@@ -292,7 +292,7 @@ mod tests {
 
 	#[test]
 	fn test_issue_parse_with_blockers() {
-		let content = r#"- [ ] Issue Title <!-- https://github.com/owner/repo/issues/1 -->
+		let content = r#"- [ ] Issue Title <!-- @owner https://github.com/owner/repo/issues/1 -->
 	Body text.
 
 	# Blockers
@@ -319,7 +319,7 @@ mod tests {
 
 	#[test]
 	fn test_issue_blockers_current_with_context() {
-		let content = r#"- [ ] Issue Title <!-- https://github.com/owner/repo/issues/1 -->
+		let content = r#"- [ ] Issue Title <!-- @owner https://github.com/owner/repo/issues/1 -->
 	Body text.
 
 	# Blockers
@@ -338,7 +338,7 @@ mod tests {
 
 	#[test]
 	fn test_issue_blockers_pop() {
-		let content = r#"- [ ] Issue Title <!-- https://github.com/owner/repo/issues/1 -->
+		let content = r#"- [ ] Issue Title <!-- @owner https://github.com/owner/repo/issues/1 -->
 	Body text.
 
 	# Blockers
@@ -358,7 +358,7 @@ mod tests {
 
 	#[test]
 	fn test_issue_serialize_with_blockers() {
-		let content = r#"- [ ] Issue Title <!-- https://github.com/owner/repo/issues/1 -->
+		let content = r#"- [ ] Issue Title <!-- @owner https://github.com/owner/repo/issues/1 -->
 	Body text.
 
 	# Blockers
@@ -375,7 +375,7 @@ mod tests {
 
 	#[test]
 	fn test_issue_no_blockers_section() {
-		let content = r#"- [ ] Issue Title <!-- https://github.com/owner/repo/issues/1 -->
+		let content = r#"- [ ] Issue Title <!-- @owner https://github.com/owner/repo/issues/1 -->
 	Just some regular body text without blockers marker.
 	- This is NOT a blocker, just body content.
 "#;
@@ -386,14 +386,14 @@ mod tests {
 
 	#[test]
 	fn test_issue_blockers_with_subissue() {
-		let content = r#"- [ ] Issue Title <!-- https://github.com/owner/repo/issues/1 -->
+		let content = r#"- [ ] Issue Title <!-- @owner https://github.com/owner/repo/issues/1 -->
 	Body.
 
 	# Blockers
 	- Blocker one
 	- Blocker two
 
-	- [ ] Sub-issue <!--sub https://github.com/owner/repo/issues/2 -->
+	- [ ] Sub-issue <!--sub @owner https://github.com/owner/repo/issues/2 -->
 		Sub-issue body
 "#;
 		let issue = Issue::parse_virtual(content, Path::new("test.md")).unwrap();

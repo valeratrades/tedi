@@ -28,7 +28,55 @@ use crate::open_interactions::sink::Sink;
 // Local - The interface for local issue storage
 //==============================================================================
 
-/// Marker type for local filesystem operations.
+/// Source variant for local issue loading.
+///
+/// Determines where to read issue content from.
+#[derive(Clone, Debug)]
+pub enum LocalSource {
+	/// Read from git's committed state (HEAD).
+	/// This is the last agreed-upon synced state.
+	Consensus,
+	/// Read from the current filesystem state.
+	/// "Submitted" because it represents what the user has effectively submitted
+	/// to the local storage - accounts for offline edits or changes made outside
+	/// this tool.
+	Submitted,
+}
+
+/// Source for loading issues from local storage.
+#[derive(Clone, Debug)]
+pub struct LocalPath {
+	pub path: PathBuf,
+	pub source: LocalSource,
+}
+
+impl LocalPath {
+	/// Create a new local path for reading from filesystem (submitted state).
+	pub fn submitted(path: PathBuf) -> Self {
+		Self {
+			path,
+			source: LocalSource::Submitted,
+		}
+	}
+
+	/// Create a new local path for reading from git (consensus state).
+	pub fn consensus(path: PathBuf) -> Self {
+		Self {
+			path,
+			source: LocalSource::Consensus,
+		}
+	}
+
+	/// Create a child path with the same source variant.
+	pub fn child(&self, child_path: PathBuf) -> Self {
+		Self {
+			path: child_path,
+			source: self.source.clone(),
+		}
+	}
+}
+
+/// Type for local filesystem operations.
 ///
 /// All custom logic for local issue storage is consolidated as methods on this type.
 pub enum Local {}
@@ -39,6 +87,152 @@ impl Local {
 	/// Returns the base directory for issue storage: XDG_DATA_HOME/todo/issues/
 	pub fn issues_dir() -> PathBuf {
 		v_utils::xdg_data_dir!("issues")
+	}
+
+	/// Read file content from the specified source.
+	///
+	/// - `Submitted`: reads from filesystem
+	/// - `Consensus`: reads from git HEAD
+	///
+	/// Returns `None` if file doesn't exist (for Submitted) or isn't tracked (for Consensus).
+	pub fn read_content(local_path: &LocalPath) -> Option<String> {
+		match local_path.source {
+			LocalSource::Submitted => std::fs::read_to_string(&local_path.path).ok(),
+			LocalSource::Consensus => Self::read_git_content(&local_path.path),
+		}
+	}
+
+	/// Read file content from git HEAD.
+	fn read_git_content(file_path: &Path) -> Option<String> {
+		use std::process::Command;
+
+		let data_dir = Self::issues_dir();
+		let data_dir_str = data_dir.to_str()?;
+		let rel_path = file_path.strip_prefix(&data_dir).ok()?;
+		let rel_path_str = rel_path.to_str()?;
+
+		// Check if git is initialized
+		let git_check = Command::new("git").args(["-C", data_dir_str, "rev-parse", "--git-dir"]).output().ok()?;
+		if !git_check.status.success() {
+			return None;
+		}
+
+		// Check if file is tracked
+		let ls_output = Command::new("git").args(["-C", data_dir_str, "ls-files", rel_path_str]).output().ok()?;
+		if !ls_output.status.success() || ls_output.stdout.is_empty() {
+			return None;
+		}
+
+		// Read from HEAD
+		let output = Command::new("git").args(["-C", data_dir_str, "show", &format!("HEAD:./{rel_path_str}")]).output().ok()?;
+
+		if !output.status.success() {
+			return None;
+		}
+
+		String::from_utf8(output.stdout).ok()
+	}
+
+	/// List directory entries from the specified source.
+	///
+	/// - `Submitted`: lists from filesystem
+	/// - `Consensus`: lists from git HEAD
+	fn list_dir_entries(local_path: &LocalPath) -> Vec<String> {
+		match local_path.source {
+			LocalSource::Submitted => Self::list_fs_entries(&local_path.path),
+			LocalSource::Consensus => Self::list_git_entries(&local_path.path),
+		}
+	}
+
+	/// List directory entries from filesystem.
+	fn list_fs_entries(dir: &Path) -> Vec<String> {
+		let Ok(entries) = std::fs::read_dir(dir) else {
+			return Vec::new();
+		};
+
+		entries.flatten().filter_map(|e| e.file_name().to_str().map(|s| s.to_string())).collect()
+	}
+
+	/// List directory entries from git HEAD.
+	fn list_git_entries(dir: &Path) -> Vec<String> {
+		use std::process::Command;
+
+		let data_dir = Self::issues_dir();
+		let Some(data_dir_str) = data_dir.to_str() else {
+			return Vec::new();
+		};
+		let Some(rel_dir) = dir.strip_prefix(&data_dir).ok() else {
+			return Vec::new();
+		};
+		let Some(rel_dir_str) = rel_dir.to_str() else {
+			return Vec::new();
+		};
+
+		let output = Command::new("git")
+			.args(["-C", data_dir_str, "ls-tree", "--name-only", "HEAD", &format!("{rel_dir_str}/")])
+			.output();
+
+		let Ok(output) = output else {
+			return Vec::new();
+		};
+		if !output.status.success() {
+			return Vec::new();
+		}
+
+		let prefix = format!("{rel_dir_str}/");
+		std::str::from_utf8(&output.stdout)
+			.unwrap_or("")
+			.lines()
+			.filter_map(|line| line.strip_prefix(&prefix))
+			.map(|s| s.to_string())
+			.collect()
+	}
+
+	/// Check if a path is a directory in the specified source.
+	fn is_dir(local_path: &LocalPath) -> bool {
+		match local_path.source {
+			LocalSource::Submitted => local_path.path.is_dir(),
+			LocalSource::Consensus => Self::is_git_dir(&local_path.path),
+		}
+	}
+
+	/// Check if a path is a directory in git.
+	fn is_git_dir(dir: &Path) -> bool {
+		use std::process::Command;
+
+		let data_dir = Self::issues_dir();
+		let Some(data_dir_str) = data_dir.to_str() else {
+			return false;
+		};
+		let Some(rel_dir) = dir.strip_prefix(&data_dir).ok() else {
+			return false;
+		};
+		let Some(rel_dir_str) = rel_dir.to_str() else {
+			return false;
+		};
+
+		let check = Command::new("git").args(["-C", data_dir_str, "ls-tree", "HEAD", &format!("{rel_dir_str}/")]).output();
+		check.map(|o| o.status.success() && !o.stdout.is_empty()).unwrap_or(false)
+	}
+
+	/// Check if a path exists in the specified source.
+	fn path_exists(local_path: &LocalPath) -> bool {
+		match local_path.source {
+			LocalSource::Submitted => local_path.path.exists(),
+			LocalSource::Consensus => Self::read_git_content(&local_path.path).is_some() || Self::is_git_dir(&local_path.path),
+		}
+	}
+
+	/// Parse a single issue node from filesystem content.
+	///
+	/// This parses one issue file (without loading children from separate files).
+	/// Children field will be empty - they're loaded separately via LazyIssue.
+	fn parse_single_node(content: &str, ancestry: Ancestry) -> Issue {
+		let path = std::path::Path::new("local.md");
+		let mut issue = Issue::parse_virtual_with_ancestry(content, path, ancestry).expect("valid issue file");
+		// Clear any inline children (filesystem format stores them in separate files)
+		issue.children.clear();
+		issue
 	}
 
 	/// Get the project directory path (where .meta.json lives).
@@ -593,25 +787,26 @@ pub struct IssueMeta {
 //==============================================================================
 
 impl todo::LazyIssue<Local> for Issue {
-	type Source = PathBuf;
+	type Source = LocalPath;
 
 	async fn identity(&mut self, source: Self::Source) -> todo::IssueIdentity {
 		if self.identity.is_linked() {
 			return self.identity.clone();
 		}
 
-		let (owner, repo) = Local::extract_owner_repo(&source).expect("valid issue path");
+		let (owner, repo) = Local::extract_owner_repo(&source.path).expect("valid issue path");
+		let ancestry = todo::Ancestry::root(&owner, &repo);
 
 		if self.contents.title.is_empty() {
-			let content = std::fs::read_to_string(&source).expect("file exists");
-			let parsed = Issue::deserialize_filesystem(&content).expect("valid issue file");
+			let content = Local::read_content(&source).expect("file exists");
+			let parsed = Local::parse_single_node(&content, ancestry);
 			self.identity = parsed.identity;
 			self.contents = parsed.contents;
 		}
 
 		if let Some(issue_number) = self.identity.number() {
 			if let Some(meta) = Local::load_issue_meta(&owner, &repo, issue_number) {
-				if let Some(linked) = &mut self.identity.linked {
+				if let Some(linked) = self.identity.remote.as_linked_mut() {
 					linked.ts = meta.ts;
 				}
 			}
@@ -625,8 +820,11 @@ impl todo::LazyIssue<Local> for Issue {
 			return self.contents.clone();
 		}
 
-		let content = std::fs::read_to_string(&source).expect("file exists");
-		let parsed = Issue::deserialize_filesystem(&content).expect("valid issue file");
+		let (owner, repo) = Local::extract_owner_repo(&source.path).expect("valid issue path");
+		let ancestry = todo::Ancestry::root(&owner, &repo);
+
+		let content = Local::read_content(&source).expect("file exists");
+		let parsed = Local::parse_single_node(&content, ancestry);
 		self.identity = parsed.identity;
 		self.contents = parsed.contents;
 
@@ -638,44 +836,56 @@ impl todo::LazyIssue<Local> for Issue {
 			return self.children.clone();
 		}
 
-		let (owner, repo) = Local::extract_owner_repo(&source).expect("valid issue path");
+		let (owner, repo) = Local::extract_owner_repo(&source.path).expect("valid issue path");
 
-		let is_dir_format = source.file_name().and_then(|n| n.to_str()).map(|n| n.starts_with(Local::MAIN_ISSUE_FILENAME)).unwrap_or(false);
+		let is_dir_format = source
+			.path
+			.file_name()
+			.and_then(|n| n.to_str())
+			.map(|n| n.starts_with(Local::MAIN_ISSUE_FILENAME))
+			.unwrap_or(false);
 
 		if !is_dir_format {
 			return Vec::new();
 		}
 
-		let Some(dir) = source.parent() else {
+		let Some(dir) = source.path.parent() else {
 			return Vec::new();
 		};
 
-		let Ok(entries) = std::fs::read_dir(dir) else {
-			return Vec::new();
+		let dir_source = LocalPath {
+			path: dir.to_path_buf(),
+			source: source.source.clone(),
 		};
+		let entries = Local::list_dir_entries(&dir_source);
 
 		let mut children = Vec::new();
 
-		for entry in entries.flatten() {
-			let path = entry.path();
-			let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-				continue;
-			};
-
+		for name in entries {
 			if name.starts_with(Local::MAIN_ISSUE_FILENAME) {
 				continue;
 			}
 
-			let child_path = if path.is_file() && (name.ends_with(".md") || name.ends_with(".md.bak")) {
-				path
-			} else if path.is_dir() {
-				let main_path = Local::main_file_path(&path, false);
-				let main_closed_path = Local::main_file_path(&path, true);
+			let entry_path = dir.join(&name);
+			let entry_source = source.child(entry_path.clone());
 
-				if main_path.exists() {
-					main_path
-				} else if main_closed_path.exists() {
-					main_closed_path
+			// Check if it's a file or directory
+			let is_file = name.ends_with(".md") || name.ends_with(".md.bak");
+			let is_directory = Local::is_dir(&entry_source);
+
+			let child_source = if is_file {
+				entry_source
+			} else if is_directory {
+				let main_path = Local::main_file_path(&entry_path, false);
+				let main_closed_path = Local::main_file_path(&entry_path, true);
+
+				let main_source = source.child(main_path);
+				let main_closed_source = source.child(main_closed_path);
+
+				if Local::path_exists(&main_source) {
+					main_source
+				} else if Local::path_exists(&main_closed_source) {
+					main_closed_source
 				} else {
 					continue;
 				}
@@ -684,9 +894,9 @@ impl todo::LazyIssue<Local> for Issue {
 			};
 
 			let mut child = Issue::empty_local(todo::Ancestry::root(&owner, &repo));
-			<Issue as todo::LazyIssue<Local>>::identity(&mut child, child_path.clone()).await;
-			<Issue as todo::LazyIssue<Local>>::contents(&mut child, child_path.clone()).await;
-			Box::pin(<Issue as todo::LazyIssue<Local>>::children(&mut child, child_path)).await;
+			<Issue as todo::LazyIssue<Local>>::identity(&mut child, child_source.clone()).await;
+			<Issue as todo::LazyIssue<Local>>::contents(&mut child, child_source.clone()).await;
+			Box::pin(<Issue as todo::LazyIssue<Local>>::children(&mut child, child_source)).await;
 
 			children.push(child);
 		}

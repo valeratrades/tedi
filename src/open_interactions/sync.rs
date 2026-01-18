@@ -88,8 +88,8 @@ use v_utils::prelude::*;
 
 use super::{
 	conflict::mark_conflict,
+	consensus::{commit_issue_changes, is_git_initialized, load_consensus_issue},
 	fetch::fetch_and_store_issue,
-	git::{commit_issue_changes, is_git_initialized, load_consensus_issue},
 	local::Local,
 	remote::load_full_issue_tree,
 	sink::IssueSinkExt,
@@ -240,7 +240,7 @@ fn apply_node_content(target: &mut Issue, source: &Issue) {
 	target.contents.comments = source.contents.comments.clone();
 
 	// Update timestamp from source identity (if both are linked)
-	if let (Some(target_linked), Some(source_linked)) = (&mut target.identity.linked, &source.identity.linked) {
+	if let (Some(target_linked), Some(source_linked)) = (target.identity.remote.as_linked_mut(), source.identity.remote.as_linked()) {
 		target_linked.ts = source_linked.ts;
 	}
 }
@@ -469,7 +469,7 @@ async fn sync_issue_to_github_inner(gh: &BoxedGithubClient, issue_file_path: &Pa
 	// Consensus is REQUIRED for sync - if we're here, the file should be tracked.
 	// For new issues, --touch creates them on Github and commits as consensus.
 	// For URL mode, fetch commits as consensus.
-	let consensus = load_consensus_issue(issue_file_path).ok_or_else(|| {
+	let consensus = load_consensus_issue(issue_file_path).await.ok_or_else(|| {
 		eyre!(
 			"BUG: Consensus missing for tracked issue.\n\
 			 File: {}\n\
@@ -599,10 +599,10 @@ pub async fn modify_and_sync_issue(gh: &BoxedGithubClient, issue_file_path: &Pat
 
 	// Load the issue tree from filesystem using LazyIssue
 	let mut issue = Issue::empty_local(todo::Ancestry::root(&owner, &repo));
-	let path = issue_file_path.to_path_buf();
-	<Issue as todo::LazyIssue<Local>>::identity(&mut issue, path.clone()).await;
-	<Issue as todo::LazyIssue<Local>>::contents(&mut issue, path.clone()).await;
-	Box::pin(<Issue as todo::LazyIssue<Local>>::children(&mut issue, path)).await;
+	let source = super::local::LocalPath::submitted(issue_file_path.to_path_buf());
+	<Issue as todo::LazyIssue<Local>>::identity(&mut issue, source.clone()).await;
+	<Issue as todo::LazyIssue<Local>>::contents(&mut issue, source.clone()).await;
+	Box::pin(<Issue as todo::LazyIssue<Local>>::children(&mut issue, source)).await;
 
 	// === CONSENSUS-FIRST SYNC ===
 	// We always show the user the consensus state, never raw local or raw remote.
@@ -619,7 +619,7 @@ pub async fn modify_and_sync_issue(gh: &BoxedGithubClient, issue_file_path: &Pat
 
 		if !prefers_local {
 			// Load consensus from git (last committed state)
-			let consensus = load_consensus_issue(issue_file_path);
+			let consensus = load_consensus_issue(issue_file_path).await;
 
 			// Determine if we need to sync before showing the user
 			let local_differs_from_consensus = consensus.as_ref().map(|c| *c != issue).unwrap_or(false);
@@ -698,8 +698,10 @@ pub async fn modify_and_sync_issue(gh: &BoxedGithubClient, issue_file_path: &Pat
 		println!("Issue marked as duplicate of #{dup_number}, removing local file...");
 
 		// Close on Github (if not already closed and not offline)
-		// If consensus doesn't exist (shouldn't happen), assume we need to close
-		let consensus_closed = load_consensus_issue(issue_file_path).map(|c| c.contents.state.is_closed()).unwrap_or(false);
+		let consensus = load_consensus_issue(issue_file_path)
+			.await
+			.expect("BUG: consensus missing for tracked issue during duplicate handling");
+		let consensus_closed = consensus.contents.state.is_closed();
 		if !offline && !consensus_closed {
 			gh.update_issue_state(&owner, &repo, meta.issue_number, "closed").await?;
 		}
@@ -746,10 +748,10 @@ pub async fn modify_issue_offline(issue_file_path: &Path, modifier: Modifier) ->
 	// Load the issue tree from filesystem using LazyIssue
 	let (owner, repo) = Local::extract_owner_repo(issue_file_path)?;
 	let mut issue = Issue::empty_local(todo::Ancestry::root(&owner, &repo));
-	let path = issue_file_path.to_path_buf();
-	<Issue as todo::LazyIssue<Local>>::identity(&mut issue, path.clone()).await;
-	<Issue as todo::LazyIssue<Local>>::contents(&mut issue, path.clone()).await;
-	Box::pin(<Issue as todo::LazyIssue<Local>>::children(&mut issue, path)).await;
+	let source = super::local::LocalPath::submitted(issue_file_path.to_path_buf());
+	<Issue as todo::LazyIssue<Local>>::identity(&mut issue, source.clone()).await;
+	<Issue as todo::LazyIssue<Local>>::contents(&mut issue, source.clone()).await;
+	Box::pin(<Issue as todo::LazyIssue<Local>>::children(&mut issue, source)).await;
 
 	// Apply the modifier (blocker command)
 	let result = modifier.apply(&mut issue, issue_file_path).await?;

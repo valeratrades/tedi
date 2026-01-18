@@ -151,7 +151,7 @@ pub async fn open_command(settings: &LiveSettings, gh: BoxedGithubClient, args: 
 			let path = create_pending_issue(&touch_path)?;
 
 			// Commit the pending issue as initial consensus
-			use super::git::commit_issue_changes;
+			use super::consensus::commit_issue_changes;
 			commit_issue_changes(&path, &touch_path.owner, &touch_path.repo, 0, Some("initial touch creation (pending)"))?;
 
 			(path, false)
@@ -182,7 +182,7 @@ pub async fn open_command(settings: &LiveSettings, gh: BoxedGithubClient, args: 
 			println!("Stored issue at: {path:?}");
 
 			// Commit the fetched state as the consensus baseline
-			use super::git::commit_issue_changes;
+			use super::consensus::commit_issue_changes;
 			commit_issue_changes(&path, &owner, &repo, issue_number, Some("initial fetch"))?;
 
 			path

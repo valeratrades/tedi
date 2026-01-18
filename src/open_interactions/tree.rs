@@ -220,7 +220,7 @@ fn apply_remote_node_content(resolved: &mut Issue, remote: &Issue) {
 	resolved.contents.comments.extend(remote.contents.comments.iter().skip(1).cloned());
 
 	// Update timestamp from remote identity (if both are linked)
-	if let (Some(resolved_linked), Some(remote_linked)) = (&mut resolved.identity.linked, &remote.identity.linked) {
+	if let (Some(resolved_linked), Some(remote_linked)) = (resolved.identity.remote.as_linked_mut(), remote.identity.remote.as_linked()) {
 		resolved_linked.ts = remote_linked.ts;
 	}
 }

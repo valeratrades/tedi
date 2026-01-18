@@ -213,6 +213,11 @@ impl IssueSinkExt for Issue {
 
 impl Sink<Remote> for Issue {
 	async fn sink(&mut self, old: Option<&Issue>) -> color_eyre::Result<bool> {
+		// Virtual issues never sync to remote - they're local-only
+		if self.identity.is_virtual() {
+			return Ok(false);
+		}
+
 		let gh = crate::github::client::get();
 		// Copy ancestry upfront to avoid borrow conflicts when updating identity
 		let ancestry = self.identity.ancestry;
