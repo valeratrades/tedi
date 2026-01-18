@@ -91,8 +91,9 @@ use super::{
 	fetch::fetch_and_store_issue,
 	git::{commit_issue_changes, is_git_initialized, load_consensus_issue},
 	local::Local,
+	remote::load_full_issue_tree,
 	sink::IssueSinkExt,
-	tree::{fetch_full_issue_tree, resolve_tree},
+	tree::resolve_tree,
 };
 use crate::github::BoxedGithubClient;
 
@@ -485,7 +486,7 @@ async fn sync_issue_to_github_inner(gh: &BoxedGithubClient, issue_file_path: &Pa
 	// created on Github in post-sync. No pre-sync phase needed.
 	let (local_needs_update, changed) = if issue.is_linked() {
 		// Normal flow: fetch remote and merge
-		let remote_issue = fetch_full_issue_tree(gh, owner, repo, issue_number).await?;
+		let remote_issue = load_full_issue_tree(gh, owner, repo, issue_number).await?;
 
 		// Apply merge mode to get the merged result
 		let (merged, local_needs_update, remote_needs_update) = apply_merge_mode(issue, Some(&consensus), &remote_issue, merge_mode, issue_file_path, owner, repo, issue_number).await?;
@@ -633,7 +634,7 @@ pub async fn modify_and_sync_issue(gh: &BoxedGithubClient, issue_file_path: &Pat
 				println!("{reason}");
 
 				// Fetch remote state
-				let remote_issue = fetch_full_issue_tree(gh, &owner, &repo, meta.issue_number).await?;
+				let remote_issue = load_full_issue_tree(gh, &owner, &repo, meta.issue_number).await?;
 
 				// Consensus is required - if missing and local differs, that's a bug
 				let consensus = consensus.ok_or_else(|| {

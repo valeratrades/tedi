@@ -1,134 +1,14 @@
 //! Tree operations for issue hierarchies.
 //!
 //! Handles:
-//! - Level-by-level parallel fetching of full issue trees from Github
 //! - Per-node comparison between local, consensus, and remote states
 //! - Timestamp-based auto-resolution of conflicts
+//!
+//! Note: Issue tree fetching is now done via `LazyIssue<Remote>` in `remote/mod.rs`.
 
 use std::collections::HashMap;
 
-use jiff::Timestamp;
-use todo::{CloseState, Comment, CommentIdentity, Issue, IssueContents, IssueIdentity, IssueLink};
-use v_utils::prelude::*;
-
-use super::github_sync::IssueGithubExt;
-use crate::github::{BoxedGithubClient, GithubComment, GithubIssue};
-
-/// Fetch a complete issue tree from Github, level by level.
-///
-/// Issues at the same nesting level are fetched in parallel.
-/// This ensures we get the full tree structure, not just shallow children.
-pub async fn fetch_full_issue_tree(gh: &BoxedGithubClient, owner: &str, repo: &str, root_issue_number: u64) -> Result<Issue> {
-	let current_user = gh.fetch_authenticated_user().await?;
-
-	// Fetch root issue with comments and immediate sub-issues
-	let (root_issue, root_comments, root_sub_issues) = tokio::try_join!(
-		gh.fetch_issue(owner, repo, root_issue_number),
-		gh.fetch_comments(owner, repo, root_issue_number),
-		gh.fetch_sub_issues(owner, repo, root_issue_number),
-	)?;
-
-	// Build root Issue (shallow children for now)
-	let mut root = Issue::from_github(&root_issue, &root_comments, &root_sub_issues, owner, repo, &current_user);
-
-	// Now recursively fetch children level by level
-	fetch_children_recursive(gh, owner, repo, &mut root).await?;
-
-	Ok(root)
-}
-
-/// Recursively fetch children for all nodes at the current level in parallel.
-fn fetch_children_recursive<'a>(
-	gh: &'a BoxedGithubClient,
-	owner: &'a str,
-	repo: &'a str,
-	issue: &'a mut Issue,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
-	Box::pin(async move {
-		if issue.children.is_empty() {
-			return Ok(());
-		}
-
-		// Collect all child issue numbers that need fetching
-		let child_numbers: Vec<u64> = issue.children.iter().filter_map(|child| child.number()).collect();
-
-		if child_numbers.is_empty() {
-			return Ok(());
-		}
-
-		// Fetch all children's data in parallel
-		let futures = child_numbers.iter().map(|&num| {
-			let gh = gh.clone();
-			async move {
-				let (comments, sub_issues) = tokio::try_join!(gh.fetch_comments(owner, repo, num), gh.fetch_sub_issues(owner, repo, num),)?;
-				Ok::<_, color_eyre::eyre::Report>((num, comments, sub_issues))
-			}
-		});
-		//TODO: when adding retry logic, switch to `cancel_safe_futures::future::join_then_try_all`
-		// so retrying branches complete before propagating errors
-		let results = futures::future::try_join_all(futures).await?;
-
-		// Build a map for quick lookup
-		let data_map: HashMap<u64, (Vec<GithubComment>, Vec<GithubIssue>)> = results.into_iter().map(|(num, comments, sub_issues)| (num, (comments, sub_issues))).collect();
-
-		// Update each child with full data
-		for child in &mut issue.children {
-			let Some(child_num) = child.number() else {
-				continue;
-			};
-			let Some((comments, sub_issues)) = data_map.get(&child_num) else {
-				continue;
-			};
-
-			// Update comments (keep first comment which is body, add actual comments)
-			for c in comments {
-				child.contents.comments.push(Comment {
-					identity: CommentIdentity::Created {
-						user: c.user.login.clone(),
-						id: c.id,
-					},
-					body: todo::Events::parse(c.body.as_deref().unwrap_or("")),
-				});
-			}
-
-			// Build sub-issue children, filtering out duplicates
-			// Child ancestry extends from parent's ancestry + parent's issue number
-			let child_ancestry = child.identity.child_ancestry().expect("we're parsing from Github - all nodes are `Linked` by definition");
-			child.children = sub_issues
-				.iter()
-				.filter(|si| !CloseState::is_duplicate_reason(si.state_reason.as_deref()))
-				.map(|si| {
-					let url = format!("https://github.com/{owner}/{repo}/issues/{}", si.number);
-					let link = IssueLink::parse(&url).expect("just constructed valid URL");
-					let close_state = CloseState::from_github(&si.state, si.state_reason.as_deref());
-					let ts = si.updated_at.parse::<Timestamp>().ok();
-					let labels: Vec<String> = si.labels.iter().map(|l| l.name.clone()).collect();
-					Issue {
-						identity: IssueIdentity::linked(child_ancestry, si.user.login.clone(), link, ts),
-						contents: IssueContents {
-							title: si.title.clone(),
-							labels,
-							state: close_state,
-							comments: vec![Comment {
-								identity: CommentIdentity::Body,
-								body: todo::Events::parse(si.body.as_deref().unwrap_or("")),
-							}],
-							blockers: Default::default(),
-						},
-						children: Vec::new(),
-					}
-				})
-				.collect();
-		}
-
-		// Recurse into children
-		for child in &mut issue.children {
-			fetch_children_recursive(gh, owner, repo, child).await?;
-		}
-
-		Ok(())
-	})
-}
+use todo::Issue;
 
 /// Result of comparing a single node.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -348,7 +228,8 @@ fn apply_remote_node_content(resolved: &mut Issue, remote: &Issue) {
 #[cfg(test)]
 mod tests {
 	use insta::assert_snapshot;
-	use todo::{Ancestry, BlockerSequence};
+	use jiff::Timestamp;
+	use todo::{Ancestry, BlockerSequence, CloseState, Comment, CommentIdentity, IssueContents, IssueIdentity, IssueLink};
 
 	use super::*;
 

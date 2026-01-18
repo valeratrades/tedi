@@ -1,30 +1,20 @@
 //! Fetch issues from Github and store locally.
+//!
+//! This module provides the `fetch_and_store_issue` function which:
+//! 1. Loads an issue tree from GitHub via `LazyIssue<Remote>`
+//! 2. Writes it to the local filesystem via `Sink<Local>`
 
 use std::path::PathBuf;
 
-use todo::{Ancestry, CloseState, FetchedIssue, Issue};
+use todo::{Ancestry, FetchedIssue, Issue};
 use v_utils::prelude::*;
 
-use super::{github_sync::IssueGithubExt, local::Local};
-use crate::github::{BoxedGithubClient, GithubIssue};
-
-/// Fetch the lineage (parent issue numbers) for an issue from GitHub.
-///
-/// Traverses up the parent chain to find the root issue.
-/// Returns issue numbers from root to immediate parent (not including the target issue).
-pub async fn fetch_lineage(gh: &BoxedGithubClient, owner: &str, repo: &str, issue_number: u64) -> Result<Vec<u64>> {
-	let mut lineage = Vec::new();
-	let mut current_issue_number = issue_number;
-
-	while let Some(parent) = gh.fetch_parent_issue(owner, repo, current_issue_number).await? {
-		lineage.push(parent.number);
-		current_issue_number = parent.number;
-	}
-
-	// Reverse so it goes from root to immediate parent
-	lineage.reverse();
-	Ok(lineage)
-}
+use super::{
+	local::Local,
+	remote::{Remote, RemoteSource},
+	sink::IssueSinkExt,
+};
+use crate::github::BoxedGithubClient;
 
 /// Fetch an issue and all its sub-issues recursively, writing them to XDG_DATA.
 ///
@@ -39,7 +29,7 @@ pub async fn fetch_and_store_issue(gh: &BoxedGithubClient, owner: &str, repo: &s
 		Some(a) => a,
 		None => {
 			// First, fetch the lineage from GitHub to know where this issue belongs
-			let lineage = fetch_lineage(gh, owner, repo, issue_number).await?;
+			let lineage = Remote::fetch_lineage(gh, owner, repo, issue_number).await?;
 
 			if !lineage.is_empty() {
 				// This is a sub-issue - validate parents exist locally and build FetchedIssue chain
@@ -53,100 +43,32 @@ pub async fn fetch_and_store_issue(gh: &BoxedGithubClient, owner: &str, repo: &s
 		}
 	};
 
-	store_issue_tree(gh, owner, repo, issue_number, ancestors).await
-}
+	// Load issue tree from GitHub via LazyIssue<Remote>
+	let source = RemoteSource::root(gh.clone(), owner, repo, issue_number);
+	let ancestry = Ancestry::root(owner, repo);
+	let mut issue = Issue::empty_local(ancestry);
 
-/// Store an issue and all its sub-issues recursively.
-/// This is the core logic shared by all issue fetching operations.
-fn store_issue_tree<'a>(
-	gh: &'a BoxedGithubClient,
-	owner: &'a str,
-	repo: &'a str,
-	issue_number: u64,
-	ancestors: Vec<FetchedIssue>,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<PathBuf>> + Send + 'a>> {
-	Box::pin(async move {
-		// Fetch issue data
-		let (current_user, issue, comments, sub_issues) = tokio::try_join!(
-			gh.fetch_authenticated_user(),
-			gh.fetch_issue(owner, repo, issue_number),
-			gh.fetch_comments(owner, repo, issue_number),
-			gh.fetch_sub_issues(owner, repo, issue_number),
-		)?;
+	<Issue as todo::LazyIssue<Remote>>::identity(&mut issue, source.clone()).await;
+	<Issue as todo::LazyIssue<Remote>>::contents(&mut issue, source.clone()).await;
+	Box::pin(<Issue as todo::LazyIssue<Remote>>::children(&mut issue, source)).await;
 
-		store_issue_node(gh, owner, repo, &issue, &comments, &sub_issues, &current_user, ancestors).await
-	})
-}
+	// Write to local filesystem via Sink<Local>
+	issue.sink_local(None).await?;
 
-/// Store a single issue node and recurse into its children.
-/// Extracted to allow reuse when we already have the GithubIssue.
-#[allow(clippy::too_many_arguments)]
-async fn store_issue_node(
-	gh: &BoxedGithubClient,
-	owner: &str,
-	repo: &str,
-	issue: &GithubIssue,
-	comments: &[crate::github::GithubComment],
-	sub_issues: &[GithubIssue],
-	current_user: &str,
-	ancestors: Vec<FetchedIssue>,
-) -> Result<PathBuf> {
-	// Filter out duplicate sub-issues - they shouldn't appear locally
-	let filtered_sub_issues: Vec<_> = sub_issues.iter().filter(|si| !CloseState::is_duplicate_reason(si.state_reason.as_deref())).cloned().collect();
+	// Determine the file path (matches logic from sink_local)
+	let issue_number = issue.number().expect("issue loaded from GitHub has number");
+	let title = &issue.contents.title;
+	let closed = issue.contents.state.is_closed();
+	let has_children = !issue.children.is_empty();
 
-	let issue_closed = issue.state == "closed";
-	let has_sub_issues = !filtered_sub_issues.is_empty();
-
-	// Determine file path - use directory format if there are sub-issues
-	let issue_file_path = if has_sub_issues {
-		// Use directory format: {dir}/__main__.md
-		let issue_dir = Local::issue_dir_path(owner, repo, Some(issue.number), &issue.title, &ancestors);
-		std::fs::create_dir_all(&issue_dir)?;
-
-		// Clean up old flat file if it exists (format is changing)
-		let old_flat_path = Local::issue_file_path(owner, repo, Some(issue.number), &issue.title, false, &ancestors);
-		if old_flat_path.exists() {
-			std::fs::remove_file(&old_flat_path)?;
-		}
-		let old_flat_closed = Local::issue_file_path(owner, repo, Some(issue.number), &issue.title, true, &ancestors);
-		if old_flat_closed.exists() {
-			std::fs::remove_file(&old_flat_closed)?;
-		}
-
-		Local::main_file_path(&issue_dir, issue_closed)
+	let issue_file_path = if has_children {
+		let issue_dir = Local::issue_dir_path(owner, repo, Some(issue_number), title, &ancestors);
+		Local::main_file_path(&issue_dir, closed)
+	} else if let Some(existing) = Local::find_issue_file(owner, repo, Some(issue_number), title, &ancestors) {
+		existing
 	} else {
-		// Check if there's an existing file (might be in either format)
-		if let Some(existing) = Local::find_issue_file(owner, repo, Some(issue.number), &issue.title, &ancestors) {
-			existing
-		} else {
-			// No existing file, use flat format
-			Local::issue_file_path(owner, repo, Some(issue.number), &issue.title, issue_closed, &ancestors)
-		}
+		Local::issue_file_path(owner, repo, Some(issue_number), title, closed, &ancestors)
 	};
-
-	// Create parent directories
-	if let Some(parent) = issue_file_path.parent() {
-		std::fs::create_dir_all(parent)?;
-	}
-
-	// Convert GitHub data to Issue struct, then serialize for filesystem storage
-	// Note: from_github takes sub_issues for building children metadata, but serialize_filesystem
-	// doesn't embed them (they're stored as separate files via the recursive calls below)
-	let issue_struct = Issue::from_github(issue, comments, &filtered_sub_issues, owner, repo, current_user);
-	let content = issue_struct.serialize_filesystem();
-	std::fs::write(&issue_file_path, &content)?;
-
-	// Build ancestors for children (current issue becomes part of ancestors)
-	let mut child_ancestors = ancestors;
-	let this_issue = FetchedIssue::from_parts(owner, repo, issue.number, &issue.title).ok_or_else(|| eyre!("Failed to construct FetchedIssue for #{}", issue.number))?;
-	child_ancestors.push(this_issue);
-
-	// Recursively fetch and store all sub-issues
-	for sub_issue in &filtered_sub_issues {
-		if let Err(e) = store_issue_tree(gh, owner, repo, sub_issue.number, child_ancestors.clone()).await {
-			eprintln!("Warning: Failed to fetch sub-issue #{}: {e}", sub_issue.number);
-		}
-	}
 
 	Ok(issue_file_path)
 }

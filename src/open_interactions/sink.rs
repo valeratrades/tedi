@@ -164,11 +164,7 @@ pub fn compute_node_diff(new: &Issue, old: Option<&Issue>) -> IssueDiff {
 // Sink Trait
 //==============================================================================
 
-// TODO: move Remote to its own module like Local is in local/mod.rs
-/// Marker type for remote GitHub operations.
-pub enum Remote {}
-
-pub use super::local::Local;
+pub use super::{local::Local, remote::Remote};
 
 /// Trait for sinking (pushing) issues to a destination.
 ///
