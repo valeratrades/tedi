@@ -92,7 +92,7 @@ use super::{
 	files::{load_issue_tree, save_issue_tree},
 	git::{commit_issue_changes, is_git_initialized, load_consensus_issue},
 	meta::load_issue_meta_from_path,
-	sink::{GithubSink, Sink},
+	sink::{Remote, Sink},
 	tree::{fetch_full_issue_tree, resolve_tree},
 };
 use crate::github::BoxedGithubClient;
@@ -509,15 +509,13 @@ async fn sync_issue_to_github_inner(gh: &BoxedGithubClient, issue_file_path: &Pa
 
 		// Push differences to GitHub using Sink trait
 		// Compare merged state against REMOTE (not consensus) to know what to push
-		let github_sink = GithubSink { gh, owner, repo };
-		let changed = issue.sink(Some(&remote_issue), github_sink).await?;
+		let changed = issue.sink(Some(&remote_issue), Remote(gh)).await?;
 
 		(local_needs_update, changed)
 	} else {
 		// Issue was just created - sink with no old state
 		// (everything is "new" relative to GitHub)
-		let github_sink = GithubSink { gh, owner, repo };
-		let changed = issue.sink(None, github_sink).await?;
+		let changed = issue.sink(None, Remote(gh)).await?;
 		(false, changed)
 	};
 

@@ -80,6 +80,12 @@ pub fn get_project_dir(owner: &str, repo: &str) -> PathBuf {
 	issues_dir().join(owner).join(repo)
 }
 
+/// Get the .meta.json path for a project.
+/// Structure: issues/{owner}/{repo}/.meta.json
+pub fn get_meta_json_path(owner: &str, repo: &str) -> PathBuf {
+	get_project_dir(owner, repo).join(".meta.json")
+}
+
 /// Build a chain of FetchedIssue by traversing the filesystem for an ancestry.
 ///
 /// Goes through each issue number in the lineage and finds the corresponding
@@ -434,12 +440,24 @@ pub fn extract_owner_repo_from_path(issue_file_path: &Path) -> Result<(String, S
 /// just the node, no children), then recursively scans the directory for child files
 /// and loads them into the `children` field.
 ///
+/// Also loads per-issue metadata (like `ts`) from the project's `.meta.json`.
+///
 /// For flat files (e.g., `123_-_title.md`), there are no children.
 /// For directory format (e.g., `123_-_title/__main__.md`), children are loaded from
 /// sibling files in the same directory.
 pub fn load_issue_tree(issue_file_path: &Path) -> Result<Issue> {
+	let (owner, repo) = extract_owner_repo_from_path(issue_file_path)?;
 	let content = std::fs::read_to_string(issue_file_path)?;
 	let mut issue = Issue::deserialize_filesystem(&content)?;
+
+	// Load ts from .meta.json if the issue is linked (has a number)
+	if let Some(issue_number) = issue.number() {
+		if let Some(meta) = super::meta::load_issue_meta(&owner, &repo, issue_number) {
+			if let Some(linked) = &mut issue.identity.linked {
+				linked.ts = meta.ts;
+			}
+		}
+	}
 
 	// Determine if this is a directory format (has __main__ in path)
 	let is_dir_format = issue_file_path.file_name().and_then(|n| n.to_str()).map(|n| n.starts_with(MAIN_ISSUE_FILENAME)).unwrap_or(false);
@@ -447,7 +465,7 @@ pub fn load_issue_tree(issue_file_path: &Path) -> Result<Issue> {
 	if is_dir_format {
 		// Load children from sibling files in the directory
 		if let Some(dir) = issue_file_path.parent() {
-			load_children_from_dir(&mut issue, dir)?;
+			load_children_from_dir(&mut issue, dir, &owner, &repo)?;
 		}
 	}
 
@@ -455,7 +473,7 @@ pub fn load_issue_tree(issue_file_path: &Path) -> Result<Issue> {
 }
 
 /// Recursively load children from a directory into the issue.
-fn load_children_from_dir(issue: &mut Issue, dir: &Path) -> Result<()> {
+fn load_children_from_dir(issue: &mut Issue, dir: &Path, owner: &str, repo: &str) -> Result<()> {
 	let Ok(entries) = std::fs::read_dir(dir) else {
 		return Ok(());
 	};
@@ -474,7 +492,7 @@ fn load_children_from_dir(issue: &mut Issue, dir: &Path) -> Result<()> {
 		// Check if this is an issue file or directory
 		if path.is_file() && (name.ends_with(".md") || name.ends_with(".md.bak")) {
 			// Flat child file
-			let child = load_issue_tree(&path)?;
+			let child = load_issue_tree_inner(&path, owner, repo)?;
 			issue.children.push(child);
 		} else if path.is_dir() {
 			// Directory child - look for __main__ file
@@ -489,7 +507,7 @@ fn load_children_from_dir(issue: &mut Issue, dir: &Path) -> Result<()> {
 				continue;
 			};
 
-			let child = load_issue_tree(&child_path)?;
+			let child = load_issue_tree_inner(&child_path, owner, repo)?;
 			issue.children.push(child);
 		}
 	}
@@ -504,37 +522,54 @@ fn load_children_from_dir(issue: &mut Issue, dir: &Path) -> Result<()> {
 	Ok(())
 }
 
+/// Internal: load issue tree when owner/repo are already known.
+fn load_issue_tree_inner(issue_file_path: &Path, owner: &str, repo: &str) -> Result<Issue> {
+	let content = std::fs::read_to_string(issue_file_path)?;
+	let mut issue = Issue::deserialize_filesystem(&content)?;
+
+	// Load ts from .meta.json if the issue is linked (has a number)
+	if let Some(issue_number) = issue.number() {
+		if let Some(meta) = super::meta::load_issue_meta(owner, repo, issue_number) {
+			if let Some(linked) = &mut issue.identity.linked {
+				linked.ts = meta.ts;
+			}
+		}
+	}
+
+	// Determine if this is a directory format (has __main__ in path)
+	let is_dir_format = issue_file_path.file_name().and_then(|n| n.to_str()).map(|n| n.starts_with(MAIN_ISSUE_FILENAME)).unwrap_or(false);
+
+	if is_dir_format {
+		// Load children from sibling files in the directory
+		if let Some(dir) = issue_file_path.parent() {
+			load_children_from_dir(&mut issue, dir, owner, repo)?;
+		}
+	}
+
+	Ok(issue)
+}
+
 //==============================================================================
 // Filesystem Sink Implementation
 //==============================================================================
 
-use super::sink::Sink;
+use super::sink::{Local, Sink};
 
-impl Sink<&Path> for Issue {
+impl Sink<Local> for Issue {
 	/// Save an issue tree to the filesystem.
 	///
 	/// Each node is written to its own file using `serialize_filesystem`.
 	/// If the issue has children, it uses directory format with `__main__.md`.
 	/// Children are written as siblings in the directory.
-	async fn sink(&mut self, old: Option<&Issue>, path: &Path) -> color_eyre::Result<bool> {
-		// Validate: error if path ends in .md but not __main__.md and both file and directory exist
-		if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
-			if file_name.ends_with(".md") && !file_name.starts_with(MAIN_ISSUE_FILENAME) {
-				let base_name = file_name.strip_suffix(".md.bak").or_else(|| file_name.strip_suffix(".md"));
-				if let (Some(base), Some(parent)) = (base_name, path.parent()) {
-					let potential_dir = parent.join(base);
-					if path.exists() && potential_dir.is_dir() {
-						bail!("Conflict: both file '{}' and directory '{}' exist for the same issue", path.display(), potential_dir.display());
-					}
-				}
-			}
-		}
-
-		let (owner, repo) = extract_owner_repo_from_path(path)?;
+	///
+	/// Location is derived from the issue's ancestry (owner/repo/lineage).
+	async fn sink(&mut self, old: Option<&Issue>, _source: Local) -> color_eyre::Result<bool> {
+		let owner = self.identity.owner();
+		let repo = self.identity.repo();
 		let has_changes = old.map(|o| self != o).unwrap_or(true);
 
 		if has_changes {
-			save_issue_tree(self, &owner, &repo, &[])?;
+			save_issue_tree(self, owner, repo, &[])?;
 		}
 
 		Ok(has_changes)
@@ -594,6 +629,9 @@ pub fn save_issue_tree(issue: &Issue, owner: &str, repo: &str, ancestors: &[Fetc
 	// Write this node (without children)
 	let content = issue.serialize_filesystem();
 	std::fs::write(&issue_file_path, &content)?;
+
+	// Note: ts metadata is NOT written here to avoid affecting git sync state.
+	// Use save_issue_meta() explicitly when metadata persistence is needed.
 
 	// Build ancestors for children
 	let mut child_ancestors = ancestors.to_vec();

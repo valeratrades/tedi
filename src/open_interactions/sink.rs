@@ -6,9 +6,8 @@
 //!
 //! ## Design Overview
 //!
-//! The `Sink<L>` trait takes:
-//! - `old`: The state of the source we're writing to (preserved after pulling), or None for new issues
-//! - `location`: Where to write (e.g., GitHub coordinates or filesystem path)
+//! The `Sink<S>` trait uses marker types (`Local`, `Remote`) to select the
+//! implementation. Location is derived from the issue's `identity.ancestry`.
 //!
 //! The trait is called on the issue we want to push.
 //!
@@ -22,6 +21,8 @@
 use std::collections::{HashMap, HashSet};
 
 use todo::{Comment, CommentIdentity, Issue, IssueIdentity, IssueLink};
+
+use crate::github::BoxedGithubClient;
 
 //==============================================================================
 // Diff Results
@@ -162,47 +163,59 @@ pub fn compute_node_diff(new: &Issue, old: Option<&Issue>) -> IssueDiff {
 }
 
 //==============================================================================
+// Source Markers
+//==============================================================================
+
+/// Marker trait for sink destinations.
+pub trait Source {}
+
+/// Marker for local filesystem sink.
+pub struct Local;
+impl Source for Local {}
+
+/// Marker for remote GitHub sink. Contains the GitHub client needed for API calls.
+pub struct Remote<'a>(pub &'a BoxedGithubClient);
+impl Source for Remote<'_> {}
+
+//==============================================================================
 // Sink Trait
 //==============================================================================
 
 /// Trait for sinking (pushing) issues to a destination.
 ///
-/// The trait is implemented for Issue and takes a location type parameter
-/// to allow different implementations for different destinations.
+/// The trait is implemented for Issue and uses the issue's ancestry to determine
+/// where to write. The source marker `S` selects which implementation to use.
 ///
 /// # Type Parameter
-/// - `L`: The location type (e.g., `GithubSink`, `&Path`)
+/// - `S`: Source marker (`Local` for filesystem, `Remote` for GitHub)
 #[allow(async_fn_in_trait)]
-pub trait Sink<L> {
-	/// Sink this issue (consensus) to the given location, comparing against `old` state.
+pub trait Sink<S: Source> {
+	/// Sink this issue (consensus) to the destination, comparing against `old` state.
+	///
+	/// Location is derived from the issue's `identity.ancestry` (owner/repo/lineage).
 	///
 	/// # Arguments
 	/// * `old` - The current state at the target location (from last pull), or None if no previous state exists
-	/// * `location` - Where to write
+	/// * `source` - Source marker (may contain client for remote operations)
 	///
 	/// # Returns
 	/// * `Ok(true)` if any changes were made
 	/// * `Ok(false)` if already in sync
 	/// * `Err(_)` on failure
-	async fn sink(&mut self, old: Option<&Issue>, location: L) -> color_eyre::Result<bool>;
+	async fn sink(&mut self, old: Option<&Issue>, source: S) -> color_eyre::Result<bool>;
 }
 
 //==============================================================================
 // GitHub Sink Implementation
 //==============================================================================
 
-use crate::github::BoxedGithubClient;
-
-/// GitHub location with client for sinking.
-pub struct GithubSink<'a> {
-	pub gh: &'a BoxedGithubClient,
-	pub owner: &'a str,
-	pub repo: &'a str,
-}
-
-impl Sink<GithubSink<'_>> for Issue {
-	async fn sink(&mut self, old: Option<&Issue>, location: GithubSink<'_>) -> color_eyre::Result<bool> {
-		let GithubSink { gh, owner, repo } = location;
+impl Sink<Remote<'_>> for Issue {
+	async fn sink(&mut self, old: Option<&Issue>, source: Remote<'_>) -> color_eyre::Result<bool> {
+		let gh = source.0;
+		// Copy ancestry upfront to avoid borrow conflicts when updating identity
+		let ancestry = self.identity.ancestry;
+		let owner = ancestry.owner();
+		let repo = ancestry.repo();
 		let mut changed = false;
 
 		// If this is a pending (local) issue, create it first
@@ -285,12 +298,14 @@ impl Sink<GithubSink<'_>> for Issue {
 			// If child is pending, it needs to be linked to parent after creation
 			let was_pending = child.is_local();
 
-			let child_sink = GithubSink { gh, owner, repo };
-			changed |= Box::pin(child.sink(old_child, child_sink)).await?;
+			changed |= Box::pin(child.sink(old_child, Remote(gh))).await?;
 
 			// Link newly created child to parent
 			if was_pending {
-				let child_id = gh.fetch_issue(owner, repo, child.number().unwrap()).await?.id;
+				let child_number = child.number().unwrap();
+				let child_owner = child.identity.owner();
+				let child_repo = child.identity.repo();
+				let child_id = gh.fetch_issue(child_owner, child_repo, child_number).await?.id;
 				gh.add_sub_issue(owner, repo, issue_number, child_id).await?;
 			}
 		}

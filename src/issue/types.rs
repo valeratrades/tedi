@@ -1385,6 +1385,7 @@ pub trait LazyIssue<S> {
 	async fn contents(&mut self, source: S) -> IssueContents;
 	async fn children(&mut self, source: S) -> Vec<Issue>;
 }
+//TODO: move this impl inside files.rs
 impl LazyIssue<&std::path::Path> for Issue {
 	async fn identity(&mut self, _source: &std::path::Path) -> IssueIdentity {
 		//DO: we always store identity at the same level as the issue file/folder; joined with others (otherwise will be inconsistent between issues with and without children)

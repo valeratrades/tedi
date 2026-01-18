@@ -1,11 +1,15 @@
 //! Project and issue metadata.
 //!
-//! The .meta.json file only stores virtual project configuration.
-//! Issue metadata (title, extension, parent) is derived from file paths.
+//! The .meta.json file stores:
+//! - Virtual project configuration (for offline-only projects)
+//! - Per-issue metadata keyed by issue number (timestamps, etc.)
+//!
+//! Issue structural metadata (title, parent) is derived from file paths.
 //! Consensus state for sync comes from git (last committed version).
 
 use std::path::PathBuf;
 
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use v_utils::prelude::*;
 
@@ -21,11 +25,20 @@ pub struct IssueMetaEntry {
 	pub parent_issue: Option<u64>,
 }
 
-/// Project-level metadata file containing only virtual project configuration.
+/// Per-issue metadata stored in .meta.json.
+/// Keyed by issue number in the issues map.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct IssueMeta {
+	/// Timestamp of last content change (body/comments, not children).
+	/// Used for sync conflict resolution.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub ts: Option<Timestamp>,
+}
+
+/// Project-level metadata file.
 /// Stored at: issues/{owner}/{repo}/.meta.json
 ///
-/// NOTE: This file only exists for virtual projects (offline-only).
-/// Normal Github-connected projects don't need this file at all.
+/// Contains both project configuration and per-issue metadata.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct ProjectMeta {
 	pub owner: String,
@@ -37,6 +50,9 @@ pub struct ProjectMeta {
 	/// Next issue number for virtual projects (auto-incremented)
 	#[serde(default)]
 	pub next_virtual_issue_number: u64,
+	/// Per-issue metadata, keyed by issue number.
+	#[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+	pub issues: std::collections::HashMap<u64, IssueMeta>,
 }
 
 /// Get the metadata file path for a project
@@ -53,12 +69,14 @@ pub fn load_project_meta(owner: &str, repo: &str) -> ProjectMeta {
 			repo: repo.to_string(),
 			virtual_project: false,
 			next_virtual_issue_number: 0,
+			issues: std::collections::HashMap::new(),
 		}),
 		Err(_) => ProjectMeta {
 			owner: owner.to_string(),
 			repo: repo.to_string(),
 			virtual_project: false,
 			next_virtual_issue_number: 0,
+			issues: std::collections::HashMap::new(),
 		},
 	}
 }
@@ -207,8 +225,38 @@ pub fn ensure_virtual_project(owner: &str, repo: &str) -> Result<ProjectMeta> {
 			repo: repo.to_string(),
 			virtual_project: true,
 			next_virtual_issue_number: 1,
+			issues: std::collections::HashMap::new(),
 		};
 		save_project_meta(&project_meta)?;
 		Ok(project_meta)
 	}
+}
+
+//==============================================================================
+// Per-Issue Metadata Operations
+//==============================================================================
+
+/// Load metadata for a specific issue from the project's .meta.json.
+/// Returns None if no metadata exists for this issue.
+pub fn load_issue_meta(owner: &str, repo: &str, issue_number: u64) -> Option<IssueMeta> {
+	let project_meta = load_project_meta(owner, repo);
+	project_meta.issues.get(&issue_number).cloned()
+}
+
+/// Save metadata for a specific issue to the project's .meta.json.
+/// Creates the file if it doesn't exist.
+pub fn save_issue_meta(owner: &str, repo: &str, issue_number: u64, meta: &IssueMeta) -> Result<()> {
+	let mut project_meta = load_project_meta(owner, repo);
+	project_meta.issues.insert(issue_number, meta.clone());
+	save_project_meta(&project_meta)
+}
+
+/// Remove metadata for a specific issue from the project's .meta.json.
+/// Does nothing if the issue has no stored metadata.
+pub fn remove_issue_meta(owner: &str, repo: &str, issue_number: u64) -> Result<()> {
+	let mut project_meta = load_project_meta(owner, repo);
+	if project_meta.issues.remove(&issue_number).is_some() {
+		save_project_meta(&project_meta)?;
+	}
+	Ok(())
 }

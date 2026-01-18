@@ -9,7 +9,7 @@ mod fetch;
 pub(crate) mod files;
 mod git;
 mod github_sync;
-mod meta;
+pub(crate) mod meta;
 mod sink;
 mod sync;
 mod touch;
