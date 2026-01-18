@@ -295,14 +295,13 @@ impl LinkedIssueMeta {
 }
 
 /// Identity of an issue - always has ancestry, optionally linked to Github.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct IssueIdentity {
 	/// Where in the tree this issue lives (owner/repo/lineage)
 	pub ancestry: Ancestry,
 	/// Github metadata if the issue is linked. None for local-only issues.
 	pub linked: Option<LinkedIssueMeta>,
 }
-
 impl IssueIdentity {
 	/// Create a new linked issue identity.
 	pub fn linked(ancestry: Ancestry, user: String, link: IssueLink, ts: Option<Timestamp>) -> Self {
@@ -387,13 +386,19 @@ impl IssueIdentity {
 	}
 }
 
+impl PartialEq for IssueIdentity {
+	fn eq(&self, other: &IssueIdentity) -> bool {
+		self.ancestry == other.ancestry
+	}
+}
+
 /// Maximum nesting depth for issues (8 levels should be plenty).
 const MAX_LINEAGE_DEPTH: usize = 8;
 
 /// Ancestry information for an issue - where it lives in the filesystem.
 /// This is always defined, even for pending issues.
 /// Uses fixed-size storage to be `Copy`.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Ancestry {
 	/// Repository owner (fixed max length; following Github spec)
 	owner: ArrayString<39>,

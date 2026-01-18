@@ -74,7 +74,11 @@ pub fn read_committed_content(file_path: &Path) -> GitTrackingStatus {
 	GitTrackingStatus::Tracked(content)
 }
 
-/// Load the consensus Issue from git (last committed state).
+/// Load the consensus Issue tree from git (last committed state).
+///
+/// This recursively loads child issues from git, similar to how `load_issue_tree`
+/// loads children from the working directory. This ensures consistent comparison
+/// between local (full tree from working dir) and consensus (full tree from git).
 ///
 /// Returns:
 /// - `Some(Issue)` if file is tracked and consensus loaded successfully
@@ -84,7 +88,8 @@ pub fn read_committed_content(file_path: &Path) -> GitTrackingStatus {
 pub fn load_consensus_issue(file_path: &Path) -> Option<Issue> {
 	match read_committed_content(file_path) {
 		GitTrackingStatus::Tracked(content) => {
-			let issue = Issue::parse_virtual(&content, file_path).unwrap_or_else(|e| {
+			// Parse as filesystem format (no children inline)
+			let mut issue = Issue::deserialize_filesystem(&content).unwrap_or_else(|e| {
 				panic!(
 					"BUG: Failed to parse committed consensus issue.\n\
 					 File: {}\n\
@@ -92,10 +97,94 @@ pub fn load_consensus_issue(file_path: &Path) -> Option<Issue> {
 					file_path.display()
 				)
 			});
+
+			// Determine if this is a directory format (has __main__ in path)
+			let is_dir_format = file_path
+				.file_name()
+				.and_then(|n| n.to_str())
+				.map(|n| n.starts_with(super::files::MAIN_ISSUE_FILENAME))
+				.unwrap_or(false);
+
+			if is_dir_format {
+				// Load children from git
+				if let Some(dir) = file_path.parent() {
+					load_consensus_children(&mut issue, dir);
+				}
+			}
+
 			Some(issue)
 		}
 		GitTrackingStatus::Untracked | GitTrackingStatus::NoGit => None,
 	}
+}
+
+/// Recursively load child issues from git into the issue's children field.
+fn load_consensus_children(issue: &mut Issue, dir: &Path) {
+	let data_dir = issues_dir();
+	let Some(data_dir_str) = data_dir.to_str() else {
+		return;
+	};
+	let Some(rel_dir) = dir.strip_prefix(&data_dir).ok() else {
+		return;
+	};
+	let Some(rel_dir_str) = rel_dir.to_str() else {
+		return;
+	};
+
+	// List files in directory from git
+	let output = Command::new("git")
+		.args(["-C", data_dir_str, "ls-tree", "--name-only", "HEAD", &format!("{rel_dir_str}/")])
+		.output();
+
+	let Ok(output) = output else {
+		return;
+	};
+	if !output.status.success() {
+		return;
+	}
+
+	let entries: Vec<&str> = std::str::from_utf8(&output.stdout)
+		.unwrap_or("")
+		.lines()
+		.filter_map(|line| line.strip_prefix(&format!("{rel_dir_str}/")))
+		.collect();
+
+	for entry in entries {
+		// Skip __main__ files (that's the parent issue itself)
+		if entry.starts_with(super::files::MAIN_ISSUE_FILENAME) {
+			continue;
+		}
+
+		// Check if this is a directory or file
+		let entry_path = dir.join(entry);
+		let is_dir = {
+			// Check git to see if this is a directory (has children)
+			let check = Command::new("git").args(["-C", data_dir_str, "ls-tree", "HEAD", &format!("{rel_dir_str}/{entry}/")]).output();
+			check.map(|o| o.status.success() && !o.stdout.is_empty()).unwrap_or(false)
+		};
+
+		if is_dir {
+			// Directory child - look for __main__ file
+			let main_path = entry_path.join(format!("{}.md", super::files::MAIN_ISSUE_FILENAME));
+			let main_closed_path = entry_path.join(format!("{}.md.bak", super::files::MAIN_ISSUE_FILENAME));
+
+			if let Some(child) = load_consensus_issue(&main_path).or_else(|| load_consensus_issue(&main_closed_path)) {
+				issue.children.push(child);
+			}
+		} else if entry.ends_with(".md") || entry.ends_with(".md.bak") {
+			// Flat child file
+			if let Some(child) = load_consensus_issue(&entry_path) {
+				issue.children.push(child);
+			}
+		}
+	}
+
+	// Sort children by issue number for consistent ordering
+	issue.children.sort_by(|a, b| {
+		let a_num = a.number().unwrap_or(0);
+		let b_num = b.number().unwrap_or(0);
+		a_num.cmp(&b_num)
+	});
 }
 
 /// Check if git is initialized in the issues directory.

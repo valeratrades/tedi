@@ -652,15 +652,15 @@ pub async fn modify_and_sync_issue(gh: &BoxedGithubClient, issue_file_path: &Pat
 					apply_merge_mode(&issue, Some(&consensus), &remote_issue, merge_mode, issue_file_path, &owner, &repo, meta.issue_number).await?;
 
 				if local_needs_update {
-					// Write merged result to filesystem
-					issue = merged;
-					issue.sink_local(None).await?;
+					// Write merged result to filesystem, passing old local state for file cleanup
+					let old_local = std::mem::replace(&mut issue, merged);
+					issue.sink_local(Some(&old_local)).await?;
 					commit_issue_changes(issue_file_path, &owner, &repo, meta.issue_number, None)?;
 				} else if issue != merged {
 					// Issue changed but doesn't need file update (keeping local)
-					issue = merged;
+					let old_local = std::mem::replace(&mut issue, merged);
 					// Still need to write the merged state for user to see
-					issue.sink_local(None).await?;
+					issue.sink_local(Some(&old_local)).await?;
 					commit_issue_changes(issue_file_path, &owner, &repo, meta.issue_number, None)?;
 				} else {
 					println!("Already up to date.");

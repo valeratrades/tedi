@@ -644,6 +644,14 @@ fn sink_issue_node(issue: &Issue, old: Option<&Issue>, owner: &str, repo: &str, 
 		any_written = true;
 	}
 
+	// Save ts metadata to .meta.json if issue has a number and ts
+	if let Some(issue_num) = issue_number
+		&& let Some(ts) = issue.ts()
+	{
+		let meta = super::meta::IssueMeta { ts: Some(ts) };
+		super::meta::save_issue_meta(owner, repo, issue_num, &meta)?;
+	}
+
 	// Build ancestors for children
 	let mut child_ancestors = ancestors.to_vec();
 	if let Some(fetched) = FetchedIssue::from_parts(owner, repo, issue_number.unwrap_or(0), title) {
@@ -653,13 +661,40 @@ fn sink_issue_node(issue: &Issue, old: Option<&Issue>, owner: &str, repo: &str, 
 	// Build map of old children by issue number for matching
 	let old_children_map: std::collections::HashMap<u64, &Issue> = old.map(|o| o.children.iter().filter_map(|c| c.number().map(|n| (n, c))).collect()).unwrap_or_default();
 
+	// Build set of new children numbers for deletion check
+	let new_child_numbers: std::collections::HashSet<u64> = issue.children.iter().filter_map(|c| c.number()).collect();
+
 	// Recursively sink children, matching with old children by issue number
 	for child in &issue.children {
 		let old_child = child.number().and_then(|n| old_children_map.get(&n).copied());
 		any_written |= sink_issue_node(child, old_child, owner, repo, &child_ancestors)?;
 	}
 
-	// TODO: Handle deleted children (in old but not in new) - remove their files
+	// Remove files for deleted children (in old but not in new)
+	for (&old_num, &old_child) in &old_children_map {
+		if !new_child_numbers.contains(&old_num) {
+			/// Remove issue files from filesystem (both flat and directory formats).
+			fn remove_issue_files(issue: &Issue, owner: &str, repo: &str, ancestors: &[FetchedIssue]) -> Result<()> {
+				let issue_number = issue.number();
+				let title = &issue.contents.title;
+
+				// Try to remove flat format files (both open and closed)
+				let flat_open = get_issue_file_path(owner, repo, issue_number, title, false, ancestors);
+				let flat_closed = get_issue_file_path(owner, repo, issue_number, title, true, ancestors);
+				let _ = std::fs::remove_file(&flat_open);
+				let _ = std::fs::remove_file(&flat_closed);
+
+				// Try to remove directory format
+				let issue_dir = get_issue_dir_path(owner, repo, issue_number, title, ancestors);
+				if issue_dir.is_dir() {
+					std::fs::remove_dir_all(&issue_dir)?;
+				}
+
+				Ok(())
+			}
+			remove_issue_files(old_child, owner, repo, &child_ancestors)?;
+		}
+	}
 
 	Ok(any_written)
 }

@@ -58,6 +58,11 @@ fn test_reset_then_mark_subissue_closed_no_conflict() {
 	// The user would do this by changing `- [ ]` to `- [x]` in the editor
 	let issue_path = ctx.dir_issue_path("o", "r", 1, "Parent Issue");
 
+	// The post-editor sync should NOT trigger a conflict because:
+	// - Consensus (from --reset) = remote state
+	// - Local = modified (sub-issue closed)
+	// - Remote = unchanged (sub-issue still open)
+	// This should be detected as LocalOnly change (only local changed since consensus)
 	let modified_parent = parse(
 		"- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
 		 \tparent body\n\
@@ -65,13 +70,6 @@ fn test_reset_then_mark_subissue_closed_no_conflict() {
 		 \t- [x] Sub Issue <!--sub @mock_user https://github.com/o/r/issues/2 -->\n\
 		 \t\tsub body\n",
 	);
-
-	// Second open: this simulates opening the file, making the edit, then closing editor
-	// The post-editor sync should NOT trigger a conflict because:
-	// - Consensus (from --reset) = remote state
-	// - Local = modified (sub-issue closed)
-	// - Remote = unchanged (sub-issue still open)
-	// This should be detected as LocalOnly change (only local changed since consensus)
 	let (status, stdout, stderr) = ctx.open(&issue_path).edit(&modified_parent).run();
 	eprintln!("Second open stdout: {stdout}");
 	eprintln!("Second open stderr: {stderr}");
@@ -129,7 +127,7 @@ fn test_reset_with_preexisting_modified_subissue_files() {
 
 	// Set up remote with 3-level hierarchy:
 	// grandparent (#1) -> parent (#2) -> child (#3)
-	// This ensures parent (#2) gets its own file because it has children
+	// This ensures parent (#2) gets its own folder because it has children
 	let grandparent = parse(
 		"- [ ] Grandparent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
 		 \tgrandparent body\n\
@@ -151,9 +149,9 @@ fn test_reset_with_preexisting_modified_subissue_files() {
 	eprintln!("First fetch stderr: {stderr}");
 	assert!(status.success(), "First fetch should succeed. stderr: {stderr}");
 
-	// Step 2: User modifies the parent sub-issue file locally (adds blockers, expands content)
+	// Step 2: User opens and modifies the parent sub-issue (adds blockers, expands content)
 	// This simulates what happens when user works on issues over time
-	// Parent file is at: issues/{owner}/{repo}/1_-_Grandparent_Issue/2_-_Parent_Issue/__main__.md
+	// The user opens the PARENT issue file, edits it, and saves - going through proper sink_local flow
 	let parent_subissue_path = ctx.data_dir().join("issues/o/r/1_-_Grandparent_Issue/2_-_Parent_Issue/__main__.md");
 	eprintln!("Looking for parent file at: {parent_subissue_path:?}");
 
@@ -170,16 +168,23 @@ fn test_reset_with_preexisting_modified_subissue_files() {
 		panic!("Parent sub-issue file not found at expected path");
 	}
 
-	let modified_parent_content = "- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/2 -->\n\toriginal parent body\n\tADDED LOCAL CONTENT - this is only local\n\t\n\t# Blockers\n\t- local blocker task\n\t\n\t- [ ] Child Issue <!--sub @mock_user https://github.com/o/r/issues/3 -->\n\t\tchild body\n";
-	std::fs::write(&parent_subissue_path, modified_parent_content).unwrap();
-
-	// Commit the local modifications
-	let issues_dir = ctx.data_dir().join("issues");
-	std::process::Command::new("git").args(["-C", issues_dir.to_str().unwrap(), "add", "-A"]).status().unwrap();
-	std::process::Command::new("git")
-		.args(["-C", issues_dir.to_str().unwrap(), "commit", "-m", "local modifications"])
-		.status()
-		.unwrap();
+	// User edits the parent sub-issue through the normal edit flow
+	// The edit adds local content and blockers to the parent
+	let modified_parent = parse(
+		"- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/2 -->\n\
+		 \toriginal parent body\n\
+		 \tADDED LOCAL CONTENT - this is only local\n\
+		 \n\
+		 \t# Blockers\n\
+		 \t- local blocker task\n\
+		 \n\
+		 \t- [ ] Child Issue <!--sub @mock_user https://github.com/o/r/issues/3 -->\n\
+		 \t\tchild body\n",
+	);
+	let (status, stdout, stderr) = ctx.open(&parent_subissue_path).edit(&modified_parent).run();
+	eprintln!("Parent edit stdout: {stdout}");
+	eprintln!("Parent edit stderr: {stderr}");
+	assert!(status.success(), "Parent edit should succeed. stderr: {stderr}");
 
 	// Step 3: User runs --reset on the GRANDPARENT issue
 	// BUG: format_issue will read the MODIFIED parent file and embed that content

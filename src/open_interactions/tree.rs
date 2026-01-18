@@ -154,7 +154,7 @@ pub fn compare_node(local: &Issue, consensus: Option<&Issue>, remote: &Issue) ->
 	// No consensus means first sync - compare local vs remote directly
 	let Some(consensus) = consensus else {
 		// First sync: if local == remote, no change; otherwise need to pick one
-		if node_content_eq(local, remote) {
+		if local.contents == remote.contents {
 			return NodeResolution::NoChange;
 		}
 		// Different content with no consensus - try timestamps, else conflict
@@ -167,8 +167,8 @@ pub fn compare_node(local: &Issue, consensus: Option<&Issue>, remote: &Issue) ->
 	};
 
 	// Compare node content (body, comments, close_state) - not children
-	let local_matches_consensus = node_content_eq(local, consensus);
-	let remote_matches_consensus = node_content_eq(remote, consensus);
+	let local_matches_consensus = local.contents == consensus.contents;
+	let remote_matches_consensus = remote.contents == consensus.contents;
 
 	let local_changed = !local_matches_consensus;
 	let remote_changed = !remote_matches_consensus;
@@ -190,35 +190,6 @@ pub fn compare_node(local: &Issue, consensus: Option<&Issue>, remote: &Issue) ->
 			}
 		}
 	}
-}
-
-/// Check if two Issue nodes have the same content (excluding children).
-fn node_content_eq(a: &Issue, b: &Issue) -> bool {
-	// Compare close state
-	if a.contents.state != b.contents.state {
-		return false;
-	}
-
-	// Compare body (first comment) - compare rendered output
-	let a_body = a.contents.comments.first().map(|c| c.body.render()).unwrap_or_default();
-	let b_body = b.contents.comments.first().map(|c| c.body.render()).unwrap_or_default();
-	if a_body != b_body {
-		return false;
-	}
-
-	// Compare other comments (by identity and rendered body)
-	let a_comments: Vec<_> = a.contents.comments.iter().skip(1).map(|c| (&c.identity, c.body.render())).collect();
-	let b_comments: Vec<_> = b.contents.comments.iter().skip(1).map(|c| (&c.identity, c.body.render())).collect();
-	if a_comments != b_comments {
-		return false;
-	}
-
-	// Compare labels
-	if a.contents.labels != b.contents.labels {
-		return false;
-	}
-
-	true
 }
 
 /// Result of resolving an entire tree.
