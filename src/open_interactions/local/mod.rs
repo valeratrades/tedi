@@ -32,10 +32,6 @@ use crate::open_interactions::sink::Sink;
 ///
 /// All custom logic for local issue storage is consolidated as methods on this type.
 pub enum Local {}
-
-//NB: the reason we expose methods through Local, - is to shortcut the possibility of having them appear without clear reference to what part of logic owns them.
-// Note that conventionally, same effect is achieved by deciding to not export methods out of a module, but use them as `mod::method`, which would translate to almost tht exactly the same eg `local::issue_dir()`
-// Difference is: when using AI, I can't control how the methods are exported. This tag solves it.
 impl Local {
 	/// The filename used for the main issue file when it has a directory for sub-issues.
 	pub const MAIN_ISSUE_FILENAME: &'static str = "__main__";
@@ -533,6 +529,10 @@ impl Local {
 		Ok(())
 	}
 }
+
+//NB: the reason we expose methods through Local, - is to shortcut the possibility of having them appear without clear reference to what part of logic owns them.
+// Note that conventionally, same effect is achieved by deciding to not export methods out of a module, but use them as `mod::method`, which would translate to almost tht exactly the same eg `local::issue_dir()`
+// Difference is: when using AI, I can't control how the methods are exported. This tag solves it.
 
 //==============================================================================
 // Types
