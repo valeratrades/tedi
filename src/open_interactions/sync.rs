@@ -741,11 +741,6 @@ pub async fn modify_and_sync_issue(gh: &BoxedGithubClient, issue_file_path: &Pat
 /// Use this when you know you're in offline mode and don't want to require a Github client.
 #[tracing::instrument(level = "debug", target = "todo::open_interactions::sync")]
 pub async fn modify_issue_offline(issue_file_path: &Path, modifier: Modifier) -> Result<ModifyResult> {
-	use super::files::extract_owner_repo_from_path;
-
-	// Extract owner and repo from path
-	let (owner, repo) = extract_owner_repo_from_path(issue_file_path)?;
-
 	// Load the issue tree from filesystem (assembles from separate files)
 	let mut issue = load_issue_tree(issue_file_path)?;
 

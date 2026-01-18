@@ -558,6 +558,7 @@ use super::sink::{Local, Sink};
 impl Sink<Local> for Issue {
 	/// Save an issue tree to the filesystem.
 	///
+	/// Compares against `old` state to only write files that actually changed.
 	/// Each node is written to its own file using `serialize_filesystem`.
 	/// If the issue has children, it uses directory format with `__main__.md`.
 	/// Children are written as siblings in the directory.
@@ -566,80 +567,40 @@ impl Sink<Local> for Issue {
 	async fn sink(&mut self, old: Option<&Issue>) -> color_eyre::Result<bool> {
 		let owner = self.identity.owner();
 		let repo = self.identity.repo();
-		let has_changes = old.map(|o| self != o).unwrap_or(true);
 
-		if has_changes {
-			save_issue_tree(self, owner, repo, &[])?;
-		}
-
-		Ok(has_changes)
+		sink_issue_node(self, old, owner, repo, &[])
 	}
 }
 
-/// Save an issue tree to the filesystem with metadata.
-///
-/// Each node is written to its own file using `serialize_filesystem`.
-/// If the issue has children, it uses directory format with `__main__.md`.
-/// Children are written as siblings in the directory.
-/// Per-issue metadata (like `ts`) is saved to .meta.json.
-///
-/// Returns the path to the root issue file.
-pub fn save_issue_tree_with_meta(issue: &Issue, owner: &str, repo: &str, ancestors: &[FetchedIssue]) -> Result<PathBuf> {
-	let path = save_issue_tree(issue, owner, repo, ancestors)?;
-
-	// Save ts to .meta.json for all issues with a number and ts
-	save_issue_meta_recursive(issue, owner, repo)?;
-
-	Ok(path)
-}
-
-/// Recursively save IssueMeta for an issue tree.
-fn save_issue_meta_recursive(issue: &Issue, owner: &str, repo: &str) -> Result<()> {
-	// Save this issue's metadata if it has a number and ts
-	if let Some(issue_num) = issue.number() {
-		if let Some(ts) = issue.ts() {
-			let meta = super::meta::IssueMeta { ts: Some(ts) };
-			super::meta::save_issue_meta(owner, repo, issue_num, &meta)?;
-		}
-	}
-
-	// Recursively save children's metadata
-	for child in &issue.children {
-		save_issue_meta_recursive(child, owner, repo)?;
-	}
-
-	Ok(())
-}
-
-/// Save an issue tree to the filesystem (files only, no metadata).
-///
-/// Each node is written to its own file using `serialize_filesystem`.
-/// If the issue has children, it uses directory format with `__main__.md`.
-/// Children are written as siblings in the directory.
-///
-/// Note: This does NOT save metadata to .meta.json. Use `save_issue_tree_with_meta`
-/// or call through `Sink<Local>` to include metadata.
-///
-/// Returns the path to the root issue file.
-pub fn save_issue_tree(issue: &Issue, owner: &str, repo: &str, ancestors: &[FetchedIssue]) -> Result<PathBuf> {
+/// Recursively write an issue node and its children to the filesystem.
+/// Only writes files that differ from `old` state.
+/// Returns Ok(true) if any files were written.
+fn sink_issue_node(issue: &Issue, old: Option<&Issue>, owner: &str, repo: &str, ancestors: &[FetchedIssue]) -> Result<bool> {
 	let issue_number = issue.number();
 	let title = &issue.contents.title;
 	let closed = issue.contents.state.is_closed();
 	let has_children = !issue.children.is_empty();
+	let old_has_children = old.map(|o| !o.children.is_empty()).unwrap_or(false);
 
+	// Determine if format changed (flat <-> directory)
+	let format_changed = has_children != old_has_children;
+
+	// Determine target path based on current state
 	let issue_file_path = if has_children {
 		// Directory format
 		let issue_dir = get_issue_dir_path(owner, repo, issue_number, title, ancestors);
 		std::fs::create_dir_all(&issue_dir)?;
 
-		// Clean up old flat file if it exists (both open and closed versions)
-		let old_flat_path = get_issue_file_path(owner, repo, issue_number, title, false, ancestors);
-		if old_flat_path.exists() {
-			std::fs::remove_file(&old_flat_path)?;
-		}
-		let old_flat_closed = get_issue_file_path(owner, repo, issue_number, title, true, ancestors);
-		if old_flat_closed.exists() {
-			std::fs::remove_file(&old_flat_closed)?;
+		// Clean up old flat file if format changed to directory
+		if format_changed {
+			let old_flat_path = get_issue_file_path(owner, repo, issue_number, title, false, ancestors);
+			if old_flat_path.exists() {
+				std::fs::remove_file(&old_flat_path)?;
+			}
+			let old_flat_closed = get_issue_file_path(owner, repo, issue_number, title, true, ancestors);
+			if old_flat_closed.exists() {
+				std::fs::remove_file(&old_flat_closed)?;
+			}
 		}
 
 		// Clean up the old main file with opposite close state
@@ -659,14 +620,29 @@ pub fn save_issue_tree(issue: &Issue, owner: &str, repo: &str, ancestors: &[Fetc
 		get_issue_file_path(owner, repo, issue_number, title, closed, ancestors)
 	};
 
-	// Create parent directories
-	if let Some(parent) = issue_file_path.parent() {
-		std::fs::create_dir_all(parent)?;
-	}
-
-	// Write this node (without children)
+	// Check if this node's content changed (excluding children)
 	let content = issue.serialize_filesystem();
-	std::fs::write(&issue_file_path, &content)?;
+	let node_changed = if format_changed {
+		true // Format change always requires write
+	} else if let Some(old_issue) = old {
+		// Compare serialized content (this compares the node without children)
+		content != old_issue.serialize_filesystem()
+	} else {
+		true // No old state means new file
+	};
+
+	let mut any_written = false;
+
+	if node_changed {
+		// Create parent directories
+		if let Some(parent) = issue_file_path.parent() {
+			std::fs::create_dir_all(parent)?;
+		}
+
+		// Write this node
+		std::fs::write(&issue_file_path, &content)?;
+		any_written = true;
+	}
 
 	// Build ancestors for children
 	let mut child_ancestors = ancestors.to_vec();
@@ -674,12 +650,18 @@ pub fn save_issue_tree(issue: &Issue, owner: &str, repo: &str, ancestors: &[Fetc
 		child_ancestors.push(fetched);
 	}
 
-	// Recursively save children
+	// Build map of old children by issue number for matching
+	let old_children_map: std::collections::HashMap<u64, &Issue> = old.map(|o| o.children.iter().filter_map(|c| c.number().map(|n| (n, c))).collect()).unwrap_or_default();
+
+	// Recursively sink children, matching with old children by issue number
 	for child in &issue.children {
-		save_issue_tree(child, owner, repo, &child_ancestors)?;
+		let old_child = child.number().and_then(|n| old_children_map.get(&n).copied());
+		any_written |= sink_issue_node(child, old_child, owner, repo, &child_ancestors)?;
 	}
 
-	Ok(issue_file_path)
+	// TODO: Handle deleted children (in old but not in new) - remove their files
+
+	Ok(any_written)
 }
 
 #[cfg(test)]
