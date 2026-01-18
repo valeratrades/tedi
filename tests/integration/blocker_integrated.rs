@@ -9,6 +9,7 @@ use todo::Issue;
 
 use crate::common::{TestContext, git::GitExt};
 
+//TODO!!!: use Issue::parse_virtual directly (once Path is no longer required)
 fn parse(content: &str) -> Issue {
 	Issue::parse_virtual(content, Path::new("test.md")).expect("failed to parse test issue")
 }

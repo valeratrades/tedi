@@ -409,7 +409,7 @@ pub enum Modifier {
 
 impl Modifier {
 	/// Apply this modifier to an issue. Returns output to display.
-	#[tracing::instrument(level = "debug", skip(issue))]
+	#[tracing::instrument]
 	async fn apply(&self, issue: &mut Issue, issue_file_path: &Path) -> Result<ModifyResult> {
 		match self {
 			Modifier::Editor { open_at_blocker } => {

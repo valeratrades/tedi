@@ -294,13 +294,18 @@ impl LinkedIssueMeta {
 	}
 }
 
+enum IssueRemote {
+	/// Github metadata if the issue is linked. None if it's yet to be.
+	Github(Option<LinkedIssueMeta>),
+	Virtual,
+}
+
 /// Identity of an issue - always has ancestry, optionally linked to Github.
 #[derive(Clone, Debug)]
 pub struct IssueIdentity {
 	/// Where in the tree this issue lives (owner/repo/lineage)
 	pub ancestry: Ancestry,
-	/// Github metadata if the issue is linked. None for local-only issues.
-	pub linked: Option<LinkedIssueMeta>,
+	pub remote: IssueRemote,
 }
 impl IssueIdentity {
 	/// Create a new linked issue identity.

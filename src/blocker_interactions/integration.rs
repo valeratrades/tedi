@@ -78,7 +78,7 @@ impl super::source::BlockerSource for IssueSource {
 		issue.contents.blockers = blockers.clone();
 
 		// Serialize and write
-		std::fs::write(&self.issue_path, issue.serialize_virtual())?;
+		std::fs::write(&self.issue_path, issue.serialize_virtual())?; //XXX: oh god, this is a horrible logical bug
 		Ok(())
 	}
 
