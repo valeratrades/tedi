@@ -1385,27 +1385,19 @@ impl std::ops::IndexMut<u64> for Issue {
 	}
 }
 
+/// Trait for lazy loading of issues from a source.
+///
+/// `S` is a marker type (e.g., `Local` for filesystem, `Remote` for GitHub).
+/// The associated `Source` type is what's actually passed to methods.
+/// Methods load data on demand; `&mut self` allows caching intermediate results.
+#[allow(async_fn_in_trait)]
 pub trait LazyIssue<S> {
-	async fn identity(&mut self, source: S) -> IssueIdentity;
-	async fn contents(&mut self, source: S) -> IssueContents;
-	async fn children(&mut self, source: S) -> Vec<Issue>;
-}
-//TODO: move this impl inside files.rs
-impl LazyIssue<&std::path::Path> for Issue {
-	async fn identity(&mut self, _source: &std::path::Path) -> IssueIdentity {
-		//DO: we always store identity at the same level as the issue file/folder; joined with others (otherwise will be inconsistent between issues with and without children)
-		todo!();
-	}
+	/// The actual source reference type (e.g., `PathBuf` for Local, `IssueLink` for Remote).
+	type Source;
 
-	async fn contents(&mut self, _source: &std::path::Path) -> IssueContents {
-		//DO: think we should be getting the actual path to the issue here
-		todo!();
-	}
-
-	async fn children(&mut self, _source: &std::path::Path) -> Vec<Issue> {
-		//DO: should parse the dir for child issues
-		todo!();
-	}
+	async fn identity(&mut self, source: Self::Source) -> IssueIdentity;
+	async fn contents(&mut self, source: Self::Source) -> IssueContents;
+	async fn children(&mut self, source: Self::Source) -> Vec<Issue>;
 }
 
 #[cfg(test)]

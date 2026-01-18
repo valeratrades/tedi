@@ -80,12 +80,6 @@ pub fn get_project_dir(owner: &str, repo: &str) -> PathBuf {
 	issues_dir().join(owner).join(repo)
 }
 
-/// Get the .meta.json path for a project.
-/// Structure: issues/{owner}/{repo}/.meta.json
-pub fn get_meta_json_path(owner: &str, repo: &str) -> PathBuf {
-	get_project_dir(owner, repo).join(".meta.json")
-}
-
 /// Build a chain of FetchedIssue by traversing the filesystem for an ancestry.
 ///
 /// Goes through each issue number in the lineage and finds the corresponding
@@ -434,126 +428,141 @@ pub fn extract_owner_repo_from_path(issue_file_path: &Path) -> Result<(String, S
 	Ok((owner, repo))
 }
 
-/// Load an issue tree from the filesystem.
-///
-/// This reads the issue at the given path using `deserialize_filesystem` (which loads
-/// just the node, no children), then recursively scans the directory for child files
-/// and loads them into the `children` field.
-///
-/// Also loads per-issue metadata (like `ts`) from the project's `.meta.json`.
-///
-/// For flat files (e.g., `123_-_title.md`), there are no children.
-/// For directory format (e.g., `123_-_title/__main__.md`), children are loaded from
-/// sibling files in the same directory.
-pub fn load_issue_tree(issue_file_path: &Path) -> Result<Issue> {
-	let (owner, repo) = extract_owner_repo_from_path(issue_file_path)?;
-	let content = std::fs::read_to_string(issue_file_path)?;
-	let mut issue = Issue::deserialize_filesystem(&content)?;
-
-	// Load ts from .meta.json if the issue is linked (has a number)
-	if let Some(issue_number) = issue.number() {
-		if let Some(meta) = super::meta::load_issue_meta(&owner, &repo, issue_number) {
-			if let Some(linked) = &mut issue.identity.linked {
-				linked.ts = meta.ts;
-			}
-		}
-	}
-
-	// Determine if this is a directory format (has __main__ in path)
-	let is_dir_format = issue_file_path.file_name().and_then(|n| n.to_str()).map(|n| n.starts_with(MAIN_ISSUE_FILENAME)).unwrap_or(false);
-
-	if is_dir_format {
-		// Load children from sibling files in the directory
-		if let Some(dir) = issue_file_path.parent() {
-			load_children_from_dir(&mut issue, dir, &owner, &repo)?;
-		}
-	}
-
-	Ok(issue)
-}
-
-/// Recursively load children from a directory into the issue.
-fn load_children_from_dir(issue: &mut Issue, dir: &Path, owner: &str, repo: &str) -> Result<()> {
-	let Ok(entries) = std::fs::read_dir(dir) else {
-		return Ok(());
-	};
-
-	for entry in entries.flatten() {
-		let path = entry.path();
-		let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-			continue;
-		};
-
-		// Skip __main__ files (that's the parent issue itself)
-		if name.starts_with(MAIN_ISSUE_FILENAME) {
-			continue;
-		}
-
-		// Check if this is an issue file or directory
-		if path.is_file() && (name.ends_with(".md") || name.ends_with(".md.bak")) {
-			// Flat child file
-			let child = load_issue_tree_inner(&path, owner, repo)?;
-			issue.children.push(child);
-		} else if path.is_dir() {
-			// Directory child - look for __main__ file
-			let main_path = get_main_file_path(&path, false);
-			let main_closed_path = get_main_file_path(&path, true);
-
-			let child_path = if main_path.exists() {
-				main_path
-			} else if main_closed_path.exists() {
-				main_closed_path
-			} else {
-				continue;
-			};
-
-			let child = load_issue_tree_inner(&child_path, owner, repo)?;
-			issue.children.push(child);
-		}
-	}
-
-	// Sort children by issue number for consistent ordering
-	issue.children.sort_by(|a, b| {
-		let a_num = a.number().unwrap_or(0);
-		let b_num = b.number().unwrap_or(0);
-		a_num.cmp(&b_num)
-	});
-
-	Ok(())
-}
-
-/// Internal: load issue tree when owner/repo are already known.
-fn load_issue_tree_inner(issue_file_path: &Path, owner: &str, repo: &str) -> Result<Issue> {
-	let content = std::fs::read_to_string(issue_file_path)?;
-	let mut issue = Issue::deserialize_filesystem(&content)?;
-
-	// Load ts from .meta.json if the issue is linked (has a number)
-	if let Some(issue_number) = issue.number() {
-		if let Some(meta) = super::meta::load_issue_meta(owner, repo, issue_number) {
-			if let Some(linked) = &mut issue.identity.linked {
-				linked.ts = meta.ts;
-			}
-		}
-	}
-
-	// Determine if this is a directory format (has __main__ in path)
-	let is_dir_format = issue_file_path.file_name().and_then(|n| n.to_str()).map(|n| n.starts_with(MAIN_ISSUE_FILENAME)).unwrap_or(false);
-
-	if is_dir_format {
-		// Load children from sibling files in the directory
-		if let Some(dir) = issue_file_path.parent() {
-			load_children_from_dir(&mut issue, dir, owner, repo)?;
-		}
-	}
-
-	Ok(issue)
-}
-
 //==============================================================================
 // Filesystem Sink Implementation
 //==============================================================================
 
 use super::sink::{Local, Sink};
+
+//==============================================================================
+// LazyIssue Implementation for Filesystem
+//==============================================================================
+
+impl todo::LazyIssue<Local> for Issue {
+	type Source = PathBuf;
+
+	async fn identity(&mut self, source: Self::Source) -> todo::IssueIdentity {
+		// If identity is already populated (linked), just return it
+		if self.identity.is_linked() {
+			return self.identity.clone();
+		}
+
+		// Need to load from file
+		let (owner, repo) = extract_owner_repo_from_path(&source).expect("valid issue path");
+
+		// If contents not loaded yet, load the file
+		if self.contents.title.is_empty() {
+			let content = std::fs::read_to_string(&source).expect("file exists");
+			let parsed = Issue::deserialize_filesystem(&content).expect("valid issue file");
+			self.identity = parsed.identity;
+			self.contents = parsed.contents;
+		}
+
+		// Load ts from .meta.json if the issue is linked
+		if let Some(issue_number) = self.identity.number() {
+			if let Some(meta) = super::meta::load_issue_meta(&owner, &repo, issue_number) {
+				if let Some(linked) = &mut self.identity.linked {
+					linked.ts = meta.ts;
+				}
+			}
+		}
+
+		self.identity.clone()
+	}
+
+	async fn contents(&mut self, source: Self::Source) -> todo::IssueContents {
+		// If contents already loaded, return them
+		if !self.contents.title.is_empty() {
+			return self.contents.clone();
+		}
+
+		// Load from file
+		let content = std::fs::read_to_string(&source).expect("file exists");
+		let parsed = Issue::deserialize_filesystem(&content).expect("valid issue file");
+		self.identity = parsed.identity;
+		self.contents = parsed.contents;
+
+		self.contents.clone()
+	}
+
+	async fn children(&mut self, source: Self::Source) -> Vec<Issue> {
+		// If children already loaded, return them
+		if !self.children.is_empty() {
+			return self.children.clone();
+		}
+
+		let (owner, repo) = extract_owner_repo_from_path(&source).expect("valid issue path");
+
+		// Determine if this is a directory format (has __main__ in path)
+		let is_dir_format = source.file_name().and_then(|n| n.to_str()).map(|n| n.starts_with(MAIN_ISSUE_FILENAME)).unwrap_or(false);
+
+		if !is_dir_format {
+			// Flat file format - no children
+			return Vec::new();
+		}
+
+		// Directory format - load children from sibling files
+		let Some(dir) = source.parent() else {
+			return Vec::new();
+		};
+
+		let Ok(entries) = std::fs::read_dir(dir) else {
+			return Vec::new();
+		};
+
+		let mut children = Vec::new();
+
+		for entry in entries.flatten() {
+			let path = entry.path();
+			let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+				continue;
+			};
+
+			// Skip __main__ files (that's the parent issue itself)
+			if name.starts_with(MAIN_ISSUE_FILENAME) {
+				continue;
+			}
+
+			// Check if this is an issue file or directory
+			let child_path = if path.is_file() && (name.ends_with(".md") || name.ends_with(".md.bak")) {
+				path
+			} else if path.is_dir() {
+				// Directory child - look for __main__ file
+				let main_path = get_main_file_path(&path, false);
+				let main_closed_path = get_main_file_path(&path, true);
+
+				if main_path.exists() {
+					main_path
+				} else if main_closed_path.exists() {
+					main_closed_path
+				} else {
+					continue;
+				}
+			} else {
+				continue;
+			};
+
+			// Recursively load child using LazyIssue (boxed to handle async recursion)
+			let mut child = Issue::empty_local(todo::Ancestry::root(&owner, &repo));
+			// Load identity, contents, and children
+			<Issue as todo::LazyIssue<Local>>::identity(&mut child, child_path.clone()).await;
+			<Issue as todo::LazyIssue<Local>>::contents(&mut child, child_path.clone()).await;
+			Box::pin(<Issue as todo::LazyIssue<Local>>::children(&mut child, child_path)).await;
+
+			children.push(child);
+		}
+
+		// Sort children by issue number for consistent ordering
+		children.sort_by(|a, b| {
+			let a_num = a.number().unwrap_or(0);
+			let b_num = b.number().unwrap_or(0);
+			a_num.cmp(&b_num)
+		});
+
+		self.children = children.clone();
+		children
+	}
+}
 
 impl Sink<Local> for Issue {
 	/// Save an issue tree to the filesystem.

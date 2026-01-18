@@ -89,10 +89,10 @@ use v_utils::prelude::*;
 use super::{
 	conflict::mark_conflict,
 	fetch::fetch_and_store_issue,
-	files::load_issue_tree,
+	files::extract_owner_repo_from_path,
 	git::{commit_issue_changes, is_git_initialized, load_consensus_issue},
 	meta::load_issue_meta_from_path,
-	sink::IssueSinkExt,
+	sink::{IssueSinkExt, Local},
 	tree::{fetch_full_issue_tree, resolve_tree},
 };
 use crate::github::BoxedGithubClient;
@@ -599,8 +599,12 @@ pub async fn modify_and_sync_issue(gh: &BoxedGithubClient, issue_file_path: &Pat
 	// Load metadata from path
 	let meta = load_issue_meta_from_path(issue_file_path)?;
 
-	// Load the issue tree from filesystem (assembles from separate files)
-	let mut issue = load_issue_tree(issue_file_path)?;
+	// Load the issue tree from filesystem using LazyIssue
+	let mut issue = Issue::empty_local(todo::Ancestry::root(&owner, &repo));
+	let path = issue_file_path.to_path_buf();
+	<Issue as todo::LazyIssue<Local>>::identity(&mut issue, path.clone()).await;
+	<Issue as todo::LazyIssue<Local>>::contents(&mut issue, path.clone()).await;
+	Box::pin(<Issue as todo::LazyIssue<Local>>::children(&mut issue, path)).await;
 
 	// === CONSENSUS-FIRST SYNC ===
 	// We always show the user the consensus state, never raw local or raw remote.
@@ -741,8 +745,13 @@ pub async fn modify_and_sync_issue(gh: &BoxedGithubClient, issue_file_path: &Pat
 /// Use this when you know you're in offline mode and don't want to require a Github client.
 #[tracing::instrument(level = "debug", target = "todo::open_interactions::sync")]
 pub async fn modify_issue_offline(issue_file_path: &Path, modifier: Modifier) -> Result<ModifyResult> {
-	// Load the issue tree from filesystem (assembles from separate files)
-	let mut issue = load_issue_tree(issue_file_path)?;
+	// Load the issue tree from filesystem using LazyIssue
+	let (owner, repo) = extract_owner_repo_from_path(issue_file_path)?;
+	let mut issue = Issue::empty_local(todo::Ancestry::root(&owner, &repo));
+	let path = issue_file_path.to_path_buf();
+	<Issue as todo::LazyIssue<Local>>::identity(&mut issue, path.clone()).await;
+	<Issue as todo::LazyIssue<Local>>::contents(&mut issue, path.clone()).await;
+	Box::pin(<Issue as todo::LazyIssue<Local>>::children(&mut issue, path)).await;
 
 	// Apply the modifier (blocker command)
 	let result = modifier.apply(&mut issue, issue_file_path).await?;
