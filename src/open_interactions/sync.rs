@@ -89,10 +89,10 @@ use v_utils::prelude::*;
 use super::{
 	conflict::mark_conflict,
 	fetch::fetch_and_store_issue,
-	files::{load_issue_tree, save_issue_tree},
+	files::load_issue_tree,
 	git::{commit_issue_changes, is_git_initialized, load_consensus_issue},
 	meta::load_issue_meta_from_path,
-	sink::{Remote, Sink},
+	sink::IssueSinkExt,
 	tree::{fetch_full_issue_tree, resolve_tree},
 };
 use crate::github::BoxedGithubClient;
@@ -313,7 +313,8 @@ async fn handle_divergence(issue_file_path: &Path, owner: &str, repo: &str, issu
 	}
 
 	// Write remote state to filesystem (each node to its own file)
-	save_issue_tree(remote_issue, owner, repo, &[])?;
+	// Clone because sink_local takes &mut (for Remote's needs), but we don't mutate here
+	remote_issue.clone().sink_local(None).await?;
 
 	// Commit remote state (if there are any changes)
 	let _ = Command::new("git").args(["-C", data_dir_str, "add", "-A"]).status()?;
@@ -498,7 +499,7 @@ async fn sync_issue_to_github_inner(gh: &BoxedGithubClient, issue_file_path: &Pa
 		// Write local file if it needs updating
 		if local_needs_update {
 			println!("Remote changed, local file updated.");
-			save_issue_tree(issue, owner, repo, &[])?;
+			issue.sink_local(None).await?;
 		}
 
 		if !local_needs_update && !remote_needs_update {
@@ -509,13 +510,13 @@ async fn sync_issue_to_github_inner(gh: &BoxedGithubClient, issue_file_path: &Pa
 
 		// Push differences to GitHub using Sink trait
 		// Compare merged state against REMOTE (not consensus) to know what to push
-		let changed = issue.sink(Some(&remote_issue), Remote(gh)).await?;
+		let changed = issue.sink_remote(Some(&remote_issue)).await?;
 
 		(local_needs_update, changed)
 	} else {
 		// Issue was just created - sink with no old state
 		// (everything is "new" relative to GitHub)
-		let changed = issue.sink(None, Remote(gh)).await?;
+		let changed = issue.sink_remote(None).await?;
 		(false, changed)
 	};
 
@@ -524,7 +525,7 @@ async fn sync_issue_to_github_inner(gh: &BoxedGithubClient, issue_file_path: &Pa
 
 	if needs_refresh {
 		// Save updated issue tree (with new URLs for created issues)
-		save_issue_tree(issue, owner, repo, &[])?;
+		issue.sink_local(None).await?;
 
 		// Get the actual issue number - may have been set by sink() if issue was pending
 		let actual_issue_number = issue.number().unwrap_or(issue_number);
@@ -653,13 +654,13 @@ pub async fn modify_and_sync_issue(gh: &BoxedGithubClient, issue_file_path: &Pat
 				if local_needs_update {
 					// Write merged result to filesystem
 					issue = merged;
-					save_issue_tree(&issue, &owner, &repo, &[])?;
+					issue.sink_local(None).await?;
 					commit_issue_changes(issue_file_path, &owner, &repo, meta.issue_number, None)?;
 				} else if issue != merged {
 					// Issue changed but doesn't need file update (keeping local)
 					issue = merged;
 					// Still need to write the merged state for user to see
-					save_issue_tree(&issue, &owner, &repo, &[])?;
+					issue.sink_local(None).await?;
 					commit_issue_changes(issue_file_path, &owner, &repo, meta.issue_number, None)?;
 				} else {
 					println!("Already up to date.");
@@ -719,7 +720,7 @@ pub async fn modify_and_sync_issue(gh: &BoxedGithubClient, issue_file_path: &Pat
 	}
 
 	// Save the issue tree to filesystem (writes each node to its own file)
-	save_issue_tree(&issue, &owner, &repo, &[])?;
+	issue.sink_local(None).await?;
 
 	// If offline mode, skip all network operations
 	if offline {
@@ -752,7 +753,7 @@ pub async fn modify_issue_offline(issue_file_path: &Path, modifier: Modifier) ->
 	let result = modifier.apply(&mut issue, issue_file_path).await?;
 
 	// Save the issue tree to filesystem (writes each node to its own file)
-	save_issue_tree(&issue, &owner, &repo, &[])?;
+	issue.sink_local(None).await?;
 
 	println!("Offline mode: changes saved locally only.");
 

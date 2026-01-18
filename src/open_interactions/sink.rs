@@ -22,8 +22,6 @@ use std::collections::{HashMap, HashSet};
 
 use todo::{Comment, CommentIdentity, Issue, IssueIdentity, IssueLink};
 
-use crate::github::BoxedGithubClient;
-
 //==============================================================================
 // Diff Results
 //==============================================================================
@@ -163,55 +161,63 @@ pub fn compute_node_diff(new: &Issue, old: Option<&Issue>) -> IssueDiff {
 }
 
 //==============================================================================
-// Source Markers
+// Sink Trait and Source Markers
 //==============================================================================
 
-/// Marker trait for sink destinations.
-pub trait Source {}
+/// Marker type for local filesystem operations.
+pub enum Local {}
 
-/// Marker for local filesystem sink.
-pub struct Local;
-impl Source for Local {}
-
-/// Marker for remote GitHub sink. Contains the GitHub client needed for API calls.
-pub struct Remote<'a>(pub &'a BoxedGithubClient);
-impl Source for Remote<'_> {}
-
-//==============================================================================
-// Sink Trait
-//==============================================================================
+/// Marker type for remote GitHub operations.
+pub enum Remote {}
 
 /// Trait for sinking (pushing) issues to a destination.
 ///
-/// The trait is implemented for Issue and uses the issue's ancestry to determine
-/// where to write. The source marker `S` selects which implementation to use.
+/// Implemented for `Issue` with marker type parameters to select the destination.
+/// Location is derived from the issue's `identity.ancestry` (owner/repo/lineage).
+/// For remote operations, the GitHub client is accessed via `github::client::get()`.
 ///
-/// # Type Parameter
-/// - `S`: Source marker (`Local` for filesystem, `Remote` for GitHub)
+/// Use the convenience methods on `IssueSinkExt` for ergonomic access:
+/// - `issue.sink_local(old)` - sink to filesystem
+/// - `issue.sink_remote(old)` - sink to GitHub
 #[allow(async_fn_in_trait)]
-pub trait Sink<S: Source> {
-	/// Sink this issue (consensus) to the destination, comparing against `old` state.
-	///
-	/// Location is derived from the issue's `identity.ancestry` (owner/repo/lineage).
+pub trait Sink<S> {
+	/// Sink this issue to the destination, comparing against `old` state.
 	///
 	/// # Arguments
 	/// * `old` - The current state at the target location (from last pull), or None if no previous state exists
-	/// * `source` - Source marker (may contain client for remote operations)
 	///
 	/// # Returns
 	/// * `Ok(true)` if any changes were made
 	/// * `Ok(false)` if already in sync
 	/// * `Err(_)` on failure
-	async fn sink(&mut self, old: Option<&Issue>, source: S) -> color_eyre::Result<bool>;
+	async fn sink(&mut self, old: Option<&Issue>) -> color_eyre::Result<bool>;
+}
+
+/// Convenience methods for sinking issues without fully-qualified trait syntax.
+pub trait IssueSinkExt {
+	/// Sink to local filesystem.
+	async fn sink_local(&mut self, old: Option<&Issue>) -> color_eyre::Result<bool>;
+	/// Sink to remote GitHub.
+	async fn sink_remote(&mut self, old: Option<&Issue>) -> color_eyre::Result<bool>;
+}
+
+impl IssueSinkExt for Issue {
+	async fn sink_local(&mut self, old: Option<&Issue>) -> color_eyre::Result<bool> {
+		<Self as Sink<Local>>::sink(self, old).await
+	}
+
+	async fn sink_remote(&mut self, old: Option<&Issue>) -> color_eyre::Result<bool> {
+		<Self as Sink<Remote>>::sink(self, old).await
+	}
 }
 
 //==============================================================================
 // GitHub Sink Implementation
 //==============================================================================
 
-impl Sink<Remote<'_>> for Issue {
-	async fn sink(&mut self, old: Option<&Issue>, source: Remote<'_>) -> color_eyre::Result<bool> {
-		let gh = source.0;
+impl Sink<Remote> for Issue {
+	async fn sink(&mut self, old: Option<&Issue>) -> color_eyre::Result<bool> {
+		let gh = crate::github::client::get();
 		// Copy ancestry upfront to avoid borrow conflicts when updating identity
 		let ancestry = self.identity.ancestry;
 		let owner = ancestry.owner();
@@ -298,7 +304,7 @@ impl Sink<Remote<'_>> for Issue {
 			// If child is pending, it needs to be linked to parent after creation
 			let was_pending = child.is_local();
 
-			changed |= Box::pin(child.sink(old_child, Remote(gh))).await?;
+			changed |= Box::pin(child.sink_remote(old_child)).await?;
 
 			// Link newly created child to parent
 			if was_pending {

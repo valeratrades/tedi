@@ -563,7 +563,7 @@ impl Sink<Local> for Issue {
 	/// Children are written as siblings in the directory.
 	///
 	/// Location is derived from the issue's ancestry (owner/repo/lineage).
-	async fn sink(&mut self, old: Option<&Issue>, _source: Local) -> color_eyre::Result<bool> {
+	async fn sink(&mut self, old: Option<&Issue>) -> color_eyre::Result<bool> {
 		let owner = self.identity.owner();
 		let repo = self.identity.repo();
 		let has_changes = old.map(|o| self != o).unwrap_or(true);
@@ -576,11 +576,49 @@ impl Sink<Local> for Issue {
 	}
 }
 
-/// Save an issue tree to the filesystem.
+/// Save an issue tree to the filesystem with metadata.
 ///
 /// Each node is written to its own file using `serialize_filesystem`.
 /// If the issue has children, it uses directory format with `__main__.md`.
 /// Children are written as siblings in the directory.
+/// Per-issue metadata (like `ts`) is saved to .meta.json.
+///
+/// Returns the path to the root issue file.
+pub fn save_issue_tree_with_meta(issue: &Issue, owner: &str, repo: &str, ancestors: &[FetchedIssue]) -> Result<PathBuf> {
+	let path = save_issue_tree(issue, owner, repo, ancestors)?;
+
+	// Save ts to .meta.json for all issues with a number and ts
+	save_issue_meta_recursive(issue, owner, repo)?;
+
+	Ok(path)
+}
+
+/// Recursively save IssueMeta for an issue tree.
+fn save_issue_meta_recursive(issue: &Issue, owner: &str, repo: &str) -> Result<()> {
+	// Save this issue's metadata if it has a number and ts
+	if let Some(issue_num) = issue.number() {
+		if let Some(ts) = issue.ts() {
+			let meta = super::meta::IssueMeta { ts: Some(ts) };
+			super::meta::save_issue_meta(owner, repo, issue_num, &meta)?;
+		}
+	}
+
+	// Recursively save children's metadata
+	for child in &issue.children {
+		save_issue_meta_recursive(child, owner, repo)?;
+	}
+
+	Ok(())
+}
+
+/// Save an issue tree to the filesystem (files only, no metadata).
+///
+/// Each node is written to its own file using `serialize_filesystem`.
+/// If the issue has children, it uses directory format with `__main__.md`.
+/// Children are written as siblings in the directory.
+///
+/// Note: This does NOT save metadata to .meta.json. Use `save_issue_tree_with_meta`
+/// or call through `Sink<Local>` to include metadata.
 ///
 /// Returns the path to the root issue file.
 pub fn save_issue_tree(issue: &Issue, owner: &str, repo: &str, ancestors: &[FetchedIssue]) -> Result<PathBuf> {
@@ -629,9 +667,6 @@ pub fn save_issue_tree(issue: &Issue, owner: &str, repo: &str, ancestors: &[Fetc
 	// Write this node (without children)
 	let content = issue.serialize_filesystem();
 	std::fs::write(&issue_file_path, &content)?;
-
-	// Note: ts metadata is NOT written here to avoid affecting git sync state.
-	// Use save_issue_meta() explicitly when metadata persistence is needed.
 
 	// Build ancestors for children
 	let mut child_ancestors = ancestors.to_vec();

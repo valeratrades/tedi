@@ -39,10 +39,9 @@ pub struct IssueMeta {
 /// Stored at: issues/{owner}/{repo}/.meta.json
 ///
 /// Contains both project configuration and per-issue metadata.
+/// Note: owner/repo are NOT stored here - they're derived from the file path.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct ProjectMeta {
-	pub owner: String,
-	pub repo: String,
 	/// Virtual project: has no Github remote, all operations are offline-only.
 	/// Issue numbers are locally generated (starting from 1).
 	#[serde(default)]
@@ -64,26 +63,14 @@ pub fn get_project_meta_path(owner: &str, repo: &str) -> PathBuf {
 pub fn load_project_meta(owner: &str, repo: &str) -> ProjectMeta {
 	let meta_path = get_project_meta_path(owner, repo);
 	match std::fs::read_to_string(&meta_path) {
-		Ok(content) => serde_json::from_str(&content).unwrap_or_else(|_| ProjectMeta {
-			owner: owner.to_string(),
-			repo: repo.to_string(),
-			virtual_project: false,
-			next_virtual_issue_number: 0,
-			issues: std::collections::HashMap::new(),
-		}),
-		Err(_) => ProjectMeta {
-			owner: owner.to_string(),
-			repo: repo.to_string(),
-			virtual_project: false,
-			next_virtual_issue_number: 0,
-			issues: std::collections::HashMap::new(),
-		},
+		Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
+		Err(_) => ProjectMeta::default(),
 	}
 }
 
 /// Save project metadata
-pub fn save_project_meta(meta: &ProjectMeta) -> Result<()> {
-	let meta_path = get_project_meta_path(&meta.owner, &meta.repo);
+pub fn save_project_meta(owner: &str, repo: &str, meta: &ProjectMeta) -> Result<()> {
+	let meta_path = get_project_meta_path(owner, repo);
 	if let Some(parent) = meta_path.parent() {
 		std::fs::create_dir_all(parent)?;
 	}
@@ -203,7 +190,7 @@ pub fn allocate_virtual_issue_number(owner: &str, repo: &str) -> Result<u64> {
 
 	let issue_number = project_meta.next_virtual_issue_number;
 	project_meta.next_virtual_issue_number += 1;
-	save_project_meta(&project_meta)?;
+	save_project_meta(owner, repo, &project_meta)?;
 
 	Ok(issue_number)
 }
@@ -221,13 +208,11 @@ pub fn ensure_virtual_project(owner: &str, repo: &str) -> Result<ProjectMeta> {
 	} else {
 		// Create new virtual project
 		let project_meta = ProjectMeta {
-			owner: owner.to_string(),
-			repo: repo.to_string(),
 			virtual_project: true,
 			next_virtual_issue_number: 1,
 			issues: std::collections::HashMap::new(),
 		};
-		save_project_meta(&project_meta)?;
+		save_project_meta(owner, repo, &project_meta)?;
 		Ok(project_meta)
 	}
 }
@@ -248,7 +233,7 @@ pub fn load_issue_meta(owner: &str, repo: &str, issue_number: u64) -> Option<Iss
 pub fn save_issue_meta(owner: &str, repo: &str, issue_number: u64, meta: &IssueMeta) -> Result<()> {
 	let mut project_meta = load_project_meta(owner, repo);
 	project_meta.issues.insert(issue_number, meta.clone());
-	save_project_meta(&project_meta)
+	save_project_meta(owner, repo, &project_meta)
 }
 
 /// Remove metadata for a specific issue from the project's .meta.json.
@@ -256,7 +241,7 @@ pub fn save_issue_meta(owner: &str, repo: &str, issue_number: u64, meta: &IssueM
 pub fn remove_issue_meta(owner: &str, repo: &str, issue_number: u64) -> Result<()> {
 	let mut project_meta = load_project_meta(owner, repo);
 	if project_meta.issues.remove(&issue_number).is_some() {
-		save_project_meta(&project_meta)?;
+		save_project_meta(owner, repo, &project_meta)?;
 	}
 	Ok(())
 }

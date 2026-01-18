@@ -124,6 +124,9 @@ async fn main() {
 		}
 	};
 
+	// Set global GitHub client for sink operations
+	github::client::set(github_client.clone());
+
 	// All the functions here can rely on config being correct.
 	let success = match cli.command {
 		Commands::Manual(manual_args) => manual_stats::update_or_open(&settings, manual_args).await,

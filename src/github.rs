@@ -380,6 +380,33 @@ pub fn create_client(settings: &LiveSettings) -> Result<BoxedGithubClient> {
 }
 
 //==============================================================================
+// Global client storage
+//==============================================================================
+
+/// Thread-local storage for the GitHub client.
+/// Set once at startup, then accessed globally by sink operations.
+pub mod client {
+	use std::cell::RefCell;
+
+	use super::BoxedGithubClient;
+
+	thread_local! {
+		static CLIENT: RefCell<Option<BoxedGithubClient>> = const { RefCell::new(None) };
+	}
+
+	/// Set the global GitHub client. Must be called before any sink operations.
+	pub fn set(client: BoxedGithubClient) {
+		CLIENT.with(|c| *c.borrow_mut() = Some(client));
+	}
+
+	/// Get the global GitHub client.
+	/// Panics if not set - this is a programming error.
+	pub fn get() -> BoxedGithubClient {
+		CLIENT.with(|c| c.borrow().clone().expect("GitHub client not initialized - call github::client::set() first"))
+	}
+}
+
+//==============================================================================
 // Utility functions (URL parsing, etc.) - These don't need the trait
 //==============================================================================
 
