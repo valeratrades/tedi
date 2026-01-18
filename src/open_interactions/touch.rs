@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use v_utils::prelude::*;
 
-use super::local::{allocate_virtual_issue_number, ensure_virtual_project, get_issue_file_path, issues_dir, sanitize_title_for_filename, search_issue_files};
+use super::local::Local;
 
 /// Parsed touch path components
 /// Format: workspace/project/issue[.md] or workspace/project/parent/child[.md] (for sub-issues)
@@ -80,7 +80,7 @@ pub fn create_pending_issue(touch_path: &TouchPath) -> Result<PathBuf> {
 	let issue_title = touch_path.issue_chain.last().unwrap();
 
 	// Determine file path - use "pending" as placeholder for the number
-	let issue_file_path = get_issue_file_path(owner, repo, None, issue_title, false, &[]);
+	let issue_file_path = Local::issue_file_path(owner, repo, None, issue_title, false, &[]);
 
 	// Create parent directories
 	if let Some(parent) = issue_file_path.parent() {
@@ -107,7 +107,7 @@ pub fn create_virtual_issue(touch_path: &TouchPath) -> Result<PathBuf> {
 	let repo = &touch_path.repo;
 
 	// Ensure virtual project exists (creates if needed)
-	ensure_virtual_project(owner, repo)?;
+	Local::ensure_virtual_project(owner, repo)?;
 
 	// For now, only support single-level issues (no sub-issues for virtual projects)
 	if touch_path.issue_chain.len() > 1 {
@@ -119,10 +119,10 @@ pub fn create_virtual_issue(touch_path: &TouchPath) -> Result<PathBuf> {
 	let issue_title = touch_path.issue_chain.last().unwrap();
 
 	// Allocate a virtual issue number (for metadata tracking, not filename)
-	let issue_number = allocate_virtual_issue_number(owner, repo)?;
+	let issue_number = Local::allocate_virtual_issue_number(owner, repo)?;
 
 	// Determine file path (no number prefix for virtual issues)
-	let issue_file_path = get_issue_file_path(owner, repo, None, issue_title, false, &[]);
+	let issue_file_path = Local::issue_file_path(owner, repo, None, issue_title, false, &[]);
 
 	// Create parent directories
 	if let Some(parent) = issue_file_path.parent() {
@@ -146,7 +146,7 @@ pub fn create_virtual_issue(touch_path: &TouchPath) -> Result<PathBuf> {
 /// Try to find an existing local issue file matching the touch path
 /// Returns the path if found, None otherwise
 pub fn find_local_issue_for_touch(touch_path: &TouchPath) -> Option<PathBuf> {
-	let issues_base = issues_dir();
+	let issues_base = Local::issues_dir();
 
 	// Path structure: issues/{owner}/{repo}/{number}_-_{title}.md
 	let project_dir = issues_base.join(&touch_path.owner).join(&touch_path.repo);
@@ -157,10 +157,10 @@ pub fn find_local_issue_for_touch(touch_path: &TouchPath) -> Option<PathBuf> {
 	// Search for files matching the issue title (last in chain)
 	let issue_title = touch_path.issue_chain.last()?;
 	// Sanitize and lowercase for comparison
-	let sanitized_title_lower = sanitize_title_for_filename(issue_title).to_lowercase();
+	let sanitized_title_lower = Local::sanitize_title(issue_title).to_lowercase();
 
 	// Search using the sanitized title
-	if let Ok(matches) = search_issue_files(&sanitized_title_lower) {
+	if let Ok(matches) = Local::search_issue_files(&sanitized_title_lower) {
 		// Filter matches to only those in the correct project directory
 		for path in matches {
 			// Check if it's in the right project directory

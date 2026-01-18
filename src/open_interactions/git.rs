@@ -8,7 +8,7 @@ use std::{path::Path, process::Command};
 use todo::Issue;
 use v_utils::prelude::*;
 
-use super::local::issues_dir;
+use super::local::Local;
 
 /// Result of checking if a file is tracked in git.
 pub enum GitTrackingStatus {
@@ -22,7 +22,7 @@ pub enum GitTrackingStatus {
 
 /// Check if a file is tracked in git and read its committed content.
 pub fn read_committed_content(file_path: &Path) -> GitTrackingStatus {
-	let data_dir = issues_dir();
+	let data_dir = Local::issues_dir();
 	let Some(data_dir_str) = data_dir.to_str() else {
 		return GitTrackingStatus::NoGit;
 	};
@@ -99,11 +99,7 @@ pub fn load_consensus_issue(file_path: &Path) -> Option<Issue> {
 			});
 
 			// Determine if this is a directory format (has __main__ in path)
-			let is_dir_format = file_path
-				.file_name()
-				.and_then(|n| n.to_str())
-				.map(|n| n.starts_with(super::local::MAIN_ISSUE_FILENAME))
-				.unwrap_or(false);
+			let is_dir_format = file_path.file_name().and_then(|n| n.to_str()).map(|n| n.starts_with(Local::MAIN_ISSUE_FILENAME)).unwrap_or(false);
 
 			if is_dir_format {
 				// Load children from git
@@ -120,7 +116,7 @@ pub fn load_consensus_issue(file_path: &Path) -> Option<Issue> {
 
 /// Recursively load child issues from git into the issue's children field.
 fn load_consensus_children(issue: &mut Issue, dir: &Path) {
-	let data_dir = issues_dir();
+	let data_dir = Local::issues_dir();
 	let Some(data_dir_str) = data_dir.to_str() else {
 		return;
 	};
@@ -151,7 +147,7 @@ fn load_consensus_children(issue: &mut Issue, dir: &Path) {
 
 	for entry in entries {
 		// Skip __main__ files (that's the parent issue itself)
-		if entry.starts_with(super::local::MAIN_ISSUE_FILENAME) {
+		if entry.starts_with(Local::MAIN_ISSUE_FILENAME) {
 			continue;
 		}
 
@@ -165,8 +161,8 @@ fn load_consensus_children(issue: &mut Issue, dir: &Path) {
 
 		if is_dir {
 			// Directory child - look for __main__ file
-			let main_path = entry_path.join(format!("{}.md", super::local::MAIN_ISSUE_FILENAME));
-			let main_closed_path = entry_path.join(format!("{}.md.bak", super::local::MAIN_ISSUE_FILENAME));
+			let main_path = entry_path.join(format!("{}.md", Local::MAIN_ISSUE_FILENAME));
+			let main_closed_path = entry_path.join(format!("{}.md.bak", Local::MAIN_ISSUE_FILENAME));
 
 			if let Some(child) = load_consensus_issue(&main_path).or_else(|| load_consensus_issue(&main_closed_path)) {
 				issue.children.push(child);
@@ -189,7 +185,7 @@ fn load_consensus_children(issue: &mut Issue, dir: &Path) {
 
 /// Check if git is initialized in the issues directory.
 pub fn is_git_initialized() -> bool {
-	let data_dir = issues_dir();
+	let data_dir = Local::issues_dir();
 	let Some(data_dir_str) = data_dir.to_str() else {
 		return false;
 	};
@@ -203,7 +199,7 @@ pub fn is_git_initialized() -> bool {
 
 /// Stage and commit changes for an issue file.
 pub fn commit_issue_changes(_file_path: &Path, owner: &str, repo: &str, issue_number: u64, message: Option<&str>) -> Result<()> {
-	let data_dir = issues_dir();
+	let data_dir = Local::issues_dir();
 	let data_dir_str = data_dir.to_str().ok_or_else(|| eyre!("Invalid data directory path"))?;
 
 	// Stage changes

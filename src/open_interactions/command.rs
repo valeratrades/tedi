@@ -7,7 +7,7 @@ use v_utils::prelude::*;
 
 use super::{
 	fetch::fetch_and_store_issue,
-	local::{ExactMatchLevel, choose_issue_with_fzf, is_virtual_project, search_issue_files},
+	local::{ExactMatchLevel, Local},
 	sync::{MergeMode, Side, SyncOptions, open_local_issue},
 	touch::{create_pending_issue, create_virtual_issue, find_local_issue_for_touch, parse_touch_path},
 };
@@ -124,7 +124,7 @@ pub async fn open_command(settings: &LiveSettings, gh: BoxedGithubClient, args: 
 	// Resolve the issue file path and sync options based on mode
 	let (issue_file_path, sync_opts, effective_offline) = if args.last {
 		// Handle --last mode: open the most recently modified issue file
-		let all_files = search_issue_files("")?;
+		let all_files = Local::search_issue_files("")?;
 		if all_files.is_empty() {
 			bail!("No issue files found. Use a Github URL to fetch an issue first.");
 		}
@@ -135,7 +135,7 @@ pub async fn open_command(settings: &LiveSettings, gh: BoxedGithubClient, args: 
 		let touch_path = parse_touch_path(input)?;
 
 		// Check if the project is virtual
-		let project_is_virtual = is_virtual_project(&touch_path.owner, &touch_path.repo);
+		let project_is_virtual = Local::is_virtual_project(&touch_path.owner, &touch_path.repo);
 
 		// First, try to find an existing local issue file
 		let (issue_file_path, effective_offline) = if let Some(existing_path) = find_local_issue_for_touch(&touch_path) {
@@ -168,8 +168,7 @@ pub async fn open_command(settings: &LiveSettings, gh: BoxedGithubClient, args: 
 		let (owner, repo, issue_number) = github::parse_github_issue_url(input)?;
 
 		// Check if we already have this issue locally
-		use super::local::find_issue_file;
-		let existing_path = find_issue_file(&owner, &repo, Some(issue_number), "", &[]);
+		let existing_path = Local::find_issue_file(&owner, &repo, Some(issue_number), "", &[]);
 
 		let issue_file_path = if let Some(path) = existing_path {
 			// File exists locally - proceed with unified sync (like --pull)
@@ -199,11 +198,11 @@ pub async fn open_command(settings: &LiveSettings, gh: BoxedGithubClient, args: 
 			(input_path.to_path_buf(), local_sync_opts(), offline)
 		} else {
 			// Local search mode: always pass all files to fzf, let it handle filtering
-			let all_files = search_issue_files("")?;
+			let all_files = Local::search_issue_files("")?;
 			if all_files.is_empty() {
 				bail!("No issue files found. Use a Github URL to fetch an issue first.");
 			}
-			let issue_file_path = match choose_issue_with_fzf(&all_files, input, exact)? {
+			let issue_file_path = match Local::choose_issue_with_fzf(&all_files, input, exact)? {
 				Some(path) => path,
 				None => bail!("No issue selected"),
 			};

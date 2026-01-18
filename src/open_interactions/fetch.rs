@@ -5,10 +5,7 @@ use std::path::PathBuf;
 use todo::{Ancestry, CloseState, FetchedIssue, Issue};
 use v_utils::prelude::*;
 
-use super::{
-	github_sync::IssueGithubExt,
-	local::{build_ancestry_path, find_issue_file, get_issue_dir_path, get_issue_file_path, get_main_file_path},
-};
+use super::{github_sync::IssueGithubExt, local::Local};
 use crate::github::{BoxedGithubClient, GithubIssue};
 
 /// Fetch the lineage (parent issue numbers) for an issue from GitHub.
@@ -49,7 +46,7 @@ pub async fn fetch_and_store_issue(gh: &BoxedGithubClient, owner: &str, repo: &s
 				println!("Issue #{issue_number} is a sub-issue with lineage: {lineage:?}");
 
 				let ancestry = Ancestry::with_lineage(owner, repo, &lineage);
-				build_ancestry_path(&ancestry)?
+				Local::build_ancestry_path(&ancestry)?
 			} else {
 				vec![]
 			}
@@ -103,27 +100,27 @@ async fn store_issue_node(
 	// Determine file path - use directory format if there are sub-issues
 	let issue_file_path = if has_sub_issues {
 		// Use directory format: {dir}/__main__.md
-		let issue_dir = get_issue_dir_path(owner, repo, Some(issue.number), &issue.title, &ancestors);
+		let issue_dir = Local::issue_dir_path(owner, repo, Some(issue.number), &issue.title, &ancestors);
 		std::fs::create_dir_all(&issue_dir)?;
 
 		// Clean up old flat file if it exists (format is changing)
-		let old_flat_path = get_issue_file_path(owner, repo, Some(issue.number), &issue.title, false, &ancestors);
+		let old_flat_path = Local::issue_file_path(owner, repo, Some(issue.number), &issue.title, false, &ancestors);
 		if old_flat_path.exists() {
 			std::fs::remove_file(&old_flat_path)?;
 		}
-		let old_flat_closed = get_issue_file_path(owner, repo, Some(issue.number), &issue.title, true, &ancestors);
+		let old_flat_closed = Local::issue_file_path(owner, repo, Some(issue.number), &issue.title, true, &ancestors);
 		if old_flat_closed.exists() {
 			std::fs::remove_file(&old_flat_closed)?;
 		}
 
-		get_main_file_path(&issue_dir, issue_closed)
+		Local::main_file_path(&issue_dir, issue_closed)
 	} else {
 		// Check if there's an existing file (might be in either format)
-		if let Some(existing) = find_issue_file(owner, repo, Some(issue.number), &issue.title, &ancestors) {
+		if let Some(existing) = Local::find_issue_file(owner, repo, Some(issue.number), &issue.title, &ancestors) {
 			existing
 		} else {
 			// No existing file, use flat format
-			get_issue_file_path(owner, repo, Some(issue.number), &issue.title, issue_closed, &ancestors)
+			Local::issue_file_path(owner, repo, Some(issue.number), &issue.title, issue_closed, &ancestors)
 		}
 	};
 
