@@ -6,8 +6,8 @@ use todo::{Ancestry, CloseState, FetchedIssue, Issue};
 use v_utils::prelude::*;
 
 use super::{
-	files::{build_ancestry_path, find_issue_file, get_issue_dir_path, get_issue_file_path, get_main_file_path},
 	github_sync::IssueGithubExt,
+	local::{build_ancestry_path, find_issue_file, get_issue_dir_path, get_issue_file_path, get_main_file_path},
 };
 use crate::github::{BoxedGithubClient, GithubIssue};
 

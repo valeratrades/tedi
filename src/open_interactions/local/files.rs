@@ -432,7 +432,8 @@ pub fn extract_owner_repo_from_path(issue_file_path: &Path) -> Result<(String, S
 // Filesystem Sink Implementation
 //==============================================================================
 
-use super::sink::{Local, Sink};
+// Sink trait is in parent module
+use crate::open_interactions::sink::{Local, Sink};
 
 //==============================================================================
 // LazyIssue Implementation for Filesystem
@@ -702,6 +703,7 @@ fn sink_issue_node(issue: &Issue, old: Option<&Issue>, owner: &str, repo: &str, 
 				Ok(())
 			}
 			remove_issue_files(old_child, owner, repo, &child_ancestors)?;
+			super::meta::remove_issue_meta(owner, repo, old_num)?;
 		}
 	}
 
@@ -751,5 +753,84 @@ mod tests {
 		assert!(matches!(ExactMatchLevel::try_from(3), Ok(ExactMatchLevel::RegexLine)));
 		assert!(ExactMatchLevel::try_from(4).is_err());
 		assert!(ExactMatchLevel::try_from(255).is_err());
+	}
+
+	/// Test that `sink_issue_node` removes metadata when a child is deleted.
+	#[test]
+	fn test_sink_removes_meta_for_deleted_child() {
+		use tempfile::TempDir;
+
+		use crate::open_interactions::local::meta;
+
+		// Override XDG_DATA_HOME for this test
+		let temp_dir = TempDir::new().unwrap();
+		let old_xdg = std::env::var("XDG_DATA_HOME").ok();
+		// SAFETY: single-threaded test
+		unsafe { std::env::set_var("XDG_DATA_HOME", temp_dir.path()) };
+
+		let owner = "test_owner";
+		let repo = "test_repo";
+
+		// Create old state: parent with one child
+		let mut old_parent = Issue::empty_local(todo::Ancestry::root(owner, repo));
+		old_parent.contents.title = "Parent".to_string();
+		old_parent.identity = todo::IssueIdentity::linked(
+			old_parent.identity.ancestry,
+			"user".to_string(),
+			todo::IssueLink::parse(&format!("https://github.com/{owner}/{repo}/issues/1")).unwrap(),
+			None,
+		);
+
+		let mut old_child = Issue::empty_local(todo::Ancestry::root(owner, repo));
+		old_child.contents.title = "Child".to_string();
+		old_child.identity = todo::IssueIdentity::linked(
+			old_child.identity.ancestry,
+			"user".to_string(),
+			todo::IssueLink::parse(&format!("https://github.com/{owner}/{repo}/issues/2")).unwrap(),
+			None,
+		);
+		old_parent.children.push(old_child);
+
+		// Write old state to filesystem (simulating previous sink)
+		sink_issue_node(&old_parent, None, owner, repo, &[]).unwrap();
+
+		// Manually add metadata for the child
+		meta::save_issue_meta(owner, repo, 2, &meta::IssueMeta { ts: Some(jiff::Timestamp::now()) }).unwrap();
+
+		// Verify metadata exists
+		let meta_before = meta::load_project_meta(owner, repo);
+		assert!(meta_before.issues.contains_key(&2), "Child should have metadata before deletion");
+
+		// Create new state: parent without child
+		let mut new_parent = Issue::empty_local(todo::Ancestry::root(owner, repo));
+		new_parent.contents.title = "Parent".to_string();
+		new_parent.identity = todo::IssueIdentity::linked(
+			new_parent.identity.ancestry,
+			"user".to_string(),
+			todo::IssueLink::parse(&format!("https://github.com/{owner}/{repo}/issues/1")).unwrap(),
+			None,
+		);
+		// No children in new state
+
+		// Sink new state with old state as reference
+		sink_issue_node(&new_parent, Some(&old_parent), owner, repo, &[]).unwrap();
+
+		// Verify metadata is removed
+		let meta_after = meta::load_project_meta(owner, repo);
+		assert!(
+			!meta_after.issues.contains_key(&2),
+			"Child metadata should be removed after deletion. Got: {:?}",
+			meta_after.issues.keys().collect::<Vec<_>>()
+		);
+
+		// Restore XDG_DATA_HOME
+		// SAFETY: single-threaded test
+		unsafe {
+			if let Some(v) = old_xdg {
+				std::env::set_var("XDG_DATA_HOME", v);
+			} else {
+				std::env::remove_var("XDG_DATA_HOME");
+			}
+		}
 	}
 }

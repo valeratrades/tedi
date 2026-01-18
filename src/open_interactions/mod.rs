@@ -6,10 +6,9 @@
 mod command;
 mod conflict;
 mod fetch;
-pub(crate) mod files;
 mod git;
 mod github_sync;
-pub(crate) mod meta;
+pub(crate) mod local;
 mod sink;
 mod sync;
 mod touch;

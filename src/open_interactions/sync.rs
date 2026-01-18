@@ -89,9 +89,8 @@ use v_utils::prelude::*;
 use super::{
 	conflict::mark_conflict,
 	fetch::fetch_and_store_issue,
-	files::extract_owner_repo_from_path,
 	git::{commit_issue_changes, is_git_initialized, load_consensus_issue},
-	meta::load_issue_meta_from_path,
+	local::{extract_owner_repo_from_path, parse_path_identity},
 	sink::{IssueSinkExt, Local},
 	tree::{fetch_full_issue_tree, resolve_tree},
 };
@@ -250,7 +249,7 @@ fn apply_node_content(target: &mut Issue, source: &Issue) {
 async fn handle_divergence(issue_file_path: &Path, owner: &str, repo: &str, issue_number: u64, remote_issue: &Issue) -> Result<()> {
 	use std::process::Command;
 
-	use super::files::issues_dir;
+	use super::local::issues_dir;
 
 	let data_dir = issues_dir();
 	let data_dir_str = data_dir.to_str().ok_or_else(|| eyre!("Invalid data directory path"))?;
@@ -534,9 +533,9 @@ async fn sync_issue_to_github_inner(gh: &BoxedGithubClient, issue_file_path: &Pa
 		println!("Refreshing local issue file from Github...");
 
 		// Determine parent issue info if this is a sub-issue
-		let meta = load_issue_meta_from_path(issue_file_path)?;
+		let meta = parse_path_identity(issue_file_path)?;
 		let ancestors: Option<Vec<FetchedIssue>> = meta.parent_issue.and_then(|parent_num| {
-			let parent_meta = load_issue_meta_from_path(issue_file_path.parent()?.join("..").as_path()).ok()?;
+			let parent_meta = parse_path_identity(issue_file_path.parent()?.join("..").as_path()).ok()?;
 			let fetched = FetchedIssue::from_parts(owner, repo, parent_num, &parent_meta.title)?;
 			Some(vec![fetched])
 		});
@@ -585,7 +584,10 @@ pub async fn open_local_issue(gh: &BoxedGithubClient, issue_file_path: &Path, of
 /// Modify a local issue file using the given modifier, then sync changes back to Github.
 #[tracing::instrument(level = "debug", skip(gh), target = "todo::open_interactions::sync")]
 pub async fn modify_and_sync_issue(gh: &BoxedGithubClient, issue_file_path: &Path, offline: bool, modifier: Modifier, sync_opts: SyncOptions) -> Result<ModifyResult> {
-	use super::{conflict::check_any_conflicts, files::extract_owner_repo_from_path, meta::is_virtual_project};
+	use super::{
+		conflict::check_any_conflicts,
+		local::{extract_owner_repo_from_path, is_virtual_project},
+	};
 
 	// Check for any unresolved conflicts first
 	check_any_conflicts()?;
@@ -597,7 +599,7 @@ pub async fn modify_and_sync_issue(gh: &BoxedGithubClient, issue_file_path: &Pat
 	let offline = offline || is_virtual_project(&owner, &repo);
 
 	// Load metadata from path
-	let meta = load_issue_meta_from_path(issue_file_path)?;
+	let meta = parse_path_identity(issue_file_path)?;
 
 	// Load the issue tree from filesystem using LazyIssue
 	let mut issue = Issue::empty_local(todo::Ancestry::root(&owner, &repo));

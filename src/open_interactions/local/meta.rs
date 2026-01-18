@@ -1,5 +1,9 @@
 //! Project and issue metadata.
 //!
+//! This module provides:
+//! 1. Path identity parsing - extracting issue number/title from file paths
+//! 2. .meta.json operations - project config and per-issue metadata
+//!
 //! The .meta.json file stores:
 //! - Virtual project configuration (for offline-only projects)
 //! - Per-issue metadata keyed by issue number (timestamps, etc.)
@@ -13,77 +17,32 @@ use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use v_utils::prelude::*;
 
-use super::files::get_project_dir;
+use super::files::{MAIN_ISSUE_FILENAME, extract_owner_repo_from_path, get_project_dir, issues_dir};
 
-/// Metadata for a single issue, derived from file path/name.
-/// This is NOT stored in .meta.json - it's computed on demand from the file path.
+//==============================================================================
+// Path Identity Parsing
+//==============================================================================
+
+/// Issue identity extracted from a file path.
+///
+/// This is NOT metadata from .meta.json - it's computed on demand by parsing
+/// the file path structure: `{number}_-_{title}.md` or `{number}_-_{title}/__main__.md`
 #[derive(Clone, Debug)]
-pub struct IssueMetaEntry {
+pub struct PathIdentity {
 	pub issue_number: u64,
 	pub title: String,
 	/// Parent issue number if this is a sub-issue
 	pub parent_issue: Option<u64>,
 }
 
-/// Per-issue metadata stored in .meta.json.
-/// Keyed by issue number in the issues map.
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-pub struct IssueMeta {
-	/// Timestamp of last content change (body/comments, not children).
-	/// Used for sync conflict resolution.
-	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub ts: Option<Timestamp>,
-}
-
-/// Project-level metadata file.
-/// Stored at: issues/{owner}/{repo}/.meta.json
+/// Parse issue identity from a file path.
 ///
-/// Contains both project configuration and per-issue metadata.
-/// Note: owner/repo are NOT stored here - they're derived from the file path.
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-pub struct ProjectMeta {
-	/// Virtual project: has no Github remote, all operations are offline-only.
-	/// Issue numbers are locally generated (starting from 1).
-	#[serde(default)]
-	pub virtual_project: bool,
-	/// Next issue number for virtual projects (auto-incremented)
-	#[serde(default)]
-	pub next_virtual_issue_number: u64,
-	/// Per-issue metadata, keyed by issue number.
-	#[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
-	pub issues: std::collections::HashMap<u64, IssueMeta>,
-}
-
-/// Get the metadata file path for a project
-pub fn get_project_meta_path(owner: &str, repo: &str) -> PathBuf {
-	get_project_dir(owner, repo).join(".meta.json")
-}
-
-/// Load project metadata, creating empty if not exists
-pub fn load_project_meta(owner: &str, repo: &str) -> ProjectMeta {
-	let meta_path = get_project_meta_path(owner, repo);
-	match std::fs::read_to_string(&meta_path) {
-		Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
-		Err(_) => ProjectMeta::default(),
-	}
-}
-
-/// Save project metadata
-pub fn save_project_meta(owner: &str, repo: &str, meta: &ProjectMeta) -> Result<()> {
-	let meta_path = get_project_meta_path(owner, repo);
-	if let Some(parent) = meta_path.parent() {
-		std::fs::create_dir_all(parent)?;
-	}
-	let content = serde_json::to_string_pretty(meta)?;
-	std::fs::write(&meta_path, content)?;
-	Ok(())
-}
-
-/// Load metadata from an issue file path by extracting info from the path/name.
-/// Handles both flat format ({number}_-_{title}.ext) and directory format ({number}_-_{title}/__main__.ext).
-pub fn load_issue_meta_from_path(issue_file_path: &std::path::Path) -> Result<IssueMetaEntry> {
-	use super::files::{MAIN_ISSUE_FILENAME, extract_owner_repo_from_path, issues_dir};
-
+/// Extracts issue number, title, and parent from the path structure.
+/// Handles both flat format (`{number}_-_{title}.md`) and directory format
+/// (`{number}_-_{title}/__main__.md`).
+///
+/// Returns `issue_number = 0` for pending issues (no number assigned yet).
+pub fn parse_path_identity(issue_file_path: &std::path::Path) -> Result<PathIdentity> {
 	let (_owner, _repo) = extract_owner_repo_from_path(issue_file_path)?;
 
 	// Extract issue number and title from filename or parent directory name
@@ -167,8 +126,70 @@ pub fn load_issue_meta_from_path(issue_file_path: &std::path::Path) -> Result<Is
 		None
 	};
 
-	Ok(IssueMetaEntry { issue_number, title, parent_issue })
+	Ok(PathIdentity { issue_number, title, parent_issue })
 }
+
+//==============================================================================
+// .meta.json Project Metadata
+//==============================================================================
+
+/// Project-level metadata file.
+/// Stored at: issues/{owner}/{repo}/.meta.json
+///
+/// Contains both project configuration and per-issue metadata.
+/// Note: owner/repo are NOT stored here - they're derived from the file path.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct ProjectMeta {
+	/// Virtual project: has no Github remote, all operations are offline-only.
+	/// Issue numbers are locally generated (starting from 1).
+	#[serde(default)]
+	pub virtual_project: bool,
+	/// Next issue number for virtual projects (auto-incremented)
+	#[serde(default)]
+	pub next_virtual_issue_number: u64,
+	/// Per-issue metadata, keyed by issue number.
+	#[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+	pub issues: std::collections::HashMap<u64, IssueMeta>,
+}
+
+/// Per-issue metadata stored in .meta.json.
+/// Keyed by issue number in the issues map.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct IssueMeta {
+	/// Timestamp of last content change (body/comments, not children).
+	/// Used for sync conflict resolution.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub ts: Option<Timestamp>,
+}
+
+/// Get the metadata file path for a project
+pub fn get_project_meta_path(owner: &str, repo: &str) -> PathBuf {
+	get_project_dir(owner, repo).join(".meta.json")
+}
+
+/// Load project metadata, creating empty if not exists
+pub fn load_project_meta(owner: &str, repo: &str) -> ProjectMeta {
+	let meta_path = get_project_meta_path(owner, repo);
+	match std::fs::read_to_string(&meta_path) {
+		Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
+		Err(_) => ProjectMeta::default(),
+	}
+}
+
+/// Save project metadata
+pub fn save_project_meta(owner: &str, repo: &str, meta: &ProjectMeta) -> Result<()> {
+	let meta_path = get_project_meta_path(owner, repo);
+	if let Some(parent) = meta_path.parent() {
+		std::fs::create_dir_all(parent)?;
+	}
+	let content = serde_json::to_string_pretty(meta)?;
+	std::fs::write(&meta_path, content)?;
+	Ok(())
+}
+
+//==============================================================================
+// Virtual Project Support
+//==============================================================================
 
 /// Check if a project is virtual (has no Github remote)
 pub fn is_virtual_project(owner: &str, repo: &str) -> bool {

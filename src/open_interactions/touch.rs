@@ -4,10 +4,7 @@ use std::path::PathBuf;
 
 use v_utils::prelude::*;
 
-use super::{
-	files::{get_issue_file_path, issues_dir, sanitize_title_for_filename, search_issue_files},
-	meta::{allocate_virtual_issue_number, ensure_virtual_project},
-};
+use super::local::{allocate_virtual_issue_number, ensure_virtual_project, get_issue_file_path, issues_dir, sanitize_title_for_filename, search_issue_files};
 
 /// Parsed touch path components
 /// Format: workspace/project/issue[.md] or workspace/project/parent/child[.md] (for sub-issues)

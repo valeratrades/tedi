@@ -7,8 +7,7 @@ use v_utils::prelude::*;
 
 use super::{
 	fetch::fetch_and_store_issue,
-	files::{ExactMatchLevel, choose_issue_with_fzf, search_issue_files},
-	meta::is_virtual_project,
+	local::{ExactMatchLevel, choose_issue_with_fzf, is_virtual_project, search_issue_files},
 	sync::{MergeMode, Side, SyncOptions, open_local_issue},
 	touch::{create_pending_issue, create_virtual_issue, find_local_issue_for_touch, parse_touch_path},
 };
@@ -169,7 +168,7 @@ pub async fn open_command(settings: &LiveSettings, gh: BoxedGithubClient, args: 
 		let (owner, repo, issue_number) = github::parse_github_issue_url(input)?;
 
 		// Check if we already have this issue locally
-		use super::files::find_issue_file;
+		use super::local::find_issue_file;
 		let existing_path = find_issue_file(&owner, &repo, Some(issue_number), "", &[]);
 
 		let issue_file_path = if let Some(path) = existing_path {

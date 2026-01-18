@@ -10,7 +10,7 @@ use color_eyre::eyre::{Result, bail, eyre};
 use todo::{DisplayFormat, Issue, Marker};
 
 use super::{BlockerSequence, operations::BlockerSequenceExt};
-use crate::open_interactions::files::{ExactMatchLevel, choose_issue_with_fzf, issues_dir, search_issue_files};
+use crate::open_interactions::local::{ExactMatchLevel, choose_issue_with_fzf, issues_dir, search_issue_files};
 
 /// Cache file for current blocker selection
 static CURRENT_BLOCKER_ISSUE_CACHE: &str = "current_blocker_issue.txt";

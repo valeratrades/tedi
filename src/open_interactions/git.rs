@@ -8,7 +8,7 @@ use std::{path::Path, process::Command};
 use todo::Issue;
 use v_utils::prelude::*;
 
-use super::files::issues_dir;
+use super::local::issues_dir;
 
 /// Result of checking if a file is tracked in git.
 pub enum GitTrackingStatus {
@@ -102,7 +102,7 @@ pub fn load_consensus_issue(file_path: &Path) -> Option<Issue> {
 			let is_dir_format = file_path
 				.file_name()
 				.and_then(|n| n.to_str())
-				.map(|n| n.starts_with(super::files::MAIN_ISSUE_FILENAME))
+				.map(|n| n.starts_with(super::local::MAIN_ISSUE_FILENAME))
 				.unwrap_or(false);
 
 			if is_dir_format {
@@ -151,7 +151,7 @@ fn load_consensus_children(issue: &mut Issue, dir: &Path) {
 
 	for entry in entries {
 		// Skip __main__ files (that's the parent issue itself)
-		if entry.starts_with(super::files::MAIN_ISSUE_FILENAME) {
+		if entry.starts_with(super::local::MAIN_ISSUE_FILENAME) {
 			continue;
 		}
 
@@ -165,8 +165,8 @@ fn load_consensus_children(issue: &mut Issue, dir: &Path) {
 
 		if is_dir {
 			// Directory child - look for __main__ file
-			let main_path = entry_path.join(format!("{}.md", super::files::MAIN_ISSUE_FILENAME));
-			let main_closed_path = entry_path.join(format!("{}.md.bak", super::files::MAIN_ISSUE_FILENAME));
+			let main_path = entry_path.join(format!("{}.md", super::local::MAIN_ISSUE_FILENAME));
+			let main_closed_path = entry_path.join(format!("{}.md.bak", super::local::MAIN_ISSUE_FILENAME));
 
 			if let Some(child) = load_consensus_issue(&main_path).or_else(|| load_consensus_issue(&main_closed_path)) {
 				issue.children.push(child);
