@@ -1324,7 +1324,28 @@ impl Issue /*{{{1*/ {
 
 		last_item_line_num.zip(last_item_col)
 	}
+
+	/// Get a reference to a descendant by lineage (chain of issue numbers).
+	/// Returns None if the path doesn't exist.
+	pub fn get(&self, lineage: &[u64]) -> Option<&Issue> {
+		let mut current = self;
+		for &num in lineage {
+			current = current.children.iter().find(|c| c.number() == Some(num))?;
+		}
+		Some(current)
+	}
+
+	/// Get a mutable reference to a descendant by lineage.
+	/// Returns None if the path doesn't exist.
+	pub fn get_mut(&mut self, lineage: &[u64]) -> Option<&mut Issue> {
+		let mut current = self;
+		for &num in lineage {
+			current = current.children.iter_mut().find(|c| c.number() == Some(num))?;
+		}
+		Some(current)
+	}
 }
+
 //,}}}1
 
 //==============================================================================
@@ -1356,28 +1377,6 @@ impl std::ops::IndexMut<u64> for Issue {
 			.iter_mut()
 			.find(|child| child.number() == Some(issue_number))
 			.unwrap_or_else(|| panic!("no child with issue number {issue_number}"))
-	}
-}
-
-impl Issue {
-	/// Get a reference to a descendant by lineage (chain of issue numbers).
-	/// Returns None if the path doesn't exist.
-	pub fn get(&self, lineage: &[u64]) -> Option<&Issue> {
-		let mut current = self;
-		for &num in lineage {
-			current = current.children.iter().find(|c| c.number() == Some(num))?;
-		}
-		Some(current)
-	}
-
-	/// Get a mutable reference to a descendant by lineage.
-	/// Returns None if the path doesn't exist.
-	pub fn get_mut(&mut self, lineage: &[u64]) -> Option<&mut Issue> {
-		let mut current = self;
-		for &num in lineage {
-			current = current.children.iter_mut().find(|c| c.number() == Some(num))?;
-		}
-		Some(current)
 	}
 }
 
