@@ -837,7 +837,7 @@ pub struct ProjectMeta {
 pub struct IssueMeta {
 	/// Timestamps for individual field changes.
 	#[serde(default)]
-	pub timestamps: todo::IssueChangeTimestamps,
+	pub timestamps: todo::IssueTimestamps,
 }
 
 //==============================================================================

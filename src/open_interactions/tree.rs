@@ -38,9 +38,10 @@ pub fn compare_node(local: &Issue, consensus: Option<&Issue>, remote: &Issue) ->
 			return NodeResolution::NoChange;
 		}
 		// Different content with no consensus - try timestamps, else conflict
-		// TODO: this conflict resolution is hacky - should be replaced with proper per-field handling
-		let local_ts = local.identity.timestamps().and_then(|t| t.most_recent());
-		let remote_ts = remote.identity.timestamps().and_then(|t| t.most_recent());
+		// HACK: Using max of all available timestamps for now.
+		// TODO: Implement proper per-field conflict resolution using IssueTimestamps
+		let local_ts = most_recent_timestamp(local.identity.timestamps());
+		let remote_ts = most_recent_timestamp(remote.identity.timestamps());
 		return match (local_ts, remote_ts) {
 			(Some(l), Some(r)) if l != r => NodeResolution::AutoResolved { take_local: l > r },
 			_ => NodeResolution::Conflict,
@@ -60,9 +61,10 @@ pub fn compare_node(local: &Issue, consensus: Option<&Issue>, remote: &Issue) ->
 		(false, true) => NodeResolution::RemoteOnly,
 		(true, true) => {
 			// Both changed - try to auto-resolve using timestamps
-			// TODO: this conflict resolution is hacky - should be replaced with proper per-field handling
-			let local_ts = local.identity.timestamps().and_then(|t| t.most_recent());
-			let remote_ts = remote.identity.timestamps().and_then(|t| t.most_recent());
+			// HACK: Using max of all available timestamps for now.
+			// TODO: Implement proper per-field conflict resolution using IssueTimestamps
+			let local_ts = most_recent_timestamp(local.identity.timestamps());
+			let remote_ts = most_recent_timestamp(remote.identity.timestamps());
 			match (local_ts, remote_ts) {
 				(Some(l), Some(r)) if l != r => NodeResolution::AutoResolved { take_local: l > r },
 				_ => {
@@ -72,6 +74,13 @@ pub fn compare_node(local: &Issue, consensus: Option<&Issue>, remote: &Issue) ->
 			}
 		}
 	}
+}
+
+/// HACK: Get the most recent timestamp from all fields.
+/// This is a temporary workaround until proper per-field conflict resolution is implemented.
+fn most_recent_timestamp(timestamps: Option<&todo::IssueTimestamps>) -> Option<jiff::Timestamp> {
+	let ts = timestamps?;
+	[ts.title, ts.description, ts.labels, ts.comments].into_iter().flatten().max()
 }
 
 /// Result of resolving an entire tree.
@@ -238,7 +247,7 @@ mod tests {
 	fn make_issue(body: &str, timestamp: Option<i64>) -> Issue {
 		let ancestry = Ancestry::root("o", "r");
 		let link = IssueLink::parse("https://github.com/o/r/issues/1").unwrap();
-		let timestamps = timestamp.map(|ts| todo::IssueChangeTimestamps::all_at(Timestamp::from_second(ts).unwrap())).unwrap_or_default();
+		let timestamps = timestamp.map(|ts| todo::IssueTimestamps::all_at(Timestamp::from_second(ts).unwrap())).unwrap_or_default();
 		Issue {
 			identity: IssueIdentity::linked(ancestry, "testuser".to_string(), link, timestamps),
 			contents: IssueContents {
@@ -321,7 +330,7 @@ mod tests {
 	fn make_issue_with_url(body: &str, timestamp: Option<i64>, url: &str) -> Issue {
 		let link = IssueLink::parse(url).unwrap();
 		let ancestry = Ancestry::root(link.owner(), link.repo());
-		let timestamps = timestamp.map(|ts| todo::IssueChangeTimestamps::all_at(Timestamp::from_second(ts).unwrap())).unwrap_or_default();
+		let timestamps = timestamp.map(|ts| todo::IssueTimestamps::all_at(Timestamp::from_second(ts).unwrap())).unwrap_or_default();
 		Issue {
 			identity: IssueIdentity::linked(ancestry, "testuser".to_string(), link, timestamps),
 			contents: IssueContents {

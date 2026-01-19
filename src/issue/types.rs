@@ -7,6 +7,38 @@ use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
+/// Repository identification: owner and repo name.
+/// Uses fixed-size `ArrayString`s to be `Copy`.
+/// GitHub limits: owner max 39 chars, repo max 100 chars.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct RepoInfo {
+	/// Repository owner (fixed max length; following Github spec)
+	owner: ArrayString<39>,
+	/// Repository name (fixed max length; following Github spec)
+	repo: ArrayString<100>,
+}
+
+impl RepoInfo {
+	/// Create a new RepoInfo.
+	/// Panics if owner exceeds 39 chars or repo exceeds 100 chars.
+	pub fn new(owner: &str, repo: &str) -> Self {
+		Self {
+			owner: ArrayString::from(owner).expect("owner name too long (max 39 chars)"),
+			repo: ArrayString::from(repo).expect("repo name too long (max 100 chars)"),
+		}
+	}
+
+	/// Get the owner.
+	pub fn owner(&self) -> &str {
+		self.owner.as_str()
+	}
+
+	/// Get the repo.
+	pub fn repo(&self) -> &str {
+		self.repo.as_str()
+	}
+}
+
 /// A Github issue identifier. Wraps a URL and derives all properties on demand.
 /// Format: `https://github.com/{owner}/{repo}/issues/{number}`
 #[derive(Clone, Debug, derive_more::Deref, derive_more::DerefMut, Eq, Hash, PartialEq)]
@@ -38,6 +70,14 @@ impl IssueLink /*{{{1*/ {
 	/// Get the underlying URL.
 	pub fn url(&self) -> &Url {
 		&self.0
+	}
+
+	/// Get the repository info (owner and repo).
+	pub fn repo_info(&self) -> RepoInfo {
+		let mut segments = self.0.path_segments().unwrap();
+		let owner = segments.next().unwrap();
+		let repo = segments.next().unwrap();
+		RepoInfo::new(owner, repo)
 	}
 
 	/// Get the owner (first path segment).
@@ -268,7 +308,7 @@ impl CloseState /*{{{1*/ {
 /// Each node keeps change info about itself only (not sub-issues).
 /// Used for sync conflict resolution.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
-pub struct IssueChangeTimestamps {
+pub struct IssueTimestamps {
 	/// Last change to the issue title. Optional because we can't always get this from GitHub.
 	pub title: Option<Timestamp>,
 	/// Last change to the issue description/body. Optional because we can't always get this from GitHub.
@@ -279,22 +319,7 @@ pub struct IssueChangeTimestamps {
 	pub comments: Option<Timestamp>,
 }
 
-impl IssueChangeTimestamps {
-	/// Get the most recent timestamp across all fields.
-	/// Used for overall conflict resolution when we need a single timestamp.
-	pub fn most_recent(&self) -> Option<Timestamp> {
-		[self.title, self.description, self.labels, self.comments].into_iter().flatten().max()
-	}
-
-	/// Create timestamps with just the comments field set.
-	/// This is the minimum we can always get from GitHub.
-	pub fn from_comments(ts: Timestamp) -> Self {
-		Self {
-			comments: Some(ts),
-			..Default::default()
-		}
-	}
-
+impl IssueTimestamps {
 	/// Create timestamps with all fields set to the same value.
 	/// Useful for local modifications where we know the exact change time.
 	pub fn all_at(ts: Timestamp) -> Self {
@@ -346,7 +371,7 @@ pub struct LinkedIssueMeta {
 	pub link: IssueLink,
 	/// Timestamps of last changes to individual fields.
 	/// Used for sync conflict resolution.
-	pub timestamps: IssueChangeTimestamps,
+	pub timestamps: IssueTimestamps,
 }
 
 impl LinkedIssueMeta {
@@ -431,7 +456,7 @@ pub struct IssueIdentity {
 
 impl IssueIdentity {
 	/// Create a new linked Github issue identity.
-	pub fn linked(ancestry: Ancestry, user: String, link: IssueLink, timestamps: IssueChangeTimestamps) -> Self {
+	pub fn linked(ancestry: Ancestry, user: String, link: IssueLink, timestamps: IssueTimestamps) -> Self {
 		Self {
 			ancestry,
 			remote: IssueRemote::Github(Some(LinkedIssueMeta { user, link, timestamps })),
@@ -503,7 +528,7 @@ impl IssueIdentity {
 	}
 
 	/// Get the timestamps if linked.
-	pub fn timestamps(&self) -> Option<&IssueChangeTimestamps> {
+	pub fn timestamps(&self) -> Option<&IssueTimestamps> {
 		self.remote.as_linked().map(|m| &m.timestamps)
 	}
 
@@ -555,10 +580,8 @@ pub const MAX_LINEAGE_DEPTH: usize = 8;
 /// Uses fixed-size storage to be `Copy`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Ancestry {
-	/// Repository owner (fixed max length; following Github spec)
-	owner: ArrayString<39>,
-	/// Repository name (fixed max length; following Github spec)
-	repo: ArrayString<100>,
+	/// Repository owner and name
+	repo_info: RepoInfo,
 	/// Chain of parent issue numbers from root to immediate parent.
 	/// Empty for root issues. Uses fixed array with length tracking.
 	lineage_arr: [u64; MAX_LINEAGE_DEPTH],
@@ -567,11 +590,19 @@ pub struct Ancestry {
 
 impl Ancestry {
 	/// Create ancestry for a root issue.
-	/// Panics if owner or repo exceed MAX_NAME_LEN.
+	/// Panics if owner or repo exceed their max lengths.
 	pub fn root(owner: &str, repo: &str) -> Self {
 		Self {
-			owner: ArrayString::from(owner).expect("owner name too long"),
-			repo: ArrayString::from(repo).expect("repo name too long"),
+			repo_info: RepoInfo::new(owner, repo),
+			lineage_arr: [0; MAX_LINEAGE_DEPTH],
+			lineage_len: 0,
+		}
+	}
+
+	/// Create ancestry for a root issue from RepoInfo.
+	pub fn root_from_repo(repo_info: RepoInfo) -> Self {
+		Self {
+			repo_info,
 			lineage_arr: [0; MAX_LINEAGE_DEPTH],
 			lineage_len: 0,
 		}
@@ -584,8 +615,7 @@ impl Ancestry {
 		let mut lineage_arr = [0; MAX_LINEAGE_DEPTH];
 		lineage_arr[..lineage.len()].copy_from_slice(lineage);
 		Self {
-			owner: ArrayString::from(owner).expect("owner name too long"),
-			repo: ArrayString::from(repo).expect("repo name too long"),
+			repo_info: RepoInfo::new(owner, repo),
 			lineage_arr,
 			lineage_len: lineage.len() as u8,
 		}
@@ -599,8 +629,7 @@ impl Ancestry {
 		let mut new_arr = self.lineage_arr;
 		new_arr[self.lineage_len as usize] = parent_number;
 		Self {
-			owner: self.owner,
-			repo: self.repo,
+			repo_info: self.repo_info,
 			lineage_arr: new_arr,
 			lineage_len: new_len as u8,
 		}
@@ -611,14 +640,19 @@ impl Ancestry {
 		&self.lineage_arr[..self.lineage_len as usize]
 	}
 
+	/// Get the repository info.
+	pub fn repo_info(&self) -> RepoInfo {
+		self.repo_info
+	}
+
 	/// Get the owner.
 	pub fn owner(&self) -> &str {
-		self.owner.as_str()
+		self.repo_info.owner()
 	}
 
 	/// Get the repo.
 	pub fn repo(&self) -> &str {
-		self.repo.as_str()
+		self.repo_info.repo()
 	}
 }
 
@@ -1039,7 +1073,7 @@ impl Issue /*{{{1*/ {
 				// Linked issues get ancestry from the URL, optionally extended by parent
 				let ancestry = parent_ancestry.copied().unwrap_or_else(|| Ancestry::root(link.owner(), link.repo()));
 				// Timestamps will be loaded from .meta.json separately
-				IssueIdentity::linked(ancestry, user, link, IssueChangeTimestamps::default())
+				IssueIdentity::linked(ancestry, user, link, IssueTimestamps::default())
 			}
 			ParsedIdentityInfo::Pending => {
 				// Pending issues require ancestry from parent/caller

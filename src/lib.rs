@@ -27,8 +27,8 @@ pub mod current_user {
 
 // Re-export all public types from issue module at crate root for convenience
 pub use issue::{
-	Ancestry, BlockerItem, BlockerSequence, CloseState, Comment, CommentIdentity, DisplayFormat, Events, FetchedIssue, HeaderLevel, Issue, IssueChangeTimestamps, IssueContents,
-	IssueIdentity, IssueLink, LazyIssue, Line, LinkedIssueMeta, MAX_LINEAGE_DEPTH, Marker, OwnedCodeBlockKind, OwnedEvent, OwnedTag, OwnedTagEnd, ParseError, classify_line,
+	Ancestry, BlockerItem, BlockerSequence, CloseState, Comment, CommentIdentity, DisplayFormat, Events, FetchedIssue, HeaderLevel, Issue, IssueContents, IssueIdentity, IssueLink,
+	IssueTimestamps, LazyIssue, Line, LinkedIssueMeta, MAX_LINEAGE_DEPTH, Marker, OwnedCodeBlockKind, OwnedEvent, OwnedTag, OwnedTagEnd, ParseError, RepoInfo, classify_line,
 	is_blockers_marker, join_with_blockers, normalize_issue_indentation, split_blockers,
 };
 

@@ -19,8 +19,8 @@ pub use marker::Marker;
 
 mod types;
 pub use types::{
-	Ancestry, CloseState, Comment, CommentIdentity, FetchedIssue, Issue, IssueChangeTimestamps, IssueContents, IssueIdentity, IssueLink, IssueRemote, LazyIssue, LinkedIssueMeta,
-	MAX_LINEAGE_DEPTH,
+	Ancestry, CloseState, Comment, CommentIdentity, FetchedIssue, Issue, IssueContents, IssueIdentity, IssueLink, IssueRemote, IssueTimestamps, LazyIssue, LinkedIssueMeta,
+	MAX_LINEAGE_DEPTH, RepoInfo,
 };
 
 mod util;

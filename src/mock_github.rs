@@ -15,7 +15,7 @@ use async_trait::async_trait;
 use tracing::instrument;
 use v_utils::prelude::*;
 
-use crate::github::{CreatedIssue, GithubClient, GithubComment, GithubIssue, GithubLabel, GithubUser};
+use crate::github::{CreatedIssue, GithubClient, GithubComment, GithubIssue, GithubLabel, GithubUser, RepoInfo};
 
 /// Internal representation of an issue in the mock
 #[derive(Clone, Debug)]
@@ -37,6 +37,8 @@ struct MockCommentData {
 	issue_number: u64,
 	body: String,
 	owner_login: String,
+	created_at: String,
+	updated_at: String,
 }
 
 /// Key for looking up issues/comments by owner/repo
@@ -183,11 +185,14 @@ impl MockGithubClient {
 				let owner_login = comment.get("owner_login").and_then(|v| v.as_str()).unwrap_or("mock_user");
 
 				let key = RepoKey::new(owner, repo);
+				let now = jiff::Timestamp::now().to_string();
 				let comment_data = MockCommentData {
 					id: comment_id,
 					issue_number,
 					body: body.to_string(),
 					owner_login: owner_login.to_string(),
+					created_at: now.clone(),
+					updated_at: now,
 				};
 
 				comments.entry(key).or_default().insert(comment_id, comment_data);
@@ -224,11 +229,14 @@ impl MockGithubClient {
 	pub fn add_comment(&self, owner: &str, repo: &str, issue_number: u64, comment_id: u64, body: &str, owner_login: &str) {
 		let key = RepoKey::new(owner, repo);
 
+		let now = jiff::Timestamp::now().to_string();
 		let comment = MockCommentData {
 			id: comment_id,
 			issue_number,
 			body: body.to_string(),
 			owner_login: owner_login.to_string(),
+			created_at: now.clone(),
+			updated_at: now,
 		};
 
 		let mut comments = self.comments.lock().unwrap();
@@ -261,23 +269,23 @@ impl MockGithubClient {
 	}
 
 	/// Get mutable access to an issue, returning an error if not found
-	fn with_issue_mut<F, R>(&self, owner: &str, repo: &str, issue_number: u64, f: F) -> Result<R>
+	fn with_issue_mut<F, R>(&self, repo: RepoInfo, issue_number: u64, f: F) -> Result<R>
 	where
 		F: FnOnce(&mut MockIssueData) -> R, {
-		let key = RepoKey::new(owner, repo);
+		let key = RepoKey::new(repo.owner(), repo.repo());
 		let mut issues = self.issues.lock().unwrap();
-		let repo_issues = issues.get_mut(&key).ok_or_else(|| eyre!("Repository not found: {owner}/{repo}"))?;
+		let repo_issues = issues.get_mut(&key).ok_or_else(|| eyre!("Repository not found: {}/{}", repo.owner(), repo.repo()))?;
 		let issue = repo_issues.get_mut(&issue_number).ok_or_else(|| eyre!("Issue not found: #{issue_number}"))?;
 		Ok(f(issue))
 	}
 
 	/// Get mutable access to a comment, returning an error if not found
-	fn with_comment_mut<F, R>(&self, owner: &str, repo: &str, comment_id: u64, f: F) -> Result<R>
+	fn with_comment_mut<F, R>(&self, repo: RepoInfo, comment_id: u64, f: F) -> Result<R>
 	where
 		F: FnOnce(&mut MockCommentData) -> R, {
-		let key = RepoKey::new(owner, repo);
+		let key = RepoKey::new(repo.owner(), repo.repo());
 		let mut comments = self.comments.lock().unwrap();
-		let repo_comments = comments.get_mut(&key).ok_or_else(|| eyre!("Repository not found: {owner}/{repo}"))?;
+		let repo_comments = comments.get_mut(&key).ok_or_else(|| eyre!("Repository not found: {}/{}", repo.owner(), repo.repo()))?;
 		let comment = repo_comments.get_mut(&comment_id).ok_or_else(|| eyre!("Comment not found: {comment_id}"))?;
 		Ok(f(comment))
 	}
@@ -292,7 +300,7 @@ impl MockGithubClient {
 			user: GithubUser { login: data.owner_login.clone() },
 			state: data.state.clone(),
 			state_reason: data.state_reason.clone(),
-			updated_at: "2024-01-15T12:00:00Z".to_string(), // Mock timestamp
+			_updated_at: "2024-01-15T12:00:00Z".to_string(), // Mock timestamp
 		}
 	}
 }
@@ -307,14 +315,16 @@ impl GithubClient for MockGithubClient {
 	}
 
 	#[instrument(skip(self), name = "MockGithubClient::fetch_issue")]
-	async fn fetch_issue(&self, owner: &str, repo: &str, issue_number: u64) -> Result<GithubIssue> {
-		tracing::info!(target: "mock_github", owner, repo, issue_number, "fetch_issue");
-		self.log_call(&format!("fetch_issue({owner}, {repo}, {issue_number})"));
+	async fn fetch_issue(&self, repo: RepoInfo, issue_number: u64) -> Result<GithubIssue> {
+		let owner = repo.owner();
+		let repo_name = repo.repo();
+		tracing::info!(target: "mock_github", owner, repo_name, issue_number, "fetch_issue");
+		self.log_call(&format!("fetch_issue({owner}, {repo_name}, {issue_number})"));
 
-		let key = RepoKey::new(owner, repo);
+		let key = RepoKey::new(owner, repo_name);
 		let issues = self.issues.lock().unwrap();
 
-		let repo_issues = issues.get(&key).ok_or_else(|| eyre!("Repository not found: {owner}/{repo}"))?;
+		let repo_issues = issues.get(&key).ok_or_else(|| eyre!("Repository not found: {owner}/{repo_name}"))?;
 
 		let issue_data = repo_issues.get(&issue_number).ok_or_else(|| eyre!("Issue not found: #{issue_number}"))?;
 
@@ -322,11 +332,13 @@ impl GithubClient for MockGithubClient {
 	}
 
 	#[instrument(skip(self), name = "MockGithubClient::fetch_comments")]
-	async fn fetch_comments(&self, owner: &str, repo: &str, issue_number: u64) -> Result<Vec<GithubComment>> {
-		tracing::info!(target: "mock_github", owner, repo, issue_number, "fetch_comments");
-		self.log_call(&format!("fetch_comments({owner}, {repo}, {issue_number})"));
+	async fn fetch_comments(&self, repo: RepoInfo, issue_number: u64) -> Result<Vec<GithubComment>> {
+		let owner = repo.owner();
+		let repo_name = repo.repo();
+		tracing::info!(target: "mock_github", owner, repo_name, issue_number, "fetch_comments");
+		self.log_call(&format!("fetch_comments({owner}, {repo_name}, {issue_number})"));
 
-		let key = RepoKey::new(owner, repo);
+		let key = RepoKey::new(owner, repo_name);
 		let comments = self.comments.lock().unwrap();
 
 		let repo_comments = match comments.get(&key) {
@@ -341,6 +353,8 @@ impl GithubClient for MockGithubClient {
 				id: c.id,
 				body: if c.body.is_empty() { None } else { Some(c.body.clone()) },
 				user: GithubUser { login: c.owner_login.clone() },
+				created_at: c.created_at.clone(),
+				updated_at: c.updated_at.clone(),
 			})
 			.collect();
 
@@ -348,11 +362,13 @@ impl GithubClient for MockGithubClient {
 	}
 
 	#[instrument(skip(self), name = "MockGithubClient::fetch_sub_issues")]
-	async fn fetch_sub_issues(&self, owner: &str, repo: &str, issue_number: u64) -> Result<Vec<GithubIssue>> {
-		tracing::info!(target: "mock_github", owner, repo, issue_number, "fetch_sub_issues");
-		self.log_call(&format!("fetch_sub_issues({owner}, {repo}, {issue_number})"));
+	async fn fetch_sub_issues(&self, repo: RepoInfo, issue_number: u64) -> Result<Vec<GithubIssue>> {
+		let owner = repo.owner();
+		let repo_name = repo.repo();
+		tracing::info!(target: "mock_github", owner, repo_name, issue_number, "fetch_sub_issues");
+		self.log_call(&format!("fetch_sub_issues({owner}, {repo_name}, {issue_number})"));
 
-		let key = RepoKey::new(owner, repo);
+		let key = RepoKey::new(owner, repo_name);
 
 		let sub_issue_numbers = {
 			let sub_issues = self.sub_issues.lock().unwrap();
@@ -377,39 +393,50 @@ impl GithubClient for MockGithubClient {
 	}
 
 	#[instrument(skip(self, body), name = "MockGithubClient::update_issue_body")]
-	async fn update_issue_body(&self, owner: &str, repo: &str, issue_number: u64, body: &str) -> Result<()> {
-		tracing::info!(target: "mock_github", owner, repo, issue_number, "update_issue_body");
-		self.log_call(&format!("update_issue_body({owner}, {repo}, {issue_number}, <body>)"));
-		self.with_issue_mut(owner, repo, issue_number, |issue| issue.body = body.to_string())
+	async fn update_issue_body(&self, repo: RepoInfo, issue_number: u64, body: &str) -> Result<()> {
+		let owner = repo.owner();
+		let repo_name = repo.repo();
+		tracing::info!(target: "mock_github", owner, repo_name, issue_number, "update_issue_body");
+		self.log_call(&format!("update_issue_body({owner}, {repo_name}, {issue_number}, <body>)"));
+		self.with_issue_mut(repo, issue_number, |issue| issue.body = body.to_string())
 	}
 
 	#[instrument(skip(self), name = "MockGithubClient::update_issue_state")]
-	async fn update_issue_state(&self, owner: &str, repo: &str, issue_number: u64, state: &str) -> Result<()> {
-		tracing::info!(target: "mock_github", owner, repo, issue_number, state, "update_issue_state");
-		self.log_call(&format!("update_issue_state({owner}, {repo}, {issue_number}, {state})"));
-		self.with_issue_mut(owner, repo, issue_number, |issue| issue.state = state.to_string())
+	async fn update_issue_state(&self, repo: RepoInfo, issue_number: u64, state: &str) -> Result<()> {
+		let owner = repo.owner();
+		let repo_name = repo.repo();
+		tracing::info!(target: "mock_github", owner, repo_name, issue_number, state, "update_issue_state");
+		self.log_call(&format!("update_issue_state({owner}, {repo_name}, {issue_number}, {state})"));
+		self.with_issue_mut(repo, issue_number, |issue| issue.state = state.to_string())
 	}
 
 	#[instrument(skip(self, body), name = "MockGithubClient::update_comment")]
-	async fn update_comment(&self, owner: &str, repo: &str, comment_id: u64, body: &str) -> Result<()> {
-		tracing::info!(target: "mock_github", owner, repo, comment_id, "update_comment");
-		self.log_call(&format!("update_comment({owner}, {repo}, {comment_id}, <body>)"));
-		self.with_comment_mut(owner, repo, comment_id, |comment| comment.body = body.to_string())
+	async fn update_comment(&self, repo: RepoInfo, comment_id: u64, body: &str) -> Result<()> {
+		let owner = repo.owner();
+		let repo_name = repo.repo();
+		tracing::info!(target: "mock_github", owner, repo_name, comment_id, "update_comment");
+		self.log_call(&format!("update_comment({owner}, {repo_name}, {comment_id}, <body>)"));
+		self.with_comment_mut(repo, comment_id, |comment| comment.body = body.to_string())
 	}
 
 	#[instrument(skip(self, body), name = "MockGithubClient::create_comment")]
-	async fn create_comment(&self, owner: &str, repo: &str, issue_number: u64, body: &str) -> Result<()> {
-		tracing::info!(target: "mock_github", owner, repo, issue_number, "create_comment");
-		self.log_call(&format!("create_comment({owner}, {repo}, {issue_number}, <body>)"));
+	async fn create_comment(&self, repo: RepoInfo, issue_number: u64, body: &str) -> Result<()> {
+		let owner = repo.owner();
+		let repo_name = repo.repo();
+		tracing::info!(target: "mock_github", owner, repo_name, issue_number, "create_comment");
+		self.log_call(&format!("create_comment({owner}, {repo_name}, {issue_number}, <body>)"));
 
-		let key = RepoKey::new(owner, repo);
+		let key = RepoKey::new(owner, repo_name);
 		let comment_id = self.next_comment_id.fetch_add(1, Ordering::SeqCst);
 
+		let now = jiff::Timestamp::now().to_string();
 		let comment = MockCommentData {
 			id: comment_id,
 			issue_number,
 			body: body.to_string(),
 			owner_login: self.user_login.clone(),
+			created_at: now.clone(),
+			updated_at: now,
 		};
 
 		let mut comments = self.comments.lock().unwrap();
@@ -419,11 +446,13 @@ impl GithubClient for MockGithubClient {
 	}
 
 	#[instrument(skip(self), name = "MockGithubClient::delete_comment")]
-	async fn delete_comment(&self, owner: &str, repo: &str, comment_id: u64) -> Result<()> {
-		tracing::info!(target: "mock_github", owner, repo, comment_id, "delete_comment");
-		self.log_call(&format!("delete_comment({owner}, {repo}, {comment_id})"));
+	async fn delete_comment(&self, repo: RepoInfo, comment_id: u64) -> Result<()> {
+		let owner = repo.owner();
+		let repo_name = repo.repo();
+		tracing::info!(target: "mock_github", owner, repo_name, comment_id, "delete_comment");
+		self.log_call(&format!("delete_comment({owner}, {repo_name}, {comment_id})"));
 
-		let key = RepoKey::new(owner, repo);
+		let key = RepoKey::new(owner, repo_name);
 		let mut comments = self.comments.lock().unwrap();
 
 		if let Some(repo_comments) = comments.get_mut(&key) {
@@ -434,11 +463,13 @@ impl GithubClient for MockGithubClient {
 	}
 
 	#[instrument(skip(self, body), name = "MockGithubClient::create_issue")]
-	async fn create_issue(&self, owner: &str, repo: &str, title: &str, body: &str) -> Result<CreatedIssue> {
-		tracing::info!(target: "mock_github", owner, repo, title, "create_issue");
-		self.log_call(&format!("create_issue({owner}, {repo}, {title}, <body>)"));
+	async fn create_issue(&self, repo: RepoInfo, title: &str, body: &str) -> Result<CreatedIssue> {
+		let owner = repo.owner();
+		let repo_name = repo.repo();
+		tracing::info!(target: "mock_github", owner, repo_name, title, "create_issue");
+		self.log_call(&format!("create_issue({owner}, {repo_name}, {title}, <body>)"));
 
-		let key = RepoKey::new(owner, repo);
+		let key = RepoKey::new(owner, repo_name);
 		let id = self.next_issue_id.fetch_add(1, Ordering::SeqCst);
 		let number = self.next_issue_number.fetch_add(1, Ordering::SeqCst);
 
@@ -458,21 +489,23 @@ impl GithubClient for MockGithubClient {
 
 		Ok(CreatedIssue {
 			number,
-			html_url: format!("https://github.com/{owner}/{repo}/issues/{number}"),
+			html_url: format!("https://github.com/{owner}/{repo_name}/issues/{number}"),
 		})
 	}
 
 	#[instrument(skip(self), name = "MockGithubClient::add_sub_issue")]
-	async fn add_sub_issue(&self, owner: &str, repo: &str, parent_issue_number: u64, child_issue_id: u64) -> Result<()> {
-		tracing::info!(target: "mock_github", owner, repo, parent_issue_number, child_issue_id, "add_sub_issue");
-		self.log_call(&format!("add_sub_issue({owner}, {repo}, parent={parent_issue_number}, child_id={child_issue_id})"));
+	async fn add_sub_issue(&self, repo: RepoInfo, parent_issue_number: u64, child_issue_id: u64) -> Result<()> {
+		let owner = repo.owner();
+		let repo_name = repo.repo();
+		tracing::info!(target: "mock_github", owner, repo_name, parent_issue_number, child_issue_id, "add_sub_issue");
+		self.log_call(&format!("add_sub_issue({owner}, {repo_name}, parent={parent_issue_number}, child_id={child_issue_id})"));
 
-		let key = RepoKey::new(owner, repo);
+		let key = RepoKey::new(owner, repo_name);
 
 		// Find the issue number that matches the child_issue_id
 		let child_number = {
 			let issues = self.issues.lock().unwrap();
-			let repo_issues = issues.get(&key).ok_or_else(|| eyre!("Repository not found: {owner}/{repo}"))?;
+			let repo_issues = issues.get(&key).ok_or_else(|| eyre!("Repository not found: {owner}/{repo_name}"))?;
 
 			repo_issues
 				.values()
@@ -488,11 +521,13 @@ impl GithubClient for MockGithubClient {
 	}
 
 	#[instrument(skip(self), name = "MockGithubClient::find_issue_by_title")]
-	async fn find_issue_by_title(&self, owner: &str, repo: &str, title: &str) -> Result<Option<u64>> {
-		tracing::info!(target: "mock_github", owner, repo, title, "find_issue_by_title");
-		self.log_call(&format!("find_issue_by_title({owner}, {repo}, {title})"));
+	async fn find_issue_by_title(&self, repo: RepoInfo, title: &str) -> Result<Option<u64>> {
+		let owner = repo.owner();
+		let repo_name = repo.repo();
+		tracing::info!(target: "mock_github", owner, repo_name, title, "find_issue_by_title");
+		self.log_call(&format!("find_issue_by_title({owner}, {repo_name}, {title})"));
 
-		let key = RepoKey::new(owner, repo);
+		let key = RepoKey::new(owner, repo_name);
 		let issues = self.issues.lock().unwrap();
 
 		let repo_issues = match issues.get(&key) {
@@ -510,11 +545,13 @@ impl GithubClient for MockGithubClient {
 	}
 
 	#[instrument(skip(self), name = "MockGithubClient::issue_exists")]
-	async fn issue_exists(&self, owner: &str, repo: &str, issue_number: u64) -> Result<bool> {
-		tracing::info!(target: "mock_github", owner, repo, issue_number, "issue_exists");
-		self.log_call(&format!("issue_exists({owner}, {repo}, {issue_number})"));
+	async fn issue_exists(&self, repo: RepoInfo, issue_number: u64) -> Result<bool> {
+		let owner = repo.owner();
+		let repo_name = repo.repo();
+		tracing::info!(target: "mock_github", owner, repo_name, issue_number, "issue_exists");
+		self.log_call(&format!("issue_exists({owner}, {repo_name}, {issue_number})"));
 
-		let key = RepoKey::new(owner, repo);
+		let key = RepoKey::new(owner, repo_name);
 		let issues = self.issues.lock().unwrap();
 
 		if let Some(repo_issues) = issues.get(&key) {
@@ -525,11 +562,13 @@ impl GithubClient for MockGithubClient {
 	}
 
 	#[instrument(skip(self), name = "MockGithubClient::fetch_parent_issue")]
-	async fn fetch_parent_issue(&self, owner: &str, repo: &str, issue_number: u64) -> Result<Option<GithubIssue>> {
-		tracing::info!(target: "mock_github", owner, repo, issue_number, "fetch_parent_issue");
-		self.log_call(&format!("fetch_parent_issue({owner}, {repo}, {issue_number})"));
+	async fn fetch_parent_issue(&self, repo: RepoInfo, issue_number: u64) -> Result<Option<GithubIssue>> {
+		let owner = repo.owner();
+		let repo_name = repo.repo();
+		tracing::info!(target: "mock_github", owner, repo_name, issue_number, "fetch_parent_issue");
+		self.log_call(&format!("fetch_parent_issue({owner}, {repo_name}, {issue_number})"));
 
-		let key = RepoKey::new(owner, repo);
+		let key = RepoKey::new(owner, repo_name);
 
 		// Find the parent by searching through sub_issues relationships
 		let parent_number = {
@@ -547,12 +586,23 @@ impl GithubClient for MockGithubClient {
 		match parent_number {
 			Some(parent_num) => {
 				let issues = self.issues.lock().unwrap();
-				let repo_issues = issues.get(&key).ok_or_else(|| eyre!("Repository not found: {owner}/{repo}"))?;
+				let repo_issues = issues.get(&key).ok_or_else(|| eyre!("Repository not found: {owner}/{repo_name}"))?;
 				let parent_data = repo_issues.get(&parent_num).ok_or_else(|| eyre!("Parent issue not found: #{parent_num}"))?;
 				Ok(Some(self.convert_issue_data(parent_data)))
 			}
 			None => Ok(None),
 		}
+	}
+
+	#[instrument(skip(self), name = "MockGithubClient::fetch_timeline_timestamps")]
+	async fn fetch_timeline_timestamps(&self, repo: RepoInfo, issue_number: u64) -> Result<crate::github::GraphqlTimelineTimestamps> {
+		let owner = repo.owner();
+		let repo_name = repo.repo();
+		tracing::info!(target: "mock_github", owner, repo_name, issue_number, "fetch_timeline_timestamps");
+		self.log_call(&format!("fetch_timeline_timestamps({owner}, {repo_name}, {issue_number})"));
+
+		// Mock returns empty timestamps - in tests we don't track change history
+		Ok(crate::github::GraphqlTimelineTimestamps::default())
 	}
 }
 
@@ -565,31 +615,33 @@ mod tests {
 	#[tokio::test]
 	async fn test_mock_basic_operations() {
 		let client = MockGithubClient::new("testuser");
+		let repo = RepoInfo::new("owner", "repo");
 
 		// Add an issue
 		client.add_issue("owner", "repo", 123, "Test Issue", "Body content", "open", vec!["bug"], "testuser");
 
 		// Fetch it
-		let issue = client.fetch_issue("owner", "repo", 123).await.unwrap();
+		let issue = client.fetch_issue(repo, 123).await.unwrap();
 		assert_eq!(issue.number, 123);
 		assert_eq!(issue.title, "Test Issue");
 		assert_eq!(issue.body, Some("Body content".to_string()));
 		assert_eq!(issue.state, "open");
 
 		// Update body
-		client.update_issue_body("owner", "repo", 123, "New body").await.unwrap();
-		let issue = client.fetch_issue("owner", "repo", 123).await.unwrap();
+		client.update_issue_body(repo, 123, "New body").await.unwrap();
+		let issue = client.fetch_issue(repo, 123).await.unwrap();
 		assert_eq!(issue.body, Some("New body".to_string()));
 
 		// Update state
-		client.update_issue_state("owner", "repo", 123, "closed").await.unwrap();
-		let issue = client.fetch_issue("owner", "repo", 123).await.unwrap();
+		client.update_issue_state(repo, 123, "closed").await.unwrap();
+		let issue = client.fetch_issue(repo, 123).await.unwrap();
 		assert_eq!(issue.state, "closed");
 	}
 
 	#[tokio::test]
 	async fn test_mock_sub_issues() {
 		let client = MockGithubClient::new("testuser");
+		let repo = RepoInfo::new("owner", "repo");
 
 		// Add parent and child issues
 		client.add_issue("owner", "repo", 1, "Parent Issue", "", "open", vec![], "testuser");
@@ -599,47 +651,50 @@ mod tests {
 		client.add_sub_issue_relation("owner", "repo", 1, 2);
 
 		// Fetch sub-issues
-		let sub_issues = client.fetch_sub_issues("owner", "repo", 1).await.unwrap();
-		assert_debug_snapshot!(format!("{sub_issues:?}"), @r#""[GithubIssue { id: 2000, number: 2, title: \"Child Issue\", body: None, labels: [], user: GithubUser { login: \"testuser\" }, state: \"open\", state_reason: None, updated_at: \"2024-01-15T12:00:00Z\" }]""#);
+		let sub_issues = client.fetch_sub_issues(repo, 1).await.unwrap();
+		assert_debug_snapshot!(format!("{sub_issues:?}"), @r#""[GithubIssue { id: 2000, number: 2, title: \"Child Issue\", body: None, labels: [], user: GithubUser { login: \"testuser\" }, state: \"open\", state_reason: None, _updated_at: \"2024-01-15T12:00:00Z\" }]""#);
 	}
 
 	#[tokio::test]
 	async fn test_mock_create_issue() {
 		let client = MockGithubClient::new("testuser");
+		let repo = RepoInfo::new("owner", "repo");
 
-		let created = client.create_issue("owner", "repo", "New Issue", "Issue body").await.unwrap();
+		let created = client.create_issue(repo, "New Issue", "Issue body").await.unwrap();
 		assert!(created.number > 0);
 		assert!(created.html_url.contains("owner/repo/issues"));
 
 		// Verify it exists
-		let issue = client.fetch_issue("owner", "repo", created.number).await.unwrap();
+		let issue = client.fetch_issue(repo, created.number).await.unwrap();
 		assert_snapshot!(issue.title, "New Issue", @"New Issue");
 	}
 
 	#[tokio::test]
 	async fn test_mock_comments() {
 		let client = MockGithubClient::new("testuser");
+		let repo = RepoInfo::new("owner", "repo");
 
 		client.add_issue("owner", "repo", 1, "Issue", "", "open", vec![], "testuser");
 		client.add_comment("owner", "repo", 1, 100, "First comment", "testuser");
 		client.add_comment("owner", "repo", 1, 101, "Second comment", "other");
 
-		let comments = client.fetch_comments("owner", "repo", 1).await.unwrap();
+		let comments = client.fetch_comments(repo, 1).await.unwrap();
 		assert_eq!(comments.len(), 2);
 
 		// Delete a comment
-		client.delete_comment("owner", "repo", 100).await.unwrap();
-		let comments = client.fetch_comments("owner", "repo", 1).await.unwrap();
+		client.delete_comment(repo, 100).await.unwrap();
+		let comments = client.fetch_comments(repo, 1).await.unwrap();
 		assert_eq!(comments.len(), 1);
 	}
 
 	#[tokio::test]
 	async fn test_mock_call_log() {
 		let client = MockGithubClient::new("testuser");
+		let repo = RepoInfo::new("owner", "repo");
 
 		client.add_issue("owner", "repo", 1, "Issue", "", "open", vec![], "testuser");
-		let _ = client.fetch_issue("owner", "repo", 1).await;
-		let _ = client.fetch_comments("owner", "repo", 1).await;
+		let _ = client.fetch_issue(repo, 1).await;
+		let _ = client.fetch_comments(repo, 1).await;
 
 		let log = client.get_call_log();
 		assert_eq!(log.len(), 2);
@@ -653,6 +708,7 @@ mod tests {
 	#[tokio::test]
 	async fn test_mock_fetch_parent_issue() {
 		let client = MockGithubClient::new("testuser");
+		let repo = RepoInfo::new("owner", "repo");
 
 		// Add parent and child issues
 		client.add_issue("owner", "repo", 1, "Parent Issue", "", "open", vec![], "testuser");
@@ -664,16 +720,16 @@ mod tests {
 		client.add_sub_issue_relation("owner", "repo", 2, 3);
 
 		// Root issue has no parent
-		let parent = client.fetch_parent_issue("owner", "repo", 1).await.unwrap();
+		let parent = client.fetch_parent_issue(repo, 1).await.unwrap();
 		assert!(parent.is_none());
 
 		// Child issue has parent
-		let parent = client.fetch_parent_issue("owner", "repo", 2).await.unwrap();
+		let parent = client.fetch_parent_issue(repo, 2).await.unwrap();
 		assert!(parent.is_some());
 		assert_eq!(parent.unwrap().number, 1);
 
 		// Grandchild has child as parent
-		let parent = client.fetch_parent_issue("owner", "repo", 3).await.unwrap();
+		let parent = client.fetch_parent_issue(repo, 3).await.unwrap();
 		assert!(parent.is_some());
 		assert_eq!(parent.unwrap().number, 2);
 	}

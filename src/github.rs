@@ -3,6 +3,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::Deserialize;
+pub use todo::RepoInfo;
 use v_utils::prelude::*;
 
 use crate::config::LiveSettings;
@@ -19,8 +20,9 @@ pub struct GithubIssue {
 	/// Reason for the state (e.g., "completed", "not_planned", "duplicate")
 	/// Only present for closed issues.
 	pub state_reason: Option<String>,
-	/// Last time the issue was updated (ISO 8601 format)
-	pub updated_at: String,
+	/// Last time the issue was updated (ISO 8601 format).
+	/// Note: We now use GraphQL timeline API to get per-field timestamps, as we this `updated_at` reacts to literally any state change of the issue, including updating children (which we really don't want to react to)
+	pub _updated_at: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -38,6 +40,10 @@ pub struct GithubComment {
 	pub id: u64,
 	pub body: Option<String>,
 	pub user: GithubUser,
+	/// When the comment was created (ISO 8601 format)
+	pub created_at: String,
+	/// When the comment was last updated (ISO 8601 format)
+	pub updated_at: String,
 }
 
 /// Response from Github when creating an issue
@@ -45,6 +51,19 @@ pub struct GithubComment {
 pub struct CreatedIssue {
 	pub number: u64,
 	pub html_url: String,
+}
+
+/// Timestamps from GraphQL timeline API for issue field changes.
+/// All fields are optional because GitHub's timeline only retains events for 90 days.
+/// Note: Comment timestamps are fetched via REST API (in GithubComment), not here.
+#[derive(Clone, Debug, Default)]
+pub struct GraphqlTimelineTimestamps {
+	/// Most recent title change (from RenamedTitleEvent)
+	pub title: Option<jiff::Timestamp>,
+	/// Most recent body/description edit (from issue's updatedAt, which is imprecise)
+	pub description: Option<jiff::Timestamp>,
+	/// Most recent label change (from LabeledEvent/UnlabeledEvent)
+	pub labels: Option<jiff::Timestamp>,
 }
 
 //==============================================================================
@@ -59,46 +78,51 @@ pub trait GithubClient: Send + Sync {
 	async fn fetch_authenticated_user(&self) -> Result<String>;
 
 	/// Fetch a single issue by number
-	async fn fetch_issue(&self, owner: &str, repo: &str, issue_number: u64) -> Result<GithubIssue>;
+	async fn fetch_issue(&self, repo: RepoInfo, issue_number: u64) -> Result<GithubIssue>;
 
 	/// Fetch all comments on an issue
-	async fn fetch_comments(&self, owner: &str, repo: &str, issue_number: u64) -> Result<Vec<GithubComment>>;
+	async fn fetch_comments(&self, repo: RepoInfo, issue_number: u64) -> Result<Vec<GithubComment>>;
 
 	/// Fetch all sub-issues of an issue
-	async fn fetch_sub_issues(&self, owner: &str, repo: &str, issue_number: u64) -> Result<Vec<GithubIssue>>;
+	async fn fetch_sub_issues(&self, repo: RepoInfo, issue_number: u64) -> Result<Vec<GithubIssue>>;
 
 	/// Update an issue's body
-	async fn update_issue_body(&self, owner: &str, repo: &str, issue_number: u64, body: &str) -> Result<()>;
+	async fn update_issue_body(&self, repo: RepoInfo, issue_number: u64, body: &str) -> Result<()>;
 
 	/// Update an issue's state (open/closed)
-	async fn update_issue_state(&self, owner: &str, repo: &str, issue_number: u64, state: &str) -> Result<()>;
+	async fn update_issue_state(&self, repo: RepoInfo, issue_number: u64, state: &str) -> Result<()>;
 
 	/// Update a comment's body
-	async fn update_comment(&self, owner: &str, repo: &str, comment_id: u64, body: &str) -> Result<()>;
+	async fn update_comment(&self, repo: RepoInfo, comment_id: u64, body: &str) -> Result<()>;
 
 	/// Create a new comment on an issue
-	async fn create_comment(&self, owner: &str, repo: &str, issue_number: u64, body: &str) -> Result<()>;
+	async fn create_comment(&self, repo: RepoInfo, issue_number: u64, body: &str) -> Result<()>;
 
 	/// Delete a comment
-	async fn delete_comment(&self, owner: &str, repo: &str, comment_id: u64) -> Result<()>;
+	async fn delete_comment(&self, repo: RepoInfo, comment_id: u64) -> Result<()>;
 
 	/// Create a new issue
-	async fn create_issue(&self, owner: &str, repo: &str, title: &str, body: &str) -> Result<CreatedIssue>;
+	async fn create_issue(&self, repo: RepoInfo, title: &str, body: &str) -> Result<CreatedIssue>;
 
 	/// Add a sub-issue to a parent issue
 	/// Note: `child_issue_id` is the resource ID (not the issue number)
-	async fn add_sub_issue(&self, owner: &str, repo: &str, parent_issue_number: u64, child_issue_id: u64) -> Result<()>;
+	async fn add_sub_issue(&self, repo: RepoInfo, parent_issue_number: u64, child_issue_id: u64) -> Result<()>;
 
 	/// Find an issue by exact title match
 	#[allow(dead_code)]
-	async fn find_issue_by_title(&self, owner: &str, repo: &str, title: &str) -> Result<Option<u64>>;
+	async fn find_issue_by_title(&self, repo: RepoInfo, title: &str) -> Result<Option<u64>>;
 
 	/// Check if an issue exists by number
 	#[allow(dead_code)]
-	async fn issue_exists(&self, owner: &str, repo: &str, issue_number: u64) -> Result<bool>;
+	async fn issue_exists(&self, repo: RepoInfo, issue_number: u64) -> Result<bool>;
 
 	/// Fetch the parent issue of a sub-issue (returns None if issue has no parent)
-	async fn fetch_parent_issue(&self, owner: &str, repo: &str, issue_number: u64) -> Result<Option<GithubIssue>>;
+	async fn fetch_parent_issue(&self, repo: RepoInfo, issue_number: u64) -> Result<Option<GithubIssue>>;
+
+	/// Fetch timestamps from GraphQL timeline API for title, description, and label changes.
+	/// All fields are optional because GitHub only retains timeline events for 90 days.
+	/// Note: Comment timestamps should be extracted from GithubComment's created_at/updated_at fields.
+	async fn fetch_timeline_timestamps(&self, repo: RepoInfo, issue_number: u64) -> Result<GraphqlTimelineTimestamps>;
 }
 
 //==============================================================================
@@ -186,8 +210,8 @@ impl GithubClient for RealGithubClient {
 		Ok(user.login)
 	}
 
-	async fn fetch_issue(&self, owner: &str, repo: &str, issue_number: u64) -> Result<GithubIssue> {
-		let url = format!("https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}");
+	async fn fetch_issue(&self, repo: RepoInfo, issue_number: u64) -> Result<GithubIssue> {
+		let url = format!("https://api.github.com/repos/{}/{}/issues/{issue_number}", repo.owner(), repo.repo());
 		let res = self.get(&url).send().await?;
 
 		if !res.status().is_success() {
@@ -200,8 +224,8 @@ impl GithubClient for RealGithubClient {
 		Ok(issue)
 	}
 
-	async fn fetch_comments(&self, owner: &str, repo: &str, issue_number: u64) -> Result<Vec<GithubComment>> {
-		let url = format!("https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}/comments");
+	async fn fetch_comments(&self, repo: RepoInfo, issue_number: u64) -> Result<Vec<GithubComment>> {
+		let url = format!("https://api.github.com/repos/{}/{}/issues/{issue_number}/comments", repo.owner(), repo.repo());
 		let res = self.get(&url).send().await?;
 
 		if !res.status().is_success() {
@@ -214,8 +238,8 @@ impl GithubClient for RealGithubClient {
 		Ok(comments)
 	}
 
-	async fn fetch_sub_issues(&self, owner: &str, repo: &str, issue_number: u64) -> Result<Vec<GithubIssue>> {
-		let url = format!("https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}/sub_issues");
+	async fn fetch_sub_issues(&self, repo: RepoInfo, issue_number: u64) -> Result<Vec<GithubIssue>> {
+		let url = format!("https://api.github.com/repos/{}/{}/issues/{issue_number}/sub_issues", repo.owner(), repo.repo());
 		let res = self.get(&url).send().await?;
 
 		if !res.status().is_success() {
@@ -228,28 +252,28 @@ impl GithubClient for RealGithubClient {
 		Ok(sub_issues)
 	}
 
-	async fn update_issue_body(&self, owner: &str, repo: &str, issue_number: u64, body: &str) -> Result<()> {
-		let url = format!("https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}");
+	async fn update_issue_body(&self, repo: RepoInfo, issue_number: u64, body: &str) -> Result<()> {
+		let url = format!("https://api.github.com/repos/{}/{}/issues/{issue_number}", repo.owner(), repo.repo());
 		self.patch_json(&url, &serde_json::json!({ "body": body }), "Failed to update issue body").await
 	}
 
-	async fn update_issue_state(&self, owner: &str, repo: &str, issue_number: u64, state: &str) -> Result<()> {
-		let url = format!("https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}");
+	async fn update_issue_state(&self, repo: RepoInfo, issue_number: u64, state: &str) -> Result<()> {
+		let url = format!("https://api.github.com/repos/{}/{}/issues/{issue_number}", repo.owner(), repo.repo());
 		self.patch_json(&url, &serde_json::json!({ "state": state }), "Failed to update issue state").await
 	}
 
-	async fn update_comment(&self, owner: &str, repo: &str, comment_id: u64, body: &str) -> Result<()> {
-		let url = format!("https://api.github.com/repos/{owner}/{repo}/issues/comments/{comment_id}");
+	async fn update_comment(&self, repo: RepoInfo, comment_id: u64, body: &str) -> Result<()> {
+		let url = format!("https://api.github.com/repos/{}/{}/issues/comments/{comment_id}", repo.owner(), repo.repo());
 		self.patch_json(&url, &serde_json::json!({ "body": body }), "Failed to update comment").await
 	}
 
-	async fn create_comment(&self, owner: &str, repo: &str, issue_number: u64, body: &str) -> Result<()> {
-		let url = format!("https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}/comments");
+	async fn create_comment(&self, repo: RepoInfo, issue_number: u64, body: &str) -> Result<()> {
+		let url = format!("https://api.github.com/repos/{}/{}/issues/{issue_number}/comments", repo.owner(), repo.repo());
 		self.post_json(&url, &serde_json::json!({ "body": body }), "Failed to create comment").await
 	}
 
-	async fn delete_comment(&self, owner: &str, repo: &str, comment_id: u64) -> Result<()> {
-		let url = format!("https://api.github.com/repos/{owner}/{repo}/issues/comments/{comment_id}");
+	async fn delete_comment(&self, repo: RepoInfo, comment_id: u64) -> Result<()> {
+		let url = format!("https://api.github.com/repos/{}/{}/issues/comments/{comment_id}", repo.owner(), repo.repo());
 		let res = self.delete(&url).send().await?;
 
 		if !res.status().is_success() {
@@ -261,8 +285,8 @@ impl GithubClient for RealGithubClient {
 		Ok(())
 	}
 
-	async fn create_issue(&self, owner: &str, repo: &str, title: &str, body: &str) -> Result<CreatedIssue> {
-		let url = format!("https://api.github.com/repos/{owner}/{repo}/issues");
+	async fn create_issue(&self, repo: RepoInfo, title: &str, body: &str) -> Result<CreatedIssue> {
+		let url = format!("https://api.github.com/repos/{}/{}/issues", repo.owner(), repo.repo());
 		let res = self.post(&url).json(&serde_json::json!({ "title": title, "body": body })).send().await?;
 
 		if !res.status().is_success() {
@@ -275,15 +299,15 @@ impl GithubClient for RealGithubClient {
 		Ok(issue)
 	}
 
-	async fn add_sub_issue(&self, owner: &str, repo: &str, parent_issue_number: u64, child_issue_id: u64) -> Result<()> {
-		let url = format!("https://api.github.com/repos/{owner}/{repo}/issues/{parent_issue_number}/sub_issues");
+	async fn add_sub_issue(&self, repo: RepoInfo, parent_issue_number: u64, child_issue_id: u64) -> Result<()> {
+		let url = format!("https://api.github.com/repos/{}/{}/issues/{parent_issue_number}/sub_issues", repo.owner(), repo.repo());
 		self.post_json(&url, &serde_json::json!({ "sub_issue_id": child_issue_id }), "Failed to add sub-issue").await
 	}
 
-	async fn find_issue_by_title(&self, owner: &str, repo: &str, title: &str) -> Result<Option<u64>> {
+	async fn find_issue_by_title(&self, repo: RepoInfo, title: &str) -> Result<Option<u64>> {
 		// Search for issues with this title (search in open and closed)
 		let encoded_title = urlencoding::encode(title);
-		let url = format!("https://api.github.com/search/issues?q=repo:{owner}/{repo}+in:title+{encoded_title}");
+		let url = format!("https://api.github.com/search/issues?q=repo:{}/{}+in:title+{encoded_title}", repo.owner(), repo.repo());
 		let res = self.get(&url).send().await?;
 
 		if !res.status().is_success() {
@@ -312,14 +336,14 @@ impl GithubClient for RealGithubClient {
 		Ok(None)
 	}
 
-	async fn issue_exists(&self, owner: &str, repo: &str, issue_number: u64) -> Result<bool> {
-		let url = format!("https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}");
+	async fn issue_exists(&self, repo: RepoInfo, issue_number: u64) -> Result<bool> {
+		let url = format!("https://api.github.com/repos/{}/{}/issues/{issue_number}", repo.owner(), repo.repo());
 		let res = self.get(&url).send().await?;
 		Ok(res.status().is_success())
 	}
 
-	async fn fetch_parent_issue(&self, owner: &str, repo: &str, issue_number: u64) -> Result<Option<GithubIssue>> {
-		let url = format!("https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}/parent");
+	async fn fetch_parent_issue(&self, repo: RepoInfo, issue_number: u64) -> Result<Option<GithubIssue>> {
+		let url = format!("https://api.github.com/repos/{}/{}/issues/{issue_number}/parent", repo.owner(), repo.repo());
 		let res = self.get(&url).send().await?;
 
 		if res.status() == reqwest::StatusCode::NOT_FOUND {
@@ -335,6 +359,100 @@ impl GithubClient for RealGithubClient {
 
 		let parent = res.json::<GithubIssue>().await?;
 		Ok(Some(parent))
+	}
+
+	async fn fetch_timeline_timestamps(&self, repo: RepoInfo, issue_number: u64) -> Result<GraphqlTimelineTimestamps> {
+		// GraphQL query to fetch timeline events for timestamp extraction.
+		// We query for:
+		// - RenamedTitleEvent: title changes
+		// - LabeledEvent/UnlabeledEvent: label changes
+		// - The issue body's updatedAt for description changes
+		//
+		// Note: GitHub timeline only retains events for 90 days, so all timestamps are optional.
+		// Comment timestamps are fetched via REST API (GithubComment has created_at/updated_at).
+		let query = r#"
+			query($owner: String!, $repo: String!, $number: Int!) {
+				repository(owner: $owner, name: $repo) {
+					issue(number: $number) {
+						bodyUpdatedAt: updatedAt
+						timelineItems(last: 100, itemTypes: [RENAMED_TITLE_EVENT, LABELED_EVENT, UNLABELED_EVENT]) {
+							nodes {
+								__typename
+								... on RenamedTitleEvent {
+									createdAt
+								}
+								... on LabeledEvent {
+									createdAt
+								}
+								... on UnlabeledEvent {
+									createdAt
+								}
+							}
+						}
+					}
+				}
+			}
+		"#;
+
+		let variables = serde_json::json!({
+			"owner": repo.owner(),
+			"repo": repo.repo(),
+			"number": issue_number as i64
+		});
+
+		let body = serde_json::json!({
+			"query": query,
+			"variables": variables
+		});
+
+		let res = self.post("https://api.github.com/graphql").json(&body).send().await?;
+
+		if !res.status().is_success() {
+			let status = res.status();
+			let body = res.text().await.unwrap_or_default();
+			bail!("Failed to fetch timeline timestamps via GraphQL: {status} - {body}");
+		}
+
+		let response: serde_json::Value = res.json().await?;
+
+		// Check for GraphQL errors
+		if let Some(errors) = response.get("errors") {
+			bail!("GraphQL errors: {errors}");
+		}
+
+		let mut timestamps = GraphqlTimelineTimestamps::default();
+
+		// Extract body updated timestamp (description)
+		if let Some(body_updated_at) = response.pointer("/data/repository/issue/bodyUpdatedAt").and_then(|v| v.as_str()) {
+			timestamps.description = body_updated_at.parse().ok();
+		}
+
+		// Process timeline items
+		if let Some(nodes) = response.pointer("/data/repository/issue/timelineItems/nodes").and_then(|v| v.as_array()) {
+			for node in nodes {
+				let typename = node.get("__typename").and_then(|v| v.as_str()).unwrap_or("");
+
+				match typename {
+					"RenamedTitleEvent" =>
+						if let Some(created_at) = node.get("createdAt").and_then(|v| v.as_str()) {
+							let ts: Option<jiff::Timestamp> = created_at.parse().ok();
+							if ts > timestamps.title {
+								timestamps.title = ts;
+							}
+						},
+					"LabeledEvent" | "UnlabeledEvent" =>
+						if let Some(created_at) = node.get("createdAt").and_then(|v| v.as_str()) {
+							let ts: Option<jiff::Timestamp> = created_at.parse().ok();
+							if ts > timestamps.labels {
+								timestamps.labels = ts;
+							}
+						},
+					_ => {}
+				}
+			}
+		}
+
+		Ok(timestamps)
 	}
 }
 

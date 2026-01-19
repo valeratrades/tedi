@@ -8,8 +8,6 @@
 //! - Local loads from PathBuf (filesystem)
 //! - Remote loads from IssueLink + optional lineage
 
-use jiff::Timestamp;
-
 //==============================================================================
 // Error Types
 //==============================================================================
@@ -18,50 +16,55 @@ use jiff::Timestamp;
 #[derive(Debug, thiserror::Error)]
 pub enum RemoteError {
 	/// Failed to fetch issue from GitHub.
-	#[error("failed to fetch issue #{number} from {owner}/{repo}")]
+	#[error("failed to fetch issue #{number} from {}/{}", repo.owner(), repo.repo())]
 	FetchIssue {
-		owner: String,
-		repo: String,
+		repo: RepoInfo,
 		number: u64,
 		#[source]
 		source: color_eyre::Report,
 	},
 
 	/// Failed to fetch issue comments from GitHub.
-	#[error("failed to fetch comments for issue #{number} from {owner}/{repo}")]
+	#[error("failed to fetch comments for issue #{number} from {}/{}", repo.owner(), repo.repo())]
 	FetchComments {
-		owner: String,
-		repo: String,
+		repo: RepoInfo,
 		number: u64,
 		#[source]
 		source: color_eyre::Report,
 	},
 
 	/// Failed to fetch sub-issues from GitHub.
-	#[error("failed to fetch sub-issues for issue #{number} from {owner}/{repo}")]
+	#[error("failed to fetch sub-issues for issue #{number} from {}/{}", repo.owner(), repo.repo())]
 	FetchSubIssues {
-		owner: String,
-		repo: String,
+		repo: RepoInfo,
 		number: u64,
 		#[source]
 		source: color_eyre::Report,
 	},
 
 	/// Failed to resolve ancestry (parent issue chain).
-	#[error("failed to resolve ancestry for issue #{number} in {owner}/{repo}")]
+	#[error("failed to resolve ancestry for issue #{number} in {}/{}", repo.owner(), repo.repo())]
 	ResolveAncestry {
-		owner: String,
-		repo: String,
+		repo: RepoInfo,
+		number: u64,
+		#[source]
+		source: color_eyre::Report,
+	},
+
+	/// Failed to fetch timestamps from GitHub GraphQL API.
+	#[error("failed to fetch timestamps for issue #{number} from {}/{}", repo.owner(), repo.repo())]
+	FetchTimestamps {
+		repo: RepoInfo,
 		number: u64,
 		#[source]
 		source: color_eyre::Report,
 	},
 
 	/// Issue not found on GitHub (404).
-	#[error("issue #{number} not found in {owner}/{repo}")]
-	NotFound { owner: String, repo: String, number: u64 },
+	#[error("issue #{number} not found in {}/{}", repo.owner(), repo.repo())]
+	NotFound { repo: RepoInfo, number: u64 },
 }
-use todo::{Ancestry, CloseState, Comment, CommentIdentity, Issue, IssueChangeTimestamps, IssueContents, IssueIdentity, IssueLink, MAX_LINEAGE_DEPTH, split_blockers};
+use todo::{Ancestry, CloseState, Comment, CommentIdentity, Issue, IssueContents, IssueIdentity, IssueLink, IssueTimestamps, MAX_LINEAGE_DEPTH, RepoInfo, split_blockers};
 use v_utils::prelude::*;
 
 use crate::github::{self, GithubComment, GithubIssue};
@@ -125,8 +128,7 @@ impl RemoteSource {
 
 	/// Resolve ancestry, fetching lineage from GitHub if not provided.
 	async fn resolve_ancestry(&self) -> Result<Ancestry, RemoteError> {
-		let owner = self.link.owner().to_string();
-		let repo = self.link.repo().to_string();
+		let repo_info = self.link.repo_info();
 		let number = self.link.number();
 
 		let lineage = match self.lineage_slice() {
@@ -138,14 +140,14 @@ impl RemoteSource {
 				let mut parents = Vec::new();
 
 				loop {
-					match gh.fetch_parent_issue(&owner, &repo, current).await {
+					match gh.fetch_parent_issue(repo_info, current).await {
 						Ok(Some(parent)) => {
 							parents.push(parent.number);
 							current = parent.number;
 						}
 						Ok(None) => break,
 						Err(e) => {
-							return Err(RemoteError::ResolveAncestry { owner, repo, number, source: e });
+							return Err(RemoteError::ResolveAncestry { repo: repo_info, number, source: e });
 						}
 					}
 				}
@@ -153,7 +155,7 @@ impl RemoteSource {
 				parents
 			}
 		};
-		Ok(Ancestry::with_lineage(&owner, &repo, &lineage))
+		Ok(Ancestry::with_lineage(repo_info.owner(), repo_info.repo(), &lineage))
 	}
 
 	/// Create a child source for a sub-issue.
@@ -182,21 +184,28 @@ impl todo::LazyIssue<Remote> for Issue {
 		}
 
 		let gh = github::client::get();
-		let owner = source.link.owner().to_string();
-		let repo = source.link.repo().to_string();
+		let repo_info = source.link.repo_info();
 		let number = source.link.number();
 
-		let issue = gh.fetch_issue(&owner, &repo, number).await.map_err(|e| RemoteError::FetchIssue {
-			owner: owner.clone(),
-			repo: repo.clone(),
-			number,
-			source: e,
-		})?;
-		let ancestry = source.resolve_ancestry().await?;
-		// For now, we only have the updated_at from GitHub which represents the most recent overall change.
-		// Set it as comments timestamp since that's the field we can always get.
-		let timestamps = issue.updated_at.parse::<Timestamp>().ok().map(IssueChangeTimestamps::from_comments).unwrap_or_default();
+		// Fetch issue and timeline timestamps in parallel
+		// Note: We don't have comment timestamps here since we don't fetch comments in identity()
+		let issue_fut = gh.fetch_issue(repo_info, number);
+		let timeline_fut = gh.fetch_timeline_timestamps(repo_info, number);
 
+		let (issue_result, timeline_result) = tokio::join!(issue_fut, timeline_fut);
+
+		let issue = issue_result.map_err(|e| RemoteError::FetchIssue { repo: repo_info, number, source: e })?;
+
+		// Build IssueTimestamps from GraphQL timeline (comments will be None here)
+		let timeline = timeline_result.map_err(|e| RemoteError::FetchTimestamps { repo: repo_info, number, source: e })?;
+		let timestamps = IssueTimestamps {
+			title: timeline.title,
+			description: timeline.description,
+			labels: timeline.labels,
+			comments: None, // Will be populated when contents() fetches comments
+		};
+
+		let ancestry = source.resolve_ancestry().await?;
 		self.identity = IssueIdentity::linked(ancestry, issue.user.login.clone(), source.link.clone(), timestamps);
 		Ok(self.identity.clone())
 	}
@@ -207,34 +216,37 @@ impl todo::LazyIssue<Remote> for Issue {
 		}
 
 		let gh = github::client::get();
-		let owner = source.link.owner().to_string();
-		let repo = source.link.repo().to_string();
+		let repo_info = source.link.repo_info();
 		let number = source.link.number();
 
-		let issue_fut = gh.fetch_issue(&owner, &repo, number);
-		let comments_fut = gh.fetch_comments(&owner, &repo, number);
+		let issue_fut = gh.fetch_issue(repo_info, number);
+		let comments_fut = gh.fetch_comments(repo_info, number);
+		let timeline_fut = gh.fetch_timeline_timestamps(repo_info, number);
 
-		let (issue_result, comments_result) = tokio::join!(issue_fut, comments_fut);
+		let (issue_result, comments_result, timeline_result) = tokio::join!(issue_fut, comments_fut, timeline_fut);
 
-		let issue = issue_result.map_err(|e| RemoteError::FetchIssue {
-			owner: owner.clone(),
-			repo: repo.clone(),
-			number,
-			source: e,
-		})?;
-		let comments = comments_result.map_err(|e| RemoteError::FetchComments {
-			owner: owner.clone(),
-			repo: repo.clone(),
-			number,
-			source: e,
-		})?;
+		let issue = issue_result.map_err(|e| RemoteError::FetchIssue { repo: repo_info, number, source: e })?;
+		let comments = comments_result.map_err(|e| RemoteError::FetchComments { repo: repo_info, number, source: e })?;
 
 		self.contents = build_contents_from_github(&issue, &comments);
 
 		// Also ensure identity is populated if not already
 		if !self.identity.is_linked() {
 			let ancestry = source.resolve_ancestry().await?;
-			let timestamps = issue.updated_at.parse::<Timestamp>().ok().map(IssueChangeTimestamps::from_comments).unwrap_or_default();
+			let timeline = timeline_result.map_err(|e| RemoteError::FetchTimestamps { repo: repo_info, number, source: e })?;
+
+			// Compute comment timestamp from REST API data (max of updated_at, falling back to created_at)
+			let comments_ts = comments
+				.iter()
+				.filter_map(|c| jiff::Timestamp::from_str(&c.updated_at).or_else(|_| jiff::Timestamp::from_str(&c.created_at)).ok())
+				.max();
+
+			let timestamps = IssueTimestamps {
+				title: timeline.title,
+				description: timeline.description,
+				labels: timeline.labels,
+				comments: comments_ts,
+			};
 			self.identity = IssueIdentity::linked(ancestry, issue.user.login.clone(), source.link.clone(), timestamps);
 		}
 
@@ -247,16 +259,13 @@ impl todo::LazyIssue<Remote> for Issue {
 		}
 
 		let gh = github::client::get();
-		let owner = source.link.owner().to_string();
-		let repo = source.link.repo().to_string();
+		let repo_info = source.link.repo_info();
 		let number = source.link.number();
 
-		let sub_issues = gh.fetch_sub_issues(&owner, &repo, number).await.map_err(|e| RemoteError::FetchSubIssues {
-			owner: owner.clone(),
-			repo: repo.clone(),
-			number,
-			source: e,
-		})?;
+		let sub_issues = gh
+			.fetch_sub_issues(repo_info, number)
+			.await
+			.map_err(|e| RemoteError::FetchSubIssues { repo: repo_info, number, source: e })?;
 
 		let filtered: Vec<&GithubIssue> = sub_issues.iter().filter(|si| !CloseState::is_duplicate_reason(si.state_reason.as_deref())).collect();
 
@@ -269,7 +278,7 @@ impl todo::LazyIssue<Remote> for Issue {
 
 		let mut children = Vec::new();
 		for sub_issue in filtered {
-			let child_url = format!("https://github.com/{owner}/{repo}/issues/{}", sub_issue.number);
+			let child_url = format!("https://github.com/{}/{}/issues/{}", repo_info.owner(), repo_info.repo(), sub_issue.number);
 			let child_link = IssueLink::parse(&child_url).expect("valid URL");
 			let child_source = source.child(child_link, parent_number);
 			let mut child = Issue::empty_local(child_ancestry);

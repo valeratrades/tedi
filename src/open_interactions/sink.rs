@@ -250,9 +250,7 @@ impl Sink<Remote> for Issue {
 
 		let gh = crate::github::client::get();
 		// Copy ancestry upfront to avoid borrow conflicts when updating identity
-		let ancestry = self.identity.ancestry;
-		let owner = ancestry.owner();
-		let repo = ancestry.repo();
+		let repo_info = self.identity.ancestry.repo_info();
 		let mut changed = false;
 
 		// If this is a pending (local) issue, create it first
@@ -262,19 +260,19 @@ impl Sink<Remote> for Issue {
 			let closed = self.contents.state.is_closed();
 
 			println!("Creating issue: {title}");
-			let created = gh.create_issue(owner, repo, title, &body).await?;
+			let created = gh.create_issue(repo_info, title, &body).await?;
 			println!("Created issue #{}: {}", created.number, created.html_url);
 
 			// Close if needed
 			if closed {
-				gh.update_issue_state(owner, repo, created.number, "closed").await?;
+				gh.update_issue_state(repo_info, created.number, "closed").await?;
 			}
 
 			// Update identity - keep same ancestry, just add linking info
-			let url = format!("https://github.com/{owner}/{repo}/issues/{}", created.number);
+			let url = format!("https://github.com/{}/{}/issues/{}", repo_info.owner(), repo_info.repo(), created.number);
 			let link = IssueLink::parse(&url).expect("just constructed valid URL");
 			let user = gh.fetch_authenticated_user().await?;
-			self.identity = IssueIdentity::linked(self.identity.ancestry, user, link, todo::IssueChangeTimestamps::default());
+			self.identity = IssueIdentity::linked(self.identity.ancestry, user, link, todo::IssueTimestamps::default());
 			changed = true;
 		}
 
@@ -286,14 +284,14 @@ impl Sink<Remote> for Issue {
 		if diff.body_changed {
 			let body = self.body();
 			println!("Updating issue #{issue_number} body...");
-			gh.update_issue_body(owner, repo, issue_number, &body).await?;
+			gh.update_issue_body(repo_info, issue_number, &body).await?;
 			changed = true;
 		}
 
 		if diff.state_changed {
 			let state = self.contents.state.to_github_state();
 			println!("Updating issue #{issue_number} state to {state}...");
-			gh.update_issue_state(owner, repo, issue_number, state).await?;
+			gh.update_issue_state(repo_info, issue_number, state).await?;
 			changed = true;
 		}
 
@@ -302,7 +300,7 @@ impl Sink<Remote> for Issue {
 			if comment.identity.is_pending() && !comment.body.is_empty() {
 				let body_str = comment.body.render();
 				println!("Creating new comment on issue #{issue_number}...");
-				gh.create_comment(owner, repo, issue_number, &body_str).await?;
+				gh.create_comment(repo_info, issue_number, &body_str).await?;
 				changed = true;
 			}
 		}
@@ -316,14 +314,14 @@ impl Sink<Remote> for Issue {
 			}
 			let body_str = comment.body.render();
 			println!("Updating comment {comment_id}...");
-			gh.update_comment(owner, repo, *comment_id, &body_str).await?;
+			gh.update_comment(repo_info, *comment_id, &body_str).await?;
 			changed = true;
 		}
 
 		// Delete removed comments
 		for comment_id in &diff.comments_to_delete {
 			println!("Deleting comment {comment_id} from issue #{issue_number}...");
-			gh.delete_comment(owner, repo, *comment_id).await?;
+			gh.delete_comment(repo_info, *comment_id).await?;
 			changed = true;
 		}
 
@@ -340,10 +338,9 @@ impl Sink<Remote> for Issue {
 			// Link newly created child to parent
 			if was_pending {
 				let child_number = child.number().unwrap();
-				let child_owner = child.identity.owner();
-				let child_repo = child.identity.repo();
-				let child_id = gh.fetch_issue(child_owner, child_repo, child_number).await?.id;
-				gh.add_sub_issue(owner, repo, issue_number, child_id).await?;
+				let child_repo_info = child.identity.ancestry.repo_info();
+				let child_id = gh.fetch_issue(child_repo_info, child_number).await?.id;
+				gh.add_sub_issue(repo_info, issue_number, child_id).await?;
 			}
 		}
 
@@ -362,7 +359,7 @@ mod tests {
 		let identity = match number {
 			Some(n) => {
 				let link = IssueLink::parse(&format!("https://github.com/o/r/issues/{n}")).unwrap();
-				IssueIdentity::linked(ancestry, "testuser".to_string(), link, todo::IssueChangeTimestamps::default())
+				IssueIdentity::linked(ancestry, "testuser".to_string(), link, todo::IssueTimestamps::default())
 			}
 			None => IssueIdentity::local(ancestry),
 		};

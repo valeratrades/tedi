@@ -684,8 +684,9 @@ pub async fn modify_and_sync_issue(issue_file_path: &Path, offline: bool, modifi
 	if let CloseState::Duplicate(dup_number) = issue.contents.state {
 		// Validate that the referenced duplicate issue exists
 		let gh = crate::github::client::get();
+		let repo_info = todo::RepoInfo::new(&owner, &repo);
 		if !offline {
-			let exists = gh.fetch_issue(&owner, &repo, dup_number).await.is_ok();
+			let exists = gh.fetch_issue(repo_info, dup_number).await.is_ok();
 			if !exists {
 				bail!(
 					"Cannot mark issue as duplicate of #{dup_number}: issue #{dup_number} does not exist in {owner}/{repo}.\n\
@@ -703,7 +704,7 @@ pub async fn modify_and_sync_issue(issue_file_path: &Path, offline: bool, modifi
 			.expect("BUG: consensus missing for tracked issue during duplicate handling");
 		let consensus_closed = consensus.contents.state.is_closed();
 		if !offline && !consensus_closed {
-			gh.update_issue_state(&owner, &repo, meta.issue_number, "closed").await?;
+			gh.update_issue_state(repo_info, meta.issue_number, "closed").await?;
 		}
 
 		// Remove local file
