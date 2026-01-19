@@ -1,34 +1,40 @@
-use clap::ValueEnum;
-
 pub mod issue;
 
-// Re-export all public types from issue module at crate root for convenience
-pub use issue::{
-	BlockerItem, BlockerSequence, CloseState, Comment, CommentIdentity, DisplayFormat, FetchedIssue, HeaderLevel, Issue, IssueIdentity, IssueLink, IssueMeta, Line, Marker, ParseError,
-	classify_line, is_blockers_marker, join_with_blockers, normalize_issue_indentation, split_blockers,
-};
+pub mod current_user {
+	use std::cell::RefCell;
 
-/// File extension/type for issue files.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
-pub enum Extension {
-	#[default]
-	Md,
-	Typ,
-}
+	thread_local! {
+		static CURRENT_USER: RefCell<Option<String>> = const { RefCell::new(None) };
+	}
 
-impl Extension {
-	pub fn as_str(&self) -> &'static str {
-		match self {
-			Extension::Md => "md",
-			Extension::Typ => "typ",
-		}
+	/// Set the current authenticated user for ownership checks.
+	/// Must be called before serializing issues.
+	pub fn set(user: String) {
+		CURRENT_USER.with(|u| *u.borrow_mut() = Some(user));
+	}
+
+	/// Get the current authenticated user.
+	/// Returns None if not set.
+	pub fn get() -> Option<String> {
+		CURRENT_USER.with(|u| u.borrow().clone())
+	}
+
+	/// Check if the given user is the current authenticated user.
+	pub fn is(user: &str) -> bool {
+		CURRENT_USER.with(|u| u.borrow().as_deref() == Some(user))
 	}
 }
 
-/// A header with a level and content, format-aware for serialization.
+// Re-export all public types from issue module at crate root for convenience
+pub use issue::{
+	Ancestry, BlockerItem, BlockerSequence, CloseState, Comment, CommentIdentity, DisplayFormat, Events, FetchedIssue, HeaderLevel, Issue, IssueContents, IssueIdentity, IssueLink,
+	IssueTimestamps, LazyIssue, Line, LinkedIssueMeta, MAX_LINEAGE_DEPTH, Marker, OwnedCodeBlockKind, OwnedEvent, OwnedTag, OwnedTagEnd, ParseError, RepoInfo, classify_line,
+	is_blockers_marker, join_with_blockers, normalize_issue_indentation, split_blockers,
+};
+
+/// A header with a level and content.
 ///
 /// Markdown format: `# Content`, `## Content`, etc.
-/// Typst format: `= Content`, `== Content`, etc.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Header {
 	pub level: usize,
@@ -46,71 +52,39 @@ impl Header {
 		}
 	}
 
-	/// Decode a header from a line string based on the file extension.
+	/// Decode a header from a line string.
 	/// Returns None if the line is not a valid header.
-	pub fn decode(s: &str, ext: Extension) -> Option<Self> {
+	pub fn decode(s: &str) -> Option<Self> {
 		let trimmed = s.trim();
 
-		match ext {
-			Extension::Md => {
-				// Markdown: # Content, ## Content, etc.
-				if !trimmed.starts_with('#') {
-					return None;
-				}
-				let mut level = 0;
-				for ch in trimmed.chars() {
-					if ch == '#' {
-						level += 1;
-					} else {
-						break;
-					}
-				}
-				// Valid header must have space after the # characters
-				if level > 0 && trimmed.len() > level {
-					let rest = &trimmed[level..];
-					if let Some(stripped) = rest.strip_prefix(' ') {
-						return Some(Self {
-							level,
-							content: stripped.to_string(),
-						});
-					}
-				}
-				None
-			}
-			Extension::Typ => {
-				// Typst: = Content, == Content, etc.
-				if !trimmed.starts_with('=') {
-					return None;
-				}
-				let mut level = 0;
-				for ch in trimmed.chars() {
-					if ch == '=' {
-						level += 1;
-					} else {
-						break;
-					}
-				}
-				// Valid header must have space after the = characters
-				if level > 0 && trimmed.len() > level {
-					let rest = &trimmed[level..];
-					if let Some(stripped) = rest.strip_prefix(' ') {
-						return Some(Self {
-							level,
-							content: stripped.to_string(),
-						});
-					}
-				}
-				None
+		// Markdown: # Content, ## Content, etc.
+		if !trimmed.starts_with('#') {
+			return None;
+		}
+		let mut level = 0;
+		for ch in trimmed.chars() {
+			if ch == '#' {
+				level += 1;
+			} else {
+				break;
 			}
 		}
+		// Valid header must have space after the # characters
+		if level > 0 && trimmed.len() > level {
+			let rest = &trimmed[level..];
+			if let Some(stripped) = rest.strip_prefix(' ') {
+				return Some(Self {
+					level,
+					content: stripped.to_string(),
+				});
+			}
+		}
+		None
 	}
 
-	/// Encode the header to a string based on the file extension.
-	pub fn encode(&self, ext: Extension) -> String {
-		match ext {
-			Extension::Md => format!("{} {}", "#".repeat(self.level), self.content),
-			Extension::Typ => format!("{} {}", "=".repeat(self.level), self.content),
-		}
+	/// Encode the header to a string.
+	pub fn encode(&self) -> String {
+		format!("{} {}", "#".repeat(self.level), self.content)
 	}
 
 	/// Check if this header's content matches the given text (case-insensitive).
@@ -131,24 +105,24 @@ mod tests {
 	}
 
 	#[test]
-	fn test_header_decode_md() {
+	fn test_header_decode() {
 		// Basic markdown headers
 		assert_eq!(
-			Header::decode("# Heading 1", Extension::Md),
+			Header::decode("# Heading 1"),
 			Some(Header {
 				level: 1,
 				content: "Heading 1".to_string()
 			})
 		);
 		assert_eq!(
-			Header::decode("## Heading 2", Extension::Md),
+			Header::decode("## Heading 2"),
 			Some(Header {
 				level: 2,
 				content: "Heading 2".to_string()
 			})
 		);
 		assert_eq!(
-			Header::decode("### Heading 3", Extension::Md),
+			Header::decode("### Heading 3"),
 			Some(Header {
 				level: 3,
 				content: "Heading 3".to_string()
@@ -157,7 +131,7 @@ mod tests {
 
 		// With leading/trailing whitespace
 		assert_eq!(
-			Header::decode("  # Trimmed  ", Extension::Md),
+			Header::decode("  # Trimmed  "),
 			Some(Header {
 				level: 1,
 				content: "Trimmed".to_string()
@@ -165,84 +139,26 @@ mod tests {
 		);
 
 		// Invalid: no space after #
-		assert_eq!(Header::decode("#NoSpace", Extension::Md), None);
+		assert_eq!(Header::decode("#NoSpace"), None);
 
 		// Invalid: not a header
-		assert_eq!(Header::decode("Just text", Extension::Md), None);
-		assert_eq!(Header::decode("- List item", Extension::Md), None);
+		assert_eq!(Header::decode("Just text"), None);
+		assert_eq!(Header::decode("- List item"), None);
 	}
 
 	#[test]
-	fn test_header_decode_typ() {
-		// Basic typst headers
-		assert_eq!(
-			Header::decode("= Heading 1", Extension::Typ),
-			Some(Header {
-				level: 1,
-				content: "Heading 1".to_string()
-			})
-		);
-		assert_eq!(
-			Header::decode("== Heading 2", Extension::Typ),
-			Some(Header {
-				level: 2,
-				content: "Heading 2".to_string()
-			})
-		);
-		assert_eq!(
-			Header::decode("=== Heading 3", Extension::Typ),
-			Some(Header {
-				level: 3,
-				content: "Heading 3".to_string()
-			})
-		);
-
-		// With leading/trailing whitespace
-		assert_eq!(
-			Header::decode("  = Trimmed  ", Extension::Typ),
-			Some(Header {
-				level: 1,
-				content: "Trimmed".to_string()
-			})
-		);
-
-		// Invalid: no space after =
-		assert_eq!(Header::decode("=NoSpace", Extension::Typ), None);
-
-		// Invalid: not a header
-		assert_eq!(Header::decode("Just text", Extension::Typ), None);
-		assert_eq!(Header::decode("- List item", Extension::Typ), None);
-	}
-
-	#[test]
-	fn test_header_encode_md() {
-		assert_eq!(Header::new(1, "Test").encode(Extension::Md), "# Test");
-		assert_eq!(Header::new(2, "Test").encode(Extension::Md), "## Test");
-		assert_eq!(Header::new(3, "Test").encode(Extension::Md), "### Test");
-	}
-
-	#[test]
-	fn test_header_encode_typ() {
-		assert_eq!(Header::new(1, "Test").encode(Extension::Typ), "= Test");
-		assert_eq!(Header::new(2, "Test").encode(Extension::Typ), "== Test");
-		assert_eq!(Header::new(3, "Test").encode(Extension::Typ), "=== Test");
+	fn test_header_encode() {
+		assert_eq!(Header::new(1, "Test").encode(), "# Test");
+		assert_eq!(Header::new(2, "Test").encode(), "## Test");
+		assert_eq!(Header::new(3, "Test").encode(), "### Test");
 	}
 
 	#[test]
 	fn test_header_roundtrip() {
-		// Markdown roundtrip
 		for level in 1..=6 {
 			let original = Header::new(level, "Content");
-			let encoded = original.encode(Extension::Md);
-			let decoded = Header::decode(&encoded, Extension::Md).unwrap();
-			assert_eq!(original, decoded);
-		}
-
-		// Typst roundtrip
-		for level in 1..=6 {
-			let original = Header::new(level, "Content");
-			let encoded = original.encode(Extension::Typ);
-			let decoded = Header::decode(&encoded, Extension::Typ).unwrap();
+			let encoded = original.encode();
+			let decoded = Header::decode(&encoded).unwrap();
 			assert_eq!(original, decoded);
 		}
 	}
@@ -254,16 +170,5 @@ mod tests {
 		assert!(header.content_eq_ignore_case("BLOCKERS"));
 		assert!(header.content_eq_ignore_case("Blockers"));
 		assert!(!header.content_eq_ignore_case("Blocker"));
-	}
-
-	#[test]
-	fn test_header_cross_format_conversion() {
-		// Decode from markdown, encode to typst
-		let md_header = Header::decode("## Section", Extension::Md).unwrap();
-		assert_eq!(md_header.encode(Extension::Typ), "== Section");
-
-		// Decode from typst, encode to markdown
-		let typ_header = Header::decode("=== Subsection", Extension::Typ).unwrap();
-		assert_eq!(typ_header.encode(Extension::Md), "### Subsection");
 	}
 }

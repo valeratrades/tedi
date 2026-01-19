@@ -56,7 +56,7 @@ async fn request_milestones(settings: &LiveSettings) -> Result<Vec<Milestone>> {
 	let milestones_config = config
 		.milestones
 		.as_ref()
-		.ok_or_else(|| eyre!("milestones config section is required. Add [milestones] section with github_token and url to your config"))?;
+		.ok_or_else(|| eyre!("milestones config section is required. Add [milestones] section with url to your config"))?;
 
 	// Parse owner/repo from URL (supports "owner/repo", "https://github.com/owner/repo", etc.)
 	let url_str = &milestones_config.url;
@@ -68,7 +68,7 @@ async fn request_milestones(settings: &LiveSettings) -> Result<Vec<Milestone>> {
 	let res = client
 		.get(&api_url)
 		.header("User-Agent", "Rust Github Client")
-		.header("Authorization", format!("token {}", milestones_config.github_token))
+		.header("Authorization", format!("token {}", config.github_token))
 		.send()
 		.await?;
 	info!(?res);
@@ -316,7 +316,7 @@ async fn update_milestone(settings: &LiveSettings, milestone_number: u64, descri
 	let res = client
 		.patch(&api_url)
 		.header("User-Agent", "Rust Github Client")
-		.header("Authorization", format!("token {}", milestones_config.github_token))
+		.header("Authorization", format!("token {}", config.github_token))
 		.header("Content-Type", "application/json")
 		.json(&body)
 		.send()
@@ -349,7 +349,7 @@ async fn create_closed_milestone(settings: &LiveSettings, title: &str, descripti
 	let res = client
 		.post(&api_url)
 		.header("User-Agent", "Rust Github Client")
-		.header("Authorization", format!("token {}", milestones_config.github_token))
+		.header("Authorization", format!("token {}", config.github_token))
 		.header("Content-Type", "application/json")
 		.json(&body)
 		.send()

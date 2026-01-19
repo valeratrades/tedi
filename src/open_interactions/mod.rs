@@ -5,11 +5,10 @@
 
 mod command;
 mod conflict;
-mod fetch;
-pub(crate) mod files;
-mod git;
-mod github_sync;
-mod meta;
+pub(crate) mod consensus;
+pub(crate) mod local;
+pub(crate) mod remote;
+mod sink;
 mod sync;
 mod touch;
 mod tree;

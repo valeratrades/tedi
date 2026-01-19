@@ -44,7 +44,7 @@
               # nixpkgs attribute names for CI dependencies
               #HACK: duplication with alwaysPkgs. #TODO: make a function to auto-generate these
               # Note: openssl.out and openssl.dev are auto-added by v-utils
-              jobDeps = { packages = [ "mold" "egl-wayland" "wayland" "libGL" "libgbm" "pkg-config" ]; debug = true; };
+              jobDeps = { packages = [ "mold" "egl-wayland" "wayland" "libGL" "libgbm" "fd" "pkg-config" ]; debug = true; };
             in
             v-utils.github {
               inherit pkgs pname rs;

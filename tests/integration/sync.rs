@@ -10,22 +10,21 @@
 
 use std::path::Path;
 
-use rstest::rstest;
 use todo::Issue;
 
 use crate::common::{TestContext, git::GitExt};
 
 fn parse(content: &str) -> Issue {
-	Issue::parse(content, Path::new("test.md")).expect("failed to parse test issue")
+	Issue::parse_virtual(content, Path::new("test.md")).expect("failed to parse test issue")
 }
 
 #[test]
 fn test_both_diverged_triggers_conflict() {
 	let ctx = TestContext::new("");
 
-	let consensus = parse("- [ ] Test Issue <!-- https://github.com/o/r/issues/1 -->\n\tconsensus body\n");
-	let local = parse("- [ ] Test Issue <!-- https://github.com/o/r/issues/1 -->\n\tlocal body\n");
-	let remote = parse("- [ ] Test Issue <!-- https://github.com/o/r/issues/1 -->\n\tremote changed body\n");
+	let consensus = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tconsensus body\n");
+	let local = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tlocal body\n");
+	let remote = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tremote changed body\n");
 
 	let issue_path = ctx.consensus(&consensus);
 	ctx.local(&local);
@@ -46,9 +45,9 @@ fn test_both_diverged_triggers_conflict() {
 fn test_both_diverged_with_git_initiates_merge() {
 	let ctx = TestContext::new("");
 
-	let consensus = parse("- [ ] Test Issue <!-- https://github.com/o/r/issues/1 -->\n\tconsensus body\n");
-	let local = parse("- [ ] Test Issue <!-- https://github.com/o/r/issues/1 -->\n\tlocal body\n");
-	let remote = parse("- [ ] Test Issue <!-- https://github.com/o/r/issues/1 -->\n\tremote changed body\n");
+	let consensus = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tconsensus body\n");
+	let local = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tlocal body\n");
+	let remote = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tremote changed body\n");
 
 	let issue_path = ctx.consensus(&consensus);
 	ctx.local(&local);
@@ -70,8 +69,8 @@ fn test_both_diverged_with_git_initiates_merge() {
 fn test_only_remote_changed_takes_remote() {
 	let ctx = TestContext::new("");
 
-	let consensus = parse("- [ ] Test Issue <!-- https://github.com/o/r/issues/1 -->\n\tconsensus body\n");
-	let remote = parse("- [ ] Test Issue <!-- https://github.com/o/r/issues/1 -->\n\tremote changed body\n");
+	let consensus = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tconsensus body\n");
+	let remote = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tremote changed body\n");
 
 	// Local matches consensus (no uncommitted changes)
 	let issue_path = ctx.consensus(&consensus);
@@ -94,8 +93,8 @@ fn test_only_remote_changed_takes_remote() {
 fn test_only_local_changed_pushes_local() {
 	let ctx = TestContext::new("");
 
-	let consensus = parse("- [ ] Test Issue <!-- https://github.com/o/r/issues/1 -->\n\tconsensus body\n");
-	let local = parse("- [ ] Test Issue <!-- https://github.com/o/r/issues/1 -->\n\tlocal changed body\n");
+	let consensus = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tconsensus body\n");
+	let local = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tlocal changed body\n");
 
 	// Remote still matches consensus
 	let issue_path = ctx.consensus(&consensus);
@@ -120,9 +119,9 @@ fn test_only_local_changed_pushes_local() {
 fn test_reset_with_local_source_skips_sync() {
 	let ctx = TestContext::new("");
 
-	let consensus = parse("- [ ] Test Issue <!-- https://github.com/o/r/issues/1 -->\n\tconsensus body\n");
-	let local = parse("- [ ] Test Issue <!-- https://github.com/o/r/issues/1 -->\n\tlocal body\n");
-	let remote = parse("- [ ] Test Issue <!-- https://github.com/o/r/issues/1 -->\n\tremote changed body\n");
+	let consensus = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tconsensus body\n");
+	let local = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tlocal body\n");
+	let remote = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tremote changed body\n");
 
 	let issue_path = ctx.consensus(&consensus);
 	ctx.local(&local);
@@ -149,7 +148,7 @@ fn test_url_open_creates_local_file_from_remote() {
 	let ctx = TestContext::new("");
 	ctx.init_git(); // Need git initialized for commits
 
-	let remote = parse("- [ ] Test Issue <!-- https://github.com/o/r/issues/1 -->\n\tremote body content\n");
+	let remote = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tremote body content\n");
 	ctx.remote(&remote);
 
 	// No local file exists - URL open should create it
@@ -175,8 +174,8 @@ fn test_url_open_creates_local_file_from_remote() {
 fn test_reset_with_remote_url_nukes_local_state() {
 	let ctx = TestContext::new("");
 
-	let local = parse("- [ ] Test Issue <!-- https://github.com/o/r/issues/1 -->\n\tlocal body that should be nuked\n");
-	let remote = parse("- [ ] Test Issue <!-- https://github.com/o/r/issues/1 -->\n\tremote body wins\n");
+	let local = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tlocal body that should be nuked\n");
+	let remote = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tremote body wins\n");
 
 	let issue_path = ctx.consensus(&local);
 	ctx.remote(&remote);
@@ -200,9 +199,9 @@ fn test_reset_with_remote_url_nukes_local_state() {
 fn test_reset_with_remote_url_skips_merge_on_divergence() {
 	let ctx = TestContext::new("");
 
-	let consensus = parse("- [ ] Test Issue <!-- https://github.com/o/r/issues/1 -->\n\tconsensus body\n");
-	let local = parse("- [ ] Test Issue <!-- https://github.com/o/r/issues/1 -->\n\tlocal diverged body\n");
-	let remote = parse("- [ ] Test Issue <!-- https://github.com/o/r/issues/1 -->\n\tremote diverged body\n");
+	let consensus = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tconsensus body\n");
+	let local = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tlocal diverged body\n");
+	let remote = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tremote diverged body\n");
 
 	let issue_path = ctx.consensus(&consensus);
 	ctx.local(&local);
@@ -230,8 +229,8 @@ fn test_reset_with_remote_url_skips_merge_on_divergence() {
 fn test_pull_fetches_before_editor() {
 	let ctx = TestContext::new("");
 
-	let local = parse("- [ ] Test Issue <!-- https://github.com/o/r/issues/1 -->\n\tlocal body\n");
-	let remote = parse("- [ ] Test Issue <!-- https://github.com/o/r/issues/1 -->\n\tremote body from github\n");
+	let local = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tlocal body\n");
+	let remote = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tremote body from github\n");
 
 	let issue_path = ctx.consensus(&local);
 	ctx.remote(&remote);
@@ -256,9 +255,9 @@ fn test_pull_fetches_before_editor() {
 fn test_pull_with_divergence_runs_sync_before_editor() {
 	let ctx = TestContext::new("");
 
-	let consensus = parse("- [ ] Test Issue <!-- https://github.com/o/r/issues/1 -->\n\tconsensus body\n");
-	let local = parse("- [ ] Test Issue <!-- https://github.com/o/r/issues/1 -->\n\tlocal diverged body\n");
-	let remote = parse("- [ ] Test Issue <!-- https://github.com/o/r/issues/1 -->\n\tremote diverged body\n");
+	let consensus = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tconsensus body\n");
+	let local = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tlocal diverged body\n");
+	let remote = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tremote diverged body\n");
 
 	let issue_path = ctx.consensus(&consensus);
 	ctx.local(&local);
@@ -282,13 +281,13 @@ fn test_pull_with_divergence_runs_sync_before_editor() {
 fn test_closing_issue_syncs_state_change() {
 	let ctx = TestContext::new("");
 
-	let open_issue = parse("- [ ] Test Issue <!-- https://github.com/o/r/issues/1 -->\n\tbody\n");
+	let open_issue = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tbody\n");
 	let issue_path = ctx.consensus(&open_issue);
 	ctx.remote(&open_issue);
 
 	// Edit to close the issue
 	let mut closed_issue = open_issue.clone();
-	closed_issue.meta.close_state = todo::CloseState::Closed;
+	closed_issue.contents.state = todo::CloseState::Closed;
 
 	let (status, stdout, stderr) = ctx.open(&issue_path).edit(&closed_issue).run();
 
@@ -310,13 +309,13 @@ fn test_duplicate_sub_issues_filtered_from_remote() {
 	ctx.init_git();
 
 	// Create issues with proper CloseState
-	let parent = parse("- [ ] Parent Issue <!-- https://github.com/o/r/issues/1 -->\n\tparent body\n");
+	let parent = parse("- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tparent body\n");
 
-	let mut normal_closed = parse("- [x] Normal Closed Sub <!-- https://github.com/o/r/issues/2 -->\n\tsub body\n");
-	normal_closed.meta.close_state = todo::CloseState::Closed;
+	let mut normal_closed = parse("- [x] Normal Closed Sub <!-- @mock_user https://github.com/o/r/issues/2 -->\n\tsub body\n");
+	normal_closed.contents.state = todo::CloseState::Closed;
 
-	let mut duplicate = parse("- [x] Duplicate Sub <!-- https://github.com/o/r/issues/3 -->\n\tduplicate body\n");
-	duplicate.meta.close_state = todo::CloseState::Duplicate(2); // duplicate of #2
+	let mut duplicate = parse("- [x] Duplicate Sub <!-- @mock_user https://github.com/o/r/issues/3 -->\n\tduplicate body\n");
+	duplicate.contents.state = todo::CloseState::Duplicate(2); // duplicate of #2
 
 	// Build parent with children for remote
 	let mut parent_with_children = parent.clone();
@@ -332,34 +331,34 @@ fn test_duplicate_sub_issues_filtered_from_remote() {
 
 	assert!(status.success(), "Should succeed. stderr: {stderr}");
 
-	// Check the created file - duplicate sub-issue should NOT be present
-	let issue_path = ctx.dir_issue_path("o", "r", 1, "Parent Issue");
-	let content = std::fs::read_to_string(&issue_path).unwrap();
+	// Check that the normal closed sub-issue file exists (with .bak suffix)
+	let issue_dir = ctx.dir_issue_path("o", "r", 1, "Parent Issue").parent().unwrap().to_path_buf();
+	let normal_closed_path = issue_dir.join("2_-_Normal_Closed_Sub.md.bak");
+	assert!(normal_closed_path.exists(), "Normal closed sub-issue file should exist");
 
-	eprintln!("File content:\n{content}");
+	let closed_content = std::fs::read_to_string(&normal_closed_path).unwrap();
+	assert!(closed_content.contains("Normal Closed Sub"), "Normal closed sub-issue content missing");
+	assert!(closed_content.contains("[x]"), "Normal closed sub should show as [x]. Got: {closed_content}");
 
-	// Normal closed sub-issue should appear
-	assert!(content.contains("Normal Closed Sub"), "Normal closed sub-issue should appear. Got: {content}");
-	assert!(content.contains("[x]"), "Normal closed sub should show as [x]. Got: {content}");
-
-	// Duplicate sub-issue should NOT appear at all
-	assert!(
-		!content.contains("Duplicate Sub"),
-		"Duplicate sub-issue should NOT appear in local representation. Got: {content}"
-	);
+	// Duplicate sub-issue should NOT have a file at all
+	let duplicate_path = issue_dir.join("3_-_Duplicate_Sub.md.bak");
+	let duplicate_path_open = issue_dir.join("3_-_Duplicate_Sub.md");
+	assert!(!duplicate_path.exists(), "Duplicate sub-issue should NOT have a file");
+	assert!(!duplicate_path_open.exists(), "Duplicate sub-issue should NOT have a file");
 }
 
 /// Opening an issue twice when local matches remote should succeed (no-op).
 /// This tests the case where you:
 /// 1. Open an issue from URL (fetches remote)
 /// 2. Open again without making changes
+///
 /// The second open should succeed, not fail with "Failed to commit remote state".
 #[test]
 fn test_open_unchanged_succeeds() {
 	let ctx = TestContext::new("");
 	ctx.init_git();
 
-	let issue = parse("- [ ] Test Issue <!-- https://github.com/o/r/issues/1 -->\n\tissue body\n");
+	let issue = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tissue body\n");
 	ctx.remote(&issue);
 
 	// First open via URL
@@ -384,7 +383,7 @@ fn test_open_by_number_unchanged_succeeds() {
 	let ctx = TestContext::new("");
 	ctx.init_git();
 
-	let issue = parse("- [ ] Test Issue <!-- https://github.com/o/r/issues/1 -->\n\tissue body\n");
+	let issue = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tissue body\n");
 	ctx.remote(&issue);
 
 	// First open via URL with --reset
@@ -409,12 +408,12 @@ fn test_reset_syncs_changes_after_editor() {
 	let ctx = TestContext::new("");
 	ctx.init_git();
 
-	let remote_issue = parse("- [ ] Test Issue <!-- https://github.com/o/r/issues/1 -->\n\tremote body\n");
+	let remote_issue = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tremote body\n");
 	ctx.remote(&remote_issue);
 
 	// Create modified version (what user will change to)
 	let mut modified_issue = remote_issue.clone();
-	modified_issue.meta.close_state = todo::CloseState::Closed;
+	modified_issue.contents.state = todo::CloseState::Closed;
 
 	// Open with --reset and make changes while editor is open
 	let issue_path = ctx.flat_issue_path("o", "r", 1, "Test Issue");
@@ -443,13 +442,13 @@ fn test_comment_shorthand_creates_comment() {
 	ctx.init_git();
 
 	// Start with an issue that has no comments
-	let issue = parse("- [ ] Test Issue <!-- https://github.com/o/r/issues/1 -->\n\tissue body\n");
+	let issue = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tissue body\n");
 	let issue_path = ctx.consensus(&issue);
 	ctx.remote(&issue);
 
 	// Simulate user adding `!c` followed by comment content
 	// After expansion, the file should have `<!-- new comment -->` marker
-	let edited_content = "- [ ] Test Issue <!-- https://github.com/o/r/issues/1 -->\n\tissue body\n\n\t!c\n\tMy new comment content\n";
+	let edited_content = "- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tissue body\n\n\t!c\n\tMy new comment content\n";
 
 	// Write the edited content (simulating what user typed in editor)
 	std::fs::write(&issue_path, edited_content).unwrap();
@@ -485,26 +484,26 @@ fn test_force_merge_preserves_both_sub_issues(#[case] args: &[&str], #[case] exp
 
 	// Local: parent with local-only sub-issue and modified description
 	let local = parse(
-		"- [ ] Parent Issue <!-- https://github.com/o/r/issues/1 -->\n\
+		"- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
 		 \tparent body\n\
 		 \textra local line\n\
 		 \n\
-		 \t- [ ] Local Sub <!--sub https://github.com/o/r/issues/2 -->\n\
+		 \t- [ ] Local Sub <!--sub @mock_user https://github.com/o/r/issues/2 -->\n\
 		 \t\tlocal sub body\n",
 	);
 
 	// Remote: parent with remote-only sub-issue (no extra description line)
 	let remote = parse(
-		"- [ ] Parent Issue <!-- https://github.com/o/r/issues/1 -->\n\
+		"- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
 		 \tparent body\n\
 		 \n\
-		 \t- [ ] Remote Sub <!--sub https://github.com/o/r/issues/3 -->\n\
+		 \t- [ ] Remote Sub <!--sub @mock_user https://github.com/o/r/issues/3 -->\n\
 		 \t\tremote sub body\n",
 	);
 
 	// Consensus: original state (no sub-issues, original description)
 	let consensus = parse(
-		"- [ ] Parent Issue <!-- https://github.com/o/r/issues/1 -->\n\
+		"- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
 		 \tparent body\n",
 	);
 

@@ -125,7 +125,7 @@ impl GitExt for TestContext {
 			state.local_issues.insert(key);
 		});
 
-		self.write_issue_file(&owner, &repo, number, issue)
+		self.write_issue_tree(&owner, &repo, number, issue)
 	}
 
 	fn consensus(&self, issue: &Issue) -> PathBuf {
@@ -139,7 +139,7 @@ impl GitExt for TestContext {
 			state.consensus_issues.insert(key);
 		});
 
-		let path = self.write_issue_file(&owner, &repo, number, issue);
+		let path = self.write_issue_tree(&owner, &repo, number, issue);
 
 		let git = self.init_git();
 		git.add_all();
@@ -167,7 +167,7 @@ impl GitExt for TestContext {
 
 	fn issue_path(&self, issue: &Issue) -> PathBuf {
 		let (owner, repo, number) = extract_issue_coords(issue);
-		self.flat_issue_path(&owner, &repo, number, &issue.meta.title)
+		self.flat_issue_path(&owner, &repo, number, &issue.contents.title)
 	}
 
 	fn flat_issue_path(&self, owner: &str, repo: &str, number: u64, title: &str) -> PathBuf {
@@ -190,13 +190,45 @@ impl GitExt for TestContext {
 }
 
 impl TestContext {
-	fn write_issue_file(&self, owner: &str, repo: &str, number: u64, issue: &Issue) -> PathBuf {
-		let issues_dir = format!("issues/{owner}/{repo}");
-		let sanitized_title = issue.meta.title.replace(' ', "_");
-		let filename = format!("{number}_-_{sanitized_title}.md");
-		let path = self.xdg.data_dir().join(&issues_dir).join(&filename);
-		self.xdg.write_data(&format!("{issues_dir}/{filename}"), &issue.serialize());
-		path
+	/// Write an issue tree to the filesystem, with each node in its own file.
+	/// Returns the path to the root issue file.
+	fn write_issue_tree(&self, owner: &str, repo: &str, number: u64, issue: &Issue) -> PathBuf {
+		self.write_issue_tree_recursive(owner, repo, number, issue, &[])
+	}
+
+	fn write_issue_tree_recursive(&self, owner: &str, repo: &str, number: u64, issue: &Issue, ancestors: &[String]) -> PathBuf {
+		let sanitized_title = issue.contents.title.replace(' ', "_");
+		let has_children = !issue.children.is_empty();
+
+		// Build base path: issues/{owner}/{repo}/{ancestors...}
+		let mut base_path = format!("issues/{owner}/{repo}");
+		for ancestor in ancestors {
+			base_path = format!("{base_path}/{ancestor}");
+		}
+
+		if has_children {
+			// Directory format: {base}/{number}_-_{title}/__main__.md
+			let dir_name = format!("{number}_-_{sanitized_title}");
+			let dir_path = format!("{base_path}/{dir_name}");
+			let file_path = format!("{dir_path}/__main__.md");
+			self.xdg.write_data(&file_path, &issue.serialize_filesystem());
+
+			// Write each child recursively
+			let mut child_ancestors = ancestors.to_vec();
+			child_ancestors.push(dir_name);
+			for child in &issue.children {
+				let child_number = child.number().unwrap_or(0);
+				self.write_issue_tree_recursive(owner, repo, child_number, child, &child_ancestors);
+			}
+
+			self.xdg.data_dir().join(&dir_path).join("__main__.md")
+		} else {
+			// Flat format: {base}/{number}_-_{title}.md
+			let filename = format!("{number}_-_{sanitized_title}.md");
+			let file_path = format!("{base_path}/{filename}");
+			self.xdg.write_data(&file_path, &issue.serialize_filesystem());
+			self.xdg.data_dir().join(&base_path).join(&filename)
+		}
 	}
 
 	fn rebuild_mock_state(&self) {
@@ -212,7 +244,7 @@ impl TestContext {
 						"title": i.title,
 						"body": i.body,
 						"state": i.state,
-						"owner_login": "mock_user"
+						"owner_login": i.owner_login
 					});
 					if let Some(reason) = &i.state_reason {
 						json["state_reason"] = serde_json::Value::String(reason.clone());
@@ -269,7 +301,7 @@ impl TestContext {
 
 /// Extract owner, repo, number from an Issue's identity, with defaults.
 fn extract_issue_coords(issue: &Issue) -> (String, String, u64) {
-	if let Some(link) = issue.meta.identity.link() {
+	if let Some(link) = issue.identity.link() {
 		(link.owner().to_string(), link.repo().to_string(), link.number())
 	} else {
 		(DEFAULT_OWNER.to_string(), DEFAULT_REPO.to_string(), DEFAULT_NUMBER)
@@ -278,7 +310,7 @@ fn extract_issue_coords(issue: &Issue) -> (String, String, u64) {
 
 /// Extract child issue number from its identity, or use default.
 fn extract_child_number(child: &Issue, default: u64) -> u64 {
-	child.meta.identity.number().unwrap_or(default)
+	child.number().unwrap_or(default)
 }
 
 /// Recursively add an issue and all its children to the mock state.
@@ -291,14 +323,16 @@ fn add_issue_recursive(state: &mut GitState, owner: &str, repo: &str, number: u6
 	state.remote_issue_ids.insert(key);
 
 	// Add the issue itself
+	let issue_owner_login = issue.user().expect("issue identity must have user - use @user format in test fixtures").to_string();
 	state.remote_issues.push(MockIssue {
 		owner: owner.to_string(),
 		repo: repo.to_string(),
 		number,
-		title: issue.meta.title.clone(),
+		title: issue.contents.title.clone(),
 		body: issue.body(),
-		state: issue.meta.close_state.to_github_state().to_string(),
-		state_reason: issue.meta.close_state.to_github_state_reason().map(|s| s.to_string()),
+		state: issue.contents.state.to_github_state().to_string(),
+		state_reason: issue.contents.state.to_github_state_reason().map(|s| s.to_string()),
+		owner_login: issue_owner_login,
 	});
 
 	// Add sub-issue relation if this is a child
@@ -312,15 +346,16 @@ fn add_issue_recursive(state: &mut GitState, owner: &str, repo: &str, number: u6
 	}
 
 	// Extract comments (skip first which is the body)
-	for comment in issue.comments.iter().skip(1) {
+	for comment in issue.contents.comments.iter().skip(1) {
 		if let Some(id) = comment.identity.id() {
+			let comment_owner_login = comment.identity.user().expect("comment identity must have user - use @user format in test fixtures").to_string();
 			state.remote_comments.push(MockComment {
 				owner: owner.to_string(),
 				repo: repo.to_string(),
 				issue_number: number,
 				comment_id: id,
-				body: comment.body.clone(),
-				owner_login: if comment.owned { "mock_user".to_string() } else { "other_user".to_string() },
+				body: comment.body.render(),
+				owner_login: comment_owner_login,
 			});
 		}
 	}
@@ -340,6 +375,7 @@ struct MockIssue {
 	body: String,
 	state: String,
 	state_reason: Option<String>,
+	owner_login: String,
 }
 
 struct MockComment {
@@ -365,7 +401,7 @@ mod tests {
 	use super::*;
 
 	fn parse(content: &str) -> Issue {
-		Issue::parse(content, Path::new("test.md")).expect("failed to parse test issue")
+		Issue::parse_virtual(content, Path::new("test.md")).expect("failed to parse test issue")
 	}
 
 	#[test]
@@ -374,13 +410,13 @@ mod tests {
 
 		// Create a 3-level hierarchy: grandparent -> parent -> child
 		let issue = parse(
-			"- [ ] Grandparent <!-- https://github.com/o/r/issues/1 -->\n\
+			"- [ ] Grandparent <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
 			 \tgrandparent body\n\
 			 \n\
-			 \t- [ ] Parent <!--sub https://github.com/o/r/issues/2 -->\n\
+			 \t- [ ] Parent <!--sub @mock_user https://github.com/o/r/issues/2 -->\n\
 			 \t\tparent body\n\
 			 \n\
-			 \t\t- [ ] Child <!--sub https://github.com/o/r/issues/3 -->\n\
+			 \t\t- [ ] Child <!--sub @mock_user https://github.com/o/r/issues/3 -->\n\
 			 \t\t\tchild body\n",
 		);
 

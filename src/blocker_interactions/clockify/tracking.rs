@@ -62,9 +62,15 @@ pub fn is_tracking_enabled() -> bool {
 	let state_path = get_blocker_state_path();
 	match std::fs::read_to_string(&state_path) {
 		Ok(content) => content.trim() == "true",
-		Err(_) => {
+		Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
 			// File doesn't exist, create it with "false" and return false
-			let _ = std::fs::write(&state_path, "false");
+			if let Err(e) = std::fs::write(&state_path, "false") {
+				tracing::warn!("failed to initialize tracking state file: {e}");
+			}
+			false
+		}
+		Err(e) => {
+			tracing::warn!("failed to read tracking state file: {e}");
 			false
 		}
 	}
@@ -84,8 +90,12 @@ fn get_workspace_settings_path() -> std::path::PathBuf {
 fn load_workspace_cache() -> WorkspaceCache {
 	let cache_path = get_workspace_settings_path();
 	match std::fs::read_to_string(&cache_path) {
-		Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
-		Err(_) => WorkspaceCache::default(),
+		Ok(content) => match serde_json::from_str(&content) {
+			Ok(cache) => cache,
+			Err(e) => panic!("corrupted workspace cache at {}: {e}", cache_path.display()),
+		},
+		Err(e) if e.kind() == std::io::ErrorKind::NotFound => WorkspaceCache::default(),
+		Err(e) => panic!("failed to read workspace cache at {}: {e}", cache_path.display()),
 	}
 }
 

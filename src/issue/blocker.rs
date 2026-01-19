@@ -197,7 +197,7 @@ pub struct BlockerItem {
 
 /// A sequence of blocker lines that can be manipulated.
 /// Internally represented as a tree, where each sequence can contain child sequences.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct BlockerSequence {
 	/// Header text (empty for root)
 	pub title: String,

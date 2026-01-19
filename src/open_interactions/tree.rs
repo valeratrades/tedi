@@ -1,134 +1,14 @@
 //! Tree operations for issue hierarchies.
 //!
 //! Handles:
-//! - Level-by-level parallel fetching of full issue trees from Github
 //! - Per-node comparison between local, consensus, and remote states
 //! - Timestamp-based auto-resolution of conflicts
+//!
+//! Note: Issue tree fetching is now done via `LazyIssue<Remote>` in `remote/mod.rs`.
 
 use std::collections::HashMap;
 
-use jiff::Timestamp;
-use todo::{CloseState, Comment, CommentIdentity, Issue, IssueIdentity, IssueLink, IssueMeta};
-use v_utils::prelude::*;
-
-use super::github_sync::IssueGithubExt;
-use crate::github::{BoxedGithubClient, GithubComment, GithubIssue};
-
-/// Fetch a complete issue tree from Github, level by level.
-///
-/// Issues at the same nesting level are fetched in parallel.
-/// This ensures we get the full tree structure, not just shallow children.
-pub async fn fetch_full_issue_tree(gh: &BoxedGithubClient, owner: &str, repo: &str, root_issue_number: u64) -> Result<Issue> {
-	let current_user = gh.fetch_authenticated_user().await?;
-
-	// Fetch root issue with comments and immediate sub-issues
-	let (root_issue, root_comments, root_sub_issues) = tokio::try_join!(
-		gh.fetch_issue(owner, repo, root_issue_number),
-		gh.fetch_comments(owner, repo, root_issue_number),
-		gh.fetch_sub_issues(owner, repo, root_issue_number),
-	)?;
-
-	// Build root Issue (shallow children for now)
-	let mut root = Issue::from_github(&root_issue, &root_comments, &root_sub_issues, owner, repo, &current_user);
-
-	// Now recursively fetch children level by level
-	fetch_children_recursive(gh, owner, repo, &current_user, &mut root).await?;
-
-	Ok(root)
-}
-
-/// Recursively fetch children for all nodes at the current level in parallel.
-fn fetch_children_recursive<'a>(
-	gh: &'a BoxedGithubClient,
-	owner: &'a str,
-	repo: &'a str,
-	current_user: &'a str,
-	issue: &'a mut Issue,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
-	Box::pin(async move {
-		if issue.children.is_empty() {
-			return Ok(());
-		}
-
-		// Collect all child issue numbers that need fetching
-		let child_numbers: Vec<u64> = issue.children.iter().filter_map(|child| child.meta.identity.number()).collect();
-
-		if child_numbers.is_empty() {
-			return Ok(());
-		}
-
-		// Fetch all children's data in parallel
-		let futures = child_numbers.iter().map(|&num| {
-			let gh = gh.clone();
-			async move {
-				let (comments, sub_issues) = tokio::try_join!(gh.fetch_comments(owner, repo, num), gh.fetch_sub_issues(owner, repo, num),)?;
-				Ok::<_, color_eyre::eyre::Report>((num, comments, sub_issues))
-			}
-		});
-		//TODO: when adding retry logic, switch to `cancel_safe_futures::future::join_then_try_all`
-		// so retrying branches complete before propagating errors
-		let results = futures::future::try_join_all(futures).await?;
-
-		// Build a map for quick lookup
-		let data_map: HashMap<u64, (Vec<GithubComment>, Vec<GithubIssue>)> = results.into_iter().map(|(num, comments, sub_issues)| (num, (comments, sub_issues))).collect();
-
-		// Update each child with full data
-		for child in &mut issue.children {
-			let Some(child_num) = child.meta.identity.number() else {
-				continue;
-			};
-			let Some((comments, sub_issues)) = data_map.get(&child_num) else {
-				continue;
-			};
-
-			// Update comments (keep first comment which is body, add actual comments)
-			for c in comments {
-				let comment_owned = c.user.login == current_user;
-				child.comments.push(Comment {
-					identity: CommentIdentity::Linked(c.id),
-					body: c.body.as_deref().unwrap_or("").to_string(),
-					owned: comment_owned,
-				});
-			}
-
-			// Build sub-issue children, filtering out duplicates
-			child.children = sub_issues
-				.iter()
-				.filter(|si| !CloseState::is_duplicate_reason(si.state_reason.as_deref()))
-				.map(|si| {
-					let url = format!("https://github.com/{owner}/{repo}/issues/{}", si.number);
-					let identity = IssueLink::parse(&url).map(IssueIdentity::Linked).expect("just constructed valid URL");
-					let close_state = CloseState::from_github(&si.state, si.state_reason.as_deref());
-					let timestamp = si.updated_at.parse::<Timestamp>().ok();
-					Issue {
-						meta: IssueMeta {
-							title: si.title.clone(),
-							identity,
-							close_state,
-							owned: si.user.login == current_user,
-						},
-						labels: si.labels.iter().map(|l| l.name.clone()).collect(),
-						comments: vec![Comment {
-							identity: CommentIdentity::Body,
-							body: si.body.as_deref().unwrap_or("").to_string(),
-							owned: si.user.login == current_user,
-						}],
-						children: Vec::new(),
-						blockers: Default::default(),
-						last_contents_change: timestamp,
-					}
-				})
-				.collect();
-		}
-
-		// Recurse into children
-		for child in &mut issue.children {
-			fetch_children_recursive(gh, owner, repo, current_user, child).await?;
-		}
-
-		Ok(())
-	})
-}
+use todo::Issue;
 
 /// Result of comparing a single node.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -154,19 +34,23 @@ pub fn compare_node(local: &Issue, consensus: Option<&Issue>, remote: &Issue) ->
 	// No consensus means first sync - compare local vs remote directly
 	let Some(consensus) = consensus else {
 		// First sync: if local == remote, no change; otherwise need to pick one
-		if node_content_eq(local, remote) {
+		if local.contents == remote.contents {
 			return NodeResolution::NoChange;
 		}
 		// Different content with no consensus - try timestamps, else conflict
-		return match (local.last_contents_change, remote.last_contents_change) {
-			(Some(local_ts), Some(remote_ts)) if local_ts != remote_ts => NodeResolution::AutoResolved { take_local: local_ts > remote_ts },
+		// HACK: Using max of all available timestamps for now.
+		// TODO: Implement proper per-field conflict resolution using IssueTimestamps
+		let local_ts = most_recent_timestamp(local.identity.timestamps());
+		let remote_ts = most_recent_timestamp(remote.identity.timestamps());
+		return match (local_ts, remote_ts) {
+			(Some(l), Some(r)) if l != r => NodeResolution::AutoResolved { take_local: l > r },
 			_ => NodeResolution::Conflict,
 		};
 	};
 
 	// Compare node content (body, comments, close_state) - not children
-	let local_matches_consensus = node_content_eq(local, consensus);
-	let remote_matches_consensus = node_content_eq(remote, consensus);
+	let local_matches_consensus = local.contents == consensus.contents;
+	let remote_matches_consensus = remote.contents == consensus.contents;
 
 	let local_changed = !local_matches_consensus;
 	let remote_changed = !remote_matches_consensus;
@@ -177,8 +61,12 @@ pub fn compare_node(local: &Issue, consensus: Option<&Issue>, remote: &Issue) ->
 		(false, true) => NodeResolution::RemoteOnly,
 		(true, true) => {
 			// Both changed - try to auto-resolve using timestamps
-			match (local.last_contents_change, remote.last_contents_change) {
-				(Some(local_ts), Some(remote_ts)) if local_ts != remote_ts => NodeResolution::AutoResolved { take_local: local_ts > remote_ts },
+			// HACK: Using max of all available timestamps for now.
+			// TODO: Implement proper per-field conflict resolution using IssueTimestamps
+			let local_ts = most_recent_timestamp(local.identity.timestamps());
+			let remote_ts = most_recent_timestamp(remote.identity.timestamps());
+			match (local_ts, remote_ts) {
+				(Some(l), Some(r)) if l != r => NodeResolution::AutoResolved { take_local: l > r },
 				_ => {
 					// Same timestamp or missing timestamps - cannot auto-resolve
 					NodeResolution::Conflict
@@ -188,33 +76,11 @@ pub fn compare_node(local: &Issue, consensus: Option<&Issue>, remote: &Issue) ->
 	}
 }
 
-/// Check if two Issue nodes have the same content (excluding children).
-fn node_content_eq(a: &Issue, b: &Issue) -> bool {
-	// Compare close state
-	if a.meta.close_state != b.meta.close_state {
-		return false;
-	}
-
-	// Compare body (first comment)
-	let a_body = a.comments.first().map(|c| c.body.as_str()).unwrap_or("");
-	let b_body = b.comments.first().map(|c| c.body.as_str()).unwrap_or("");
-	if a_body != b_body {
-		return false;
-	}
-
-	// Compare other comments (by identity and body)
-	let a_comments: Vec<_> = a.comments.iter().skip(1).map(|c| (&c.identity, &c.body)).collect();
-	let b_comments: Vec<_> = b.comments.iter().skip(1).map(|c| (&c.identity, &c.body)).collect();
-	if a_comments != b_comments {
-		return false;
-	}
-
-	// Compare labels
-	if a.labels != b.labels {
-		return false;
-	}
-
-	true
+/// HACK: Get the most recent timestamp from all fields.
+/// This is a temporary workaround until proper per-field conflict resolution is implemented.
+fn most_recent_timestamp(timestamps: Option<&todo::IssueTimestamps>) -> Option<jiff::Timestamp> {
+	let ts = timestamps?;
+	[ts.title, ts.description, ts.labels, ts.comments].into_iter().flatten().max()
 }
 
 /// Result of resolving an entire tree.
@@ -264,6 +130,7 @@ pub fn resolve_tree(local: &Issue, consensus: Option<&Issue>, remote: &Issue) ->
 	}
 }
 
+#[allow(clippy::too_many_arguments)]
 fn resolve_tree_recursive(
 	resolved: &mut Issue,
 	local: &Issue,
@@ -309,17 +176,17 @@ fn resolve_tree_recursive(
 
 	// Now compare children
 	// Build maps by URL for matching
-	let local_children_by_url: HashMap<&str, &Issue> = local.children.iter().filter_map(|c| c.meta.identity.url_str().map(|url| (url, c))).collect();
+	let local_children_by_url: HashMap<&str, &Issue> = local.children.iter().filter_map(|c| c.url_str().map(|url| (url, c))).collect();
 
 	let consensus_children_by_url: HashMap<&str, &Issue> = consensus
-		.map(|c| c.children.iter().filter_map(|child| child.meta.identity.url_str().map(|url| (url, child))).collect())
+		.map(|c| c.children.iter().filter_map(|child| child.url_str().map(|url| (url, child))).collect())
 		.unwrap_or_default();
 
-	let remote_children_by_url: HashMap<&str, &Issue> = remote.children.iter().filter_map(|c| c.meta.identity.url_str().map(|url| (url, c))).collect();
+	let remote_children_by_url: HashMap<&str, &Issue> = remote.children.iter().filter_map(|c| c.url_str().map(|url| (url, c))).collect();
 
 	// Process each child in resolved (which starts as local's children)
 	for (i, resolved_child) in resolved.children.iter_mut().enumerate() {
-		let Some(url) = resolved_child.meta.identity.url_str() else {
+		let Some(url) = resolved_child.url_str() else {
 			continue;
 		};
 
@@ -349,48 +216,51 @@ fn resolve_tree_recursive(
 
 /// Apply remote node content to resolved node (excluding children).
 fn apply_remote_node_content(resolved: &mut Issue, remote: &Issue) {
-	resolved.meta.close_state = remote.meta.close_state.clone();
-	resolved.labels = remote.labels.clone();
+	resolved.contents.state = remote.contents.state.clone();
+	resolved.contents.labels = remote.contents.labels.clone();
 
 	// Update comments: keep structure but update content
-	if let Some(remote_body) = remote.comments.first()
-		&& let Some(resolved_body) = resolved.comments.first_mut()
+	if let Some(remote_body) = remote.contents.comments.first()
+		&& let Some(resolved_body) = resolved.contents.comments.first_mut()
 	{
 		resolved_body.body = remote_body.body.clone();
 	}
 
 	// Replace other comments with remote's
-	resolved.comments.truncate(1);
-	resolved.comments.extend(remote.comments.iter().skip(1).cloned());
+	resolved.contents.comments.truncate(1);
+	resolved.contents.comments.extend(remote.contents.comments.iter().skip(1).cloned());
 
-	// Update timestamp
-	resolved.last_contents_change = remote.last_contents_change;
+	// Update timestamps from remote identity (if both are linked)
+	if let (Some(resolved_linked), Some(remote_linked)) = (resolved.identity.remote.as_linked_mut(), remote.identity.remote.as_linked()) {
+		resolved_linked.timestamps = remote_linked.timestamps.clone();
+	}
 }
 
 #[cfg(test)]
 mod tests {
 	use insta::assert_snapshot;
-	use todo::BlockerSequence;
+	use jiff::Timestamp;
+	use todo::{Ancestry, BlockerSequence, CloseState, Comment, CommentIdentity, IssueContents, IssueIdentity, IssueLink};
 
 	use super::*;
 
 	fn make_issue(body: &str, timestamp: Option<i64>) -> Issue {
+		let ancestry = Ancestry::root("o", "r");
+		let link = IssueLink::parse("https://github.com/o/r/issues/1").unwrap();
+		let timestamps = timestamp.map(|ts| todo::IssueTimestamps::all_at(Timestamp::from_second(ts).unwrap())).unwrap_or_default();
 		Issue {
-			meta: IssueMeta {
+			identity: IssueIdentity::linked(ancestry, "testuser".to_string(), link, timestamps),
+			contents: IssueContents {
 				title: "Test".to_string(),
-				identity: IssueLink::parse("https://github.com/o/r/issues/1").map(IssueIdentity::Linked).unwrap(),
-				close_state: CloseState::Open,
-				owned: true,
+				labels: vec![],
+				state: CloseState::Open,
+				comments: vec![Comment {
+					identity: CommentIdentity::Body,
+					body: todo::Events::parse(body),
+				}],
+				blockers: BlockerSequence::default(),
 			},
-			labels: vec![],
-			comments: vec![Comment {
-				identity: CommentIdentity::Body,
-				body: body.to_string(),
-				owned: true,
-			}],
 			children: vec![],
-			blockers: BlockerSequence::default(),
-			last_contents_change: timestamp.map(|ts| Timestamp::from_second(ts).unwrap()),
 		}
 	}
 
@@ -458,22 +328,22 @@ mod tests {
 	}
 
 	fn make_issue_with_url(body: &str, timestamp: Option<i64>, url: &str) -> Issue {
+		let link = IssueLink::parse(url).unwrap();
+		let ancestry = Ancestry::root(link.owner(), link.repo());
+		let timestamps = timestamp.map(|ts| todo::IssueTimestamps::all_at(Timestamp::from_second(ts).unwrap())).unwrap_or_default();
 		Issue {
-			meta: IssueMeta {
+			identity: IssueIdentity::linked(ancestry, "testuser".to_string(), link, timestamps),
+			contents: IssueContents {
 				title: "Test".to_string(),
-				identity: IssueLink::parse(url).map(IssueIdentity::Linked).unwrap(),
-				close_state: CloseState::Open,
-				owned: true,
+				labels: vec![],
+				state: CloseState::Open,
+				comments: vec![Comment {
+					identity: CommentIdentity::Body,
+					body: todo::Events::parse(body),
+				}],
+				blockers: BlockerSequence::default(),
 			},
-			labels: vec![],
-			comments: vec![Comment {
-				identity: CommentIdentity::Body,
-				body: body.to_string(),
-				owned: true,
-			}],
 			children: vec![],
-			blockers: BlockerSequence::default(),
-			last_contents_change: timestamp.map(|ts| Timestamp::from_second(ts).unwrap()),
 		}
 	}
 

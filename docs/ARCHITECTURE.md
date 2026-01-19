@@ -4,6 +4,8 @@
 
 ### Reading from GitHub → Issue
 
+Uses `LazyIssue<Remote>` trait implemented in `remote/mod.rs`:
+
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                           GITHUB API RESPONSE                               │
@@ -24,8 +26,11 @@
                                     │
                                     ▼
                     ┌───────────────────────────────┐
-                    │      from_github()            │
-                    │  (github_sync.rs)             │
+                    │   LazyIssue<Remote>           │
+                    │   (remote/mod.rs)             │
+                    │   - identity()                │
+                    │   - contents()                │
+                    │   - children()                │
                     └───────────────────────────────┘
                                     │
         ┌───────────────────────────┼───────────────────────────┐
@@ -40,18 +45,19 @@
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                              Issue struct                                   │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│  meta: IssueMeta {                                                          │
-│    title: String,                                                           │
-│    identity: IssueIdentity::Linked(IssueLink),                              │
-│    close_state: CloseState,                                                 │
-│    owned: bool,             // user.login == current_user                   │
+│  identity: IssueIdentity {                                                  │
+│    ancestry: Ancestry,                                                      │
+│    linked: Option<LinkedIssueMeta> { user, link, ts },                      │
 │  }                                                                          │
-│  labels: Vec<String>,                                                       │
-│  comments: Vec<Comment>,    // [0] = body (CommentIdentity::Body)           │
-│                             // [1..] = comments (CommentIdentity::Linked)   │
+│  contents: IssueContents {                                                  │
+│    title: String,                                                           │
+│    labels: Vec<String>,                                                     │
+│    state: CloseState,                                                       │
+│    comments: Vec<Comment>,  // [0] = body (CommentIdentity::Body)           │
+│                             // [1..] = comments (CommentIdentity::Created)  │
+│    blockers: BlockerSequence,                                               │
+│  }                                                                          │
 │  children: Vec<Issue>,      // sub-issues, recursively                      │
-│  blockers: BlockerSequence, // extracted from body                          │
-│  last_contents_change: Option<Timestamp>,  // from updated_at               │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -113,8 +119,10 @@
 
 | Type | File |
 |------|------|
-| `Issue`, `IssueMeta`, `CloseState`, `IssueIdentity` | `src/issue/types.rs` |
+| `Issue`, `IssueContents`, `CloseState`, `IssueIdentity` | `src/issue/types.rs` |
+| `LazyIssue<S>` trait | `src/issue/types.rs` |
 | `GithubIssue`, `GithubComment`, `CreatedIssue` | `src/github.rs` |
-| `from_github()` | `src/open_interactions/github_sync.rs` |
+| `LazyIssue<Remote>` impl, `AsyncFrom<RemoteSource>` | `src/open_interactions/remote/mod.rs` |
+| `LazyIssue<Local>` impl | `src/open_interactions/local/mod.rs` |
 | `split_blockers()`, `join_with_blockers()` | `src/issue/blocker.rs` |
 | `sync_local_issue_to_github()` | `src/open_interactions/sync.rs` |

@@ -99,6 +99,7 @@ impl TestContext {
 		let mut cmd = Command::new(get_binary_path());
 		cmd.args(args);
 		cmd.env("__IS_INTEGRATION_TEST", "1");
+		cmd.env("TODO__GITHUB_TOKEN", "test_token");
 		for (key, value) in self.xdg.env_vars() {
 			cmd.env(key, value);
 		}
@@ -212,6 +213,7 @@ impl<'a> OpenBuilder<'a> {
 		cmd.args(&self.extra_args);
 		cmd.arg(self.issue_path.to_str().unwrap());
 		cmd.env("__IS_INTEGRATION_TEST", "1");
+		cmd.env("TODO__GITHUB_TOKEN", "test_token");
 		for (key, value) in self.ctx.xdg.env_vars() {
 			cmd.env(key, value);
 		}
@@ -239,19 +241,23 @@ impl<'a> OpenBuilder<'a> {
 						std::thread::sleep(std::time::Duration::from_millis(100));
 
 						// Edit the file while "editor is open" if requested
+						// Use serialize_virtual since that's what the user sees/edits (full tree with children)
 						if let Some(issue) = &edit_to {
-							std::fs::write(&issue_path, issue.serialize()).unwrap();
+							std::fs::write(&issue_path, issue.serialize_virtual()).unwrap();
 						}
 
 						// Try to signal the pipe (use nix O_NONBLOCK to avoid blocking)
+						// Only mark as signaled if we successfully wrote to the pipe.
+						// The pipe open will fail if no reader is waiting yet.
 						#[cfg(unix)]
 						{
 							use std::os::unix::fs::OpenOptionsExt;
 							if let Ok(mut pipe) = std::fs::OpenOptions::new().write(true).custom_flags(0x800).open(&pipe_path) {
-								let _ = pipe.write_all(b"x");
+								if pipe.write_all(b"x").is_ok() {
+									signaled = true;
+								}
 							}
 						}
-						signaled = true;
 					}
 					std::thread::sleep(std::time::Duration::from_millis(10));
 				}
@@ -296,6 +302,7 @@ impl<'a> OpenUrlBuilder<'a> {
 		cmd.args(&self.extra_args);
 		cmd.arg(&self.url);
 		cmd.env("__IS_INTEGRATION_TEST", "1");
+		cmd.env("TODO__GITHUB_TOKEN", "test_token");
 		for (key, value) in self.ctx.xdg.env_vars() {
 			cmd.env(key, value);
 		}
@@ -319,19 +326,23 @@ impl<'a> OpenUrlBuilder<'a> {
 						std::thread::sleep(std::time::Duration::from_millis(100));
 
 						// Edit the file while "editor is open" if requested
+						// Use serialize_virtual since that's what the user sees/edits (full tree with children)
 						if let Some((path, issue)) = &edit_at_path {
-							std::fs::write(path, issue.serialize()).unwrap();
+							std::fs::write(path, issue.serialize_virtual()).unwrap();
 						}
 
 						// Try to signal the pipe (use O_NONBLOCK to avoid blocking)
+						// Only mark as signaled if we successfully wrote to the pipe.
+						// The pipe open will fail if no reader is waiting yet.
 						#[cfg(unix)]
 						{
 							use std::os::unix::fs::OpenOptionsExt;
 							if let Ok(mut pipe) = std::fs::OpenOptions::new().write(true).custom_flags(0x800).open(&pipe_path) {
-								let _ = pipe.write_all(b"x");
+								if pipe.write_all(b"x").is_ok() {
+									signaled = true;
+								}
 							}
 						}
-						signaled = true;
 					}
 					std::thread::sleep(std::time::Duration::from_millis(10));
 				}

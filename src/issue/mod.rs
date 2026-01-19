@@ -7,16 +7,24 @@
 //! optional Github synchronization.
 
 mod blocker;
-mod error;
-mod marker;
-mod types;
-mod util;
-
 pub use blocker::{BlockerItem, BlockerSequence, DisplayFormat, HeaderLevel, Line, classify_line, join_with_blockers, split_blockers};
+
+mod events;
+pub use events::{Events, OwnedCodeBlockKind, OwnedEvent, OwnedTag, OwnedTagEnd};
+
+mod error;
 pub use error::ParseError;
+mod marker;
 pub use marker::Marker;
-pub use types::{CloseState, Comment, CommentIdentity, FetchedIssue, Issue, IssueIdentity, IssueLink, IssueMeta};
+
+mod types;
+pub use types::{
+	Ancestry, CloseState, Comment, CommentIdentity, FetchedIssue, Issue, IssueContents, IssueIdentity, IssueLink, IssueRemote, IssueTimestamps, LazyIssue, LinkedIssueMeta,
+	MAX_LINEAGE_DEPTH, RepoInfo,
+};
+
+mod util;
 pub use util::{is_blockers_marker, normalize_issue_indentation};
 
-// Re-export Extension and Header from parent
-pub use crate::{Extension, Header};
+// Re-export Header from parent
+pub use crate::Header;

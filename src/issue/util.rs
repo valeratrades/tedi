@@ -1,23 +1,18 @@
 //! Small utility functions for issue processing.
+//XXX: fundamentally flawed concept, is up for deprecation.
+// Markers should be taking care of all parts of parsing themselves
 
 use super::Marker;
-use crate::Extension;
 
 /// Check if a line is a blockers section marker.
 /// Recognized formats (case-insensitive):
-/// - `# Blockers` (preferred for .md, what `!b` expands to)
-/// - `= Blockers` (preferred for .typ, what `!b` expands to)
+/// - `# Blockers` (preferred, what `!b` expands to)
 /// - `<!--blockers-->` (legacy, still supported)
 /// - `#{1,6} Blockers` (any header level)
-/// - `={1,6} Blockers` (any header level for typst)
 /// - `**Blockers**` (with optional trailing `:`)
-/// - `// blockers` (legacy typst, still supported)
 pub fn is_blockers_marker(line: &str) -> bool {
-	// Use Marker enum for standard formats - try both extensions
-	if matches!(Marker::decode(line, Extension::Md), Some(Marker::BlockersSection(_))) {
-		return true;
-	}
-	if matches!(Marker::decode(line, Extension::Typ), Some(Marker::BlockersSection(_))) {
+	// Use Marker enum for standard formats
+	if matches!(Marker::decode(line), Some(Marker::BlockersSection(_))) {
 		return true;
 	}
 	// Also support **Blockers** format (not in Marker enum as it's non-standard)

@@ -14,14 +14,14 @@ use todo::Issue;
 use crate::common::{TestContext, git::GitExt};
 
 fn parse(content: &str) -> Issue {
-	Issue::parse(content, Path::new("test.md")).expect("failed to parse test issue")
+	Issue::parse_virtual(content, Path::new("test.md")).expect("failed to parse test issue")
 }
 
 #[test]
 fn test_flat_format_preserved_when_no_sub_issues() {
 	let ctx = TestContext::new("");
 
-	let parent = parse("- [ ] Parent Issue <!-- https://github.com/o/r/issues/1 -->\n\tparent body\n");
+	let parent = parse("- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tparent body\n");
 	let issue_path = ctx.consensus(&parent);
 	ctx.remote(&parent);
 
@@ -44,15 +44,15 @@ fn test_old_flat_file_removed_when_sub_issues_appear() {
 	let ctx = TestContext::new("");
 
 	// Start with a flat issue locally
-	let parent = parse("- [ ] Parent Issue <!-- https://github.com/o/r/issues/1 -->\n\tparent body\n");
+	let parent = parse("- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tparent body\n");
 	let issue_path = ctx.consensus(&parent);
 
 	// Remote now has sub-issues - create a version with children for mock
 	let with_children = parse(
-		"- [ ] Parent Issue <!-- https://github.com/o/r/issues/1 -->\n\
+		"- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
 		 \tparent body\n\
 		 \n\
-		 \t- [ ] Child Issue <!--sub https://github.com/o/r/issues/2 -->\n\
+		 \t- [ ] Child Issue <!--sub @mock_user https://github.com/o/r/issues/2 -->\n\
 		 \t\tchild body\n",
 	);
 	// Remote has the version with children
@@ -80,15 +80,15 @@ fn test_old_placement_discarded_even_without_local_changes() {
 	let ctx = TestContext::new("");
 
 	// Set up a flat issue locally, committed to git
-	let parent = parse("- [ ] Parent Issue <!-- https://github.com/o/r/issues/1 -->\n\tparent body\n");
+	let parent = parse("- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tparent body\n");
 	let issue_path = ctx.consensus(&parent);
 
 	// Remote has sub-issues now (simulating someone else adding them)
 	let with_children = parse(
-		"- [ ] Parent Issue <!-- https://github.com/o/r/issues/1 -->\n\
+		"- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
 		 \tparent body\n\
 		 \n\
-		 \t- [ ] Child Issue <!--sub https://github.com/o/r/issues/2 -->\n\
+		 \t- [ ] Child Issue <!--sub @mock_user https://github.com/o/r/issues/2 -->\n\
 		 \t\tchild body\n",
 	);
 	ctx.remote(&with_children);
@@ -122,13 +122,13 @@ fn test_duplicate_reference_to_nonexistent_issue_fails() {
 	let ctx = TestContext::new("");
 
 	// Set up a local issue
-	let original = parse("- [ ] Some Issue <!-- https://github.com/o/r/issues/1 -->\n\tbody\n");
+	let original = parse("- [ ] Some Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tbody\n");
 	let issue_path = ctx.consensus(&original);
 	ctx.remote(&original);
 
 	// Modify the issue to mark it as duplicate of #999 (which doesn't exist)
 	let mut duplicate = original.clone();
-	duplicate.meta.close_state = todo::CloseState::Duplicate(999);
+	duplicate.contents.state = todo::CloseState::Duplicate(999);
 
 	// Try to sync the duplicate state
 	let (status, stdout, stderr) = ctx.open(&issue_path).edit(&duplicate).run();
@@ -152,8 +152,8 @@ fn test_duplicate_reference_to_existing_issue_succeeds() {
 	let ctx = TestContext::new("");
 
 	// Set up a local issue and a target duplicate issue
-	let original = parse("- [ ] Some Issue <!-- https://github.com/o/r/issues/1 -->\n\tbody\n");
-	let dup_target = parse("- [ ] Target Issue <!-- https://github.com/o/r/issues/2 -->\n\ttarget body\n");
+	let original = parse("- [ ] Some Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tbody\n");
+	let dup_target = parse("- [ ] Target Issue <!-- @mock_user https://github.com/o/r/issues/2 -->\n\ttarget body\n");
 	let issue_path = ctx.consensus(&original);
 
 	// Set up mock Github with both issues
@@ -162,7 +162,7 @@ fn test_duplicate_reference_to_existing_issue_succeeds() {
 
 	// Modify the issue to mark it as duplicate of #2 (which exists)
 	let mut duplicate = original.clone();
-	duplicate.meta.close_state = todo::CloseState::Duplicate(2);
+	duplicate.contents.state = todo::CloseState::Duplicate(2);
 
 	// Sync the duplicate state
 	let (status, stdout, stderr) = ctx.open(&issue_path).edit(&duplicate).run();

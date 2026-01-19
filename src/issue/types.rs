@@ -2,18 +2,49 @@
 //!
 //! This module contains the pure Issue type with parsing and serialization.
 
-use std::fmt;
-
+use arrayvec::ArrayString;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
+/// Repository identification: owner and repo name.
+/// Uses fixed-size `ArrayString`s to be `Copy`.
+/// GitHub limits: owner max 39 chars, repo max 100 chars.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct RepoInfo {
+	/// Repository owner (fixed max length; following Github spec)
+	owner: ArrayString<39>,
+	/// Repository name (fixed max length; following Github spec)
+	repo: ArrayString<100>,
+}
+
+impl RepoInfo {
+	/// Create a new RepoInfo.
+	/// Panics if owner exceeds 39 chars or repo exceeds 100 chars.
+	pub fn new(owner: &str, repo: &str) -> Self {
+		Self {
+			owner: ArrayString::from(owner).expect("owner name too long (max 39 chars)"),
+			repo: ArrayString::from(repo).expect("repo name too long (max 100 chars)"),
+		}
+	}
+
+	/// Get the owner.
+	pub fn owner(&self) -> &str {
+		self.owner.as_str()
+	}
+
+	/// Get the repo.
+	pub fn repo(&self) -> &str {
+		self.repo.as_str()
+	}
+}
+
 /// A Github issue identifier. Wraps a URL and derives all properties on demand.
 /// Format: `https://github.com/{owner}/{repo}/issues/{number}`
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Debug, derive_more::Deref, derive_more::DerefMut, Eq, Hash, PartialEq)]
 pub struct IssueLink(Url);
 
-impl IssueLink {
+impl IssueLink /*{{{1*/ {
 	/// Create from a URL. Returns None if not a valid Github issue URL.
 	pub fn new(url: Url) -> Option<Self> {
 		// Validate it's a Github issue URL
@@ -41,6 +72,14 @@ impl IssueLink {
 		&self.0
 	}
 
+	/// Get the repository info (owner and repo).
+	pub fn repo_info(&self) -> RepoInfo {
+		let mut segments = self.0.path_segments().unwrap();
+		let owner = segments.next().unwrap();
+		let repo = segments.next().unwrap();
+		RepoInfo::new(owner, repo)
+	}
+
 	/// Get the owner (first path segment).
 	pub fn owner(&self) -> &str {
 		self.0.path_segments().unwrap().next().unwrap()
@@ -61,63 +100,7 @@ impl IssueLink {
 		self.0.as_str()
 	}
 }
-
-impl fmt::Display for IssueLink {
-	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		write!(f, "{}", self.0)
-	}
-}
-
-impl From<IssueLink> for Url {
-	fn from(link: IssueLink) -> Url {
-		link.0
-	}
-}
-
-impl AsRef<Url> for IssueLink {
-	fn as_ref(&self) -> &Url {
-		&self.0
-	}
-}
-
-/// Identity of an issue - either linked to Github or pending creation.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum IssueIdentity {
-	/// Issue exists on Github with this link
-	Linked(IssueLink),
-	/// Issue is pending creation on Github (will be created in post-sync)
-	Pending,
-}
-
-impl IssueIdentity {
-	/// Get the link if this issue is linked to Github.
-	pub fn link(&self) -> Option<&IssueLink> {
-		match self {
-			Self::Linked(link) => Some(link),
-			Self::Pending => None,
-		}
-	}
-
-	/// Check if this issue is linked to Github.
-	pub fn is_linked(&self) -> bool {
-		matches!(self, Self::Linked(_))
-	}
-
-	/// Check if this issue is pending creation.
-	pub fn is_pending(&self) -> bool {
-		matches!(self, Self::Pending)
-	}
-
-	/// Get the issue number if linked.
-	pub fn number(&self) -> Option<u64> {
-		self.link().map(|l| l.number())
-	}
-
-	/// Get the URL string if linked.
-	pub fn url_str(&self) -> Option<&str> {
-		self.link().map(|l| l.as_str())
-	}
-}
+//,}}}1
 
 /// Identity of a comment - either linked to Github or pending creation.
 /// Note: The first comment (issue body) is always `Body`, not `Linked` or `Pending`.
@@ -125,17 +108,25 @@ impl IssueIdentity {
 pub enum CommentIdentity {
 	/// This is the issue body (first comment), not a separate Github comment
 	Body,
-	/// Comment exists on Github with this ID
-	Linked(u64),
+	/// Comment exists on Github with this ID, created by given user
+	Created { user: String, id: u64 },
 	/// Comment is pending creation on Github (will be created in post-sync)
 	Pending,
 }
 
-impl CommentIdentity {
+impl CommentIdentity /*{{{1*/ {
 	/// Get the comment ID if linked.
 	pub fn id(&self) -> Option<u64> {
 		match self {
-			Self::Linked(id) => Some(*id),
+			Self::Created { id, .. } => Some(*id),
+			Self::Body | Self::Pending => None,
+		}
+	}
+
+	/// Get the user who created this comment if linked.
+	pub fn user(&self) -> Option<&str> {
+		match self {
+			Self::Created { user, .. } => Some(user),
 			Self::Body | Self::Pending => None,
 		}
 	}
@@ -150,16 +141,18 @@ impl CommentIdentity {
 		matches!(self, Self::Pending)
 	}
 }
+//,}}}1
 
 /// An issue with its title - used when we need both identity and display name.
 /// This is what we have after fetching an issue from Github.
+//DEPRECATE: completely pointless
 #[derive(Clone, Debug)]
 pub struct FetchedIssue {
 	pub link: IssueLink,
 	pub title: String,
 }
 
-impl FetchedIssue {
+impl FetchedIssue /*{{{1*/ {
 	pub fn new(link: IssueLink, title: impl Into<String>) -> Self {
 		Self { link, title: title.into() }
 	}
@@ -186,6 +179,7 @@ impl FetchedIssue {
 		self.link.repo()
 	}
 }
+//,}}}1
 
 use super::{
 	blocker::{BlockerSequence, classify_line, join_with_blockers},
@@ -206,7 +200,7 @@ enum CheckboxParseResult<'a> {
 /// Result of parsing a child title line.
 enum ChildTitleParseResult {
 	/// Successfully parsed child/sub-issue
-	Ok(IssueMeta),
+	Ok,
 	/// Not a child title line
 	NotChildTitle,
 	/// Has checkbox syntax but invalid content (like `[abc]`)
@@ -231,7 +225,7 @@ pub enum CloseState {
 	Duplicate(u64),
 }
 
-impl CloseState {
+impl CloseState /*{{{1*/ {
 	/// Returns true if the issue is closed (any close variant)
 	pub fn is_closed(&self) -> bool {
 		!matches!(self, CloseState::Open)
@@ -308,16 +302,358 @@ impl CloseState {
 		}
 	}
 }
+//,}}}1
 
-/// Metadata for an issue (title line info)
+/// Timestamps tracking when individual fields of an issue were last changed.
+/// Each node keeps change info about itself only (not sub-issues).
+/// Used for sync conflict resolution.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+pub struct IssueTimestamps {
+	/// Last change to the issue title. Optional because we can't always get this from GitHub.
+	pub title: Option<Timestamp>,
+	/// Last change to the issue description/body. Optional because we can't always get this from GitHub.
+	pub description: Option<Timestamp>,
+	/// Last change to labels. Optional because we can't always get this from GitHub.
+	pub labels: Option<Timestamp>,
+	/// Last comment activity (creation/edit). We can always get this from GitHub.
+	pub comments: Option<Timestamp>,
+}
+
+impl IssueTimestamps {
+	/// Create timestamps with all fields set to the same value.
+	/// Useful for local modifications where we know the exact change time.
+	pub fn all_at(ts: Timestamp) -> Self {
+		Self {
+			title: Some(ts),
+			description: Some(ts),
+			labels: Some(ts),
+			comments: Some(ts),
+		}
+	}
+
+	/// Update timestamps based on what changed between old and new issue contents.
+	/// Sets the current time for any field that changed.
+	pub fn update_from_diff(&mut self, old: &super::IssueContents, new: &super::IssueContents) {
+		let now = Timestamp::now();
+
+		if old.title != new.title {
+			self.title = Some(now);
+		}
+
+		// Compare body (first comment) for description changes
+		let old_body = old.comments.first().map(|c| c.body.render()).unwrap_or_default();
+		let new_body = new.comments.first().map(|c| c.body.render()).unwrap_or_default();
+		// Also check blockers as they're part of the body on GitHub
+		if old_body != new_body || old.blockers != new.blockers {
+			self.description = Some(now);
+		}
+
+		if old.labels != new.labels {
+			self.labels = Some(now);
+		}
+
+		// Comments changed if any non-body comment is different
+		let old_comments: Vec<_> = old.comments.iter().skip(1).collect();
+		let new_comments: Vec<_> = new.comments.iter().skip(1).collect();
+		if old_comments.len() != new_comments.len() || old_comments.iter().zip(&new_comments).any(|(o, n)| o.body.render() != n.body.render()) {
+			self.comments = Some(now);
+		}
+	}
+}
+
+/// Metadata for an issue linked to Github.
+/// Lineage is stored separately in `Ancestry`.
 #[derive(Clone, Debug, PartialEq)]
-pub struct IssueMeta {
-	pub title: String,
-	/// Issue identity - linked to Github or pending creation
-	pub identity: IssueIdentity,
-	pub close_state: CloseState,
-	/// Whether owned by current user (false = immutable)
-	pub owned: bool,
+pub struct LinkedIssueMeta {
+	/// User who created the issue
+	pub user: String,
+	/// Link to the issue on Github
+	pub link: IssueLink,
+	/// Timestamps of last changes to individual fields.
+	/// Used for sync conflict resolution.
+	pub timestamps: IssueTimestamps,
+}
+
+impl LinkedIssueMeta {
+	/// Get the repository owner from the link.
+	pub fn owner(&self) -> &str {
+		self.link.owner()
+	}
+
+	/// Get the repository name from the link.
+	pub fn repo(&self) -> &str {
+		self.link.repo()
+	}
+
+	/// Get the issue number from the link.
+	pub fn number(&self) -> u64 {
+		self.link.number()
+	}
+}
+
+/// Remote connection status for an issue.
+///
+/// Distinguishes between:
+/// - Github issues (linked or pending creation)
+/// - Virtual issues (local-only, never synced to Github)
+#[derive(Clone, Debug, PartialEq)]
+pub enum IssueRemote {
+	/// Issue is (or will be) on Github.
+	/// `None` = pending creation (will be created on first sync)
+	/// `Some(_)` = already linked to Github
+	Github(Option<LinkedIssueMeta>),
+	/// Virtual issue - local only, never synced to Github.
+	/// Used for projects without a Github remote.
+	Virtual,
+}
+
+impl IssueRemote {
+	/// Returns true if this is a Github issue (linked or pending).
+	pub fn is_github(&self) -> bool {
+		matches!(self, IssueRemote::Github(_))
+	}
+
+	/// Returns true if this is a virtual (local-only) issue.
+	pub fn is_virtual(&self) -> bool {
+		matches!(self, IssueRemote::Virtual)
+	}
+
+	/// Returns true if this issue is linked to Github.
+	pub fn is_linked(&self) -> bool {
+		matches!(self, IssueRemote::Github(Some(_)))
+	}
+
+	/// Returns true if this is a pending Github issue (not yet created).
+	pub fn is_pending(&self) -> bool {
+		matches!(self, IssueRemote::Github(None))
+	}
+
+	/// Get the linked metadata if this is a linked Github issue.
+	pub fn as_linked(&self) -> Option<&LinkedIssueMeta> {
+		match self {
+			IssueRemote::Github(Some(meta)) => Some(meta),
+			_ => None,
+		}
+	}
+
+	/// Get mutable access to the linked metadata.
+	pub fn as_linked_mut(&mut self) -> Option<&mut LinkedIssueMeta> {
+		match self {
+			IssueRemote::Github(Some(meta)) => Some(meta),
+			_ => None,
+		}
+	}
+}
+
+/// Identity of an issue - always has ancestry, with remote connection info.
+#[derive(Clone, Debug)]
+pub struct IssueIdentity {
+	/// Where in the tree this issue lives (owner/repo/lineage)
+	pub ancestry: Ancestry,
+	/// Remote connection status (Github linked/pending, or Virtual)
+	pub remote: IssueRemote,
+}
+
+impl IssueIdentity {
+	/// Create a new linked Github issue identity.
+	pub fn linked(ancestry: Ancestry, user: String, link: IssueLink, timestamps: IssueTimestamps) -> Self {
+		Self {
+			ancestry,
+			remote: IssueRemote::Github(Some(LinkedIssueMeta { user, link, timestamps })),
+		}
+	}
+
+	/// Create a new pending Github issue identity (will be created on first sync).
+	pub fn pending(ancestry: Ancestry) -> Self {
+		Self {
+			ancestry,
+			remote: IssueRemote::Github(None),
+		}
+	}
+
+	/// Create a new virtual (local-only) issue identity.
+	pub fn virtual_issue(ancestry: Ancestry) -> Self {
+		Self {
+			ancestry,
+			remote: IssueRemote::Virtual,
+		}
+	}
+
+	/// Create a new local-only issue identity.
+	/// DEPRECATED: use `pending()` for Github issues or `virtual_issue()` for local-only.
+	/// This currently maps to `pending()` for backwards compatibility.
+	pub fn local(ancestry: Ancestry) -> Self {
+		Self::pending(ancestry)
+	}
+
+	/// Check if this issue is linked to Github.
+	pub fn is_linked(&self) -> bool {
+		self.remote.is_linked()
+	}
+
+	/// Check if this issue is local only (pending creation on Github).
+	/// Note: Virtual issues are also local-only but should be checked via is_virtual().
+	pub fn is_local(&self) -> bool {
+		self.remote.is_pending()
+	}
+
+	/// Check if this is a virtual (local-only, never-sync) issue.
+	pub fn is_virtual(&self) -> bool {
+		self.remote.is_virtual()
+	}
+
+	/// Get the linked metadata if linked.
+	pub fn as_linked(&self) -> Option<&LinkedIssueMeta> {
+		self.remote.as_linked()
+	}
+
+	/// Get the issue link if linked.
+	pub fn link(&self) -> Option<&IssueLink> {
+		self.remote.as_linked().map(|m| &m.link)
+	}
+
+	/// Get the issue number if linked.
+	pub fn number(&self) -> Option<u64> {
+		self.link().map(|l| l.number())
+	}
+
+	/// Get the URL string if linked.
+	pub fn url_str(&self) -> Option<&str> {
+		self.link().map(|l| l.as_str())
+	}
+
+	/// Get the user who created this issue if linked.
+	pub fn user(&self) -> Option<&str> {
+		self.remote.as_linked().map(|m| m.user.as_str())
+	}
+
+	/// Get the timestamps if linked.
+	pub fn timestamps(&self) -> Option<&IssueTimestamps> {
+		self.remote.as_linked().map(|m| &m.timestamps)
+	}
+
+	/// Get ancestry (always available).
+	pub fn ancestry(&self) -> &Ancestry {
+		&self.ancestry
+	}
+
+	/// Get owner (always available via ancestry).
+	pub fn owner(&self) -> &str {
+		self.ancestry.owner()
+	}
+
+	/// Get repo (always available via ancestry).
+	pub fn repo(&self) -> &str {
+		self.ancestry.repo()
+	}
+
+	/// Create a child's ancestry by appending this issue's number.
+	/// Returns None if this issue is not linked (has no number to append).
+	pub fn child_ancestry(&self) -> Option<Ancestry> {
+		self.number().map(|n| self.ancestry.child(n))
+	}
+
+	/// Encode for serialization.
+	/// - Linked: `@user url`
+	/// - Pending: `local:` (will be created on Github)
+	/// - Virtual: `virtual:owner/repo#N` where N is a local tracking number
+	pub fn encode(&self) -> String {
+		match &self.remote {
+			IssueRemote::Github(Some(meta)) => format!("@{} {}", meta.user, meta.link.as_str()),
+			IssueRemote::Github(None) => "local:".to_string(),
+			IssueRemote::Virtual => "virtual:".to_string(),
+		}
+	}
+}
+
+impl PartialEq for IssueIdentity {
+	fn eq(&self, other: &IssueIdentity) -> bool {
+		self.ancestry == other.ancestry
+	}
+}
+
+/// Maximum nesting depth for issues (8 levels should be plenty).
+pub const MAX_LINEAGE_DEPTH: usize = 8;
+
+/// Ancestry information for an issue - where it lives in the filesystem.
+/// This is always defined, even for pending issues.
+/// Uses fixed-size storage to be `Copy`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Ancestry {
+	/// Repository owner and name
+	repo_info: RepoInfo,
+	/// Chain of parent issue numbers from root to immediate parent.
+	/// Empty for root issues. Uses fixed array with length tracking.
+	lineage_arr: [u64; MAX_LINEAGE_DEPTH],
+	lineage_len: u8,
+}
+
+impl Ancestry {
+	/// Create ancestry for a root issue.
+	/// Panics if owner or repo exceed their max lengths.
+	pub fn root(owner: &str, repo: &str) -> Self {
+		Self {
+			repo_info: RepoInfo::new(owner, repo),
+			lineage_arr: [0; MAX_LINEAGE_DEPTH],
+			lineage_len: 0,
+		}
+	}
+
+	/// Create ancestry for a root issue from RepoInfo.
+	pub fn root_from_repo(repo_info: RepoInfo) -> Self {
+		Self {
+			repo_info,
+			lineage_arr: [0; MAX_LINEAGE_DEPTH],
+			lineage_len: 0,
+		}
+	}
+
+	/// Create ancestry with a pre-existing lineage.
+	/// Panics if [owner](Ancestry::owner)/[repo](Ancestry::repo) str are too large or lineage exceeds [MAX_LINEAGE_DEPTH].
+	pub fn with_lineage(owner: &str, repo: &str, lineage: &[u64]) -> Self {
+		assert!(lineage.len() <= MAX_LINEAGE_DEPTH, "Issue nesting too deep (max {MAX_LINEAGE_DEPTH} levels)");
+		let mut lineage_arr = [0; MAX_LINEAGE_DEPTH];
+		lineage_arr[..lineage.len()].copy_from_slice(lineage);
+		Self {
+			repo_info: RepoInfo::new(owner, repo),
+			lineage_arr,
+			lineage_len: lineage.len() as u8,
+		}
+	}
+
+	/// Create ancestry for a child issue.
+	/// Panics if lineage would exceed MAX_LINEAGE_DEPTH.
+	pub fn child(&self, parent_number: u64) -> Self {
+		let new_len = self.lineage_len as usize + 1;
+		assert!(new_len <= MAX_LINEAGE_DEPTH, "Issue nesting too deep (max {MAX_LINEAGE_DEPTH} levels)");
+		let mut new_arr = self.lineage_arr;
+		new_arr[self.lineage_len as usize] = parent_number;
+		Self {
+			repo_info: self.repo_info,
+			lineage_arr: new_arr,
+			lineage_len: new_len as u8,
+		}
+	}
+
+	/// Get the lineage as a slice.
+	pub fn lineage(&self) -> &[u64] {
+		&self.lineage_arr[..self.lineage_len as usize]
+	}
+
+	/// Get the repository info.
+	pub fn repo_info(&self) -> RepoInfo {
+		self.repo_info
+	}
+
+	/// Get the owner.
+	pub fn owner(&self) -> &str {
+		self.repo_info.owner()
+	}
+
+	/// Get the repo.
+	pub fn repo(&self) -> &str {
+		self.repo_info.repo()
+	}
 }
 
 /// A comment in the issue conversation (first one is always the issue body)
@@ -325,59 +661,141 @@ pub struct IssueMeta {
 pub struct Comment {
 	/// Comment identity - body, linked to Github, or pending creation
 	pub identity: CommentIdentity,
-	pub body: String,
-	pub owned: bool,
+	/// The markdown body stored as parsed events for lossless roundtripping
+	pub body: super::Events,
+}
+
+/// The full editable content of an issue.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct IssueContents {
+	pub title: String,
+	pub labels: Vec<String>,
+	pub state: CloseState,
+	pub comments: Vec<Comment>,
+	pub blockers: BlockerSequence,
+}
+
+/// Parsed identity info from title line (internal helper).
+/// Represents what we can extract from the HTML comment marker.
+enum ParsedIdentityInfo {
+	/// Linked to Github: `@user url`
+	Linked { user: String, link: IssueLink },
+	/// Pending creation on Github: `local:` or empty
+	Pending,
+	/// Virtual (local-only, never sync): `virtual:`
+	Virtual,
+}
+
+/// Parsed title line components (internal helper)
+struct ParsedTitleLine {
+	title: String,
+	/// Identity info parsed from the title line
+	identity_info: ParsedIdentityInfo,
+	close_state: CloseState,
+	labels: Vec<String>,
 }
 
 /// Complete representation of an issue file
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Issue {
-	pub meta: IssueMeta,
-	pub labels: Vec<String>,
-	/// Comments in order. First is always the issue body (serialized without marker).
-	pub comments: Vec<Comment>,
+	/// Identity - linked to Github or local only
+	pub identity: IssueIdentity,
+	pub contents: IssueContents,
 	/// Sub-issues in order
 	pub children: Vec<Issue>,
-	/// Blockers section.
-	pub blockers: BlockerSequence,
-	/// Timestamp of last content change (body/comments, not children).
-	/// Used for sync conflict resolution. None for local-only issues that haven't been synced.
-	pub last_contents_change: Option<Timestamp>,
 }
 
-impl Issue {
+impl Issue /*{{{1*/ {
+	/// Check if this issue is local only (not yet on Github).
+	pub fn is_local(&self) -> bool {
+		self.identity.is_local()
+	}
+
+	/// Create an empty local issue with the given ancestry.
+	/// Used for comparison when an issue doesn't exist yet.
+	pub fn empty_local(ancestry: Ancestry) -> Self {
+		Self {
+			identity: IssueIdentity::local(ancestry),
+			contents: IssueContents::default(),
+			children: vec![],
+		}
+	}
+
+	/// Check if this issue is linked to Github.
+	pub fn is_linked(&self) -> bool {
+		self.identity.is_linked()
+	}
+
+	/// Get the issue number if linked to Github.
+	pub fn number(&self) -> Option<u64> {
+		self.identity.number()
+	}
+
+	/// Get the URL string if linked to Github.
+	pub fn url_str(&self) -> Option<&str> {
+		self.identity.url_str()
+	}
+
+	/// Get the user who created this issue if linked to Github.
+	pub fn user(&self) -> Option<&str> {
+		self.identity.user()
+	}
+
+	/// Update timestamps based on what changed compared to old contents.
+	/// This should be called after local modifications to track when fields changed.
+	pub fn update_timestamps_from_diff(&mut self, old_contents: &IssueContents) {
+		if let Some(linked) = self.identity.remote.as_linked_mut() {
+			linked.timestamps.update_from_diff(old_contents, &self.contents);
+		}
+	}
+
+	/// Get ancestry (always available).
+	pub fn ancestry(&self) -> &Ancestry {
+		self.identity.ancestry()
+	}
+
 	/// Get the full issue body including blockers section.
 	/// This is what should be synced to Github as the issue body.
 	pub fn body(&self) -> String {
-		let base_body = self.comments.first().map(|c| c.body.as_str()).unwrap_or("");
-		join_with_blockers(base_body, &self.blockers)
+		let base_body = self.contents.comments.first().map(|c| c.body.render()).unwrap_or_default();
+		join_with_blockers(&base_body, &self.contents.blockers)
 	}
 
-	/// Parse markdown content into an Issue.
-	/// Returns an error with a detailed message if any part of the file cannot be understood.
-	pub fn parse(content: &str, path: &std::path::Path) -> Result<Self, ParseError> {
+	/// Parse virtual representation (markdown with full tree) into an Issue.
+	///
+	/// For linked issues, ancestry is derived from the URL in the content.
+	/// For pending/virtual issues, `ancestry` must be provided or parsing will fail.
+	pub fn parse_virtual_with_ancestry(content: &str, path: &std::path::Path, ancestry: Ancestry) -> Result<Self, ParseError> {
 		let ctx = ParseContext::new(content.to_string(), path.display().to_string());
-
-		//TODO!!!!!!: make parse aware of Extension
-		let extension = path
-			.extension()
-			.and_then(|e| e.to_str())
-			.map(|ext| match ext {
-				"md" => crate::Extension::Md,
-				"typ" => crate::Extension::Typ,
-				_ => crate::Extension::Md,
-			})
-			.unwrap_or(crate::Extension::Md);
 
 		let normalized = normalize_issue_indentation(content);
 		let mut lines = normalized.lines().peekable();
 
-		Self::parse_at_depth(&mut lines, 0, 1, &ctx)
+		Self::parse_virtual_at_depth(&mut lines, 0, 1, &ctx, Some(&ancestry))
 	}
 
-	/// Parse an issue at given nesting depth (0 = root, 1 = sub-issue, etc.)
-	/// `line_num` tracks the current line for error reporting.
-	fn parse_at_depth(lines: &mut std::iter::Peekable<std::str::Lines>, depth: usize, line_num: usize, ctx: &ParseContext) -> Result<Self, ParseError> {
+	/// Parse virtual representation (markdown with full tree) into an Issue.
+	///
+	/// For linked issues, ancestry is derived from the URL in the content.
+	/// For pending/virtual root issues, this will panic - use `parse_virtual_with_ancestry` instead.
+	pub fn parse_virtual(content: &str, path: &std::path::Path) -> Result<Self, ParseError> {
+		let ctx = ParseContext::new(content.to_string(), path.display().to_string());
+
+		let normalized = normalize_issue_indentation(content);
+		let mut lines = normalized.lines().peekable();
+
+		Self::parse_virtual_at_depth(&mut lines, 0, 1, &ctx, None)
+	}
+
+	/// Parse virtual representation at given nesting depth.
+	/// `parent_ancestry` is the ancestry of the parent issue (if any) - used to derive child ancestry.
+	fn parse_virtual_at_depth(
+		lines: &mut std::iter::Peekable<std::str::Lines>,
+		depth: usize,
+		line_num: usize,
+		ctx: &ParseContext,
+		parent_ancestry: Option<&Ancestry>,
+	) -> Result<Self, ParseError> {
 		let indent = "\t".repeat(depth);
 		let child_indent = "\t".repeat(depth + 1);
 
@@ -388,13 +806,13 @@ impl Issue {
 			span: ctx.line_span(line_num),
 			expected_tabs: depth,
 		})?;
-		let (meta, labels) = Self::parse_title_line(title_content, line_num, ctx)?;
+		let parsed = Self::parse_title_line(title_content, line_num, ctx)?;
 
 		let mut comments = Vec::new();
 		let mut children = Vec::new();
 		let mut blocker_lines = Vec::new();
 		let mut current_comment_lines: Vec<String> = Vec::new();
-		let mut current_comment_meta: Option<(CommentIdentity, bool)> = None; // (identity, owned)
+		let mut current_comment_meta: Option<CommentIdentity> = None;
 		let mut in_body = true;
 		let mut in_blockers = false;
 		let mut current_line = line_num;
@@ -432,16 +850,18 @@ impl Issue {
 				if in_body {
 					in_body = false;
 					if !body_lines.is_empty() {
-						let body = body_lines.join("\n").trim().to_string();
+						let body_text = body_lines.join("\n").trim().to_string();
 						comments.push(Comment {
 							identity: CommentIdentity::Body,
-							body,
-							owned: meta.owned,
+							body: super::Events::parse(&body_text),
 						});
 					}
-				} else if let Some((identity, owned)) = current_comment_meta.take() {
-					let body = current_comment_lines.join("\n").trim().to_string();
-					comments.push(Comment { identity, body, owned });
+				} else if let Some(identity) = current_comment_meta.take() {
+					let body_text = current_comment_lines.join("\n").trim().to_string();
+					comments.push(Comment {
+						identity,
+						body: super::Events::parse(&body_text),
+					});
 					current_comment_lines.clear();
 				}
 				in_blockers = true;
@@ -455,7 +875,7 @@ impl Issue {
 				// Check if this is a sub-issue line - if so, exit blockers mode and process it below
 				if content.starts_with("- [") {
 					match Self::parse_child_title_line_detailed(content) {
-						ChildTitleParseResult::Ok(_) => {
+						ChildTitleParseResult::Ok => {
 							in_blockers = false;
 							tracing::debug!("[parse] exiting blockers section due to sub-issue: {content:?}");
 							// Fall through to sub-issue processing below
@@ -505,39 +925,31 @@ impl Issue {
 				// Flush previous (only for actual comment markers, not fold markers)
 				if in_body {
 					in_body = false;
-					let body = body_lines.join("\n").trim().to_string();
+					let body_text = body_lines.join("\n").trim().to_string();
 					comments.push(Comment {
 						identity: CommentIdentity::Body,
-						body,
-						owned: meta.owned,
+						body: super::Events::parse(&body_text),
 					});
-				} else if let Some((identity, owned)) = current_comment_meta.take() {
-					let body = current_comment_lines.join("\n").trim().to_string();
-					comments.push(Comment { identity, body, owned });
+				} else if let Some(identity) = current_comment_meta.take() {
+					let body_text = current_comment_lines.join("\n").trim().to_string();
+					comments.push(Comment {
+						identity,
+						body: super::Events::parse(&body_text),
+					});
 					current_comment_lines.clear();
 				}
 
 				// Handle !c shorthand
 				if is_new_comment_shorthand {
-					current_comment_meta = Some((CommentIdentity::Pending, true));
+					current_comment_meta = Some(CommentIdentity::Pending);
 					continue;
 				}
 
 				if inner == "new comment" {
-					current_comment_meta = Some((CommentIdentity::Pending, true));
+					current_comment_meta = Some(CommentIdentity::Pending);
 				} else if inner.contains("#issuecomment-") {
-					let (is_immutable, url) = if let Some(rest) = inner.strip_prefix("immutable ") {
-						(true, rest.trim())
-					} else {
-						(false, inner)
-					};
-					let identity = url
-						.split("#issuecomment-")
-						.nth(1)
-						.and_then(|s| s.parse().ok())
-						.map(CommentIdentity::Linked)
-						.unwrap_or(CommentIdentity::Pending);
-					current_comment_meta = Some((identity, !is_immutable));
+					let identity = Self::parse_comment_identity(inner);
+					current_comment_meta = Some(identity);
 				}
 				continue;
 			}
@@ -545,7 +957,7 @@ impl Issue {
 			// Check for sub-issue line: `- [x] Title <!--sub url-->` or `- [ ] Title` (new)
 			if content.starts_with("- [") {
 				let is_child_title = match Self::parse_child_title_line_detailed(content) {
-					ChildTitleParseResult::Ok(_) => true,
+					ChildTitleParseResult::Ok => true,
 					ChildTitleParseResult::InvalidCheckbox(invalid_content) => {
 						return Err(ParseError::InvalidCheckbox {
 							src: ctx.named_source(),
@@ -570,15 +982,17 @@ impl Issue {
 				// Flush current
 				if in_body {
 					in_body = false;
-					let body = body_lines.join("\n").trim().to_string();
+					let body_text = body_lines.join("\n").trim().to_string();
 					comments.push(Comment {
 						identity: CommentIdentity::Body,
-						body,
-						owned: meta.owned,
+						body: super::Events::parse(&body_text),
 					});
-				} else if let Some((identity, owned)) = current_comment_meta.take() {
-					let body = current_comment_lines.join("\n").trim().to_string();
-					comments.push(Comment { identity, body, owned });
+				} else if let Some(identity) = current_comment_meta.take() {
+					let body_text = current_comment_lines.join("\n").trim().to_string();
+					comments.push(Comment {
+						identity,
+						body: super::Events::parse(&body_text),
+					});
 					current_comment_lines.clear();
 				}
 
@@ -608,9 +1022,23 @@ impl Issue {
 				}
 
 				// Recursively parse the child
+				// Build child's parent ancestry from this issue's identity info
+				let child_parent_ancestry = match &parsed.identity_info {
+					ParsedIdentityInfo::Linked { link, .. } => {
+						// Parent is linked - child ancestry extends from it
+						let base_ancestry = parent_ancestry
+							.map(|a| a.child(link.number()))
+							.unwrap_or_else(|| Ancestry::root(link.owner(), link.repo()).child(link.number()));
+						Some(base_ancestry)
+					}
+					ParsedIdentityInfo::Pending | ParsedIdentityInfo::Virtual => {
+						// Local/virtual parent - pass through parent ancestry (Copy)
+						parent_ancestry.copied()
+					}
+				};
 				let child_content = child_lines.join("\n");
 				let mut child_lines_iter = child_content.lines().peekable();
-				let child = Self::parse_at_depth(&mut child_lines_iter, 0, current_line, ctx)?;
+				let child = Self::parse_virtual_at_depth(&mut child_lines_iter, 0, current_line, ctx, child_parent_ancestry.as_ref())?;
 				children.push(child);
 				continue;
 			}
@@ -626,31 +1054,59 @@ impl Issue {
 
 		// Flush final
 		if in_body {
-			let body = body_lines.join("\n").trim().to_string();
+			let body_text = body_lines.join("\n").trim().to_string();
 			comments.push(Comment {
 				identity: CommentIdentity::Body,
-				body,
-				owned: meta.owned,
+				body: super::Events::parse(&body_text),
 			});
-		} else if let Some((identity, owned)) = current_comment_meta.take() {
-			let body = current_comment_lines.join("\n").trim().to_string();
-			comments.push(Comment { identity, body, owned });
+		} else if let Some(identity) = current_comment_meta.take() {
+			let body_text = current_comment_lines.join("\n").trim().to_string();
+			comments.push(Comment {
+				identity,
+				body: super::Events::parse(&body_text),
+			});
 		}
 
+		// Build identity from identity_info
+		let identity = match parsed.identity_info {
+			ParsedIdentityInfo::Linked { user, link } => {
+				// Linked issues get ancestry from the URL, optionally extended by parent
+				let ancestry = parent_ancestry.copied().unwrap_or_else(|| Ancestry::root(link.owner(), link.repo()));
+				// Timestamps will be loaded from .meta.json separately
+				IssueIdentity::linked(ancestry, user, link, IssueTimestamps::default())
+			}
+			ParsedIdentityInfo::Pending => {
+				// Pending issues require ancestry from parent/caller
+				let ancestry = parent_ancestry
+					.copied()
+					.expect("BUG: pending issue without ancestry. Use parse_virtual_with_ancestry for pending root issues.");
+				IssueIdentity::pending(ancestry)
+			}
+			ParsedIdentityInfo::Virtual => {
+				// Virtual issues require ancestry from parent/caller
+				let ancestry = parent_ancestry
+					.copied()
+					.expect("BUG: virtual issue without ancestry. Use parse_virtual_with_ancestry for virtual root issues.");
+				IssueIdentity::virtual_issue(ancestry)
+			}
+		};
+
 		Ok(Issue {
-			meta,
-			labels,
-			comments,
+			identity,
+			contents: IssueContents {
+				title: parsed.title,
+				labels: parsed.labels,
+				state: parsed.close_state,
+				comments,
+				blockers: BlockerSequence::from_lines(blocker_lines),
+			},
 			children,
-			blockers: BlockerSequence::from_lines(blocker_lines),
-			last_contents_change: None, // Set from Github when syncing
 		})
 	}
 
 	/// Parse title line: `- [ ] [label1, label2] Title <!--url-->` or `- [ ] Title <!--immutable url-->`
 	/// Also supports `- [-]` for not-planned and `- [123]` for duplicates.
-	/// Returns (IssueMeta, labels)
-	fn parse_title_line(line: &str, line_num: usize, ctx: &ParseContext) -> Result<(IssueMeta, Vec<String>), ParseError> {
+	fn parse_title_line(line: &str, line_num: usize, ctx: &ParseContext) -> Result<ParsedTitleLine, ParseError> {
 		// Parse checkbox: `- [CONTENT] `
 		let (close_state, rest) = match Self::parse_checkbox_prefix_detailed(line) {
 			CheckboxParseResult::Ok(state, rest) => (state, rest),
@@ -701,30 +1157,76 @@ impl Issue {
 		let title = rest[..marker_start].trim().to_string();
 		let inner = rest[marker_start + 4..marker_end].trim();
 
-		// Handle both root format `<!-- url -->` and sub format `<!--sub url -->`
+		// Handle both root format `<!-- @user url -->` and sub format `<!--sub @user url -->`
 		let inner = inner.strip_prefix("sub ").unwrap_or(inner);
 
-		let (owned, identity) = if let Some(url) = inner.strip_prefix("immutable ") {
-			let url = url.trim();
-			let identity = IssueLink::parse(url).map(IssueIdentity::Linked).unwrap_or(IssueIdentity::Pending);
-			(false, identity)
-		} else if inner.is_empty() {
-			// Empty marker `<!--  -->` or `<!--sub -->` means pending
-			(true, IssueIdentity::Pending)
-		} else {
-			let identity = IssueLink::parse(inner).map(IssueIdentity::Linked).unwrap_or(IssueIdentity::Pending);
-			(true, identity)
-		};
+		// Parse identity info from marker content
+		let identity_info = Self::parse_identity_info(inner);
 
-		Ok((
-			IssueMeta {
-				title,
-				identity,
-				close_state,
-				owned,
-			},
+		Ok(ParsedTitleLine {
+			title,
+			identity_info,
+			close_state,
 			labels,
-		))
+		})
+	}
+
+	/// Parse identity info from the HTML comment content.
+	/// Formats:
+	/// - `@user url` for linked Github issues (full format with author)
+	/// - `url` for linked Github issues (bare URL, author unknown)
+	/// - `local:` or empty for pending Github issues
+	/// - `virtual:` for virtual (local-only) issues
+	fn parse_identity_info(s: &str) -> ParsedIdentityInfo {
+		let s = s.trim();
+
+		// Empty marker means pending
+		if s.is_empty() {
+			return ParsedIdentityInfo::Pending;
+		}
+
+		// Virtual format: `virtual:` - local only, never sync
+		if s.starts_with("virtual:") {
+			return ParsedIdentityInfo::Virtual;
+		}
+
+		// Local format: `local:` - pending creation on Github
+		if s.starts_with("local:") {
+			return ParsedIdentityInfo::Pending;
+		}
+
+		// Linked format with user: `@username https://github.com/...`
+		if let Some(rest) = s.strip_prefix('@')
+			&& let Some(space_idx) = rest.find(' ')
+		{
+			let user = rest[..space_idx].to_string();
+			let url = rest[space_idx + 1..].trim();
+			if let Some(link) = IssueLink::parse(url) {
+				return ParsedIdentityInfo::Linked { user, link };
+			}
+		}
+
+		// Default to pending for unrecognized formats
+		ParsedIdentityInfo::Pending
+	}
+
+	/// Parse `@user url#issuecomment-id` format into CommentIdentity.
+	/// Returns Pending if parsing fails.
+	fn parse_comment_identity(s: &str) -> CommentIdentity {
+		let s = s.trim();
+
+		// Format: `@username url#issuecomment-123`
+		if let Some(rest) = s.strip_prefix('@')
+			&& let Some(space_idx) = rest.find(' ')
+		{
+			let user = rest[..space_idx].to_string();
+			let url = rest[space_idx + 1..].trim();
+			if let Some(id) = url.split("#issuecomment-").nth(1).and_then(|s| s.parse().ok()) {
+				return CommentIdentity::Created { user, id };
+			}
+		}
+
+		CommentIdentity::Pending
 	}
 
 	/// Parse checkbox prefix: `- [CONTENT] ` and return result.
@@ -750,7 +1252,7 @@ impl Issue {
 
 	/// Parse child/sub-issue title line with detailed result.
 	fn parse_child_title_line_detailed(line: &str) -> ChildTitleParseResult {
-		let (close_state, rest) = match Self::parse_checkbox_prefix_detailed(line) {
+		let (_, rest) = match Self::parse_checkbox_prefix_detailed(line) {
 			CheckboxParseResult::Ok(state, rest) => (state, rest),
 			CheckboxParseResult::NotCheckbox => return ChildTitleParseResult::NotChildTitle,
 			CheckboxParseResult::InvalidContent(content) => return ChildTitleParseResult::InvalidCheckbox(content),
@@ -758,27 +1260,15 @@ impl Issue {
 
 		// Check for sub marker
 		if let Some(marker_start) = rest.find("<!--sub ") {
-			let Some(marker_end) = rest.find("-->") else {
+			if rest.find("-->").is_none() {
 				return ChildTitleParseResult::NotChildTitle;
 			};
-			let title = rest[..marker_start].trim().to_string();
-			let url = rest[marker_start + 8..marker_end].trim().to_string();
-			let identity = IssueLink::parse(&url).map(IssueIdentity::Linked).unwrap_or(IssueIdentity::Pending);
-			ChildTitleParseResult::Ok(IssueMeta {
-				title,
-				identity,
-				close_state,
-				owned: true,
-			})
+			let title = rest[..marker_start].trim();
+			if title.is_empty() { ChildTitleParseResult::NotChildTitle } else { ChildTitleParseResult::Ok }
 		} else if !rest.contains("<!--") {
-			let title = rest.trim().to_string();
+			let title = rest.trim();
 			if !title.is_empty() {
-				ChildTitleParseResult::Ok(IssueMeta {
-					title,
-					identity: IssueIdentity::Pending,
-					close_state,
-					owned: true,
-				})
+				ChildTitleParseResult::Ok
 			} else {
 				ChildTitleParseResult::NotChildTitle
 			}
@@ -794,40 +1284,43 @@ impl Issue {
 	/// Serialize for virtual file representation (human-readable, full tree).
 	/// Creates a complete markdown file with all children recursively embedded.
 	/// Used for temp files in /tmp where user views/edits the full issue tree.
-	pub fn serialize_virtual(&self, ext: crate::Extension) -> String {
-		self.serialize_virtual_at_depth(0, ext)
+	pub fn serialize_virtual(&self) -> String {
+		self.serialize_virtual_at_depth(0)
 	}
 
 	/// Internal: serialize virtual representation at given depth
-	fn serialize_virtual_at_depth(&self, depth: usize, ext: crate::Extension) -> String {
+	fn serialize_virtual_at_depth(&self, depth: usize) -> String {
 		let indent = "\t".repeat(depth);
 		let content_indent = "\t".repeat(depth + 1);
 		let mut out = String::new();
 
-		// Title line - root uses `<!-- url -->`, children use `<!--sub url -->`
-		let checked = self.meta.close_state.to_checkbox();
-		let url_part = self.meta.identity.url_str().unwrap_or("");
-		let labels_part = if self.labels.is_empty() { String::new() } else { format!("[{}] ", self.labels.join(", ")) };
-		let marker = if depth == 0 { " " } else { "sub " };
-		if self.meta.owned {
-			out.push_str(&format!("{indent}- [{checked}] {labels_part}{} <!--{marker}{url_part} -->\n", self.meta.title));
+		// Title line - root uses `<!-- @user url -->`, children use `<!--sub @user url -->`
+		let checked = self.contents.state.to_checkbox();
+		let identity_part = self.identity.encode();
+		let labels_part = if self.contents.labels.is_empty() {
+			String::new()
 		} else {
-			out.push_str(&format!("{indent}- [{checked}] {labels_part}{} <!--immutable{marker}{url_part} -->\n", self.meta.title));
-		}
+			format!("[{}] ", self.contents.labels.join(", "))
+		};
+		let marker = if depth == 0 { " " } else { "sub " };
+		let is_owned = self.user().is_some_and(crate::current_user::is);
+		out.push_str(&format!("{indent}- [{checked}] {labels_part}{} <!--{marker}{identity_part} -->\n", self.contents.title));
 
-		// Body (first comment)
-		if let Some(body_comment) = self.comments.first() {
-			let comment_indent = if body_comment.owned { &content_indent } else { &format!("{content_indent}\t") };
+		// Body (first comment) - add extra indent if not owned
+		if let Some(body_comment) = self.contents.comments.first() {
+			let comment_indent = if is_owned { &content_indent } else { &format!("{content_indent}\t") };
 			if !body_comment.body.is_empty() {
-				for line in body_comment.body.lines() {
+				let body_rendered = body_comment.body.render();
+				for line in body_rendered.lines() {
 					out.push_str(&format!("{comment_indent}{line}\n"));
 				}
 			}
 		}
 
 		// Additional comments
-		for comment in self.comments.iter().skip(1) {
-			let comment_indent = if comment.owned { &content_indent } else { &format!("{content_indent}\t") };
+		for comment in self.contents.comments.iter().skip(1) {
+			let comment_is_owned = comment.identity.user().is_some_and(crate::current_user::is);
+			let comment_indent = if comment_is_owned { &content_indent } else { &format!("{content_indent}\t") };
 
 			if out.lines().last().is_some_and(|l| !l.trim().is_empty()) {
 				out.push_str(&format!("{content_indent}\n"));
@@ -837,33 +1330,30 @@ impl Issue {
 				CommentIdentity::Body => {
 					out.push_str(&format!("{content_indent}<!-- new comment -->\n"));
 				}
-				CommentIdentity::Linked(id) => {
-					let url = self.meta.identity.url_str().unwrap_or("");
-					if comment.owned {
-						out.push_str(&format!("{content_indent}<!-- {url}#issuecomment-{id} -->\n"));
-					} else {
-						out.push_str(&format!("{content_indent}<!--immutable {url}#issuecomment-{id} -->\n"));
-					}
+				CommentIdentity::Created { user, id } => {
+					let url = self.url_str().unwrap_or("");
+					out.push_str(&format!("{content_indent}<!-- @{user} {url}#issuecomment-{id} -->\n"));
 				}
 				CommentIdentity::Pending => {
 					out.push_str(&format!("{content_indent}<!-- new comment -->\n"));
 				}
 			}
 			if !comment.body.is_empty() {
-				for line in comment.body.lines() {
+				let comment_rendered = comment.body.render();
+				for line in comment_rendered.lines() {
 					out.push_str(&format!("{comment_indent}{line}\n"));
 				}
 			}
 		}
 
 		// Blockers section
-		if !self.blockers.is_empty() {
+		if !self.contents.blockers.is_empty() {
 			if out.lines().last().is_some_and(|l| !l.trim().is_empty()) {
 				out.push_str(&format!("{content_indent}\n"));
 			}
 			let header = crate::Header::new(1, "Blockers");
-			out.push_str(&format!("{content_indent}{}\n", header.encode(ext)));
-			for line in self.blockers.lines() {
+			out.push_str(&format!("{content_indent}{}\n", header.encode()));
+			for line in self.contents.blockers.lines() {
 				out.push_str(&format!("{content_indent}{}\n", line.to_raw()));
 			}
 		}
@@ -877,29 +1367,26 @@ impl Issue {
 
 			// For closed children, we need to wrap the body in vim folds
 			// But still recurse for the full structure
-			if child.meta.close_state.is_closed() {
+			if child.contents.state.is_closed() {
 				// Output child title line
-				let child_checked = child.meta.close_state.to_checkbox();
-				let child_url_part = child.meta.identity.url_str().unwrap_or("");
-				let child_labels_part = if child.labels.is_empty() { String::new() } else { format!("[{}] ", child.labels.join(", ")) };
-				if child.meta.owned {
-					out.push_str(&format!(
-						"{content_indent}- [{child_checked}] {child_labels_part}{} <!--sub {child_url_part} -->\n",
-						child.meta.title
-					));
+				let child_checked = child.contents.state.to_checkbox();
+				let child_identity_part = child.identity.encode();
+				let child_labels_part = if child.contents.labels.is_empty() {
+					String::new()
 				} else {
-					out.push_str(&format!(
-						"{content_indent}- [{child_checked}] {child_labels_part}{} <!--immutable sub {child_url_part} -->\n",
-						child.meta.title
-					));
-				}
+					format!("[{}] ", child.contents.labels.join(", "))
+				};
+				out.push_str(&format!(
+					"{content_indent}- [{child_checked}] {child_labels_part}{} <!--sub {child_identity_part} -->\n",
+					child.contents.title
+				));
 
 				// Vim fold start
 				let child_content_indent = "\t".repeat(depth + 2);
 				out.push_str(&format!("{child_content_indent}<!--omitted {{{{{{always-->\n"));
 
 				// Child body and nested content (without title line - we already output it)
-				let child_serialized = child.serialize_virtual_at_depth(depth + 1, ext);
+				let child_serialized = child.serialize_virtual_at_depth(depth + 1);
 				// Skip the first line (title) since we already output it with vim fold handling
 				for line in child_serialized.lines().skip(1) {
 					out.push_str(&format!("{line}\n"));
@@ -908,7 +1395,7 @@ impl Issue {
 				// Vim fold end
 				out.push_str(&format!("{child_content_indent}<!--,}}}}}}-->\n"));
 			} else {
-				out.push_str(&child.serialize_virtual_at_depth(depth + 1, ext));
+				out.push_str(&child.serialize_virtual_at_depth(depth + 1));
 			}
 		}
 
@@ -917,34 +1404,37 @@ impl Issue {
 
 	/// Serialize for filesystem storage (single node, no children).
 	/// Children are stored in separate files within the parent's directory.
-	/// This is the inverse of `deserialize_filesystem`.
-	pub fn serialize_filesystem(&self, ext: crate::Extension) -> String {
+	/// Parsing is done via `Local::parse_single_node` in the local module.
+	pub fn serialize_filesystem(&self) -> String {
 		let content_indent = "\t";
 		let mut out = String::new();
 
 		// Title line (always at root level for filesystem representation)
-		let checked = self.meta.close_state.to_checkbox();
-		let url_part = self.meta.identity.url_str().unwrap_or("");
-		let labels_part = if self.labels.is_empty() { String::new() } else { format!("[{}] ", self.labels.join(", ")) };
-		if self.meta.owned {
-			out.push_str(&format!("- [{checked}] {labels_part}{} <!-- {url_part} -->\n", self.meta.title));
+		let checked = self.contents.state.to_checkbox();
+		let identity_part = self.identity.encode();
+		let labels_part = if self.contents.labels.is_empty() {
+			String::new()
 		} else {
-			out.push_str(&format!("- [{checked}] {labels_part}{} <!--immutable {url_part} -->\n", self.meta.title));
-		}
+			format!("[{}] ", self.contents.labels.join(", "))
+		};
+		let is_owned = self.user().is_some_and(crate::current_user::is);
+		out.push_str(&format!("- [{checked}] {labels_part}{} <!-- {identity_part} -->\n", self.contents.title));
 
-		// Body (first comment)
-		if let Some(body_comment) = self.comments.first() {
-			let comment_indent = if body_comment.owned { content_indent } else { "\t\t" };
+		// Body (first comment) - add extra indent if not owned
+		if let Some(body_comment) = self.contents.comments.first() {
+			let comment_indent = if is_owned { content_indent } else { "\t\t" };
 			if !body_comment.body.is_empty() {
-				for line in body_comment.body.lines() {
+				let body_rendered = body_comment.body.render();
+				for line in body_rendered.lines() {
 					out.push_str(&format!("{comment_indent}{line}\n"));
 				}
 			}
 		}
 
 		// Additional comments
-		for comment in self.comments.iter().skip(1) {
-			let comment_indent_str = if comment.owned { content_indent } else { "\t\t" };
+		for comment in self.contents.comments.iter().skip(1) {
+			let comment_is_owned = comment.identity.user().is_some_and(crate::current_user::is);
+			let comment_indent_str = if comment_is_owned { content_indent } else { "\t\t" };
 
 			if out.lines().last().is_some_and(|l| !l.trim().is_empty()) {
 				out.push_str(&format!("{content_indent}\n"));
@@ -954,33 +1444,30 @@ impl Issue {
 				CommentIdentity::Body => {
 					out.push_str(&format!("{content_indent}<!-- new comment -->\n"));
 				}
-				CommentIdentity::Linked(id) => {
-					let url = self.meta.identity.url_str().unwrap_or("");
-					if comment.owned {
-						out.push_str(&format!("{content_indent}<!-- {url}#issuecomment-{id} -->\n"));
-					} else {
-						out.push_str(&format!("{content_indent}<!--immutable {url}#issuecomment-{id} -->\n"));
-					}
+				CommentIdentity::Created { user, id } => {
+					let url = self.url_str().unwrap_or("");
+					out.push_str(&format!("{content_indent}<!-- @{user} {url}#issuecomment-{id} -->\n"));
 				}
 				CommentIdentity::Pending => {
 					out.push_str(&format!("{content_indent}<!-- new comment -->\n"));
 				}
 			}
 			if !comment.body.is_empty() {
-				for line in comment.body.lines() {
+				let comment_rendered = comment.body.render();
+				for line in comment_rendered.lines() {
 					out.push_str(&format!("{comment_indent_str}{line}\n"));
 				}
 			}
 		}
 
 		// Blockers section
-		if !self.blockers.is_empty() {
+		if !self.contents.blockers.is_empty() {
 			if out.lines().last().is_some_and(|l| !l.trim().is_empty()) {
 				out.push_str(&format!("{content_indent}\n"));
 			}
 			let header = crate::Header::new(1, "Blockers");
-			out.push_str(&format!("{content_indent}{}\n", header.encode(ext)));
-			for line in self.blockers.lines() {
+			out.push_str(&format!("{content_indent}{}\n", header.encode()));
+			for line in self.contents.blockers.lines() {
 				out.push_str(&format!("{content_indent}{}\n", line.to_raw()));
 			}
 		}
@@ -1005,30 +1492,8 @@ impl Issue {
 
 	/// Parse from virtual file content (full tree embedded).
 	/// This is the inverse of `serialize_virtual`.
-	pub fn deserialize_virtual(content: &str, ext: crate::Extension) -> Result<Self, ParseError> {
-		// Virtual format is the same as the current parse format
-		// We create a dummy path with the right extension for parsing
-		let dummy_path = match ext {
-			crate::Extension::Md => std::path::Path::new("virtual.md"),
-			crate::Extension::Typ => std::path::Path::new("virtual.typ"),
-		};
-		Self::parse(content, dummy_path)
-	}
-
-	/// Parse from filesystem content (single node, no children).
-	/// Children must be loaded separately from their own files.
-	/// This is the inverse of `serialize_filesystem`.
-	pub fn deserialize_filesystem(content: &str, ext: crate::Extension) -> Result<Self, ParseError> {
-		// Filesystem format is the same structure but without embedded children
-		// Children field will be empty; caller loads them from directory
-		let dummy_path = match ext {
-			crate::Extension::Md => std::path::Path::new("filesystem.md"),
-			crate::Extension::Typ => std::path::Path::new("filesystem.typ"),
-		};
-		let mut issue = Self::parse(content, dummy_path)?;
-		// Clear any children that might have been parsed (shouldn't happen in filesystem format)
-		issue.children.clear();
-		Ok(issue)
+	pub fn deserialize_virtual(content: &str) -> Result<Self, ParseError> {
+		Self::parse_virtual(content, std::path::Path::new("virtual.md"))
 	}
 
 	/// Get a mutable reference to a child issue by path
@@ -1047,17 +1512,17 @@ impl Issue {
 	/// Returns None if there are no blockers.
 	/// Line numbers are 1-indexed to match editor conventions.
 	/// Column points to the first character of the item text (after `- `).
-	pub fn find_last_blocker_position(&self, ext: crate::Extension) -> Option<(u32, u32)> {
-		if self.blockers.is_empty() {
+	pub fn find_last_blocker_position(&self) -> Option<(u32, u32)> {
+		if self.contents.blockers.is_empty() {
 			return None;
 		}
 
 		// Serialize and find the last blocker item line
-		let serialized = self.serialize_virtual(ext);
+		let serialized = self.serialize_virtual();
 		let lines: Vec<&str> = serialized.lines().collect();
 
-		// Find where blockers section starts (format-aware header check)
-		let blockers_header = crate::Header::new(1, "Blockers").encode(ext);
+		// Find where blockers section starts
+		let blockers_header = crate::Header::new(1, "Blockers").encode();
 		let blockers_start_idx = lines.iter().position(|line| line.trim() == blockers_header)?;
 
 		// Track the last line that's a blocker item (starts with `- ` but not `- [` which is sub-issue)
@@ -1086,53 +1551,77 @@ impl Issue {
 
 		last_item_line_num.zip(last_item_col)
 	}
+
+	/// Get a reference to a descendant by lineage (chain of issue numbers).
+	/// Returns None if the path doesn't exist.
+	pub fn get(&self, lineage: &[u64]) -> Option<&Issue> {
+		let mut current = self;
+		for &num in lineage {
+			current = current.children.iter().find(|c| c.number() == Some(num))?;
+		}
+		Some(current)
+	}
+
+	/// Get a mutable reference to a descendant by lineage.
+	/// Returns None if the path doesn't exist.
+	pub fn get_mut(&mut self, lineage: &[u64]) -> Option<&mut Issue> {
+		let mut current = self;
+		for &num in lineage {
+			current = current.children.iter_mut().find(|c| c.number() == Some(num))?;
+		}
+		Some(current)
+	}
 }
 
-/// Semantic equality for divergence detection.
-/// Compares the fields that matter for sync: close_state, body, comments, sub-issue states.
-/// Ignores local-only fields like blockers and ownership.
-impl PartialEq for Issue {
-	fn eq(&self, other: &Self) -> bool {
-		// Compare close state
-		if self.meta.close_state != other.meta.close_state {
-			return false;
-		}
+//,}}}1
 
-		// Compare body (first comment)
-		let self_body = self.comments.first().map(|c| c.body.as_str()).unwrap_or("");
-		let other_body = other.comments.first().map(|c| c.body.as_str()).unwrap_or("");
-		if self_body != other_body {
-			return false;
-		}
+//==============================================================================
+// Index by issue number
+//==============================================================================
 
-		// Compare comments (skip first which is body)
-		let self_comments: Vec<_> = self.comments.iter().skip(1).collect();
-		let other_comments: Vec<_> = other.comments.iter().skip(1).collect();
+// PERF: Linear search through children for each index operation.
+// We sacrifice some performance for determinism - the tree structure
+// is navigated by issue numbers rather than positional indices.
 
-		if self_comments.len() != other_comments.len() {
-			return false;
-		}
+impl std::ops::Index<u64> for Issue {
+	type Output = Issue;
 
-		for (sc, oc) in self_comments.iter().zip(other_comments.iter()) {
-			if sc.identity != oc.identity || sc.body != oc.body {
-				return false;
-			}
-		}
-
-		// Compare sub-issue states
-		if self.children.len() != other.children.len() {
-			return false;
-		}
-
-		for (sc, oc) in self.children.iter().zip(other.children.iter()) {
-			// Compare by identity (issue number) and state
-			if sc.meta.identity != oc.meta.identity || sc.meta.close_state != oc.meta.close_state {
-				return false;
-			}
-		}
-
-		true
+	/// Index into children by issue number.
+	/// Panics if no child with that number exists.
+	fn index(&self, issue_number: u64) -> &Self::Output {
+		self.children
+			.iter()
+			.find(|child| child.number() == Some(issue_number))
+			.unwrap_or_else(|| panic!("no child with issue number {issue_number}"))
 	}
+}
+
+impl std::ops::IndexMut<u64> for Issue {
+	/// Index into children by issue number (mutable).
+	/// Panics if no child with that number exists.
+	fn index_mut(&mut self, issue_number: u64) -> &mut Self::Output {
+		self.children
+			.iter_mut()
+			.find(|child| child.number() == Some(issue_number))
+			.unwrap_or_else(|| panic!("no child with issue number {issue_number}"))
+	}
+}
+
+/// Trait for lazy loading of issues from a source.
+///
+/// `S` is a marker type (e.g., `Local` for filesystem, `Remote` for GitHub).
+/// The associated `Source` type is what's actually passed to methods.
+/// Methods load data on demand; `&mut self` allows caching intermediate results.
+#[allow(async_fn_in_trait)]
+pub trait LazyIssue<S> {
+	/// The actual source reference type (e.g., `PathBuf` for Local, `IssueLink` for Remote).
+	type Source;
+	/// Error type for operations on this source.
+	type Error: std::error::Error;
+
+	async fn identity(&mut self, source: Self::Source) -> Result<IssueIdentity, Self::Error>;
+	async fn contents(&mut self, source: Self::Source) -> Result<IssueContents, Self::Error>;
+	async fn children(&mut self, source: Self::Source) -> Result<Vec<Issue>, Self::Error>;
 }
 
 #[cfg(test)]
@@ -1231,13 +1720,13 @@ mod tests {
 		use std::path::Path;
 
 		// Invalid checkbox on root issue
-		let content = "- [abc] Invalid issue <!-- https://github.com/owner/repo/issues/123 -->\n\tBody\n";
-		let result = Issue::parse(content, Path::new("test.md"));
+		let content = "- [abc] Invalid issue <!-- @owner https://github.com/owner/repo/issues/123 -->\n\tBody\n";
+		let result = Issue::parse_virtual(content, Path::new("test.md"));
 		assert!(matches!(result, Err(ParseError::InvalidCheckbox { content, .. }) if content == "abc"));
 
 		// Invalid checkbox on sub-issue
-		let content = "- [ ] Parent <!-- https://github.com/owner/repo/issues/1 -->\n\tBody\n\n\t- [xyz] Bad sub <!--sub https://github.com/owner/repo/issues/2 -->\n";
-		let result = Issue::parse(content, Path::new("test.md"));
+		let content = "- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->\n\tBody\n\n\t- [xyz] Bad sub <!--sub @owner https://github.com/owner/repo/issues/2 -->\n";
+		let result = Issue::parse_virtual(content, Path::new("test.md"));
 		assert!(matches!(result, Err(ParseError::InvalidCheckbox { content, .. }) if content == "xyz"));
 	}
 
@@ -1245,14 +1734,14 @@ mod tests {
 	fn test_parse_and_serialize_not_planned() {
 		use std::path::Path;
 
-		let content = "- [-] Not planned issue <!-- https://github.com/owner/repo/issues/123 -->\n\tBody text\n";
-		let issue = Issue::parse(content, Path::new("test.md")).unwrap();
+		let content = "- [-] Not planned issue <!-- @owner https://github.com/owner/repo/issues/123 -->\n\tBody text\n";
+		let issue = Issue::parse_virtual(content, Path::new("test.md")).unwrap();
 
-		assert_eq!(issue.meta.close_state, CloseState::NotPlanned);
-		assert_eq!(issue.meta.title, "Not planned issue");
+		assert_eq!(issue.contents.state, CloseState::NotPlanned);
+		assert_eq!(issue.contents.title, "Not planned issue");
 
 		// Verify serialization preserves the state
-		let serialized = issue.serialize_virtual(crate::Extension::Md);
+		let serialized = issue.serialize_virtual();
 		assert!(serialized.starts_with("- [-] Not planned issue"));
 	}
 
@@ -1260,14 +1749,14 @@ mod tests {
 	fn test_parse_and_serialize_duplicate() {
 		use std::path::Path;
 
-		let content = "- [456] Duplicate issue <!-- https://github.com/owner/repo/issues/123 -->\n\tBody text\n";
-		let issue = Issue::parse(content, Path::new("test.md")).unwrap();
+		let content = "- [456] Duplicate issue <!-- @owner https://github.com/owner/repo/issues/123 -->\n\tBody text\n";
+		let issue = Issue::parse_virtual(content, Path::new("test.md")).unwrap();
 
-		assert_eq!(issue.meta.close_state, CloseState::Duplicate(456));
-		assert_eq!(issue.meta.title, "Duplicate issue");
+		assert_eq!(issue.contents.state, CloseState::Duplicate(456));
+		assert_eq!(issue.contents.title, "Duplicate issue");
 
 		// Verify serialization preserves the state
-		let serialized = issue.serialize_virtual(crate::Extension::Md);
+		let serialized = issue.serialize_virtual();
 		assert!(serialized.starts_with("- [456] Duplicate issue"));
 	}
 
@@ -1275,40 +1764,43 @@ mod tests {
 	fn test_parse_sub_issue_close_types() {
 		use std::path::Path;
 
-		let content = r#"- [ ] Parent issue <!-- https://github.com/owner/repo/issues/1 -->
+		// Set current user so content is serialized without extra indent
+		crate::current_user::set("owner".to_string());
+
+		let content = r#"- [ ] Parent issue <!-- @owner https://github.com/owner/repo/issues/1 -->
 	Body
 
-	- [x] Closed sub <!--sub https://github.com/owner/repo/issues/2 -->
+	- [x] Closed sub <!--sub @owner https://github.com/owner/repo/issues/2 -->
 		<!--omitted {{{always-->
 		closed body
 		<!--,}}}-->
 
-	- [-] Not planned sub <!--sub https://github.com/owner/repo/issues/3 -->
+	- [-] Not planned sub <!--sub @owner https://github.com/owner/repo/issues/3 -->
 		<!--omitted {{{always-->
 		not planned body
 		<!--,}}}-->
 
-	- [42] Duplicate sub <!--sub https://github.com/owner/repo/issues/4 -->
+	- [42] Duplicate sub <!--sub @owner https://github.com/owner/repo/issues/4 -->
 		<!--omitted {{{always-->
 		duplicate body
 		<!--,}}}-->
 "#;
-		let issue = Issue::parse(content, Path::new("test.md")).unwrap();
-		insta::assert_snapshot!(issue.serialize_virtual(crate::Extension::Md), @"
-		- [ ] Parent issue <!-- https://github.com/owner/repo/issues/1 -->
+		let issue = Issue::parse_virtual(content, Path::new("test.md")).unwrap();
+		insta::assert_snapshot!(issue.serialize_virtual(), @"
+		- [ ] Parent issue <!-- @owner https://github.com/owner/repo/issues/1 -->
 			Body
 			
-			- [x] Closed sub <!--sub https://github.com/owner/repo/issues/2 -->
+			- [x] Closed sub <!--sub @owner https://github.com/owner/repo/issues/2 -->
 				<!--omitted {{{always-->
 				closed body
 				<!--,}}}-->
 			
-			- [-] Not planned sub <!--sub https://github.com/owner/repo/issues/3 -->
+			- [-] Not planned sub <!--sub @owner https://github.com/owner/repo/issues/3 -->
 				<!--omitted {{{always-->
 				not planned body
 				<!--,}}}-->
 			
-			- [42] Duplicate sub <!--sub https://github.com/owner/repo/issues/4 -->
+			- [42] Duplicate sub <!--sub @owner https://github.com/owner/repo/issues/4 -->
 				<!--omitted {{{always-->
 				duplicate body
 				<!--,}}}-->
@@ -1319,18 +1811,18 @@ mod tests {
 	fn test_find_last_blocker_position_empty() {
 		use std::path::Path;
 
-		let content = "- [ ] Issue <!-- https://github.com/owner/repo/issues/1 -->\n\tBody\n";
-		let issue = Issue::parse(content, Path::new("test.md")).unwrap();
-		assert!(issue.find_last_blocker_position(crate::Extension::Md).is_none());
+		let content = "- [ ] Issue <!-- @owner https://github.com/owner/repo/issues/1 -->\n\tBody\n";
+		let issue = Issue::parse_virtual(content, Path::new("test.md")).unwrap();
+		assert!(issue.find_last_blocker_position().is_none());
 	}
 
 	#[test]
 	fn test_find_last_blocker_position_single_item() {
 		use std::path::Path;
 
-		let content = "- [ ] Issue <!-- https://github.com/owner/repo/issues/1 -->\n\tBody\n\n\t# Blockers\n\t- task 1\n";
-		let issue = Issue::parse(content, Path::new("test.md")).unwrap();
-		let pos = issue.find_last_blocker_position(crate::Extension::Md);
+		let content = "- [ ] Issue <!-- @owner https://github.com/owner/repo/issues/1 -->\n\tBody\n\n\t# Blockers\n\t- task 1\n";
+		let issue = Issue::parse_virtual(content, Path::new("test.md")).unwrap();
+		let pos = issue.find_last_blocker_position();
 		assert!(pos.is_some());
 		let (line, col) = pos.unwrap();
 		assert_eq!(line, 5); // Line 5: `\t- task 1`
@@ -1342,9 +1834,9 @@ mod tests {
 	fn test_find_last_blocker_position_multiple_items() {
 		use std::path::Path;
 
-		let content = "- [ ] Issue <!-- https://github.com/owner/repo/issues/1 -->\n\tBody\n\n\t# Blockers\n\t- task 1\n\t- task 2\n\t- task 3\n";
-		let issue = Issue::parse(content, Path::new("test.md")).unwrap();
-		let pos = issue.find_last_blocker_position(crate::Extension::Md);
+		let content = "- [ ] Issue <!-- @owner https://github.com/owner/repo/issues/1 -->\n\tBody\n\n\t# Blockers\n\t- task 1\n\t- task 2\n\t- task 3\n";
+		let issue = Issue::parse_virtual(content, Path::new("test.md")).unwrap();
+		let pos = issue.find_last_blocker_position();
 		assert!(pos.is_some());
 		let (line, col) = pos.unwrap();
 		assert_eq!(line, 7); // Line 7: `\t- task 3`
@@ -1355,9 +1847,9 @@ mod tests {
 	fn test_find_last_blocker_position_with_headers() {
 		use std::path::Path;
 
-		let content = "- [ ] Issue <!-- https://github.com/owner/repo/issues/1 -->\n\tBody\n\n\t# Blockers\n\t# Phase 1\n\t- task a\n\t# Phase 2\n\t- task b\n";
-		let issue = Issue::parse(content, Path::new("test.md")).unwrap();
-		let pos = issue.find_last_blocker_position(crate::Extension::Md);
+		let content = "- [ ] Issue <!-- @owner https://github.com/owner/repo/issues/1 -->\n\tBody\n\n\t# Blockers\n\t# Phase 1\n\t- task a\n\t# Phase 2\n\t- task b\n";
+		let issue = Issue::parse_virtual(content, Path::new("test.md")).unwrap();
+		let pos = issue.find_last_blocker_position();
 		assert!(pos.is_some());
 		let (line, col) = pos.unwrap();
 		assert_eq!(line, 8); // Line 8: `\t- task b`
@@ -1368,10 +1860,9 @@ mod tests {
 	fn test_find_last_blocker_position_before_sub_issues() {
 		use std::path::Path;
 
-		let content =
-			"- [ ] Issue <!-- https://github.com/owner/repo/issues/1 -->\n\tBody\n\n\t# Blockers\n\t- blocker task\n\n\t- [ ] Sub issue <!--sub https://github.com/owner/repo/issues/2 -->\n";
-		let issue = Issue::parse(content, Path::new("test.md")).unwrap();
-		let pos = issue.find_last_blocker_position(crate::Extension::Md);
+		let content = "- [ ] Issue <!-- @owner https://github.com/owner/repo/issues/1 -->\n\tBody\n\n\t# Blockers\n\t- blocker task\n\n\t- [ ] Sub issue <!--sub @owner https://github.com/owner/repo/issues/2 -->\n";
+		let issue = Issue::parse_virtual(content, Path::new("test.md")).unwrap();
+		let pos = issue.find_last_blocker_position();
 		assert!(pos.is_some());
 		let (line, col) = pos.unwrap();
 		assert_eq!(line, 5); // Line 5: `\t- blocker task`, not the sub-issue line
@@ -1383,20 +1874,20 @@ mod tests {
 		use std::path::Path;
 
 		// Issue with children
-		let content = r#"- [ ] Parent <!-- https://github.com/owner/repo/issues/1 -->
+		let content = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
 	Parent body
 
-	- [ ] Child 1 <!--sub https://github.com/owner/repo/issues/2 -->
+	- [ ] Child 1 <!--sub @owner https://github.com/owner/repo/issues/2 -->
 		Child 1 body
 
-	- [ ] Child 2 <!--sub https://github.com/owner/repo/issues/3 -->
+	- [ ] Child 2 <!--sub @owner https://github.com/owner/repo/issues/3 -->
 		Child 2 body
 "#;
-		let issue = Issue::parse(content, Path::new("test.md")).unwrap();
+		let issue = Issue::parse_virtual(content, Path::new("test.md")).unwrap();
 		assert_eq!(issue.children.len(), 2);
 
 		// Filesystem serialization should NOT include children
-		let fs_serialized = issue.serialize_filesystem(crate::Extension::Md);
+		let fs_serialized = issue.serialize_filesystem();
 		assert!(!fs_serialized.contains("Child 1"));
 		assert!(!fs_serialized.contains("Child 2"));
 		assert!(fs_serialized.contains("Parent body"));
@@ -1406,52 +1897,56 @@ mod tests {
 	fn test_serialize_virtual_includes_children() {
 		use std::path::Path;
 
-		let content = r#"- [ ] Parent <!-- https://github.com/owner/repo/issues/1 -->
+		let content = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
 	Parent body
 
-	- [ ] Child 1 <!--sub https://github.com/owner/repo/issues/2 -->
+	- [ ] Child 1 <!--sub @owner https://github.com/owner/repo/issues/2 -->
 		Child 1 body
 "#;
-		let issue = Issue::parse(content, Path::new("test.md")).unwrap();
+		let issue = Issue::parse_virtual(content, Path::new("test.md")).unwrap();
 
 		// Virtual serialization should include children
-		let virtual_serialized = issue.serialize_virtual(crate::Extension::Md);
+		let virtual_serialized = issue.serialize_virtual();
 		assert!(virtual_serialized.contains("Parent body"));
 		assert!(virtual_serialized.contains("Child 1"));
 		assert!(virtual_serialized.contains("Child 1 body"));
 	}
 
 	#[test]
-	fn test_deserialize_filesystem_clears_children() {
-		// Even if content somehow has children markers, deserialize_filesystem clears them
-		let content = r#"- [ ] Parent <!-- https://github.com/owner/repo/issues/1 -->
+	fn test_parse_virtual_includes_inline_children() {
+		use std::path::Path;
+
+		// parse_virtual includes inline children (used for virtual file format)
+		let content = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
 	Parent body
 
-	- [ ] Child <!--sub https://github.com/owner/repo/issues/2 -->
+	- [ ] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
-		let issue = Issue::deserialize_filesystem(content, crate::Extension::Md).unwrap();
-		assert!(issue.children.is_empty());
-		assert_eq!(issue.meta.title, "Parent");
+		let issue = Issue::parse_virtual(content, Path::new("test.md")).unwrap();
+		// parse_virtual preserves inline children
+		assert_eq!(issue.children.len(), 1);
+		assert_eq!(issue.contents.title, "Parent");
+		assert_eq!(issue.children[0].contents.title, "Child");
 	}
 
 	#[test]
 	fn test_virtual_roundtrip() {
 		use std::path::Path;
 
-		let content = r#"- [ ] Parent <!-- https://github.com/owner/repo/issues/1 -->
+		let content = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
 	Parent body
 
-	- [ ] Child <!--sub https://github.com/owner/repo/issues/2 -->
+	- [ ] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
-		let issue = Issue::parse(content, Path::new("test.md")).unwrap();
+		let issue = Issue::parse_virtual(content, Path::new("test.md")).unwrap();
 
 		// Serialize to virtual, then deserialize back
-		let serialized = issue.serialize_virtual(crate::Extension::Md);
-		let reparsed = Issue::deserialize_virtual(&serialized, crate::Extension::Md).unwrap();
+		let serialized = issue.serialize_virtual();
+		let reparsed = Issue::deserialize_virtual(&serialized).unwrap();
 
-		assert_eq!(issue.meta.title, reparsed.meta.title);
+		assert_eq!(issue.contents.title, reparsed.contents.title);
 		assert_eq!(issue.children.len(), reparsed.children.len());
 	}
 
@@ -1459,14 +1954,14 @@ mod tests {
 	fn test_serialize_github_body_only() {
 		use std::path::Path;
 
-		let content = r#"- [ ] Issue <!-- https://github.com/owner/repo/issues/1 -->
+		let content = r#"- [ ] Issue <!-- @owner https://github.com/owner/repo/issues/1 -->
 	This is the body text.
 
 	# Blockers
 	- task 1
 	- task 2
 "#;
-		let issue = Issue::parse(content, Path::new("test.md")).unwrap();
+		let issue = Issue::parse_virtual(content, Path::new("test.md")).unwrap();
 
 		// GitHub serialization is just the body (with blockers)
 		let github = issue.serialize_github();

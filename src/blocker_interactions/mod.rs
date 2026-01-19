@@ -7,12 +7,14 @@
 //!
 //! # Architecture
 //!
-//! - `standard`: Extended parsing primitives (typst conversion, formatting)
-//! - `operations`: Extended operations on BlockerSequence (pop, move, etc.)
+//! - `io`: CLI definitions and entry point
+//! - `integration`: Issue-based blocker implementation (uses modify_and_sync_issue)
+//! - `operations`: Extended operations on BlockerSequence (pop, add, etc.)
 //! - `source`: BlockerSource trait for data access abstraction
-//! - `io`: File-based source implementation + CLI handling
-//! - `integration`: Issue-based source implementation
 //! - `clockify`: Time tracking integration
+//!
+//! Urgent mode stores blockers in `issues/{owner}/urgent.md` - a simple blocker list
+//! without Github sync. Only one urgent file can exist at a time.
 //!
 //! Core types (HeaderLevel, Line, BlockerSequence, classify_line) are defined in the
 //! library crate (todo::blocker_types) and re-exported here for convenience.
@@ -22,7 +24,6 @@ pub(super) mod integration;
 mod io;
 mod operations;
 mod source;
-mod standard;
 
 // Re-export core types from library
 // Re-export the CLI API
@@ -32,9 +33,7 @@ pub use io::BlockerArgs;
 pub use operations::BlockerSequenceExt;
 pub use todo::BlockerSequence;
 
-use crate::config::LiveSettings;
-
 /// Main entry point for blocker commands
-pub async fn main(settings: &LiveSettings, args: BlockerArgs, offline: bool) -> Result<()> {
-	io::main(settings, args, offline).await
+pub async fn main(args: BlockerArgs, offline: bool) -> Result<()> {
+	io::main(args, offline).await
 }
