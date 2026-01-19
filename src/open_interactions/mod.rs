@@ -7,6 +7,7 @@ mod command;
 mod conflict;
 pub(crate) mod consensus;
 pub(crate) mod local;
+mod merge;
 pub(crate) mod remote;
 mod sink;
 mod sync;
