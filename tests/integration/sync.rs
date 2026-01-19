@@ -30,7 +30,11 @@ use crate::common::{TestContext, git::GitExt};
 
 /// Render the issues directory state as a snapshot string.
 /// Excludes `.git` directory and sorts files for deterministic output.
+/// Normalizes git commit hashes in conflict markers for deterministic snapshots.
 fn snapshot_issues_dir(ctx: &TestContext) -> String {
+	// Regex to match git commit hashes in diff3 conflict markers (e.g., "||||||| a0f7d74")
+	let hash_regex = regex::Regex::new(r"\|\|\|\|\|\|\| [0-9a-f]{7,40}").unwrap();
+
 	let issues_dir = ctx.xdg.data_dir().join("issues");
 	if !issues_dir.exists() {
 		return String::from("(empty - issues directory does not exist)");
@@ -48,7 +52,12 @@ fn snapshot_issues_dir(ctx: &TestContext) -> String {
 			let relative_path = path.strip_prefix(&issues_dir).expect("path should be under issues_dir");
 			let relative_str = format!("/{}", relative_path.to_string_lossy());
 			if let Ok(text) = std::fs::read_to_string(path) {
-				files.push(v_fixtures::FixtureFile { path: relative_str, text });
+				// Normalize git hashes in conflict markers
+				let normalized_text = hash_regex.replace_all(&text, "||||||| [hash]").to_string();
+				files.push(v_fixtures::FixtureFile {
+					path: relative_str,
+					text: normalized_text,
+				});
 			}
 		}
 	}
@@ -422,7 +431,7 @@ fn test_closing_issue_syncs_state_change() {
 	//- /o/__conflict.md
 	<<<<<<< HEAD
 	- [x] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-	||||||| cc3efca
+	||||||| [hash]
 	=======
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
 	>>>>>>> remote-state
@@ -576,7 +585,7 @@ fn test_reset_syncs_changes_after_editor() {
 	//- /o/__conflict.md
 	<<<<<<< HEAD
 	- [x] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-	||||||| 45ca6f4
+	||||||| [hash]
 	=======
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
 	>>>>>>> remote-state
@@ -638,7 +647,7 @@ fn test_comment_shorthand_creates_comment() {
 		
 		<!-- new comment -->
 			My new comment content
-	||||||| 2eaa14a
+	||||||| [hash]
 	=======
 	>>>>>>> remote-state
 	//- /o/r/1_-_Test_Issue.md
