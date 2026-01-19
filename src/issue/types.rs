@@ -317,23 +317,12 @@ pub struct IssueTimestamps {
 	pub labels: Option<Timestamp>,
 	/// Last state change (open/closed). Optional because we can't always get this from GitHub.
 	pub state: Option<Timestamp>,
-	/// Last comment activity (creation/edit). We can always get this from GitHub.
-	pub comments: Option<Timestamp>,
+	/// Per-comment timestamps (indexed by position, excluding body at index 0).
+	/// Empty vec means no timestamp info available.
+	pub comments: Vec<Timestamp>,
 }
 
 impl IssueTimestamps {
-	/// Create timestamps with all fields set to the same value.
-	/// Useful for local modifications where we know the exact change time.
-	pub fn all_at(ts: Timestamp) -> Self {
-		Self {
-			title: Some(ts),
-			description: Some(ts),
-			labels: Some(ts),
-			state: Some(ts),
-			comments: Some(ts),
-		}
-	}
-
 	/// Update timestamps based on what changed between old and new issue contents.
 	/// Sets the current time for any field that changed.
 	pub fn update_from_diff(&mut self, old: &super::IssueContents, new: &super::IssueContents) {
@@ -358,12 +347,21 @@ impl IssueTimestamps {
 			self.state = Some(now);
 		}
 
-		// Comments changed if any non-body comment is different
+		// Per-comment timestamps (skip body at index 0)
 		let old_comments: Vec<_> = old.comments.iter().skip(1).collect();
 		let new_comments: Vec<_> = new.comments.iter().skip(1).collect();
-		if old_comments.len() != new_comments.len() || old_comments.iter().zip(&new_comments).any(|(o, n)| o.body.render() != n.body.render()) {
-			self.comments = Some(now);
+		let new_comment_count = new_comments.len();
+
+		// Resize timestamps vec to match new comment count
+		self.comments.resize(new_comment_count, now);
+
+		// Update timestamps for changed comments
+		for (i, (old_c, new_c)) in old_comments.iter().zip(&new_comments).enumerate() {
+			if old_c.body.render() != new_c.body.render() {
+				self.comments[i] = now;
+			}
 		}
+		// New comments (beyond old length) already have `now` from resize
 	}
 }
 

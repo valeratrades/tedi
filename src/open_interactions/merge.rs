@@ -93,7 +93,10 @@ impl Merge for Issue {
 		}
 
 		// Merge comments (excluding body which is first comment)
-		if dominated_by(self_ts.comments, other_ts.comments) {
+		// Compare using max timestamp from each side's comment timestamps
+		let self_comments_ts = self_ts.comments.iter().max().copied();
+		let other_comments_ts = other_ts.comments.iter().max().copied();
+		if dominated_by(self_comments_ts, other_comments_ts) {
 			// Replace all non-body comments with other's
 			let self_body = self.contents.comments.first().cloned();
 			self.contents.comments = other.contents.comments.clone();
@@ -123,8 +126,8 @@ impl Merge for Issue {
 			if dominated_by(self_ts.state, other_ts.state) {
 				linked.timestamps.state = other_ts.state;
 			}
-			if dominated_by(self_ts.comments, other_ts.comments) {
-				linked.timestamps.comments = other_ts.comments;
+			if dominated_by(self_comments_ts, other_comments_ts) {
+				linked.timestamps.comments = other_ts.comments.clone();
 			}
 		}
 
@@ -242,7 +245,14 @@ mod tests {
 			children: vec![],
 		};
 
-		let timestamps = IssueTimestamps::all_at(Timestamp::now());
+		let ts = Timestamp::now();
+		let timestamps = IssueTimestamps {
+			title: Some(ts),
+			description: Some(ts),
+			labels: Some(ts),
+			state: Some(ts),
+			comments: vec![],
+		};
 		let linked = make_linked_issue("test", 1, timestamps);
 
 		let result = virtual_issue.merge(linked, false);
@@ -258,13 +268,13 @@ mod tests {
 			title: Some(old_ts),
 			description: None,
 			labels: None,
-			comments: None,
+			comments: vec![],
 		};
 		let new_timestamps = IssueTimestamps {
 			title: Some(new_ts),
 			description: None,
 			labels: None,
-			comments: None,
+			comments: vec![],
 		};
 
 		let mut self_issue = make_linked_issue("old title", 1, old_timestamps);
@@ -284,13 +294,13 @@ mod tests {
 			title: Some(new_ts),
 			description: None,
 			labels: None,
-			comments: None,
+			comments: vec![],
 		};
 		let old_timestamps = IssueTimestamps {
 			title: Some(old_ts),
 			description: None,
 			labels: None,
-			comments: None,
+			comments: vec![],
 		};
 
 		let mut self_issue = make_linked_issue("newer title", 1, new_timestamps);
@@ -310,7 +320,7 @@ mod tests {
 			title: Some(ts),
 			description: None,
 			labels: None,
-			comments: None,
+			comments: vec![],
 		};
 
 		let mut self_issue = make_linked_issue("self title", 1, none_timestamps);
@@ -331,13 +341,13 @@ mod tests {
 			title: Some(new_ts),
 			description: None,
 			labels: None,
-			comments: None,
+			comments: vec![],
 		};
 		let old_timestamps = IssueTimestamps {
 			title: Some(old_ts),
 			description: None,
 			labels: None,
-			comments: None,
+			comments: vec![],
 		};
 
 		let mut self_issue = make_linked_issue("newer title", 1, new_timestamps);
@@ -356,7 +366,7 @@ mod tests {
 			title: Some(ts),
 			description: None,
 			labels: None,
-			comments: None,
+			comments: vec![],
 		};
 
 		let mut pending = make_pending_issue("pending title");
@@ -376,7 +386,7 @@ mod tests {
 			title: Some(ts),
 			description: None,
 			labels: None,
-			comments: None,
+			comments: vec![],
 		};
 
 		let mut self_issue = make_linked_issue("self title", 1, timestamps.clone());

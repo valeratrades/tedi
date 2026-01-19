@@ -183,14 +183,14 @@ impl tedi::LazyIssue<Remote> for Issue {
 
 		let issue = issue_result.map_err(|e| RemoteError::FetchIssue { repo: repo_info, number, source: e })?;
 
-		// Build IssueTimestamps from GraphQL timeline (comments will be None here)
+		// Build IssueTimestamps from GraphQL timeline (comments will be empty here)
 		let timeline = timeline_result.map_err(|e| RemoteError::FetchTimestamps { repo: repo_info, number, source: e })?;
 		let timestamps = IssueTimestamps {
 			title: timeline.title,
 			description: timeline.description,
 			labels: timeline.labels,
 			state: timeline.state,
-			comments: None, // Will be populated when contents() fetches comments
+			comments: vec![], // Will be populated when contents() fetches comments
 		};
 
 		let ancestry = source.resolve_ancestry().await?;
@@ -223,11 +223,11 @@ impl tedi::LazyIssue<Remote> for Issue {
 			let ancestry = source.resolve_ancestry().await?;
 			let timeline = timeline_result.map_err(|e| RemoteError::FetchTimestamps { repo: repo_info, number, source: e })?;
 
-			// Compute comment timestamp from REST API data (max of updated_at, falling back to created_at)
-			let comments_ts = comments
+			// Build per-comment timestamps from REST API data (updated_at, falling back to created_at)
+			let comments_ts: Vec<_> = comments
 				.iter()
 				.filter_map(|c| jiff::Timestamp::from_str(&c.updated_at).or_else(|_| jiff::Timestamp::from_str(&c.created_at)).ok())
-				.max();
+				.collect();
 
 			let timestamps = IssueTimestamps {
 				title: timeline.title,
