@@ -16,7 +16,42 @@
 
 use std::path::{Path, PathBuf};
 
-use jiff::Timestamp;
+//==============================================================================
+// Error Types
+//==============================================================================
+
+/// Error type for local issue operations.
+#[derive(Debug, thiserror::Error)]
+pub enum LocalError {
+	/// File not found at the expected path.
+	#[error("issue file not found: {path}")]
+	FileNotFound { path: PathBuf },
+
+	/// Failed to read file contents.
+	#[error("failed to read file: {path}")]
+	ReadError {
+		path: PathBuf,
+		#[source]
+		source: std::io::Error,
+	},
+
+	/// Failed to parse issue content.
+	#[error("failed to parse issue file: {path}")]
+	ParseError {
+		path: PathBuf,
+		#[source]
+		source: todo::ParseError,
+	},
+
+	/// Invalid path structure - cannot extract owner/repo.
+	#[error("invalid issue path structure: {path}")]
+	InvalidPath { path: PathBuf },
+
+	/// Git operation failed (for consensus reads).
+	#[error("git operation failed: {message}")]
+	GitError { message: String },
+}
+
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use todo::{Ancestry, FetchedIssue, Issue};
@@ -100,6 +135,22 @@ impl Local {
 			LocalSource::Submitted => std::fs::read_to_string(&local_path.path).ok(),
 			LocalSource::Consensus => Self::read_git_content(&local_path.path),
 		}
+	}
+
+	/// Load a full issue tree from a local path.
+	///
+	/// This is the primary entry point for loading issues from the filesystem.
+	/// It recursively loads identity, contents, and children.
+	pub async fn load_issue(source: LocalPath) -> Result<Issue, LocalError> {
+		let (owner, repo) = Self::extract_owner_repo(&source.path).map_err(|_| LocalError::InvalidPath { path: source.path.clone() })?;
+		let ancestry = todo::Ancestry::root(&owner, &repo);
+		let mut issue = Issue::empty_local(ancestry);
+
+		<Issue as todo::LazyIssue<Local>>::identity(&mut issue, source.clone()).await?;
+		<Issue as todo::LazyIssue<Local>>::contents(&mut issue, source.clone()).await?;
+		Box::pin(<Issue as todo::LazyIssue<Local>>::children(&mut issue, source)).await?;
+
+		Ok(issue)
 	}
 
 	/// Read file content from git HEAD.
@@ -227,12 +278,14 @@ impl Local {
 	///
 	/// This parses one issue file (without loading children from separate files).
 	/// Children field will be empty - they're loaded separately via LazyIssue.
-	fn parse_single_node(content: &str, ancestry: Ancestry) -> Issue {
-		let path = std::path::Path::new("local.md");
-		let mut issue = Issue::parse_virtual_with_ancestry(content, path, ancestry).expect("valid issue file");
+	fn parse_single_node(content: &str, ancestry: Ancestry, file_path: &Path) -> Result<Issue, LocalError> {
+		let mut issue = Issue::parse_virtual_with_ancestry(content, file_path, ancestry).map_err(|e| LocalError::ParseError {
+			path: file_path.to_path_buf(),
+			source: e,
+		})?;
 		// Clear any inline children (filesystem format stores them in separate files)
 		issue.children.clear();
-		issue
+		Ok(issue)
 	}
 
 	/// Get the project directory path (where .meta.json lives).
@@ -778,8 +831,9 @@ pub struct ProjectMeta {
 /// Per-issue metadata stored in .meta.json.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct IssueMeta {
-	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub ts: Option<Timestamp>,
+	/// Timestamps for individual field changes.
+	#[serde(default)]
+	pub timestamps: todo::IssueChangeTimestamps,
 }
 
 //==============================================================================
@@ -787,19 +841,20 @@ pub struct IssueMeta {
 //==============================================================================
 
 impl todo::LazyIssue<Local> for Issue {
+	type Error = LocalError;
 	type Source = LocalPath;
 
-	async fn identity(&mut self, source: Self::Source) -> todo::IssueIdentity {
+	async fn identity(&mut self, source: Self::Source) -> Result<todo::IssueIdentity, Self::Error> {
 		if self.identity.is_linked() {
-			return self.identity.clone();
+			return Ok(self.identity.clone());
 		}
 
-		let (owner, repo) = Local::extract_owner_repo(&source.path).expect("valid issue path");
+		let (owner, repo) = Local::extract_owner_repo(&source.path).map_err(|_| LocalError::InvalidPath { path: source.path.clone() })?;
 		let ancestry = todo::Ancestry::root(&owner, &repo);
 
 		if self.contents.title.is_empty() {
-			let content = Local::read_content(&source).expect("file exists");
-			let parsed = Local::parse_single_node(&content, ancestry);
+			let content = Local::read_content(&source).ok_or_else(|| LocalError::FileNotFound { path: source.path.clone() })?;
+			let parsed = Local::parse_single_node(&content, ancestry, &source.path)?;
 			self.identity = parsed.identity;
 			self.contents = parsed.contents;
 		}
@@ -807,33 +862,33 @@ impl todo::LazyIssue<Local> for Issue {
 		if let Some(issue_number) = self.identity.number() {
 			if let Some(meta) = Local::load_issue_meta(&owner, &repo, issue_number) {
 				if let Some(linked) = self.identity.remote.as_linked_mut() {
-					linked.ts = meta.ts;
+					linked.timestamps = meta.timestamps;
 				}
 			}
 		}
 
-		self.identity.clone()
+		Ok(self.identity.clone())
 	}
 
-	async fn contents(&mut self, source: Self::Source) -> todo::IssueContents {
+	async fn contents(&mut self, source: Self::Source) -> Result<todo::IssueContents, Self::Error> {
 		if !self.contents.title.is_empty() {
-			return self.contents.clone();
+			return Ok(self.contents.clone());
 		}
 
-		let (owner, repo) = Local::extract_owner_repo(&source.path).expect("valid issue path");
+		let (owner, repo) = Local::extract_owner_repo(&source.path).map_err(|_| LocalError::InvalidPath { path: source.path.clone() })?;
 		let ancestry = todo::Ancestry::root(&owner, &repo);
 
-		let content = Local::read_content(&source).expect("file exists");
-		let parsed = Local::parse_single_node(&content, ancestry);
+		let content = Local::read_content(&source).ok_or_else(|| LocalError::FileNotFound { path: source.path.clone() })?;
+		let parsed = Local::parse_single_node(&content, ancestry, &source.path)?;
 		self.identity = parsed.identity;
 		self.contents = parsed.contents;
 
-		self.contents.clone()
+		Ok(self.contents.clone())
 	}
 
-	async fn children(&mut self, source: Self::Source) -> Vec<Issue> {
+	async fn children(&mut self, source: Self::Source) -> Result<Vec<Issue>, Self::Error> {
 		if !self.children.is_empty() {
-			return self.children.clone();
+			return Ok(self.children.clone());
 		}
 
 		let is_dir_format = source
@@ -844,11 +899,11 @@ impl todo::LazyIssue<Local> for Issue {
 			.unwrap_or(false);
 
 		if !is_dir_format {
-			return Vec::new();
+			return Ok(Vec::new());
 		}
 
 		let Some(dir) = source.path.parent() else {
-			return Vec::new();
+			return Ok(Vec::new());
 		};
 
 		let dir_source = LocalPath {
@@ -891,8 +946,7 @@ impl todo::LazyIssue<Local> for Issue {
 				continue;
 			};
 
-			use async_from::AsyncFrom;
-			let child = Issue::async_from(child_source).await;
+			let child = Local::load_issue(child_source).await?;
 			children.push(child);
 		}
 
@@ -903,26 +957,7 @@ impl todo::LazyIssue<Local> for Issue {
 		});
 
 		self.children = children.clone();
-		children
-	}
-}
-
-//==============================================================================
-// AsyncFrom Implementation - load full Issue from LocalPath
-//==============================================================================
-
-#[async_trait::async_trait]
-impl async_from::AsyncFrom<LocalPath> for Issue {
-	async fn async_from(source: LocalPath) -> Self {
-		let (owner, repo) = Local::extract_owner_repo(&source.path).expect("valid issue path");
-		let ancestry = todo::Ancestry::root(&owner, &repo);
-		let mut issue = Issue::empty_local(ancestry);
-
-		<Issue as todo::LazyIssue<Local>>::identity(&mut issue, source.clone()).await;
-		<Issue as todo::LazyIssue<Local>>::contents(&mut issue, source.clone()).await;
-		Box::pin(<Issue as todo::LazyIssue<Local>>::children(&mut issue, source)).await;
-
-		issue
+		Ok(children)
 	}
 }
 
@@ -999,9 +1034,9 @@ fn sink_issue_node(issue: &Issue, old: Option<&Issue>, owner: &str, repo: &str, 
 	}
 
 	if let Some(issue_num) = issue_number
-		&& let Some(ts) = issue.ts()
+		&& let Some(timestamps) = issue.identity.timestamps()
 	{
-		let meta = IssueMeta { ts: Some(ts) };
+		let meta = IssueMeta { timestamps: timestamps.clone() };
 		Local::save_issue_meta(owner, repo, issue_num, &meta)?;
 	}
 

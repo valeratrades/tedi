@@ -89,9 +89,9 @@ use v_utils::prelude::*;
 use super::{
 	conflict::mark_conflict,
 	consensus::{commit_issue_changes, is_git_initialized, load_consensus_issue},
-	local::Local,
-	remote::{RemoteSource, load_full_issue_tree},
-	sink::IssueSinkExt,
+	local::{Local, LocalPath},
+	remote::RemoteSource,
+	sink::{IssueLoadExt, IssueSinkExt},
 	tree::resolve_tree,
 };
 
@@ -237,9 +237,9 @@ fn apply_node_content(target: &mut Issue, source: &Issue) {
 	// Copy comments (body is first comment)
 	target.contents.comments = source.contents.comments.clone();
 
-	// Update timestamp from source identity (if both are linked)
+	// Update timestamps from source identity (if both are linked)
 	if let (Some(target_linked), Some(source_linked)) = (target.identity.remote.as_linked_mut(), source.identity.remote.as_linked()) {
-		target_linked.ts = source_linked.ts;
+		target_linked.timestamps = source_linked.timestamps.clone();
 	}
 }
 
@@ -409,7 +409,10 @@ impl Modifier {
 	/// Apply this modifier to an issue. Returns output to display.
 	#[tracing::instrument]
 	async fn apply(&self, issue: &mut Issue, issue_file_path: &Path) -> Result<ModifyResult> {
-		match self {
+		// Capture old contents for timestamp diff calculation
+		let old_contents = issue.contents.clone();
+
+		let result = match self {
 			Modifier::Editor { open_at_blocker } => {
 				// Serialize current state
 				let content = issue.serialize_virtual();
@@ -436,7 +439,7 @@ impl Modifier {
 				let content = std::fs::read_to_string(issue_file_path)?;
 				*issue = Issue::parse_virtual(&content, issue_file_path)?;
 
-				Ok(ModifyResult { output: None, file_modified })
+				ModifyResult { output: None, file_modified }
 			}
 			Modifier::BlockerPop => {
 				use crate::blocker_interactions::BlockerSequenceExt;
@@ -444,7 +447,7 @@ impl Modifier {
 				let popped = issue.contents.blockers.pop();
 				let output = popped.map(|text| format!("Popped: {text}"));
 
-				Ok(ModifyResult { output, file_modified: true })
+				ModifyResult { output, file_modified: true }
 			}
 			Modifier::BlockerAdd { text } => {
 				use crate::blocker_interactions::BlockerSequenceExt;
@@ -452,9 +455,16 @@ impl Modifier {
 				issue.contents.blockers.add(text);
 				let output = None; // will repeat it when printing the current
 
-				Ok(ModifyResult { output, file_modified: true })
+				ModifyResult { output, file_modified: true }
 			}
+		};
+
+		// Update timestamps based on what changed
+		if result.file_modified {
+			issue.update_timestamps_from_diff(&old_contents);
 		}
+
+		Ok(result)
 	}
 }
 
@@ -468,12 +478,12 @@ async fn sync_issue_to_github_inner(issue_file_path: &Path, owner: &str, repo: &
 	// Consensus is REQUIRED for sync - if we're here, the file should be tracked.
 	// For new issues, --touch creates them on Github and commits as consensus.
 	// For URL mode, fetch commits as consensus.
-	let consensus = load_consensus_issue(issue_file_path).await.ok_or_else(|| {
+	let consensus = load_consensus_issue(issue_file_path).await?.ok_or_else(|| {
 		eyre!(
 			"BUG: Consensus missing for tracked issue.\n\
-			 File: {}\n\
-			 This indicates a bug - the file should have been committed before sync.\n\
-			 Please report this issue.",
+				 File: {}\n\
+				 This indicates a bug - the file should have been committed before sync.\n\
+				 Please report this issue.",
 			issue_file_path.display()
 		)
 	})?;
@@ -489,7 +499,7 @@ async fn sync_issue_to_github_inner(issue_file_path: &Path, owner: &str, repo: &
 		let link = IssueLink::parse(&url).expect("valid URL");
 		// Use lineage from the local issue's ancestry
 		let source = RemoteSource::with_lineage(link, issue.identity.ancestry().lineage());
-		let remote_issue = load_full_issue_tree(source).await?;
+		let remote_issue = Issue::load_remote(source).await?;
 
 		// Apply merge mode to get the merged result
 		let (merged, local_needs_update, remote_needs_update) = apply_merge_mode(issue, Some(&consensus), &remote_issue, merge_mode, issue_file_path, owner, repo, issue_number).await?;
@@ -587,9 +597,8 @@ pub async fn modify_and_sync_issue(issue_file_path: &Path, offline: bool, modifi
 	let meta = Local::parse_path_identity(issue_file_path)?;
 
 	// Load the issue tree from filesystem
-	use async_from::AsyncFrom;
-	let source = super::local::LocalPath::submitted(issue_file_path.to_path_buf());
-	let mut issue = Issue::async_from(source).await;
+	let source = LocalPath::submitted(issue_file_path.to_path_buf());
+	let mut issue = Issue::load_local(source).await?;
 
 	// === CONSENSUS-FIRST SYNC ===
 	// We always show the user the consensus state, never raw local or raw remote.
@@ -606,7 +615,7 @@ pub async fn modify_and_sync_issue(issue_file_path: &Path, offline: bool, modifi
 
 		if !prefers_local {
 			// Load consensus from git (last committed state)
-			let consensus = load_consensus_issue(issue_file_path).await;
+			let consensus = load_consensus_issue(issue_file_path).await?;
 
 			// Determine if we need to sync before showing the user
 			let local_differs_from_consensus = consensus.as_ref().map(|c| *c != issue).unwrap_or(false);
@@ -624,7 +633,7 @@ pub async fn modify_and_sync_issue(issue_file_path: &Path, offline: bool, modifi
 				let url = format!("https://github.com/{owner}/{repo}/issues/{}", meta.issue_number);
 				let link = IssueLink::parse(&url).expect("valid URL");
 				let source = RemoteSource::with_lineage(link, issue.identity.ancestry().lineage());
-				let remote_issue = load_full_issue_tree(source).await?;
+				let remote_issue = Issue::load_remote(source).await?;
 
 				// Consensus is required - if missing and local differs, that's a bug
 				let consensus = consensus.ok_or_else(|| {
@@ -690,7 +699,7 @@ pub async fn modify_and_sync_issue(issue_file_path: &Path, offline: bool, modifi
 
 		// Close on Github (if not already closed and not offline)
 		let consensus = load_consensus_issue(issue_file_path)
-			.await
+			.await?
 			.expect("BUG: consensus missing for tracked issue during duplicate handling");
 		let consensus_closed = consensus.contents.state.is_closed();
 		if !offline && !consensus_closed {
@@ -737,9 +746,8 @@ pub async fn modify_and_sync_issue(issue_file_path: &Path, offline: bool, modifi
 #[tracing::instrument(level = "debug", target = "todo::open_interactions::sync")]
 pub async fn modify_issue_offline(issue_file_path: &Path, modifier: Modifier) -> Result<ModifyResult> {
 	// Load the issue tree from filesystem
-	use async_from::AsyncFrom;
-	let source = super::local::LocalPath::submitted(issue_file_path.to_path_buf());
-	let mut issue = Issue::async_from(source).await;
+	let source = LocalPath::submitted(issue_file_path.to_path_buf());
+	let mut issue = Issue::load_local(source).await?;
 
 	// Apply the modifier (blocker command)
 	let result = modifier.apply(&mut issue, issue_file_path).await?;

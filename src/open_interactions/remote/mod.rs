@@ -9,13 +9,82 @@
 //! - Remote loads from IssueLink + optional lineage
 
 use jiff::Timestamp;
-use todo::{Ancestry, CloseState, Comment, CommentIdentity, Issue, IssueContents, IssueIdentity, IssueLink, MAX_LINEAGE_DEPTH, split_blockers};
+
+//==============================================================================
+// Error Types
+//==============================================================================
+
+/// Error type for remote GitHub operations.
+#[derive(Debug, thiserror::Error)]
+pub enum RemoteError {
+	/// Failed to fetch issue from GitHub.
+	#[error("failed to fetch issue #{number} from {owner}/{repo}")]
+	FetchIssue {
+		owner: String,
+		repo: String,
+		number: u64,
+		#[source]
+		source: color_eyre::Report,
+	},
+
+	/// Failed to fetch issue comments from GitHub.
+	#[error("failed to fetch comments for issue #{number} from {owner}/{repo}")]
+	FetchComments {
+		owner: String,
+		repo: String,
+		number: u64,
+		#[source]
+		source: color_eyre::Report,
+	},
+
+	/// Failed to fetch sub-issues from GitHub.
+	#[error("failed to fetch sub-issues for issue #{number} from {owner}/{repo}")]
+	FetchSubIssues {
+		owner: String,
+		repo: String,
+		number: u64,
+		#[source]
+		source: color_eyre::Report,
+	},
+
+	/// Failed to resolve ancestry (parent issue chain).
+	#[error("failed to resolve ancestry for issue #{number} in {owner}/{repo}")]
+	ResolveAncestry {
+		owner: String,
+		repo: String,
+		number: u64,
+		#[source]
+		source: color_eyre::Report,
+	},
+
+	/// Issue not found on GitHub (404).
+	#[error("issue #{number} not found in {owner}/{repo}")]
+	NotFound { owner: String, repo: String, number: u64 },
+}
+use todo::{Ancestry, CloseState, Comment, CommentIdentity, Issue, IssueChangeTimestamps, IssueContents, IssueIdentity, IssueLink, MAX_LINEAGE_DEPTH, split_blockers};
 use v_utils::prelude::*;
 
 use crate::github::{self, GithubComment, GithubIssue};
 
 /// Marker type for remote GitHub operations.
 pub enum Remote {}
+
+impl Remote {
+	/// Load a full issue tree from GitHub.
+	///
+	/// This is the primary entry point for loading issues from the remote.
+	/// It recursively loads identity, contents, and children.
+	pub async fn load_issue(source: RemoteSource) -> Result<Issue, RemoteError> {
+		let ancestry = source.resolve_ancestry().await?;
+		let mut issue = Issue::empty_local(ancestry);
+
+		<Issue as todo::LazyIssue<Remote>>::identity(&mut issue, source.clone()).await?;
+		<Issue as todo::LazyIssue<Remote>>::contents(&mut issue, source.clone()).await?;
+		Box::pin(<Issue as todo::LazyIssue<Remote>>::children(&mut issue, source)).await?;
+
+		Ok(issue)
+	}
+}
 
 /// Source for loading issues from GitHub.
 ///
@@ -55,26 +124,36 @@ impl RemoteSource {
 	}
 
 	/// Resolve ancestry, fetching lineage from GitHub if not provided.
-	async fn resolve_ancestry(&self) -> Result<Ancestry> {
+	async fn resolve_ancestry(&self) -> Result<Ancestry, RemoteError> {
+		let owner = self.link.owner().to_string();
+		let repo = self.link.repo().to_string();
+		let number = self.link.number();
+
 		let lineage = match self.lineage_slice() {
 			Some(l) => l.to_vec(),
 			None => {
 				// Fetch lineage from GitHub by traversing parent chain
 				let gh = github::client::get();
-				let owner = self.link.owner();
-				let repo = self.link.repo();
-				let mut current = self.link.number();
+				let mut current = number;
 				let mut parents = Vec::new();
 
-				while let Some(parent) = gh.fetch_parent_issue(owner, repo, current).await? {
-					parents.push(parent.number);
-					current = parent.number;
+				loop {
+					match gh.fetch_parent_issue(&owner, &repo, current).await {
+						Ok(Some(parent)) => {
+							parents.push(parent.number);
+							current = parent.number;
+						}
+						Ok(None) => break,
+						Err(e) => {
+							return Err(RemoteError::ResolveAncestry { owner, repo, number, source: e });
+						}
+					}
 				}
 				parents.reverse();
 				parents
 			}
 		};
-		Ok(Ancestry::with_lineage(self.link.owner(), self.link.repo(), &lineage))
+		Ok(Ancestry::with_lineage(&owner, &repo, &lineage))
 	}
 
 	/// Create a child source for a sub-issue.
@@ -94,66 +173,95 @@ impl RemoteSource {
 }
 
 impl todo::LazyIssue<Remote> for Issue {
+	type Error = RemoteError;
 	type Source = RemoteSource;
 
-	async fn identity(&mut self, source: Self::Source) -> IssueIdentity {
+	async fn identity(&mut self, source: Self::Source) -> Result<IssueIdentity, Self::Error> {
 		if self.identity.is_linked() {
-			return self.identity.clone();
+			return Ok(self.identity.clone());
 		}
 
 		let gh = github::client::get();
-		let owner = source.link.owner();
-		let repo = source.link.repo();
+		let owner = source.link.owner().to_string();
+		let repo = source.link.repo().to_string();
 		let number = source.link.number();
 
-		let issue = gh.fetch_issue(owner, repo, number).await.expect("failed to fetch issue");
-		let ancestry = source.resolve_ancestry().await.expect("failed to resolve ancestry");
-		let ts = issue.updated_at.parse::<Timestamp>().ok();
+		let issue = gh.fetch_issue(&owner, &repo, number).await.map_err(|e| RemoteError::FetchIssue {
+			owner: owner.clone(),
+			repo: repo.clone(),
+			number,
+			source: e,
+		})?;
+		let ancestry = source.resolve_ancestry().await?;
+		// For now, we only have the updated_at from GitHub which represents the most recent overall change.
+		// Set it as comments timestamp since that's the field we can always get.
+		let timestamps = issue.updated_at.parse::<Timestamp>().ok().map(IssueChangeTimestamps::from_comments).unwrap_or_default();
 
-		self.identity = IssueIdentity::linked(ancestry, issue.user.login.clone(), source.link.clone(), ts);
-		self.identity.clone()
+		self.identity = IssueIdentity::linked(ancestry, issue.user.login.clone(), source.link.clone(), timestamps);
+		Ok(self.identity.clone())
 	}
 
-	async fn contents(&mut self, source: Self::Source) -> IssueContents {
+	async fn contents(&mut self, source: Self::Source) -> Result<IssueContents, Self::Error> {
 		if !self.contents.title.is_empty() {
-			return self.contents.clone();
+			return Ok(self.contents.clone());
 		}
 
 		let gh = github::client::get();
-		let owner = source.link.owner();
-		let repo = source.link.repo();
+		let owner = source.link.owner().to_string();
+		let repo = source.link.repo().to_string();
 		let number = source.link.number();
 
-		let (issue, comments) = tokio::try_join!(gh.fetch_issue(owner, repo, number), gh.fetch_comments(owner, repo, number),).expect("failed to fetch issue contents");
+		let issue_fut = gh.fetch_issue(&owner, &repo, number);
+		let comments_fut = gh.fetch_comments(&owner, &repo, number);
+
+		let (issue_result, comments_result) = tokio::join!(issue_fut, comments_fut);
+
+		let issue = issue_result.map_err(|e| RemoteError::FetchIssue {
+			owner: owner.clone(),
+			repo: repo.clone(),
+			number,
+			source: e,
+		})?;
+		let comments = comments_result.map_err(|e| RemoteError::FetchComments {
+			owner: owner.clone(),
+			repo: repo.clone(),
+			number,
+			source: e,
+		})?;
 
 		self.contents = build_contents_from_github(&issue, &comments);
 
 		// Also ensure identity is populated if not already
 		if !self.identity.is_linked() {
-			let ancestry = source.resolve_ancestry().await.expect("failed to resolve ancestry");
-			let ts = issue.updated_at.parse::<Timestamp>().ok();
-			self.identity = IssueIdentity::linked(ancestry, issue.user.login.clone(), source.link.clone(), ts);
+			let ancestry = source.resolve_ancestry().await?;
+			let timestamps = issue.updated_at.parse::<Timestamp>().ok().map(IssueChangeTimestamps::from_comments).unwrap_or_default();
+			self.identity = IssueIdentity::linked(ancestry, issue.user.login.clone(), source.link.clone(), timestamps);
 		}
 
-		self.contents.clone()
+		Ok(self.contents.clone())
 	}
 
-	async fn children(&mut self, source: Self::Source) -> Vec<Issue> {
+	async fn children(&mut self, source: Self::Source) -> Result<Vec<Issue>, Self::Error> {
 		if !self.children.is_empty() {
-			return self.children.clone();
+			return Ok(self.children.clone());
 		}
 
 		let gh = github::client::get();
-		let owner = source.link.owner();
-		let repo = source.link.repo();
+		let owner = source.link.owner().to_string();
+		let repo = source.link.repo().to_string();
 		let number = source.link.number();
 
-		let sub_issues = gh.fetch_sub_issues(owner, repo, number).await.expect("failed to fetch sub-issues");
+		let sub_issues = gh.fetch_sub_issues(&owner, &repo, number).await.map_err(|e| RemoteError::FetchSubIssues {
+			owner: owner.clone(),
+			repo: repo.clone(),
+			number,
+			source: e,
+		})?;
 
 		let filtered: Vec<&GithubIssue> = sub_issues.iter().filter(|si| !CloseState::is_duplicate_reason(si.state_reason.as_deref())).collect();
 
 		if filtered.is_empty() {
-			return Vec::new();
+			return Ok(Vec::new());
 		}
 
 		let parent_number = source.link.number();
@@ -166,16 +274,16 @@ impl todo::LazyIssue<Remote> for Issue {
 			let child_source = source.child(child_link, parent_number);
 			let mut child = Issue::empty_local(child_ancestry);
 
-			<Issue as todo::LazyIssue<Remote>>::identity(&mut child, child_source.clone()).await;
-			<Issue as todo::LazyIssue<Remote>>::contents(&mut child, child_source.clone()).await;
-			Box::pin(<Issue as todo::LazyIssue<Remote>>::children(&mut child, child_source)).await;
+			<Issue as todo::LazyIssue<Remote>>::identity(&mut child, child_source.clone()).await?;
+			<Issue as todo::LazyIssue<Remote>>::contents(&mut child, child_source.clone()).await?;
+			Box::pin(<Issue as todo::LazyIssue<Remote>>::children(&mut child, child_source)).await?;
 
 			children.push(child);
 		}
 
 		children.sort_by_key(|c| c.number().unwrap_or(0));
 		self.children = children.clone();
-		children
+		Ok(children)
 	}
 }
 
@@ -209,16 +317,4 @@ fn build_contents_from_github(issue: &GithubIssue, comments: &[GithubComment]) -
 		comments: issue_comments,
 		blockers,
 	}
-}
-
-/// Load a full issue tree from GitHub.
-pub async fn load_full_issue_tree(source: RemoteSource) -> Result<Issue> {
-	let ancestry = source.resolve_ancestry().await?;
-	let mut issue = Issue::empty_local(ancestry);
-
-	<Issue as todo::LazyIssue<Remote>>::identity(&mut issue, source.clone()).await;
-	<Issue as todo::LazyIssue<Remote>>::contents(&mut issue, source.clone()).await;
-	Box::pin(<Issue as todo::LazyIssue<Remote>>::children(&mut issue, source)).await;
-
-	Ok(issue)
 }

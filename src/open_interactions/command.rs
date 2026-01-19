@@ -8,8 +8,8 @@ use v_utils::prelude::*;
 
 use super::{
 	local::{ExactMatchLevel, Local},
-	remote::{RemoteSource, load_full_issue_tree},
-	sink::IssueSinkExt,
+	remote::RemoteSource,
+	sink::{IssueLoadExt, IssueSinkExt},
 	sync::{MergeMode, Side, SyncOptions, open_local_issue},
 	touch::{create_pending_issue, create_virtual_issue, find_local_issue_for_touch, parse_touch_path},
 };
@@ -181,7 +181,7 @@ pub async fn open_command(settings: &LiveSettings, args: OpenArgs, offline: bool
 			let url = format!("https://github.com/{owner}/{repo}/issues/{issue_number}");
 			let link = IssueLink::parse(&url).expect("valid URL");
 			let source = RemoteSource::new(link);
-			let mut issue = load_full_issue_tree(source).await?;
+			let mut issue = todo::Issue::load_remote(source).await?;
 
 			// Write to local filesystem
 			issue.sink_local(None).await?;

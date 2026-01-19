@@ -264,6 +264,78 @@ impl CloseState /*{{{1*/ {
 }
 //,}}}1
 
+/// Timestamps tracking when individual fields of an issue were last changed.
+/// Each node keeps change info about itself only (not sub-issues).
+/// Used for sync conflict resolution.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+pub struct IssueChangeTimestamps {
+	/// Last change to the issue title. Optional because we can't always get this from GitHub.
+	pub title: Option<Timestamp>,
+	/// Last change to the issue description/body. Optional because we can't always get this from GitHub.
+	pub description: Option<Timestamp>,
+	/// Last change to labels. Optional because we can't always get this from GitHub.
+	pub labels: Option<Timestamp>,
+	/// Last comment activity (creation/edit). We can always get this from GitHub.
+	pub comments: Option<Timestamp>,
+}
+
+impl IssueChangeTimestamps {
+	/// Get the most recent timestamp across all fields.
+	/// Used for overall conflict resolution when we need a single timestamp.
+	pub fn most_recent(&self) -> Option<Timestamp> {
+		[self.title, self.description, self.labels, self.comments].into_iter().flatten().max()
+	}
+
+	/// Create timestamps with just the comments field set.
+	/// This is the minimum we can always get from GitHub.
+	pub fn from_comments(ts: Timestamp) -> Self {
+		Self {
+			comments: Some(ts),
+			..Default::default()
+		}
+	}
+
+	/// Create timestamps with all fields set to the same value.
+	/// Useful for local modifications where we know the exact change time.
+	pub fn all_at(ts: Timestamp) -> Self {
+		Self {
+			title: Some(ts),
+			description: Some(ts),
+			labels: Some(ts),
+			comments: Some(ts),
+		}
+	}
+
+	/// Update timestamps based on what changed between old and new issue contents.
+	/// Sets the current time for any field that changed.
+	pub fn update_from_diff(&mut self, old: &super::IssueContents, new: &super::IssueContents) {
+		let now = Timestamp::now();
+
+		if old.title != new.title {
+			self.title = Some(now);
+		}
+
+		// Compare body (first comment) for description changes
+		let old_body = old.comments.first().map(|c| c.body.render()).unwrap_or_default();
+		let new_body = new.comments.first().map(|c| c.body.render()).unwrap_or_default();
+		// Also check blockers as they're part of the body on GitHub
+		if old_body != new_body || old.blockers != new.blockers {
+			self.description = Some(now);
+		}
+
+		if old.labels != new.labels {
+			self.labels = Some(now);
+		}
+
+		// Comments changed if any non-body comment is different
+		let old_comments: Vec<_> = old.comments.iter().skip(1).collect();
+		let new_comments: Vec<_> = new.comments.iter().skip(1).collect();
+		if old_comments.len() != new_comments.len() || old_comments.iter().zip(&new_comments).any(|(o, n)| o.body.render() != n.body.render()) {
+			self.comments = Some(now);
+		}
+	}
+}
+
 /// Metadata for an issue linked to Github.
 /// Lineage is stored separately in `Ancestry`.
 #[derive(Clone, Debug, PartialEq)]
@@ -272,9 +344,9 @@ pub struct LinkedIssueMeta {
 	pub user: String,
 	/// Link to the issue on Github
 	pub link: IssueLink,
-	/// Timestamp of last content change (body/comments, not children).
-	/// Used for sync conflict resolution. None if unknown.
-	pub ts: Option<Timestamp>,
+	/// Timestamps of last changes to individual fields.
+	/// Used for sync conflict resolution.
+	pub timestamps: IssueChangeTimestamps,
 }
 
 impl LinkedIssueMeta {
@@ -359,10 +431,10 @@ pub struct IssueIdentity {
 
 impl IssueIdentity {
 	/// Create a new linked Github issue identity.
-	pub fn linked(ancestry: Ancestry, user: String, link: IssueLink, ts: Option<Timestamp>) -> Self {
+	pub fn linked(ancestry: Ancestry, user: String, link: IssueLink, timestamps: IssueChangeTimestamps) -> Self {
 		Self {
 			ancestry,
-			remote: IssueRemote::Github(Some(LinkedIssueMeta { user, link, ts })),
+			remote: IssueRemote::Github(Some(LinkedIssueMeta { user, link, timestamps })),
 		}
 	}
 
@@ -430,9 +502,9 @@ impl IssueIdentity {
 		self.remote.as_linked().map(|m| m.user.as_str())
 	}
 
-	/// Get the timestamp if available.
-	pub fn ts(&self) -> Option<Timestamp> {
-		self.remote.as_linked().and_then(|m| m.ts)
+	/// Get the timestamps if linked.
+	pub fn timestamps(&self) -> Option<&IssueChangeTimestamps> {
+		self.remote.as_linked().map(|m| &m.timestamps)
 	}
 
 	/// Get ancestry (always available).
@@ -635,9 +707,12 @@ impl Issue /*{{{1*/ {
 		self.identity.user()
 	}
 
-	/// Get the timestamp if available.
-	pub fn ts(&self) -> Option<Timestamp> {
-		self.identity.ts()
+	/// Update timestamps based on what changed compared to old contents.
+	/// This should be called after local modifications to track when fields changed.
+	pub fn update_timestamps_from_diff(&mut self, old_contents: &IssueContents) {
+		if let Some(linked) = self.identity.remote.as_linked_mut() {
+			linked.timestamps.update_from_diff(old_contents, &self.contents);
+		}
 	}
 
 	/// Get ancestry (always available).
@@ -963,7 +1038,8 @@ impl Issue /*{{{1*/ {
 			ParsedIdentityInfo::Linked { user, link } => {
 				// Linked issues get ancestry from the URL, optionally extended by parent
 				let ancestry = parent_ancestry.copied().unwrap_or_else(|| Ancestry::root(link.owner(), link.repo()));
-				IssueIdentity::linked(ancestry, user, link, None)
+				// Timestamps will be loaded from .meta.json separately
+				IssueIdentity::linked(ancestry, user, link, IssueChangeTimestamps::default())
 			}
 			ParsedIdentityInfo::Pending => {
 				// Pending issues require ancestry from parent/caller
@@ -1506,10 +1582,12 @@ impl std::ops::IndexMut<u64> for Issue {
 pub trait LazyIssue<S> {
 	/// The actual source reference type (e.g., `PathBuf` for Local, `IssueLink` for Remote).
 	type Source;
+	/// Error type for operations on this source.
+	type Error: std::error::Error;
 
-	async fn identity(&mut self, source: Self::Source) -> IssueIdentity;
-	async fn contents(&mut self, source: Self::Source) -> IssueContents;
-	async fn children(&mut self, source: Self::Source) -> Vec<Issue>;
+	async fn identity(&mut self, source: Self::Source) -> Result<IssueIdentity, Self::Error>;
+	async fn contents(&mut self, source: Self::Source) -> Result<IssueContents, Self::Error>;
+	async fn children(&mut self, source: Self::Source) -> Result<Vec<Issue>, Self::Error>;
 }
 
 #[cfg(test)]

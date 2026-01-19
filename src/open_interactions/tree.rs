@@ -38,8 +38,9 @@ pub fn compare_node(local: &Issue, consensus: Option<&Issue>, remote: &Issue) ->
 			return NodeResolution::NoChange;
 		}
 		// Different content with no consensus - try timestamps, else conflict
-		let local_ts = local.ts();
-		let remote_ts = remote.ts();
+		// TODO: this conflict resolution is hacky - should be replaced with proper per-field handling
+		let local_ts = local.identity.timestamps().and_then(|t| t.most_recent());
+		let remote_ts = remote.identity.timestamps().and_then(|t| t.most_recent());
 		return match (local_ts, remote_ts) {
 			(Some(l), Some(r)) if l != r => NodeResolution::AutoResolved { take_local: l > r },
 			_ => NodeResolution::Conflict,
@@ -59,8 +60,9 @@ pub fn compare_node(local: &Issue, consensus: Option<&Issue>, remote: &Issue) ->
 		(false, true) => NodeResolution::RemoteOnly,
 		(true, true) => {
 			// Both changed - try to auto-resolve using timestamps
-			let local_ts = local.ts();
-			let remote_ts = remote.ts();
+			// TODO: this conflict resolution is hacky - should be replaced with proper per-field handling
+			let local_ts = local.identity.timestamps().and_then(|t| t.most_recent());
+			let remote_ts = remote.identity.timestamps().and_then(|t| t.most_recent());
 			match (local_ts, remote_ts) {
 				(Some(l), Some(r)) if l != r => NodeResolution::AutoResolved { take_local: l > r },
 				_ => {
@@ -219,9 +221,9 @@ fn apply_remote_node_content(resolved: &mut Issue, remote: &Issue) {
 	resolved.contents.comments.truncate(1);
 	resolved.contents.comments.extend(remote.contents.comments.iter().skip(1).cloned());
 
-	// Update timestamp from remote identity (if both are linked)
+	// Update timestamps from remote identity (if both are linked)
 	if let (Some(resolved_linked), Some(remote_linked)) = (resolved.identity.remote.as_linked_mut(), remote.identity.remote.as_linked()) {
-		resolved_linked.ts = remote_linked.ts;
+		resolved_linked.timestamps = remote_linked.timestamps.clone();
 	}
 }
 
@@ -236,9 +238,9 @@ mod tests {
 	fn make_issue(body: &str, timestamp: Option<i64>) -> Issue {
 		let ancestry = Ancestry::root("o", "r");
 		let link = IssueLink::parse("https://github.com/o/r/issues/1").unwrap();
-		let ts = timestamp.map(|ts| Timestamp::from_second(ts).unwrap());
+		let timestamps = timestamp.map(|ts| todo::IssueChangeTimestamps::all_at(Timestamp::from_second(ts).unwrap())).unwrap_or_default();
 		Issue {
-			identity: IssueIdentity::linked(ancestry, "testuser".to_string(), link, ts),
+			identity: IssueIdentity::linked(ancestry, "testuser".to_string(), link, timestamps),
 			contents: IssueContents {
 				title: "Test".to_string(),
 				labels: vec![],
@@ -319,9 +321,9 @@ mod tests {
 	fn make_issue_with_url(body: &str, timestamp: Option<i64>, url: &str) -> Issue {
 		let link = IssueLink::parse(url).unwrap();
 		let ancestry = Ancestry::root(link.owner(), link.repo());
-		let ts = timestamp.map(|ts| Timestamp::from_second(ts).unwrap());
+		let timestamps = timestamp.map(|ts| todo::IssueChangeTimestamps::all_at(Timestamp::from_second(ts).unwrap())).unwrap_or_default();
 		Issue {
-			identity: IssueIdentity::linked(ancestry, "testuser".to_string(), link, ts),
+			identity: IssueIdentity::linked(ancestry, "testuser".to_string(), link, timestamps),
 			contents: IssueContents {
 				title: "Test".to_string(),
 				labels: vec![],

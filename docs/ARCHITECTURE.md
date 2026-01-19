@@ -122,7 +122,7 @@ Uses `LazyIssue<Remote>` trait implemented in `remote/mod.rs`:
 | `Issue`, `IssueContents`, `CloseState`, `IssueIdentity` | `src/issue/types.rs` |
 | `LazyIssue<S>` trait | `src/issue/types.rs` |
 | `GithubIssue`, `GithubComment`, `CreatedIssue` | `src/github.rs` |
-| `LazyIssue<Remote>` impl, `load_full_issue_tree()` | `src/open_interactions/remote/mod.rs` |
+| `LazyIssue<Remote>` impl, `AsyncFrom<RemoteSource>` | `src/open_interactions/remote/mod.rs` |
 | `LazyIssue<Local>` impl | `src/open_interactions/local/mod.rs` |
 | `split_blockers()`, `join_with_blockers()` | `src/issue/blocker.rs` |
 | `sync_local_issue_to_github()` | `src/open_interactions/sync.rs` |

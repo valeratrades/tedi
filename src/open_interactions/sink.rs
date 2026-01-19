@@ -208,6 +208,36 @@ impl IssueSinkExt for Issue {
 }
 
 //==============================================================================
+// Issue Loading Extension Trait
+//==============================================================================
+
+use super::{
+	local::{LocalError, LocalPath},
+	remote::{RemoteError, RemoteSource},
+};
+
+/// Convenience methods for loading issues from sources.
+///
+/// Mirrors `IssueSinkExt` - provides ergonomic `Issue::load_local()` and `Issue::load_remote()`
+/// that delegate to the source-specific implementations.
+pub trait IssueLoadExt: Sized {
+	/// Load a full issue tree from a local path.
+	async fn load_local(source: LocalPath) -> Result<Self, LocalError>;
+	/// Load a full issue tree from GitHub.
+	async fn load_remote(source: RemoteSource) -> Result<Self, RemoteError>;
+}
+
+impl IssueLoadExt for Issue {
+	async fn load_local(source: LocalPath) -> Result<Self, LocalError> {
+		super::local::Local::load_issue(source).await
+	}
+
+	async fn load_remote(source: RemoteSource) -> Result<Self, RemoteError> {
+		super::remote::Remote::load_issue(source).await
+	}
+}
+
+//==============================================================================
 // GitHub Sink Implementation
 //==============================================================================
 
@@ -244,7 +274,7 @@ impl Sink<Remote> for Issue {
 			let url = format!("https://github.com/{owner}/{repo}/issues/{}", created.number);
 			let link = IssueLink::parse(&url).expect("just constructed valid URL");
 			let user = gh.fetch_authenticated_user().await?;
-			self.identity = IssueIdentity::linked(self.identity.ancestry, user, link, None);
+			self.identity = IssueIdentity::linked(self.identity.ancestry, user, link, todo::IssueChangeTimestamps::default());
 			changed = true;
 		}
 
@@ -332,7 +362,7 @@ mod tests {
 		let identity = match number {
 			Some(n) => {
 				let link = IssueLink::parse(&format!("https://github.com/o/r/issues/{n}")).unwrap();
-				IssueIdentity::linked(ancestry, "testuser".to_string(), link, None)
+				IssueIdentity::linked(ancestry, "testuser".to_string(), link, todo::IssueChangeTimestamps::default())
 			}
 			None => IssueIdentity::local(ancestry),
 		};
