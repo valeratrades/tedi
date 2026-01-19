@@ -698,7 +698,7 @@ struct ParsedTitleLine {
 }
 
 /// Complete representation of an issue file
-#[derive(Clone, Debug, PartialEq, derive_more::IntoIterator)]
+#[derive(Clone, Debug, derive_more::IntoIterator, PartialEq)]
 pub struct Issue {
 	/// Identity - linked to Github or local only
 	pub identity: IssueIdentity,

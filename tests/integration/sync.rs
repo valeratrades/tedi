@@ -14,12 +14,53 @@
 //! Seeds are chosen to be either:
 //! - Close together (e.g., 100 vs 105): tests edge cases where timestamps are similar
 //! - Far apart (e.g., 50 vs 200): guarantees one side dominates
+//!
+//! ## Snapshot Testing
+//!
+//! Tests use insta snapshots to capture the resulting directory state.
+//! The `.meta.json` file contains actual timestamps from seed-based generation,
+//! so snapshots verify both file content and timestamp values.
 
 use std::path::Path;
 
 use tedi::Issue;
+use v_fixtures::render_fixture;
 
 use crate::common::{TestContext, git::GitExt};
+
+/// Render the issues directory state as a snapshot string.
+/// Excludes `.git` directory and sorts files for deterministic output.
+fn snapshot_issues_dir(ctx: &TestContext) -> String {
+	let issues_dir = ctx.xdg.data_dir().join("issues");
+	if !issues_dir.exists() {
+		return String::from("(empty - issues directory does not exist)");
+	}
+
+	// Use a TempFixture-like approach: walk the directory and collect files
+	let mut files = Vec::new();
+	for entry in walkdir::WalkDir::new(&issues_dir)
+		.into_iter()
+		.filter_entry(|e| !e.path().to_string_lossy().contains(".git"))
+		.filter_map(Result::ok)
+	{
+		let path = entry.path();
+		if path.is_file() {
+			let relative_path = path.strip_prefix(&issues_dir).expect("path should be under issues_dir");
+			let relative_str = format!("/{}", relative_path.to_string_lossy());
+			if let Ok(text) = std::fs::read_to_string(path) {
+				files.push(v_fixtures::FixtureFile { path: relative_str, text });
+			}
+		}
+	}
+
+	if files.is_empty() {
+		return String::from("(empty - no files in issues directory)");
+	}
+
+	// Sort by path for deterministic output
+	files.sort_by(|a, b| a.path.cmp(&b.path));
+	render_fixture(&v_fixtures::Fixture { files })
+}
 
 fn parse(content: &str) -> Issue {
 	Issue::parse_virtual(content, Path::new("test.md")).expect("failed to parse test issue")
@@ -43,11 +84,29 @@ fn test_both_diverged_triggers_conflict() {
 
 	eprintln!("stdout: {stdout}");
 	eprintln!("stderr: {stderr}");
+	eprintln!("status: {status:?}");
 
-	assert!(
-		!status.success() || stderr.contains("Conflict") || stdout.contains("Merging"),
-		"Should trigger conflict or merge when both diverged. stdout: {stdout}, stderr: {stderr}"
-	);
+	// Capture the resulting directory state - this shows actual timestamps and merge result
+	insta::assert_snapshot!(snapshot_issues_dir(&ctx), @r#"
+	//- /o/r/.meta.json
+	{
+	  "virtual_project": false,
+	  "next_virtual_issue_number": 0,
+	  "issues": {
+	    "1": {
+	      "timestamps": {
+	        "title": "2001-09-11T10:54:39Z",
+	        "description": "2001-09-11T11:07:36Z",
+	        "labels": "2001-09-11T16:40:49Z",
+	        "comments": "2001-09-11T18:46:17Z"
+	      }
+	    }
+	  }
+	}
+	//- /o/r/1_-_Test_Issue.md
+	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+			remote changed body
+	"#);
 }
 
 #[test]
@@ -70,10 +129,8 @@ fn test_both_diverged_with_git_initiates_merge() {
 	eprintln!("stderr: {stderr}");
 	eprintln!("status: {status:?}");
 
-	assert!(
-		stdout.contains("Merging") || stdout.contains("merged") || stderr.contains("CONFLICT") || stderr.contains("Conflict"),
-		"Expected merge activity or conflict. stdout: {stdout}, stderr: {stderr}"
-	);
+	// Capture the resulting directory state - this shows actual timestamps and merge result
+	insta::assert_snapshot!(snapshot_issues_dir(&ctx), @"");
 }
 
 /// When local matches consensus (no uncommitted changes) and remote has changed,
@@ -125,11 +182,9 @@ fn test_only_local_changed_pushes_local() {
 	eprintln!("status: {status:?}");
 
 	assert!(status.success(), "Should succeed when only local changed. stderr: {stderr}");
-	// Should push local changes to remote
-	assert!(
-		stdout.contains("Updating") || stdout.contains("Synced") || stdout.contains("body"),
-		"Expected push activity. stdout: {stdout}, stderr: {stderr}"
-	);
+
+	// Capture the resulting directory state
+	insta::assert_snapshot!(snapshot_issues_dir(&ctx), @"");
 }
 
 #[test]
@@ -325,10 +380,9 @@ fn test_closing_issue_syncs_state_change() {
 	eprintln!("stderr: {stderr}");
 
 	assert!(status.success(), "Should succeed. stderr: {stderr}");
-	assert!(
-		stdout.contains("state") || stdout.contains("closed") || stdout.contains("Updating"),
-		"Expected state change sync. stdout: {stdout}"
-	);
+
+	// Capture the resulting directory state
+	insta::assert_snapshot!(snapshot_issues_dir(&ctx), @"");
 }
 
 /// Sub-issues closed as duplicates should NOT appear in the pulled remote state.
@@ -456,12 +510,8 @@ fn test_reset_syncs_changes_after_editor() {
 
 	assert!(status.success(), "Should succeed. stderr: {stderr}");
 
-	// The key assertion: sync should have happened after editor
-	// We should see "Updating issue state" or similar in the output
-	assert!(
-		stdout.contains("Updating") || stdout.contains("Synced"),
-		"Changes should be synced after editor. stdout: {stdout}"
-	);
+	// Capture the resulting directory state
+	insta::assert_snapshot!(snapshot_issues_dir(&ctx), @"");
 }
 
 /// `!c` shorthand should expand to `<!-- new comment -->` and trigger comment creation.

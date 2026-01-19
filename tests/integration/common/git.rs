@@ -390,20 +390,18 @@ impl TestContext {
 				.remote_comments
 				.iter()
 				.map(|c| {
-					let mut json = serde_json::json!({
+					// Use provided timestamp or default to base timestamp
+					let ts = c.timestamp.unwrap_or_else(|| jiff::Timestamp::from_second(BASE_TIMESTAMP_SECS).unwrap());
+					serde_json::json!({
 						"owner": c.owner,
 						"repo": c.repo,
 						"issue_number": c.issue_number,
 						"comment_id": c.comment_id,
 						"body": c.body,
-						"owner_login": c.owner_login
-					});
-					// Add timestamp if provided
-					if let Some(ts) = c.timestamp {
-						json["created_at"] = serde_json::Value::String(ts.to_string());
-						json["updated_at"] = serde_json::Value::String(ts.to_string());
-					}
-					json
+						"owner_login": c.owner_login,
+						"created_at": ts.to_string(),
+						"updated_at": ts.to_string()
+					})
 				})
 				.collect();
 
