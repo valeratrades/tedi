@@ -247,14 +247,17 @@ impl<'a> OpenBuilder<'a> {
 						}
 
 						// Try to signal the pipe (use nix O_NONBLOCK to avoid blocking)
+						// Only mark as signaled if we successfully wrote to the pipe.
+						// The pipe open will fail if no reader is waiting yet.
 						#[cfg(unix)]
 						{
 							use std::os::unix::fs::OpenOptionsExt;
 							if let Ok(mut pipe) = std::fs::OpenOptions::new().write(true).custom_flags(0x800).open(&pipe_path) {
-								let _ = pipe.write_all(b"x");
+								if pipe.write_all(b"x").is_ok() {
+									signaled = true;
+								}
 							}
 						}
-						signaled = true;
 					}
 					std::thread::sleep(std::time::Duration::from_millis(10));
 				}
@@ -329,14 +332,17 @@ impl<'a> OpenUrlBuilder<'a> {
 						}
 
 						// Try to signal the pipe (use O_NONBLOCK to avoid blocking)
+						// Only mark as signaled if we successfully wrote to the pipe.
+						// The pipe open will fail if no reader is waiting yet.
 						#[cfg(unix)]
 						{
 							use std::os::unix::fs::OpenOptionsExt;
 							if let Ok(mut pipe) = std::fs::OpenOptions::new().write(true).custom_flags(0x800).open(&pipe_path) {
-								let _ = pipe.write_all(b"x");
+								if pipe.write_all(b"x").is_ok() {
+									signaled = true;
+								}
 							}
 						}
-						signaled = true;
 					}
 					std::thread::sleep(std::time::Duration::from_millis(10));
 				}
