@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 // Error Types
 //==============================================================================
 
-/// Error type for local issue operations.
+/// Error type for local issue loading operations.
 #[derive(Debug, thiserror::Error)]
 pub enum LocalError {
 	/// File not found at the expected path.
@@ -52,6 +52,38 @@ pub enum LocalError {
 	GitError { message: String },
 }
 
+/// Error type for consensus sink operations.
+#[derive(Debug, derive_more::Display, miette::Diagnostic, thiserror::Error)]
+pub enum ConsensusSinkError {
+	#[display("failed to write issue files: {_0}")]
+	#[diagnostic(code(tedi::consensus::write))]
+	Write(color_eyre::Report),
+
+	#[display("git add failed: {_0}")]
+	#[diagnostic(code(tedi::consensus::git_add))]
+	GitAdd(String),
+
+	#[display("git status failed: {_0}")]
+	#[diagnostic(code(tedi::consensus::git_status))]
+	GitStatus(String),
+
+	#[display("git commit failed: {_0}")]
+	#[diagnostic(code(tedi::consensus::git_commit))]
+	GitCommit(String),
+
+	#[display("files rejected by .gitignore:\n{_0}")]
+	#[diagnostic(code(tedi::consensus::gitignore), help("Check your .gitignore rules or remove the conflicting patterns"))]
+	GitIgnoreRejection(String),
+
+	#[display("invalid data directory path (not valid UTF-8)")]
+	#[diagnostic(code(tedi::consensus::invalid_path))]
+	InvalidDataDir,
+
+	#[display("{_0}")]
+	#[diagnostic(code(tedi::consensus::io))]
+	Io(#[from] std::io::Error),
+}
+
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use tedi::{Ancestry, FetchedIssue, Issue};
@@ -77,6 +109,12 @@ pub enum LocalSource {
 	/// this tool.
 	Submitted,
 }
+
+/// Marker type for sinking to filesystem (submitted state).
+pub struct Submitted;
+
+/// Marker type for sinking to git (consensus state).
+pub struct Consensus;
 
 /// Source for loading issues from local storage.
 #[derive(Clone, Debug)]
@@ -135,22 +173,6 @@ impl Local {
 			LocalSource::Submitted => std::fs::read_to_string(&local_path.path).ok(),
 			LocalSource::Consensus => Self::read_git_content(&local_path.path),
 		}
-	}
-
-	/// Load a full issue tree from a local path.
-	///
-	/// This is the primary entry point for loading issues from the filesystem.
-	/// It recursively loads identity, contents, and children.
-	pub async fn load_issue(source: LocalPath) -> Result<Issue, LocalError> {
-		let (owner, repo) = Self::extract_owner_repo(&source.path).map_err(|_| LocalError::InvalidPath { path: source.path.clone() })?;
-		let ancestry = tedi::Ancestry::root(&owner, &repo);
-		let mut issue = Issue::empty_local(ancestry);
-
-		<Issue as tedi::LazyIssue<Local>>::identity(&mut issue, source.clone()).await?;
-		<Issue as tedi::LazyIssue<Local>>::contents(&mut issue, source.clone()).await?;
-		Box::pin(<Issue as tedi::LazyIssue<Local>>::children(&mut issue, source)).await?;
-
-		Ok(issue)
 	}
 
 	/// Read file content from git HEAD.
@@ -847,6 +869,11 @@ impl tedi::LazyIssue<Local> for Issue {
 	type Error = LocalError;
 	type Source = LocalPath;
 
+	async fn ancestry(source: &Self::Source) -> Result<tedi::Ancestry, Self::Error> {
+		let (owner, repo) = Local::extract_owner_repo(&source.path).map_err(|_| LocalError::InvalidPath { path: source.path.clone() })?;
+		Ok(tedi::Ancestry::root(&owner, &repo))
+	}
+
 	async fn identity(&mut self, source: Self::Source) -> Result<tedi::IssueIdentity, Self::Error> {
 		if self.identity.is_linked() {
 			return Ok(self.identity.clone());
@@ -948,7 +975,7 @@ impl tedi::LazyIssue<Local> for Issue {
 				continue;
 			};
 
-			let child = Local::load_issue(child_source).await?;
+			let child = <Issue as tedi::LazyIssue<Local>>::load(child_source).await?;
 			children.push(child);
 		}
 
@@ -961,21 +988,95 @@ impl tedi::LazyIssue<Local> for Issue {
 		self.children = children.clone();
 		Ok(children)
 	}
+
+	async fn load(source: Self::Source) -> Result<Issue, Self::Error> {
+		let ancestry = <Self as tedi::LazyIssue<Local>>::ancestry(&source).await?;
+		let mut issue = Issue::empty_local(ancestry);
+		<Self as tedi::LazyIssue<Local>>::identity(&mut issue, source.clone()).await?;
+		<Self as tedi::LazyIssue<Local>>::contents(&mut issue, source.clone()).await?;
+		Box::pin(<Self as tedi::LazyIssue<Local>>::children(&mut issue, source)).await?;
+		Ok(issue)
+	}
 }
 
 //==============================================================================
 // Sink Implementation
 //==============================================================================
 
-impl Sink<Local> for Issue {
-	async fn sink(&mut self, old: Option<&Issue>) -> color_eyre::Result<bool> {
+//TODO: @claude: create proper error type for Submitted sink (see ConsensusSinkError for reference)
+impl Sink<Submitted> for Issue {
+	type Error = color_eyre::Report;
+
+	async fn sink(&mut self, old: Option<&Issue>) -> Result<bool, Self::Error> {
 		let owner = self.identity.owner();
 		let repo = self.identity.repo();
 
-		sink_issue_node(self, old, owner, repo, &[])
+		Ok(sink_issue_node(self, old, owner, repo, &[])?)
 	}
 }
 
+impl Sink<Consensus> for Issue {
+	type Error = ConsensusSinkError;
+
+	async fn sink(&mut self, old: Option<&Issue>) -> Result<bool, Self::Error> {
+		use std::process::Command;
+
+		let owner = self.identity.owner();
+		let repo = self.identity.repo();
+
+		// Write files to filesystem (same as Submitted)
+		let any_written = sink_issue_node(self, old, owner, repo, &[]).map_err(ConsensusSinkError::Write)?;
+
+		if !any_written {
+			return Ok(false);
+		}
+
+		// Stage and commit to git
+		let data_dir = Local::issues_dir();
+		let data_dir_str = data_dir.to_str().ok_or(ConsensusSinkError::InvalidDataDir)?;
+
+		// Stage all changes
+		let add_output = Command::new("git").args(["-C", data_dir_str, "add", "-A"]).output()?;
+		if !add_output.status.success() {
+			return Err(ConsensusSinkError::GitAdd(String::from_utf8_lossy(&add_output.stderr).into_owned()));
+		}
+
+		// Check if any files were ignored (would indicate .gitignore rejection)
+		let status_output = Command::new("git").args(["-C", data_dir_str, "status", "--porcelain"]).output()?;
+		if !status_output.status.success() {
+			return Err(ConsensusSinkError::GitStatus(String::from_utf8_lossy(&status_output.stderr).into_owned()));
+		}
+
+		// Check for ignored files that we tried to add
+		let project_dir = Local::project_dir(owner, repo);
+		if let Some(rel) = project_dir.strip_prefix(&data_dir).ok() {
+			let check_ignored = Command::new("git").args(["-C", data_dir_str, "check-ignore", "--no-index", "-v"]).arg(rel.join("**")).output()?;
+			// check-ignore returns 0 if files ARE ignored, 1 if none are ignored
+			if check_ignored.status.success() && !check_ignored.stdout.is_empty() {
+				return Err(ConsensusSinkError::GitIgnoreRejection(String::from_utf8_lossy(&check_ignored.stdout).into_owned()));
+			}
+		}
+
+		// Check if there are staged changes to commit
+		let diff_output = Command::new("git").args(["-C", data_dir_str, "diff", "--cached", "--quiet"]).status()?;
+		if diff_output.success() {
+			// No staged changes - nothing to commit
+			return Ok(false);
+		}
+
+		// Commit with a descriptive message
+		let issue_number = self.number().map(|n| format!("#{n}")).unwrap_or_else(|| "new".to_string());
+		let commit_msg = format!("sync: {owner}/{repo}{issue_number}");
+		let commit_output = Command::new("git").args(["-C", data_dir_str, "commit", "-m", &commit_msg]).output()?;
+		if !commit_output.status.success() {
+			return Err(ConsensusSinkError::GitCommit(String::from_utf8_lossy(&commit_output.stderr).into_owned()));
+		}
+
+		Ok(true)
+	}
+}
+
+//TODO!!!: (owner, repo, ancestors) here are all incorrect and outdated. We need none of them, as all the necessary info is already in `issue`. What does vec of FetchedIssue for ancestors even represent, - why on earth we're drugging github into this
 fn sink_issue_node(issue: &Issue, old: Option<&Issue>, owner: &str, repo: &str, ancestors: &[FetchedIssue]) -> Result<bool> {
 	let issue_number = issue.number();
 	let title = &issue.contents.title;

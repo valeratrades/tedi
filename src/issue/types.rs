@@ -1616,14 +1616,19 @@ impl std::ops::IndexMut<u64> for Issue {
 /// Methods load data on demand; `&mut self` allows caching intermediate results.
 #[allow(async_fn_in_trait)]
 pub trait LazyIssue<S> {
-	/// The actual source reference type (e.g., `PathBuf` for Local, `IssueLink` for Remote).
-	type Source;
+	/// The actual source reference type (e.g., `LocalPath` for Local, `RemoteSource` for Remote).
+	type Source: Clone;
 	/// Error type for operations on this source.
 	type Error: std::error::Error;
 
+	/// Resolve ancestry from the source.
+	async fn ancestry(source: &Self::Source) -> Result<Ancestry, Self::Error>;
 	async fn identity(&mut self, source: Self::Source) -> Result<IssueIdentity, Self::Error>;
 	async fn contents(&mut self, source: Self::Source) -> Result<IssueContents, Self::Error>;
 	async fn children(&mut self, source: Self::Source) -> Result<Vec<Issue>, Self::Error>;
+
+	/// Load a full issue tree from the source.
+	async fn load(source: Self::Source) -> Result<Issue, Self::Error>;
 }
 
 #[cfg(test)]

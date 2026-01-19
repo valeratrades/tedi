@@ -72,23 +72,6 @@ use crate::github::{self, GithubComment, GithubIssue};
 /// Marker type for remote GitHub operations.
 pub enum Remote {}
 
-impl Remote {
-	/// Load a full issue tree from GitHub.
-	///
-	/// This is the primary entry point for loading issues from the remote.
-	/// It recursively loads identity, contents, and children.
-	pub async fn load_issue(source: RemoteSource) -> Result<Issue, RemoteError> {
-		let ancestry = source.resolve_ancestry().await?;
-		let mut issue = Issue::empty_local(ancestry);
-
-		<Issue as tedi::LazyIssue<Remote>>::identity(&mut issue, source.clone()).await?;
-		<Issue as tedi::LazyIssue<Remote>>::contents(&mut issue, source.clone()).await?;
-		Box::pin(<Issue as tedi::LazyIssue<Remote>>::children(&mut issue, source)).await?;
-
-		Ok(issue)
-	}
-}
-
 /// Source for loading issues from GitHub.
 ///
 /// Contains the issue link and optional lineage (parent issue numbers from root to immediate parent).
@@ -127,7 +110,7 @@ impl RemoteSource {
 	}
 
 	/// Resolve ancestry, fetching lineage from GitHub if not provided.
-	async fn resolve_ancestry(&self) -> Result<Ancestry, RemoteError> {
+	pub async fn resolve_ancestry(&self) -> Result<Ancestry, RemoteError> {
 		let repo_info = self.link.repo_info();
 		let number = self.link.number();
 
@@ -177,6 +160,10 @@ impl RemoteSource {
 impl tedi::LazyIssue<Remote> for Issue {
 	type Error = RemoteError;
 	type Source = RemoteSource;
+
+	async fn ancestry(source: &Self::Source) -> Result<Ancestry, Self::Error> {
+		source.resolve_ancestry().await
+	}
 
 	async fn identity(&mut self, source: Self::Source) -> Result<IssueIdentity, Self::Error> {
 		if self.identity.is_linked() {
@@ -293,6 +280,15 @@ impl tedi::LazyIssue<Remote> for Issue {
 		children.sort_by_key(|c| c.number().unwrap_or(0));
 		self.children = children.clone();
 		Ok(children)
+	}
+
+	async fn load(source: Self::Source) -> Result<Issue, Self::Error> {
+		let ancestry = <Self as tedi::LazyIssue<Remote>>::ancestry(&source).await?;
+		let mut issue = Issue::empty_local(ancestry);
+		<Self as tedi::LazyIssue<Remote>>::identity(&mut issue, source.clone()).await?;
+		<Self as tedi::LazyIssue<Remote>>::contents(&mut issue, source.clone()).await?;
+		Box::pin(<Self as tedi::LazyIssue<Remote>>::children(&mut issue, source)).await?;
+		Ok(issue)
 	}
 }
 

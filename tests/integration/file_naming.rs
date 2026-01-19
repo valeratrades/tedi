@@ -58,7 +58,8 @@ fn test_old_flat_file_removed_when_sub_issues_appear() {
 	// Remote has the version with children
 	ctx.remote(&with_children);
 
-	let (status, stdout, stderr) = ctx.run_open(&issue_path);
+	// Need --pull since local == consensus (no uncommitted changes)
+	let (status, stdout, stderr) = ctx.open(&issue_path).args(&["--pull"]).run();
 
 	eprintln!("stdout: {stdout}");
 	eprintln!("stderr: {stderr}");
@@ -73,9 +74,9 @@ fn test_old_flat_file_removed_when_sub_issues_appear() {
 }
 
 #[test]
-fn test_old_placement_discarded_even_without_local_changes() {
-	// This test verifies that when remote gains sub-issues but local has no changes,
-	// the old flat file is still cleaned up and replaced with the directory format.
+fn test_old_placement_discarded_with_pull() {
+	// This test verifies that when remote gains sub-issues and we use --pull,
+	// the old flat file is cleaned up and replaced with the directory format.
 
 	let ctx = TestContext::new("");
 
@@ -93,8 +94,8 @@ fn test_old_placement_discarded_even_without_local_changes() {
 	);
 	ctx.remote(&with_children);
 
-	// Open the issue (should sync and update format)
-	let (status, stdout, stderr) = ctx.run_open(&issue_path);
+	// Need --pull since local == consensus (no uncommitted local changes)
+	let (status, stdout, stderr) = ctx.open(&issue_path).args(&["--pull"]).run();
 
 	eprintln!("stdout: {stdout}");
 	eprintln!("stderr: {stderr}");
@@ -103,10 +104,7 @@ fn test_old_placement_discarded_even_without_local_changes() {
 
 	// The critical assertion: old flat file must be gone
 	let flat_path = ctx.flat_issue_path("o", "r", 1, "Parent Issue");
-	assert!(
-		!flat_path.exists(),
-		"Old flat format file at {flat_path:?} should be removed even when no local changes were made"
-	);
+	assert!(!flat_path.exists(), "Old flat format file at {flat_path:?} should be removed when using --pull");
 
 	// New directory format should exist with the main file
 	let dir_path = ctx.dir_issue_path("o", "r", 1, "Parent Issue");

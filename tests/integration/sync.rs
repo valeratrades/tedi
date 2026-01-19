@@ -65,8 +65,10 @@ fn test_both_diverged_with_git_initiates_merge() {
 	);
 }
 
+/// When local matches consensus (no uncommitted changes) and remote has changed,
+/// we only pull remote changes if --pull is specified.
 #[test]
-fn test_only_remote_changed_takes_remote() {
+fn test_only_remote_changed_takes_remote_with_pull() {
 	let ctx = TestContext::new("");
 
 	let consensus = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tconsensus body\n");
@@ -76,16 +78,18 @@ fn test_only_remote_changed_takes_remote() {
 	let issue_path = ctx.consensus(&consensus);
 	ctx.remote(&remote);
 
-	let (status, stdout, stderr) = ctx.run_open(&issue_path);
+	// Must use --pull to fetch remote changes when local is unchanged
+	let (status, stdout, stderr) = ctx.open(&issue_path).args(&["--pull"]).run();
 
 	eprintln!("stdout: {stdout}");
 	eprintln!("stderr: {stderr}");
 	eprintln!("status: {status:?}");
 
-	assert!(status.success(), "Should succeed when only remote changed. stderr: {stderr}");
+	assert!(status.success(), "Should succeed with --pull when only remote changed. stderr: {stderr}");
+	// Verify we pulled (shows "Pulling latest...")
 	assert!(
-		stdout.contains("Remote changed") || stdout.contains("updated"),
-		"Expected remote update message. stdout: {stdout}, stderr: {stderr}"
+		stdout.contains("Pulling") || stdout.contains("pull"),
+		"Expected pull activity message. stdout: {stdout}, stderr: {stderr}"
 	);
 }
 
@@ -536,4 +540,52 @@ fn test_force_merge_preserves_both_sub_issues(#[case] args: &[&str], #[case] exp
 	} else {
 		assert!(!content.contains("extra local line"), "Remote description should win with {args:?}. Got: {content}");
 	}
+}
+
+/// Verify that .meta.json is written with timestamps when sinking to Consensus.
+/// This is critical for the merge algorithm to work - timestamps determine which side wins.
+#[test]
+fn test_consensus_sink_writes_meta_json_with_timestamps() {
+	let ctx = TestContext::new("");
+
+	// Set up a remote issue with a comment (will have timestamps from mock)
+	let remote = parse(
+		"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
+		 \tremote body\n\
+		 \n\
+		 \t---\n\
+		 \t<!-- comment 1001 @commenter -->\n\
+		 \tA test comment\n",
+	);
+	ctx.remote(&remote);
+
+	// Fetch the issue via URL - this should sink to Consensus and write .meta.json
+	let (status, stdout, stderr) = ctx.open_url("o", "r", 1).run();
+
+	eprintln!("stdout: {stdout}");
+	eprintln!("stderr: {stderr}");
+
+	assert!(status.success(), "Fetch should succeed. stderr: {stderr}");
+
+	// Check that .meta.json exists and contains timestamps for issue #1
+	let meta_path = ctx.xdg.data_dir().join("issues/o/r/.meta.json");
+	assert!(meta_path.exists(), ".meta.json should be created at {}", meta_path.display());
+
+	let meta_content = std::fs::read_to_string(&meta_path).expect("Should read .meta.json");
+	eprintln!("meta_content: {meta_content}");
+
+	let meta: serde_json::Value = serde_json::from_str(&meta_content).expect("Should parse .meta.json");
+
+	// Check that issue 1 has timestamps
+	let issue_meta = &meta["issues"]["1"];
+	assert!(!issue_meta.is_null(), "Issue #1 should have metadata in .meta.json");
+
+	let timestamps = &issue_meta["timestamps"];
+	assert!(!timestamps.is_null(), "Issue #1 should have timestamps");
+
+	// All timestamp fields should be present (timestamps are serialized as ISO 8601 strings)
+	assert!(timestamps["title"].is_string(), "title timestamp should be present");
+	assert!(timestamps["description"].is_string(), "description timestamp should be present");
+	assert!(timestamps["labels"].is_string(), "labels timestamp should be present");
+	assert!(timestamps["comments"].is_string(), "comments timestamp should be present (issue has a comment)");
 }

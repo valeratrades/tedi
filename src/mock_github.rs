@@ -31,6 +31,12 @@ struct MockIssueData {
 	state_reason: Option<String>,
 	labels: Vec<String>,
 	owner_login: String,
+	/// Timestamp for title changes
+	title_timestamp: Option<jiff::Timestamp>,
+	/// Timestamp for description/body changes
+	description_timestamp: Option<jiff::Timestamp>,
+	/// Timestamp for label changes
+	labels_timestamp: Option<jiff::Timestamp>,
 }
 
 /// Internal representation of a comment in the mock
@@ -143,6 +149,8 @@ impl MockGithubClient {
 				let key = RepoKey::new(owner, repo);
 				let id = self.next_issue_id.fetch_add(1, Ordering::SeqCst);
 
+				// Use current time as default timestamp for all fields
+				let now = Some(jiff::Timestamp::now());
 				let issue_data = MockIssueData {
 					number,
 					id,
@@ -152,6 +160,9 @@ impl MockGithubClient {
 					state_reason: state_reason.clone(),
 					labels,
 					owner_login: owner_login.to_string(),
+					title_timestamp: now,
+					description_timestamp: now,
+					labels_timestamp: now,
 				};
 
 				self.issues.lock().unwrap().entry(key).or_default().insert(number, issue_data);
@@ -212,6 +223,7 @@ impl MockGithubClient {
 		let key = RepoKey::new(owner, repo);
 		let id = self.next_issue_id.fetch_add(1, Ordering::SeqCst);
 
+		let now = Some(jiff::Timestamp::now());
 		let issue = MockIssueData {
 			number,
 			id,
@@ -221,6 +233,9 @@ impl MockGithubClient {
 			state_reason: None,
 			labels: labels.into_iter().map(|s| s.to_string()).collect(),
 			owner_login: owner_login.to_string(),
+			title_timestamp: now,
+			description_timestamp: now,
+			labels_timestamp: now,
 		};
 
 		let mut issues = self.issues.lock().unwrap();
@@ -476,6 +491,7 @@ impl GithubClient for MockGithubClient {
 		let id = self.next_issue_id.fetch_add(1, Ordering::SeqCst);
 		let number = self.next_issue_number.fetch_add(1, Ordering::SeqCst);
 
+		let now = Some(jiff::Timestamp::now());
 		let issue = MockIssueData {
 			number,
 			id,
@@ -485,6 +501,9 @@ impl GithubClient for MockGithubClient {
 			state_reason: None,
 			labels: Vec::new(),
 			owner_login: self.user_login.clone(),
+			title_timestamp: now,
+			description_timestamp: now,
+			labels_timestamp: now,
 		};
 
 		let mut issues = self.issues.lock().unwrap();
@@ -604,7 +623,19 @@ impl GithubClient for MockGithubClient {
 		tracing::info!(target: "mock_github", owner, repo_name, issue_number, "fetch_timeline_timestamps");
 		self.log_call(&format!("fetch_timeline_timestamps({owner}, {repo_name}, {issue_number})"));
 
-		// Mock returns empty timestamps - in tests we don't track change history
+		let issues = self.issues.lock().unwrap();
+		let key = RepoKey::new(owner, repo_name);
+
+		if let Some(repo_issues) = issues.get(&key) {
+			if let Some(issue) = repo_issues.get(&issue_number) {
+				return Ok(crate::github::GraphqlTimelineTimestamps {
+					title: issue.title_timestamp,
+					description: issue.description_timestamp,
+					labels: issue.labels_timestamp,
+				});
+			}
+		}
+
 		Ok(crate::github::GraphqlTimelineTimestamps::default())
 	}
 }

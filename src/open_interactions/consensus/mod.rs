@@ -10,12 +10,9 @@ mod git;
 use std::path::Path;
 
 pub use git::{commit_issue_changes, is_git_initialized};
-use tedi::Issue;
+use tedi::{Issue, LazyIssue};
 
-use super::{
-	local::{Local, LocalError, LocalPath},
-	sink::IssueLoadExt,
-};
+use super::local::{Local, LocalError, LocalPath};
 
 /// Load the consensus Issue tree from git (last committed state).
 ///
@@ -33,5 +30,5 @@ pub async fn load_consensus_issue(file_path: &Path) -> Result<Option<Issue>, Loc
 		return Ok(None);
 	}
 
-	Issue::load_local(source).await.map(Some)
+	<Issue as LazyIssue<Local>>::load(source).await.map(Some)
 }

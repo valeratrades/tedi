@@ -3,13 +3,13 @@
 use std::path::Path;
 
 use clap::Args;
-use tedi::IssueLink;
+use tedi::{Issue, IssueLink, LazyIssue};
 use v_utils::prelude::*;
 
 use super::{
-	local::{ExactMatchLevel, Local},
-	remote::RemoteSource,
-	sink::{IssueLoadExt, IssueSinkExt},
+	local::{ExactMatchLevel, Local, Submitted},
+	remote::{Remote, RemoteSource},
+	sink::Sink,
 	sync::{MergeMode, Side, SyncOptions, open_local_issue},
 	touch::{create_pending_issue, create_virtual_issue, find_local_issue_for_touch, parse_touch_path},
 };
@@ -181,10 +181,10 @@ pub async fn open_command(settings: &LiveSettings, args: OpenArgs, offline: bool
 			let url = format!("https://github.com/{owner}/{repo}/issues/{issue_number}");
 			let link = IssueLink::parse(&url).expect("valid URL");
 			let source = RemoteSource::new(link);
-			let mut issue = tedi::Issue::load_remote(source).await?;
+			let mut issue = <Issue as LazyIssue<Remote>>::load(source).await?;
 
 			// Write to local filesystem
-			issue.sink_local(None).await?;
+			<Issue as Sink<Submitted>>::sink(&mut issue, None).await?;
 
 			// Find the path where it was written
 			let path = Local::find_issue_file(&owner, &repo, Some(issue_number), &issue.contents.title, &[]).expect("just wrote the issue");

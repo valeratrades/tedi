@@ -164,19 +164,18 @@ pub fn compute_node_diff(new: &Issue, old: Option<&Issue>) -> IssueDiff {
 // Sink Trait
 //==============================================================================
 
-pub use super::{local::Local, remote::Remote};
+pub use super::remote::Remote;
 
 /// Trait for sinking (pushing) issues to a destination.
 ///
 /// Implemented for `Issue` with marker type parameters to select the destination.
 /// Location is derived from the issue's `identity.ancestry` (owner/repo/lineage).
 /// For remote operations, the GitHub client is accessed via `github::client::get()`.
-///
-/// Use the convenience methods on `IssueSinkExt` for ergonomic access:
-/// - `issue.sink_local(old)` - sink to filesystem
-/// - `issue.sink_remote(old)` - sink to GitHub
 #[allow(async_fn_in_trait)]
 pub trait Sink<S> {
+	/// Error type for this sink implementation.
+	type Error: std::fmt::Debug + std::fmt::Display;
+
 	/// Sink this issue to the destination, comparing against `old` state.
 	///
 	/// # Arguments
@@ -186,63 +185,18 @@ pub trait Sink<S> {
 	/// * `Ok(true)` if any changes were made
 	/// * `Ok(false)` if already in sync
 	/// * `Err(_)` on failure
-	async fn sink(&mut self, old: Option<&Issue>) -> color_eyre::Result<bool>;
-}
-
-/// Convenience methods for sinking issues without fully-qualified trait syntax.
-pub trait IssueSinkExt {
-	/// Sink to local filesystem.
-	async fn sink_local(&mut self, old: Option<&Issue>) -> color_eyre::Result<bool>;
-	/// Sink to remote GitHub.
-	async fn sink_remote(&mut self, old: Option<&Issue>) -> color_eyre::Result<bool>;
-}
-
-impl IssueSinkExt for Issue {
-	async fn sink_local(&mut self, old: Option<&Issue>) -> color_eyre::Result<bool> {
-		<Self as Sink<Local>>::sink(self, old).await
-	}
-
-	async fn sink_remote(&mut self, old: Option<&Issue>) -> color_eyre::Result<bool> {
-		<Self as Sink<Remote>>::sink(self, old).await
-	}
-}
-
-//==============================================================================
-// Issue Loading Extension Trait
-//==============================================================================
-
-use super::{
-	local::{LocalError, LocalPath},
-	remote::{RemoteError, RemoteSource},
-};
-
-/// Convenience methods for loading issues from sources.
-///
-/// Mirrors `IssueSinkExt` - provides ergonomic `Issue::load_local()` and `Issue::load_remote()`
-/// that delegate to the source-specific implementations.
-pub trait IssueLoadExt: Sized {
-	/// Load a full issue tree from a local path.
-	async fn load_local(source: LocalPath) -> Result<Self, LocalError>;
-	/// Load a full issue tree from GitHub.
-	async fn load_remote(source: RemoteSource) -> Result<Self, RemoteError>;
-}
-
-impl IssueLoadExt for Issue {
-	async fn load_local(source: LocalPath) -> Result<Self, LocalError> {
-		super::local::Local::load_issue(source).await
-	}
-
-	async fn load_remote(source: RemoteSource) -> Result<Self, RemoteError> {
-		super::remote::Remote::load_issue(source).await
-	}
+	async fn sink(&mut self, old: Option<&Issue>) -> Result<bool, Self::Error>;
 }
 
 //==============================================================================
 // GitHub Sink Implementation
 //==============================================================================
 
+//TODO: @claude: create proper error type for Remote sink (see ConsensusSinkError for reference)
 impl Sink<Remote> for Issue {
-	async fn sink(&mut self, old: Option<&Issue>) -> color_eyre::Result<bool> {
+	type Error = color_eyre::Report;
+
+	async fn sink(&mut self, old: Option<&Issue>) -> Result<bool, Self::Error> {
 		// Virtual issues never sync to remote - they're local-only
 		if self.identity.is_virtual() {
 			return Ok(false);
@@ -333,7 +287,7 @@ impl Sink<Remote> for Issue {
 			// If child is pending, it needs to be linked to parent after creation
 			let was_pending = child.is_local();
 
-			changed |= Box::pin(child.sink_remote(old_child)).await?;
+			changed |= Box::pin(<Issue as Sink<Remote>>::sink(child, old_child)).await?;
 
 			// Link newly created child to parent
 			if was_pending {
