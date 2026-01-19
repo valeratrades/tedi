@@ -361,7 +361,7 @@ async fn handle_divergence(issue_file_path: &Path, owner: &str, repo: &str, issu
 	// Check if it's actually a conflict (vs other error)
 	if merge_stdout.contains("CONFLICT") || merge_stderr.contains("CONFLICT") || merge_stdout.contains("Automatic merge failed") {
 		// Mark this file as having conflicts - blocks all operations until resolved
-		let _ = mark_conflict(issue_file_path);
+		mark_conflict(issue_file_path)?;
 
 		bail!(
 			"Conflict detected: both local and remote have changes for issue #{issue_number}.\n\

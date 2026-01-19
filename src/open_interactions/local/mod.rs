@@ -738,8 +738,12 @@ impl Local {
 	fn load_project_meta(owner: &str, repo: &str) -> ProjectMeta {
 		let meta_path = Self::project_meta_path(owner, repo);
 		match std::fs::read_to_string(&meta_path) {
-			Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
-			Err(_) => ProjectMeta::default(),
+			Ok(content) => match serde_json::from_str(&content) {
+				Ok(meta) => meta,
+				Err(e) => panic!("corrupted project metadata at {}: {e}", meta_path.display()),
+			},
+			Err(e) if e.kind() == std::io::ErrorKind::NotFound => ProjectMeta::default(),
+			Err(e) => panic!("failed to read project metadata at {}: {e}", meta_path.display()),
 		}
 	}
 

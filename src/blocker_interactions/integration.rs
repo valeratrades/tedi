@@ -139,9 +139,13 @@ fn find_existing_urgent() -> Option<(PathBuf, String)> {
 }
 
 /// Load blockers from an urgent.md file (simple blocker list, no issue metadata).
+/// Returns empty blockers if the file doesn't exist yet.
 fn load_urgent_blockers(path: &Path) -> Result<BlockerSequence> {
-	let content = std::fs::read_to_string(path).unwrap_or_default();
-	Ok(BlockerSequence::parse(&content))
+	match std::fs::read_to_string(path) {
+		Ok(content) => Ok(BlockerSequence::parse(&content)),
+		Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(BlockerSequence::default()),
+		Err(e) => Err(e.into()),
+	}
 }
 
 /// Save blockers to an urgent.md file.
@@ -205,11 +209,15 @@ async fn update_tracking_after_change() {
 		return;
 	}
 
-	// Stop current tracking (ignore errors)
-	let _ = super::clockify::stop_current_tracking(None).await;
+	// Stop current tracking
+	if let Err(e) = super::clockify::stop_current_tracking(None).await {
+		tracing::warn!("failed to stop clockify tracking: {e}");
+	}
 
 	// Restart with new current blocker
-	let _ = super::clockify::restart_tracking_for_project(|fully_qualified| get_current_blocker_description(fully_qualified).map(|(desc, _)| desc), None).await;
+	if let Err(e) = super::clockify::restart_tracking_for_project(|fully_qualified| get_current_blocker_description(fully_qualified).map(|(desc, _)| desc), None).await {
+		tracing::warn!("failed to restart clockify tracking: {e}");
+	}
 }
 
 /// Main entry point for integrated blocker commands (works with issue files).
