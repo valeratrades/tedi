@@ -268,12 +268,14 @@ mod tests {
 			title: Some(old_ts),
 			description: None,
 			labels: None,
+			state: None,
 			comments: vec![],
 		};
 		let new_timestamps = IssueTimestamps {
 			title: Some(new_ts),
 			description: None,
 			labels: None,
+			state: None,
 			comments: vec![],
 		};
 
@@ -294,12 +296,14 @@ mod tests {
 			title: Some(new_ts),
 			description: None,
 			labels: None,
+			state: None,
 			comments: vec![],
 		};
 		let old_timestamps = IssueTimestamps {
 			title: Some(old_ts),
 			description: None,
 			labels: None,
+			state: None,
 			comments: vec![],
 		};
 
@@ -320,6 +324,7 @@ mod tests {
 			title: Some(ts),
 			description: None,
 			labels: None,
+			state: None,
 			comments: vec![],
 		};
 
@@ -341,12 +346,14 @@ mod tests {
 			title: Some(new_ts),
 			description: None,
 			labels: None,
+			state: None,
 			comments: vec![],
 		};
 		let old_timestamps = IssueTimestamps {
 			title: Some(old_ts),
 			description: None,
 			labels: None,
+			state: None,
 			comments: vec![],
 		};
 
@@ -366,6 +373,7 @@ mod tests {
 			title: Some(ts),
 			description: None,
 			labels: None,
+			state: None,
 			comments: vec![],
 		};
 
@@ -386,6 +394,7 @@ mod tests {
 			title: Some(ts),
 			description: None,
 			labels: None,
+			state: None,
 			comments: vec![],
 		};
 

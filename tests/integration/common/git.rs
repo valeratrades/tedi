@@ -74,7 +74,8 @@ pub fn timestamps_from_seed(seed: Seed) -> IssueTimestamps {
 		title: Some(timestamp_for_field(seed, -2)),
 		description: Some(timestamp_for_field(seed, -1)),
 		labels: Some(timestamp_for_field(seed, 0)),
-		comments: Some(timestamp_for_field(seed, 1)),
+		state: Some(timestamp_for_field(seed, 1)),
+		comments: vec![],
 	}
 }
 
@@ -438,7 +439,8 @@ impl TestContext {
 				"title": timestamps.title.map(|t| t.to_string()),
 				"description": timestamps.description.map(|t| t.to_string()),
 				"labels": timestamps.labels.map(|t| t.to_string()),
-				"comments": timestamps.comments.map(|t| t.to_string())
+				"state": timestamps.state.map(|t| t.to_string()),
+				"comments": timestamps.comments.iter().map(|t| t.to_string()).collect::<Vec<_>>()
 			}
 		});
 
@@ -501,11 +503,12 @@ fn add_issue_recursive(state: &mut GitState, owner: &str, repo: &str, number: u6
 	}
 
 	// Extract comments (skip first which is the body)
-	// Use the comments timestamp from IssueTimestamps if available
-	let comment_ts = timestamps.and_then(|ts| ts.comments);
-	for comment in issue.contents.comments.iter().skip(1) {
+	// Use the per-comment timestamps from IssueTimestamps if available
+	let comment_timestamps = timestamps.map(|ts| &ts.comments);
+	for (i, comment) in issue.contents.comments.iter().skip(1).enumerate() {
 		if let Some(id) = comment.identity.id() {
 			let comment_owner_login = comment.identity.user().expect("comment identity must have user - use @user format in test fixtures").to_string();
+			let comment_ts = comment_timestamps.and_then(|ts| ts.get(i).copied());
 			state.remote_comments.push(MockComment {
 				owner: owner.to_string(),
 				repo: repo.to_string(),

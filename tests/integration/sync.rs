@@ -770,7 +770,8 @@ fn test_consensus_sink_writes_meta_json_with_timestamps() {
 	        "title": null,
 	        "description": null,
 	        "labels": null,
-	        "comments": null
+	        "state": null,
+	        "comments": []
 	      }
 	    }
 	  }
