@@ -79,9 +79,6 @@ pub struct MockGithubClient {
 	/// Sub-issue relationships: parent_issue_number -> vec of child issue numbers
 	sub_issues: Mutex<HashMap<RepoKey, HashMap<u64, Vec<u64>>>>,
 
-	/// Repos where user has collaborator access
-	collaborator_repos: Mutex<Vec<RepoKey>>,
-
 	/// Call log for debugging
 	call_log: Mutex<Vec<String>>,
 }
@@ -97,7 +94,6 @@ impl MockGithubClient {
 			issues: Mutex::new(HashMap::new()),
 			comments: Mutex::new(HashMap::new()),
 			sub_issues: Mutex::new(HashMap::new()),
-			collaborator_repos: Mutex::new(Vec::new()),
 			call_log: Mutex::new(Vec::new()),
 		};
 
@@ -154,16 +150,6 @@ impl MockGithubClient {
 				};
 
 				self.issues.lock().unwrap().entry(key).or_default().insert(number, issue_data);
-			}
-		}
-
-		// Load collaborator repos
-		if let Some(repos) = state.get("collaborator_repos").and_then(|v| v.as_array()) {
-			let mut collab_repos = self.collaborator_repos.lock().unwrap();
-			for repo in repos {
-				let owner = repo.get("owner").and_then(|v| v.as_str()).ok_or("missing owner")?;
-				let repo_name = repo.get("repo").and_then(|v| v.as_str()).ok_or("missing repo")?;
-				collab_repos.push(RepoKey::new(owner, repo_name));
 			}
 		}
 
@@ -256,16 +242,6 @@ impl MockGithubClient {
 
 		let mut sub_issues = self.sub_issues.lock().unwrap();
 		sub_issues.entry(key).or_default().entry(parent_number).or_default().push(child_number);
-	}
-
-	/// Grant collaborator access to a repo
-	#[cfg(test)]
-	pub fn grant_collaborator_access(&self, owner: &str, repo: &str) {
-		let key = RepoKey::new(owner, repo);
-		let mut repos = self.collaborator_repos.lock().unwrap();
-		if !repos.contains(&key) {
-			repos.push(key);
-		}
 	}
 
 	/// Get the call log for debugging
@@ -457,16 +433,6 @@ impl GithubClient for MockGithubClient {
 		Ok(())
 	}
 
-	#[instrument(skip(self), name = "MockGithubClient::check_collaborator_access")]
-	async fn check_collaborator_access(&self, owner: &str, repo: &str) -> Result<bool> {
-		tracing::info!(target: "mock_github", owner, repo, "check_collaborator_access");
-		self.log_call(&format!("check_collaborator_access({owner}, {repo})"));
-
-		let key = RepoKey::new(owner, repo);
-		let repos = self.collaborator_repos.lock().unwrap();
-		Ok(repos.contains(&key))
-	}
-
 	#[instrument(skip(self, body), name = "MockGithubClient::create_issue")]
 	async fn create_issue(&self, owner: &str, repo: &str, title: &str, body: &str) -> Result<CreatedIssue> {
 		tracing::info!(target: "mock_github", owner, repo, title, "create_issue");
@@ -491,7 +457,6 @@ impl GithubClient for MockGithubClient {
 		issues.entry(key).or_default().insert(number, issue);
 
 		Ok(CreatedIssue {
-			id,
 			number,
 			html_url: format!("https://github.com/{owner}/{repo}/issues/{number}"),
 		})
@@ -641,7 +606,6 @@ mod tests {
 	#[tokio::test]
 	async fn test_mock_create_issue() {
 		let client = MockGithubClient::new("testuser");
-		client.grant_collaborator_access("owner", "repo");
 
 		let created = client.create_issue("owner", "repo", "New Issue", "Issue body").await.unwrap();
 		assert!(created.number > 0);

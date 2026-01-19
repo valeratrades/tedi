@@ -64,6 +64,6 @@ pub enum Command {
 	Halt(HaltArgs),
 }
 
-pub async fn main(settings: &crate::config::LiveSettings, args: BlockerArgs, offline: bool) -> Result<()> {
-	super::integration::main_integrated(settings, args.command, args.format, offline).await
+pub async fn main(args: BlockerArgs, offline: bool) -> Result<()> {
+	super::integration::main_integrated(args.command, args.format, offline).await
 }

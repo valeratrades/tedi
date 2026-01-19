@@ -6,7 +6,6 @@
 mod command;
 mod conflict;
 pub(crate) mod consensus;
-mod fetch;
 pub(crate) mod local;
 pub(crate) mod remote;
 mod sink;

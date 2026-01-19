@@ -99,6 +99,7 @@ impl TestContext {
 		let mut cmd = Command::new(get_binary_path());
 		cmd.args(args);
 		cmd.env("__IS_INTEGRATION_TEST", "1");
+		cmd.env("TODO__GITHUB_TOKEN", "test_token");
 		for (key, value) in self.xdg.env_vars() {
 			cmd.env(key, value);
 		}
@@ -212,6 +213,7 @@ impl<'a> OpenBuilder<'a> {
 		cmd.args(&self.extra_args);
 		cmd.arg(self.issue_path.to_str().unwrap());
 		cmd.env("__IS_INTEGRATION_TEST", "1");
+		cmd.env("TODO__GITHUB_TOKEN", "test_token");
 		for (key, value) in self.ctx.xdg.env_vars() {
 			cmd.env(key, value);
 		}
@@ -297,6 +299,7 @@ impl<'a> OpenUrlBuilder<'a> {
 		cmd.args(&self.extra_args);
 		cmd.arg(&self.url);
 		cmd.env("__IS_INTEGRATION_TEST", "1");
+		cmd.env("TODO__GITHUB_TOKEN", "test_token");
 		for (key, value) in self.ctx.xdg.env_vars() {
 			cmd.env(key, value);
 		}

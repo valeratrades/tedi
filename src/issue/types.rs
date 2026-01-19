@@ -476,7 +476,7 @@ impl PartialEq for IssueIdentity {
 }
 
 /// Maximum nesting depth for issues (8 levels should be plenty).
-const MAX_LINEAGE_DEPTH: usize = 8;
+pub const MAX_LINEAGE_DEPTH: usize = 8;
 
 /// Ancestry information for an issue - where it lives in the filesystem.
 /// This is always defined, even for pending issues.

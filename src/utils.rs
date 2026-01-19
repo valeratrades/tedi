@@ -144,6 +144,7 @@ mod tests {
 		unsafe {
 			std::env::set_var("WAKETIME", "05:00");
 			std::env::set_var("DAY_SECTION_BORDERS", "2.5:10:16");
+			std::env::set_var("TODO__GITHUB_TOKEN", "test_token");
 		}
 
 		if let Some(t) = t {

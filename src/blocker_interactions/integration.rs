@@ -214,7 +214,7 @@ async fn update_tracking_after_change() {
 
 /// Main entry point for integrated blocker commands (works with issue files).
 /// This is the default mode for blocker commands.
-pub async fn main_integrated(settings: &crate::config::LiveSettings, command: super::io::Command, format: DisplayFormat, offline: bool) -> Result<()> {
+pub async fn main_integrated(command: super::io::Command, format: DisplayFormat, offline: bool) -> Result<()> {
 	use super::{io::Command, source::BlockerSource};
 	use crate::open_interactions::{Modifier, SyncOptions, modify_and_sync_issue, modify_issue_offline};
 
@@ -400,8 +400,7 @@ pub async fn main_integrated(settings: &crate::config::LiveSettings, command: su
 			let result = if offline {
 				modify_issue_offline(&issue_path, Modifier::BlockerPop).await?
 			} else {
-				let gh = crate::github::create_client(settings)?;
-				modify_and_sync_issue(&gh, &issue_path, offline, Modifier::BlockerPop, SyncOptions::default()).await?
+				modify_and_sync_issue(&issue_path, offline, Modifier::BlockerPop, SyncOptions::default()).await?
 			};
 
 			// Output results
@@ -431,9 +430,7 @@ pub async fn main_integrated(settings: &crate::config::LiveSettings, command: su
 				if let Some((existing_path, existing_owner)) = find_existing_urgent() {
 					if existing_owner != owner {
 						bail!(
-							"Cannot create urgent file for '{}': another urgent file exists for '{}'. Complete that first.\n  {}",
-							owner,
-							existing_owner,
+							"Cannot create urgent file for '{owner}': another urgent file exists for '{existing_owner}'. Complete that first.\n  {}",
 							existing_path.display()
 						);
 					}
@@ -458,8 +455,7 @@ pub async fn main_integrated(settings: &crate::config::LiveSettings, command: su
 				let result = if offline {
 					modify_issue_offline(&issue_path, Modifier::BlockerAdd { text: name.clone() }).await?
 				} else {
-					let gh = crate::github::create_client(settings)?;
-					modify_and_sync_issue(&gh, &issue_path, offline, Modifier::BlockerAdd { text: name.clone() }, SyncOptions::default()).await?
+					modify_and_sync_issue(&issue_path, offline, Modifier::BlockerAdd { text: name.clone() }, SyncOptions::default()).await?
 				};
 
 				// Output results

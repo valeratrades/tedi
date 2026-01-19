@@ -106,26 +106,28 @@ async fn main() {
 		}
 	};
 
-	let github_client: github::BoxedGithubClient = if cli.mock {
-		std::sync::Arc::new(mock_github::MockGithubClient::new("mock_user"))
-	} else {
+	// Commands that require GitHub client (when not offline)
+	let needs_github = matches!(cli.command, Commands::Open(_) | Commands::Blocker(_)) && !cli.offline;
+
+	let github_client: Option<github::BoxedGithubClient> = if cli.mock {
+		Some(std::sync::Arc::new(mock_github::MockGithubClient::new("mock_user")))
+	} else if needs_github {
 		match github::RealGithubClient::new(&settings) {
-			Ok(client) => std::sync::Arc::new(client),
+			Ok(client) => Some(std::sync::Arc::new(client)),
 			Err(e) => {
-				// Only error if we're using a command that needs Github
-				// For now, create a dummy that will error on use
-				if matches!(cli.command, Commands::Open(_)) {
-					eprintln!("Error: {e}");
-					std::process::exit(1);
-				}
-				// For other commands, create a mock (they won't use it)
-				std::sync::Arc::new(mock_github::MockGithubClient::new("unused"))
+				eprintln!("Error: {e}");
+				std::process::exit(1);
 			}
 		}
+	} else {
+		// Commands that don't need GitHub - don't initialize client
+		None
 	};
 
-	// Set global GitHub client for sink operations
-	github::client::set(github_client.clone());
+	// Set global GitHub client for sink operations (if initialized)
+	if let Some(client) = github_client {
+		github::client::set(client);
+	}
 
 	// All the functions here can rely on config being correct.
 	let success = match cli.command {
@@ -135,11 +137,11 @@ async fn main() {
 			shell_init::output(&settings, args);
 			Ok(())
 		}
-		Commands::Blocker(args) => blocker_interactions::main(&settings, args, cli.offline).await,
+		Commands::Blocker(args) => blocker_interactions::main(args, cli.offline).await,
 		Commands::Clockify(args) => blocker_interactions::clockify::clockify_main(&settings, args).await,
 		Commands::PerfEval(args) => perf_eval::main(&settings, args).await,
 		Commands::WatchMonitors(args) => watch_monitors::main(&settings, args),
-		Commands::Open(args) => open_interactions::open_command(&settings, github_client, args, cli.offline).await,
+		Commands::Open(args) => open_interactions::open_command(&settings, args, cli.offline).await,
 	};
 
 	match success {

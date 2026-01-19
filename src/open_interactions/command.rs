@@ -3,18 +3,17 @@
 use std::path::Path;
 
 use clap::Args;
+use todo::IssueLink;
 use v_utils::prelude::*;
 
 use super::{
-	fetch::fetch_and_store_issue,
 	local::{ExactMatchLevel, Local},
+	remote::{RemoteSource, load_full_issue_tree},
+	sink::IssueSinkExt,
 	sync::{MergeMode, Side, SyncOptions, open_local_issue},
 	touch::{create_pending_issue, create_virtual_issue, find_local_issue_for_touch, parse_touch_path},
 };
-use crate::{
-	config::LiveSettings,
-	github::{self, BoxedGithubClient},
-};
+use crate::{config::LiveSettings, github};
 
 /// Open a Github issue in $EDITOR.
 ///
@@ -77,8 +76,8 @@ pub struct OpenArgs {
 	pub reset: bool,
 }
 
-#[tracing::instrument(level = "debug", skip(settings, gh))]
-pub async fn open_command(settings: &LiveSettings, gh: BoxedGithubClient, args: OpenArgs, offline: bool) -> Result<()> {
+#[tracing::instrument(level = "debug", skip(settings))]
+pub async fn open_command(settings: &LiveSettings, args: OpenArgs, offline: bool) -> Result<()> {
 	tracing::debug!("open_command entered, blocker={}", args.blocker);
 	let _ = settings; // settings still available if needed in future
 
@@ -178,7 +177,17 @@ pub async fn open_command(settings: &LiveSettings, gh: BoxedGithubClient, args: 
 			// File doesn't exist - fetch and create it
 			println!("Fetching issue #{issue_number} from {owner}/{repo}...");
 
-			let path = fetch_and_store_issue(&gh, &owner, &repo, issue_number, None).await?;
+			// Load from GitHub (lineage=None means it will be fetched if needed)
+			let url = format!("https://github.com/{owner}/{repo}/issues/{issue_number}");
+			let link = IssueLink::parse(&url).expect("valid URL");
+			let source = RemoteSource::new(link);
+			let mut issue = load_full_issue_tree(source).await?;
+
+			// Write to local filesystem
+			issue.sink_local(None).await?;
+
+			// Find the path where it was written
+			let path = Local::find_issue_file(&owner, &repo, Some(issue_number), &issue.contents.title, &[]).expect("just wrote the issue");
 			println!("Stored issue at: {path:?}");
 
 			// Commit the fetched state as the consensus baseline
@@ -213,7 +222,7 @@ pub async fn open_command(settings: &LiveSettings, gh: BoxedGithubClient, args: 
 
 	// Open the local issue file for editing
 	// If using blocker mode, open at the last blocker position
-	open_local_issue(&gh, &issue_file_path, effective_offline, sync_opts, use_blocker_mode).await?;
+	open_local_issue(&issue_file_path, effective_offline, sync_opts, use_blocker_mode).await?;
 
 	// If --blocker-set was used, set this issue as the current blocker issue
 	if args.blocker_set {

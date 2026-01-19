@@ -83,19 +83,17 @@ impl SyncOptions {
 
 use std::path::Path;
 
-use todo::{CloseState, FetchedIssue, Issue};
+use todo::{CloseState, Issue, IssueLink};
 use v_utils::prelude::*;
 
 use super::{
 	conflict::mark_conflict,
 	consensus::{commit_issue_changes, is_git_initialized, load_consensus_issue},
-	fetch::fetch_and_store_issue,
 	local::Local,
-	remote::load_full_issue_tree,
+	remote::{RemoteSource, load_full_issue_tree},
 	sink::IssueSinkExt,
 	tree::resolve_tree,
 };
-use crate::github::BoxedGithubClient;
 
 //=============================================================================
 // Sync implementation
@@ -463,8 +461,9 @@ impl Modifier {
 /// Inner sync logic shared by open_local_issue and sync_issue_file.
 ///
 /// This is the unified sync entry point. All sync operations go through here.
-/// Uses the Sink trait to push changes to GitHub.
-async fn sync_issue_to_github_inner(gh: &BoxedGithubClient, issue_file_path: &Path, owner: &str, repo: &str, issue_number: u64, issue: &mut Issue, merge_mode: MergeMode) -> Result<()> {
+/// Uses LazyIssue<Remote> to fetch and Sink<Remote> to push changes.
+/// GitHub client is accessed globally via `github::client::get()`.
+async fn sync_issue_to_github_inner(issue_file_path: &Path, owner: &str, repo: &str, issue_number: u64, issue: &mut Issue, merge_mode: MergeMode) -> Result<()> {
 	// Load consensus from git (last committed state).
 	// Consensus is REQUIRED for sync - if we're here, the file should be tracked.
 	// For new issues, --touch creates them on Github and commits as consensus.
@@ -486,7 +485,11 @@ async fn sync_issue_to_github_inner(gh: &BoxedGithubClient, issue_file_path: &Pa
 	// created on Github in post-sync. No pre-sync phase needed.
 	let (local_needs_update, changed) = if issue.is_linked() {
 		// Normal flow: fetch remote and merge
-		let remote_issue = load_full_issue_tree(gh, owner, repo, issue_number).await?;
+		let url = format!("https://github.com/{owner}/{repo}/issues/{issue_number}");
+		let link = IssueLink::parse(&url).expect("valid URL");
+		// Use lineage from the local issue's ancestry
+		let source = RemoteSource::with_lineage(link, issue.identity.ancestry().lineage());
+		let remote_issue = load_full_issue_tree(source).await?;
 
 		// Apply merge mode to get the merged result
 		let (merged, local_needs_update, remote_needs_update) = apply_merge_mode(issue, Some(&consensus), &remote_issue, merge_mode, issue_file_path, owner, repo, issue_number).await?;
@@ -518,40 +521,24 @@ async fn sync_issue_to_github_inner(gh: &BoxedGithubClient, issue_file_path: &Pa
 		(false, changed)
 	};
 
-	// Determine if we need to refresh from Github
-	let needs_refresh = changed || local_needs_update;
-
-	if needs_refresh {
-		// Save updated issue tree (with new URLs for created issues)
+	if changed || local_needs_update {
+		// sink_remote already updated issue in-place with GitHub-assigned data
+		// (new issue numbers, etc.) - just persist to local filesystem
 		issue.sink_local(None).await?;
 
-		// Get the actual issue number - may have been set by sink() if issue was pending
+		// Get the actual issue number - may have been set by sink_remote if issue was pending
 		let actual_issue_number = issue.number().unwrap_or(issue_number);
 
-		// Re-fetch and update local file to reflect the synced state
-		println!("Refreshing local issue file from Github...");
+		// Find where the issue file is now (path may have changed if title changed)
+		let new_path = Local::find_issue_file(owner, repo, Some(actual_issue_number), &issue.contents.title, &[]).expect("just wrote the issue");
 
-		// Determine parent issue info if this is a sub-issue
-		let meta = Local::parse_path_identity(issue_file_path)?;
-		let ancestors: Option<Vec<FetchedIssue>> = meta.parent_issue.and_then(|parent_num| {
-			let parent_meta = Local::parse_path_identity(issue_file_path.parent()?.join("..").as_path()).ok()?;
-			let fetched = FetchedIssue::from_parts(owner, repo, parent_num, &parent_meta.title)?;
-			Some(vec![fetched])
-		});
-
-		// Store the old path before re-fetching
-		let old_path = issue_file_path.to_path_buf();
-
-		// Re-fetch creates file with potentially new title/state
-		let new_path = fetch_and_store_issue(gh, owner, repo, actual_issue_number, ancestors).await?;
-
-		// If the path changed, delete the old file
-		if old_path != new_path && old_path.exists() {
-			println!("Issue renamed/moved, removing old file: {old_path:?}");
-			std::fs::remove_file(&old_path)?;
+		// If the path changed, clean up old file
+		if issue_file_path != new_path && issue_file_path.exists() {
+			println!("Issue renamed/moved, removing old file: {}", issue_file_path.display());
+			std::fs::remove_file(issue_file_path)?;
 
 			// Handle old sub-issues directory cleanup
-			let old_sub_dir = old_path.with_extension("");
+			let old_sub_dir = issue_file_path.with_extension("");
 			let old_sub_dir = if old_sub_dir.extension().is_some() { old_sub_dir.with_extension("") } else { old_sub_dir };
 
 			let new_parent = new_path.parent();
@@ -564,7 +551,7 @@ async fn sync_issue_to_github_inner(gh: &BoxedGithubClient, issue_file_path: &Pa
 		}
 
 		// Commit the synced changes to local git
-		commit_issue_changes(issue_file_path, owner, repo, actual_issue_number, None)?;
+		commit_issue_changes(&new_path, owner, repo, actual_issue_number, None)?;
 	} else {
 		println!("No changes made.");
 	}
@@ -574,15 +561,17 @@ async fn sync_issue_to_github_inner(gh: &BoxedGithubClient, issue_file_path: &Pa
 
 /// Open a local issue file with the default editor modifier.
 /// If `open_at_blocker` is true, opens the editor at the position of the last blocker item.
-#[tracing::instrument(level = "debug", skip(gh, sync_opts), target = "todo::open_interactions::sync")]
-pub async fn open_local_issue(gh: &BoxedGithubClient, issue_file_path: &Path, offline: bool, sync_opts: SyncOptions, open_at_blocker: bool) -> Result<()> {
-	modify_and_sync_issue(gh, issue_file_path, offline, Modifier::Editor { open_at_blocker }, sync_opts).await?;
+/// GitHub client is accessed globally via `github::client::get()`.
+#[tracing::instrument(level = "debug", skip(sync_opts), target = "todo::open_interactions::sync")]
+pub async fn open_local_issue(issue_file_path: &Path, offline: bool, sync_opts: SyncOptions, open_at_blocker: bool) -> Result<()> {
+	modify_and_sync_issue(issue_file_path, offline, Modifier::Editor { open_at_blocker }, sync_opts).await?;
 	Ok(())
 }
 
 /// Modify a local issue file using the given modifier, then sync changes back to Github.
-#[tracing::instrument(level = "debug", skip(gh), target = "todo::open_interactions::sync")]
-pub async fn modify_and_sync_issue(gh: &BoxedGithubClient, issue_file_path: &Path, offline: bool, modifier: Modifier, sync_opts: SyncOptions) -> Result<ModifyResult> {
+/// GitHub client is accessed globally via `github::client::get()`.
+#[tracing::instrument(level = "debug", skip(sync_opts), target = "todo::open_interactions::sync")]
+pub async fn modify_and_sync_issue(issue_file_path: &Path, offline: bool, modifier: Modifier, sync_opts: SyncOptions) -> Result<ModifyResult> {
 	use super::conflict::check_any_conflicts;
 
 	// Check for any unresolved conflicts first
@@ -632,7 +621,10 @@ pub async fn modify_and_sync_issue(gh: &BoxedGithubClient, issue_file_path: &Pat
 				println!("{reason}");
 
 				// Fetch remote state
-				let remote_issue = load_full_issue_tree(gh, &owner, &repo, meta.issue_number).await?;
+				let url = format!("https://github.com/{owner}/{repo}/issues/{}", meta.issue_number);
+				let link = IssueLink::parse(&url).expect("valid URL");
+				let source = RemoteSource::with_lineage(link, issue.identity.ancestry().lineage());
+				let remote_issue = load_full_issue_tree(source).await?;
 
 				// Consensus is required - if missing and local differs, that's a bug
 				let consensus = consensus.ok_or_else(|| {
@@ -682,6 +674,7 @@ pub async fn modify_and_sync_issue(gh: &BoxedGithubClient, issue_file_path: &Pat
 	// Handle duplicate close type: remove from local storage entirely
 	if let CloseState::Duplicate(dup_number) = issue.contents.state {
 		// Validate that the referenced duplicate issue exists
+		let gh = crate::github::client::get();
 		if !offline {
 			let exists = gh.fetch_issue(&owner, &repo, dup_number).await.is_ok();
 			if !exists {
@@ -734,7 +727,7 @@ pub async fn modify_and_sync_issue(gh: &BoxedGithubClient, issue_file_path: &Pat
 	let merge_mode = sync_opts.take_merge_mode();
 
 	// Use shared sync logic
-	sync_issue_to_github_inner(gh, issue_file_path, &owner, &repo, meta.issue_number, &mut issue, merge_mode).await?;
+	sync_issue_to_github_inner(issue_file_path, &owner, &repo, meta.issue_number, &mut issue, merge_mode).await?;
 
 	Ok(result)
 }

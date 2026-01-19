@@ -33,9 +33,7 @@ pub use io::BlockerArgs;
 pub use operations::BlockerSequenceExt;
 pub use todo::BlockerSequence;
 
-use crate::config::LiveSettings;
-
 /// Main entry point for blocker commands
-pub async fn main(settings: &LiveSettings, args: BlockerArgs, offline: bool) -> Result<()> {
-	io::main(settings, args, offline).await
+pub async fn main(args: BlockerArgs, offline: bool) -> Result<()> {
+	io::main(args, offline).await
 }

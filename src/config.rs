@@ -4,6 +4,7 @@ pub const EXE_NAME: &str = env!("CARGO_PKG_NAME");
 
 #[derive(Clone, Debug, Default, v_macros::LiveSettings, v_macros::MyConfigPrimitives, v_macros::Settings)]
 pub struct AppConfig {
+	pub github_token: String,
 	pub timer: Option<Timer>,
 	pub milestones: Option<Milestones>,
 	pub manual_stats: Option<ManualStats>,
@@ -11,7 +12,6 @@ pub struct AppConfig {
 
 #[derive(Clone, Debug, v_macros::MyConfigPrimitives, v_macros::SettingsNested)]
 pub struct Milestones {
-	pub github_token: String,
 	/// Github repo URL for milestones (e.g., "https://github.com/owner/repo" or "owner/repo")
 	pub url: String,
 }

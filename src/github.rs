@@ -43,7 +43,6 @@ pub struct GithubComment {
 /// Response from Github when creating an issue
 #[derive(Debug, Deserialize)]
 pub struct CreatedIssue {
-	pub id: u64,
 	pub number: u64,
 	pub html_url: String,
 }
@@ -83,9 +82,6 @@ pub trait GithubClient: Send + Sync {
 	/// Delete a comment
 	async fn delete_comment(&self, owner: &str, repo: &str, comment_id: u64) -> Result<()>;
 
-	/// Check if the authenticated user has collaborator (push/write) access
-	async fn check_collaborator_access(&self, owner: &str, repo: &str) -> Result<bool>;
-
 	/// Create a new issue
 	async fn create_issue(&self, owner: &str, repo: &str, title: &str, body: &str) -> Result<CreatedIssue>;
 
@@ -94,9 +90,11 @@ pub trait GithubClient: Send + Sync {
 	async fn add_sub_issue(&self, owner: &str, repo: &str, parent_issue_number: u64, child_issue_id: u64) -> Result<()>;
 
 	/// Find an issue by exact title match
+	#[allow(dead_code)]
 	async fn find_issue_by_title(&self, owner: &str, repo: &str, title: &str) -> Result<Option<u64>>;
 
 	/// Check if an issue exists by number
+	#[allow(dead_code)]
 	async fn issue_exists(&self, owner: &str, repo: &str, issue_number: u64) -> Result<bool>;
 
 	/// Fetch the parent issue of a sub-issue (returns None if issue has no parent)
@@ -116,14 +114,10 @@ pub struct RealGithubClient {
 impl RealGithubClient {
 	pub fn new(settings: &LiveSettings) -> Result<Self> {
 		let config = settings.config()?;
-		let milestones_config = config
-			.milestones
-			.as_ref()
-			.ok_or_else(|| eyre!("milestones config section is required for Github token. Add [milestones] section with github_token to your config"))?;
 
 		Ok(Self {
 			http_client: Client::new(),
-			github_token: milestones_config.github_token.clone(),
+			github_token: config.github_token.clone(),
 		})
 	}
 
@@ -267,29 +261,6 @@ impl GithubClient for RealGithubClient {
 		Ok(())
 	}
 
-	async fn check_collaborator_access(&self, owner: &str, repo: &str) -> Result<bool> {
-		// Get the authenticated user's login
-		let current_user = self.fetch_authenticated_user().await?;
-
-		// Check if user is a collaborator with write access
-		let url = format!("https://api.github.com/repos/{owner}/{repo}/collaborators/{current_user}/permission");
-		let res = self.get(&url).send().await?;
-
-		if !res.status().is_success() {
-			// If we can't check, assume no access
-			return Ok(false);
-		}
-
-		#[derive(Deserialize)]
-		struct PermissionResponse {
-			permission: String,
-		}
-
-		let perm: PermissionResponse = res.json().await?;
-		// "admin", "write", "read", "none"
-		Ok(perm.permission == "admin" || perm.permission == "write")
-	}
-
 	async fn create_issue(&self, owner: &str, repo: &str, title: &str, body: &str) -> Result<CreatedIssue> {
 		let url = format!("https://api.github.com/repos/{owner}/{repo}/issues");
 		let res = self.post(&url).json(&serde_json::json!({ "title": title, "body": body })).send().await?;
@@ -372,12 +343,6 @@ impl GithubClient for RealGithubClient {
 //==============================================================================
 
 pub type BoxedGithubClient = Arc<dyn GithubClient>;
-
-/// Create a Github client from settings.
-/// Returns an error if Github token is not configured.
-pub fn create_client(settings: &LiveSettings) -> Result<BoxedGithubClient> {
-	Ok(Arc::new(RealGithubClient::new(settings)?))
-}
 
 //==============================================================================
 // Global client storage
