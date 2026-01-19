@@ -105,7 +105,7 @@ pub enum Modifier {
 impl Modifier {
 	#[tracing::instrument]
 	async fn apply(&self, issue: &mut Issue, issue_file_path: &Path) -> Result<ModifyResult> {
-		let old_contents = issue.contents.clone();
+		let old_issue = issue.clone();
 
 		let result = match self {
 			Modifier::Editor { open_at_blocker } => {
@@ -146,7 +146,7 @@ impl Modifier {
 		};
 
 		if result.file_modified {
-			issue.update_timestamps_from_diff(&old_contents);
+			issue.update_timestamps_from_diff(&old_issue);
 		}
 
 		Ok(result)

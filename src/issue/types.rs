@@ -753,11 +753,25 @@ impl Issue /*{{{1*/ {
 		self.identity.user()
 	}
 
-	/// Update timestamps based on what changed compared to old contents.
+	/// Update timestamps based on what changed compared to old issue.
 	/// This should be called after local modifications to track when fields changed.
-	pub fn update_timestamps_from_diff(&mut self, old_contents: &IssueContents) {
+	/// Recursively updates children's timestamps too.
+	pub fn update_timestamps_from_diff(&mut self, old: &Issue) {
 		if let Some(linked) = self.identity.remote.as_linked_mut() {
-			linked.timestamps.update_from_diff(old_contents, &self.contents);
+			linked.timestamps.update_from_diff(&old.contents, &self.contents);
+		}
+
+		// Recursively update children's timestamps
+		// Match children by URL/number
+		for new_child in &mut self.children {
+			let old_child = old.children.iter().find(|c| match (new_child.url_str(), c.url_str()) {
+				(Some(a), Some(b)) => a == b,
+				_ => new_child.number() == c.number(),
+			});
+			if let Some(old_child) = old_child {
+				new_child.update_timestamps_from_diff(old_child);
+			}
+			// New children (not in old) don't need timestamp updates - they'll use defaults
 		}
 	}
 
