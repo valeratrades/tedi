@@ -24,9 +24,6 @@ pub trait BlockerSequenceExt {
 	/// Get the current (last) blocker item
 	fn current(&self) -> Option<&BlockerItem>;
 
-	/// Get the current blocker as a raw string (for caching/comparison)
-	fn current_raw(&self) -> Option<String>;
-
 	/// Get the current blocker with context prepended (joined by ": ").
 	fn current_with_context(&self, ownership_hierarchy: &[String]) -> Option<String>;
 
@@ -40,10 +37,6 @@ pub trait BlockerSequenceExt {
 impl BlockerSequenceExt for BlockerSequence {
 	fn current(&self) -> Option<&BlockerItem> {
 		last_item(self)
-	}
-
-	fn current_raw(&self) -> Option<String> {
-		self.current().map(|item| format!("- {}", item.text))
 	}
 
 	fn current_with_context(&self, ownership_hierarchy: &[String]) -> Option<String> {

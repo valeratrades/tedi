@@ -9,8 +9,9 @@ mod git;
 
 use std::path::Path;
 
+use async_from::AsyncFrom;
 pub use git::{commit_issue_changes, is_git_initialized};
-use todo::{Ancestry, Issue, LazyIssue};
+use todo::Issue;
 
 use super::local::{Local, LocalPath};
 
@@ -29,14 +30,5 @@ pub async fn load_consensus_issue(file_path: &Path) -> Option<Issue> {
 		return None;
 	}
 
-	let (owner, repo) = Local::extract_owner_repo(file_path).ok()?;
-	let ancestry = Ancestry::root(&owner, &repo);
-
-	let mut issue = Issue::empty_local(ancestry);
-
-	<Issue as LazyIssue<Local>>::identity(&mut issue, source.clone()).await;
-	<Issue as LazyIssue<Local>>::contents(&mut issue, source.clone()).await;
-	Box::pin(<Issue as LazyIssue<Local>>::children(&mut issue, source)).await;
-
-	Some(issue)
+	Some(Issue::async_from(source).await)
 }

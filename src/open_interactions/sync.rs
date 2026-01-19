@@ -597,12 +597,10 @@ pub async fn modify_and_sync_issue(gh: &BoxedGithubClient, issue_file_path: &Pat
 	// Load metadata from path
 	let meta = Local::parse_path_identity(issue_file_path)?;
 
-	// Load the issue tree from filesystem using LazyIssue
-	let mut issue = Issue::empty_local(todo::Ancestry::root(&owner, &repo));
+	// Load the issue tree from filesystem
+	use async_from::AsyncFrom;
 	let source = super::local::LocalPath::submitted(issue_file_path.to_path_buf());
-	<Issue as todo::LazyIssue<Local>>::identity(&mut issue, source.clone()).await;
-	<Issue as todo::LazyIssue<Local>>::contents(&mut issue, source.clone()).await;
-	Box::pin(<Issue as todo::LazyIssue<Local>>::children(&mut issue, source)).await;
+	let mut issue = Issue::async_from(source).await;
 
 	// === CONSENSUS-FIRST SYNC ===
 	// We always show the user the consensus state, never raw local or raw remote.
@@ -745,13 +743,10 @@ pub async fn modify_and_sync_issue(gh: &BoxedGithubClient, issue_file_path: &Pat
 /// Use this when you know you're in offline mode and don't want to require a Github client.
 #[tracing::instrument(level = "debug", target = "todo::open_interactions::sync")]
 pub async fn modify_issue_offline(issue_file_path: &Path, modifier: Modifier) -> Result<ModifyResult> {
-	// Load the issue tree from filesystem using LazyIssue
-	let (owner, repo) = Local::extract_owner_repo(issue_file_path)?;
-	let mut issue = Issue::empty_local(todo::Ancestry::root(&owner, &repo));
+	// Load the issue tree from filesystem
+	use async_from::AsyncFrom;
 	let source = super::local::LocalPath::submitted(issue_file_path.to_path_buf());
-	<Issue as todo::LazyIssue<Local>>::identity(&mut issue, source.clone()).await;
-	<Issue as todo::LazyIssue<Local>>::contents(&mut issue, source.clone()).await;
-	Box::pin(<Issue as todo::LazyIssue<Local>>::children(&mut issue, source)).await;
+	let mut issue = Issue::async_from(source).await;
 
 	// Apply the modifier (blocker command)
 	let result = modifier.apply(&mut issue, issue_file_path).await?;

@@ -10,6 +10,7 @@ default = []
 arrayvec = "0.7"
 ask_llm = { version = "^2.1.4" }
 async-trait = "^0.1.89"
+async_from = "0.2.0"
 base64 = "0.22"
 clap = { version = "^4.5.54", features = ["derive"] }
 clap_complete = "4.5.65"

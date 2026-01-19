@@ -836,8 +836,6 @@ impl todo::LazyIssue<Local> for Issue {
 			return self.children.clone();
 		}
 
-		let (owner, repo) = Local::extract_owner_repo(&source.path).expect("valid issue path");
-
 		let is_dir_format = source
 			.path
 			.file_name()
@@ -893,11 +891,8 @@ impl todo::LazyIssue<Local> for Issue {
 				continue;
 			};
 
-			let mut child = Issue::empty_local(todo::Ancestry::root(&owner, &repo));
-			<Issue as todo::LazyIssue<Local>>::identity(&mut child, child_source.clone()).await;
-			<Issue as todo::LazyIssue<Local>>::contents(&mut child, child_source.clone()).await;
-			Box::pin(<Issue as todo::LazyIssue<Local>>::children(&mut child, child_source)).await;
-
+			use async_from::AsyncFrom;
+			let child = Issue::async_from(child_source).await;
 			children.push(child);
 		}
 
@@ -909,6 +904,25 @@ impl todo::LazyIssue<Local> for Issue {
 
 		self.children = children.clone();
 		children
+	}
+}
+
+//==============================================================================
+// AsyncFrom Implementation - load full Issue from LocalPath
+//==============================================================================
+
+#[async_trait::async_trait]
+impl async_from::AsyncFrom<LocalPath> for Issue {
+	async fn async_from(source: LocalPath) -> Self {
+		let (owner, repo) = Local::extract_owner_repo(&source.path).expect("valid issue path");
+		let ancestry = todo::Ancestry::root(&owner, &repo);
+		let mut issue = Issue::empty_local(ancestry);
+
+		<Issue as todo::LazyIssue<Local>>::identity(&mut issue, source.clone()).await;
+		<Issue as todo::LazyIssue<Local>>::contents(&mut issue, source.clone()).await;
+		Box::pin(<Issue as todo::LazyIssue<Local>>::children(&mut issue, source)).await;
+
+		issue
 	}
 }
 
