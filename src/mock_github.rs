@@ -254,6 +254,7 @@ impl MockGithubClient {
 
 	/// Add a comment to an issue
 	#[cfg(test)]
+	#[expect(clippy::too_many_arguments, reason = "test helper, extra verbosity is fine")]
 	pub fn add_comment(&self, owner: &str, repo: &str, issue_number: u64, comment_id: u64, body: &str, owner_login: &str, timestamp: jiff::Timestamp) {
 		let key = RepoKey::new(owner, repo);
 
@@ -637,15 +638,15 @@ impl GithubClient for MockGithubClient {
 		let issues = self.issues.lock().unwrap();
 		let key = RepoKey::new(owner, repo_name);
 
-		if let Some(repo_issues) = issues.get(&key) {
-			if let Some(issue) = repo_issues.get(&issue_number) {
-				return Ok(crate::github::GraphqlTimelineTimestamps {
-					title: issue.title_timestamp,
-					description: issue.description_timestamp,
-					labels: issue.labels_timestamp,
-					state: issue.state_timestamp,
-				});
-			}
+		if let Some(repo_issues) = issues.get(&key)
+			&& let Some(issue) = repo_issues.get(&issue_number)
+		{
+			return Ok(crate::github::GraphqlTimelineTimestamps {
+				title: issue.title_timestamp,
+				description: issue.description_timestamp,
+				labels: issue.labels_timestamp,
+				state: issue.state_timestamp,
+			});
 		}
 
 		Ok(crate::github::GraphqlTimelineTimestamps::default())

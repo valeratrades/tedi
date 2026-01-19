@@ -101,13 +101,13 @@ impl Merge for Issue {
 			let self_body = self.contents.comments.first().cloned();
 			self.contents.comments = other.contents.comments.clone();
 			// Restore self's body if we didn't take other's description
-			if !dominated_by(self_ts.description, other_ts.description) {
-				if let Some(body) = self_body {
-					if self.contents.comments.is_empty() {
-						self.contents.comments.push(body);
-					} else {
-						self.contents.comments[0] = body;
-					}
+			if !dominated_by(self_ts.description, other_ts.description)
+				&& let Some(body) = self_body
+			{
+				if self.contents.comments.is_empty() {
+					self.contents.comments.push(body);
+				} else {
+					self.contents.comments[0] = body;
 				}
 			}
 		}
@@ -240,7 +240,7 @@ mod tests {
 		let ancestry = Ancestry::root("test", "repo");
 		// Create a virtual issue (local-only, never synced to Github)
 		let mut virtual_issue = Issue {
-			identity: IssueIdentity::virtual_issue(ancestry.clone()),
+			identity: IssueIdentity::virtual_issue(ancestry),
 			contents: IssueContents::default(),
 			children: vec![],
 		};

@@ -788,11 +788,6 @@ impl Local {
 		Ok(())
 	}
 
-	/// Load metadata for a specific issue from the project's .meta.json.
-	fn load_issue_meta(owner: &str, repo: &str, issue_number: u64) -> Option<IssueMeta> {
-		Self::load_issue_meta_from_source(owner, repo, issue_number, LocalSource::Submitted)
-	}
-
 	/// Load metadata for a specific issue from a specific source.
 	fn load_issue_meta_from_source(owner: &str, repo: &str, issue_number: u64, source: LocalSource) -> Option<IssueMeta> {
 		let project_meta = Self::load_project_meta_from_source(owner, repo, source);
@@ -1025,7 +1020,7 @@ impl Sink<Submitted> for Issue {
 		let owner = self.identity.owner();
 		let repo = self.identity.repo();
 
-		Ok(sink_issue_node(self, old, owner, repo, &[])?)
+		sink_issue_node(self, old, owner, repo, &[])
 	}
 }
 
@@ -1063,7 +1058,7 @@ impl Sink<Consensus> for Issue {
 
 		// Check for ignored files that we tried to add
 		let project_dir = Local::project_dir(owner, repo);
-		if let Some(rel) = project_dir.strip_prefix(&data_dir).ok() {
+		if let Ok(rel) = project_dir.strip_prefix(&data_dir) {
 			let check_ignored = Command::new("git").args(["-C", data_dir_str, "check-ignore", "--no-index", "-v"]).arg(rel.join("**")).output()?;
 			// check-ignore returns 0 if files ARE ignored, 1 if none are ignored
 			if check_ignored.status.success() && !check_ignored.stdout.is_empty() {
