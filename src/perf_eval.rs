@@ -53,28 +53,34 @@ pub async fn main(_settings: &LiveSettings, args: PerfEvalArgs) -> Result<()> {
 				bail!(
 					"Most recent screenshot is {} seconds old (found at: {}).\n\
 						The watch-monitors daemon should be running to provide fresh screenshots.\n\
-						Start it with: todo watch-monitors\n\
-						Or enable the systemd service: services.todo-watch-monitors.enable = true;",
+						Start it with: {} watch-monitors\n\
+						Or enable the systemd service: services.{}-watch-monitors.enable = true;",
 					elapsed.as_secs(),
-					recent_path.display()
+					recent_path.display(),
+					env!("CARGO_PKG_NAME"),
+					env!("CARGO_PKG_NAME"),
 				);
 			}
 		} else {
 			bail!(
 				"No screenshots found in {}.\n\
 				The watch-monitors daemon should be running to capture screenshots.\n\
-				Start it with: todo watch-monitors\n\
-				Or enable the systemd service: services.todo-watch-monitors.enable = true;",
-				date_dir.display()
+				Start it with: {} watch-monitors\n\
+				Or enable the systemd service: services.{}-watch-monitors.enable = true;",
+				date_dir.display(),
+				env!("CARGO_PKG_NAME"),
+				env!("CARGO_PKG_NAME"),
 			);
 		}
 	} else {
 		bail!(
 			"Screenshot directory does not exist: {}\n\
 			The watch-monitors daemon should be running to capture screenshots.\n\
-			Start it with: todo watch-monitors\n\
-			Or enable the systemd service: services.todo-watch-monitors.enable = true;",
-			date_dir.display()
+			Start it with: {} watch-monitors\n\
+			Or enable the systemd service: services.{}-watch-monitors.enable = true;",
+			date_dir.display(),
+			env!("CARGO_PKG_NAME"),
+			env!("CARGO_PKG_NAME"),
 		);
 	}
 
@@ -178,7 +184,7 @@ pub async fn main(_settings: &LiveSettings, args: PerfEvalArgs) -> Result<()> {
 	let current_blocker = String::from_utf8_lossy(&blocker_output.stdout).trim().to_string();
 
 	if current_blocker.is_empty() {
-		bail!("No current blocker found. Set one with: todo blocker add <task>");
+		bail!("No current blocker found. Set one with: {} blocker add <task>", env!("CARGO_PKG_NAME"));
 	}
 
 	// Get daily milestones

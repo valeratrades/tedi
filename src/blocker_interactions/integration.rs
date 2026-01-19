@@ -10,7 +10,7 @@
 use std::path::{Path, PathBuf};
 
 use color_eyre::eyre::{Result, bail, eyre};
-use todo::{DisplayFormat, Issue, Marker};
+use tedi::{DisplayFormat, Issue, Marker};
 
 use super::{BlockerSequence, operations::BlockerSequenceExt, source::BlockerSource};
 use crate::open_interactions::local::{ExactMatchLevel, Local};
@@ -54,7 +54,7 @@ impl IssueSource {
 	/// Get relative path for display
 	pub fn display_relative(&self) -> String {
 		self.issue_path
-			.strip_prefix(&Local::issues_dir())
+			.strip_prefix(Local::issues_dir())
 			.map(|p| p.to_string_lossy().to_string())
 			.unwrap_or_else(|_| self.issue_path.to_string_lossy().to_string())
 	}
@@ -250,7 +250,7 @@ pub async fn main_integrated(command: super::io::Command, format: DisplayFormat,
 			// Load and show current blocker
 			let blockers = source.load()?;
 			if blockers.is_empty() {
-				let marker = Marker::BlockersSection(todo::Header::new(1, "Blockers"));
+				let marker = Marker::BlockersSection(tedi::Header::new(1, "Blockers"));
 				println!("No `{marker}` marker found in issue body.");
 			} else if let Some(current) = blockers.current_with_context(&[]) {
 				println!("Current: {current}");
@@ -314,7 +314,7 @@ pub async fn main_integrated(command: super::io::Command, format: DisplayFormat,
 			let blockers = source.load()?;
 
 			if blockers.is_empty() {
-				let marker = Marker::BlockersSection(todo::Header::new(1, "Blockers"));
+				let marker = Marker::BlockersSection(tedi::Header::new(1, "Blockers"));
 				println!("No `{marker}` marker found in issue body.");
 			} else {
 				let output = blockers.serialize(format);
@@ -400,7 +400,7 @@ pub async fn main_integrated(command: super::io::Command, format: DisplayFormat,
 			let source = IssueSource::new(issue_path.clone());
 			let blockers = source.load()?;
 			if blockers.is_empty() {
-				let marker = Marker::BlockersSection(todo::Header::new(1, "Blockers"));
+				let marker = Marker::BlockersSection(tedi::Header::new(1, "Blockers"));
 				bail!("No `{marker}` marker found in issue body.");
 			}
 
@@ -435,13 +435,13 @@ pub async fn main_integrated(command: super::io::Command, format: DisplayFormat,
 				let owner = get_current_owner().ok_or_else(|| eyre!("No blocker file set. Use `todo blocker set <pattern>` first to establish owner context."))?;
 
 				// Check if another urgent file exists for a different owner
-				if let Some((existing_path, existing_owner)) = find_existing_urgent() {
-					if existing_owner != owner {
-						bail!(
-							"Cannot create urgent file for '{owner}': another urgent file exists for '{existing_owner}'. Complete that first.\n  {}",
-							existing_path.display()
-						);
-					}
+				if let Some((existing_path, existing_owner)) = find_existing_urgent()
+					&& existing_owner != owner
+				{
+					bail!(
+						"Cannot create urgent file for '{owner}': another urgent file exists for '{existing_owner}'. Complete that first.\n  {}",
+						existing_path.display()
+					);
 				}
 
 				let urgent_path = get_urgent_path(&owner);
@@ -555,7 +555,7 @@ mod tests {
 		let issue = Issue::parse_virtual(content, Path::new("test.md")).unwrap();
 
 		assert!(!issue.contents.blockers.is_empty());
-		insta::assert_snapshot!(issue.contents.blockers.serialize(todo::DisplayFormat::Headers), @"
+		insta::assert_snapshot!(issue.contents.blockers.serialize(tedi::DisplayFormat::Headers), @"
 		# Phase 1
 		- First task
 			comment on first task
@@ -598,7 +598,7 @@ mod tests {
 
 		issue.contents.blockers.pop();
 
-		insta::assert_snapshot!(issue.contents.blockers.serialize(todo::DisplayFormat::Headers), @"
+		insta::assert_snapshot!(issue.contents.blockers.serialize(tedi::DisplayFormat::Headers), @"
 		- First task
 		- Second task
 		");
@@ -647,7 +647,7 @@ mod tests {
 		let issue = Issue::parse_virtual(content, Path::new("test.md")).unwrap();
 
 		// Blockers should only contain the blocker items, not the sub-issue
-		insta::assert_snapshot!(issue.contents.blockers.serialize(todo::DisplayFormat::Headers), @"
+		insta::assert_snapshot!(issue.contents.blockers.serialize(tedi::DisplayFormat::Headers), @"
 		- Blocker one
 		- Blocker two
 		");

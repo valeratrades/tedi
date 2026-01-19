@@ -83,7 +83,7 @@ impl SyncOptions {
 
 use std::path::Path;
 
-use todo::{CloseState, Issue, IssueLink};
+use tedi::{CloseState, Issue, IssueLink};
 use v_utils::prelude::*;
 
 use super::{
@@ -572,7 +572,7 @@ async fn sync_issue_to_github_inner(issue_file_path: &Path, owner: &str, repo: &
 /// Open a local issue file with the default editor modifier.
 /// If `open_at_blocker` is true, opens the editor at the position of the last blocker item.
 /// GitHub client is accessed globally via `github::client::get()`.
-#[tracing::instrument(level = "debug", skip(sync_opts), target = "todo::open_interactions::sync")]
+#[tracing::instrument(level = "debug", skip(sync_opts), target = "tedi::open_interactions::sync")]
 pub async fn open_local_issue(issue_file_path: &Path, offline: bool, sync_opts: SyncOptions, open_at_blocker: bool) -> Result<()> {
 	modify_and_sync_issue(issue_file_path, offline, Modifier::Editor { open_at_blocker }, sync_opts).await?;
 	Ok(())
@@ -580,7 +580,7 @@ pub async fn open_local_issue(issue_file_path: &Path, offline: bool, sync_opts: 
 
 /// Modify a local issue file using the given modifier, then sync changes back to Github.
 /// GitHub client is accessed globally via `github::client::get()`.
-#[tracing::instrument(level = "debug", skip(sync_opts), target = "todo::open_interactions::sync")]
+#[tracing::instrument(level = "debug", skip(sync_opts), target = "tedi::open_interactions::sync")]
 pub async fn modify_and_sync_issue(issue_file_path: &Path, offline: bool, modifier: Modifier, sync_opts: SyncOptions) -> Result<ModifyResult> {
 	use super::conflict::check_any_conflicts;
 
@@ -684,7 +684,7 @@ pub async fn modify_and_sync_issue(issue_file_path: &Path, offline: bool, modifi
 	if let CloseState::Duplicate(dup_number) = issue.contents.state {
 		// Validate that the referenced duplicate issue exists
 		let gh = crate::github::client::get();
-		let repo_info = todo::RepoInfo::new(&owner, &repo);
+		let repo_info = tedi::RepoInfo::new(&owner, &repo);
 		if !offline {
 			let exists = gh.fetch_issue(repo_info, dup_number).await.is_ok();
 			if !exists {
@@ -744,7 +744,7 @@ pub async fn modify_and_sync_issue(issue_file_path: &Path, offline: bool, modifi
 
 /// Modify a local issue file offline (no Github sync).
 /// Use this when you know you're in offline mode and don't want to require a Github client.
-#[tracing::instrument(level = "debug", target = "todo::open_interactions::sync")]
+#[tracing::instrument(level = "debug", target = "tedi::open_interactions::sync")]
 pub async fn modify_issue_offline(issue_file_path: &Path, modifier: Modifier) -> Result<ModifyResult> {
 	// Load the issue tree from filesystem
 	let source = LocalPath::submitted(issue_file_path.to_path_buf());

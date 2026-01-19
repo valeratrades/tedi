@@ -401,7 +401,7 @@ pub enum IssueRemote {
 	/// Issue is (or will be) on Github.
 	/// `None` = pending creation (will be created on first sync)
 	/// `Some(_)` = already linked to Github
-	Github(Option<LinkedIssueMeta>),
+	Github(Box<Option<LinkedIssueMeta>>),
 	/// Virtual issue - local only, never synced to Github.
 	/// Used for projects without a Github remote.
 	Virtual,
@@ -420,18 +420,18 @@ impl IssueRemote {
 
 	/// Returns true if this issue is linked to Github.
 	pub fn is_linked(&self) -> bool {
-		matches!(self, IssueRemote::Github(Some(_)))
+		matches!(self, IssueRemote::Github(inner) if inner.is_some())
 	}
 
 	/// Returns true if this is a pending Github issue (not yet created).
 	pub fn is_pending(&self) -> bool {
-		matches!(self, IssueRemote::Github(None))
+		matches!(self, IssueRemote::Github(inner) if inner.is_none())
 	}
 
 	/// Get the linked metadata if this is a linked Github issue.
 	pub fn as_linked(&self) -> Option<&LinkedIssueMeta> {
 		match self {
-			IssueRemote::Github(Some(meta)) => Some(meta),
+			IssueRemote::Github(inner) => (**inner).as_ref(),
 			_ => None,
 		}
 	}
@@ -439,7 +439,7 @@ impl IssueRemote {
 	/// Get mutable access to the linked metadata.
 	pub fn as_linked_mut(&mut self) -> Option<&mut LinkedIssueMeta> {
 		match self {
-			IssueRemote::Github(Some(meta)) => Some(meta),
+			IssueRemote::Github(inner) => (**inner).as_mut(),
 			_ => None,
 		}
 	}
@@ -459,7 +459,7 @@ impl IssueIdentity {
 	pub fn linked(ancestry: Ancestry, user: String, link: IssueLink, timestamps: IssueTimestamps) -> Self {
 		Self {
 			ancestry,
-			remote: IssueRemote::Github(Some(LinkedIssueMeta { user, link, timestamps })),
+			remote: IssueRemote::Github(Box::new(Some(LinkedIssueMeta { user, link, timestamps }))),
 		}
 	}
 
@@ -467,7 +467,7 @@ impl IssueIdentity {
 	pub fn pending(ancestry: Ancestry) -> Self {
 		Self {
 			ancestry,
-			remote: IssueRemote::Github(None),
+			remote: IssueRemote::Github(Box::new(None)),
 		}
 	}
 
@@ -559,8 +559,10 @@ impl IssueIdentity {
 	/// - Virtual: `virtual:owner/repo#N` where N is a local tracking number
 	pub fn encode(&self) -> String {
 		match &self.remote {
-			IssueRemote::Github(Some(meta)) => format!("@{} {}", meta.user, meta.link.as_str()),
-			IssueRemote::Github(None) => "local:".to_string(),
+			IssueRemote::Github(inner) => match inner.as_ref() {
+				Some(meta) => format!("@{} {}", meta.user, meta.link.as_str()),
+				None => "local:".to_string(),
+			},
 			IssueRemote::Virtual => "virtual:".to_string(),
 		}
 	}

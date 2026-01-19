@@ -17,7 +17,7 @@
 //! - `headers`: Traditional flat format with `# Header` lines
 //! - `nested`: Indented format showing hierarchy visually
 
-use todo::{BlockerItem, BlockerSequence};
+use tedi::{BlockerItem, BlockerSequence};
 
 /// Extension trait for BlockerSequence with additional operations
 pub trait BlockerSequenceExt {
@@ -144,7 +144,7 @@ fn add_item_to_current(seq: &mut BlockerSequence, item: BlockerItem) {
 
 #[cfg(test)]
 mod tests {
-	use todo::DisplayFormat;
+	use tedi::DisplayFormat;
 
 	use super::*;
 

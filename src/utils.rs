@@ -12,10 +12,13 @@ use crate::config::LiveSettings;
 #[cfg(test)]
 use crate::mocks::MockTimestamp as TimestampImpl;
 
+/// Environment variable name for mock pipe (integration tests)
+const ENV_MOCK_PIPE: &str = concat!(env!("CARGO_PKG_NAME"), "_MOCK_PIPE");
+
 /// Open a file in editor.
 ///
 /// Behavior depends on environment:
-/// - If `TODO_MOCK_PIPE` env var is set: waits for any data on the named pipe, then returns.
+/// - If `{PKG_NAME}_MOCK_PIPE` env var is set: waits for any data on the named pipe, then returns.
 ///   This allows integration tests to control when the "editor" closes.
 /// - Otherwise: opens with $EDITOR normally.
 ///
@@ -23,7 +26,7 @@ use crate::mocks::MockTimestamp as TimestampImpl;
 #[instrument(level = "debug")]
 pub async fn open_file<P: AsRef<Path> + std::fmt::Debug>(path: P, position: Option<Position>) -> Result<()> {
 	// Check for integration test pipe-based mock mode
-	if let Ok(pipe_path) = std::env::var("TODO_MOCK_PIPE") {
+	if let Ok(pipe_path) = std::env::var(ENV_MOCK_PIPE) {
 		// Wait for signal on the pipe (any data or EOF when writer closes)
 		eprintln!("[mock] Waiting for signal on pipe: {pipe_path}");
 		let mut buf = [0u8; 1];
@@ -139,12 +142,14 @@ mod tests {
 
 	use super::*;
 
+	const ENV_GITHUB_TOKEN: &str = concat!(env!("CARGO_PKG_NAME"), "__GITHUB_TOKEN");
+
 	fn init_test(t: Option<(i16, i8, i8, i8, i8, i8)>) -> LiveSettings {
 		// SAFETY: This is only used in tests and doesn't cause race conditions in single-threaded test execution
 		unsafe {
 			std::env::set_var("WAKETIME", "05:00");
 			std::env::set_var("DAY_SECTION_BORDERS", "2.5:10:16");
-			std::env::set_var("TODO__GITHUB_TOKEN", "test_token");
+			std::env::set_var(ENV_GITHUB_TOKEN, "test_token");
 		}
 
 		if let Some(t) = t {

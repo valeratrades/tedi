@@ -16,7 +16,7 @@
 
 use std::path::Path;
 
-use todo::Issue;
+use tedi::Issue;
 
 use crate::common::{TestContext, git::GitExt};
 
@@ -97,7 +97,7 @@ fn test_reset_then_edit_body_no_conflict() {
 	// Now edit the body
 	let issue_path = ctx.flat_issue_path("o", "r", 1, "Test Issue");
 	let mut modified = issue.clone();
-	modified.contents.comments[0].body = todo::Events::parse("modified body");
+	modified.contents.comments[0].body = tedi::Events::parse("modified body");
 
 	// Second open: edit the body
 	let (status, stdout, stderr) = ctx.open(&issue_path).edit(&modified).run();

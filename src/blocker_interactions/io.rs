@@ -6,7 +6,7 @@
 
 use clap::{Args, Subcommand};
 use color_eyre::eyre::Result;
-use todo::DisplayFormat;
+use tedi::DisplayFormat;
 
 use super::clockify::{HaltArgs, ResumeArgs};
 

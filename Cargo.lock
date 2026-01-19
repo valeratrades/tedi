@@ -3521,6 +3521,51 @@ dependencies = [
 ]
 
 [[package]]
+name = "tedi"
+version = "0.11.3"
+dependencies = [
+ "arrayvec",
+ "ask_llm",
+ "async-trait",
+ "async_from",
+ "base64",
+ "clap",
+ "clap_complete",
+ "color-eyre",
+ "config",
+ "derive-new",
+ "derive_builder",
+ "derive_more",
+ "futures",
+ "image",
+ "insta",
+ "jiff",
+ "libwayshot",
+ "miette",
+ "pandoc",
+ "png",
+ "pulldown-cmark",
+ "pulldown-cmark-to-cmark",
+ "regex",
+ "reqwest 0.13.1",
+ "rstest",
+ "serde",
+ "serde_json",
+ "smart-default",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "urlencoding",
+ "v_fixtures",
+ "v_utils",
+ "walkdir",
+ "xdg",
+]
+
+[[package]]
 name = "tempfile"
 version = "3.24.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3649,51 +3694,6 @@ name = "tinyvec_macros"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
-
-[[package]]
-name = "todo"
-version = "0.11.3"
-dependencies = [
- "arrayvec",
- "ask_llm",
- "async-trait",
- "async_from",
- "base64",
- "clap",
- "clap_complete",
- "color-eyre",
- "config",
- "derive-new",
- "derive_builder",
- "derive_more",
- "futures",
- "image",
- "insta",
- "jiff",
- "libwayshot",
- "miette",
- "pandoc",
- "png",
- "pulldown-cmark",
- "pulldown-cmark-to-cmark",
- "regex",
- "reqwest 0.13.1",
- "rstest",
- "serde",
- "serde_json",
- "smart-default",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "url",
- "urlencoding",
- "v_fixtures",
- "v_utils",
- "walkdir",
- "xdg",
-]
 
 [[package]]
 name = "tokio"

@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 
-use todo::Issue;
+use tedi::Issue;
 
 /// Result of comparing a single node.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -78,7 +78,7 @@ pub fn compare_node(local: &Issue, consensus: Option<&Issue>, remote: &Issue) ->
 
 /// HACK: Get the most recent timestamp from all fields.
 /// This is a temporary workaround until proper per-field conflict resolution is implemented.
-fn most_recent_timestamp(timestamps: Option<&todo::IssueTimestamps>) -> Option<jiff::Timestamp> {
+fn most_recent_timestamp(timestamps: Option<&tedi::IssueTimestamps>) -> Option<jiff::Timestamp> {
 	let ts = timestamps?;
 	[ts.title, ts.description, ts.labels, ts.comments].into_iter().flatten().max()
 }
@@ -240,14 +240,14 @@ fn apply_remote_node_content(resolved: &mut Issue, remote: &Issue) {
 mod tests {
 	use insta::assert_snapshot;
 	use jiff::Timestamp;
-	use todo::{Ancestry, BlockerSequence, CloseState, Comment, CommentIdentity, IssueContents, IssueIdentity, IssueLink};
+	use tedi::{Ancestry, BlockerSequence, CloseState, Comment, CommentIdentity, IssueContents, IssueIdentity, IssueLink};
 
 	use super::*;
 
 	fn make_issue(body: &str, timestamp: Option<i64>) -> Issue {
 		let ancestry = Ancestry::root("o", "r");
 		let link = IssueLink::parse("https://github.com/o/r/issues/1").unwrap();
-		let timestamps = timestamp.map(|ts| todo::IssueTimestamps::all_at(Timestamp::from_second(ts).unwrap())).unwrap_or_default();
+		let timestamps = timestamp.map(|ts| tedi::IssueTimestamps::all_at(Timestamp::from_second(ts).unwrap())).unwrap_or_default();
 		Issue {
 			identity: IssueIdentity::linked(ancestry, "testuser".to_string(), link, timestamps),
 			contents: IssueContents {
@@ -256,7 +256,7 @@ mod tests {
 				state: CloseState::Open,
 				comments: vec![Comment {
 					identity: CommentIdentity::Body,
-					body: todo::Events::parse(body),
+					body: tedi::Events::parse(body),
 				}],
 				blockers: BlockerSequence::default(),
 			},
@@ -330,7 +330,7 @@ mod tests {
 	fn make_issue_with_url(body: &str, timestamp: Option<i64>, url: &str) -> Issue {
 		let link = IssueLink::parse(url).unwrap();
 		let ancestry = Ancestry::root(link.owner(), link.repo());
-		let timestamps = timestamp.map(|ts| todo::IssueTimestamps::all_at(Timestamp::from_second(ts).unwrap())).unwrap_or_default();
+		let timestamps = timestamp.map(|ts| tedi::IssueTimestamps::all_at(Timestamp::from_second(ts).unwrap())).unwrap_or_default();
 		Issue {
 			identity: IssueIdentity::linked(ancestry, "testuser".to_string(), link, timestamps),
 			contents: IssueContents {
@@ -339,7 +339,7 @@ mod tests {
 				state: CloseState::Open,
 				comments: vec![Comment {
 					identity: CommentIdentity::Body,
-					body: todo::Events::parse(body),
+					body: tedi::Events::parse(body),
 				}],
 				blockers: BlockerSequence::default(),
 			},

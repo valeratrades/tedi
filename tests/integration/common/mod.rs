@@ -29,6 +29,11 @@ use std::{
 
 use v_fixtures::{Fixture, fs_standards::xdg::Xdg};
 
+/// Environment variable names derived from package name
+const ENV_GITHUB_TOKEN: &str = concat!(env!("CARGO_PKG_NAME"), "__GITHUB_TOKEN");
+const ENV_MOCK_STATE: &str = concat!(env!("CARGO_PKG_NAME"), "_MOCK_STATE");
+const ENV_MOCK_PIPE: &str = concat!(env!("CARGO_PKG_NAME"), "_MOCK_PIPE");
+
 static BINARY_COMPILED: OnceLock<()> = OnceLock::new();
 
 /// Compile the binary before running any tests
@@ -99,7 +104,7 @@ impl TestContext {
 		let mut cmd = Command::new(get_binary_path());
 		cmd.args(args);
 		cmd.env("__IS_INTEGRATION_TEST", "1");
-		cmd.env("TODO__GITHUB_TOKEN", "test_token");
+		cmd.env(ENV_GITHUB_TOKEN, "test_token");
 		for (key, value) in self.xdg.env_vars() {
 			cmd.env(key, value);
 		}
@@ -191,7 +196,7 @@ pub struct OpenBuilder<'a> {
 	ctx: &'a TestContext,
 	issue_path: &'a Path,
 	extra_args: Vec<&'a str>,
-	edit_to: Option<todo::Issue>,
+	edit_to: Option<tedi::Issue>,
 }
 impl<'a> OpenBuilder<'a> {
 	/// Add extra CLI arguments.
@@ -201,7 +206,7 @@ impl<'a> OpenBuilder<'a> {
 	}
 
 	/// Edit the file to this issue while "editor is open".
-	pub fn edit(mut self, issue: &todo::Issue) -> Self {
+	pub fn edit(mut self, issue: &tedi::Issue) -> Self {
 		self.edit_to = Some(issue.clone());
 		self
 	}
@@ -213,12 +218,12 @@ impl<'a> OpenBuilder<'a> {
 		cmd.args(&self.extra_args);
 		cmd.arg(self.issue_path.to_str().unwrap());
 		cmd.env("__IS_INTEGRATION_TEST", "1");
-		cmd.env("TODO__GITHUB_TOKEN", "test_token");
+		cmd.env(ENV_GITHUB_TOKEN, "test_token");
 		for (key, value) in self.ctx.xdg.env_vars() {
 			cmd.env(key, value);
 		}
-		cmd.env("TODO_MOCK_STATE", &self.ctx.mock_state_path);
-		cmd.env("TODO_MOCK_PIPE", &self.ctx.pipe_path);
+		cmd.env(ENV_MOCK_STATE, &self.ctx.mock_state_path);
+		cmd.env(ENV_MOCK_PIPE, &self.ctx.pipe_path);
 		cmd.stdout(std::process::Stdio::piped());
 		cmd.stderr(std::process::Stdio::piped());
 
@@ -252,10 +257,10 @@ impl<'a> OpenBuilder<'a> {
 						#[cfg(unix)]
 						{
 							use std::os::unix::fs::OpenOptionsExt;
-							if let Ok(mut pipe) = std::fs::OpenOptions::new().write(true).custom_flags(0x800).open(&pipe_path) {
-								if pipe.write_all(b"x").is_ok() {
-									signaled = true;
-								}
+							if let Ok(mut pipe) = std::fs::OpenOptions::new().write(true).custom_flags(0x800).open(&pipe_path)
+								&& pipe.write_all(b"x").is_ok()
+							{
+								signaled = true;
 							}
 						}
 					}
@@ -278,7 +283,7 @@ pub struct OpenUrlBuilder<'a> {
 	ctx: &'a TestContext,
 	url: String,
 	extra_args: Vec<&'a str>,
-	edit_at_path: Option<(PathBuf, todo::Issue)>,
+	edit_at_path: Option<(PathBuf, tedi::Issue)>,
 }
 
 impl<'a> OpenUrlBuilder<'a> {
@@ -290,7 +295,7 @@ impl<'a> OpenUrlBuilder<'a> {
 
 	/// Edit the file at the specified path while "editor is open".
 	/// Use this when you know the path the issue will be stored at.
-	pub fn edit_at(mut self, path: &Path, issue: &todo::Issue) -> Self {
+	pub fn edit_at(mut self, path: &Path, issue: &tedi::Issue) -> Self {
 		self.edit_at_path = Some((path.to_path_buf(), issue.clone()));
 		self
 	}
@@ -302,12 +307,12 @@ impl<'a> OpenUrlBuilder<'a> {
 		cmd.args(&self.extra_args);
 		cmd.arg(&self.url);
 		cmd.env("__IS_INTEGRATION_TEST", "1");
-		cmd.env("TODO__GITHUB_TOKEN", "test_token");
+		cmd.env(ENV_GITHUB_TOKEN, "test_token");
 		for (key, value) in self.ctx.xdg.env_vars() {
 			cmd.env(key, value);
 		}
-		cmd.env("TODO_MOCK_STATE", &self.ctx.mock_state_path);
-		cmd.env("TODO_MOCK_PIPE", &self.ctx.pipe_path);
+		cmd.env(ENV_MOCK_STATE, &self.ctx.mock_state_path);
+		cmd.env(ENV_MOCK_PIPE, &self.ctx.pipe_path);
 		cmd.stdout(std::process::Stdio::piped());
 		cmd.stderr(std::process::Stdio::piped());
 
@@ -337,10 +342,10 @@ impl<'a> OpenUrlBuilder<'a> {
 						#[cfg(unix)]
 						{
 							use std::os::unix::fs::OpenOptionsExt;
-							if let Ok(mut pipe) = std::fs::OpenOptions::new().write(true).custom_flags(0x800).open(&pipe_path) {
-								if pipe.write_all(b"x").is_ok() {
-									signaled = true;
-								}
+							if let Ok(mut pipe) = std::fs::OpenOptions::new().write(true).custom_flags(0x800).open(&pipe_path)
+								&& pipe.write_all(b"x").is_ok()
+							{
+								signaled = true;
 							}
 						}
 					}

@@ -5,7 +5,7 @@
 
 use std::path::Path;
 
-use todo::Issue;
+use tedi::Issue;
 
 use crate::common::{TestContext, git::GitExt};
 

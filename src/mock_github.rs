@@ -17,6 +17,9 @@ use v_utils::prelude::*;
 
 use crate::github::{CreatedIssue, GithubClient, GithubComment, GithubIssue, GithubLabel, GithubUser, RepoInfo};
 
+/// Environment variable name for mock state file (integration tests)
+const ENV_MOCK_STATE: &str = concat!(env!("CARGO_PKG_NAME"), "_MOCK_STATE");
+
 /// Internal representation of an issue in the mock
 #[derive(Clone, Debug)]
 struct MockIssueData {
@@ -99,8 +102,8 @@ impl MockGithubClient {
 			call_log: Mutex::new(Vec::new()),
 		};
 
-		// Load initial state from file if TODO_MOCK_STATE is set (integration tests)
-		if let Ok(state_file) = std::env::var("TODO_MOCK_STATE")
+		// Load initial state from file if {PKG_NAME}_MOCK_STATE is set (integration tests)
+		if let Ok(state_file) = std::env::var(ENV_MOCK_STATE)
 			&& let Ok(content) = std::fs::read_to_string(&state_file)
 		{
 			if let Err(e) = client.load_state_json(&content) {

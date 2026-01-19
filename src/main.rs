@@ -30,7 +30,7 @@ struct Cli {
 	/// Automatically enabled for virtual projects (projects without Github remote).
 	#[arg(long, global = true)]
 	offline: bool,
-	/// Log to a specific file (filename only, no path). Logs go to ~/.local/state/todo/{filename}.log
+	/// Log to a specific file (filename only, no path). Logs go to ~/.local/state/tedi/{filename}.log
 	#[arg(long, global = true)]
 	log_to: Option<String>,
 }
@@ -93,7 +93,7 @@ async fn main() {
 	}
 	if std::env::var("__IS_INTEGRATION_TEST").is_ok() {
 		// SAFETY: This is called at program start before any other threads are spawned
-		unsafe { std::env::set_var("LOG_DIRECTIVES", "info,todo=debug") };
+		unsafe { std::env::set_var("LOG_DIRECTIVES", concat!("info,", env!("CARGO_PKG_NAME"), "=debug")) };
 	}
 
 	let cli = Cli::parse();

@@ -10,7 +10,7 @@
 
 use std::path::Path;
 
-use todo::Issue;
+use tedi::Issue;
 
 use crate::common::{TestContext, git::GitExt};
 
@@ -287,7 +287,7 @@ fn test_closing_issue_syncs_state_change() {
 
 	// Edit to close the issue
 	let mut closed_issue = open_issue.clone();
-	closed_issue.contents.state = todo::CloseState::Closed;
+	closed_issue.contents.state = tedi::CloseState::Closed;
 
 	let (status, stdout, stderr) = ctx.open(&issue_path).edit(&closed_issue).run();
 
@@ -312,10 +312,10 @@ fn test_duplicate_sub_issues_filtered_from_remote() {
 	let parent = parse("- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tparent body\n");
 
 	let mut normal_closed = parse("- [x] Normal Closed Sub <!-- @mock_user https://github.com/o/r/issues/2 -->\n\tsub body\n");
-	normal_closed.contents.state = todo::CloseState::Closed;
+	normal_closed.contents.state = tedi::CloseState::Closed;
 
 	let mut duplicate = parse("- [x] Duplicate Sub <!-- @mock_user https://github.com/o/r/issues/3 -->\n\tduplicate body\n");
-	duplicate.contents.state = todo::CloseState::Duplicate(2); // duplicate of #2
+	duplicate.contents.state = tedi::CloseState::Duplicate(2); // duplicate of #2
 
 	// Build parent with children for remote
 	let mut parent_with_children = parent.clone();
@@ -413,7 +413,7 @@ fn test_reset_syncs_changes_after_editor() {
 
 	// Create modified version (what user will change to)
 	let mut modified_issue = remote_issue.clone();
-	modified_issue.contents.state = todo::CloseState::Closed;
+	modified_issue.contents.state = tedi::CloseState::Closed;
 
 	// Open with --reset and make changes while editor is open
 	let issue_path = ctx.flat_issue_path("o", "r", 1, "Test Issue");

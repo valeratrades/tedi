@@ -30,7 +30,7 @@
 
 use std::{cell::RefCell, collections::HashSet, path::PathBuf};
 
-use todo::Issue;
+use tedi::Issue;
 use v_fixtures::fs_standards::git::Git;
 
 use super::TestContext;

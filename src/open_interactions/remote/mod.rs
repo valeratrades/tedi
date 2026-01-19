@@ -64,7 +64,7 @@ pub enum RemoteError {
 	#[error("issue #{number} not found in {}/{}", repo.owner(), repo.repo())]
 	NotFound { repo: RepoInfo, number: u64 },
 }
-use todo::{Ancestry, CloseState, Comment, CommentIdentity, Issue, IssueContents, IssueIdentity, IssueLink, IssueTimestamps, MAX_LINEAGE_DEPTH, RepoInfo, split_blockers};
+use tedi::{Ancestry, CloseState, Comment, CommentIdentity, Issue, IssueContents, IssueIdentity, IssueLink, IssueTimestamps, MAX_LINEAGE_DEPTH, RepoInfo, split_blockers};
 use v_utils::prelude::*;
 
 use crate::github::{self, GithubComment, GithubIssue};
@@ -81,9 +81,9 @@ impl Remote {
 		let ancestry = source.resolve_ancestry().await?;
 		let mut issue = Issue::empty_local(ancestry);
 
-		<Issue as todo::LazyIssue<Remote>>::identity(&mut issue, source.clone()).await?;
-		<Issue as todo::LazyIssue<Remote>>::contents(&mut issue, source.clone()).await?;
-		Box::pin(<Issue as todo::LazyIssue<Remote>>::children(&mut issue, source)).await?;
+		<Issue as tedi::LazyIssue<Remote>>::identity(&mut issue, source.clone()).await?;
+		<Issue as tedi::LazyIssue<Remote>>::contents(&mut issue, source.clone()).await?;
+		Box::pin(<Issue as tedi::LazyIssue<Remote>>::children(&mut issue, source)).await?;
 
 		Ok(issue)
 	}
@@ -174,7 +174,7 @@ impl RemoteSource {
 	}
 }
 
-impl todo::LazyIssue<Remote> for Issue {
+impl tedi::LazyIssue<Remote> for Issue {
 	type Error = RemoteError;
 	type Source = RemoteSource;
 
@@ -283,9 +283,9 @@ impl todo::LazyIssue<Remote> for Issue {
 			let child_source = source.child(child_link, parent_number);
 			let mut child = Issue::empty_local(child_ancestry);
 
-			<Issue as todo::LazyIssue<Remote>>::identity(&mut child, child_source.clone()).await?;
-			<Issue as todo::LazyIssue<Remote>>::contents(&mut child, child_source.clone()).await?;
-			Box::pin(<Issue as todo::LazyIssue<Remote>>::children(&mut child, child_source)).await?;
+			<Issue as tedi::LazyIssue<Remote>>::identity(&mut child, child_source.clone()).await?;
+			<Issue as tedi::LazyIssue<Remote>>::contents(&mut child, child_source.clone()).await?;
+			Box::pin(<Issue as tedi::LazyIssue<Remote>>::children(&mut child, child_source)).await?;
 
 			children.push(child);
 		}
@@ -306,7 +306,7 @@ fn build_contents_from_github(issue: &GithubIssue, comments: &[GithubComment]) -
 
 	let mut issue_comments = vec![Comment {
 		identity: CommentIdentity::Body,
-		body: todo::Events::parse(&body),
+		body: tedi::Events::parse(&body),
 	}];
 
 	for c in comments {
@@ -315,7 +315,7 @@ fn build_contents_from_github(issue: &GithubIssue, comments: &[GithubComment]) -
 				user: c.user.login.clone(),
 				id: c.id,
 			},
-			body: todo::Events::parse(c.body.as_deref().unwrap_or("")),
+			body: tedi::Events::parse(c.body.as_deref().unwrap_or("")),
 		});
 	}
 

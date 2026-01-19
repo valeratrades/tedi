@@ -1,7 +1,13 @@
 [package]
-name = "todo"
+name = "tedi"
 version = "0.11.3"
 edition = "2024"
+authors = ["Valeriy Sakharov <valeratrades@gmail.com>"]
+description = "Personal productivity CLI for task tracking, time management, and GitHub issue integration"
+license = "BlueOak-1.0.0"
+repository = "https://github.com/valeratrades/tedi"
+keywords = ["productivity", "task-management", "github", "time-tracking"]
+categories = ["command-line-utilities"]
 
 [features]
 default = []

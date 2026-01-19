@@ -17,7 +17,7 @@
 //! without Github sync. Only one urgent file can exist at a time.
 //!
 //! Core types (HeaderLevel, Line, BlockerSequence, classify_line) are defined in the
-//! library crate (todo::blocker_types) and re-exported here for convenience.
+//! library crate (tedi::blocker_types) and re-exported here for convenience.
 
 pub mod clockify;
 pub(super) mod integration;
@@ -31,7 +31,7 @@ use color_eyre::eyre::Result;
 pub use io::BlockerArgs;
 // Re-export extended operations
 pub use operations::BlockerSequenceExt;
-pub use todo::BlockerSequence;
+pub use tedi::BlockerSequence;
 
 /// Main entry point for blocker commands
 pub async fn main(args: BlockerArgs, offline: bool) -> Result<()> {

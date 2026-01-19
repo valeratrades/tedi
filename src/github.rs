@@ -3,7 +3,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::Deserialize;
-pub use todo::RepoInfo;
+pub use tedi::RepoInfo;
 use v_utils::prelude::*;
 
 use crate::config::LiveSettings;

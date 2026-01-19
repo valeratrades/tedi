@@ -11,11 +11,11 @@ use miette::{Diagnostic, NamedSource, SourceSpan};
 #[derive(Debug, Diagnostic, thiserror::Error)]
 pub enum ParseError {
 	#[error("file is empty")]
-	#[diagnostic(code(todo::parse::empty_file))]
+	#[diagnostic(code(tedi::parse::empty_file))]
 	EmptyFile,
 
 	#[error("invalid title line")]
-	#[diagnostic(code(todo::parse::invalid_title), help("title must be formatted as: '- [ ] Title <!-- url -->' or '- [x] Title <!-- url -->'"))]
+	#[diagnostic(code(tedi::parse::invalid_title), help("title must be formatted as: '- [ ] Title <!-- url -->' or '- [x] Title <!-- url -->'"))]
 	InvalidTitle {
 		#[source_code]
 		src: NamedSource<String>,
@@ -25,7 +25,7 @@ pub enum ParseError {
 	},
 
 	#[error("missing URL marker in title")]
-	#[diagnostic(code(todo::parse::missing_url_marker), help("title line must contain a URL marker: '<!-- url -->' or '<!--immutable url -->'"))]
+	#[diagnostic(code(tedi::parse::missing_url_marker), help("title line must contain a URL marker: '<!-- url -->' or '<!--immutable url -->'"))]
 	MissingUrlMarker {
 		#[source_code]
 		src: NamedSource<String>,
@@ -34,7 +34,7 @@ pub enum ParseError {
 	},
 
 	#[error("malformed URL marker")]
-	#[diagnostic(code(todo::parse::malformed_url_marker), help("URL marker must be: '<!-- url -->' with closing '-->'"))]
+	#[diagnostic(code(tedi::parse::malformed_url_marker), help("URL marker must be: '<!-- url -->' with closing '-->'"))]
 	MalformedUrlMarker {
 		#[source_code]
 		src: NamedSource<String>,
@@ -43,7 +43,7 @@ pub enum ParseError {
 	},
 
 	#[error("unexpected indentation")]
-	#[diagnostic(code(todo::parse::bad_indent), help("check that indentation is consistent (use tabs)"))]
+	#[diagnostic(code(tedi::parse::bad_indent), help("check that indentation is consistent (use tabs)"))]
 	BadIndentation {
 		#[source_code]
 		src: NamedSource<String>,
@@ -54,7 +54,7 @@ pub enum ParseError {
 
 	#[error("invalid checkbox content: '{content}'")]
 	#[diagnostic(
-		code(todo::parse::invalid_checkbox),
+		code(tedi::parse::invalid_checkbox),
 		help("valid checkbox values are: ' ' (open), 'x' (closed), '-' (not planned), or a number like '123' (duplicate of issue #123)")
 	)]
 	InvalidCheckbox {
@@ -66,7 +66,7 @@ pub enum ParseError {
 	},
 
 	#[error("duplicate reference to non-existent issue #{issue_number}")]
-	#[diagnostic(code(todo::parse::invalid_duplicate), help("the referenced issue does not exist in this repository"))]
+	#[diagnostic(code(tedi::parse::invalid_duplicate), help("the referenced issue does not exist in this repository"))]
 	InvalidDuplicateReference {
 		#[source_code]
 		src: NamedSource<String>,

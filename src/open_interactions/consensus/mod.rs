@@ -10,7 +10,7 @@ mod git;
 use std::path::Path;
 
 pub use git::{commit_issue_changes, is_git_initialized};
-use todo::Issue;
+use tedi::Issue;
 
 use super::{
 	local::{Local, LocalError, LocalPath},

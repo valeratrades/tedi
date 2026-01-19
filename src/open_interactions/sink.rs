@@ -20,7 +20,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use todo::{Comment, CommentIdentity, Issue, IssueIdentity, IssueLink};
+use tedi::{Comment, CommentIdentity, Issue, IssueIdentity, IssueLink};
 
 //==============================================================================
 // Diff Results
@@ -272,7 +272,7 @@ impl Sink<Remote> for Issue {
 			let url = format!("https://github.com/{}/{}/issues/{}", repo_info.owner(), repo_info.repo(), created.number);
 			let link = IssueLink::parse(&url).expect("just constructed valid URL");
 			let user = gh.fetch_authenticated_user().await?;
-			self.identity = IssueIdentity::linked(self.identity.ancestry, user, link, todo::IssueTimestamps::default());
+			self.identity = IssueIdentity::linked(self.identity.ancestry, user, link, tedi::IssueTimestamps::default());
 			changed = true;
 		}
 
@@ -307,10 +307,10 @@ impl Sink<Remote> for Issue {
 
 		// Update existing comments
 		for (comment_id, comment) in &diff.comments_to_update {
-			if let CommentIdentity::Created { user, .. } = &comment.identity {
-				if !todo::current_user::is(user) {
-					continue;
-				}
+			if let CommentIdentity::Created { user, .. } = &comment.identity
+				&& !tedi::current_user::is(user)
+			{
+				continue;
 			}
 			let body_str = comment.body.render();
 			println!("Updating comment {comment_id}...");
@@ -350,7 +350,7 @@ impl Sink<Remote> for Issue {
 
 #[cfg(test)]
 mod tests {
-	use todo::{Ancestry, BlockerSequence, CloseState, IssueContents, IssueLink};
+	use tedi::{Ancestry, BlockerSequence, CloseState, IssueContents, IssueLink};
 
 	use super::*;
 
@@ -359,7 +359,7 @@ mod tests {
 		let identity = match number {
 			Some(n) => {
 				let link = IssueLink::parse(&format!("https://github.com/o/r/issues/{n}")).unwrap();
-				IssueIdentity::linked(ancestry, "testuser".to_string(), link, todo::IssueTimestamps::default())
+				IssueIdentity::linked(ancestry, "testuser".to_string(), link, tedi::IssueTimestamps::default())
 			}
 			None => IssueIdentity::local(ancestry),
 		};
@@ -372,7 +372,7 @@ mod tests {
 				state: CloseState::Open,
 				comments: vec![Comment {
 					identity: CommentIdentity::Body,
-					body: todo::Events::parse("body"),
+					body: tedi::Events::parse("body"),
 				}],
 				blockers: BlockerSequence::default(),
 			},
@@ -392,7 +392,7 @@ mod tests {
 	fn test_compute_node_diff_body_changed() {
 		let old = make_issue("Root", Some(1));
 		let mut new = make_issue("Root", Some(1));
-		new.contents.comments[0].body = todo::Events::parse("new body");
+		new.contents.comments[0].body = tedi::Events::parse("new body");
 
 		let diff = compute_node_diff(&new, Some(&old));
 
@@ -418,7 +418,7 @@ mod tests {
 		let mut new = make_issue("Root", Some(1));
 		new.contents.comments.push(Comment {
 			identity: CommentIdentity::Pending,
-			body: todo::Events::parse("new comment"),
+			body: tedi::Events::parse("new comment"),
 		});
 
 		let diff = compute_node_diff(&new, Some(&old));
@@ -432,7 +432,7 @@ mod tests {
 		let mut old = make_issue("Root", Some(1));
 		old.contents.comments.push(Comment {
 			identity: CommentIdentity::Created { user: "user".to_string(), id: 123 },
-			body: todo::Events::parse("old comment"),
+			body: tedi::Events::parse("old comment"),
 		});
 		let new = make_issue("Root", Some(1));
 

@@ -40,7 +40,7 @@ pub enum LocalError {
 	ParseError {
 		path: PathBuf,
 		#[source]
-		source: todo::ParseError,
+		source: Box<tedi::ParseError>,
 	},
 
 	/// Invalid path structure - cannot extract owner/repo.
@@ -54,7 +54,7 @@ pub enum LocalError {
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use todo::{Ancestry, FetchedIssue, Issue};
+use tedi::{Ancestry, FetchedIssue, Issue};
 use v_utils::prelude::*;
 
 use crate::open_interactions::sink::Sink;
@@ -143,12 +143,12 @@ impl Local {
 	/// It recursively loads identity, contents, and children.
 	pub async fn load_issue(source: LocalPath) -> Result<Issue, LocalError> {
 		let (owner, repo) = Self::extract_owner_repo(&source.path).map_err(|_| LocalError::InvalidPath { path: source.path.clone() })?;
-		let ancestry = todo::Ancestry::root(&owner, &repo);
+		let ancestry = tedi::Ancestry::root(&owner, &repo);
 		let mut issue = Issue::empty_local(ancestry);
 
-		<Issue as todo::LazyIssue<Local>>::identity(&mut issue, source.clone()).await?;
-		<Issue as todo::LazyIssue<Local>>::contents(&mut issue, source.clone()).await?;
-		Box::pin(<Issue as todo::LazyIssue<Local>>::children(&mut issue, source)).await?;
+		<Issue as tedi::LazyIssue<Local>>::identity(&mut issue, source.clone()).await?;
+		<Issue as tedi::LazyIssue<Local>>::contents(&mut issue, source.clone()).await?;
+		Box::pin(<Issue as tedi::LazyIssue<Local>>::children(&mut issue, source)).await?;
 
 		Ok(issue)
 	}
@@ -281,7 +281,7 @@ impl Local {
 	fn parse_single_node(content: &str, ancestry: Ancestry, file_path: &Path) -> Result<Issue, LocalError> {
 		let mut issue = Issue::parse_virtual_with_ancestry(content, file_path, ancestry).map_err(|e| LocalError::ParseError {
 			path: file_path.to_path_buf(),
-			source: e,
+			source: Box::new(e),
 		})?;
 		// Clear any inline children (filesystem format stores them in separate files)
 		issue.children.clear();
@@ -429,15 +429,14 @@ impl Local {
 
 				if path.is_dir() {
 					walk_dir(&path, pattern, matches)?;
-				} else if path.is_file() {
-					if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-						if name.ends_with(".md") || name.ends_with(".md.bak") {
-							let name_lower = name.to_lowercase();
-							let path_str = path.to_string_lossy().to_lowercase();
-							if pattern.is_empty() || name_lower.contains(pattern) || path_str.contains(pattern) {
-								matches.push(path);
-							}
-						}
+				} else if path.is_file()
+					&& let Some(name) = path.file_name().and_then(|n| n.to_str())
+					&& (name.ends_with(".md") || name.ends_with(".md.bak"))
+				{
+					let name_lower = name.to_lowercase();
+					let path_str = path.to_string_lossy().to_lowercase();
+					if pattern.is_empty() || name_lower.contains(pattern) || path_str.contains(pattern) {
+						matches.push(path);
 					}
 				}
 			}
@@ -837,24 +836,24 @@ pub struct ProjectMeta {
 pub struct IssueMeta {
 	/// Timestamps for individual field changes.
 	#[serde(default)]
-	pub timestamps: todo::IssueTimestamps,
+	pub timestamps: tedi::IssueTimestamps,
 }
 
 //==============================================================================
 // LazyIssue Implementation
 //==============================================================================
 
-impl todo::LazyIssue<Local> for Issue {
+impl tedi::LazyIssue<Local> for Issue {
 	type Error = LocalError;
 	type Source = LocalPath;
 
-	async fn identity(&mut self, source: Self::Source) -> Result<todo::IssueIdentity, Self::Error> {
+	async fn identity(&mut self, source: Self::Source) -> Result<tedi::IssueIdentity, Self::Error> {
 		if self.identity.is_linked() {
 			return Ok(self.identity.clone());
 		}
 
 		let (owner, repo) = Local::extract_owner_repo(&source.path).map_err(|_| LocalError::InvalidPath { path: source.path.clone() })?;
-		let ancestry = todo::Ancestry::root(&owner, &repo);
+		let ancestry = tedi::Ancestry::root(&owner, &repo);
 
 		if self.contents.title.is_empty() {
 			let content = Local::read_content(&source).ok_or_else(|| LocalError::FileNotFound { path: source.path.clone() })?;
@@ -863,24 +862,23 @@ impl todo::LazyIssue<Local> for Issue {
 			self.contents = parsed.contents;
 		}
 
-		if let Some(issue_number) = self.identity.number() {
-			if let Some(meta) = Local::load_issue_meta(&owner, &repo, issue_number) {
-				if let Some(linked) = self.identity.remote.as_linked_mut() {
-					linked.timestamps = meta.timestamps;
-				}
-			}
+		if let Some(issue_number) = self.identity.number()
+			&& let Some(meta) = Local::load_issue_meta(&owner, &repo, issue_number)
+			&& let Some(linked) = self.identity.remote.as_linked_mut()
+		{
+			linked.timestamps = meta.timestamps;
 		}
 
 		Ok(self.identity.clone())
 	}
 
-	async fn contents(&mut self, source: Self::Source) -> Result<todo::IssueContents, Self::Error> {
+	async fn contents(&mut self, source: Self::Source) -> Result<tedi::IssueContents, Self::Error> {
 		if !self.contents.title.is_empty() {
 			return Ok(self.contents.clone());
 		}
 
 		let (owner, repo) = Local::extract_owner_repo(&source.path).map_err(|_| LocalError::InvalidPath { path: source.path.clone() })?;
-		let ancestry = todo::Ancestry::root(&owner, &repo);
+		let ancestry = tedi::Ancestry::root(&owner, &repo);
 
 		let content = Local::read_content(&source).ok_or_else(|| LocalError::FileNotFound { path: source.path.clone() })?;
 		let parsed = Local::parse_single_node(&content, ancestry, &source.path)?;

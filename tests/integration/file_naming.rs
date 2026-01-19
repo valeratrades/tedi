@@ -9,7 +9,7 @@
 
 use std::path::Path;
 
-use todo::Issue;
+use tedi::Issue;
 
 use crate::common::{TestContext, git::GitExt};
 
@@ -128,7 +128,7 @@ fn test_duplicate_reference_to_nonexistent_issue_fails() {
 
 	// Modify the issue to mark it as duplicate of #999 (which doesn't exist)
 	let mut duplicate = original.clone();
-	duplicate.contents.state = todo::CloseState::Duplicate(999);
+	duplicate.contents.state = tedi::CloseState::Duplicate(999);
 
 	// Try to sync the duplicate state
 	let (status, stdout, stderr) = ctx.open(&issue_path).edit(&duplicate).run();
@@ -162,7 +162,7 @@ fn test_duplicate_reference_to_existing_issue_succeeds() {
 
 	// Modify the issue to mark it as duplicate of #2 (which exists)
 	let mut duplicate = original.clone();
-	duplicate.contents.state = todo::CloseState::Duplicate(2);
+	duplicate.contents.state = tedi::CloseState::Duplicate(2);
 
 	// Sync the duplicate state
 	let (status, stdout, stderr) = ctx.open(&issue_path).edit(&duplicate).run();

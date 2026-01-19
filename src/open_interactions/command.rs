@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use clap::Args;
-use todo::IssueLink;
+use tedi::IssueLink;
 use v_utils::prelude::*;
 
 use super::{
@@ -181,7 +181,7 @@ pub async fn open_command(settings: &LiveSettings, args: OpenArgs, offline: bool
 			let url = format!("https://github.com/{owner}/{repo}/issues/{issue_number}");
 			let link = IssueLink::parse(&url).expect("valid URL");
 			let source = RemoteSource::new(link);
-			let mut issue = todo::Issue::load_remote(source).await?;
+			let mut issue = tedi::Issue::load_remote(source).await?;
 
 			// Write to local filesystem
 			issue.sink_local(None).await?;

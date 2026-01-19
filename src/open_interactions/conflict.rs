@@ -19,7 +19,7 @@ fn conflicts_dir() -> PathBuf {
 #[derive(Debug, Diagnostic, Error)]
 #[error("Unresolved conflict blocks all operations")]
 #[diagnostic(
-	code(todo::conflict::unresolved),
+	code(tedi::conflict::unresolved),
 	help("Resolve the conflict markers (<<<<<<< ======= >>>>>>>), then stage and commit.\n\n{}", file_path.display())
 )]
 pub struct ConflictBlockedError {
