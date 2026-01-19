@@ -12,7 +12,6 @@ pub(crate) mod remote;
 mod sink;
 mod sync;
 mod touch;
-mod tree;
 pub(crate) mod util;
 
 // Re-export the public API

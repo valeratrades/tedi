@@ -7,6 +7,13 @@
 //!
 //! Tests work with `Issue` directly - our canonical representation.
 //! The mock Github layer translates to API format at the boundary.
+//!
+//! ## Timestamp Seeds
+//!
+//! Each test uses unique seed values to ensure variety. Higher seed = newer timestamp = wins in merge.
+//! Seeds are chosen to be either:
+//! - Close together (e.g., 100 vs 105): tests edge cases where timestamps are similar
+//! - Far apart (e.g., 50 vs 200): guarantees one side dominates
 
 use std::path::Path;
 
@@ -26,9 +33,11 @@ fn test_both_diverged_triggers_conflict() {
 	let local = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tlocal body\n");
 	let remote = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tremote changed body\n");
 
-	let issue_path = ctx.consensus(&consensus);
-	ctx.local(&local);
-	ctx.remote(&remote);
+	// Both local and remote changed since consensus - should conflict
+	// Seeds: consensus=-50, local=40, remote=45 (local and remote close but both newer than consensus)
+	let issue_path = ctx.consensus(&consensus, Some(-50));
+	ctx.local(&local, Some(40));
+	ctx.remote(&remote, Some(45));
 
 	let (status, stdout, stderr) = ctx.run_open(&issue_path);
 
@@ -49,9 +58,11 @@ fn test_both_diverged_with_git_initiates_merge() {
 	let local = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tlocal body\n");
 	let remote = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tremote changed body\n");
 
-	let issue_path = ctx.consensus(&consensus);
-	ctx.local(&local);
-	ctx.remote(&remote);
+	// Both local and remote changed since consensus - should merge/conflict
+	// Seeds: consensus=-70, local=60, remote=65 (far apart from consensus, close to each other)
+	let issue_path = ctx.consensus(&consensus, Some(-70));
+	ctx.local(&local, Some(60));
+	ctx.remote(&remote, Some(65));
 
 	let (status, stdout, stderr) = ctx.run_open(&issue_path);
 
@@ -74,9 +85,10 @@ fn test_only_remote_changed_takes_remote_with_pull() {
 	let consensus = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tconsensus body\n");
 	let remote = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tremote changed body\n");
 
-	// Local matches consensus (no uncommitted changes)
-	let issue_path = ctx.consensus(&consensus);
-	ctx.remote(&remote);
+	// Local matches consensus (no uncommitted changes), remote changed
+	// Seeds: consensus=-45, remote=90 (remote much newer, guarantees dominance)
+	let issue_path = ctx.consensus(&consensus, Some(-45));
+	ctx.remote(&remote, Some(90));
 
 	// Must use --pull to fetch remote changes when local is unchanged
 	let (status, stdout, stderr) = ctx.open(&issue_path).args(&["--pull"]).run();
@@ -100,10 +112,11 @@ fn test_only_local_changed_pushes_local() {
 	let consensus = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tconsensus body\n");
 	let local = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tlocal changed body\n");
 
-	// Remote still matches consensus
-	let issue_path = ctx.consensus(&consensus);
-	ctx.local(&local);
-	ctx.remote(&consensus);
+	// Local changed, remote still matches consensus
+	// Seeds: consensus=-25, local=85, remote=-25 (local much newer than unchanged remote)
+	let issue_path = ctx.consensus(&consensus, Some(-25));
+	ctx.local(&local, Some(85));
+	ctx.remote(&consensus, Some(-25));
 
 	let (status, stdout, stderr) = ctx.run_open(&issue_path);
 
@@ -127,9 +140,11 @@ fn test_reset_with_local_source_skips_sync() {
 	let local = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tlocal body\n");
 	let remote = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tremote changed body\n");
 
-	let issue_path = ctx.consensus(&consensus);
-	ctx.local(&local);
-	ctx.remote(&remote);
+	// --reset uses local as source, so timestamps don't affect result
+	// Seeds: consensus=-30, local=20, remote=25
+	let issue_path = ctx.consensus(&consensus, Some(-30));
+	ctx.local(&local, Some(20));
+	ctx.remote(&remote, Some(25));
 
 	// Run with --reset flag
 	let (status, stdout, stderr) = ctx.open(&issue_path).args(&["--reset"]).run();
@@ -153,7 +168,8 @@ fn test_url_open_creates_local_file_from_remote() {
 	ctx.init_git(); // Need git initialized for commits
 
 	let remote = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tremote body content\n");
-	ctx.remote(&remote);
+	// Seed: 15 (arbitrary, no comparison needed)
+	ctx.remote(&remote, Some(15));
 
 	// No local file exists - URL open should create it
 	let expected_path = ctx.flat_issue_path("o", "r", 1, "Test Issue");
@@ -181,8 +197,10 @@ fn test_reset_with_remote_url_nukes_local_state() {
 	let local = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tlocal body that should be nuked\n");
 	let remote = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tremote body wins\n");
 
-	let issue_path = ctx.consensus(&local);
-	ctx.remote(&remote);
+	// --reset overrides everything, but remote is the source when opening via URL
+	// Seeds: consensus=-40, remote=80 (remote much newer)
+	let issue_path = ctx.consensus(&local, Some(-40));
+	ctx.remote(&remote, Some(80));
 
 	// Open via URL with --reset should nuke local and use remote
 	let (status, stdout, stderr) = ctx.open_url("o", "r", 1).args(&["--reset"]).run();
@@ -207,9 +225,11 @@ fn test_reset_with_remote_url_skips_merge_on_divergence() {
 	let local = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tlocal diverged body\n");
 	let remote = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tremote diverged body\n");
 
-	let issue_path = ctx.consensus(&consensus);
-	ctx.local(&local);
-	ctx.remote(&remote);
+	// Both diverged, but --reset via URL should skip merge and use remote
+	// Seeds: consensus=-60, local=30, remote=35
+	let issue_path = ctx.consensus(&consensus, Some(-60));
+	ctx.local(&local, Some(30));
+	ctx.remote(&remote, Some(35));
 
 	// Open via URL with --reset should NOT trigger merge conflict
 	let (status, stdout, stderr) = ctx.open_url("o", "r", 1).args(&["--reset"]).run();
@@ -236,8 +256,10 @@ fn test_pull_fetches_before_editor() {
 	let local = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tlocal body\n");
 	let remote = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tremote body from github\n");
 
-	let issue_path = ctx.consensus(&local);
-	ctx.remote(&remote);
+	// Local unchanged from consensus, remote changed
+	// Seeds: consensus=-20, remote=70
+	let issue_path = ctx.consensus(&local, Some(-20));
+	ctx.remote(&remote, Some(70));
 
 	// --pull should fetch from Github before opening editor
 	let (status, stdout, stderr) = ctx.open(&issue_path).args(&["--pull"]).run();
@@ -263,9 +285,11 @@ fn test_pull_with_divergence_runs_sync_before_editor() {
 	let local = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tlocal diverged body\n");
 	let remote = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tremote diverged body\n");
 
-	let issue_path = ctx.consensus(&consensus);
-	ctx.local(&local);
-	ctx.remote(&remote);
+	// Both local and remote changed since consensus
+	// Seeds: consensus=-80, local=50, remote=55
+	let issue_path = ctx.consensus(&consensus, Some(-80));
+	ctx.local(&local, Some(50));
+	ctx.remote(&remote, Some(55));
 
 	// --pull should attempt to sync/merge BEFORE editor opens
 	let (_status, stdout, stderr) = ctx.open(&issue_path).args(&["--pull"]).run();
@@ -286,8 +310,10 @@ fn test_closing_issue_syncs_state_change() {
 	let ctx = TestContext::new("");
 
 	let open_issue = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tbody\n");
-	let issue_path = ctx.consensus(&open_issue);
-	ctx.remote(&open_issue);
+	// Local = consensus = remote initially
+	// Seeds: consensus=5, remote=5 (same seed = same base time)
+	let issue_path = ctx.consensus(&open_issue, Some(5));
+	ctx.remote(&open_issue, Some(5));
 
 	// Edit to close the issue
 	let mut closed_issue = open_issue.clone();
@@ -325,7 +351,8 @@ fn test_duplicate_sub_issues_filtered_from_remote() {
 	let mut parent_with_children = parent.clone();
 	parent_with_children.children = vec![normal_closed, duplicate];
 
-	ctx.remote(&parent_with_children);
+	// Seed: -10 (arbitrary)
+	ctx.remote(&parent_with_children, Some(-10));
 
 	// Open via URL to fetch from remote
 	let (status, stdout, stderr) = ctx.open_url("o", "r", 1).run();
@@ -363,7 +390,8 @@ fn test_open_unchanged_succeeds() {
 	ctx.init_git();
 
 	let issue = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tissue body\n");
-	ctx.remote(&issue);
+	// Seed: 10 (arbitrary)
+	ctx.remote(&issue, Some(10));
 
 	// First open via URL
 	let (status, _stdout, stderr) = ctx.open_url("o", "r", 1).run();
@@ -388,7 +416,7 @@ fn test_open_by_number_unchanged_succeeds() {
 	ctx.init_git();
 
 	let issue = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tissue body\n");
-	ctx.remote(&issue);
+	ctx.remote(&issue, None);
 
 	// First open via URL with --reset
 	let (status, stdout, stderr) = ctx.open_url("o", "r", 1).args(&["--reset"]).run();
@@ -413,7 +441,7 @@ fn test_reset_syncs_changes_after_editor() {
 	ctx.init_git();
 
 	let remote_issue = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tremote body\n");
-	ctx.remote(&remote_issue);
+	ctx.remote(&remote_issue, None);
 
 	// Create modified version (what user will change to)
 	let mut modified_issue = remote_issue.clone();
@@ -447,8 +475,8 @@ fn test_comment_shorthand_creates_comment() {
 
 	// Start with an issue that has no comments
 	let issue = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tissue body\n");
-	let issue_path = ctx.consensus(&issue);
-	ctx.remote(&issue);
+	let issue_path = ctx.consensus(&issue, None);
+	ctx.remote(&issue, None);
 
 	// Simulate user adding `!c` followed by comment content
 	// After expansion, the file should have `<!-- new comment -->` marker
@@ -511,9 +539,9 @@ fn test_force_merge_preserves_both_sub_issues(#[case] args: &[&str], #[case] exp
 		 \tparent body\n",
 	);
 
-	let issue_path = ctx.consensus(&consensus);
-	ctx.local(&local);
-	ctx.remote(&remote);
+	let issue_path = ctx.consensus(&consensus, None);
+	ctx.local(&local, None);
+	ctx.remote(&remote, None);
 
 	let (status, stdout, stderr) = ctx.open(&issue_path).args(args).run();
 
@@ -557,7 +585,7 @@ fn test_consensus_sink_writes_meta_json_with_timestamps() {
 		 \t<!-- comment 1001 @commenter -->\n\
 		 \tA test comment\n",
 	);
-	ctx.remote(&remote);
+	ctx.remote(&remote, None);
 
 	// Fetch the issue via URL - this should sink to Consensus and write .meta.json
 	let (status, stdout, stderr) = ctx.open_url("o", "r", 1).run();

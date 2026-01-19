@@ -26,8 +26,8 @@ fn test_comments_with_ids_sync_correctly() {
 		 \tThis is my comment\n",
 	);
 
-	ctx.consensus(&issue);
-	ctx.remote(&issue);
+	ctx.consensus(&issue, None);
+	ctx.remote(&issue, None);
 
 	let path = ctx.issue_path(&issue);
 	let (status, stdout, stderr) = ctx.open(&path).args(&["--force"]).run();
@@ -52,8 +52,8 @@ fn test_nested_issues_preserved_through_sync() {
 		 \t\tnested body c\n",
 	);
 
-	let path = ctx.consensus(&issue);
-	ctx.remote(&issue);
+	let path = ctx.consensus(&issue, None);
+	ctx.remote(&issue, None);
 
 	let (status, stdout, stderr) = ctx.run_open(&path);
 	eprintln!("stdout: {stdout}\nstderr: {stderr}");
@@ -89,8 +89,8 @@ fn test_mixed_open_closed_nested_issues_preserved() {
 		 \t\t<!--,}}}-->\n",
 	);
 
-	let path = ctx.consensus(&issue);
-	ctx.remote(&issue);
+	let path = ctx.consensus(&issue, None);
+	ctx.remote(&issue, None);
 
 	let (status, stdout, stderr) = ctx.run_open(&path);
 	eprintln!("stdout: {stdout}\nstderr: {stderr}");
@@ -122,8 +122,8 @@ fn test_blockers_preserved_through_sync() {
 		 \t- second blocker\n",
 	);
 
-	let path = ctx.consensus(&issue);
-	ctx.remote(&issue);
+	let path = ctx.consensus(&issue, None);
+	ctx.remote(&issue, None);
 
 	let (status, stdout, stderr) = ctx.run_open(&path);
 	eprintln!("stdout: {stdout}\nstderr: {stderr}");
@@ -143,8 +143,8 @@ fn test_blockers_added_during_edit_preserved() {
 	// Initial state: no blockers
 	let initial_issue = parse("- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tlorem ipsum\n");
 
-	let path = ctx.consensus(&initial_issue);
-	ctx.remote(&initial_issue);
+	let path = ctx.consensus(&initial_issue, None);
+	ctx.remote(&initial_issue, None);
 
 	// User adds blockers during edit
 	let edited_issue = parse(
@@ -182,8 +182,8 @@ fn test_blockers_with_headers_preserved() {
 		 \t- task gamma\n",
 	);
 
-	let path = ctx.consensus(&issue);
-	ctx.remote(&issue);
+	let path = ctx.consensus(&issue, None);
+	ctx.remote(&issue, None);
 
 	let (status, stdout, stderr) = ctx.run_open(&path);
 	eprintln!("stdout: {stdout}\nstderr: {stderr}");
@@ -214,8 +214,8 @@ fn test_nested_issues_and_blockers_together() {
 	);
 
 	// Use the path returned by consensus (which is in directory format for issues with children)
-	let path = ctx.consensus(&issue);
-	ctx.remote(&issue);
+	let path = ctx.consensus(&issue, None);
+	ctx.remote(&issue, None);
 
 	let (status, stdout, stderr) = ctx.run_open(&path);
 	eprintln!("stdout: {stdout}\nstderr: {stderr}");
@@ -247,8 +247,8 @@ fn test_closing_nested_issue_creates_bak_file() {
 	);
 
 	// Use the path returned by consensus (which is in directory format for issues with children)
-	let path = ctx.consensus(&initial_issue);
-	ctx.remote(&initial_issue);
+	let path = ctx.consensus(&initial_issue, None);
+	ctx.remote(&initial_issue, None);
 
 	// User closes nested issue during edit
 	let edited_issue = parse(

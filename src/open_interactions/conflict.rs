@@ -338,25 +338,6 @@ fn legacy_conflicts_dir() -> PathBuf {
 	v_utils::xdg_state_dir!("conflicts")
 }
 
-/// Legacy: Record that a file has conflicts that need resolution.
-/// DEPRECATED: Will be removed when sync.rs is rewritten.
-pub fn mark_conflict(file_path: &std::path::Path) -> Result<()> {
-	let conflicts_dir = legacy_conflicts_dir();
-	std::fs::create_dir_all(&conflicts_dir)?;
-
-	// Use a hash of the path as filename to avoid nested directories
-	let hash = {
-		use std::hash::{Hash, Hasher};
-		let mut hasher = std::collections::hash_map::DefaultHasher::new();
-		file_path.hash(&mut hasher);
-		hasher.finish()
-	};
-
-	let marker_path = conflicts_dir.join(format!("{hash:x}.conflict"));
-	std::fs::write(&marker_path, file_path.to_string_lossy().as_bytes())?;
-	Ok(())
-}
-
 /// Legacy: Check for any unresolved conflicts (marker-file based).
 /// DEPRECATED: Will be removed when sync.rs is rewritten.
 pub fn check_any_conflicts() -> Result<(), ConflictBlockedError> {

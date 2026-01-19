@@ -22,8 +22,8 @@ fn test_flat_format_preserved_when_no_sub_issues() {
 	let ctx = TestContext::new("");
 
 	let parent = parse("- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tparent body\n");
-	let issue_path = ctx.consensus(&parent);
-	ctx.remote(&parent);
+	let issue_path = ctx.consensus(&parent, None);
+	ctx.remote(&parent, None);
 
 	let (status, stdout, stderr) = ctx.run_open(&issue_path);
 
@@ -45,7 +45,7 @@ fn test_old_flat_file_removed_when_sub_issues_appear() {
 
 	// Start with a flat issue locally
 	let parent = parse("- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tparent body\n");
-	let issue_path = ctx.consensus(&parent);
+	let issue_path = ctx.consensus(&parent, None);
 
 	// Remote now has sub-issues - create a version with children for mock
 	let with_children = parse(
@@ -56,7 +56,7 @@ fn test_old_flat_file_removed_when_sub_issues_appear() {
 		 \t\tchild body\n",
 	);
 	// Remote has the version with children
-	ctx.remote(&with_children);
+	ctx.remote(&with_children, None);
 
 	// Need --pull since local == consensus (no uncommitted changes)
 	let (status, stdout, stderr) = ctx.open(&issue_path).args(&["--pull"]).run();
@@ -82,7 +82,7 @@ fn test_old_placement_discarded_with_pull() {
 
 	// Set up a flat issue locally, committed to git
 	let parent = parse("- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tparent body\n");
-	let issue_path = ctx.consensus(&parent);
+	let issue_path = ctx.consensus(&parent, None);
 
 	// Remote has sub-issues now (simulating someone else adding them)
 	let with_children = parse(
@@ -92,7 +92,7 @@ fn test_old_placement_discarded_with_pull() {
 		 \t- [ ] Child Issue <!--sub @mock_user https://github.com/o/r/issues/2 -->\n\
 		 \t\tchild body\n",
 	);
-	ctx.remote(&with_children);
+	ctx.remote(&with_children, None);
 
 	// Need --pull since local == consensus (no uncommitted local changes)
 	let (status, stdout, stderr) = ctx.open(&issue_path).args(&["--pull"]).run();
@@ -121,8 +121,8 @@ fn test_duplicate_reference_to_nonexistent_issue_fails() {
 
 	// Set up a local issue
 	let original = parse("- [ ] Some Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tbody\n");
-	let issue_path = ctx.consensus(&original);
-	ctx.remote(&original);
+	let issue_path = ctx.consensus(&original, None);
+	ctx.remote(&original, None);
 
 	// Modify the issue to mark it as duplicate of #999 (which doesn't exist)
 	let mut duplicate = original.clone();
@@ -152,11 +152,11 @@ fn test_duplicate_reference_to_existing_issue_succeeds() {
 	// Set up a local issue and a target duplicate issue
 	let original = parse("- [ ] Some Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tbody\n");
 	let dup_target = parse("- [ ] Target Issue <!-- @mock_user https://github.com/o/r/issues/2 -->\n\ttarget body\n");
-	let issue_path = ctx.consensus(&original);
+	let issue_path = ctx.consensus(&original, None);
 
 	// Set up mock Github with both issues
-	ctx.remote(&original);
-	ctx.remote(&dup_target);
+	ctx.remote(&original, None);
+	ctx.remote(&dup_target, None);
 
 	// Modify the issue to mark it as duplicate of #2 (which exists)
 	let mut duplicate = original.clone();

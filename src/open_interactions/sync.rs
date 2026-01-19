@@ -126,7 +126,7 @@ impl Modifier {
 				let file_modified = mtime_after != mtime_before;
 
 				let content = std::fs::read_to_string(issue_file_path)?;
-				*issue = Issue::parse_virtual(&content, issue_file_path)?;
+				issue.update_from_virtual(&content, issue_file_path)?;
 
 				ModifyResult { output: None, file_modified }
 			}

@@ -698,16 +698,22 @@ struct ParsedTitleLine {
 }
 
 /// Complete representation of an issue file
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, derive_more::IntoIterator)]
 pub struct Issue {
 	/// Identity - linked to Github or local only
 	pub identity: IssueIdentity,
 	pub contents: IssueContents,
 	/// Sub-issues in order
+	#[into_iterator(owned, ref, ref_mut)]
 	pub children: Vec<Issue>,
 }
 
 impl Issue /*{{{1*/ {
+	/// Iterate over children by mutable reference.
+	pub fn iter_mut(&mut self) -> std::slice::IterMut<'_, Issue> {
+		self.children.iter_mut()
+	}
+
 	/// Check if this issue is local only (not yet on Github).
 	pub fn is_local(&self) -> bool {
 		self.identity.is_local()
@@ -1496,6 +1502,52 @@ impl Issue /*{{{1*/ {
 	/// This is the inverse of `serialize_virtual`.
 	pub fn deserialize_virtual(content: &str) -> Result<Self, ParseError> {
 		Self::parse_virtual(content, std::path::Path::new("virtual.md"))
+	}
+
+	/// Update this issue from virtual format content.
+	///
+	/// This preserves identity information (timestamps, link, user, ancestry) while
+	/// updating the contents from the parsed virtual format. For children, existing
+	/// issues are matched by issue number and their identities are preserved.
+	///
+	/// Use this instead of `parse_virtual` when re-loading an issue after editor edits.
+	pub fn update_from_virtual(&mut self, content: &str, path: &std::path::Path) -> Result<(), ParseError> {
+		// Parse the new content
+		let parsed = Self::parse_virtual_with_ancestry(content, path, self.identity.ancestry)?;
+
+		// Update contents (title, labels, state, comments, blockers)
+		self.contents = parsed.contents;
+
+		// For children: match by issue number to preserve identities
+		let old_children: std::collections::HashMap<u64, Issue> = self.children.drain(..).filter_map(|c| c.number().map(|n| (n, c))).collect();
+
+		for mut new_child in parsed.children {
+			if let Some(number) = new_child.number()
+				&& let Some(old_child) = old_children.get(&number)
+			{
+				// Preserve identity from existing child
+				new_child.identity = old_child.identity.clone();
+				// Recursively preserve child identities
+				Self::preserve_child_identities(&mut new_child, old_child);
+			}
+			self.children.push(new_child);
+		}
+
+		Ok(())
+	}
+
+	/// Recursively preserve child identities from old issue tree.
+	fn preserve_child_identities(new_issue: &mut Issue, old_issue: &Issue) {
+		let old_children: std::collections::HashMap<u64, &Issue> = old_issue.children.iter().filter_map(|c| c.number().map(|n| (n, c))).collect();
+
+		for new_child in &mut new_issue.children {
+			if let Some(number) = new_child.number()
+				&& let Some(&old_child) = old_children.get(&number)
+			{
+				new_child.identity = old_child.identity.clone();
+				Self::preserve_child_identities(new_child, old_child);
+			}
+		}
 	}
 
 	/// Get a mutable reference to a child issue by path

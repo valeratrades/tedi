@@ -53,7 +53,7 @@ pub enum LocalError {
 }
 
 /// Error type for consensus sink operations.
-#[derive(Debug, derive_more::Display, miette::Diagnostic, thiserror::Error)]
+#[derive(Debug, miette::Diagnostic, derive_more::Display, thiserror::Error)]
 pub enum ConsensusSinkError {
 	#[display("failed to write issue files: {_0}")]
 	#[diagnostic(code(tedi::consensus::write))]
@@ -757,14 +757,23 @@ impl Local {
 
 	/// Load project metadata, creating empty if not exists
 	fn load_project_meta(owner: &str, repo: &str) -> ProjectMeta {
+		Self::load_project_meta_from_source(owner, repo, LocalSource::Submitted)
+	}
+
+	/// Load project metadata from a specific source (filesystem or git).
+	fn load_project_meta_from_source(owner: &str, repo: &str, source: LocalSource) -> ProjectMeta {
 		let meta_path = Self::project_meta_path(owner, repo);
-		match std::fs::read_to_string(&meta_path) {
-			Ok(content) => match serde_json::from_str(&content) {
+		let content = match source {
+			LocalSource::Submitted => std::fs::read_to_string(&meta_path).ok(),
+			LocalSource::Consensus => Self::read_git_content(&meta_path),
+		};
+
+		match content {
+			Some(c) => match serde_json::from_str(&c) {
 				Ok(meta) => meta,
 				Err(e) => panic!("corrupted project metadata at {}: {e}", meta_path.display()),
 			},
-			Err(e) if e.kind() == std::io::ErrorKind::NotFound => ProjectMeta::default(),
-			Err(e) => panic!("failed to read project metadata at {}: {e}", meta_path.display()),
+			None => ProjectMeta::default(),
 		}
 	}
 
@@ -781,7 +790,12 @@ impl Local {
 
 	/// Load metadata for a specific issue from the project's .meta.json.
 	fn load_issue_meta(owner: &str, repo: &str, issue_number: u64) -> Option<IssueMeta> {
-		let project_meta = Self::load_project_meta(owner, repo);
+		Self::load_issue_meta_from_source(owner, repo, issue_number, LocalSource::Submitted)
+	}
+
+	/// Load metadata for a specific issue from a specific source.
+	fn load_issue_meta_from_source(owner: &str, repo: &str, issue_number: u64, source: LocalSource) -> Option<IssueMeta> {
+		let project_meta = Self::load_project_meta_from_source(owner, repo, source);
 		project_meta.issues.get(&issue_number).cloned()
 	}
 
@@ -890,7 +904,7 @@ impl tedi::LazyIssue<Local> for Issue {
 		}
 
 		if let Some(issue_number) = self.identity.number()
-			&& let Some(meta) = Local::load_issue_meta(&owner, &repo, issue_number)
+			&& let Some(meta) = Local::load_issue_meta_from_source(&owner, &repo, issue_number, source.source.clone())
 			&& let Some(linked) = self.identity.remote.as_linked_mut()
 		{
 			linked.timestamps = meta.timestamps;

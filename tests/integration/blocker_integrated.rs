@@ -29,7 +29,7 @@ fn test_blocker_add_in_integrated_mode() {
 	);
 
 	// Set up: local issue file exists
-	let issue_path = ctx.local(&issue);
+	let issue_path = ctx.local(&issue, None);
 
 	// Set this issue as the current blocker issue
 	ctx.xdg.write_cache("current_blocker_issue.txt", issue_path.to_str().unwrap());
@@ -66,7 +66,7 @@ fn test_blocker_pop_in_integrated_mode() {
 	);
 
 	// Set up: local issue file exists
-	let issue_path = ctx.local(&issue);
+	let issue_path = ctx.local(&issue, None);
 
 	// Set this issue as the current blocker issue
 	ctx.xdg.write_cache("current_blocker_issue.txt", issue_path.to_str().unwrap());
@@ -99,7 +99,7 @@ fn test_blocker_add_creates_blockers_section_if_missing() {
 	let issue = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tBody text without blockers section.\n");
 
 	// Set up: local issue file exists
-	let issue_path = ctx.local(&issue);
+	let issue_path = ctx.local(&issue, None);
 
 	// Set this issue as the current blocker issue
 	ctx.xdg.write_cache("current_blocker_issue.txt", issue_path.to_str().unwrap());
@@ -137,7 +137,7 @@ fn test_blocker_add_with_header_context() {
 	);
 
 	// Set up: local issue file exists
-	let issue_path = ctx.local(&issue);
+	let issue_path = ctx.local(&issue, None);
 
 	// Set this issue as the current blocker issue
 	ctx.xdg.write_cache("current_blocker_issue.txt", issue_path.to_str().unwrap());

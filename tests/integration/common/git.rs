@@ -6,34 +6,115 @@
 //! let ctx = TestContext::new("");
 //! ctx.init_git();
 //!
-//! // Set up local file (uncommitted)
-//! ctx.local(&issue);
+//! // Set up local file (uncommitted) with timestamps from seed 50
+//! ctx.local(&issue, Some(50));
 //!
-//! // Set up consensus state (committed to git)
-//! ctx.consensus(&issue);
+//! // Set up consensus state (committed to git) with timestamps from seed -30
+//! ctx.consensus(&issue, Some(-30));
 //!
-//! // Set up mock remote (Github API responses)
-//! ctx.remote(&issue);
+//! // Set up mock remote (Github API responses) with timestamps from seed -30
+//! ctx.remote(&issue, Some(-30));
 //!
 //! // All methods are additive - can call multiple times:
-//! ctx.remote(&issue1);
-//! ctx.remote(&issue2); // Adds to mock, doesn't replace
+//! ctx.remote(&issue1, Some(1));
+//! ctx.remote(&issue2, Some(2)); // Adds to mock, doesn't replace
 //!
-//! // Typical sync test: consensus committed, local uncommitted, remote different
-//! ctx.consensus(&base);
-//! ctx.local(&modified);
-//! ctx.remote(&remote_version);
+//! // Typical sync test: local newer than consensus/remote
+//! ctx.consensus(&base, Some(-40));       // older
+//! ctx.local(&modified, Some(60));        // newer (wins in merge)
+//! ctx.remote(&remote_version, Some(-40)); // same as consensus
 //! ```
+//!
+//! ## Timestamp Seeds
+//!
+//! Seeds must be in range -100..=100. Each seed produces:
+//! 1. Pseudo-random scatter per field (±12h, deterministic per seed+field_index)
+//! 2. Deterministic offset: -100 → -12h, 0 → base, +100 → +12h
+//!
+//! Higher seed = newer timestamps = wins in merge conflicts.
+//! Use `None` for no timestamps (legacy behavior).
 //!
 //! Owner/repo/number are extracted from the Issue's identity (IssueLink).
 //! If no link exists, defaults are used: owner="owner", repo="repo", number=1.
 
 use std::{cell::RefCell, collections::HashSet, path::PathBuf};
 
-use tedi::Issue;
+use tedi::{Issue, IssueTimestamps};
 use v_fixtures::fs_standards::git::Git;
 
 use super::TestContext;
+
+/// Seed for deterministic timestamp generation. Must be in range -100..=100.
+pub type Seed = i64;
+
+/// Base timestamp: 2001-09-11 12:00:00 UTC (midday).
+const BASE_TIMESTAMP_SECS: i64 = 1000209600;
+
+/// 12 hours in seconds - the range for randomization.
+const HALF_DAY_SECS: i64 = 12 * 60 * 60;
+
+/// Generate timestamps from a seed value.
+///
+/// Seed must be in range -100..=100. Each timestamp field gets:
+/// 1. A pseudo-random offset in ±12h range (deterministic per seed+index)
+/// 2. A deterministic offset based on seed: -100 → -12h, 0 → 0, +100 → +12h
+///
+/// This means same seed produces same timestamps, but different fields have different
+/// random-looking values. Higher seed = newer timestamps = wins in merge conflicts.
+///
+/// Index mapping for fields:
+/// - title: -2
+/// - description: -1
+/// - labels: 0
+/// - comments: 1 (aggregate timestamp for "most recent comment")
+pub fn timestamps_from_seed(seed: Seed) -> IssueTimestamps {
+	assert!((-100..=100).contains(&seed), "seed must be in range -100..=100, got {seed}");
+
+	IssueTimestamps {
+		title: Some(timestamp_for_field(seed, -2)),
+		description: Some(timestamp_for_field(seed, -1)),
+		labels: Some(timestamp_for_field(seed, 0)),
+		comments: Some(timestamp_for_field(seed, 1)),
+	}
+}
+
+/// Set timestamps on an issue and all its children.
+pub fn set_timestamps(issue: &mut Issue, seed: Seed) {
+	let timestamps = timestamps_from_seed(seed);
+	for node in issue.iter_mut() {
+		node.identity.remote.as_linked_mut().unwrap().timestamps = timestamps.clone();
+	}
+}
+
+/// Generate a timestamp for a specific field index.
+///
+/// Combines pseudo-random scatter (from seed+index) with deterministic offset (from seed).
+fn timestamp_for_field(seed: Seed, field_index: i64) -> jiff::Timestamp {
+	// Pseudo-random scatter: hash seed+index to get a value in ±12h range
+	let random_offset = pseudo_random_offset(seed, field_index);
+
+	// Deterministic offset: seed maps linearly to ±12h
+	// -100 → -12h, 0 → 0, +100 → +12h
+	let deterministic_offset = (seed * HALF_DAY_SECS) / 100;
+
+	let total_offset = random_offset + deterministic_offset;
+	jiff::Timestamp::from_second(BASE_TIMESTAMP_SECS + total_offset).expect("valid timestamp")
+}
+
+/// Simple pseudo-random number generator seeded by seed+index.
+/// Returns a value in range [-HALF_DAY_SECS, +HALF_DAY_SECS].
+fn pseudo_random_offset(seed: Seed, index: i64) -> i64 {
+	// Combine seed and index into a single value, then hash it
+	let combined = (seed as u64).wrapping_mul(31).wrapping_add(index as u64);
+	// Simple xorshift-style mixing
+	let mut x = combined;
+	x ^= x << 13;
+	x ^= x >> 7;
+	x ^= x << 17;
+	// Map to [-HALF_DAY_SECS, +HALF_DAY_SECS]
+	let normalized = (x % (2 * HALF_DAY_SECS as u64 + 1)) as i64;
+	normalized - HALF_DAY_SECS
+}
 
 /// Default owner for test issues without a link
 const DEFAULT_OWNER: &str = "owner";
@@ -84,17 +165,23 @@ pub trait GitExt {
 	/// Write issue to local file (uncommitted). Additive - can call multiple times.
 	/// Returns the path to the issue file.
 	/// Panics if same (owner, repo, number) is submitted twice.
-	fn local(&self, issue: &Issue) -> PathBuf;
+	///
+	/// If `seed` is provided, timestamps are generated from it and written to `.meta.json`.
+	fn local(&self, issue: &Issue, seed: Option<Seed>) -> PathBuf;
 
 	/// Write issue and commit to git as consensus state. Additive - can call multiple times.
 	/// Returns the path to the issue file.
 	/// Panics if same (owner, repo, number) is submitted twice.
-	fn consensus(&self, issue: &Issue) -> PathBuf;
+	///
+	/// If `seed` is provided, timestamps are generated from it and written to `.meta.json`.
+	fn consensus(&self, issue: &Issue, seed: Option<Seed>) -> PathBuf;
 
 	/// Set up mock Github API to return this issue. Additive - can call multiple times.
 	/// Handles sub-issues automatically.
 	/// Panics if same (owner, repo, number) is submitted twice.
-	fn remote(&self, issue: &Issue);
+	///
+	/// If `seed` is provided, timestamps are generated from it for the mock response.
+	fn remote(&self, issue: &Issue, seed: Option<Seed>);
 
 	/// Get the flat format path for an issue: `{number}_-_{title}.md`
 	fn flat_issue_path(&self, owner: &str, repo: &str, number: u64, title: &str) -> PathBuf;
@@ -114,7 +201,7 @@ impl GitExt for TestContext {
 		Git::init(self.xdg.data_dir().join("issues"))
 	}
 
-	fn local(&self, issue: &Issue) -> PathBuf {
+	fn local(&self, issue: &Issue, seed: Option<Seed>) -> PathBuf {
 		let (owner, repo, number) = extract_issue_coords(issue);
 		let key = (owner.clone(), repo.clone(), number);
 
@@ -125,10 +212,18 @@ impl GitExt for TestContext {
 			state.local_issues.insert(key);
 		});
 
-		self.write_issue_tree(&owner, &repo, number, issue)
+		let path = self.write_issue_tree(&owner, &repo, number, issue);
+
+		// Write timestamps to .meta.json if seed provided
+		if let Some(seed) = seed {
+			let timestamps = timestamps_from_seed(seed);
+			self.write_issue_meta(&owner, &repo, number, &timestamps);
+		}
+
+		path
 	}
 
-	fn consensus(&self, issue: &Issue) -> PathBuf {
+	fn consensus(&self, issue: &Issue, seed: Option<Seed>) -> PathBuf {
 		let (owner, repo, number) = extract_issue_coords(issue);
 		let key = (owner.clone(), repo.clone(), number);
 
@@ -141,6 +236,12 @@ impl GitExt for TestContext {
 
 		let path = self.write_issue_tree(&owner, &repo, number, issue);
 
+		// Write timestamps to .meta.json if seed provided
+		if let Some(seed) = seed {
+			let timestamps = timestamps_from_seed(seed);
+			self.write_issue_meta(&owner, &repo, number, &timestamps);
+		}
+
 		let git = self.init_git();
 		git.add_all();
 		git.commit(&format!("consensus {owner}/{repo}#{number}"));
@@ -148,9 +249,11 @@ impl GitExt for TestContext {
 		path
 	}
 
-	fn remote(&self, issue: &Issue) {
+	fn remote(&self, issue: &Issue, seed: Option<Seed>) {
 		let (owner, repo, number) = extract_issue_coords(issue);
 		let key = (owner.clone(), repo.clone(), number);
+
+		let timestamps = seed.map(timestamps_from_seed);
 
 		with_state(self, |state| {
 			if state.remote_issue_ids.contains(&key) {
@@ -158,7 +261,7 @@ impl GitExt for TestContext {
 			}
 
 			// Recursively add issue and all its children
-			add_issue_recursive(state, &owner, &repo, number, None, issue);
+			add_issue_recursive(state, &owner, &repo, number, None, issue, timestamps.as_ref());
 		});
 
 		// Rebuild and write mock state
@@ -249,6 +352,18 @@ impl TestContext {
 					if let Some(reason) = &i.state_reason {
 						json["state_reason"] = serde_json::Value::String(reason.clone());
 					}
+					// Add timestamps if provided
+					if let Some(ts) = &i.timestamps {
+						if let Some(t) = ts.title {
+							json["title_timestamp"] = serde_json::Value::String(t.to_string());
+						}
+						if let Some(t) = ts.description {
+							json["description_timestamp"] = serde_json::Value::String(t.to_string());
+						}
+						if let Some(t) = ts.labels {
+							json["labels_timestamp"] = serde_json::Value::String(t.to_string());
+						}
+					}
 					json
 				})
 				.collect();
@@ -275,14 +390,20 @@ impl TestContext {
 				.remote_comments
 				.iter()
 				.map(|c| {
-					serde_json::json!({
+					let mut json = serde_json::json!({
 						"owner": c.owner,
 						"repo": c.repo,
 						"issue_number": c.issue_number,
 						"comment_id": c.comment_id,
 						"body": c.body,
 						"owner_login": c.owner_login
-					})
+					});
+					// Add timestamp if provided
+					if let Some(ts) = c.timestamp {
+						json["created_at"] = serde_json::Value::String(ts.to_string());
+						json["updated_at"] = serde_json::Value::String(ts.to_string());
+					}
+					json
 				})
 				.collect();
 
@@ -296,6 +417,38 @@ impl TestContext {
 
 			self.setup_mock_state(&mock_state);
 		});
+	}
+
+	/// Write timestamps to .meta.json for an issue.
+	fn write_issue_meta(&self, owner: &str, repo: &str, number: u64, timestamps: &IssueTimestamps) {
+		let meta_path = self.xdg.data_dir().join(format!("issues/{owner}/{repo}/.meta.json"));
+
+		// Load existing meta or create new
+		let mut project_meta: serde_json::Value = if meta_path.exists() {
+			let content = std::fs::read_to_string(&meta_path).unwrap();
+			serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({"issues": {}}))
+		} else {
+			serde_json::json!({"issues": {}})
+		};
+
+		// Build issue meta with timestamps
+		let issue_meta = serde_json::json!({
+			"timestamps": {
+				"title": timestamps.title.map(|t| t.to_string()),
+				"description": timestamps.description.map(|t| t.to_string()),
+				"labels": timestamps.labels.map(|t| t.to_string()),
+				"comments": timestamps.comments.map(|t| t.to_string())
+			}
+		});
+
+		// Insert into project meta
+		project_meta["issues"][number.to_string()] = issue_meta;
+
+		// Write back
+		if let Some(parent) = meta_path.parent() {
+			std::fs::create_dir_all(parent).unwrap();
+		}
+		std::fs::write(&meta_path, serde_json::to_string_pretty(&project_meta).unwrap()).unwrap();
 	}
 }
 
@@ -314,7 +467,7 @@ fn extract_child_number(child: &Issue, default: u64) -> u64 {
 }
 
 /// Recursively add an issue and all its children to the mock state.
-fn add_issue_recursive(state: &mut GitState, owner: &str, repo: &str, number: u64, parent_number: Option<u64>, issue: &Issue) {
+fn add_issue_recursive(state: &mut GitState, owner: &str, repo: &str, number: u64, parent_number: Option<u64>, issue: &Issue, timestamps: Option<&IssueTimestamps>) {
 	let key = (owner.to_string(), repo.to_string(), number);
 
 	if state.remote_issue_ids.contains(&key) {
@@ -333,6 +486,7 @@ fn add_issue_recursive(state: &mut GitState, owner: &str, repo: &str, number: u6
 		state: issue.contents.state.to_github_state().to_string(),
 		state_reason: issue.contents.state.to_github_state_reason().map(|s| s.to_string()),
 		owner_login: issue_owner_login,
+		timestamps: timestamps.cloned(),
 	});
 
 	// Add sub-issue relation if this is a child
@@ -346,6 +500,8 @@ fn add_issue_recursive(state: &mut GitState, owner: &str, repo: &str, number: u6
 	}
 
 	// Extract comments (skip first which is the body)
+	// Use the comments timestamp from IssueTimestamps if available
+	let comment_ts = timestamps.and_then(|ts| ts.comments);
 	for comment in issue.contents.comments.iter().skip(1) {
 		if let Some(id) = comment.identity.id() {
 			let comment_owner_login = comment.identity.user().expect("comment identity must have user - use @user format in test fixtures").to_string();
@@ -356,14 +512,15 @@ fn add_issue_recursive(state: &mut GitState, owner: &str, repo: &str, number: u6
 				comment_id: id,
 				body: comment.body.render(),
 				owner_login: comment_owner_login,
+				timestamp: comment_ts,
 			});
 		}
 	}
 
-	// Recursively add children
+	// Recursively add children (they inherit the same timestamps)
 	for (i, child) in issue.children.iter().enumerate() {
 		let child_number = extract_child_number(child, number * 100 + 1 + i as u64);
-		add_issue_recursive(state, owner, repo, child_number, Some(number), child);
+		add_issue_recursive(state, owner, repo, child_number, Some(number), child, timestamps);
 	}
 }
 
@@ -376,6 +533,8 @@ struct MockIssue {
 	state: String,
 	state_reason: Option<String>,
 	owner_login: String,
+	/// Timestamps for this issue (if provided via seed)
+	timestamps: Option<IssueTimestamps>,
 }
 
 struct MockComment {
@@ -385,6 +544,8 @@ struct MockComment {
 	comment_id: u64,
 	body: String,
 	owner_login: String,
+	/// Timestamp for this comment (if provided via seed)
+	timestamp: Option<jiff::Timestamp>,
 }
 
 struct SubIssueRelation {
@@ -420,7 +581,7 @@ mod tests {
 			 \t\t\tchild body\n",
 		);
 
-		ctx.remote(&issue);
+		ctx.remote(&issue, None);
 
 		// Read the mock state that was written
 		let mock_content = std::fs::read_to_string(&ctx.mock_state_path).unwrap();

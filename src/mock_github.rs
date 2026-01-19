@@ -149,8 +149,12 @@ impl MockGithubClient {
 				let key = RepoKey::new(owner, repo);
 				let id = self.next_issue_id.fetch_add(1, Ordering::SeqCst);
 
-				// Use current time as default timestamp for all fields
-				let now = Some(jiff::Timestamp::now());
+				// Read timestamps from JSON - required if tests use seeded timestamps
+				let parse_ts = |field: &str| -> Option<jiff::Timestamp> { issue.get(field).and_then(|v| v.as_str()).map(|s| s.parse().expect("valid timestamp in mock JSON")) };
+				let title_timestamp = parse_ts("title_timestamp");
+				let description_timestamp = parse_ts("description_timestamp");
+				let labels_timestamp = parse_ts("labels_timestamp");
+
 				let issue_data = MockIssueData {
 					number,
 					id,
@@ -160,9 +164,9 @@ impl MockGithubClient {
 					state_reason: state_reason.clone(),
 					labels,
 					owner_login: owner_login.to_string(),
-					title_timestamp: now,
-					description_timestamp: now,
-					labels_timestamp: now,
+					title_timestamp,
+					description_timestamp,
+					labels_timestamp,
 				};
 
 				self.issues.lock().unwrap().entry(key).or_default().insert(number, issue_data);
@@ -199,14 +203,16 @@ impl MockGithubClient {
 				let owner_login = comment.get("owner_login").and_then(|v| v.as_str()).unwrap_or("mock_user");
 
 				let key = RepoKey::new(owner, repo);
-				let now = jiff::Timestamp::now().to_string();
+				// Read timestamps from JSON - required if tests use seeded timestamps
+				let created_at = comment.get("created_at").and_then(|v| v.as_str()).expect("created_at required in mock JSON").to_string();
+				let updated_at = comment.get("updated_at").and_then(|v| v.as_str()).expect("updated_at required in mock JSON").to_string();
 				let comment_data = MockCommentData {
 					id: comment_id,
 					issue_number,
 					body: body.to_string(),
 					owner_login: owner_login.to_string(),
-					created_at: now.clone(),
-					updated_at: now,
+					created_at,
+					updated_at,
 				};
 
 				comments.entry(key).or_default().insert(comment_id, comment_data);
@@ -219,11 +225,10 @@ impl MockGithubClient {
 	/// Add an issue to the mock state
 	#[cfg(test)]
 	#[expect(clippy::too_many_arguments)]
-	pub fn add_issue(&self, owner: &str, repo: &str, number: u64, title: &str, body: &str, state: &str, labels: Vec<&str>, owner_login: &str) {
+	pub fn add_issue(&self, owner: &str, repo: &str, number: u64, title: &str, body: &str, state: &str, labels: Vec<&str>, owner_login: &str, timestamp: Option<jiff::Timestamp>) {
 		let key = RepoKey::new(owner, repo);
 		let id = self.next_issue_id.fetch_add(1, Ordering::SeqCst);
 
-		let now = Some(jiff::Timestamp::now());
 		let issue = MockIssueData {
 			number,
 			id,
@@ -233,9 +238,9 @@ impl MockGithubClient {
 			state_reason: None,
 			labels: labels.into_iter().map(|s| s.to_string()).collect(),
 			owner_login: owner_login.to_string(),
-			title_timestamp: now,
-			description_timestamp: now,
-			labels_timestamp: now,
+			title_timestamp: timestamp,
+			description_timestamp: timestamp,
+			labels_timestamp: timestamp,
 		};
 
 		let mut issues = self.issues.lock().unwrap();
@@ -244,17 +249,17 @@ impl MockGithubClient {
 
 	/// Add a comment to an issue
 	#[cfg(test)]
-	pub fn add_comment(&self, owner: &str, repo: &str, issue_number: u64, comment_id: u64, body: &str, owner_login: &str) {
+	pub fn add_comment(&self, owner: &str, repo: &str, issue_number: u64, comment_id: u64, body: &str, owner_login: &str, timestamp: jiff::Timestamp) {
 		let key = RepoKey::new(owner, repo);
 
-		let now = jiff::Timestamp::now().to_string();
+		let ts_str = timestamp.to_string();
 		let comment = MockCommentData {
 			id: comment_id,
 			issue_number,
 			body: body.to_string(),
 			owner_login: owner_login.to_string(),
-			created_at: now.clone(),
-			updated_at: now,
+			created_at: ts_str.clone(),
+			updated_at: ts_str,
 		};
 
 		let mut comments = self.comments.lock().unwrap();
@@ -646,13 +651,18 @@ mod tests {
 
 	use super::*;
 
+	/// Test timestamp - a fixed point for unit tests
+	fn test_ts() -> jiff::Timestamp {
+		jiff::Timestamp::from_second(1704067200).unwrap() // 2024-01-01 00:00:00 UTC
+	}
+
 	#[tokio::test]
 	async fn test_mock_basic_operations() {
 		let client = MockGithubClient::new("testuser");
 		let repo = RepoInfo::new("owner", "repo");
 
 		// Add an issue
-		client.add_issue("owner", "repo", 123, "Test Issue", "Body content", "open", vec!["bug"], "testuser");
+		client.add_issue("owner", "repo", 123, "Test Issue", "Body content", "open", vec!["bug"], "testuser", Some(test_ts()));
 
 		// Fetch it
 		let issue = client.fetch_issue(repo, 123).await.unwrap();
@@ -678,8 +688,8 @@ mod tests {
 		let repo = RepoInfo::new("owner", "repo");
 
 		// Add parent and child issues
-		client.add_issue("owner", "repo", 1, "Parent Issue", "", "open", vec![], "testuser");
-		client.add_issue("owner", "repo", 2, "Child Issue", "", "open", vec![], "testuser");
+		client.add_issue("owner", "repo", 1, "Parent Issue", "", "open", vec![], "testuser", Some(test_ts()));
+		client.add_issue("owner", "repo", 2, "Child Issue", "", "open", vec![], "testuser", Some(test_ts()));
 
 		// Add sub-issue relationship
 		client.add_sub_issue_relation("owner", "repo", 1, 2);
@@ -708,9 +718,9 @@ mod tests {
 		let client = MockGithubClient::new("testuser");
 		let repo = RepoInfo::new("owner", "repo");
 
-		client.add_issue("owner", "repo", 1, "Issue", "", "open", vec![], "testuser");
-		client.add_comment("owner", "repo", 1, 100, "First comment", "testuser");
-		client.add_comment("owner", "repo", 1, 101, "Second comment", "other");
+		client.add_issue("owner", "repo", 1, "Issue", "", "open", vec![], "testuser", Some(test_ts()));
+		client.add_comment("owner", "repo", 1, 100, "First comment", "testuser", test_ts());
+		client.add_comment("owner", "repo", 1, 101, "Second comment", "other", test_ts());
 
 		let comments = client.fetch_comments(repo, 1).await.unwrap();
 		assert_eq!(comments.len(), 2);
@@ -726,7 +736,7 @@ mod tests {
 		let client = MockGithubClient::new("testuser");
 		let repo = RepoInfo::new("owner", "repo");
 
-		client.add_issue("owner", "repo", 1, "Issue", "", "open", vec![], "testuser");
+		client.add_issue("owner", "repo", 1, "Issue", "", "open", vec![], "testuser", Some(test_ts()));
 		let _ = client.fetch_issue(repo, 1).await;
 		let _ = client.fetch_comments(repo, 1).await;
 
@@ -745,9 +755,9 @@ mod tests {
 		let repo = RepoInfo::new("owner", "repo");
 
 		// Add parent and child issues
-		client.add_issue("owner", "repo", 1, "Parent Issue", "", "open", vec![], "testuser");
-		client.add_issue("owner", "repo", 2, "Child Issue", "", "open", vec![], "testuser");
-		client.add_issue("owner", "repo", 3, "Grandchild Issue", "", "open", vec![], "testuser");
+		client.add_issue("owner", "repo", 1, "Parent Issue", "", "open", vec![], "testuser", Some(test_ts()));
+		client.add_issue("owner", "repo", 2, "Child Issue", "", "open", vec![], "testuser", Some(test_ts()));
+		client.add_issue("owner", "repo", 3, "Grandchild Issue", "", "open", vec![], "testuser", Some(test_ts()));
 
 		// Add sub-issue relationships
 		client.add_sub_issue_relation("owner", "repo", 1, 2);

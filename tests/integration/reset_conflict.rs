@@ -45,7 +45,7 @@ fn test_reset_then_mark_subissue_closed_no_conflict() {
 		 \t\tsub body\n",
 	);
 
-	ctx.remote(&parent);
+	ctx.remote(&parent, None);
 
 	// First: open via URL with --reset (this simulates `todo open --reset <url>`)
 	// This fetches from remote, stores locally, and commits as consensus
@@ -88,7 +88,7 @@ fn test_reset_then_edit_body_no_conflict() {
 	ctx.init_git();
 
 	let issue = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\toriginal body\n");
-	ctx.remote(&issue);
+	ctx.remote(&issue, None);
 
 	// First: open via URL with --reset
 	let (status, _stdout, stderr) = ctx.open_url("o", "r", 1).args(&["--reset"]).run();
@@ -139,7 +139,7 @@ fn test_reset_with_preexisting_modified_subissue_files() {
 		 \t\t\tchild body\n",
 	);
 
-	ctx.remote(&grandparent);
+	ctx.remote(&grandparent, None);
 
 	// Step 1: First fetch - creates local files
 	// grandparent (#1) is at: 1_-_Grandparent_Issue/__main__.md

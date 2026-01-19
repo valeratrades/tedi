@@ -23,7 +23,7 @@ clap_complete = "4.5.65"
 color-eyre = "0.6.5"
 config = "^0.15.19"
 derive-new = "^0"
-derive_more = { version = "2.1.1", features = ["from_str", "display", "from"] }
+derive_more = { version = "2.1.1", features = ["from_str", "display", "from", "into_iterator"] }
 futures = "0.3.31"
 image = "0.25.9"
 jiff = { version = "^0.2", features = ["serde"] }
