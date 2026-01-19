@@ -161,7 +161,7 @@ impl todo::LazyIssue<Remote> for Issue {
 
 		let mut children = Vec::new();
 		for sub_issue in filtered {
-			let child_url = format!("https://github.com/{}/{}/issues/{}", owner, repo, sub_issue.number);
+			let child_url = format!("https://github.com/{owner}/{repo}/issues/{}", sub_issue.number);
 			let child_link = IssueLink::parse(&child_url).expect("valid URL");
 			let child_source = source.child(child_link, parent_number);
 			let mut child = Issue::empty_local(child_ancestry);
