@@ -473,7 +473,8 @@ fn test_closing_issue_syncs_state_change() {
 	eprintln!("stderr: {stderr}");
 
 	// Capture the resulting directory state
-	insta::assert_snapshot!(snapshot_issues_dir(&ctx), @r#"
+	// Line 11 contains `state` timestamp set via Timestamp::now() when detecting state change
+	insta::assert_snapshot!(snapshot_issues_dir_redacting(&ctx, &[11]), @r#"
 	//- /o/r/.meta.json
 	{
 	  "virtual_project": false,
@@ -484,7 +485,7 @@ fn test_closing_issue_syncs_state_change() {
 	        "title": "2001-09-11T09:15:20Z",
 	        "description": "2001-09-11T04:30:34Z",
 	        "labels": "2001-09-11T06:38:10Z",
-	        "state": "2026-01-19T19:43:12.287014508Z",
+	        [REDACTED - non-deterministic timestamp]
 	        "comments": []
 	      }
 	    }
