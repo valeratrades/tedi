@@ -363,6 +363,9 @@ impl TestContext {
 						if let Some(t) = ts.labels {
 							json["labels_timestamp"] = serde_json::Value::String(t.to_string());
 						}
+						if let Some(t) = ts.state {
+							json["state_timestamp"] = serde_json::Value::String(t.to_string());
+						}
 					}
 					json
 				})

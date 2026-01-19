@@ -37,6 +37,8 @@ struct MockIssueData {
 	description_timestamp: Option<jiff::Timestamp>,
 	/// Timestamp for label changes
 	labels_timestamp: Option<jiff::Timestamp>,
+	/// Timestamp for state changes (open/closed)
+	state_timestamp: Option<jiff::Timestamp>,
 }
 
 /// Internal representation of a comment in the mock
@@ -154,6 +156,7 @@ impl MockGithubClient {
 				let title_timestamp = parse_ts("title_timestamp");
 				let description_timestamp = parse_ts("description_timestamp");
 				let labels_timestamp = parse_ts("labels_timestamp");
+				let state_timestamp = parse_ts("state_timestamp");
 
 				let issue_data = MockIssueData {
 					number,
@@ -167,6 +170,7 @@ impl MockGithubClient {
 					title_timestamp,
 					description_timestamp,
 					labels_timestamp,
+					state_timestamp,
 				};
 
 				self.issues.lock().unwrap().entry(key).or_default().insert(number, issue_data);
@@ -241,6 +245,7 @@ impl MockGithubClient {
 			title_timestamp: timestamp,
 			description_timestamp: timestamp,
 			labels_timestamp: timestamp,
+			state_timestamp: timestamp,
 		};
 
 		let mut issues = self.issues.lock().unwrap();
@@ -509,6 +514,7 @@ impl GithubClient for MockGithubClient {
 			title_timestamp: now,
 			description_timestamp: now,
 			labels_timestamp: now,
+			state_timestamp: now,
 		};
 
 		let mut issues = self.issues.lock().unwrap();
@@ -637,6 +643,7 @@ impl GithubClient for MockGithubClient {
 					title: issue.title_timestamp,
 					description: issue.description_timestamp,
 					labels: issue.labels_timestamp,
+					state: issue.state_timestamp,
 				});
 			}
 		}

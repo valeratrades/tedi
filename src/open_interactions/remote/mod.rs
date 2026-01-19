@@ -189,6 +189,7 @@ impl tedi::LazyIssue<Remote> for Issue {
 			title: timeline.title,
 			description: timeline.description,
 			labels: timeline.labels,
+			state: timeline.state,
 			comments: None, // Will be populated when contents() fetches comments
 		};
 
@@ -232,6 +233,7 @@ impl tedi::LazyIssue<Remote> for Issue {
 				title: timeline.title,
 				description: timeline.description,
 				labels: timeline.labels,
+				state: timeline.state,
 				comments: comments_ts,
 			};
 			self.identity = IssueIdentity::linked(ancestry, issue.user.login.clone(), source.link.clone(), timestamps);

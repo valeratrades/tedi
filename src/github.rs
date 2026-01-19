@@ -64,6 +64,8 @@ pub struct GraphqlTimelineTimestamps {
 	pub description: Option<jiff::Timestamp>,
 	/// Most recent label change (from LabeledEvent/UnlabeledEvent)
 	pub labels: Option<jiff::Timestamp>,
+	/// Most recent state change (from ClosedEvent/ReopenedEvent)
+	pub state: Option<jiff::Timestamp>,
 }
 
 //==============================================================================
@@ -366,6 +368,7 @@ impl GithubClient for RealGithubClient {
 		// We query for:
 		// - RenamedTitleEvent: title changes
 		// - LabeledEvent/UnlabeledEvent: label changes
+		// - ClosedEvent/ReopenedEvent: state changes
 		// - The issue body's updatedAt for description changes
 		//
 		// Note: GitHub timeline only retains events for 90 days, so all timestamps are optional.
@@ -375,7 +378,7 @@ impl GithubClient for RealGithubClient {
 				repository(owner: $owner, name: $repo) {
 					issue(number: $number) {
 						bodyUpdatedAt: updatedAt
-						timelineItems(last: 100, itemTypes: [RENAMED_TITLE_EVENT, LABELED_EVENT, UNLABELED_EVENT]) {
+						timelineItems(last: 100, itemTypes: [RENAMED_TITLE_EVENT, LABELED_EVENT, UNLABELED_EVENT, CLOSED_EVENT, REOPENED_EVENT]) {
 							nodes {
 								__typename
 								... on RenamedTitleEvent {
@@ -385,6 +388,12 @@ impl GithubClient for RealGithubClient {
 									createdAt
 								}
 								... on UnlabeledEvent {
+									createdAt
+								}
+								... on ClosedEvent {
+									createdAt
+								}
+								... on ReopenedEvent {
 									createdAt
 								}
 							}
@@ -445,6 +454,13 @@ impl GithubClient for RealGithubClient {
 							let ts: Option<jiff::Timestamp> = created_at.parse().ok();
 							if ts > timestamps.labels {
 								timestamps.labels = ts;
+							}
+						},
+					"ClosedEvent" | "ReopenedEvent" =>
+						if let Some(created_at) = node.get("createdAt").and_then(|v| v.as_str()) {
+							let ts: Option<jiff::Timestamp> = created_at.parse().ok();
+							if ts > timestamps.state {
+								timestamps.state = ts;
 							}
 						},
 					_ => {}

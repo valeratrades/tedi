@@ -87,9 +87,8 @@ impl Merge for Issue {
 			self.contents.blockers = other.contents.blockers.clone();
 		}
 
-		// Merge state - uses description timestamp as proxy since state changes are rare
-		// and usually accompany description changes
-		if dominated_by(self_ts.description, other_ts.description) {
+		// Merge state
+		if dominated_by(self_ts.state, other_ts.state) {
 			self.contents.state = other.contents.state.clone();
 		}
 
@@ -120,6 +119,9 @@ impl Merge for Issue {
 			}
 			if dominated_by(self_ts.description, other_ts.description) {
 				linked.timestamps.description = other_ts.description;
+			}
+			if dominated_by(self_ts.state, other_ts.state) {
+				linked.timestamps.state = other_ts.state;
 			}
 			if dominated_by(self_ts.comments, other_ts.comments) {
 				linked.timestamps.comments = other_ts.comments;

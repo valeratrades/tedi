@@ -311,10 +311,12 @@ impl CloseState /*{{{1*/ {
 pub struct IssueTimestamps {
 	/// Last change to the issue title. Optional because we can't always get this from GitHub.
 	pub title: Option<Timestamp>,
-	/// Last change to the issue description/body. Optional because we can't always get this from GitHub.
+	/// Last change to the issue description/body (includes blockers). Optional because we can't always get this from GitHub.
 	pub description: Option<Timestamp>,
 	/// Last change to labels. Optional because we can't always get this from GitHub.
 	pub labels: Option<Timestamp>,
+	/// Last state change (open/closed). Optional because we can't always get this from GitHub.
+	pub state: Option<Timestamp>,
 	/// Last comment activity (creation/edit). We can always get this from GitHub.
 	pub comments: Option<Timestamp>,
 }
@@ -327,6 +329,7 @@ impl IssueTimestamps {
 			title: Some(ts),
 			description: Some(ts),
 			labels: Some(ts),
+			state: Some(ts),
 			comments: Some(ts),
 		}
 	}
@@ -340,16 +343,19 @@ impl IssueTimestamps {
 			self.title = Some(now);
 		}
 
-		// Compare body (first comment) for description changes
+		// Compare body (first comment) and blockers for description changes
 		let old_body = old.comments.first().map(|c| c.body.render()).unwrap_or_default();
 		let new_body = new.comments.first().map(|c| c.body.render()).unwrap_or_default();
-		// Also check blockers as they're part of the body on GitHub
 		if old_body != new_body || old.blockers != new.blockers {
 			self.description = Some(now);
 		}
 
 		if old.labels != new.labels {
 			self.labels = Some(now);
+		}
+
+		if old.state != new.state {
+			self.state = Some(now);
 		}
 
 		// Comments changed if any non-body comment is different
