@@ -32,6 +32,49 @@ use crate::common::{TestContext, git::GitExt};
 /// Excludes `.git` directory and sorts files for deterministic output.
 /// Normalizes git commit hashes in conflict markers for deterministic snapshots.
 fn snapshot_issues_dir(ctx: &TestContext) -> String {
+	snapshot_issues_dir_redacting(ctx, &[])
+}
+
+/// Redact specific lines from a snapshot output.
+///
+/// # Why this exists
+///
+/// Some timestamps in `.meta.json` are set via `Timestamp::now()` when the code
+/// detects local changes (e.g., user closes an issue). These timestamps are
+/// non-deterministic and change between test runs, causing snapshot failures.
+///
+/// We can't easily parse and redact them because:
+/// - The JSON is embedded in a multi-file fixture format
+/// - Timestamps from seeded test data vs `now()` are indistinguishable by format
+/// - Only certain fields (like `state`) get `now()` timestamps in certain tests
+///
+/// So we take the ugly-but-explicit approach: callers specify which output lines
+/// to redact. This makes it obvious in the test which values are non-deterministic.
+///
+/// # Arguments
+/// * `lines_to_redact` - 1-indexed line numbers to replace with "[REDACTED]"
+fn snapshot_issues_dir_redacting(ctx: &TestContext, lines_to_redact: &[usize]) -> String {
+	let snapshot = snapshot_issues_dir_inner(ctx);
+	if lines_to_redact.is_empty() {
+		return snapshot;
+	}
+	snapshot
+		.lines()
+		.enumerate()
+		.map(|(i, line)| {
+			let line_num = i + 1; // 1-indexed
+			if lines_to_redact.contains(&line_num) {
+				"        [REDACTED - non-deterministic timestamp]".to_string()
+			} else {
+				line.to_string()
+			}
+		})
+		.collect::<Vec<_>>()
+		.join("\n")
+}
+
+/// Inner implementation that does the actual directory snapshot.
+fn snapshot_issues_dir_inner(ctx: &TestContext) -> String {
 	// Regex to match git commit hashes in diff3 conflict markers (e.g., "||||||| a0f7d74")
 	let hash_regex = regex::Regex::new(r"\|\|\|\|\|\|\| [0-9a-f]{7,40}").unwrap();
 
@@ -107,7 +150,8 @@ fn test_both_diverged_triggers_conflict() {
 	        "title": "2001-09-11T10:54:39Z",
 	        "description": "2001-09-11T11:07:36Z",
 	        "labels": "2001-09-11T16:40:49Z",
-	        "comments": "2001-09-11T18:46:17Z"
+	        "state": "2001-09-11T22:22:01Z",
+	        "comments": []
 	      }
 	    }
 	  }
@@ -150,7 +194,8 @@ fn test_both_diverged_with_git_initiates_merge() {
 	        "title": "2001-09-12T01:58:13Z",
 	        "description": "2001-09-12T04:56:40Z",
 	        "labels": "2001-09-11T14:34:47Z",
-	        "comments": "2001-09-11T17:33:14Z"
+	        "state": "2001-09-12T03:35:54Z",
+	        "comments": []
 	      }
 	    }
 	  }
@@ -223,7 +268,8 @@ fn test_only_local_changed_pushes_local() {
 	        "title": "2001-09-12T03:55:22Z",
 	        "description": "2001-09-12T03:30:04Z",
 	        "labels": "2001-09-12T01:22:28Z",
-	        "comments": "2001-09-11T17:16:14Z"
+	        "state": "2001-09-11T17:16:14Z",
+	        "comments": []
 	      }
 	    }
 	  }
@@ -428,14 +474,6 @@ fn test_closing_issue_syncs_state_change() {
 
 	// Capture the resulting directory state
 	insta::assert_snapshot!(snapshot_issues_dir(&ctx), @r#"
-	//- /o/__conflict.md
-	<<<<<<< HEAD
-	- [x] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-	||||||| [hash]
-	=======
-	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-	>>>>>>> remote-state
-			body
 	//- /o/r/.meta.json
 	{
 	  "virtual_project": false,
@@ -446,7 +484,8 @@ fn test_closing_issue_syncs_state_change() {
 	        "title": "2001-09-11T09:15:20Z",
 	        "description": "2001-09-11T04:30:34Z",
 	        "labels": "2001-09-11T06:38:10Z",
-	        "comments": "2001-09-11T19:10:04Z"
+	        "state": "2026-01-19T19:43:12.287014508Z",
+	        "comments": []
 	      }
 	    }
 	  }
@@ -581,15 +620,8 @@ fn test_reset_syncs_changes_after_editor() {
 	eprintln!("stderr: {stderr}");
 
 	// Capture the resulting directory state
-	insta::assert_snapshot!(snapshot_issues_dir(&ctx), @r#"
-	//- /o/__conflict.md
-	<<<<<<< HEAD
-	- [x] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-	||||||| [hash]
-	=======
-	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-	>>>>>>> remote-state
-			remote body
+	// Line 11 contains `state` timestamp set via Timestamp::now() when detecting state change
+	insta::assert_snapshot!(snapshot_issues_dir_redacting(&ctx, &[11]), @r#"
 	//- /o/r/.meta.json
 	{
 	  "virtual_project": false,
@@ -600,7 +632,8 @@ fn test_reset_syncs_changes_after_editor() {
 	        "title": null,
 	        "description": null,
 	        "labels": null,
-	        "comments": null
+	        [REDACTED - non-deterministic timestamp]
+	        "comments": []
 	      }
 	    }
 	  }
