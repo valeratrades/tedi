@@ -54,6 +54,7 @@
               jobs.errors.install = jobDeps;
               jobs.warnings.install = jobDeps;
               jobs.warnings.augment = [ "code-duplication" ];
+              release.default = true;
             };
           readme = v-utils.readme-fw {
             inherit pkgs pname;

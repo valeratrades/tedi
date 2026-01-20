@@ -1,0 +1,79 @@
+env:
+  CARGO_INCREMENTAL: '0'
+  CARGO_NET_RETRY: '10'
+  RUSTUP_MAX_RETRIES: '10'
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@nightly
+      with:
+        targets: ${{ matrix.target }}
+    - if: runner.os == 'Linux'
+      name: Install mold
+      uses: rui314/setup-mold@v1
+    - name: Build release binary
+      run: cargo build --release --target ${{ matrix.target }} ${{ matrix.cargo_flags
+        }}
+    - if: runner.os != 'Windows'
+      name: Package binary (unix)
+      run: 'cd target/${{ matrix.target }}/release
+
+        PNAME="${GITHUB_REPOSITORY##*/}"
+
+        tar -czvf ../../../${PNAME}-${{ matrix.target }}.tar.gz $PNAME
+
+        '
+    - if: runner.os == 'Windows'
+      name: Package binary (windows)
+      run: 'cd target/${{ matrix.target }}/release
+
+        $PNAME = $env:GITHUB_REPOSITORY.Split(''/'')[-1]
+
+        Compress-Archive -Path "$PNAME.exe" -DestinationPath "../../../$PNAME-${{
+        matrix.target }}.zip"
+
+        '
+      shell: pwsh
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: binary-${{ matrix.target }}
+        path: '*.tar.gz
+
+          *.zip'
+    strategy:
+      matrix:
+        include:
+        - cargo_flags: ''
+          os: ubuntu-latest
+          target: x86_64-unknown-linux-gnu
+        - cargo_flags: ''
+          os: macos-latest
+          target: x86_64-apple-darwin
+        - cargo_flags: ''
+          os: macos-latest
+          target: aarch64-apple-darwin
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/download-artifact@v4
+      with:
+        merge-multiple: true
+        path: artifacts
+    - env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      name: Create Release
+      uses: softprops/action-gh-release@v2
+      with:
+        files: artifacts/*
+name: Release
+'on':
+  push:
+    tags:
+    - v[0-9]+.*
+  workflow_dispatch: {}
+permissions:
+  contents: write
