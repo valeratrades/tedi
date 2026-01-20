@@ -371,10 +371,17 @@ impl Local {
 	/// Structure: issues/{owner}/{repo}/{number}_-_{title}.md[.bak]
 	/// For nested: issues/{owner}/{repo}/{ancestor_dirs}/.../{number}_-_{title}.md[.bak]
 	pub fn issue_file_path(owner: &str, repo: &str, issue_number: Option<u64>, title: &str, closed: bool, ancestors: &[FetchedIssue]) -> PathBuf {
+		let ancestor_dir_names: Vec<_> = ancestors.iter().map(|a| Self::format_issue_dir_name(a)).collect();
+		Self::issue_file_path_from_dir_names(owner, repo, issue_number, title, closed, &ancestor_dir_names)
+	}
+
+	/// Get the path for an issue file using ancestor directory names directly.
+	/// Use this when you have directory names but not full FetchedIssue objects.
+	pub fn issue_file_path_from_dir_names(owner: &str, repo: &str, issue_number: Option<u64>, title: &str, closed: bool, ancestor_dir_names: &[String]) -> PathBuf {
 		let mut path = Self::project_dir(owner, repo);
 
-		for ancestor in ancestors {
-			path = path.join(Self::format_issue_dir_name(ancestor));
+		for dir_name in ancestor_dir_names {
+			path = path.join(dir_name);
 		}
 
 		let filename = Self::format_issue_filename(issue_number, title, closed);
@@ -476,7 +483,31 @@ impl Local {
 		Ok(matches)
 	}
 
+	/// Build ancestor directory names by traversing the filesystem for an ancestry.
+	/// Finds issues by number (either flat file or directory) and returns the directory names.
+	pub fn build_ancestor_dir_names(ancestry: &Ancestry) -> Result<Vec<String>> {
+		let mut path = Self::project_dir(ancestry.owner(), ancestry.repo());
+
+		if !path.exists() {
+			bail!("Project directory does not exist: {}", path.display());
+		}
+
+		let mut result = Vec::with_capacity(ancestry.lineage().len());
+
+		for &issue_number in ancestry.lineage() {
+			let dir_name = Self::find_issue_dir_name_by_number(&path, issue_number)
+				.ok_or_else(|| eyre!("Parent issue #{issue_number} not found locally in {}. Fetch the parent issue first.", path.display()))?;
+
+			path = path.join(&dir_name);
+			result.push(dir_name);
+		}
+
+		Ok(result)
+	}
+
+	#[allow(deprecated)]
 	/// Build a chain of FetchedIssue by traversing the filesystem for an ancestry.
+	#[deprecated(note = "Use build_ancestor_dir_names instead")]
 	pub fn build_ancestry_path(ancestry: &Ancestry) -> Result<Vec<FetchedIssue>> {
 		let mut path = Self::project_dir(ancestry.owner(), ancestry.repo());
 
@@ -583,6 +614,37 @@ impl Local {
 
 			if name.starts_with(&prefix_with_sep) || name == exact_match {
 				return Some(path);
+			}
+		}
+
+		None
+	}
+
+	/// Find an issue by number (flat file or directory) and return the directory name it would use.
+	/// For flat file `99_-_title.md` returns `99_-_title`.
+	/// For directory `99_-_title/` returns `99_-_title`.
+	fn find_issue_dir_name_by_number(parent: &Path, issue_number: u64) -> Option<String> {
+		let entries = std::fs::read_dir(parent).ok()?;
+
+		let prefix_with_sep = format!("{issue_number}_-_");
+		let exact_match_dir = format!("{issue_number}");
+
+		for entry in entries.flatten() {
+			let path = entry.path();
+			let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+				continue;
+			};
+
+			if path.is_dir() {
+				if name.starts_with(&prefix_with_sep) || name == exact_match_dir {
+					return Some(name.to_string());
+				}
+			} else if path.is_file() {
+				// Flat file: strip .md or .md.bak extension to get dir name
+				let base = name.strip_suffix(".md.bak").or_else(|| name.strip_suffix(".md"))?;
+				if base.starts_with(&prefix_with_sep) || base == exact_match_dir {
+					return Some(base.to_string());
+				}
 			}
 		}
 

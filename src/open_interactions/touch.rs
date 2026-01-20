@@ -87,11 +87,27 @@ pub fn parse_touch_path(user_input: &str) -> Result<TouchPathResult> {
 		let children = list_children(&actual_path)?;
 		match match_single_or_none(&children, pattern) {
 			MatchOrNone::Unique(matched) => {
+				let matched_path = actual_path.join(&matched);
+
 				// Extract issue number from matched name
 				if let Some(issue_num) = extract_issue_number(&matched) {
 					lineage.push(issue_num);
 				}
-				actual_path = actual_path.join(&matched);
+
+				// If matched a flat file but not the last segment, user wants to create a child.
+				// We still add the issue to lineage (done above) - the Sink will handle
+				// converting the flat file to directory format when creating the sub-issue.
+				if !is_last && matched_path.is_file() {
+					// Can't descend into a file, but we've recorded the parent in lineage.
+					// Remaining segments define what to create under this parent.
+					let remaining_title = segments[2 + i + 1..].last().map(|s| strip_md_extension(s)).unwrap_or(pattern);
+					return Ok(TouchPathResult::Create {
+						title: remaining_title.to_string(),
+						ancestry: Ancestry::with_lineage(&owner, &repo, &lineage),
+					});
+				}
+
+				actual_path = matched_path;
 			}
 			MatchOrNone::NoMatch => {
 				// No match - this is a create request
@@ -178,11 +194,11 @@ fn match_single_or_none(children: &[String], pattern: &str) -> MatchOrNone {
 ///
 /// Ancestry contains owner/repo and parent lineage (if creating a sub-issue).
 pub fn create_pending_issue(title: &str, ancestry: &Ancestry) -> Result<PathBuf> {
-	// Build ancestors chain if creating a sub-issue
-	let ancestors = if ancestry.lineage().is_empty() { vec![] } else { Local::build_ancestry_path(ancestry)? };
+	// Build ancestor directory names if creating a sub-issue
+	let ancestor_dir_names = if ancestry.lineage().is_empty() { vec![] } else { Local::build_ancestor_dir_names(ancestry)? };
 
 	// Determine file path - None for number since it's pending
-	let issue_file_path = Local::issue_file_path(ancestry.owner(), ancestry.repo(), None, title, false, &ancestors);
+	let issue_file_path = Local::issue_file_path_from_dir_names(ancestry.owner(), ancestry.repo(), None, title, false, &ancestor_dir_names);
 
 	// Create parent directories
 	if let Some(parent) = issue_file_path.parent() {

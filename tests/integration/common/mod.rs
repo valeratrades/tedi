@@ -19,6 +19,7 @@
 //! ```
 
 pub mod git;
+mod snapshot;
 
 use std::{
 	io::Write,
@@ -27,6 +28,7 @@ use std::{
 	sync::OnceLock,
 };
 
+pub use snapshot::{snapshot_issues_dir, snapshot_issues_dir_redacting};
 use v_fixtures::{Fixture, fs_standards::xdg::Xdg};
 
 /// Environment variable names derived from package name
@@ -189,6 +191,15 @@ impl TestContext {
 			edit_at_path: None,
 		}
 	}
+
+	/// Create a TouchBuilder for running the `open --touch` command.
+	pub fn touch(&self, pattern: &str) -> TouchBuilder<'_> {
+		TouchBuilder {
+			ctx: self,
+			pattern: pattern.to_string(),
+			edit_at_path: None,
+		}
+	}
 }
 
 /// Builder for running the `open` command with various options.
@@ -339,6 +350,78 @@ impl<'a> OpenUrlBuilder<'a> {
 						// Try to signal the pipe (use O_NONBLOCK to avoid blocking)
 						// Only mark as signaled if we successfully wrote to the pipe.
 						// The pipe open will fail if no reader is waiting yet.
+						#[cfg(unix)]
+						{
+							use std::os::unix::fs::OpenOptionsExt;
+							if let Ok(mut pipe) = std::fs::OpenOptions::new().write(true).custom_flags(0x800).open(&pipe_path)
+								&& pipe.write_all(b"x").is_ok()
+							{
+								signaled = true;
+							}
+						}
+					}
+					std::thread::sleep(std::time::Duration::from_millis(10));
+				}
+			}
+		}
+
+		let output = child.wait_with_output().unwrap();
+		(
+			output.status,
+			String::from_utf8_lossy(&output.stdout).into_owned(),
+			String::from_utf8_lossy(&output.stderr).into_owned(),
+		)
+	}
+}
+
+/// Builder for running the `open --touch` command.
+pub struct TouchBuilder<'a> {
+	ctx: &'a TestContext,
+	pattern: String,
+	edit_at_path: Option<(PathBuf, tedi::Issue)>,
+}
+
+impl<'a> TouchBuilder<'a> {
+	/// Edit the file at the specified path while "editor is open".
+	pub fn edit_at(mut self, path: &Path, issue: &tedi::Issue) -> Self {
+		self.edit_at_path = Some((path.to_path_buf(), issue.clone()));
+		self
+	}
+
+	/// Run the command and return (exit_status, stdout, stderr).
+	pub fn run(self) -> (ExitStatus, String, String) {
+		let mut cmd = Command::new(get_binary_path());
+		cmd.arg("--mock").arg("open").arg("--touch").arg(&self.pattern);
+		cmd.env("__IS_INTEGRATION_TEST", "1");
+		cmd.env(ENV_GITHUB_TOKEN, "test_token");
+		for (key, value) in self.ctx.xdg.env_vars() {
+			cmd.env(key, value);
+		}
+		cmd.env(ENV_MOCK_STATE, &self.ctx.mock_state_path);
+		cmd.env(ENV_MOCK_PIPE, &self.ctx.pipe_path);
+		cmd.stdout(std::process::Stdio::piped());
+		cmd.stderr(std::process::Stdio::piped());
+
+		let mut child = cmd.spawn().unwrap();
+
+		// Poll for process completion, signaling pipe when it's waiting
+		let pipe_path = self.ctx.pipe_path.clone();
+		let edit_at_path = self.edit_at_path.clone();
+		let mut signaled = false;
+
+		loop {
+			match child.try_wait().unwrap() {
+				Some(_status) => break,
+				None => {
+					if !signaled {
+						std::thread::sleep(std::time::Duration::from_millis(100));
+
+						// Edit the file while "editor is open" if requested
+						if let Some((path, issue)) = &edit_at_path {
+							std::fs::write(path, issue.serialize_virtual()).unwrap();
+						}
+
+						// Try to signal the pipe
 						#[cfg(unix)]
 						{
 							use std::os::unix::fs::OpenOptionsExt;

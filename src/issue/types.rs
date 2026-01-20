@@ -145,7 +145,7 @@ impl CommentIdentity /*{{{1*/ {
 
 /// An issue with its title - used when we need both identity and display name.
 /// This is what we have after fetching an issue from Github.
-//DEPRECATE: completely pointless
+#[deprecated(note = "HORRIBLE PRIMITIVE ERRONEOUSLY USED IN OLD BAD LEGACY CODE. USE ANCESTRY OR DIRECTORY NAMES DIRECTLY.")]
 #[derive(Clone, Debug)]
 pub struct FetchedIssue {
 	pub link: IssueLink,
