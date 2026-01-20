@@ -21,11 +21,18 @@ pub struct TouchPath {
 
 /// Parse a path for --touch mode
 /// Format: workspace/project/issue[.md] or workspace/project/parent_issue/child_issue[.md]
-pub fn parse_touch_path(path: &str) -> Result<TouchPath> {
-	let path_buf = PathBuf::from(path);
+//TODO: at the callsite of this thing, we reject creation of nested sub-issues. WRONG
+pub fn parse_touch_path(user_input: &str) -> Result<TouchPath> {
+	if user_input.starts_with('/') {
+		// don't think there is an actually good way to ensure semantic correctness of the user input beyond this
+		bail!("Expecting semantic per-component match string for owner/repo/issue/optional-sub-issues, got: {user_input}")
+	}
+	let path_buf = PathBuf::from(user_input); //HACK: this is only a semantic "path", - doesn't guarantee extension nor precision of components (for each one it is valid to pass just number or just title 
 
 	// Check if path has .md extension
 	let has_md_ext = path_buf.extension().and_then(|e| e.to_str()) == Some("md");
+
+	//TODO: switch to just ensuring the last component has .md^ after it always, by AND extension
 
 	// Collect all path components
 	let components: Vec<&str> = path_buf.iter().filter_map(|c| c.to_str()).collect();
@@ -54,6 +61,9 @@ pub fn parse_touch_path(path: &str) -> Result<TouchPath> {
 		}
 	}
 
+	//TODO: delegate impl-sensitive parts (ie issue dirs top) to Local // probably would pay to separate the patten matching logic into its own module too btw
+
+	//TODO: update to be constructing Ancestry
 	Ok(TouchPath { owner, repo, issue_chain })
 }
 
