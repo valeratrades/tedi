@@ -112,9 +112,16 @@ pub async fn open_command(settings: &LiveSettings, args: OpenArgs, offline: bool
 	// Handle --blocker and --blocker-set modes: use current blocker issue file if no pattern provided
 	let use_blocker_mode = args.blocker || args.blocker_set;
 	let input = if use_blocker_mode && args.url_or_pattern.is_none() {
-		// Get current blocker issue path
-		let blocker_path = crate::blocker_interactions::integration::get_current_blocker_issue().ok_or_else(|| eyre!("No blocker issue set. Use `todo blocker set <pattern>` first."))?;
-		blocker_path.to_string_lossy().to_string()
+		// Get current blocker issue path if it exists
+		// --blocker requires it to exist; --blocker-set just opens fzf if not set
+		if let Some(blocker_path) = crate::blocker_interactions::integration::get_current_blocker_issue() {
+			blocker_path.to_string_lossy().to_string()
+		} else if args.blocker {
+			bail!("No blocker issue set. Use `todo blocker set <pattern>` first.")
+		} else {
+			// --blocker-set without current blocker: use empty pattern for fzf
+			String::new()
+		}
 	} else {
 		args.url_or_pattern.as_deref().unwrap_or("").trim().to_string()
 	};
