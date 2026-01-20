@@ -61,6 +61,22 @@ fn test_touch_creates_subissue_under_parent_matched_by_substring() {
 fn test_touch_path_with_more_segments_after_flat_file_match() {
 	let ctx = TestContext::new(
 		r#"
+		//- /testowner/testrepo/.meta.json
+		{
+			"virtual_project": false,
+			"next_virtual_issue_number": 0,
+			"issues": {
+				"99": {
+					"timestamps": {
+						"title": null,
+						"description": null,
+						"labels": null,
+						"state": null,
+						"comments": []
+					}
+				}
+			}
+		}
 		//- /data/issues/testowner/testrepo/99_-_ancestry_resolve_for_ind.md
 		- [ ] ancestry resolve for ind <!--https://github.com/testowner/testrepo/issues/99-->
 			body content here
@@ -82,16 +98,7 @@ fn test_touch_path_with_more_segments_after_flat_file_match() {
 	  "virtual_project": false,
 	  "next_virtual_issue_number": 0,
 	  "issues": {
-	    "99": {
-	      "timestamps": {
-	        "title": null,
-	        "description": null,
-	        "labels": null,
-	        "state": null,
-	        "comments": []
-	      }
-	    },
-	    "1": {
+	    "100": {
 	      "timestamps": {
 	        "title": null,
 	        "description": null,
@@ -106,7 +113,7 @@ fn test_touch_path_with_more_segments_after_flat_file_match() {
 	- [ ] ancestry resolve for ind <!--https://github.com/testowner/testrepo/issues/99-->
 		body content here
 		
-	//- /testowner/testrepo/99_-_ancestry_resolve_for_ind/check_works.md
-	- [ ] check_works <!-- local: -->
+	//- /testowner/testrepo/99_-_ancestry_resolve_for_ind/100_-_check_works.md
+	- [ ] check_works <!-- @mock_user https://github.com/testowner/testrepo/issues/100 -->
 	"#);
 }

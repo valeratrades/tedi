@@ -15,7 +15,52 @@ use async_trait::async_trait;
 use tracing::instrument;
 use v_utils::prelude::*;
 
-use crate::github::{CreatedIssue, GithubClient, GithubComment, GithubIssue, GithubLabel, GithubUser, RepoInfo};
+use crate::{
+	github::{CreatedIssue, GithubClient, GithubComment, GithubIssue, GithubLabel, GithubUser, RepoInfo},
+	open_interactions::local::Local,
+};
+
+/// Scan the project directory for the maximum issue number in filenames.
+/// Looks at files/dirs matching pattern `{number}_-_*` or just `{number}`.
+fn scan_max_issue_number(owner: &str, repo: &str) -> u64 {
+	fn scan_dir(path: &std::path::Path, max: &mut u64) {
+		let Ok(entries) = std::fs::read_dir(path) else {
+			return;
+		};
+		for entry in entries.flatten() {
+			let name = entry.file_name();
+			let name_str = name.to_string_lossy();
+
+			// Skip hidden files and special files
+			if name_str.starts_with('.') {
+				continue;
+			}
+
+			// Extract issue number from name: either "{number}_-_..." or just "{number}"
+			let number_part = if let Some(sep_pos) = name_str.find("_-_") {
+				&name_str[..sep_pos]
+			} else {
+				// Strip .md or .md.bak extension if present
+				name_str.strip_suffix(".md.bak").or_else(|| name_str.strip_suffix(".md")).unwrap_or(&name_str)
+			};
+
+			if let Ok(num) = number_part.parse::<u64>() {
+				*max = (*max).max(num);
+			}
+
+			// Recurse into directories
+			let entry_path = entry.path();
+			if entry_path.is_dir() {
+				scan_dir(&entry_path, max);
+			}
+		}
+	}
+
+	let project_dir = Local::project_dir(owner, repo);
+	let mut max = 0u64;
+	scan_dir(&project_dir, &mut max);
+	max
+}
 
 /// Environment variable name for mock state file (integration tests)
 const ENV_MOCK_STATE: &str = concat!(env!("CARGO_PKG_NAME"), "_MOCK_STATE");
@@ -77,9 +122,6 @@ pub struct MockGithubClient {
 	/// Counter for generating unique issue IDs
 	next_issue_id: AtomicU64,
 
-	/// Counter for generating unique issue numbers (per repo)
-	next_issue_number: AtomicU64,
-
 	/// Counter for generating unique comment IDs
 	next_comment_id: AtomicU64,
 
@@ -102,7 +144,6 @@ impl MockGithubClient {
 		let client = Self {
 			user_login: user_login.to_string(),
 			next_issue_id: AtomicU64::new(1000),
-			next_issue_number: AtomicU64::new(1),
 			next_comment_id: AtomicU64::new(5000),
 			issues: Mutex::new(HashMap::new()),
 			comments: Mutex::new(HashMap::new()),
@@ -500,7 +541,14 @@ impl GithubClient for MockGithubClient {
 
 		let key = RepoKey::new(owner, repo_name);
 		let id = self.next_issue_id.fetch_add(1, Ordering::SeqCst);
-		let number = self.next_issue_number.fetch_add(1, Ordering::SeqCst);
+
+		// Get next issue number: scan filesystem for max existing issue number + 1
+		let number = {
+			let max_from_files = scan_max_issue_number(owner, repo_name);
+			let project_meta = Local::load_project_meta(owner, repo_name);
+			let max_from_meta = project_meta.issues.keys().max().copied().unwrap_or(0);
+			max_from_files.max(max_from_meta) + 1
+		};
 
 		let now = Some(jiff::Timestamp::now());
 		let issue = MockIssueData {

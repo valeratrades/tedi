@@ -389,11 +389,18 @@ impl Local {
 	}
 
 	/// Get the path to the issue directory (where sub-issues are stored).
+	#[allow(deprecated)]
 	pub fn issue_dir_path(owner: &str, repo: &str, issue_number: Option<u64>, title: &str, ancestors: &[FetchedIssue]) -> PathBuf {
+		let ancestor_dir_names: Vec<_> = ancestors.iter().map(|a| Self::format_issue_dir_name(a)).collect();
+		Self::issue_dir_path_from_dir_names(owner, repo, issue_number, title, &ancestor_dir_names)
+	}
+
+	/// Get the path to the issue directory using ancestor directory names directly.
+	pub fn issue_dir_path_from_dir_names(owner: &str, repo: &str, issue_number: Option<u64>, title: &str, ancestor_dir_names: &[String]) -> PathBuf {
 		let mut path = Self::project_dir(owner, repo);
 
-		for ancestor in ancestors {
-			path = path.join(Self::format_issue_dir_name(ancestor));
+		for dir_name in ancestor_dir_names {
+			path = path.join(dir_name);
 		}
 
 		path.join(Self::issue_dir_name(issue_number, title))
@@ -906,7 +913,7 @@ impl Local {
 	}
 
 	/// Load project metadata, creating empty if not exists
-	fn load_project_meta(owner: &str, repo: &str) -> ProjectMeta {
+	pub fn load_project_meta(owner: &str, repo: &str) -> ProjectMeta {
 		Self::load_project_meta_from_source(owner, repo, LocalSource::Submitted)
 	}
 
@@ -1232,26 +1239,31 @@ impl Sink<Consensus> for Issue {
 	}
 }
 
-//TODO!!!: (owner, repo, ancestors) here are all incorrect and outdated. We need none of them, as all the necessary info is already in `issue`. What does vec of FetchedIssue for ancestors even represent, - why on earth we're drugging github into this
-fn sink_issue_node(issue: &Issue, old: Option<&Issue>, owner: &str, repo: &str, ancestors: &[FetchedIssue]) -> Result<bool> {
+/// Sink an issue node to the local filesystem.
+/// Uses issue's identity.ancestry for path construction.
+#[allow(deprecated)]
+fn sink_issue_node(issue: &Issue, old: Option<&Issue>, owner: &str, repo: &str, _ancestors: &[FetchedIssue]) -> Result<bool> {
 	let issue_number = issue.number();
 	let title = &issue.contents.title;
 	let closed = issue.contents.state.is_closed();
 	let has_children = !issue.children.is_empty();
 	let old_has_children = old.map(|o| !o.children.is_empty()).unwrap_or(false);
 
+	// Build ancestor directory names from issue's ancestry lineage
+	let ancestor_dir_names = Local::build_ancestor_dir_names(&issue.identity.ancestry).unwrap_or_default();
+
 	let format_changed = has_children != old_has_children;
 
 	let issue_file_path = if has_children {
-		let issue_dir = Local::issue_dir_path(owner, repo, issue_number, title, ancestors);
+		let issue_dir = Local::issue_dir_path_from_dir_names(owner, repo, issue_number, title, &ancestor_dir_names);
 		std::fs::create_dir_all(&issue_dir)?;
 
 		if format_changed {
-			let old_flat_path = Local::issue_file_path(owner, repo, issue_number, title, false, ancestors);
+			let old_flat_path = Local::issue_file_path_from_dir_names(owner, repo, issue_number, title, false, &ancestor_dir_names);
 			if old_flat_path.exists() {
 				std::fs::remove_file(&old_flat_path)?;
 			}
-			let old_flat_closed = Local::issue_file_path(owner, repo, issue_number, title, true, ancestors);
+			let old_flat_closed = Local::issue_file_path_from_dir_names(owner, repo, issue_number, title, true, &ancestor_dir_names);
 			if old_flat_closed.exists() {
 				std::fs::remove_file(&old_flat_closed)?;
 			}
@@ -1264,12 +1276,25 @@ fn sink_issue_node(issue: &Issue, old: Option<&Issue>, owner: &str, repo: &str, 
 
 		Local::main_file_path(&issue_dir, closed)
 	} else {
-		let old_path = Local::issue_file_path(owner, repo, issue_number, title, !closed, ancestors);
+		// Clean up old file with opposite closed state
+		let old_path = Local::issue_file_path_from_dir_names(owner, repo, issue_number, title, !closed, &ancestor_dir_names);
 		if old_path.exists() {
 			std::fs::remove_file(&old_path)?;
 		}
 
-		Local::issue_file_path(owner, repo, issue_number, title, closed, ancestors)
+		// If issue now has a number, also clean up old pending file (without number)
+		if issue_number.is_some() {
+			let pending_path = Local::issue_file_path_from_dir_names(owner, repo, None, title, false, &ancestor_dir_names);
+			if pending_path.exists() {
+				std::fs::remove_file(&pending_path)?;
+			}
+			let pending_closed = Local::issue_file_path_from_dir_names(owner, repo, None, title, true, &ancestor_dir_names);
+			if pending_closed.exists() {
+				std::fs::remove_file(&pending_closed)?;
+			}
+		}
+
+		Local::issue_file_path_from_dir_names(owner, repo, issue_number, title, closed, &ancestor_dir_names)
 	};
 
 	let content = issue.serialize_filesystem();
@@ -1299,39 +1324,36 @@ fn sink_issue_node(issue: &Issue, old: Option<&Issue>, owner: &str, repo: &str, 
 		Local::save_issue_meta(owner, repo, issue_num, &meta)?;
 	}
 
-	let mut child_ancestors = ancestors.to_vec();
-	if let Some(fetched) = FetchedIssue::from_parts(owner, repo, issue_number.unwrap_or(0), title) {
-		child_ancestors.push(fetched);
-	}
-
 	let old_children_map: std::collections::HashMap<u64, &Issue> = old.map(|o| o.children.iter().filter_map(|c| c.number().map(|n| (n, c))).collect()).unwrap_or_default();
 
 	let new_child_numbers: std::collections::HashSet<u64> = issue.children.iter().filter_map(|c| c.number()).collect();
 
 	for child in &issue.children {
 		let old_child = child.number().and_then(|n| old_children_map.get(&n).copied());
-		any_written |= sink_issue_node(child, old_child, owner, repo, &child_ancestors)?;
+		// Children have their own ancestry in their identity, so pass empty ancestors
+		any_written |= sink_issue_node(child, old_child, owner, repo, &[])?;
 	}
 
 	for (&old_num, &old_child) in &old_children_map {
 		if !new_child_numbers.contains(&old_num) {
-			fn remove_issue_files(issue: &Issue, owner: &str, repo: &str, ancestors: &[FetchedIssue]) -> Result<()> {
+			fn remove_issue_files(issue: &Issue, owner: &str, repo: &str) -> Result<()> {
 				let issue_number = issue.number();
 				let title = &issue.contents.title;
+				let ancestor_dir_names = Local::build_ancestor_dir_names(&issue.identity.ancestry).unwrap_or_default();
 
-				let flat_open = Local::issue_file_path(owner, repo, issue_number, title, false, ancestors);
-				let flat_closed = Local::issue_file_path(owner, repo, issue_number, title, true, ancestors);
+				let flat_open = Local::issue_file_path_from_dir_names(owner, repo, issue_number, title, false, &ancestor_dir_names);
+				let flat_closed = Local::issue_file_path_from_dir_names(owner, repo, issue_number, title, true, &ancestor_dir_names);
 				let _ = std::fs::remove_file(&flat_open);
 				let _ = std::fs::remove_file(&flat_closed);
 
-				let issue_dir = Local::issue_dir_path(owner, repo, issue_number, title, ancestors);
+				let issue_dir = Local::issue_dir_path_from_dir_names(owner, repo, issue_number, title, &ancestor_dir_names);
 				if issue_dir.is_dir() {
 					std::fs::remove_dir_all(&issue_dir)?;
 				}
 
 				Ok(())
 			}
-			remove_issue_files(old_child, owner, repo, &child_ancestors)?;
+			remove_issue_files(old_child, owner, repo)?;
 			Local::remove_issue_meta(owner, repo, old_num)?;
 		}
 	}
