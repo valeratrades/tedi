@@ -1971,16 +1971,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "khronos-egl"
-version = "6.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6aae1df220ece3c0ada96b8153459b67eebe9ae9212258bb0134ae60416fdf76"
-dependencies = [
- "libc",
- "pkg-config",
-]
-
-[[package]]
 name = "khronos_api"
 version = "3.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2036,16 +2026,16 @@ dependencies = [
 
 [[package]]
 name = "libwayshot"
-version = "0.6.0"
+version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b6ffa08807d9bc503e34eed767e80b01fd528b1bc193b0bfd604958f22887609"
+checksum = "9430b4f78cc5e31f01b9e96a548ea419b0f2e64af99338e5731f0b0e43b13e9d"
 dependencies = [
  "drm",
  "gbm",
  "gl",
  "image",
- "khronos-egl",
  "memmap2",
+ "r-egl-wayland",
  "rustix 1.1.3",
  "thiserror 2.0.18",
  "tracing",
@@ -2732,6 +2722,28 @@ name = "r-efi"
 version = "5.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "69cdb34c158ceb288df11e18b4bd39de994f6657d83847bdffdbd7f346754b0f"
+
+[[package]]
+name = "r-egl"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "74c68c047fb54b1eb9a0e751d9b238ff41195a4fcdae90ddc6b43b5903e2b09b"
+dependencies = [
+ "libc",
+ "pkg-config",
+]
+
+[[package]]
+name = "r-egl-wayland"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a9b502a04cf38d8ab73fded506bb3a84999fc6cfea9801d1b459402a79f963d4"
+dependencies = [
+ "r-egl",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-protocols",
+]
 
 [[package]]
 name = "rand"

@@ -27,7 +27,7 @@ derive_more = { version = "2.1.1", features = ["from_str", "display", "from", "i
 futures = "0.3.31"
 image = "0.25.9"
 jiff = { version = "^0.2", features = ["serde"] }
-libwayshot = "0.6.0"
+libwayshot = "0.7.2"
 miette = { version = "7", features = ["fancy"] }
 pandoc = "^0.8.11"
 png = "0.18"
@@ -39,7 +39,7 @@ serde = { version = "^1.0.228", features = ["derive"] }
 serde_json = { version = "^1.0.149", features = ["std"] }
 smart-default = "^0.7"
 tempfile = "^3.24.0"
-thiserror = "2.0.17"
+thiserror = "2.0.18"
 tokio = { version = "^1.49.0", features = ["rt", "rt-multi-thread"] }
 tracing = "^0.1.44"
 tracing-subscriber = { version = "^0.3", features = ["env-filter", "json"] }
