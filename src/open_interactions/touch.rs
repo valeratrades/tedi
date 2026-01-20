@@ -22,49 +22,30 @@ pub struct TouchPath {
 /// Parse a path for --touch mode
 /// Format: workspace/project/issue[.md] or workspace/project/parent_issue/child_issue[.md]
 //TODO: at the callsite of this thing, we reject creation of nested sub-issues. WRONG
-pub fn parse_touch_path(user_input: &str) -> Result<TouchPath> {
+pub fn parse_touch_path(user_input: &str) -> Result<TouchPath /*TODO: switch to return Ancestry*/> {
 	if user_input.starts_with('/') {
 		// don't think there is an actually good way to ensure semantic correctness of the user input beyond this
 		bail!("Expecting semantic per-component match string for owner/repo/issue/optional-sub-issues, got: {user_input}")
 	}
-	let path_buf = PathBuf::from(user_input); //HACK: this is only a semantic "path", - doesn't guarantee extension nor precision of components (for each one it is valid to pass just number or just title 
+	let mut subpath_regexes: Vec<String> = user_input.split('/').cloned().collect();
 
-	// Check if path has .md extension
-	let has_md_ext = path_buf.extension().and_then(|e| e.to_str()) == Some("md");
-
-	//TODO: switch to just ensuring the last component has .md^ after it always, by AND extension
-
-	// Collect all path components
-	let components: Vec<&str> = path_buf.iter().filter_map(|c| c.to_str()).collect();
-
-	// Need at least: workspace/project/issue
-	if components.len() < 3 {
-		bail!("Path must be in format: workspace/project/issue (got {} components)", components.len());
-	}
-
-	let owner = components[0].to_string();
-	let repo = components[1].to_string();
-
-	// Everything after workspace/project is the issue chain
-	let mut issue_chain = Vec::new();
-
-	// All components from index 2 onwards
-	for component in &components[2..] {
-		issue_chain.push(component.to_string());
-	}
-
-	// If we have an extension, strip it from the last component
-	if has_md_ext && let Some(last) = issue_chain.last_mut() {
-		// Strip the extension suffix (e.g., ".md")
-		if let Some(stem) = last.rsplit_once('.') {
-			*last = stem.0.to_string();
+	// step-wise construct through string-matching, starting at issues-dir top
+	let mut actual_path = Local::issues_dir();
+	for rgx in subpath_regexes {
+		let children = actual_path.children(); // pseudo-code
+		let matches = apply_regex(children);
+		if !matches.len() == 1 {
+			bail!("a good miette error pointing to regex substring that didn't match (in the context of full submitted input)")
 		}
+		actual_path.extend(PathBuf::from(matches[0])).unwrap();
 	}
+
+	let ancestry = Local::extract_ancestry(&actual_path).unwrap();
 
 	//TODO: delegate impl-sensitive parts (ie issue dirs top) to Local // probably would pay to separate the patten matching logic into its own module too btw
 
 	//TODO: update to be constructing Ancestry
-	Ok(TouchPath { owner, repo, issue_chain })
+	Ok(ancestry)
 }
 
 /// Create a pending issue locally that will be pushed to Github on first sync.
