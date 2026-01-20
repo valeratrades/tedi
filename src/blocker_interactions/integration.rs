@@ -109,8 +109,8 @@ fn get_current_source() -> Result<IssueSource> {
 /// Get the owner from the current blocker issue path.
 fn get_current_owner() -> Option<String> {
 	let issue_path = get_current_blocker_issue()?;
-	let (owner, _repo) = Local::extract_owner_repo(&issue_path).ok()?;
-	Some(owner)
+	let ancestry = Local::extract_ancestry(&issue_path).ok()?;
+	Some(ancestry.owner().to_string())
 }
 
 /// Get the path to the owner-level urgent.md file.

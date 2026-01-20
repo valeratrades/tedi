@@ -502,6 +502,68 @@ impl Local {
 		Ok(result)
 	}
 
+	/// Find the issue file for an ancestry.
+	/// Navigates the filesystem using issue numbers in the lineage.
+	pub fn find_issue_file_by_ancestry(ancestry: &Ancestry) -> Option<PathBuf> {
+		let mut path = Self::project_dir(ancestry.owner(), ancestry.repo());
+
+		if !path.exists() {
+			return None;
+		}
+
+		let lineage = ancestry.lineage();
+		if lineage.is_empty() {
+			return None;
+		}
+
+		// Navigate to parent directories
+		for &issue_number in &lineage[..lineage.len() - 1] {
+			let dir = Self::find_issue_dir_by_number(&path, issue_number)?;
+			path = dir;
+		}
+
+		// Find the target issue (last in lineage)
+		let target_number = *lineage.last().unwrap();
+
+		// Check for directory format first (issue with children)
+		if let Some(dir) = Self::find_issue_dir_by_number(&path, target_number) {
+			let main_file = Self::main_file_path(&dir, false);
+			if main_file.exists() {
+				return Some(main_file);
+			}
+			let main_bak = Self::main_file_path(&dir, true);
+			if main_bak.exists() {
+				return Some(main_bak);
+			}
+		}
+
+		// Check for flat file format
+		let entries = std::fs::read_dir(&path).ok()?;
+		let prefix_with_sep = format!("{target_number}_-_");
+		let exact_match = format!("{target_number}.md");
+		let exact_match_bak = format!("{target_number}.md.bak");
+
+		for entry in entries.flatten() {
+			let entry_path = entry.path();
+			if !entry_path.is_file() {
+				continue;
+			}
+
+			let Some(name) = entry_path.file_name().and_then(|n| n.to_str()) else {
+				continue;
+			};
+
+			if name.starts_with(&prefix_with_sep) && (name.ends_with(".md") || name.ends_with(".md.bak")) {
+				return Some(entry_path);
+			}
+			if name == exact_match || name == exact_match_bak {
+				return Some(entry_path);
+			}
+		}
+
+		None
+	}
+
 	/// Find an issue directory by its number prefix.
 	fn find_issue_dir_by_number(parent: &Path, issue_number: u64) -> Option<PathBuf> {
 		let entries = std::fs::read_dir(parent).ok()?;
@@ -537,25 +599,51 @@ impl Local {
 		}
 	}
 
-	/// Extract owner/repo from an issue file path.
-	pub fn extract_owner_repo(path: &Path) -> Result<(String, String)> {
+	/// Extract full ancestry (owner/repo/lineage) from an issue file path.
+	///
+	/// Path structure: `issues/{owner}/{repo}/{number}_-_{title}/.../file.md`
+	/// The lineage contains parent issue numbers from the path components between repo and the target file.
+	pub fn extract_ancestry(path: &Path) -> Result<Ancestry> {
 		let issues_base = Self::issues_dir();
 
 		let rel_path = path.strip_prefix(&issues_base).map_err(|_| eyre!("Issue file is not in issues directory: {path:?}"))?;
 
-		let mut components = rel_path.components();
-		let owner = components
-			.next()
-			.and_then(|c| c.as_os_str().to_str())
-			.ok_or_else(|| eyre!("Could not extract owner from path: {path:?}"))?
-			.to_string();
-		let repo = components
-			.next()
-			.and_then(|c| c.as_os_str().to_str())
-			.ok_or_else(|| eyre!("Could not extract repo from path: {path:?}"))?
-			.to_string();
+		let components: Vec<_> = rel_path.components().collect();
+		if components.len() < 2 {
+			bail!("Path too short to extract owner/repo: {path:?}");
+		}
 
-		Ok((owner, repo))
+		let owner = components[0].as_os_str().to_str().ok_or_else(|| eyre!("Could not extract owner from path: {path:?}"))?;
+		let repo = components[1].as_os_str().to_str().ok_or_else(|| eyre!("Could not extract repo from path: {path:?}"))?;
+
+		// Everything between repo and the final component is a parent issue directory
+		// Format: {number}_-_{title} or just {number}
+		let mut lineage = Vec::new();
+		for component in &components[2..components.len().saturating_sub(1)] {
+			let name = component.as_os_str().to_str().ok_or_else(|| eyre!("Invalid path component: {component:?}"))?;
+
+			// Skip if this looks like a file (has .md extension)
+			if name.ends_with(".md") || name.ends_with(".md.bak") {
+				continue;
+			}
+
+			// Extract issue number from directory name
+			let issue_number = if let Some(sep_pos) = name.find("_-_") {
+				name[..sep_pos].parse::<u64>().map_err(|_| eyre!("Invalid issue directory format: {name}"))?
+			} else {
+				name.parse::<u64>().map_err(|_| eyre!("Invalid issue directory format: {name}"))?
+			};
+			lineage.push(issue_number);
+		}
+
+		Ok(Ancestry::with_lineage(owner, repo, &lineage))
+	}
+
+	/// Extract owner/repo from an issue file path.
+	#[deprecated(note = "Use extract_ancestry instead for full lineage information")]
+	pub fn extract_owner_repo(path: &Path) -> Result<(String, String)> {
+		let ancestry = Self::extract_ancestry(path)?;
+		Ok((ancestry.owner().to_string(), ancestry.repo().to_string()))
 	}
 
 	/// Choose an issue file using fzf.
@@ -641,7 +729,7 @@ impl Local {
 
 	/// Parse issue identity from a file path.
 	pub fn parse_path_identity(issue_file_path: &Path) -> Result<PathIdentity> {
-		let (_owner, _repo) = Self::extract_owner_repo(issue_file_path)?;
+		let _ancestry = Self::extract_ancestry(issue_file_path)?;
 
 		let filename = issue_file_path.file_name().and_then(|n| n.to_str()).ok_or_else(|| eyre!("Invalid issue file path"))?;
 
@@ -879,8 +967,7 @@ impl tedi::LazyIssue<Local> for Issue {
 	type Source = LocalPath;
 
 	async fn ancestry(source: &Self::Source) -> Result<tedi::Ancestry, Self::Error> {
-		let (owner, repo) = Local::extract_owner_repo(&source.path).map_err(|_| LocalError::InvalidPath { path: source.path.clone() })?;
-		Ok(tedi::Ancestry::root(&owner, &repo))
+		Local::extract_ancestry(&source.path).map_err(|_| LocalError::InvalidPath { path: source.path.clone() })
 	}
 
 	async fn identity(&mut self, source: Self::Source) -> Result<tedi::IssueIdentity, Self::Error> {
@@ -888,8 +975,7 @@ impl tedi::LazyIssue<Local> for Issue {
 			return Ok(self.identity.clone());
 		}
 
-		let (owner, repo) = Local::extract_owner_repo(&source.path).map_err(|_| LocalError::InvalidPath { path: source.path.clone() })?;
-		let ancestry = tedi::Ancestry::root(&owner, &repo);
+		let ancestry = Local::extract_ancestry(&source.path).map_err(|_| LocalError::InvalidPath { path: source.path.clone() })?;
 
 		if self.contents.title.is_empty() {
 			let content = Local::read_content(&source).ok_or_else(|| LocalError::FileNotFound { path: source.path.clone() })?;
@@ -899,7 +985,7 @@ impl tedi::LazyIssue<Local> for Issue {
 		}
 
 		if let Some(issue_number) = self.identity.number()
-			&& let Some(meta) = Local::load_issue_meta_from_source(&owner, &repo, issue_number, source.source.clone())
+			&& let Some(meta) = Local::load_issue_meta_from_source(ancestry.owner(), ancestry.repo(), issue_number, source.source.clone())
 			&& let Some(linked) = self.identity.remote.as_linked_mut()
 		{
 			linked.timestamps = meta.timestamps;
@@ -913,8 +999,7 @@ impl tedi::LazyIssue<Local> for Issue {
 			return Ok(self.contents.clone());
 		}
 
-		let (owner, repo) = Local::extract_owner_repo(&source.path).map_err(|_| LocalError::InvalidPath { path: source.path.clone() })?;
-		let ancestry = tedi::Ancestry::root(&owner, &repo);
+		let ancestry = Local::extract_ancestry(&source.path).map_err(|_| LocalError::InvalidPath { path: source.path.clone() })?;
 
 		let content = Local::read_content(&source).ok_or_else(|| LocalError::FileNotFound { path: source.path.clone() })?;
 		let parsed = Local::parse_single_node(&content, ancestry, &source.path)?;

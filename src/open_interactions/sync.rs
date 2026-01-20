@@ -249,7 +249,8 @@ pub async fn modify_and_sync_issue(issue_file_path: &Path, offline: bool, modifi
 	// Check for unresolved conflicts first (legacy check)
 	check_any_conflicts()?;
 
-	let (owner, repo) = Local::extract_owner_repo(issue_file_path)?;
+	let ancestry = Local::extract_ancestry(issue_file_path)?;
+	let (owner, repo) = (ancestry.owner().to_string(), ancestry.repo().to_string());
 
 	// Check for unresolved conflict for this owner (new check)
 	check_conflict(&owner)?;
