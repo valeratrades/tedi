@@ -882,7 +882,7 @@ impl Local {
 			let project_meta = ProjectMeta {
 				virtual_project: true,
 				next_virtual_issue_number: 1,
-				issues: std::collections::HashMap::new(),
+				issues: std::collections::BTreeMap::new(),
 			};
 			Self::save_project_meta(owner, repo, &project_meta)?;
 			Ok(project_meta)
@@ -1015,8 +1015,8 @@ pub struct ProjectMeta {
 	pub virtual_project: bool,
 	#[serde(default)]
 	pub next_virtual_issue_number: u64,
-	#[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
-	pub issues: std::collections::HashMap<u64, IssueMeta>,
+	#[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+	pub issues: std::collections::BTreeMap<u64, IssueMeta>,
 }
 
 /// Per-issue metadata stored in .meta.json.

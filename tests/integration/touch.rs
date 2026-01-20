@@ -10,6 +10,22 @@ use crate::common::{TestContext, snapshot_issues_dir};
 fn test_touch_matches_issue_by_substring() {
 	let ctx = TestContext::new(
 		r#"
+		//- /data/issues/testowner/testrepo/.meta.json
+		{
+		  "virtual_project": false,
+		  "next_virtual_issue_number": 0,
+		  "issues": {
+		    "99": {
+		      "timestamps": {
+		        "title": null,
+		        "description": null,
+		        "labels": null,
+		        "state": null,
+		        "comments": []
+		      }
+		    }
+		  }
+		}
 		//- /data/issues/testowner/testrepo/99_-_ancestry_resolve_for_ind.md
 		- [ ] ancestry resolve for ind <!--https://github.com/testowner/testrepo/issues/99-->
 			body content here
@@ -30,6 +46,22 @@ fn test_touch_matches_issue_by_substring() {
 fn test_touch_creates_subissue_under_parent_matched_by_substring() {
 	let ctx = TestContext::new(
 		r#"
+		//- /data/issues/testowner/testrepo/.meta.json
+		{
+		  "virtual_project": false,
+		  "next_virtual_issue_number": 0,
+		  "issues": {
+		    "99": {
+		      "timestamps": {
+		        "title": null,
+		        "description": null,
+		        "labels": null,
+		        "state": null,
+		        "comments": []
+		      }
+		    }
+		  }
+		}
 		//- /data/issues/testowner/testrepo/99_-_parent_issue/__main__.md
 		- [ ] parent issue <!--https://github.com/testowner/testrepo/issues/99-->
 			parent body
@@ -37,17 +69,44 @@ fn test_touch_creates_subissue_under_parent_matched_by_substring() {
 	);
 
 	// Touch parent/new-child where "parent" matches "99_-_parent_issue" by substring
-	let (status, stdout, stderr) = ctx.touch("testowner/testrepo/parent/new-child").run();
+	let (status, _stdout, stderr) = ctx.touch("testowner/testrepo/parent/new-child").run();
 
 	// Should succeed - parent matched, new-child is a create request
 	assert!(status.success(), "Expected success, got stderr: {stderr}");
-	assert!(
-		stdout.contains("Created pending sub-issue: new-child"),
-		"Expected sub-issue creation, stdout: {stdout}, stderr: {stderr}"
-	);
 
-	// Verify the sub-issue was created in the right place
-	assert!(ctx.data_exists("issues/testowner/testrepo/99_-_parent_issue/new-child.md"));
+	// Verify the sub-issue was created in the right place (with issue number after sync)
+	insta::assert_snapshot!(snapshot_issues_dir(&ctx), @r#"
+	//- /testowner/testrepo/.meta.json
+	{
+	  "virtual_project": false,
+	  "next_virtual_issue_number": 0,
+	  "issues": {
+	    "99": {
+	      "timestamps": {
+	        "title": null,
+	        "description": null,
+	        "labels": null,
+	        "state": null,
+	        "comments": []
+	      }
+	    },
+	    "100": {
+	      "timestamps": {
+	        "title": null,
+	        "description": null,
+	        "labels": null,
+	        "state": null,
+	        "comments": []
+	      }
+	    }
+	  }
+	}
+	//- /testowner/testrepo/99_-_parent_issue/100_-_new-child.md
+	- [ ] new-child <!-- @mock_user https://github.com/testowner/testrepo/issues/100 -->
+	//- /testowner/testrepo/99_-_parent_issue/__main__.md
+	- [ ] parent issue <!--https://github.com/testowner/testrepo/issues/99-->
+		parent body
+	"#);
 }
 
 /// Test that touch mode correctly handles paths where middle segments match flat files.
@@ -61,7 +120,7 @@ fn test_touch_creates_subissue_under_parent_matched_by_substring() {
 fn test_touch_path_with_more_segments_after_flat_file_match() {
 	let ctx = TestContext::new(
 		r#"
-		//- /testowner/testrepo/.meta.json
+		//- /data/issues/testowner/testrepo/.meta.json
 		{
 			"virtual_project": false,
 			"next_virtual_issue_number": 0,
@@ -98,6 +157,15 @@ fn test_touch_path_with_more_segments_after_flat_file_match() {
 	  "virtual_project": false,
 	  "next_virtual_issue_number": 0,
 	  "issues": {
+	    "99": {
+	      "timestamps": {
+	        "title": null,
+	        "description": null,
+	        "labels": null,
+	        "state": null,
+	        "comments": []
+	      }
+	    },
 	    "100": {
 	      "timestamps": {
 	        "title": null,
@@ -112,7 +180,7 @@ fn test_touch_path_with_more_segments_after_flat_file_match() {
 	//- /testowner/testrepo/99_-_ancestry_resolve_for_ind.md
 	- [ ] ancestry resolve for ind <!--https://github.com/testowner/testrepo/issues/99-->
 		body content here
-		
+
 	//- /testowner/testrepo/99_-_ancestry_resolve_for_ind/100_-_check_works.md
 	- [ ] check_works <!-- @mock_user https://github.com/testowner/testrepo/issues/100 -->
 	"#);
