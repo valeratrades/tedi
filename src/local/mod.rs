@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 //==============================================================================
 
 /// Error type for local issue loading operations.
-#[derive(Debug, derive_more::From, thiserror::Error, miette::Diagnostic)]
+#[derive(Debug, miette::Diagnostic, thiserror::Error, derive_more::From)]
 pub enum LocalError {
 	/// File not found at the expected path.
 	#[error("issue file not found: {path}")]
@@ -401,12 +401,23 @@ impl Local {
 		}
 	}
 
-	/// Get the path for an issue file.
-	/// Structure: issues/{owner}/{repo}/{number}_-_{title}.md[.bak]
-	/// For nested: issues/{owner}/{repo}/{ancestor_dirs}/.../{number}_-_{title}.md[.bak]
-	pub fn issue_file_path(owner: &str, repo: &str, issue_number: Option<u64>, title: &str, closed: bool, ancestors: &[FetchedIssue]) -> PathBuf {
-		let ancestor_dir_names: Vec<_> = ancestors.iter().map(|a| Self::format_issue_dir_name(a)).collect();
-		Self::issue_file_path_from_dir_names(owner, repo, issue_number, title, closed, &ancestor_dir_names)
+	/// Get the path for an issue file from an Issue.
+	/// Uses the issue's ancestry to resolve the path.
+	///
+	/// # Errors
+	/// Returns an error if ancestor directories can't be resolved from the ancestry.
+	pub fn issue_file_path(issue: &Issue) -> Result<PathBuf> {
+		let ancestry = &issue.identity.ancestry;
+		let ancestor_dir_names = Self::build_ancestor_dir_names(ancestry)?;
+		let closed = issue.contents.state.is_closed();
+		Ok(Self::issue_file_path_from_dir_names(
+			ancestry.owner(),
+			ancestry.repo(),
+			issue.number(),
+			&issue.contents.title,
+			closed,
+			&ancestor_dir_names,
+		))
 	}
 
 	/// Get the path for an issue file using ancestor directory names directly.
@@ -452,20 +463,20 @@ impl Local {
 	}
 
 	/// Find the actual file path for an issue, checking both flat and directory formats.
-	pub fn find_issue_file(owner: &str, repo: &str, issue_number: Option<u64>, title: &str, ancestors: &[FetchedIssue]) -> Option<PathBuf> {
+	pub fn find_issue_file(owner: &str, repo: &str, issue_number: Option<u64>, title: &str, ancestor_dir_names: &[String]) -> Option<PathBuf> {
 		// Try flat format first (both open and closed)
-		let flat_path = Self::issue_file_path(owner, repo, issue_number, title, false, ancestors);
+		let flat_path = Self::issue_file_path_from_dir_names(owner, repo, issue_number, title, false, ancestor_dir_names);
 		if flat_path.exists() {
 			return Some(flat_path);
 		}
 
-		let flat_closed_path = Self::issue_file_path(owner, repo, issue_number, title, true, ancestors);
+		let flat_closed_path = Self::issue_file_path_from_dir_names(owner, repo, issue_number, title, true, ancestor_dir_names);
 		if flat_closed_path.exists() {
 			return Some(flat_closed_path);
 		}
 
 		// Try directory format
-		let issue_dir = Self::issue_dir_path(owner, repo, issue_number, title, ancestors);
+		let issue_dir = Self::issue_dir_path_from_dir_names(owner, repo, issue_number, title, ancestor_dir_names);
 		if issue_dir.is_dir() {
 			let main_path = Self::main_file_path(&issue_dir, false);
 			if main_path.exists() {

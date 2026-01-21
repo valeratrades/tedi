@@ -194,7 +194,7 @@ pub async fn open_command(settings: &LiveSettings, args: OpenArgs, offline: bool
 
 			// Commit the fetched state as the consensus baseline
 			use super::consensus::commit_issue_changes;
-			commit_issue_changes(&path, &owner, &repo, issue_number, Some("initial fetch"))?;
+			commit_issue_changes(&owner, &repo, issue_number)?;
 
 			path
 		};

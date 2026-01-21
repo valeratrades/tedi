@@ -42,7 +42,7 @@ use super::{
 /// Caller is responsible for loading the issue (via `LazyIssue<Local>::load`).
 #[tracing::instrument]
 pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Modifier, sync_opts: SyncOptions) -> Result<ModifyResult> {
-	let issue_file_path: LocalPath = Local::issue_file_path(&issue);
+	let issue_file_path = Local::issue_file_path(&issue)?;
 	let repo_info = issue.identity.ancestry.repo_info();
 	let (owner, repo) = (repo_info.owner(), repo_info.repo()); //HACK: feels redundant
 
@@ -161,7 +161,7 @@ pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Mo
 		let remote_source = RemoteSource::with_lineage(link, issue.identity.ancestry().lineage());
 		let remote = <Issue as LazyIssue<Remote>>::load(remote_source).await?;
 
-		let consensus = load_consensus_issue(issue_file_path).await?;
+		let consensus = load_consensus_issue(&issue_file_path).await?;
 		let (resolved, changed) = core::sync_issue(issue, consensus, remote, mode, &owner, &repo, meta.issue_number).await?;
 		issue = resolved;
 
@@ -169,7 +169,7 @@ pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Mo
 			// Re-sink local in case issue numbers changed
 			<Issue as Sink<Submitted>>::sink(&mut issue, None).await?;
 			let actual_number = issue.number().unwrap_or(meta.issue_number);
-			commit_issue_changes(issue_file_path, &owner, &repo, actual_number, None)?;
+			commit_issue_changes(&owner, &repo, actual_number)?;
 		} else {
 			println!("No changes.");
 		}
@@ -178,7 +178,7 @@ pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Mo
 		<Issue as Sink<Remote>>::sink(&mut issue, None).await?;
 		<Issue as Sink<Submitted>>::sink(&mut issue, None).await?;
 		let actual_number = issue.number().unwrap_or(meta.issue_number);
-		commit_issue_changes(issue_file_path, &owner, &repo, actual_number, None)?;
+		commit_issue_changes(&owner, &repo, actual_number)?;
 	}
 
 	Ok(result)
