@@ -262,6 +262,13 @@ fn test_closing_nested_issue_creates_bak_file() {
 	let (status, stdout, stderr) = ctx.open(&path).edit(&edited_issue).run();
 	eprintln!("stdout: {stdout}\nstderr: {stderr}");
 
+	// Debug: list files in the issues directory
+	let issues_dir = ctx.data_dir().join("issues/o/r");
+	eprintln!("Files in {issues_dir:?}:");
+	for entry in walkdir::WalkDir::new(&issues_dir).into_iter().filter_map(|e| e.ok()) {
+		eprintln!("  {}", entry.path().display());
+	}
+
 	assert!(status.success(), "stderr: {stderr}");
 
 	// With the new model, closed child is in a separate .bak file

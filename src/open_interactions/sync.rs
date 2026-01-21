@@ -190,10 +190,26 @@ async fn sync_issue(local: Issue, consensus: Option<Issue>, remote: Issue, mode:
 	let mut local_merged = local.clone();
 	let mut remote_merged = remote.clone();
 
+	eprintln!("[sync_issue] Before merge:");
+	eprintln!("  local lineage: {:?}", local.identity.ancestry.lineage());
+	eprintln!("  remote lineage: {:?}", remote.identity.ancestry.lineage());
+	for (i, c) in local.children.iter().enumerate() {
+		eprintln!("  local child[{i}] lineage: {:?}", c.identity.ancestry.lineage());
+	}
+	for (i, c) in remote.children.iter().enumerate() {
+		eprintln!("  remote child[{i}] lineage: {:?}", c.identity.ancestry.lineage());
+	}
+
 	if let Some(ref consensus) = consensus {
 		let _ = local_merged.merge(consensus.clone(), false);
 	}
 	local_merged.merge(remote.clone(), force)?;
+
+	eprintln!("[sync_issue] After merge:");
+	eprintln!("  local_merged lineage: {:?}", local_merged.identity.ancestry.lineage());
+	for (i, c) in local_merged.children.iter().enumerate() {
+		eprintln!("  local_merged child[{i}] lineage: {:?}", c.identity.ancestry.lineage());
+	}
 
 	if let Some(consensus) = consensus {
 		let _ = remote_merged.merge(consensus, false);
@@ -261,6 +277,10 @@ pub async fn modify_and_sync_issue(issue_file_path: &Path, offline: bool, modifi
 	// Load local issue
 	let source = LocalPath::submitted(issue_file_path.to_path_buf());
 	let mut issue = <Issue as LazyIssue<Local>>::load(source).await?;
+	eprintln!("[after load] issue lineage: {:?}", issue.identity.ancestry.lineage());
+	for (i, c) in issue.children.iter().enumerate() {
+		eprintln!("[after load] child[{i}] lineage: {:?}", c.identity.ancestry.lineage());
+	}
 
 	// Handle virtual issues - they don't sync
 	if issue.identity.remote.is_virtual() {
@@ -316,6 +336,10 @@ pub async fn modify_and_sync_issue(issue_file_path: &Path, offline: bool, modifi
 	}
 
 	// Save locally
+	eprintln!("[save locally] issue lineage: {:?}", issue.identity.ancestry.lineage());
+	for (i, c) in issue.children.iter().enumerate() {
+		eprintln!("[save locally] child[{i}] lineage: {:?}", c.identity.ancestry.lineage());
+	}
 	<Issue as Sink<Submitted>>::sink(&mut issue, None).await?;
 
 	if offline {

@@ -648,9 +648,11 @@ impl Local {
 				}
 			} else if path.is_file() {
 				// Flat file: strip .md or .md.bak extension to get dir name
-				let base = name.strip_suffix(".md.bak").or_else(|| name.strip_suffix(".md"))?;
-				if base.starts_with(&prefix_with_sep) || base == exact_match_dir {
-					return Some(base.to_string());
+				// Use if-let instead of ? to avoid early return on non-.md files
+				if let Some(base) = name.strip_suffix(".md.bak").or_else(|| name.strip_suffix(".md")) {
+					if base.starts_with(&prefix_with_sep) || base == exact_match_dir {
+						return Some(base.to_string());
+					}
 				}
 			}
 		}
@@ -671,7 +673,10 @@ impl Local {
 	/// Extract full ancestry (owner/repo/lineage) from an issue file path.
 	///
 	/// Path structure: `issues/{owner}/{repo}/{number}_-_{title}/.../file.md`
-	/// The lineage contains parent issue numbers from the path components between repo and the target file.
+	/// The lineage contains PARENT issue numbers from the path components between repo and the target file.
+	///
+	/// For directory format (`__main__.md`), the immediately containing directory is the issue itself,
+	/// not a parent, so it's excluded from lineage.
 	pub fn extract_ancestry(path: &Path) -> Result<Ancestry> {
 		let issues_base = Self::issues_dir();
 
@@ -685,10 +690,16 @@ impl Local {
 		let owner = components[0].as_os_str().to_str().ok_or_else(|| eyre!("Could not extract owner from path: {path:?}"))?;
 		let repo = components[1].as_os_str().to_str().ok_or_else(|| eyre!("Could not extract repo from path: {path:?}"))?;
 
-		// Everything between repo and the final component is a parent issue directory
+		// Check if this is a directory format file (__main__.md or __main__.md.bak)
+		let filename = components.last().and_then(|c| c.as_os_str().to_str()).unwrap_or("");
+		let is_dir_format = filename.starts_with(Self::MAIN_ISSUE_FILENAME);
+
+		// Everything between repo and the final component is a potential parent issue directory
 		// Format: {number}_-_{title} or just {number}
+		// For directory format, exclude the last directory (that's the issue itself, not a parent)
 		let mut lineage = Vec::new();
-		for component in &components[2..components.len().saturating_sub(1)] {
+		let end_offset = if is_dir_format { 2 } else { 1 }; // Skip filename + issue dir for dir format
+		for component in &components[2..components.len().saturating_sub(end_offset)] {
 			let name = component.as_os_str().to_str().ok_or_else(|| eyre!("Invalid path component: {component:?}"))?;
 
 			// Skip if this looks like a file (has .md extension)
@@ -1250,7 +1261,16 @@ fn sink_issue_node(issue: &Issue, old: Option<&Issue>, owner: &str, repo: &str, 
 	let old_has_children = old.map(|o| !o.children.is_empty()).unwrap_or(false);
 
 	// Build ancestor directory names from issue's ancestry lineage
-	let ancestor_dir_names = Local::build_ancestor_dir_names(&issue.identity.ancestry).unwrap_or_default();
+	let lineage = issue.identity.ancestry.lineage();
+	eprintln!("[sink_issue_node] issue #{:?} '{}', lineage: {:?}", issue_number, title, lineage);
+	let ancestor_dir_names = match Local::build_ancestor_dir_names(&issue.identity.ancestry) {
+		Ok(names) => names,
+		Err(e) => {
+			eprintln!("[sink_issue_node] build_ancestor_dir_names FAILED: {e}");
+			vec![]
+		}
+	};
+	eprintln!("[sink_issue_node] ancestor_dir_names: {:?}", ancestor_dir_names);
 
 	let format_changed = has_children != old_has_children;
 

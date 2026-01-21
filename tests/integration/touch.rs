@@ -180,7 +180,7 @@ fn test_touch_path_with_more_segments_after_flat_file_match() {
 	//- /testowner/testrepo/99_-_ancestry_resolve_for_ind.md
 	- [ ] ancestry resolve for ind <!--https://github.com/testowner/testrepo/issues/99-->
 		body content here
-
+		
 	//- /testowner/testrepo/99_-_ancestry_resolve_for_ind/100_-_check_works.md
 	- [ ] check_works <!-- @mock_user https://github.com/testowner/testrepo/issues/100 -->
 	"#);
