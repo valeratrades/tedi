@@ -102,104 +102,124 @@ fn get_current_source() -> Result<IssueSource> {
 	Ok(IssueSource::new(issue_path))
 }
 
-//=============================================================================
-// Urgent file handling - owner-level urgent.md at issues/{owner}/urgent.md
-//=============================================================================
+/// Urgent file handling - standalone blocker interface, NOT connected to issues.
+///
+/// This is intentionally separate from the issue-based blocker system.
+/// Urgent.md files are simple blocker lists stored at `issues/{owner}/urgent.md`
+/// with no Github sync, no issue metadata - just raw blockers for immediate tasks.
+mod urgent {
+	use super::*;
 
-/// Get the owner from the current blocker issue path.
-fn get_current_owner() -> Option<String> {
-	let issue_path = get_current_blocker_issue()?;
-	let ancestry = Local::extract_ancestry(&issue_path).ok()?;
-	Some(ancestry.owner().to_string())
-}
-
-/// Get the path to the owner-level urgent.md file.
-fn get_urgent_path(owner: &str) -> PathBuf {
-	Local::issues_dir().join(owner).join("urgent.md")
-}
-
-/// Check if an urgent.md file exists for any owner.
-/// Returns the path and owner name if found.
-fn find_existing_urgent() -> Option<(PathBuf, String)> {
-	let issues_dir = Local::issues_dir();
-	if !issues_dir.exists() {
-		return None;
+	/// Get the owner from the current blocker issue path.
+	pub fn get_current_owner() -> Option<String> {
+		let issue_path = get_current_blocker_issue()?;
+		let ancestry = Local::extract_ancestry(&issue_path).ok()?;
+		Some(ancestry.owner().to_string())
 	}
 
-	for entry in std::fs::read_dir(&issues_dir).ok()?.flatten() {
-		if entry.file_type().ok()?.is_dir() {
-			let urgent_path = entry.path().join("urgent.md");
-			if urgent_path.exists() {
-				let owner = entry.file_name().to_string_lossy().to_string();
-				return Some((urgent_path, owner));
+	/// Get the path to the owner-level urgent.md file.
+	pub fn get_path(owner: &str) -> PathBuf {
+		Local::issues_dir().join(owner).join("urgent.md")
+	}
+
+	/// Check if an urgent.md file exists for any owner.
+	/// Returns the path and owner name if found.
+	pub fn find_existing() -> Option<(PathBuf, String)> {
+		let issues_dir = Local::issues_dir();
+		if !issues_dir.exists() {
+			return None;
+		}
+
+		for entry in std::fs::read_dir(&issues_dir).ok()?.flatten() {
+			if entry.file_type().ok()?.is_dir() {
+				let urgent_path = entry.path().join("urgent.md");
+				if urgent_path.exists() {
+					let owner = entry.file_name().to_string_lossy().to_string();
+					return Some((urgent_path, owner));
+				}
 			}
 		}
+		None
 	}
-	None
+
+	/// Load blockers from an urgent.md file (simple blocker list, no issue metadata).
+	/// Returns empty blockers if the file doesn't exist yet.
+	pub fn load_blockers(path: &Path) -> Result<BlockerSequence> {
+		match std::fs::read_to_string(path) {
+			Ok(content) => Ok(BlockerSequence::parse(&content)),
+			Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(BlockerSequence::default()),
+			Err(e) => Err(e.into()),
+		}
+	}
+
+	/// Save blockers to an urgent.md file.
+	pub fn save_blockers(path: &Path, blockers: &BlockerSequence) -> Result<()> {
+		if let Some(parent) = path.parent() {
+			std::fs::create_dir_all(parent)?;
+		}
+		std::fs::write(path, blockers.serialize(DisplayFormat::Headers))?;
+		Ok(())
+	}
+
+	/// Check if urgent file is semantically empty and delete it if so.
+	pub fn cleanup_if_empty(path: &Path) -> Result<()> {
+		if !path.exists() {
+			return Ok(());
+		}
+
+		let content = std::fs::read_to_string(path)?;
+		let blockers = BlockerSequence::parse(&content);
+
+		if blockers.is_empty() {
+			std::fs::remove_file(path)?;
+			eprintln!("Removed empty urgent file: {}", path.display());
+		}
+
+		Ok(())
+	}
+
+	/// Get the current urgent blocker description for tracking purposes.
+	/// Returns (description, is_urgent=true) if found.
+	pub fn description(fully_qualified: bool) -> Option<(String, bool)> {
+		let (urgent_path, owner) = find_existing()?;
+		let blockers = load_blockers(&urgent_path).ok()?;
+		let current = blockers.current_with_context(&[])?;
+		let prefix = if fully_qualified { format!("URGENT({owner}): ") } else { "URGENT: ".to_string() };
+		Some((format!("{prefix}{current}"), true))
+	}
 }
 
-/// Load blockers from an urgent.md file (simple blocker list, no issue metadata).
-/// Returns empty blockers if the file doesn't exist yet.
-fn load_urgent_blockers(path: &Path) -> Result<BlockerSequence> {
-	match std::fs::read_to_string(path) {
-		Ok(content) => Ok(BlockerSequence::parse(&content)),
-		Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(BlockerSequence::default()),
-		Err(e) => Err(e.into()),
+/// Trait for getting current blocker description from different sources.
+trait BlockerDescription {
+	/// Get the current blocker description for tracking purposes.
+	/// Returns (description, is_urgent) if found.
+	fn description(&self, fully_qualified: bool) -> Option<(String, bool)>;
+}
+
+impl BlockerDescription for IssueSource {
+	fn description(&self, fully_qualified: bool) -> Option<(String, bool)> {
+		let blockers = self.load().ok()?;
+		let hierarchy = if fully_qualified {
+			self.path_for_hierarchy()
+				.and_then(|p| p.file_stem().map(|s| s.to_string_lossy().to_string()))
+				.map(|s| vec![s])
+				.unwrap_or_default()
+		} else {
+			vec![]
+		};
+		blockers.current_with_context(&hierarchy).map(|desc| (desc, false))
 	}
 }
 
-/// Save blockers to an urgent.md file.
-fn save_urgent_blockers(path: &Path, blockers: &BlockerSequence) -> Result<()> {
-	if let Some(parent) = path.parent() {
-		std::fs::create_dir_all(parent)?;
-	}
-	std::fs::write(path, blockers.serialize(DisplayFormat::Headers))?;
-	Ok(())
-}
-
-/// Check if urgent file is semantically empty and delete it if so.
-fn cleanup_urgent_if_empty(path: &Path) -> Result<()> {
-	if !path.exists() {
-		return Ok(());
-	}
-
-	let content = std::fs::read_to_string(path)?;
-	let blockers = BlockerSequence::parse(&content);
-
-	if blockers.is_empty() {
-		std::fs::remove_file(path)?;
-		eprintln!("Removed empty urgent file: {}", path.display());
-	}
-
-	Ok(())
-}
-
-/// Get the current blocker description for tracking purposes.
-/// Checks urgent file first, then falls back to current issue.
-/// Returns (description, is_urgent) if found.
+/// Get the current blocker description, checking urgent first then falling back to issue.
 fn get_current_blocker_description(fully_qualified: bool) -> Option<(String, bool)> {
 	// Check urgent file first
-	if let Some((urgent_path, owner)) = find_existing_urgent() {
-		let blockers = load_urgent_blockers(&urgent_path).ok()?;
-		if let Some(current) = blockers.current_with_context(&[]) {
-			let prefix = if fully_qualified { format!("URGENT({owner}): ") } else { "URGENT: ".to_string() };
-			return Some((format!("{prefix}{current}"), true));
-		}
+	if let Some(desc) = urgent::description(fully_qualified) {
+		return Some(desc);
 	}
 
 	// Fall back to current issue
-	let source = get_current_source().ok()?;
-	let blockers = source.load().ok()?;
-	let hierarchy = if fully_qualified {
-		source
-			.path_for_hierarchy()
-			.and_then(|p| p.file_stem().map(|s| s.to_string_lossy().to_string()))
-			.map(|s| vec![s])
-			.unwrap_or_default()
-	} else {
-		vec![]
-	};
-	blockers.current_with_context(&hierarchy).map(|desc| (desc, false))
+	get_current_source().ok()?.description(fully_qualified)
 }
 
 /// Update clockify tracking after a blocker change (add/pop).
@@ -229,8 +249,8 @@ pub async fn main_integrated(command: super::io::Command, format: DisplayFormat,
 	match command {
 		Command::Set { pattern } => {
 			// Check if there's an urgent file - can't switch away until it's empty
-			if let Some((urgent_path, owner)) = find_existing_urgent() {
-				let blockers = load_urgent_blockers(&urgent_path)?;
+			if let Some((urgent_path, owner)) = urgent::find_existing() {
+				let blockers = urgent::load_blockers(&urgent_path)?;
 				if !blockers.is_empty() {
 					eprintln!("Cannot switch project while urgent tasks exist for '{owner}'. Complete urgent tasks first.");
 					eprintln!("  {}", urgent_path.display());
@@ -262,8 +282,8 @@ pub async fn main_integrated(command: super::io::Command, format: DisplayFormat,
 		Command::Open { pattern, set_after, urgent } => {
 			if urgent {
 				// Open the urgent file for the current owner
-				let owner = get_current_owner().ok_or_else(|| eyre!("No blocker file set. Use `todo blocker set <pattern>` first to establish owner context."))?;
-				let urgent_path = get_urgent_path(&owner);
+				let owner = urgent::get_current_owner().ok_or_else(|| eyre!("No blocker file set. Use `todo blocker set <pattern>` first to establish owner context."))?;
+				let urgent_path = urgent::get_path(&owner);
 
 				if !urgent_path.exists() {
 					// Create empty urgent file
@@ -276,7 +296,7 @@ pub async fn main_integrated(command: super::io::Command, format: DisplayFormat,
 				v_utils::io::file_open::open(&urgent_path).await?;
 
 				// Cleanup if empty after editing
-				cleanup_urgent_if_empty(&urgent_path)?;
+				urgent::cleanup_if_empty(&urgent_path)?;
 
 				// Update tracking if enabled
 				update_tracking_after_change().await;
@@ -304,8 +324,8 @@ pub async fn main_integrated(command: super::io::Command, format: DisplayFormat,
 
 		Command::List => {
 			// Check if there's an urgent file - show that first
-			if let Some((urgent_path, owner)) = find_existing_urgent() {
-				let blockers = load_urgent_blockers(&urgent_path)?;
+			if let Some((urgent_path, owner)) = urgent::find_existing() {
+				let blockers = urgent::load_blockers(&urgent_path)?;
 				if !blockers.is_empty() {
 					println!("=== URGENT ({owner}) ===");
 					println!("{}", blockers.serialize(format));
@@ -331,8 +351,8 @@ pub async fn main_integrated(command: super::io::Command, format: DisplayFormat,
 
 		Command::Current { fully_qualified } => {
 			// Check urgent file first - urgent tasks take priority
-			if let Some((urgent_path, owner)) = find_existing_urgent() {
-				let blockers = load_urgent_blockers(&urgent_path)?;
+			if let Some((urgent_path, owner)) = urgent::find_existing() {
+				let blockers = urgent::load_blockers(&urgent_path)?;
 				if let Some(current) = blockers.current_with_context(&[]) {
 					let prefix = if fully_qualified { format!("URGENT({owner}): ") } else { "URGENT: ".to_string() };
 					let output = format!("{prefix}{current}");
@@ -372,17 +392,17 @@ pub async fn main_integrated(command: super::io::Command, format: DisplayFormat,
 
 		Command::Pop => {
 			// Check if there's an urgent file - pop from there first
-			if let Some((urgent_path, owner)) = find_existing_urgent() {
-				let mut blockers = load_urgent_blockers(&urgent_path)?;
+			if let Some((urgent_path, owner)) = urgent::find_existing() {
+				let mut blockers = urgent::load_blockers(&urgent_path)?;
 				if !blockers.is_empty() {
 					let popped = blockers.pop();
-					save_urgent_blockers(&urgent_path, &blockers)?;
+					urgent::save_blockers(&urgent_path, &blockers)?;
 
 					if let Some(text) = popped {
 						println!("Popped (urgent {owner}): {text}");
 					}
 
-					cleanup_urgent_if_empty(&urgent_path)?;
+					urgent::cleanup_if_empty(&urgent_path)?;
 
 					// Update tracking after pop
 					update_tracking_after_change().await;
@@ -431,10 +451,10 @@ pub async fn main_integrated(command: super::io::Command, format: DisplayFormat,
 		Command::Add { name, urgent } => {
 			if urgent {
 				// Add to owner-level urgent.md
-				let owner = get_current_owner().ok_or_else(|| eyre!("No blocker file set. Use `todo blocker set <pattern>` first to establish owner context."))?;
+				let owner = urgent::get_current_owner().ok_or_else(|| eyre!("No blocker file set. Use `todo blocker set <pattern>` first to establish owner context."))?;
 
 				// Check if another urgent file exists for a different owner
-				if let Some((existing_path, existing_owner)) = find_existing_urgent()
+				if let Some((existing_path, existing_owner)) = urgent::find_existing()
 					&& existing_owner != owner
 				{
 					bail!(
@@ -443,10 +463,10 @@ pub async fn main_integrated(command: super::io::Command, format: DisplayFormat,
 					);
 				}
 
-				let urgent_path = get_urgent_path(&owner);
-				let mut blockers = load_urgent_blockers(&urgent_path)?;
+				let urgent_path = urgent::get_path(&owner);
+				let mut blockers = urgent::load_blockers(&urgent_path)?;
 				blockers.add(&name);
-				save_urgent_blockers(&urgent_path, &blockers)?;
+				urgent::save_blockers(&urgent_path, &blockers)?;
 
 				// Update tracking after add
 				update_tracking_after_change().await;
