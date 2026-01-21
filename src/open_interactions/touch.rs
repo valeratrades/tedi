@@ -191,7 +191,8 @@ fn match_single_or_none(children: &[String], pattern: &str) -> MatchOrNone {
 /// The issue will only be written to disk when the user saves changes.
 ///
 /// Ancestry contains owner/repo and parent lineage (if creating a sub-issue).
-pub fn create_pending_issue(title: &str, ancestry: &Ancestry) -> Result<(tedi::Issue, PathBuf)> {
+/// If `virtual_project` is true, creates a virtual issue (local-only, no Github sync).
+pub fn create_pending_issue(title: &str, ancestry: &Ancestry, virtual_project: bool) -> Result<(tedi::Issue, PathBuf)> {
 	use tedi::{CloseState, Comment, CommentIdentity, Events, Issue, IssueContents, IssueIdentity};
 
 	// Build ancestor directory names if creating a sub-issue
@@ -201,7 +202,11 @@ pub fn create_pending_issue(title: &str, ancestry: &Ancestry) -> Result<(tedi::I
 	let issue_file_path = Local::issue_file_path_from_dir_names(ancestry.owner(), ancestry.repo(), None, title, false, &ancestor_dir_names);
 
 	// Create the Issue object in memory
-	let identity = IssueIdentity::local(*ancestry);
+	let identity = if virtual_project {
+		IssueIdentity::virtual_issue(*ancestry)
+	} else {
+		IssueIdentity::pending(*ancestry)
+	};
 	let contents = IssueContents {
 		title: title.to_string(),
 		labels: vec![],
@@ -224,41 +229,11 @@ pub fn create_pending_issue(title: &str, ancestry: &Ancestry) -> Result<(tedi::I
 	} else {
 		println!("Creating pending issue: {title}");
 	}
-	println!("Issue will be created on Github when you save and sync.");
-
-	Ok((issue, issue_file_path))
-}
-
-/// Create a new virtual issue locally (no Github).
-/// Virtual issues have locally-generated issue numbers and are stored in the same format.
-pub fn create_virtual_issue(title: &str, ancestry: &Ancestry) -> Result<PathBuf> {
-	let owner = ancestry.owner();
-	let repo = ancestry.repo();
-
-	// Ensure virtual project exists (creates if needed)
-	Local::ensure_virtual_project(owner, repo)?;
-
-	// Allocate a virtual issue number (for metadata tracking, not filename)
-	let issue_number = Local::allocate_virtual_issue_number(owner, repo)?;
-
-	// Determine file path (no number prefix for virtual issues)
-	let issue_file_path = Local::issue_file_path(owner, repo, None, title, false, &[]);
-
-	// Create parent directories
-	if let Some(parent) = issue_file_path.parent() {
-		std::fs::create_dir_all(parent)?;
+	if !virtual_project {
+		println!("Issue will be created on Github when you save and sync.");
 	}
 
-	// Create the issue file with basic structure
-	// Virtual issues don't have a Github URL, so we use a special marker
-	let content = format!("- [ ] {title} <!--virtual:{owner}/{repo}#{issue_number}-->\n");
-
-	std::fs::write(&issue_file_path, &content)?;
-
-	println!("Created virtual issue #{issue_number}: {title}");
-	println!("Stored at: {issue_file_path:?}");
-
-	Ok(issue_file_path)
+	Ok((issue, issue_file_path))
 }
 
 #[cfg(test)]

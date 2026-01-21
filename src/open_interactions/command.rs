@@ -13,7 +13,7 @@ use v_utils::prelude::*;
 use super::{
 	remote::{Remote, RemoteSource},
 	sync::{MergeMode, Modifier, Side, SyncOptions, modify_and_sync_issue},
-	touch::{TouchPathResult, create_pending_issue, create_virtual_issue, parse_touch_path},
+	touch::{TouchPathResult, create_pending_issue, parse_touch_path},
 };
 use crate::{config::LiveSettings, github};
 
@@ -151,20 +151,13 @@ pub async fn open_command(settings: &LiveSettings, args: OpenArgs, offline: bool
 				(path, local_sync_opts(), offline || project_is_virtual)
 			}
 			TouchPathResult::Create { title, ancestry } => {
-				// Need to create a new issue
+				// Create pending issue, write to disk, then use unified sync flow
+				// Works the same for virtual and real projects - sync handles the difference
 				let project_is_virtual = Local::is_virtual_project(ancestry.owner(), ancestry.repo());
-
-				if project_is_virtual {
-					// Virtual project: stays local forever
-					println!("Project {}/{} is virtual (no Github remote)", ancestry.owner(), ancestry.repo());
-					(create_virtual_issue(&title, &ancestry)?, local_sync_opts(), true)
-				} else {
-					// Real project: create pending issue, write to disk, then use unified sync flow
-					let (mut issue, path) = create_pending_issue(&title, &ancestry)?;
-					<Issue as Sink<Submitted>>::sink(&mut issue, None).await?;
-					modify_and_sync_issue(&path, false, Modifier::Editor { open_at_blocker: false }, local_sync_opts()).await?;
-					return Ok(());
-				}
+				let (mut issue, path) = create_pending_issue(&title, &ancestry, project_is_virtual)?;
+				<Issue as Sink<Submitted>>::sink(&mut issue, None).await?;
+				modify_and_sync_issue(&path, project_is_virtual, Modifier::Editor { open_at_blocker: false }, local_sync_opts()).await?;
+				return Ok(());
 			}
 		}
 	} else if github::is_github_issue_url(input) {
