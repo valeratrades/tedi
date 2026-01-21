@@ -100,46 +100,7 @@ pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Mo
 		return Ok(result);
 	}
 
-	// Handle duplicate close type
-	if let CloseState::Duplicate(dup_number) = issue.contents.state {
-		todo!("everything up until `commit_issue_changes` at the bottom here must go. Instead, Sink<Remote> and Sink<Local> should know to remove themselves when marked as duplicates"); //TODO!!!!: .
-		//return async {
-		//	// Validate duplicate exists
-		//	if !offline {
-		//		let gh = crate::github::client::get();
-		//		let repo_info = tedi::RepoInfo::new(owner, repo);
-		//		if gh.fetch_issue(repo_info, dup_number).await.is_err() {
-		//			bail!("Cannot mark as duplicate of #{dup_number}: issue does not exist.");
-		//		}
-		//	}
-		//
-		//	println!("Marked as duplicate of #{dup_number}, removing...");
-		//
-		//	// Close on Github if needed
-		//	if !offline {
-		//		let consensus = load_consensus_issue(&issue_file_path).await?.expect("consensus missing");
-		//		if !consensus.contents.state.is_closed() {
-		//			let gh = crate::github::client::get();
-		//			gh.update_issue_state(repo_info, issue_number, "closed").await?; //XXX: incorrect, should close as duplicate. And as a duplicate of something specific. "closed" is very bad, - must serialize CloseState instead
-		//		}
-		//	}
-		//
-		//	// Remove local files
-		//	std::fs::remove_file(issue_file_path)?;
-		//	let sub_dir = issue_file_path.with_extension("");
-		//	let sub_dir = if sub_dir.extension().is_some() { sub_dir.with_extension("") } else { sub_dir };
-		//	if sub_dir.is_dir() {
-		//		std::fs::remove_dir_all(&sub_dir)?;
-		//	}
-		//
-		//	commit_issue_changes(issue_file_path, owner, repo, issue_number, None)?;
-		//	println!("Duplicate removed.");
-		//	Ok(())
-		//}
-		//.await;
-	}
-
-	// Save locally
+	// Save locally (Sink<Submitted> handles duplicate removal)
 	eprintln!("[save locally] issue lineage: {:?}", issue.identity.ancestry.lineage());
 	for (i, c) in issue.children.iter().enumerate() {
 		eprintln!("[save locally] child[{i}] lineage: {:?}", c.identity.ancestry.lineage());

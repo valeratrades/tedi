@@ -7,7 +7,7 @@ use std::path::Path;
 
 use tedi::Issue;
 
-use crate::common::{TestContext, git::GitExt};
+use crate::common::{TestContext, git::GitExt, snapshot_issues_dir};
 
 fn parse(content: &str) -> Issue {
 	Issue::parse_virtual(content, Path::new("test.md")).expect("failed to parse test issue")
@@ -268,6 +268,40 @@ fn test_closing_nested_issue_creates_bak_file() {
 	for entry in walkdir::WalkDir::new(&issues_dir).into_iter().filter_map(|e| e.ok()) {
 		eprintln!("  {}", entry.path().display());
 	}
+
+	insta::assert_snapshot!(snapshot_issues_dir(&ctx), @r#"
+	//- /o/r/.meta.json
+	{
+	  "virtual_project": false,
+	  "next_virtual_issue_number": 0,
+	  "issues": {
+	    "1": {
+	      "timestamps": {
+	        "title": null,
+	        "description": null,
+	        "labels": null,
+	        "state": null,
+	        "comments": []
+	      }
+	    },
+	    "2": {
+	      "timestamps": {
+	        "title": null,
+	        "description": null,
+	        "labels": null,
+	        "state": null,
+	        "comments": []
+	      }
+	    }
+	  }
+	}
+	//- /o/r/1_-_a/2_-_b.md
+	- [ ] b <!-- @mock_user https://github.com/o/r/issues/2 -->
+			nested body content
+	//- /o/r/1_-_a/__main__.md
+	- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->
+			lorem ipsum
+	"#);
 
 	assert!(status.success(), "stderr: {stderr}");
 

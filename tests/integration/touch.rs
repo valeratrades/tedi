@@ -78,6 +78,29 @@ fn test_touch_path_with_more_segments_after_flat_file_match() {
 
 	eprintln!("{stdout:?}");
 	eprintln!("{stderr:?}");
+
+	insta::assert_snapshot!(snapshot_issues_dir(&ctx), @r#"
+	//- /testowner/testrepo/.meta.json
+	{
+		"virtual_project": false,
+		"next_virtual_issue_number": 0,
+		"issues": {
+			"99": {
+				"timestamps": {
+					"title": null,
+					"description": null,
+					"labels": null,
+					"state": null,
+					"comments": []
+				}
+			}
+		}
+	}
+	//- /testowner/testrepo/99_-_ancestry_resolve_for_ind.md
+	- [ ] ancestry resolve for ind <!--https://github.com/testowner/testrepo/issues/99-->
+		body content here
+	"#);
+
 	assert!(status.success(), "Expected success, got stderr: {stderr}");
 
 	// Verify: flat file converted to directory, sub-issue created inside
@@ -145,6 +168,28 @@ fn test_touch_new_subissue_no_edits_does_not_create() {
 
 	// Touch a new sub-issue path but don't make any edits (just close editor)
 	let (status, _stdout, stderr) = ctx.touch("testowner/testrepo/parent/new_child").run();
+
+	insta::assert_snapshot!(snapshot_issues_dir(&ctx), @r#"
+	//- /testowner/testrepo/.meta.json
+	{
+		"virtual_project": false,
+		"next_virtual_issue_number": 0,
+		"issues": {
+			"99": {
+				"timestamps": {
+					"title": null,
+					"description": null,
+					"labels": null,
+					"state": null,
+					"comments": []
+				}
+			}
+		}
+	}
+	//- /testowner/testrepo/99_-_parent_issue.md
+	- [ ] parent issue <!--https://github.com/testowner/testrepo/issues/99-->
+		parent body
+	"#);
 
 	// Should succeed (editor opened and closed)
 	assert!(status.success(), "Expected success, got stderr: {stderr}");

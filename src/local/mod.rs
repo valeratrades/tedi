@@ -1305,6 +1305,12 @@ impl Sink<Consensus> for Issue {
 /// Uses issue's identity.ancestry for path construction.
 #[allow(deprecated)]
 fn sink_issue_node(issue: &Issue, old: Option<&Issue>, owner: &str, repo: &str, _ancestors: &[FetchedIssue]) -> Result<bool> {
+	// Duplicate issues self-eliminate: remove local files instead of writing
+	if let crate::CloseState::Duplicate(dup_of) = issue.contents.state {
+		tracing::info!(issue = ?issue.number(), duplicate_of = dup_of, "Removing duplicate issue from local storage");
+		return remove_duplicate_issue(issue, owner, repo);
+	}
+
 	let issue_number = issue.number();
 	let title = &issue.contents.title;
 	let closed = issue.contents.state.is_closed();
@@ -1463,4 +1469,33 @@ fn sink_issue_node(issue: &Issue, old: Option<&Issue>, owner: &str, repo: &str, 
 	}
 
 	Ok(any_written)
+}
+
+/// Remove a duplicate issue from local storage.
+/// Called when an issue is marked as a duplicate - it should be removed rather than written.
+fn remove_duplicate_issue(issue: &Issue, owner: &str, repo: &str) -> Result<bool> {
+	let issue_number = issue.number();
+	let title = &issue.contents.title;
+
+	let ancestor_dir_names = Local::build_ancestor_dir_names(&issue.identity.ancestry).unwrap_or_default();
+
+	// Remove flat file variants
+	let flat_open = Local::issue_file_path_from_dir_names(owner, repo, issue_number, title, false, &ancestor_dir_names);
+	let flat_closed = Local::issue_file_path_from_dir_names(owner, repo, issue_number, title, true, &ancestor_dir_names);
+	let _ = std::fs::remove_file(&flat_open);
+	let _ = std::fs::remove_file(&flat_closed);
+
+	// Remove directory variant (if it has children)
+	let issue_dir = Local::issue_dir_path_from_dir_names(owner, repo, issue_number, title, &ancestor_dir_names);
+	if issue_dir.is_dir() {
+		std::fs::remove_dir_all(&issue_dir)?;
+	}
+
+	// Remove metadata
+	if let Some(num) = issue_number {
+		Local::remove_issue_meta(owner, repo, num)?;
+	}
+
+	println!("Removed duplicate issue #{issue_number:?}");
+	Ok(true)
 }

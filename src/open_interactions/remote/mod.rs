@@ -346,6 +346,7 @@ impl Sink<Remote> for Issue {
 
 		let gh = crate::github::client::get();
 		let repo_info = self.identity.ancestry.repo_info();
+
 		let mut changed = false;
 
 		// If this is a pending (local) issue, create it first
