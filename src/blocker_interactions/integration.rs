@@ -287,15 +287,18 @@ pub async fn main_integrated(command: super::io::Command, format: DisplayFormat,
 					get_current_blocker_issue().ok_or_else(|| eyre!("No issue set. Use `todo blocker set <pattern>` first."))?
 				};
 
-				// Open the issue file with $EDITOR (offline, no Github sync)
-				v_utils::io::file_open::open(&issue_path).await?;
+				// Use unified modify flow
+				modify_and_sync_issue(&issue_path, offline, Modifier::Editor { open_at_blocker: false }, SyncOptions::default()).await?;
 
 				// If set_after flag is set, update the current blocker issue
 				if set_after {
 					set_current_blocker_issue(&issue_path)?;
-					let source = IssueSource::new(issue_path);
+					let source = IssueSource::new(issue_path.clone());
 					println!("Set blockers to: {}", source.display_name());
 				}
+
+				// Update tracking after change
+				update_tracking_after_change().await;
 			}
 		}
 
