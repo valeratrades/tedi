@@ -1530,8 +1530,14 @@ impl Issue /*{{{1*/ {
 	///
 	/// Use this instead of `parse_virtual` when re-loading an issue after editor edits.
 	pub fn update_from_virtual(&mut self, content: &str, path: &std::path::Path) -> Result<(), ParseError> {
+		eprintln!("[update_from_virtual] content:\n{content}");
 		// Parse the new content
 		let parsed = Self::parse_virtual_with_ancestry(content, path, self.identity.ancestry)?;
+
+		eprintln!("[update_from_virtual] parsed {} children", parsed.children.len());
+		for (i, c) in parsed.children.iter().enumerate() {
+			eprintln!("[update_from_virtual] parsed child[{i}] state: {:?}", c.contents.state);
+		}
 
 		// Update contents (title, labels, state, comments, blockers)
 		self.contents = parsed.contents;

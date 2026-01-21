@@ -1319,7 +1319,10 @@ fn sink_issue_node(issue: &Issue, old: Option<&Issue>, owner: &str, repo: &str, 
 
 	// Build ancestor directory names from issue's ancestry lineage
 	let lineage = issue.identity.ancestry.lineage();
-	eprintln!("[sink_issue_node] issue #{issue_number:?} '{title}', lineage: {lineage:?}");
+	eprintln!(
+		"[sink_issue_node] issue #{issue_number:?} '{title}', lineage: {lineage:?}, closed: {closed}, state: {:?}",
+		issue.contents.state
+	);
 	let ancestor_dir_names = match Local::build_ancestor_dir_names(&issue.identity.ancestry) {
 		Ok(names) => names,
 		Err(e) => {

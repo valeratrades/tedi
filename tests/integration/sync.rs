@@ -527,8 +527,7 @@ fn test_reset_syncs_changes_after_editor() {
 	modified_issue.contents.state = tedi::CloseState::Closed;
 
 	// Open with --reset and make changes while editor is open
-	let issue_path = ctx.flat_issue_path("o", "r", 1, "Test Issue");
-	let (_status, stdout, stderr) = ctx.open_url("o", "r", 1).args(&["--reset"]).unsafe_edit_source_file(&issue_path, &modified_issue).run();
+	let (_status, stdout, stderr) = ctx.open_url("o", "r", 1).args(&["--reset"]).edit(&modified_issue).run();
 
 	eprintln!("stdout: {stdout}");
 	eprintln!("stderr: {stderr}");
