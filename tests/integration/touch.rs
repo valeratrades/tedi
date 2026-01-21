@@ -73,9 +73,7 @@ fn test_touch_path_with_more_segments_after_flat_file_match() {
 	"#,
 	);
 
-	// Touch ancestry/check_works where "ancestry" matches flat file "99_-_ancestry_resolve_for_ind.md"
-	// Should create "check_works" as sub-issue under #99, converting flat file to directory.
-	let (status, stdout, stderr) = ctx.touch("testowner/testrepo/ancestry/check_works").run();
+	let (status, stdout, stderr) = ctx.touch("testowner/testrepo/ancestry/check_works").edit().run();
 
 	eprintln!("{stdout:?}");
 	eprintln!("{stderr:?}");

@@ -267,31 +267,31 @@ pub async fn open_new_issue(mut issue: Issue, issue_file_path: &Path, _sync_opts
 	let repo = issue.identity.repo().to_string();
 
 	// Use a temp file for editing - don't create the final directory/files yet
-	let temp_dir = std::env::temp_dir();
-	let temp_file = temp_dir.join(format!("tedi_new_issue_{}.md", std::process::id()));
+	{
+		let temp_file = Local::virtual_edit_path(&issue);
+		if let Some(parent) = temp_file.parent() {
+			std::fs::create_dir_all(parent)?;
+		}
 
-	// Apply editor modifier using temp file
-	let result = Modifier::Editor { open_at_blocker: false }.apply(&mut issue, &temp_file).await?;
+		// this is interface for opening the editor (or applying procedural changes, hence the structure)
+		let result = Modifier::Editor { open_at_blocker: false }.apply(&mut issue, &temp_file).await?;
 
-	// Clean up temp file
-	let _ = std::fs::remove_file(&temp_file);
+		let _ = std::fs::remove_file(&temp_file); // Clean up temp file
 
-	// Early exit if no changes
-	if !result.file_modified {
-		v_utils::log!("Aborted (no changes made)");
-		return Ok(());
+		// Early exit if no changes
+		if !result.file_modified {
+			v_utils::log!("Aborted (no changes made)");
+			return Ok(());
+		}
+		println!("Saving new issue...");
 	}
 
-	// User made changes - proceed with saving
-	println!("Saving new issue...");
-
-	// Sink to local filesystem (this handles parent directory conversion if needed)
 	<Issue as Sink<Submitted>>::sink(&mut issue, None).await?;
 
-	// Find the actual path where the issue was saved (may differ from issue_file_path after sink)
+	// Find the actual path where the issue was saved (may differ from [issue_file_path] after sink)
 	let actual_path = Local::find_issue_file(&owner, &repo, issue.number(), &issue.contents.title, &[]).unwrap_or_else(|| issue_file_path.to_path_buf());
 
-	// Commit as initial consensus
+	// Commit as initial consensus (we do it before and after github sync attempt, as issue number and meta will get changed after the latter, yet we can't rely on the network call being successful
 	commit_issue_changes(&actual_path, &owner, &repo, 0, Some("initial touch creation (pending)"))?;
 
 	// Push to remote

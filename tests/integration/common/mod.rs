@@ -29,6 +29,7 @@ use std::{
 };
 
 pub use snapshot::{snapshot_issues_dir, snapshot_issues_dir_redacting};
+use tedi::Issue;
 use v_fixtures::{Fixture, fs_standards::xdg::Xdg};
 
 /// Environment variable names derived from package name
@@ -304,9 +305,21 @@ impl<'a> OpenUrlBuilder<'a> {
 		self
 	}
 
+	/// operates on the issue that is opened for the user. Sets the virtual serialization of the provided issue over it (won't keep change timestamps)
+	pub fn edit(mut self, issue: &Issue) -> Self {
+		todo!();
+	}
+
+	/// operates on the issue that is opened for the user in virtual format in a temp file. Updates its **contents** to the provided String and submits.
+	///NB: don't submit the issue header at the top, - just contents without any indentation
+	pub fn edit_contents(mut self, new_issue_body: String) -> Self {
+		todo!();
+	}
+
 	/// Edit the file at the specified path while "editor is open".
 	/// Use this when you know the path the issue will be stored at.
-	pub fn edit_at(mut self, path: &Path, issue: &tedi::Issue) -> Self {
+	///NB: be very very careful when using: the proper interface for submitting generic user-like edits is [edit](Self::edit) or [edit_contents](Self::edit_contents). Operating on the filesystem directly is ill-advised and should only be used in tests that specifically want to see reaction to underlying filesystem changes.
+	pub fn unsafe_edit_source_file(mut self, path: &Path, issue: &tedi::Issue) -> Self {
 		self.edit_at_path = Some((path.to_path_buf(), issue.clone()));
 		self
 	}

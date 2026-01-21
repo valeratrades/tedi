@@ -157,6 +157,30 @@ impl Local {
 	/// The filename used for the main issue file when it has a directory for sub-issues.
 	pub const MAIN_ISSUE_FILENAME: &'static str = "__main__";
 
+	/// Get the virtual edit path for an issue.
+	///
+	/// Returns a path in `/tmp/{CARGO_PKG_NAME}/{ancestry}/{fname}.md` where:
+	/// - ancestry is `owner/repo/lineage[0]/lineage[1]/...` (lineage elements joined by `/`)
+	/// - fname is the proper issue filename based on number and title
+	///
+	/// This path is used when opening an editor for the user to edit the issue.
+	pub fn virtual_edit_path(issue: &tedi::Issue) -> PathBuf {
+		let ancestry = &issue.identity.ancestry;
+		let mut path = PathBuf::from("/tmp").join(env!("CARGO_PKG_NAME"));
+
+		// Add owner/repo
+		path = path.join(ancestry.owner()).join(ancestry.repo());
+
+		// Add lineage components (parent issue numbers)
+		for &parent_num in ancestry.lineage() {
+			path = path.join(parent_num.to_string());
+		}
+
+		// Add the issue filename
+		let fname = Self::format_issue_filename(issue.number(), &issue.contents.title, false);
+		path.join(fname)
+	}
+
 	/// Returns the base directory for issue storage: XDG_DATA_HOME/todo/issues/
 	pub fn issues_dir() -> PathBuf {
 		v_utils::xdg_data_dir!("issues")
