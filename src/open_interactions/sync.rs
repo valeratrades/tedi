@@ -259,6 +259,54 @@ pub async fn open_local_issue(issue_file_path: &Path, offline: bool, sync_opts: 
 	Ok(())
 }
 
+/// Open a new issue (not yet on disk) with the editor.
+/// The issue will only be saved if the user makes changes.
+#[tracing::instrument(level = "debug", skip(issue, _sync_opts), target = "tedi::open_interactions::sync")]
+pub async fn open_new_issue(mut issue: Issue, issue_file_path: &Path, _sync_opts: SyncOptions) -> Result<()> {
+	let owner = issue.identity.owner().to_string();
+	let repo = issue.identity.repo().to_string();
+
+	// Use a temp file for editing - don't create the final directory/files yet
+	let temp_dir = std::env::temp_dir();
+	let temp_file = temp_dir.join(format!("tedi_new_issue_{}.md", std::process::id()));
+
+	// Apply editor modifier using temp file
+	let result = Modifier::Editor { open_at_blocker: false }.apply(&mut issue, &temp_file).await?;
+
+	// Clean up temp file
+	let _ = std::fs::remove_file(&temp_file);
+
+	// Early exit if no changes
+	if !result.file_modified {
+		v_utils::log!("Aborted (no changes made)");
+		return Ok(());
+	}
+
+	// User made changes - proceed with saving
+	println!("Saving new issue...");
+
+	// Sink to local filesystem (this handles parent directory conversion if needed)
+	<Issue as Sink<Submitted>>::sink(&mut issue, None).await?;
+
+	// Find the actual path where the issue was saved (may differ from issue_file_path after sink)
+	let actual_path = Local::find_issue_file(&owner, &repo, issue.number(), &issue.contents.title, &[]).unwrap_or_else(|| issue_file_path.to_path_buf());
+
+	// Commit as initial consensus
+	commit_issue_changes(&actual_path, &owner, &repo, 0, Some("initial touch creation (pending)"))?;
+
+	// Push to remote
+	<Issue as Sink<Remote>>::sink(&mut issue, None).await?;
+
+	// Update consensus after remote sync
+	if let Some(issue_number) = issue.number() {
+		// Find the new path (may have changed after getting issue number)
+		let new_path = Local::find_issue_file(&owner, &repo, Some(issue_number), &issue.contents.title, &[]).unwrap_or_else(|| issue_file_path.to_path_buf());
+		commit_issue_changes(&new_path, &owner, &repo, issue_number, None)?;
+	}
+
+	Ok(())
+}
+
 /// Modify a local issue file, then sync changes back to Github.
 #[tracing::instrument(level = "debug", skip(sync_opts), target = "tedi::open_interactions::sync")]
 pub async fn modify_and_sync_issue(issue_file_path: &Path, offline: bool, modifier: Modifier, sync_opts: SyncOptions) -> Result<ModifyResult> {

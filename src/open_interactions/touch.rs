@@ -188,38 +188,47 @@ fn match_single_or_none(children: &[String], pattern: &str) -> MatchOrNone {
 	}
 }
 
-/// Create a pending issue locally that will be pushed to Github on first sync.
-/// The issue file is created with an empty identity marker `<!-- -->` indicating it's pending.
-/// When the user saves and syncs, the Sink trait will create the issue on Github.
+/// Create a pending issue in memory (not written to disk).
+/// Returns the Issue object and the path where it would be stored.
+/// The issue will only be written to disk when the user saves changes.
 ///
 /// Ancestry contains owner/repo and parent lineage (if creating a sub-issue).
-pub fn create_pending_issue(title: &str, ancestry: &Ancestry) -> Result<PathBuf> {
+pub fn create_pending_issue(title: &str, ancestry: &Ancestry) -> Result<(tedi::Issue, PathBuf)> {
+	use tedi::{CloseState, Comment, CommentIdentity, Events, Issue, IssueContents, IssueIdentity};
+
 	// Build ancestor directory names if creating a sub-issue
 	let ancestor_dir_names = if ancestry.lineage().is_empty() { vec![] } else { Local::build_ancestor_dir_names(ancestry)? };
 
 	// Determine file path - None for number since it's pending
 	let issue_file_path = Local::issue_file_path_from_dir_names(ancestry.owner(), ancestry.repo(), None, title, false, &ancestor_dir_names);
 
-	// Create parent directories
-	if let Some(parent) = issue_file_path.parent() {
-		std::fs::create_dir_all(parent)?;
-	}
+	// Create the Issue object in memory
+	let identity = IssueIdentity::local(*ancestry);
+	let contents = IssueContents {
+		title: title.to_string(),
+		labels: vec![],
+		state: CloseState::Open,
+		comments: vec![Comment {
+			identity: CommentIdentity::Body,
+			body: Events::default(),
+		}],
+		blockers: Default::default(),
+	};
 
-	// Create the issue file with pending marker (empty identity)
-	// Format: `- [ ] Title <!-- -->` means pending issue
-	let content = format!("- [ ] {title} <!-- -->\n\t\n");
-
-	std::fs::write(&issue_file_path, &content)?;
+	let issue = Issue {
+		identity,
+		contents,
+		children: vec![],
+	};
 
 	if !ancestry.lineage().is_empty() {
-		println!("Created pending sub-issue: {title}");
+		println!("Creating pending sub-issue: {title}");
 	} else {
-		println!("Created pending issue: {title}");
+		println!("Creating pending issue: {title}");
 	}
-	println!("Stored at: {issue_file_path:?}");
 	println!("Issue will be created on Github when you save and sync.");
 
-	Ok(issue_file_path)
+	Ok((issue, issue_file_path))
 }
 
 /// Create a new virtual issue locally (no Github).

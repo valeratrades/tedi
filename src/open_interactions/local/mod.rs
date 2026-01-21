@@ -1272,6 +1272,39 @@ fn sink_issue_node(issue: &Issue, old: Option<&Issue>, owner: &str, repo: &str, 
 	};
 	eprintln!("[sink_issue_node] ancestor_dir_names: {ancestor_dir_names:?}");
 
+	// If this issue has a parent (lineage non-empty), ensure the parent is in directory format.
+	// The parent may currently be a flat file that needs to be converted to __main__.md.
+	if let Some(parent_dir_name) = ancestor_dir_names.last() {
+		let grandparent_dir_names = &ancestor_dir_names[..ancestor_dir_names.len() - 1];
+		let mut parent_dir = Local::project_dir(owner, repo);
+		for dir_name in grandparent_dir_names {
+			parent_dir = parent_dir.join(dir_name);
+		}
+		parent_dir = parent_dir.join(parent_dir_name);
+		eprintln!("[sink_issue_node] parent_dir: {}, is_dir: {}", parent_dir.display(), parent_dir.is_dir());
+
+		if !parent_dir.is_dir() {
+			// Parent exists as flat file, need to convert to directory
+			let flat_open = parent_dir.with_extension("md");
+			let flat_closed = PathBuf::from(format!("{}.md.bak", parent_dir.display()));
+			eprintln!("[sink_issue_node] flat_open: {}, exists: {}", flat_open.display(), flat_open.exists());
+			eprintln!("[sink_issue_node] flat_closed: {}, exists: {}", flat_closed.display(), flat_closed.exists());
+
+			std::fs::create_dir_all(&parent_dir)?;
+
+			// Move whichever flat file exists to __main__.md (preserving closed state)
+			if flat_closed.exists() {
+				let main_path = Local::main_file_path(&parent_dir, true);
+				eprintln!("[sink_issue_node] moving {} -> {}", flat_closed.display(), main_path.display());
+				std::fs::rename(&flat_closed, &main_path)?;
+			} else if flat_open.exists() {
+				let main_path = Local::main_file_path(&parent_dir, false);
+				eprintln!("[sink_issue_node] moving {} -> {}", flat_open.display(), main_path.display());
+				std::fs::rename(&flat_open, &main_path)?;
+			}
+		}
+	}
+
 	let format_changed = has_children != old_has_children;
 
 	let issue_file_path = if has_children {

@@ -10,7 +10,7 @@ use super::{
 	local::{ExactMatchLevel, Local, Submitted},
 	remote::{Remote, RemoteSource},
 	sink::Sink,
-	sync::{MergeMode, Side, SyncOptions, open_local_issue},
+	sync::{MergeMode, Side, SyncOptions, open_local_issue, open_new_issue},
 	touch::{TouchPathResult, create_pending_issue, create_virtual_issue, parse_touch_path},
 };
 use crate::{config::LiveSettings, github};
@@ -140,13 +140,13 @@ pub async fn open_command(settings: &LiveSettings, args: OpenArgs, offline: bool
 		// Handle --touch mode
 		let touch_result = parse_touch_path(input)?;
 
-		let (issue_file_path, effective_offline) = match touch_result {
+		match touch_result {
 			TouchPathResult::Found(ancestry) => {
 				// Found existing issue - look up the file path
 				let path = Local::find_issue_file_by_ancestry(&ancestry).ok_or_else(|| eyre!("Issue matched but file not found for ancestry: {ancestry:?}"))?;
 				let project_is_virtual = Local::is_virtual_project(ancestry.owner(), ancestry.repo());
 				println!("Found existing issue: {path:?}");
-				(path, offline || project_is_virtual)
+				(path, local_sync_opts(), offline || project_is_virtual)
 			}
 			TouchPathResult::Create { title, ancestry } => {
 				// Need to create a new issue
@@ -155,22 +155,15 @@ pub async fn open_command(settings: &LiveSettings, args: OpenArgs, offline: bool
 				if project_is_virtual {
 					// Virtual project: stays local forever
 					println!("Project {}/{} is virtual (no Github remote)", ancestry.owner(), ancestry.repo());
-					(create_virtual_issue(&title, &ancestry)?, true)
+					(create_virtual_issue(&title, &ancestry)?, local_sync_opts(), true)
 				} else {
-					// Real project: create a pending issue locally
-					// The issue will be created on Github when user saves and syncs
-					let path = create_pending_issue(&title, &ancestry)?;
-
-					// Commit the pending issue as initial consensus
-					use super::consensus::commit_issue_changes;
-					commit_issue_changes(&path, ancestry.owner(), ancestry.repo(), 0, Some("initial touch creation (pending)"))?;
-
-					(path, false)
+					// Real project: create issue in memory, open editor, only save if user makes changes
+					let (issue, path) = create_pending_issue(&title, &ancestry)?;
+					open_new_issue(issue, &path, local_sync_opts()).await?;
+					return Ok(());
 				}
 			}
-		};
-
-		(issue_file_path, local_sync_opts(), effective_offline)
+		}
 	} else if github::is_github_issue_url(input) {
 		// Github URL mode: unified with --pull behavior
 		// URL opening implies pull=true and prefers Remote for --force/--reset
