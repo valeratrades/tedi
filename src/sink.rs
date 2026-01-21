@@ -20,7 +20,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use tedi::{Comment, CommentIdentity, Issue};
+use crate::{Comment, CommentIdentity, Issue};
 
 //==============================================================================
 // Diff Results
@@ -187,16 +187,15 @@ pub trait Sink<S> {
 
 #[cfg(test)]
 mod tests {
-	use tedi::{Ancestry, BlockerSequence, CloseState, IssueContents, IssueLink};
-
 	use super::*;
+	use crate::{Ancestry, BlockerSequence, CloseState, Events, IssueContents, IssueIdentity, IssueLink, IssueTimestamps};
 
 	fn make_issue(title: &str, number: Option<u64>) -> Issue {
 		let ancestry = Ancestry::root("o", "r");
 		let identity = match number {
 			Some(n) => {
 				let link = IssueLink::parse(&format!("https://github.com/o/r/issues/{n}")).unwrap();
-				IssueIdentity::linked(ancestry, "testuser".to_string(), link, tedi::IssueTimestamps::default())
+				IssueIdentity::linked(ancestry, "testuser".to_string(), link, IssueTimestamps::default())
 			}
 			None => IssueIdentity::local(ancestry),
 		};
@@ -209,7 +208,7 @@ mod tests {
 				state: CloseState::Open,
 				comments: vec![Comment {
 					identity: CommentIdentity::Body,
-					body: tedi::Events::parse("body"),
+					body: Events::parse("body"),
 				}],
 				blockers: BlockerSequence::default(),
 			},
@@ -229,7 +228,7 @@ mod tests {
 	fn test_compute_node_diff_body_changed() {
 		let old = make_issue("Root", Some(1));
 		let mut new = make_issue("Root", Some(1));
-		new.contents.comments[0].body = tedi::Events::parse("new body");
+		new.contents.comments[0].body = Events::parse("new body");
 
 		let diff = compute_node_diff(&new, Some(&old));
 
@@ -255,7 +254,7 @@ mod tests {
 		let mut new = make_issue("Root", Some(1));
 		new.contents.comments.push(Comment {
 			identity: CommentIdentity::Pending,
-			body: tedi::Events::parse("new comment"),
+			body: Events::parse("new comment"),
 		});
 
 		let diff = compute_node_diff(&new, Some(&old));
@@ -269,7 +268,7 @@ mod tests {
 		let mut old = make_issue("Root", Some(1));
 		old.contents.comments.push(Comment {
 			identity: CommentIdentity::Created { user: "user".to_string(), id: 123 },
-			body: tedi::Events::parse("old comment"),
+			body: Events::parse("old comment"),
 		});
 		let new = make_issue("Root", Some(1));
 

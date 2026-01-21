@@ -10,9 +10,10 @@ mod git;
 use std::path::Path;
 
 pub use git::{commit_issue_changes, is_git_initialized};
-use tedi::{Issue, LazyIssue};
-
-use super::local::{Local, LocalError, LocalPath};
+use tedi::{
+	Issue, LazyIssue,
+	local::{Local, LocalError, LocalPath},
+};
 
 /// Load the consensus Issue tree from git (last committed state).
 ///

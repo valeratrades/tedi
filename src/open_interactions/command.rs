@@ -3,13 +3,15 @@
 use std::path::Path;
 
 use clap::Args;
-use tedi::{Issue, IssueLink, LazyIssue};
+use tedi::{
+	Issue, IssueLink, LazyIssue,
+	local::{ExactMatchLevel, Local, Submitted},
+	sink::Sink,
+};
 use v_utils::prelude::*;
 
 use super::{
-	local::{ExactMatchLevel, Local, Submitted},
 	remote::{Remote, RemoteSource},
-	sink::Sink,
 	sync::{MergeMode, Side, SyncOptions, open_local_issue, open_new_issue},
 	touch::{TouchPathResult, create_pending_issue, create_virtual_issue, parse_touch_path},
 };

@@ -377,7 +377,7 @@ impl<'a> OpenUrlBuilder<'a> {
 						match &edit_op {
 							Some(EditOperation::FullIssue(issue)) => {
 								// Write to the virtual edit path computed from the issue
-								let vpath = virtual_edit_path(issue);
+								let vpath = tedi::local::Local::virtual_edit_path(issue);
 								if let Some(parent) = vpath.parent() {
 									std::fs::create_dir_all(parent).unwrap();
 								}
@@ -549,7 +549,7 @@ impl<'a> TouchBuilder<'a> {
 						match &edit_op {
 							Some(EditOperation::FullIssue(issue)) => {
 								// Write to the virtual edit path computed from the issue
-								let vpath = virtual_edit_path(issue);
+								let vpath = tedi::local::Local::virtual_edit_path(issue);
 								if let Some(parent) = vpath.parent() {
 									std::fs::create_dir_all(parent).unwrap();
 								}

@@ -4,9 +4,8 @@
 
 use std::{path::Path, process::Command};
 
+use tedi::local::Local;
 use v_utils::prelude::*;
-
-use crate::open_interactions::local::Local;
 
 /// Check if git is initialized in the issues directory.
 pub fn is_git_initialized() -> bool {

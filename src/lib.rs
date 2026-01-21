@@ -1,4 +1,6 @@
 pub mod issue;
+pub mod local;
+pub mod sink;
 
 pub mod current_user {
 	use std::cell::RefCell;

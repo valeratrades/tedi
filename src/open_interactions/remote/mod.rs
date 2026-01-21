@@ -64,10 +64,13 @@ pub enum RemoteError {
 	#[error("issue #{number} not found in {}/{}", repo.owner(), repo.repo())]
 	NotFound { repo: RepoInfo, number: u64 },
 }
-use tedi::{Ancestry, CloseState, Comment, CommentIdentity, Issue, IssueContents, IssueIdentity, IssueLink, IssueTimestamps, MAX_LINEAGE_DEPTH, RepoInfo, split_blockers};
+use tedi::{
+	Ancestry, CloseState, Comment, CommentIdentity, Issue, IssueContents, IssueIdentity, IssueLink, IssueTimestamps, MAX_LINEAGE_DEPTH, RepoInfo,
+	sink::{Sink, compute_node_diff},
+	split_blockers,
+};
 use v_utils::prelude::*;
 
-use super::sink::{Sink, compute_node_diff};
 use crate::github::{self, GithubComment, GithubIssue};
 
 /// Marker type for remote GitHub operations.

@@ -3,10 +3,8 @@
 use std::path::PathBuf;
 
 use regex::Regex;
-use tedi::Ancestry;
+use tedi::{Ancestry, local::Local};
 use v_utils::prelude::*;
-
-use super::local::Local;
 
 /// Result of parsing a touch path
 #[derive(Debug)]

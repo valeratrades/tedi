@@ -23,16 +23,18 @@
 
 use std::path::Path;
 
-use tedi::{CloseState, Issue, IssueLink, LazyIssue};
+use tedi::{
+	CloseState, Issue, IssueLink, LazyIssue,
+	local::{Local, LocalPath, Submitted},
+	sink::Sink,
+};
 use v_utils::prelude::*;
 
 use super::{
 	conflict::{ConflictOutcome, check_any_conflicts, check_conflict, complete_conflict_resolution, initiate_conflict_merge, read_resolved_conflict},
 	consensus::{commit_issue_changes, load_consensus_issue},
-	local::{Local, LocalPath, Submitted},
 	merge::Merge,
 	remote::{Remote, RemoteSource},
-	sink::Sink,
 };
 
 //=============================================================================

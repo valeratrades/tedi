@@ -14,11 +14,11 @@
 use std::{path::PathBuf, process::Command};
 
 use miette::Diagnostic;
-use tedi::Issue;
+use tedi::{Issue, local::Local};
 use thiserror::Error;
 use v_utils::prelude::*;
 
-use super::{consensus::is_git_initialized, local::Local};
+use super::consensus::is_git_initialized;
 
 //==============================================================================
 // Error Types

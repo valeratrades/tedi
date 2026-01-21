@@ -40,7 +40,7 @@ pub enum LocalError {
 	ParseError {
 		path: PathBuf,
 		#[source]
-		source: Box<tedi::ParseError>,
+		source: Box<crate::ParseError>,
 	},
 
 	/// Invalid path structure - cannot extract owner/repo.
@@ -86,10 +86,9 @@ pub enum ConsensusSinkError {
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use tedi::{Ancestry, FetchedIssue, Issue};
 use v_utils::prelude::*;
 
-use crate::open_interactions::sink::Sink;
+use crate::{Ancestry, FetchedIssue, Issue, sink::Sink};
 
 //==============================================================================
 // Local - The interface for local issue storage
@@ -164,7 +163,7 @@ impl Local {
 	/// - fname is the proper issue filename based on number and title
 	///
 	/// This path is used when opening an editor for the user to edit the issue.
-	pub fn virtual_edit_path(issue: &tedi::Issue) -> PathBuf {
+	pub fn virtual_edit_path(issue: &crate::Issue) -> PathBuf {
 		let ancestry = &issue.identity.ancestry;
 		let mut path = PathBuf::from("/tmp").join(env!("CARGO_PKG_NAME"));
 
@@ -1059,22 +1058,22 @@ pub struct ProjectMeta {
 pub struct IssueMeta {
 	/// Timestamps for individual field changes.
 	#[serde(default)]
-	pub timestamps: tedi::IssueTimestamps,
+	pub timestamps: crate::IssueTimestamps,
 }
 
 //==============================================================================
 // LazyIssue Implementation
 //==============================================================================
 
-impl tedi::LazyIssue<Local> for Issue {
+impl crate::LazyIssue<Local> for Issue {
 	type Error = LocalError;
 	type Source = LocalPath;
 
-	async fn ancestry(source: &Self::Source) -> Result<tedi::Ancestry, Self::Error> {
+	async fn ancestry(source: &Self::Source) -> Result<crate::Ancestry, Self::Error> {
 		Local::extract_ancestry(&source.path).map_err(|_| LocalError::InvalidPath { path: source.path.clone() })
 	}
 
-	async fn identity(&mut self, source: Self::Source) -> Result<tedi::IssueIdentity, Self::Error> {
+	async fn identity(&mut self, source: Self::Source) -> Result<crate::IssueIdentity, Self::Error> {
 		if self.identity.is_linked() {
 			return Ok(self.identity.clone());
 		}
@@ -1098,7 +1097,7 @@ impl tedi::LazyIssue<Local> for Issue {
 		Ok(self.identity.clone())
 	}
 
-	async fn contents(&mut self, source: Self::Source) -> Result<tedi::IssueContents, Self::Error> {
+	async fn contents(&mut self, source: Self::Source) -> Result<crate::IssueContents, Self::Error> {
 		if !self.contents.title.is_empty() {
 			return Ok(self.contents.clone());
 		}
@@ -1173,7 +1172,7 @@ impl tedi::LazyIssue<Local> for Issue {
 				continue;
 			};
 
-			let child = <Issue as tedi::LazyIssue<Local>>::load(child_source).await?;
+			let child = <Issue as crate::LazyIssue<Local>>::load(child_source).await?;
 			children.push(child);
 		}
 
@@ -1188,11 +1187,11 @@ impl tedi::LazyIssue<Local> for Issue {
 	}
 
 	async fn load(source: Self::Source) -> Result<Issue, Self::Error> {
-		let ancestry = <Self as tedi::LazyIssue<Local>>::ancestry(&source).await?;
+		let ancestry = <Self as crate::LazyIssue<Local>>::ancestry(&source).await?;
 		let mut issue = Issue::empty_local(ancestry);
-		<Self as tedi::LazyIssue<Local>>::identity(&mut issue, source.clone()).await?;
-		<Self as tedi::LazyIssue<Local>>::contents(&mut issue, source.clone()).await?;
-		Box::pin(<Self as tedi::LazyIssue<Local>>::children(&mut issue, source)).await?;
+		<Self as crate::LazyIssue<Local>>::identity(&mut issue, source.clone()).await?;
+		<Self as crate::LazyIssue<Local>>::contents(&mut issue, source.clone()).await?;
+		Box::pin(<Self as crate::LazyIssue<Local>>::children(&mut issue, source)).await?;
 		Ok(issue)
 	}
 }

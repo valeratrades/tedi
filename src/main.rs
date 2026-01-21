@@ -6,7 +6,7 @@ mod manual_stats;
 mod milestones;
 mod mock_github;
 pub mod mocks;
-pub mod open_interactions;
+mod open_interactions;
 mod perf_eval;
 mod shell_init;
 pub mod utils;
