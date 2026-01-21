@@ -10,10 +10,10 @@
 use std::path::{Path, PathBuf};
 
 use color_eyre::eyre::{Result, bail, eyre};
-use tedi::{DisplayFormat, Issue, Marker};
+use tedi::{DisplayFormat, Issue, LazyIssue, Marker, local::Local};
 
 use super::{BlockerSequence, operations::BlockerSequenceExt, source::BlockerSource};
-use crate::open_interactions::local::{ExactMatchLevel, Local};
+use crate::open_interactions::local::ExactMatchLevel;
 
 /// Cache file for current blocker selection
 static CURRENT_BLOCKER_ISSUE_CACHE: &str = "current_blocker_issue.txt";
@@ -308,7 +308,8 @@ pub async fn main_integrated(command: super::io::Command, format: DisplayFormat,
 				};
 
 				// Use unified modify flow
-				modify_and_sync_issue(&issue_path, offline, Modifier::Editor { open_at_blocker: false }, SyncOptions::default()).await?;
+				let issue = <Issue as LazyIssue<Local>>::load(issue_path.clone().into()).await?;
+				modify_and_sync_issue(issue, offline, Modifier::Editor { open_at_blocker: false }, SyncOptions::default()).await?;
 
 				// If set_after flag is set, update the current blocker issue
 				if set_after {
@@ -428,7 +429,8 @@ pub async fn main_integrated(command: super::io::Command, format: DisplayFormat,
 			}
 
 			// Use unified modify workflow
-			let result = modify_and_sync_issue(&issue_path, offline, Modifier::BlockerPop, SyncOptions::default()).await?;
+			let issue = <Issue as LazyIssue<Local>>::load(issue_path.clone().into()).await?;
+			let result = modify_and_sync_issue(issue, offline, Modifier::BlockerPop, SyncOptions::default()).await?;
 
 			// Output results
 			if let Some(output) = result.output {
@@ -479,7 +481,8 @@ pub async fn main_integrated(command: super::io::Command, format: DisplayFormat,
 				let issue_path = get_current_blocker_issue().ok_or_else(|| eyre!("No blocker file set. Use `todo blocker set <pattern>` first."))?;
 
 				// Use unified modify workflow
-				let result = modify_and_sync_issue(&issue_path, offline, Modifier::BlockerAdd { text: name.clone() }, SyncOptions::default()).await?;
+				let issue = <Issue as LazyIssue<Local>>::load(issue_path.clone().into()).await?;
+				let result = modify_and_sync_issue(issue, offline, Modifier::BlockerAdd { text: name.clone() }, SyncOptions::default()).await?;
 
 				// Output results
 				if let Some(output) = result.output {

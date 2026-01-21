@@ -2,10 +2,11 @@
 //!
 //! Provides functions to commit issue changes to git.
 
-use std::{path::Path, process::Command};
+use std::process::Command;
 
-use tedi::local::Local;
 use v_utils::prelude::*;
+
+use super::super::Local;
 
 /// Check if git is initialized in the issues directory.
 pub fn is_git_initialized() -> bool {
@@ -22,7 +23,8 @@ pub fn is_git_initialized() -> bool {
 }
 
 /// Stage and commit changes for an issue file.
-pub fn commit_issue_changes(_file_path: &Path, owner: &str, repo: &str, issue_number: u64, message: Option<&str>) -> Result<()> {
+//TODO: update all callsites to pass corrected args
+pub fn commit_issue_changes(owner: &str, repo: &str, issue_number: u64) -> Result<()> {
 	let data_dir = Local::issues_dir();
 	let data_dir_str = data_dir.to_str().ok_or_else(|| eyre!("Invalid data directory path"))?;
 
@@ -37,9 +39,8 @@ pub fn commit_issue_changes(_file_path: &Path, owner: &str, repo: &str, issue_nu
 	}
 
 	// Commit with provided or default message
-	let default_msg = format!("sync: {owner}/{repo}#{issue_number}");
-	let commit_msg = message.unwrap_or(&default_msg);
-	Command::new("git").args(["-C", data_dir_str, "commit", "-m", commit_msg]).output()?;
+	let commit_msg = format!("sync: {owner}/{repo}#{issue_number}");
+	Command::new("git").args(["-C", data_dir_str, "commit", "-m", &commit_msg]).output()?;
 
 	Ok(())
 }

@@ -31,30 +31,24 @@ use tedi::{
 };
 
 use super::{
-	conflict::{ConflictOutcome, check_any_conflicts, check_conflict, complete_conflict_resolution, initiate_conflict_merge, read_resolved_conflict},
+	conflict::{ConflictOutcome, complete_conflict_resolution, initiate_conflict_merge, read_resolved_conflict},
 	consensus::{commit_issue_changes, load_consensus_issue},
 	merge::Merge,
 	remote::{Remote, RemoteSource},
 };
 
-/// Modify a local issue file, then sync changes back to Github.
-#[tracing::instrument(level = "debug", skip(sync_opts), target = "tedi::open_interactions::sync")]
-pub async fn modify_and_sync_issue(issue_file_path: &Path, offline: bool, modifier: Modifier, sync_opts: SyncOptions) -> Result<ModifyResult> {
-	// Check for unresolved conflicts first (legacy check)
-	check_any_conflicts()?;
+/// Modify a local issue, then sync changes back to Github.
+///
+/// Caller is responsible for loading the issue (via `LazyIssue<Local>::load`).
+#[tracing::instrument]
+pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Modifier, sync_opts: SyncOptions) -> Result<ModifyResult> {
+	let issue_file_path: LocalPath = Local::issue_file_path(&issue);
+	let repo_info = issue.identity.ancestry.repo_info();
+	let (owner, repo) = (repo_info.owner(), repo_info.repo()); //HACK: feels redundant
 
-	let ancestry = Local::extract_ancestry(issue_file_path)?;
-	let (owner, repo) = (ancestry.owner().to_string(), ancestry.repo().to_string());
+	let offline = offline || Local::is_virtual_project(issue.identity.ancestry.repo_info());
+	let meta = Local::parse_path_identity(&issue_file_path)?;
 
-	// Check for unresolved conflict for this owner (new check)
-	check_conflict(&owner)?;
-
-	let offline = offline || Local::is_virtual_project(&owner, &repo);
-	let meta = Local::parse_path_identity(issue_file_path)?;
-
-	// Load local issue
-	let source = LocalPath::submitted(issue_file_path.to_path_buf());
-	let mut issue = <Issue as LazyIssue<Local>>::load(source).await?;
 	eprintln!("[after load] issue lineage: {:?}", issue.identity.ancestry.lineage());
 	for (i, c) in issue.children.iter().enumerate() {
 		eprintln!("[after load] child[{i}] lineage: {:?}", c.identity.ancestry.lineage());
@@ -62,7 +56,7 @@ pub async fn modify_and_sync_issue(issue_file_path: &Path, offline: bool, modifi
 
 	// Handle virtual issues - they don't sync
 	if issue.identity.remote.is_virtual() {
-		let result = modifier.apply(&mut issue, issue_file_path).await?;
+		let result = modifier.apply(&mut issue, &issue_file_path).await?;
 		if result.file_modified {
 			<Issue as Sink<Submitted>>::sink(&mut issue, None).await?;
 		}
@@ -74,7 +68,7 @@ pub async fn modify_and_sync_issue(issue_file_path: &Path, offline: bool, modifi
 		let prefers_local = matches!(sync_opts.peek_merge_mode(), MergeMode::Reset { prefer: Side::Local } | MergeMode::Force { prefer: Side::Local });
 
 		if !prefers_local {
-			let consensus = load_consensus_issue(issue_file_path).await?;
+			let consensus = load_consensus_issue(&issue_file_path).await?;
 			let local_differs = consensus.as_ref().map(|c| *c != issue).unwrap_or(false);
 
 			if sync_opts.pull || local_differs {
@@ -91,14 +85,14 @@ pub async fn modify_and_sync_issue(issue_file_path: &Path, offline: bool, modifi
 				issue = resolved;
 
 				if changed {
-					commit_issue_changes(issue_file_path, &owner, &repo, meta.issue_number, None)?;
+					commit_issue_changes(&owner, &repo, meta.issue_number)?;
 				}
 			}
 		}
 	}
 
 	// Apply modifier
-	let result = modifier.apply(&mut issue, issue_file_path).await?;
+	let result = modifier.apply(&mut issue, &issue_file_path).await?;
 
 	// Early exit if no changes (unless in test mode)
 	if !result.file_modified && std::env::var("__IS_INTEGRATION_TEST").is_err() {
@@ -108,9 +102,41 @@ pub async fn modify_and_sync_issue(issue_file_path: &Path, offline: bool, modifi
 
 	// Handle duplicate close type
 	if let CloseState::Duplicate(dup_number) = issue.contents.state {
-		return helpers::handle_duplicate_close(&issue, issue_file_path, &owner, &repo, meta.issue_number, dup_number, offline)
-			.await
-			.map(|_| result);
+		todo!("everything up until `commit_issue_changes` at the bottom here must go. Instead, Sink<Remote> and Sink<Local> should know to remove themselves when marked as duplicates"); //TODO!!!!: .
+		//return async {
+		//	// Validate duplicate exists
+		//	if !offline {
+		//		let gh = crate::github::client::get();
+		//		let repo_info = tedi::RepoInfo::new(owner, repo);
+		//		if gh.fetch_issue(repo_info, dup_number).await.is_err() {
+		//			bail!("Cannot mark as duplicate of #{dup_number}: issue does not exist.");
+		//		}
+		//	}
+		//
+		//	println!("Marked as duplicate of #{dup_number}, removing...");
+		//
+		//	// Close on Github if needed
+		//	if !offline {
+		//		let consensus = load_consensus_issue(&issue_file_path).await?.expect("consensus missing");
+		//		if !consensus.contents.state.is_closed() {
+		//			let gh = crate::github::client::get();
+		//			gh.update_issue_state(repo_info, issue_number, "closed").await?; //XXX: incorrect, should close as duplicate. And as a duplicate of something specific. "closed" is very bad, - must serialize CloseState instead
+		//		}
+		//	}
+		//
+		//	// Remove local files
+		//	std::fs::remove_file(issue_file_path)?;
+		//	let sub_dir = issue_file_path.with_extension("");
+		//	let sub_dir = if sub_dir.extension().is_some() { sub_dir.with_extension("") } else { sub_dir };
+		//	if sub_dir.is_dir() {
+		//		std::fs::remove_dir_all(&sub_dir)?;
+		//	}
+		//
+		//	commit_issue_changes(issue_file_path, owner, repo, issue_number, None)?;
+		//	println!("Duplicate removed.");
+		//	Ok(())
+		//}
+		//.await;
 	}
 
 	// Save locally
@@ -369,41 +395,3 @@ mod types {
 	}
 }
 pub use types::*;
-
-mod helpers {
-	use super::*;
-	pub(super) async fn handle_duplicate_close(_issue: &Issue, issue_file_path: &Path, owner: &str, repo: &str, issue_number: u64, dup_number: u64, offline: bool) -> Result<()> {
-		// Validate duplicate exists
-		if !offline {
-			let gh = crate::github::client::get();
-			let repo_info = tedi::RepoInfo::new(owner, repo);
-			if gh.fetch_issue(repo_info, dup_number).await.is_err() {
-				bail!("Cannot mark as duplicate of #{dup_number}: issue does not exist.");
-			}
-		}
-
-		println!("Marked as duplicate of #{dup_number}, removing...");
-
-		// Close on Github if needed
-		if !offline {
-			let consensus = load_consensus_issue(issue_file_path).await?.expect("consensus missing");
-			if !consensus.contents.state.is_closed() {
-				let gh = crate::github::client::get();
-				let repo_info = tedi::RepoInfo::new(owner, repo);
-				gh.update_issue_state(repo_info, issue_number, "closed").await?;
-			}
-		}
-
-		// Remove local files
-		std::fs::remove_file(issue_file_path)?;
-		let sub_dir = issue_file_path.with_extension("");
-		let sub_dir = if sub_dir.extension().is_some() { sub_dir.with_extension("") } else { sub_dir };
-		if sub_dir.is_dir() {
-			std::fs::remove_dir_all(&sub_dir)?;
-		}
-
-		commit_issue_changes(issue_file_path, owner, repo, issue_number, None)?;
-		println!("Duplicate removed.");
-		Ok(())
-	}
-}

@@ -192,14 +192,8 @@ fn match_single_or_none(children: &[String], pattern: &str) -> MatchOrNone {
 ///
 /// Ancestry contains owner/repo and parent lineage (if creating a sub-issue).
 /// If `virtual_project` is true, creates a virtual issue (local-only, no Github sync).
-pub fn create_pending_issue(title: &str, ancestry: &Ancestry, virtual_project: bool) -> Result<(tedi::Issue, PathBuf)> {
+pub fn create_pending_issue(title: &str, ancestry: &Ancestry, virtual_project: bool) -> Result<tedi::Issue> {
 	use tedi::{CloseState, Comment, CommentIdentity, Events, Issue, IssueContents, IssueIdentity};
-
-	// Build ancestor directory names if creating a sub-issue
-	let ancestor_dir_names = if ancestry.lineage().is_empty() { vec![] } else { Local::build_ancestor_dir_names(ancestry)? };
-
-	// Determine file path - None for number since it's pending
-	let issue_file_path = Local::issue_file_path_from_dir_names(ancestry.owner(), ancestry.repo(), None, title, false, &ancestor_dir_names);
 
 	// Create the Issue object in memory
 	let identity = if virtual_project {
@@ -233,7 +227,7 @@ pub fn create_pending_issue(title: &str, ancestry: &Ancestry, virtual_project: b
 		println!("Issue will be created on Github when you save and sync.");
 	}
 
-	Ok((issue, issue_file_path))
+	Ok(issue)
 }
 
 #[cfg(test)]

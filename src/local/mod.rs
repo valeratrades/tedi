@@ -14,6 +14,9 @@
 //!
 //! All public access goes through methods on the `Local` type.
 
+pub mod conflict;
+pub mod consensus;
+
 use std::path::{Path, PathBuf};
 
 //==============================================================================
@@ -21,7 +24,7 @@ use std::path::{Path, PathBuf};
 //==============================================================================
 
 /// Error type for local issue loading operations.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, derive_more::From, thiserror::Error, miette::Diagnostic)]
 pub enum LocalError {
 	/// File not found at the expected path.
 	#[error("issue file not found: {path}")]
@@ -43,13 +46,14 @@ pub enum LocalError {
 		source: Box<crate::ParseError>,
 	},
 
-	/// Invalid path structure - cannot extract owner/repo.
-	#[error("invalid issue path structure: {path}")]
-	InvalidPath { path: PathBuf },
-
 	/// Git operation failed (for consensus reads).
 	#[error("git operation failed: {message}")]
 	GitError { message: String },
+
+	/// Unresolved merge conflict blocks operation.
+	#[error(transparent)]
+	#[diagnostic(transparent)]
+	ConflictBlocked(conflict::ConflictBlockedError),
 }
 
 /// Error type for consensus sink operations.
@@ -116,8 +120,9 @@ pub struct Submitted;
 pub struct Consensus;
 
 /// Source for loading issues from local storage.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, derive_more::Deref)]
 pub struct LocalPath {
+	#[deref]
 	pub path: PathBuf,
 	pub source: LocalSource,
 }
@@ -145,6 +150,12 @@ impl LocalPath {
 			path: child_path,
 			source: self.source.clone(),
 		}
+	}
+}
+
+impl<P: Into<PathBuf>> From<P> for LocalPath {
+	fn from(path: P) -> Self {
+		Self::submitted(path.into())
 	}
 }
 
@@ -899,8 +910,8 @@ impl Local {
 	}
 
 	/// Check if a project is virtual (has no Github remote)
-	pub fn is_virtual_project(owner: &str, repo: &str) -> bool {
-		Self::load_project_meta(owner, repo).virtual_project
+	pub fn is_virtual_project(repo_info: crate::RepoInfo) -> bool {
+		Self::load_project_meta(repo_info.owner(), repo_info.repo()).virtual_project //TODO: update all occurences of `owner, repo` to just `repo_info` everywhere
 	}
 
 	/// Ensure a virtual project exists (creates if needed).
@@ -1070,7 +1081,7 @@ impl crate::LazyIssue<Local> for Issue {
 	type Source = LocalPath;
 
 	async fn ancestry(source: &Self::Source) -> Result<crate::Ancestry, Self::Error> {
-		Local::extract_ancestry(&source.path).map_err(|_| LocalError::InvalidPath { path: source.path.clone() })
+		Local::extract_ancestry(&source.path).map_err(|_| LocalError::FileNotFound { path: source.path.clone() })
 	}
 
 	async fn identity(&mut self, source: Self::Source) -> Result<crate::IssueIdentity, Self::Error> {
@@ -1078,7 +1089,7 @@ impl crate::LazyIssue<Local> for Issue {
 			return Ok(self.identity.clone());
 		}
 
-		let ancestry = Local::extract_ancestry(&source.path).map_err(|_| LocalError::InvalidPath { path: source.path.clone() })?;
+		let ancestry = Local::extract_ancestry(&source.path).map_err(|_| LocalError::FileNotFound { path: source.path.clone() })?;
 
 		if self.contents.title.is_empty() {
 			let content = Local::read_content(&source).ok_or_else(|| LocalError::FileNotFound { path: source.path.clone() })?;
@@ -1102,7 +1113,7 @@ impl crate::LazyIssue<Local> for Issue {
 			return Ok(self.contents.clone());
 		}
 
-		let ancestry = Local::extract_ancestry(&source.path).map_err(|_| LocalError::InvalidPath { path: source.path.clone() })?;
+		let ancestry = Local::extract_ancestry(&source.path).map_err(|_| LocalError::FileNotFound { path: source.path.clone() })?;
 
 		let content = Local::read_content(&source).ok_or_else(|| LocalError::FileNotFound { path: source.path.clone() })?;
 		let parsed = Local::parse_single_node(&content, ancestry, &source.path)?;
@@ -1187,6 +1198,12 @@ impl crate::LazyIssue<Local> for Issue {
 	}
 
 	async fn load(source: Self::Source) -> Result<Issue, Self::Error> {
+		// Check for unresolved conflicts (only for Submitted, and only for root loads)
+		if matches!(source.source, LocalSource::Submitted) {
+			let ancestry = Local::extract_ancestry(&source.path).map_err(|_| LocalError::FileNotFound { path: source.path.clone() })?;
+			conflict::check_conflict(ancestry.owner())?;
+		}
+
 		let ancestry = <Self as crate::LazyIssue<Local>>::ancestry(&source).await?;
 		let mut issue = Issue::empty_local(ancestry);
 		<Self as crate::LazyIssue<Local>>::identity(&mut issue, source.clone()).await?;

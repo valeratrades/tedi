@@ -146,17 +146,16 @@ pub async fn open_command(settings: &LiveSettings, args: OpenArgs, offline: bool
 			TouchPathResult::Found(ancestry) => {
 				// Found existing issue - look up the file path
 				let path = Local::find_issue_file_by_ancestry(&ancestry).ok_or_else(|| eyre!("Issue matched but file not found for ancestry: {ancestry:?}"))?;
-				let project_is_virtual = Local::is_virtual_project(ancestry.owner(), ancestry.repo());
+				let project_is_virtual = Local::is_virtual_project(ancestry.repo_info());
 				println!("Found existing issue: {path:?}");
 				(path, local_sync_opts(), offline || project_is_virtual)
 			}
 			TouchPathResult::Create { title, ancestry } => {
-				// Create pending issue, write to disk, then use unified sync flow
-				// Works the same for virtual and real projects - sync handles the difference
-				let project_is_virtual = Local::is_virtual_project(ancestry.owner(), ancestry.repo());
-				let (mut issue, path) = create_pending_issue(&title, &ancestry, project_is_virtual)?;
-				<Issue as Sink<Submitted>>::sink(&mut issue, None).await?;
-				modify_and_sync_issue(&path, project_is_virtual, Modifier::Editor { open_at_blocker: false }, local_sync_opts()).await?;
+				// Create pending issue in memory, then use unified sync flow
+				// Modifier::Editor will write it to disk before opening
+				let project_is_virtual = Local::is_virtual_project(ancestry.repo_info());
+				let issue = create_pending_issue(&title, &ancestry, project_is_virtual)?;
+				modify_and_sync_issue(issue, project_is_virtual, Modifier::Editor { open_at_blocker: false }, local_sync_opts()).await?;
 				return Ok(());
 			}
 		}
@@ -225,7 +224,8 @@ pub async fn open_command(settings: &LiveSettings, args: OpenArgs, offline: bool
 
 	// Open the local issue file for editing
 	// If using blocker mode, open at the last blocker position
-	modify_and_sync_issue(&issue_file_path, effective_offline, Modifier::Editor { open_at_blocker }, sync_opts).await?;
+	let issue = <Issue as LazyIssue<Local>>::load(issue_file_path.clone().into()).await?;
+	modify_and_sync_issue(issue, effective_offline, Modifier::Editor { open_at_blocker }, sync_opts).await?;
 
 	// If --blocker-set was used, set this issue as the current blocker issue
 	if args.blocker_set {
