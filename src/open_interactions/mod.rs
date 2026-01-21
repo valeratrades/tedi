@@ -6,10 +6,10 @@
 mod command;
 mod conflict;
 pub(crate) mod consensus;
-pub(crate) mod local;
+pub mod local;
 mod merge;
 pub(crate) mod remote;
-mod sink;
+pub mod sink;
 mod sync;
 mod touch;
 pub(crate) mod util;

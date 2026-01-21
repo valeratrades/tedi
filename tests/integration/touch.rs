@@ -73,7 +73,8 @@ fn test_touch_path_with_more_segments_after_flat_file_match() {
 	"#,
 	);
 
-	let (status, stdout, stderr) = ctx.touch("testowner/testrepo/ancestry/check_works").edit().run();
+	let new_issue_contents = "new issue contents";
+	let (status, stdout, stderr) = ctx.touch("testowner/testrepo/ancestry/check_works").edit_contents(new_issue_contents).run();
 
 	eprintln!("{stdout:?}");
 	eprintln!("{stderr:?}");

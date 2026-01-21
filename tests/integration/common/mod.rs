@@ -189,7 +189,7 @@ impl TestContext {
 			ctx: self,
 			url,
 			extra_args: Vec::new(),
-			edit_at_path: None,
+			edit_op: None,
 		}
 	}
 
@@ -198,7 +198,7 @@ impl TestContext {
 		TouchBuilder {
 			ctx: self,
 			pattern: pattern.to_string(),
-			edit_at_path: None,
+			edit_op: None,
 		}
 	}
 }
@@ -290,12 +290,23 @@ impl<'a> OpenBuilder<'a> {
 	}
 }
 
+/// Type of edit operation for the builder.
+#[derive(Clone)]
+enum EditOperation {
+	/// Edit using a full Issue (writes serialize_virtual)
+	FullIssue(Issue),
+	/// Edit just the contents/body (preserves header, replaces body)
+	ContentsOnly(String),
+	/// Edit the source file directly (unsafe, for testing filesystem behavior)
+	SourceFile(PathBuf, Issue),
+}
+
 /// Builder for running the `open` command with a URL (remote source).
 pub struct OpenUrlBuilder<'a> {
 	ctx: &'a TestContext,
 	url: String,
 	extra_args: Vec<&'a str>,
-	edit_at_path: Option<(PathBuf, tedi::Issue)>,
+	edit_op: Option<EditOperation>,
 }
 
 impl<'a> OpenUrlBuilder<'a> {
@@ -305,22 +316,30 @@ impl<'a> OpenUrlBuilder<'a> {
 		self
 	}
 
-	/// operates on the issue that is opened for the user. Sets the virtual serialization of the provided issue over it (won't keep change timestamps)
+	/// Operates on the issue that is opened for the user in virtual format.
+	/// Sets the virtual serialization of the provided issue over the temp file.
+	/// The issue's identity determines the virtual edit path.
 	pub fn edit(mut self, issue: &Issue) -> Self {
-		todo!();
+		self.edit_op = Some(EditOperation::FullIssue(issue.clone()));
+		self
 	}
 
-	/// operates on the issue that is opened for the user in virtual format in a temp file. Updates its **contents** to the provided String and submits.
-	///NB: don't submit the issue header at the top, - just contents without any indentation
-	pub fn edit_contents(mut self, new_issue_body: String) -> Self {
-		todo!();
+	/// Operates on the issue that is opened for the user in virtual format in a temp file.
+	/// Updates its **contents** (body) to the provided String and submits.
+	/// NB: don't submit the issue header at the top - just contents without any indentation.
+	pub fn edit_contents<T: AsRef<str>>(mut self, new_issue_body: T) -> Self {
+		self.edit_op = Some(EditOperation::ContentsOnly(new_issue_body.as_ref().to_string()));
+		self
 	}
 
 	/// Edit the file at the specified path while "editor is open".
 	/// Use this when you know the path the issue will be stored at.
-	///NB: be very very careful when using: the proper interface for submitting generic user-like edits is [edit](Self::edit) or [edit_contents](Self::edit_contents). Operating on the filesystem directly is ill-advised and should only be used in tests that specifically want to see reaction to underlying filesystem changes.
+	/// NB: be very careful when using - the proper interface for submitting generic user-like edits
+	/// is [edit](Self::edit) or [edit_contents](Self::edit_contents). Operating on the filesystem
+	/// directly is ill-advised and should only be used in tests that specifically want to see
+	/// reaction to underlying filesystem changes.
 	pub fn unsafe_edit_source_file(mut self, path: &Path, issue: &tedi::Issue) -> Self {
-		self.edit_at_path = Some((path.to_path_buf(), issue.clone()));
+		self.edit_op = Some(EditOperation::SourceFile(path.to_path_buf(), issue.clone()));
 		self
 	}
 
@@ -344,7 +363,7 @@ impl<'a> OpenUrlBuilder<'a> {
 
 		// Poll for process completion, signaling pipe when it's waiting
 		let pipe_path = self.ctx.pipe_path.clone();
-		let edit_at_path = self.edit_at_path.clone();
+		let edit_op = self.edit_op.clone();
 		let mut signaled = false;
 
 		loop {
@@ -355,9 +374,29 @@ impl<'a> OpenUrlBuilder<'a> {
 						std::thread::sleep(std::time::Duration::from_millis(100));
 
 						// Edit the file while "editor is open" if requested
-						// Use serialize_virtual since that's what the user sees/edits (full tree with children)
-						if let Some((path, issue)) = &edit_at_path {
-							std::fs::write(path, issue.serialize_virtual()).unwrap();
+						match &edit_op {
+							Some(EditOperation::FullIssue(issue)) => {
+								// Write to the virtual edit path computed from the issue
+								let vpath = virtual_edit_path(issue);
+								if let Some(parent) = vpath.parent() {
+									std::fs::create_dir_all(parent).unwrap();
+								}
+								std::fs::write(&vpath, issue.serialize_virtual()).unwrap();
+							}
+							Some(EditOperation::ContentsOnly(new_body)) => {
+								// Find the virtual edit file, read it, replace body, write back
+								let virtual_edit_base = PathBuf::from("/tmp").join(env!("CARGO_PKG_NAME"));
+								if let Some(vpath) = find_virtual_edit_file(&virtual_edit_base) {
+									let content = std::fs::read_to_string(&vpath).unwrap();
+									let new_content = replace_issue_body(&content, new_body);
+									std::fs::write(&vpath, new_content).unwrap();
+								}
+							}
+							Some(EditOperation::SourceFile(path, issue)) => {
+								// Write directly to the source file (unsafe mode)
+								std::fs::write(path, issue.serialize_virtual()).unwrap();
+							}
+							None => {}
 						}
 
 						// Try to signal the pipe (use O_NONBLOCK to avoid blocking)
@@ -387,17 +426,94 @@ impl<'a> OpenUrlBuilder<'a> {
 	}
 }
 
+/// Find the most recently modified .md file under the virtual edit base path.
+fn find_virtual_edit_file(base: &Path) -> Option<PathBuf> {
+	if !base.exists() {
+		return None;
+	}
+
+	let mut best: Option<(PathBuf, std::time::SystemTime)> = None;
+
+	fn walk(dir: &Path, best: &mut Option<(PathBuf, std::time::SystemTime)>) {
+		if let Ok(entries) = std::fs::read_dir(dir) {
+			for entry in entries.flatten() {
+				let path = entry.path();
+				if path.is_dir() {
+					walk(&path, best);
+				} else if path.extension().is_some_and(|e| e == "md") {
+					if let Ok(meta) = path.metadata() {
+						if let Ok(mtime) = meta.modified() {
+							if best.as_ref().map(|(_, t)| mtime > *t).unwrap_or(true) {
+								*best = Some((path, mtime));
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	walk(base, &mut best);
+	best.map(|(p, _)| p)
+}
+
+/// Replace the body content in a virtual-format issue file.
+/// Keeps the title line (first line starting with `- [`), replaces everything after it.
+fn replace_issue_body(content: &str, new_body: &str) -> String {
+	let mut lines = content.lines();
+
+	// Keep the title line
+	let title_line = lines.next().unwrap_or("");
+
+	// Build new content: title line + indented new body
+	let mut result = String::from(title_line);
+	result.push('\n');
+
+	// Indent the new body content (virtual format uses single tab indent for body)
+	for line in new_body.lines() {
+		if line.is_empty() {
+			result.push('\n');
+		} else {
+			result.push('\t');
+			result.push_str(line);
+			result.push('\n');
+		}
+	}
+
+	result
+}
+
 /// Builder for running the `open --touch` command.
 pub struct TouchBuilder<'a> {
 	ctx: &'a TestContext,
 	pattern: String,
-	edit_at_path: Option<(PathBuf, tedi::Issue)>,
+	edit_op: Option<EditOperation>,
 }
 
 impl<'a> TouchBuilder<'a> {
+	/// Operates on the issue that is opened for the user in virtual format.
+	/// Sets the virtual serialization of the provided issue over the temp file.
+	/// The issue's identity determines the virtual edit path.
+	pub fn edit(mut self, issue: &Issue) -> Self {
+		self.edit_op = Some(EditOperation::FullIssue(issue.clone()));
+		self
+	}
+
+	/// Operates on the issue that is opened for the user in virtual format in a temp file.
+	/// Updates its **contents** (body) to the provided String and submits.
+	/// NB: don't submit the issue header at the top - just contents without any indentation.
+	pub fn edit_contents<T: AsRef<str>>(mut self, new_issue_body: T) -> Self {
+		self.edit_op = Some(EditOperation::ContentsOnly(new_issue_body.as_ref().to_string()));
+		self
+	}
+
 	/// Edit the file at the specified path while "editor is open".
-	pub fn edit_at(mut self, path: &Path, issue: &tedi::Issue) -> Self {
-		self.edit_at_path = Some((path.to_path_buf(), issue.clone()));
+	/// NB: be very careful when using - the proper interface for submitting generic user-like edits
+	/// is [edit](Self::edit) or [edit_contents](Self::edit_contents). Operating on the filesystem
+	/// directly is ill-advised and should only be used in tests that specifically want to see
+	/// reaction to underlying filesystem changes.
+	pub fn unsafe_edit_source_file(mut self, path: &Path, issue: &tedi::Issue) -> Self {
+		self.edit_op = Some(EditOperation::SourceFile(path.to_path_buf(), issue.clone()));
 		self
 	}
 
@@ -419,7 +535,7 @@ impl<'a> TouchBuilder<'a> {
 
 		// Poll for process completion, signaling pipe when it's waiting
 		let pipe_path = self.ctx.pipe_path.clone();
-		let edit_at_path = self.edit_at_path.clone();
+		let edit_op = self.edit_op.clone();
 		let mut signaled = false;
 
 		loop {
@@ -430,8 +546,29 @@ impl<'a> TouchBuilder<'a> {
 						std::thread::sleep(std::time::Duration::from_millis(100));
 
 						// Edit the file while "editor is open" if requested
-						if let Some((path, issue)) = &edit_at_path {
-							std::fs::write(path, issue.serialize_virtual()).unwrap();
+						match &edit_op {
+							Some(EditOperation::FullIssue(issue)) => {
+								// Write to the virtual edit path computed from the issue
+								let vpath = virtual_edit_path(issue);
+								if let Some(parent) = vpath.parent() {
+									std::fs::create_dir_all(parent).unwrap();
+								}
+								std::fs::write(&vpath, issue.serialize_virtual()).unwrap();
+							}
+							Some(EditOperation::ContentsOnly(new_body)) => {
+								// Find the virtual edit file, read it, replace body, write back
+								let virtual_edit_base = PathBuf::from("/tmp").join(env!("CARGO_PKG_NAME"));
+								if let Some(vpath) = find_virtual_edit_file(&virtual_edit_base) {
+									let content = std::fs::read_to_string(&vpath).unwrap();
+									let new_content = replace_issue_body(&content, new_body);
+									std::fs::write(&vpath, new_content).unwrap();
+								}
+							}
+							Some(EditOperation::SourceFile(path, issue)) => {
+								// Write directly to the source file (unsafe mode)
+								std::fs::write(path, issue.serialize_virtual()).unwrap();
+							}
+							None => {}
 						}
 
 						// Try to signal the pipe

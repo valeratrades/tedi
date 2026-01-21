@@ -67,6 +67,7 @@ pub enum RemoteError {
 use tedi::{Ancestry, CloseState, Comment, CommentIdentity, Issue, IssueContents, IssueIdentity, IssueLink, IssueTimestamps, MAX_LINEAGE_DEPTH, RepoInfo, split_blockers};
 use v_utils::prelude::*;
 
+use super::sink::{Sink, compute_node_diff};
 use crate::github::{self, GithubComment, GithubIssue};
 
 /// Marker type for remote GitHub operations.
@@ -323,5 +324,112 @@ fn build_contents_from_github(issue: &GithubIssue, comments: &[GithubComment]) -
 		state: close_state,
 		comments: issue_comments,
 		blockers,
+	}
+}
+
+//==============================================================================
+// Sink<Remote> Implementation
+//==============================================================================
+
+//TODO: @claude: create proper error type for Remote sink (see ConsensusSinkError for reference)
+impl Sink<Remote> for Issue {
+	type Error = color_eyre::Report;
+
+	async fn sink(&mut self, old: Option<&Issue>) -> Result<bool, Self::Error> {
+		// Virtual issues never sync to remote - they're local-only
+		if self.identity.is_virtual() {
+			return Ok(false);
+		}
+
+		let gh = crate::github::client::get();
+		let repo_info = self.identity.ancestry.repo_info();
+		let mut changed = false;
+
+		// If this is a pending (local) issue, create it first
+		if self.is_local() {
+			let title = &self.contents.title;
+			let body = self.body();
+			let closed = self.contents.state.is_closed();
+			let ancestry = self.identity.ancestry;
+
+			println!("Creating issue: {title}");
+			let created = gh.create_issue(repo_info, title, &body).await?;
+			println!("Created issue #{}: {}", created.number, created.html_url);
+
+			// Close if needed
+			if closed {
+				gh.update_issue_state(repo_info, created.number, "closed").await?;
+			}
+
+			// Link to parent if this issue has one
+			let lineage = ancestry.lineage();
+			if let Some(&parent_number) = lineage.last() {
+				gh.add_sub_issue(repo_info, parent_number, created.id).await?;
+			}
+
+			// Update identity - keep same ancestry, just add linking info
+			let url = format!("https://github.com/{}/{}/issues/{}", repo_info.owner(), repo_info.repo(), created.number);
+			let link = IssueLink::parse(&url).expect("just constructed valid URL");
+			let user = gh.fetch_authenticated_user().await?;
+			self.identity = IssueIdentity::linked(ancestry, user, link, tedi::IssueTimestamps::default());
+			changed = true;
+		}
+
+		let issue_number = self.number().expect("issue must have number after creation");
+
+		// Sync content against old (if we have old state)
+		let diff = compute_node_diff(self, old);
+
+		if diff.body_changed {
+			let body = self.body();
+			println!("Updating issue #{issue_number} body...");
+			gh.update_issue_body(repo_info, issue_number, &body).await?;
+			changed = true;
+		}
+
+		if diff.state_changed {
+			let state = self.contents.state.to_github_state();
+			println!("Updating issue #{issue_number} state to {state}...");
+			gh.update_issue_state(repo_info, issue_number, state).await?;
+			changed = true;
+		}
+
+		// Create pending comments sequentially (order matters)
+		for comment in self.contents.comments.iter_mut().skip(1) {
+			if comment.identity.is_pending() && !comment.body.is_empty() {
+				let body_str = comment.body.render();
+				println!("Creating new comment on issue #{issue_number}...");
+				gh.create_comment(repo_info, issue_number, &body_str).await?;
+				changed = true;
+			}
+		}
+
+		// Update existing comments
+		for (comment_id, comment) in &diff.comments_to_update {
+			if let CommentIdentity::Created { user, .. } = &comment.identity
+				&& !tedi::current_user::is(user)
+			{
+				continue;
+			}
+			let body_str = comment.body.render();
+			println!("Updating comment {comment_id}...");
+			gh.update_comment(repo_info, *comment_id, &body_str).await?;
+			changed = true;
+		}
+
+		// Delete removed comments
+		for comment_id in &diff.comments_to_delete {
+			println!("Deleting comment {comment_id} from issue #{issue_number}...");
+			gh.delete_comment(repo_info, *comment_id).await?;
+			changed = true;
+		}
+
+		// Recursively sink children
+		for (i, child) in self.children.iter_mut().enumerate() {
+			let old_child = old.and_then(|o| o.children.get(i));
+			changed |= Box::pin(<Issue as Sink<Remote>>::sink(child, old_child)).await?;
+		}
+
+		Ok(changed)
 	}
 }
