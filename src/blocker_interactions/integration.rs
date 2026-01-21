@@ -224,7 +224,7 @@ async fn update_tracking_after_change() {
 /// This is the default mode for blocker commands.
 pub async fn main_integrated(command: super::io::Command, format: DisplayFormat, offline: bool) -> Result<()> {
 	use super::{io::Command, source::BlockerSource};
-	use crate::open_interactions::{Modifier, SyncOptions, modify_and_sync_issue, modify_issue_offline};
+	use crate::open_interactions::{Modifier, SyncOptions, modify_and_sync_issue};
 
 	match command {
 		Command::Set { pattern } => {
@@ -404,12 +404,8 @@ pub async fn main_integrated(command: super::io::Command, format: DisplayFormat,
 				bail!("No `{marker}` marker found in issue body.");
 			}
 
-			// Use unified modify workflow - offline version skips Github client requirement
-			let result = if offline {
-				modify_issue_offline(&issue_path, Modifier::BlockerPop).await?
-			} else {
-				modify_and_sync_issue(&issue_path, offline, Modifier::BlockerPop, SyncOptions::default()).await?
-			};
+			// Use unified modify workflow
+			let result = modify_and_sync_issue(&issue_path, offline, Modifier::BlockerPop, SyncOptions::default()).await?;
 
 			// Output results
 			if let Some(output) = result.output {
@@ -459,12 +455,8 @@ pub async fn main_integrated(command: super::io::Command, format: DisplayFormat,
 			} else {
 				let issue_path = get_current_blocker_issue().ok_or_else(|| eyre!("No blocker file set. Use `todo blocker set <pattern>` first."))?;
 
-				// Use unified modify workflow - offline version skips Github client requirement
-				let result = if offline {
-					modify_issue_offline(&issue_path, Modifier::BlockerAdd { text: name.clone() }).await?
-				} else {
-					modify_and_sync_issue(&issue_path, offline, Modifier::BlockerAdd { text: name.clone() }, SyncOptions::default()).await?
-				};
+				// Use unified modify workflow
+				let result = modify_and_sync_issue(&issue_path, offline, Modifier::BlockerAdd { text: name.clone() }, SyncOptions::default()).await?;
 
 				// Output results
 				if let Some(output) = result.output {

@@ -12,14 +12,10 @@ use v_utils::prelude::*;
 
 use super::{
 	remote::{Remote, RemoteSource},
-	sync::{MergeMode, Side, SyncOptions},
+	sync::{MergeMode, Modifier, Side, SyncOptions, modify_and_sync_issue},
 	touch::{TouchPathResult, create_pending_issue, create_virtual_issue, parse_touch_path},
 };
-use crate::{
-	config::LiveSettings,
-	github,
-	open_interactions::{Modifier, modify_and_sync_issue},
-};
+use crate::{config::LiveSettings, github};
 
 /// Open a Github issue in $EDITOR.
 ///
@@ -163,9 +159,10 @@ pub async fn open_command(settings: &LiveSettings, args: OpenArgs, offline: bool
 					println!("Project {}/{} is virtual (no Github remote)", ancestry.owner(), ancestry.repo());
 					(create_virtual_issue(&title, &ancestry)?, local_sync_opts(), true)
 				} else {
-					// Real project: create issue in memory, open editor, only save if user makes changes
-					let (issue, path) = create_pending_issue(&title, &ancestry)?;
-					open_new_issue(issue, &path, local_sync_opts()).await?;
+					// Real project: create pending issue, write to disk, then use unified sync flow
+					let (mut issue, path) = create_pending_issue(&title, &ancestry)?;
+					<Issue as Sink<Submitted>>::sink(&mut issue, None).await?;
+					modify_and_sync_issue(&path, false, Modifier::Editor { open_at_blocker: false }, local_sync_opts()).await?;
 					return Ok(());
 				}
 			}

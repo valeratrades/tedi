@@ -16,7 +16,7 @@ pub(crate) mod util;
 // Re-export the public API
 pub use command::{OpenArgs, open_command};
 // Re-export sync types for blocker integration
-pub use sync::{MergeMode, Modifier, ModifyResult, Side, SyncOptions, modify_and_sync_issue, modify_issue_offline};
+pub use sync::{MergeMode, Modifier, ModifyResult, Side, SyncOptions, modify_and_sync_issue};
 // Re-export Issue from the library crate
 pub use tedi::Issue;
 pub use tedi::{local, sink};

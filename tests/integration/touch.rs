@@ -107,12 +107,11 @@ fn test_touch_path_with_more_segments_after_flat_file_match() {
 	    }
 	  }
 	}
+	//- /testowner/testrepo/99_-_ancestry_resolve_for_ind/100_-_check_works.md
+	- [ ] check_works <!-- @mock_user https://github.com/testowner/testrepo/issues/100 -->
 	//- /testowner/testrepo/99_-_ancestry_resolve_for_ind/__main__.md
 	- [ ] ancestry resolve for ind <!--https://github.com/testowner/testrepo/issues/99-->
 		body content here
-		
-	//- /testowner/testrepo/99_-_ancestry_resolve_for_ind/100_-_check_works.md
-	- [ ] check_works <!-- @mock_user https://github.com/testowner/testrepo/issues/100 -->
 	"#);
 }
 
@@ -154,21 +153,32 @@ fn test_touch_new_subissue_no_edits_does_not_create() {
 	insta::assert_snapshot!(snapshot_issues_dir(&ctx), @r#"
 	//- /testowner/testrepo/.meta.json
 	{
-		"virtual_project": false,
-		"next_virtual_issue_number": 0,
-		"issues": {
-			"99": {
-				"timestamps": {
-					"title": null,
-					"description": null,
-					"labels": null,
-					"state": null,
-					"comments": []
-				}
-			}
-		}
+	  "virtual_project": false,
+	  "next_virtual_issue_number": 0,
+	  "issues": {
+	    "99": {
+	      "timestamps": {
+	        "title": null,
+	        "description": null,
+	        "labels": null,
+	        "state": null,
+	        "comments": []
+	      }
+	    },
+	    "100": {
+	      "timestamps": {
+	        "title": null,
+	        "description": null,
+	        "labels": null,
+	        "state": null,
+	        "comments": []
+	      }
+	    }
+	  }
 	}
-	//- /testowner/testrepo/99_-_parent_issue.md
+	//- /testowner/testrepo/99_-_parent_issue/100_-_new_child.md
+	- [ ] new_child <!-- @mock_user https://github.com/testowner/testrepo/issues/100 -->
+	//- /testowner/testrepo/99_-_parent_issue/__main__.md
 	- [ ] parent issue <!--https://github.com/testowner/testrepo/issues/99-->
 		parent body
 	"#);
