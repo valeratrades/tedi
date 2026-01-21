@@ -12,10 +12,14 @@ use v_utils::prelude::*;
 
 use super::{
 	remote::{Remote, RemoteSource},
-	sync::{MergeMode, Side, SyncOptions, open_local_issue, open_new_issue},
+	sync::{MergeMode, Side, SyncOptions},
 	touch::{TouchPathResult, create_pending_issue, create_virtual_issue, parse_touch_path},
 };
-use crate::{config::LiveSettings, github};
+use crate::{
+	config::LiveSettings,
+	github,
+	open_interactions::{Modifier, modify_and_sync_issue},
+};
 
 /// Open a Github issue in $EDITOR.
 ///
@@ -112,8 +116,8 @@ pub async fn open_command(settings: &LiveSettings, args: OpenArgs, offline: bool
 	let remote_sync_opts = || make_sync_opts(true);
 
 	// Handle --blocker and --blocker-set modes: use current blocker issue file if no pattern provided
-	let use_blocker_mode = args.blocker || args.blocker_set;
-	let input = if use_blocker_mode && args.url_or_pattern.is_none() {
+	let open_at_blocker = args.blocker || args.blocker_set;
+	let input = if open_at_blocker && args.url_or_pattern.is_none() {
 		// Get current blocker issue path if it exists
 		// --blocker requires it to exist; --blocker-set just opens fzf if not set
 		if let Some(blocker_path) = crate::blocker_interactions::integration::get_current_blocker_issue() {
@@ -231,7 +235,7 @@ pub async fn open_command(settings: &LiveSettings, args: OpenArgs, offline: bool
 
 	// Open the local issue file for editing
 	// If using blocker mode, open at the last blocker position
-	open_local_issue(&issue_file_path, effective_offline, sync_opts, use_blocker_mode).await?;
+	modify_and_sync_issue(&issue_file_path, effective_offline, Modifier::Editor { open_at_blocker }, sync_opts).await?;
 
 	// If --blocker-set was used, set this issue as the current blocker issue
 	if args.blocker_set {

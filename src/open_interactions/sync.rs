@@ -23,12 +23,12 @@
 
 use std::path::Path;
 
+use color_eyre::eyre::{Result, bail};
 use tedi::{
 	CloseState, Issue, IssueLink, LazyIssue,
 	local::{Local, LocalPath, Submitted},
 	sink::Sink,
 };
-use v_utils::prelude::*;
 
 use super::{
 	conflict::{ConflictOutcome, check_any_conflicts, check_conflict, complete_conflict_resolution, initiate_conflict_merge, read_resolved_conflict},
@@ -36,278 +36,6 @@ use super::{
 	merge::Merge,
 	remote::{Remote, RemoteSource},
 };
-
-//=============================================================================
-// Types
-//=============================================================================
-
-/// Which side to prefer in merge operations.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Side {
-	Local,
-	Remote,
-}
-
-/// How to merge local and remote states.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum MergeMode {
-	/// Timestamp-based resolution. Conflict if can't auto-resolve.
-	#[default]
-	Normal,
-	/// Force preferred side on conflicts, keep non-conflicting from both.
-	Force { prefer: Side },
-	/// Take preferred side entirely.
-	Reset { prefer: Side },
-}
-
-/// Options for controlling sync behavior.
-///
-/// The `merge_mode` is consumed after first use (pre-editor sync),
-/// so post-editor sync runs with `MergeMode::Normal`.
-#[derive(Debug, Default)]
-pub struct SyncOptions {
-	merge_mode: std::cell::Cell<Option<MergeMode>>,
-	/// Fetch and sync from remote before opening editor.
-	pub pull: bool,
-}
-
-impl SyncOptions {
-	pub fn new(merge_mode: Option<MergeMode>, pull: bool) -> Self {
-		Self {
-			merge_mode: std::cell::Cell::new(merge_mode),
-			pull,
-		}
-	}
-
-	/// Take the merge mode, returning Normal if already taken or not set.
-	pub fn take_merge_mode(&self) -> MergeMode {
-		self.merge_mode.take().unwrap_or_default()
-	}
-
-	/// Peek at the merge mode without consuming it.
-	pub fn peek_merge_mode(&self) -> MergeMode {
-		self.merge_mode.get().unwrap_or_default()
-	}
-}
-
-/// Result of applying a modifier to an issue.
-pub struct ModifyResult {
-	pub output: Option<String>,
-	pub file_modified: bool,
-}
-
-/// A modifier that can be applied to an issue file.
-#[derive(Debug)]
-pub enum Modifier {
-	Editor { open_at_blocker: bool },
-	BlockerPop,
-	BlockerAdd { text: String },
-}
-
-impl Modifier {
-	#[tracing::instrument]
-	async fn apply(&self, issue: &mut Issue, issue_file_path: &Path) -> Result<ModifyResult> {
-		let old_issue = issue.clone();
-
-		let result = match self {
-			Modifier::Editor { open_at_blocker } => {
-				let content = issue.serialize_virtual();
-				std::fs::write(issue_file_path, &content)?;
-
-				let mtime_before = std::fs::metadata(issue_file_path)?.modified()?;
-
-				let position = if *open_at_blocker {
-					issue.find_last_blocker_position().map(|(line, col)| crate::utils::Position::new(line, Some(col)))
-				} else {
-					None
-				};
-
-				crate::utils::open_file(issue_file_path, position).await?;
-
-				let mtime_after = std::fs::metadata(issue_file_path)?.modified()?;
-				let file_modified = mtime_after != mtime_before;
-
-				let content = std::fs::read_to_string(issue_file_path)?;
-				issue.update_from_virtual(&content, issue_file_path)?;
-
-				ModifyResult { output: None, file_modified }
-			}
-			Modifier::BlockerPop => {
-				use crate::blocker_interactions::BlockerSequenceExt;
-				let popped = issue.contents.blockers.pop();
-				ModifyResult {
-					output: popped.map(|text| format!("Popped: {text}")),
-					file_modified: true,
-				}
-			}
-			Modifier::BlockerAdd { text } => {
-				use crate::blocker_interactions::BlockerSequenceExt;
-				issue.contents.blockers.add(text);
-				ModifyResult { output: None, file_modified: true }
-			}
-		};
-
-		if result.file_modified {
-			issue.update_timestamps_from_diff(&old_issue);
-		}
-
-		Ok(result)
-	}
-}
-
-//=============================================================================
-// Sync Core
-//=============================================================================
-
-/// Sync an issue between local and remote using the four-merge algorithm.
-///
-/// ```text
-/// local.merge(consensus, false);  local.merge(remote, force);
-/// remote.merge(consensus, false); remote.merge(local, force);
-///
-/// if local == remote { resolved } else { conflict }
-/// ```
-///
-/// Returns `(resolved_issue, changed)` where `changed` indicates if any updates were made.
-async fn sync_issue(local: Issue, consensus: Option<Issue>, remote: Issue, mode: MergeMode, owner: &str, repo: &str, issue_number: u64) -> Result<(Issue, bool)> {
-	// Handle Reset mode - take one side entirely
-	if let MergeMode::Reset { prefer } = mode {
-		return match prefer {
-			Side::Local => {
-				let mut resolved = local;
-				<Issue as Sink<Remote>>::sink(&mut resolved, Some(&remote)).await?;
-				Ok((resolved, true))
-			}
-			Side::Remote => {
-				let mut resolved = remote;
-				<Issue as Sink<Submitted>>::sink(&mut resolved, None).await?;
-				Ok((resolved, true))
-			}
-		};
-	}
-
-	let force = matches!(mode, MergeMode::Force { .. });
-
-	// Apply four-merge algorithm
-	let mut local_merged = local.clone();
-	let mut remote_merged = remote.clone();
-
-	eprintln!("[sync_issue] Before merge:");
-	eprintln!("  local lineage: {:?}", local.identity.ancestry.lineage());
-	eprintln!("  remote lineage: {:?}", remote.identity.ancestry.lineage());
-	for (i, c) in local.children.iter().enumerate() {
-		eprintln!("  local child[{i}] lineage: {:?}", c.identity.ancestry.lineage());
-	}
-	for (i, c) in remote.children.iter().enumerate() {
-		eprintln!("  remote child[{i}] lineage: {:?}", c.identity.ancestry.lineage());
-	}
-
-	if let Some(ref consensus) = consensus {
-		let _ = local_merged.merge(consensus.clone(), false);
-	}
-	local_merged.merge(remote.clone(), force)?;
-
-	eprintln!("[sync_issue] After merge:");
-	eprintln!("  local_merged lineage: {:?}", local_merged.identity.ancestry.lineage());
-	for (i, c) in local_merged.children.iter().enumerate() {
-		eprintln!("  local_merged child[{i}] lineage: {:?}", c.identity.ancestry.lineage());
-	}
-
-	if let Some(consensus) = consensus {
-		let _ = remote_merged.merge(consensus, false);
-	}
-	remote_merged.merge(local, force)?;
-
-	// Compare results
-	if local_merged == remote_merged {
-		// Auto-resolved - sink to both sides
-		let mut resolved = local_merged;
-		<Issue as Sink<Submitted>>::sink(&mut resolved, None).await?;
-		<Issue as Sink<Remote>>::sink(&mut resolved, None).await?;
-		Ok((resolved, true))
-	} else {
-		// Conflict - initiate git merge
-		match initiate_conflict_merge(owner, repo, issue_number, &local_merged, &remote_merged)? {
-			ConflictOutcome::AutoMerged => {
-				let resolved = read_resolved_conflict(owner)?;
-				complete_conflict_resolution(owner)?;
-				let mut resolved = resolved;
-				<Issue as Sink<Submitted>>::sink(&mut resolved, None).await?;
-				<Issue as Sink<Remote>>::sink(&mut resolved, None).await?;
-				Ok((resolved, true))
-			}
-			ConflictOutcome::NeedsResolution => {
-				bail!(
-					"Conflict detected for {owner}/{repo}#{issue_number}.\n\
-					 Resolve using standard git tools, then re-run."
-				);
-			}
-			ConflictOutcome::NoChanges => {
-				// Git says no changes - take local
-				Ok((local_merged, false))
-			}
-		}
-	}
-}
-
-//=============================================================================
-// Public API
-//=============================================================================
-
-/// Open a local issue file with the editor.
-#[tracing::instrument(level = "debug", skip(sync_opts), target = "tedi::open_interactions::sync")]
-pub async fn open_local_issue(issue_file_path: &Path, offline: bool, sync_opts: SyncOptions, open_at_blocker: bool) -> Result<()> {
-	modify_and_sync_issue(issue_file_path, offline, Modifier::Editor { open_at_blocker }, sync_opts).await?;
-	Ok(())
-}
-
-/// Open a new issue (not yet on disk) with the editor.
-/// The issue will only be saved if the user makes changes.
-#[tracing::instrument(level = "debug", skip(issue, _sync_opts), target = "tedi::open_interactions::sync")]
-pub async fn open_new_issue(mut issue: Issue, issue_file_path: &Path, _sync_opts: SyncOptions) -> Result<()> {
-	let owner = issue.identity.owner().to_string();
-	let repo = issue.identity.repo().to_string();
-
-	// Use a temp file for editing - don't create the final directory/files yet
-	{
-		let temp_file = Local::virtual_edit_path(&issue);
-		if let Some(parent) = temp_file.parent() {
-			std::fs::create_dir_all(parent)?;
-		}
-
-		// this is interface for opening the editor (or applying procedural changes, hence the structure)
-		let result = Modifier::Editor { open_at_blocker: false }.apply(&mut issue, &temp_file).await?;
-
-		let _ = std::fs::remove_file(&temp_file); // Clean up temp file
-
-		// Early exit if no changes
-		if !result.file_modified {
-			v_utils::log!("Aborted (no changes made)");
-			return Ok(());
-		}
-		println!("Saving new issue...");
-	}
-
-	<Issue as Sink<Submitted>>::sink(&mut issue, None).await?;
-
-	// Find the actual path where the issue was saved (may differ from [issue_file_path] after sink)
-	let actual_path = Local::find_issue_file(&owner, &repo, issue.number(), &issue.contents.title, &[]).unwrap_or_else(|| issue_file_path.to_path_buf());
-
-	// Commit as initial consensus (we do it before and after github sync attempt, as issue number and meta will get changed after the latter, yet we can't rely on the network call being successful
-	commit_issue_changes(&actual_path, &owner, &repo, 0, Some("initial touch creation (pending)"))?;
-
-	// Push to remote
-	<Issue as Sink<Remote>>::sink(&mut issue, None).await?;
-
-	// Update consensus after remote sync
-	if let Some(issue_number) = issue.number() {
-		// Find the new path (may have changed after getting issue number)
-		let new_path = Local::find_issue_file(&owner, &repo, Some(issue_number), &issue.contents.title, &[]).unwrap_or_else(|| issue_file_path.to_path_buf());
-		commit_issue_changes(&new_path, &owner, &repo, issue_number, None)?;
-	}
-
-	Ok(())
-}
 
 /// Modify a local issue file, then sync changes back to Github.
 #[tracing::instrument(level = "debug", skip(sync_opts), target = "tedi::open_interactions::sync")]
@@ -359,7 +87,7 @@ pub async fn modify_and_sync_issue(issue_file_path: &Path, offline: bool, modifi
 				let remote = <Issue as LazyIssue<Remote>>::load(remote_source).await?;
 
 				let mode = sync_opts.take_merge_mode();
-				let (resolved, changed) = sync_issue(issue, consensus, remote, mode, &owner, &repo, meta.issue_number).await?;
+				let (resolved, changed) = core::sync_issue(issue, consensus, remote, mode, &owner, &repo, meta.issue_number).await?;
 				issue = resolved;
 
 				if changed {
@@ -380,7 +108,7 @@ pub async fn modify_and_sync_issue(issue_file_path: &Path, offline: bool, modifi
 
 	// Handle duplicate close type
 	if let CloseState::Duplicate(dup_number) = issue.contents.state {
-		return handle_duplicate_close(&issue, issue_file_path, &owner, &repo, meta.issue_number, dup_number, offline)
+		return helpers::handle_duplicate_close(&issue, issue_file_path, &owner, &repo, meta.issue_number, dup_number, offline)
 			.await
 			.map(|_| result);
 	}
@@ -408,7 +136,7 @@ pub async fn modify_and_sync_issue(issue_file_path: &Path, offline: bool, modifi
 		let remote = <Issue as LazyIssue<Remote>>::load(remote_source).await?;
 
 		let consensus = load_consensus_issue(issue_file_path).await?;
-		let (resolved, changed) = sync_issue(issue, consensus, remote, mode, &owner, &repo, meta.issue_number).await?;
+		let (resolved, changed) = core::sync_issue(issue, consensus, remote, mode, &owner, &repo, meta.issue_number).await?;
 		issue = resolved;
 
 		if changed {
@@ -430,54 +158,252 @@ pub async fn modify_and_sync_issue(issue_file_path: &Path, offline: bool, modifi
 	Ok(result)
 }
 
-/// Modify a local issue offline (no Github sync).
-#[tracing::instrument(level = "debug", target = "tedi::open_interactions::sync")]
-pub async fn modify_issue_offline(issue_file_path: &Path, modifier: Modifier) -> Result<ModifyResult> {
-	let source = LocalPath::submitted(issue_file_path.to_path_buf());
-	let mut issue = <Issue as LazyIssue<Local>>::load(source).await?;
+mod core {
+	use super::*;
+	/// Sync an issue between local and remote using the four-merge algorithm.
+	///
+	/// ```text
+	/// local.merge(consensus, false);  local.merge(remote, force);
+	/// remote.merge(consensus, false); remote.merge(local, force);
+	///
+	/// if local == remote { resolved } else { conflict }
+	/// ```
+	///
+	/// Returns `(resolved_issue, changed)` where `changed` indicates if any updates were made.
+	pub(super) async fn sync_issue(local: Issue, consensus: Option<Issue>, remote: Issue, mode: MergeMode, owner: &str, repo: &str, issue_number: u64) -> Result<(Issue, bool)> {
+		// Handle Reset mode - take one side entirely
+		if let MergeMode::Reset { prefer } = mode {
+			return match prefer {
+				Side::Local => {
+					let mut resolved = local;
+					<Issue as Sink<Remote>>::sink(&mut resolved, Some(&remote)).await?;
+					Ok((resolved, true))
+				}
+				Side::Remote => {
+					let mut resolved = remote;
+					<Issue as Sink<Submitted>>::sink(&mut resolved, None).await?;
+					Ok((resolved, true))
+				}
+			};
+		}
 
-	let result = modifier.apply(&mut issue, issue_file_path).await?;
-	<Issue as Sink<Submitted>>::sink(&mut issue, None).await?;
+		let force = matches!(mode, MergeMode::Force { .. });
 
-	println!("Offline: saved locally.");
-	Ok(result)
+		// Apply four-merge algorithm
+		let mut local_merged = local.clone();
+		let mut remote_merged = remote.clone();
+
+		eprintln!("[sync_issue] Before merge:");
+		eprintln!("  local lineage: {:?}", local.identity.ancestry.lineage());
+		eprintln!("  remote lineage: {:?}", remote.identity.ancestry.lineage());
+		for (i, c) in local.children.iter().enumerate() {
+			eprintln!("  local child[{i}] lineage: {:?}", c.identity.ancestry.lineage());
+		}
+		for (i, c) in remote.children.iter().enumerate() {
+			eprintln!("  remote child[{i}] lineage: {:?}", c.identity.ancestry.lineage());
+		}
+
+		if let Some(ref consensus) = consensus {
+			let _ = local_merged.merge(consensus.clone(), false);
+		}
+		local_merged.merge(remote.clone(), force)?;
+
+		eprintln!("[sync_issue] After merge:");
+		eprintln!("  local_merged lineage: {:?}", local_merged.identity.ancestry.lineage());
+		for (i, c) in local_merged.children.iter().enumerate() {
+			eprintln!("  local_merged child[{i}] lineage: {:?}", c.identity.ancestry.lineage());
+		}
+
+		if let Some(consensus) = consensus {
+			let _ = remote_merged.merge(consensus, false);
+		}
+		remote_merged.merge(local, force)?;
+
+		// Compare results
+		if local_merged == remote_merged {
+			// Auto-resolved - sink to both sides
+			let mut resolved = local_merged;
+			<Issue as Sink<Submitted>>::sink(&mut resolved, None).await?;
+			<Issue as Sink<Remote>>::sink(&mut resolved, None).await?;
+			Ok((resolved, true))
+		} else {
+			// Conflict - initiate git merge
+			match initiate_conflict_merge(owner, repo, issue_number, &local_merged, &remote_merged)? {
+				ConflictOutcome::AutoMerged => {
+					let resolved = read_resolved_conflict(owner)?;
+					complete_conflict_resolution(owner)?;
+					let mut resolved = resolved;
+					<Issue as Sink<Submitted>>::sink(&mut resolved, None).await?;
+					<Issue as Sink<Remote>>::sink(&mut resolved, None).await?;
+					Ok((resolved, true))
+				}
+				ConflictOutcome::NeedsResolution => {
+					bail!(
+						"Conflict detected for {owner}/{repo}#{issue_number}.\n\
+						Resolve using standard git tools, then re-run."
+					);
+				}
+				ConflictOutcome::NoChanges => {
+					// Git says no changes - take local
+					Ok((local_merged, false))
+				}
+			}
+		}
+	}
 }
 
-//=============================================================================
-// Helpers
-//=============================================================================
+mod types {
+	use super::*;
+	/// Which side to prefer in merge operations.
+	#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+	pub enum Side {
+		Local,
+		Remote,
+	}
 
-async fn handle_duplicate_close(_issue: &Issue, issue_file_path: &Path, owner: &str, repo: &str, issue_number: u64, dup_number: u64, offline: bool) -> Result<()> {
-	// Validate duplicate exists
-	if !offline {
-		let gh = crate::github::client::get();
-		let repo_info = tedi::RepoInfo::new(owner, repo);
-		if gh.fetch_issue(repo_info, dup_number).await.is_err() {
-			bail!("Cannot mark as duplicate of #{dup_number}: issue does not exist.");
+	/// How to merge local and remote states.
+	#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+	pub enum MergeMode {
+		/// Timestamp-based resolution. Conflict if can't auto-resolve.
+		#[default]
+		Normal,
+		/// Force preferred side on conflicts, keep non-conflicting from both.
+		Force { prefer: Side },
+		/// Take preferred side entirely.
+		Reset { prefer: Side },
+	}
+
+	/// Options for controlling sync behavior.
+	///
+	/// The `merge_mode` is consumed after first use (pre-editor sync),
+	/// so post-editor sync runs with `MergeMode::Normal`.
+	#[derive(Debug, Default)]
+	pub struct SyncOptions {
+		merge_mode: std::cell::Cell<Option<MergeMode>>,
+		/// Fetch and sync from remote before opening editor.
+		pub pull: bool,
+	}
+
+	impl SyncOptions {
+		pub fn new(merge_mode: Option<MergeMode>, pull: bool) -> Self {
+			Self {
+				merge_mode: std::cell::Cell::new(merge_mode),
+				pull,
+			}
+		}
+
+		/// Take the merge mode, returning Normal if already taken or not set.
+		pub fn take_merge_mode(&self) -> MergeMode {
+			self.merge_mode.take().unwrap_or_default()
+		}
+
+		/// Peek at the merge mode without consuming it.
+		pub fn peek_merge_mode(&self) -> MergeMode {
+			self.merge_mode.get().unwrap_or_default()
 		}
 	}
 
-	println!("Marked as duplicate of #{dup_number}, removing...");
+	/// Result of applying a modifier to an issue.
+	pub struct ModifyResult {
+		pub output: Option<String>,
+		pub file_modified: bool,
+	}
 
-	// Close on Github if needed
-	if !offline {
-		let consensus = load_consensus_issue(issue_file_path).await?.expect("consensus missing");
-		if !consensus.contents.state.is_closed() {
+	/// A modifier that can be applied to an issue file.
+	#[derive(Debug)]
+	pub enum Modifier {
+		Editor { open_at_blocker: bool },
+		BlockerPop,
+		BlockerAdd { text: String },
+	}
+
+	impl Modifier {
+		#[tracing::instrument]
+		pub(super) async fn apply(&self, issue: &mut Issue, issue_file_path: &Path) -> Result<ModifyResult> {
+			let old_issue = issue.clone();
+
+			let result = match self {
+				Modifier::Editor { open_at_blocker } => {
+					let content = issue.serialize_virtual();
+					std::fs::write(issue_file_path, &content)?;
+
+					let mtime_before = std::fs::metadata(issue_file_path)?.modified()?;
+
+					let position = if *open_at_blocker {
+						issue.find_last_blocker_position().map(|(line, col)| crate::utils::Position::new(line, Some(col)))
+					} else {
+						None
+					};
+
+					crate::utils::open_file(issue_file_path, position).await?;
+
+					let mtime_after = std::fs::metadata(issue_file_path)?.modified()?;
+					let file_modified = mtime_after != mtime_before;
+
+					let content = std::fs::read_to_string(issue_file_path)?;
+					issue.update_from_virtual(&content, issue_file_path)?;
+
+					ModifyResult { output: None, file_modified }
+				}
+				Modifier::BlockerPop => {
+					use crate::blocker_interactions::BlockerSequenceExt;
+					let popped = issue.contents.blockers.pop();
+					ModifyResult {
+						output: popped.map(|text| format!("Popped: {text}")),
+						file_modified: true,
+					}
+				}
+				Modifier::BlockerAdd { text } => {
+					use crate::blocker_interactions::BlockerSequenceExt;
+					issue.contents.blockers.add(text);
+					ModifyResult { output: None, file_modified: true }
+				}
+			};
+
+			if result.file_modified {
+				issue.update_timestamps_from_diff(&old_issue);
+			}
+
+			Ok(result)
+		}
+	}
+}
+pub use types::*;
+
+mod helpers {
+	use super::*;
+	pub(super) async fn handle_duplicate_close(_issue: &Issue, issue_file_path: &Path, owner: &str, repo: &str, issue_number: u64, dup_number: u64, offline: bool) -> Result<()> {
+		// Validate duplicate exists
+		if !offline {
 			let gh = crate::github::client::get();
 			let repo_info = tedi::RepoInfo::new(owner, repo);
-			gh.update_issue_state(repo_info, issue_number, "closed").await?;
+			if gh.fetch_issue(repo_info, dup_number).await.is_err() {
+				bail!("Cannot mark as duplicate of #{dup_number}: issue does not exist.");
+			}
 		}
-	}
 
-	// Remove local files
-	std::fs::remove_file(issue_file_path)?;
-	let sub_dir = issue_file_path.with_extension("");
-	let sub_dir = if sub_dir.extension().is_some() { sub_dir.with_extension("") } else { sub_dir };
-	if sub_dir.is_dir() {
-		std::fs::remove_dir_all(&sub_dir)?;
-	}
+		println!("Marked as duplicate of #{dup_number}, removing...");
 
-	commit_issue_changes(issue_file_path, owner, repo, issue_number, None)?;
-	println!("Duplicate removed.");
-	Ok(())
+		// Close on Github if needed
+		if !offline {
+			let consensus = load_consensus_issue(issue_file_path).await?.expect("consensus missing");
+			if !consensus.contents.state.is_closed() {
+				let gh = crate::github::client::get();
+				let repo_info = tedi::RepoInfo::new(owner, repo);
+				gh.update_issue_state(repo_info, issue_number, "closed").await?;
+			}
+		}
+
+		// Remove local files
+		std::fs::remove_file(issue_file_path)?;
+		let sub_dir = issue_file_path.with_extension("");
+		let sub_dir = if sub_dir.extension().is_some() { sub_dir.with_extension("") } else { sub_dir };
+		if sub_dir.is_dir() {
+			std::fs::remove_dir_all(&sub_dir)?;
+		}
+
+		commit_issue_changes(issue_file_path, owner, repo, issue_number, None)?;
+		println!("Duplicate removed.");
+		Ok(())
+	}
 }
