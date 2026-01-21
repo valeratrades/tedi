@@ -212,6 +212,7 @@ impl Sink<Remote> for Issue {
 			let title = &self.contents.title;
 			let body = self.body();
 			let closed = self.contents.state.is_closed();
+			let ancestry = self.identity.ancestry;
 
 			println!("Creating issue: {title}");
 			let created = gh.create_issue(repo_info, title, &body).await?;
@@ -222,11 +223,17 @@ impl Sink<Remote> for Issue {
 				gh.update_issue_state(repo_info, created.number, "closed").await?;
 			}
 
+			// Link to parent if this issue has one
+			let lineage = ancestry.lineage();
+			if let Some(&parent_number) = lineage.last() {
+				gh.add_sub_issue(repo_info, parent_number, created.id).await?;
+			}
+
 			// Update identity - keep same ancestry, just add linking info
 			let url = format!("https://github.com/{}/{}/issues/{}", repo_info.owner(), repo_info.repo(), created.number);
 			let link = IssueLink::parse(&url).expect("just constructed valid URL");
 			let user = gh.fetch_authenticated_user().await?;
-			self.identity = IssueIdentity::linked(self.identity.ancestry, user, link, tedi::IssueTimestamps::default());
+			self.identity = IssueIdentity::linked(ancestry, user, link, tedi::IssueTimestamps::default());
 			changed = true;
 		}
 
@@ -283,19 +290,7 @@ impl Sink<Remote> for Issue {
 		// Match children by position when we have old, otherwise sink with None
 		for (i, child) in self.children.iter_mut().enumerate() {
 			let old_child = old.and_then(|o| o.children.get(i));
-
-			// If child is pending, it needs to be linked to parent after creation
-			let was_pending = child.is_local();
-
 			changed |= Box::pin(<Issue as Sink<Remote>>::sink(child, old_child)).await?;
-
-			// Link newly created child to parent
-			if was_pending {
-				let child_number = child.number().unwrap();
-				let child_repo_info = child.identity.ancestry.repo_info();
-				let child_id = gh.fetch_issue(child_repo_info, child_number).await?.id;
-				gh.add_sub_issue(repo_info, issue_number, child_id).await?;
-			}
 		}
 
 		Ok(changed)

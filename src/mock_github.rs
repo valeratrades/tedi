@@ -570,6 +570,7 @@ impl GithubClient for MockGithubClient {
 		issues.entry(key).or_default().insert(number, issue);
 
 		Ok(CreatedIssue {
+			id,
 			number,
 			html_url: format!("https://github.com/{owner}/{repo_name}/issues/{number}"),
 		})

@@ -49,6 +49,7 @@ pub struct GithubComment {
 /// Response from Github when creating an issue
 #[derive(Debug, Deserialize)]
 pub struct CreatedIssue {
+	pub id: u64,
 	pub number: u64,
 	pub html_url: String,
 }
