@@ -327,7 +327,7 @@ mod types {
 					let mtime_after = std::fs::metadata(issue_file_path)?.modified()?;
 					let file_modified = mtime_after != mtime_before;
 
-					eprintln!("[Modifier::Editor] reading from: {:?}", issue_file_path);
+					eprintln!("[Modifier::Editor] reading from: {issue_file_path:?}");
 					let content = std::fs::read_to_string(issue_file_path)?;
 					eprintln!("[Modifier::Editor] content read:\n{content}");
 					issue.update_from_virtual(&content, issue_file_path)?;

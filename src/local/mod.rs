@@ -421,32 +421,20 @@ impl Local {
 	}
 
 	/// Get the path for an issue file using ancestor directory names directly.
-	/// Use this when you have directory names but not full FetchedIssue objects.
-	///
-	/// Checks if the issue exists in directory format (has sub-issues) and returns
-	/// the appropriate path (`__main__.md` for directory format, flat file otherwise).
+	#[deprecated]
 	pub fn issue_file_path_from_dir_names(owner: &str, repo: &str, issue_number: Option<u64>, title: &str, closed: bool, ancestor_dir_names: &[String]) -> PathBuf {
-		let mut base_path = Self::project_dir(owner, repo);
+		let mut path = Self::project_dir(owner, repo);
 
 		for dir_name in ancestor_dir_names {
-			base_path = base_path.join(dir_name);
+			path = path.join(dir_name);
 		}
 
-		// Check if issue exists in directory format (has sub-issues on disk)
-		let issue_dir = Self::issue_dir_path_from_dir_names(owner, repo, issue_number, title, ancestor_dir_names);
-		if issue_dir.is_dir() {
-			// Directory format: use __main__.md
-			Self::main_file_path(&issue_dir, closed)
-		} else {
-			// Flat file format
-			let filename = Self::format_issue_filename(issue_number, title, closed);
-			base_path.join(filename)
-		}
+		let filename = Self::format_issue_filename(issue_number, title, closed);
+		path.join(filename)
 	}
 
 	/// Get the path to the issue directory (where sub-issues are stored).
-	#[allow(deprecated)]
-	pub fn issue_dir_path(owner: &str, repo: &str, issue_number: Option<u64>, title: &str, ancestors: &[FetchedIssue]) -> PathBuf {
+	pub fn issue_dir_path(issue_number: Option<u64>, title: &str, ancestry: Ancestry) -> PathBuf {
 		let ancestor_dir_names: Vec<_> = ancestors.iter().map(|a| Self::format_issue_dir_name(a)).collect();
 		Self::issue_dir_path_from_dir_names(owner, repo, issue_number, title, &ancestor_dir_names)
 	}
