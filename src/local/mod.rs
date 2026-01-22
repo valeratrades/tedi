@@ -422,15 +422,26 @@ impl Local {
 
 	/// Get the path for an issue file using ancestor directory names directly.
 	/// Use this when you have directory names but not full FetchedIssue objects.
+	///
+	/// Checks if the issue exists in directory format (has sub-issues) and returns
+	/// the appropriate path (`__main__.md` for directory format, flat file otherwise).
 	pub fn issue_file_path_from_dir_names(owner: &str, repo: &str, issue_number: Option<u64>, title: &str, closed: bool, ancestor_dir_names: &[String]) -> PathBuf {
-		let mut path = Self::project_dir(owner, repo);
+		let mut base_path = Self::project_dir(owner, repo);
 
 		for dir_name in ancestor_dir_names {
-			path = path.join(dir_name);
+			base_path = base_path.join(dir_name);
 		}
 
-		let filename = Self::format_issue_filename(issue_number, title, closed);
-		path.join(filename)
+		// Check if issue exists in directory format (has sub-issues on disk)
+		let issue_dir = Self::issue_dir_path_from_dir_names(owner, repo, issue_number, title, ancestor_dir_names);
+		if issue_dir.is_dir() {
+			// Directory format: use __main__.md
+			Self::main_file_path(&issue_dir, closed)
+		} else {
+			// Flat file format
+			let filename = Self::format_issue_filename(issue_number, title, closed);
+			base_path.join(filename)
+		}
 	}
 
 	/// Get the path to the issue directory (where sub-issues are stored).
@@ -1314,23 +1325,12 @@ fn sink_issue_node(issue: &Issue, old: Option<&Issue>, owner: &str, repo: &str, 
 	let issue_number = issue.number();
 	let title = &issue.contents.title;
 	let closed = issue.contents.state.is_closed();
+	eprintln!("[sink_issue_node] issue #{issue_number:?} '{title}', closed: {closed}, state: {:?}", issue.contents.state);
 	let has_children = !issue.children.is_empty();
 	let old_has_children = old.map(|o| !o.children.is_empty()).unwrap_or(false);
 
 	// Build ancestor directory names from issue's ancestry lineage
-	let lineage = issue.identity.ancestry.lineage();
-	eprintln!(
-		"[sink_issue_node] issue #{issue_number:?} '{title}', lineage: {lineage:?}, closed: {closed}, state: {:?}",
-		issue.contents.state
-	);
-	let ancestor_dir_names = match Local::build_ancestor_dir_names(&issue.identity.ancestry) {
-		Ok(names) => names,
-		Err(e) => {
-			eprintln!("[sink_issue_node] build_ancestor_dir_names FAILED: {e}");
-			vec![]
-		}
-	};
-	eprintln!("[sink_issue_node] ancestor_dir_names: {ancestor_dir_names:?}");
+	let ancestor_dir_names = Local::build_ancestor_dir_names(&issue.identity.ancestry).unwrap_or_default();
 
 	// If this issue has a parent (lineage non-empty), ensure the parent is in directory format.
 	// The parent may currently be a flat file that needs to be converted to __main__.md.
@@ -1341,25 +1341,20 @@ fn sink_issue_node(issue: &Issue, old: Option<&Issue>, owner: &str, repo: &str, 
 			parent_dir = parent_dir.join(dir_name);
 		}
 		parent_dir = parent_dir.join(parent_dir_name);
-		eprintln!("[sink_issue_node] parent_dir: {}, is_dir: {}", parent_dir.display(), parent_dir.is_dir());
 
 		if !parent_dir.is_dir() {
 			// Parent exists as flat file, need to convert to directory
 			let flat_open = parent_dir.with_extension("md");
 			let flat_closed = PathBuf::from(format!("{}.md.bak", parent_dir.display()));
-			eprintln!("[sink_issue_node] flat_open: {}, exists: {}", flat_open.display(), flat_open.exists());
-			eprintln!("[sink_issue_node] flat_closed: {}, exists: {}", flat_closed.display(), flat_closed.exists());
 
 			std::fs::create_dir_all(&parent_dir)?;
 
 			// Move whichever flat file exists to __main__.md (preserving closed state)
 			if flat_closed.exists() {
 				let main_path = Local::main_file_path(&parent_dir, true);
-				eprintln!("[sink_issue_node] moving {} -> {}", flat_closed.display(), main_path.display());
 				std::fs::rename(&flat_closed, &main_path)?;
 			} else if flat_open.exists() {
 				let main_path = Local::main_file_path(&parent_dir, false);
-				eprintln!("[sink_issue_node] moving {} -> {}", flat_open.display(), main_path.display());
 				std::fs::rename(&flat_open, &main_path)?;
 			}
 		}

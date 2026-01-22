@@ -1530,13 +1530,13 @@ impl Issue /*{{{1*/ {
 	///
 	/// Use this instead of `parse_virtual` when re-loading an issue after editor edits.
 	pub fn update_from_virtual(&mut self, content: &str, path: &std::path::Path) -> Result<(), ParseError> {
-		eprintln!("[update_from_virtual] content:\n{content}");
 		// Parse the new content
 		let parsed = Self::parse_virtual_with_ancestry(content, path, self.identity.ancestry)?;
 
+		eprintln!("[update_from_virtual] parsed.contents.state: {:?}", parsed.contents.state);
 		eprintln!("[update_from_virtual] parsed {} children", parsed.children.len());
 		for (i, c) in parsed.children.iter().enumerate() {
-			eprintln!("[update_from_virtual] parsed child[{i}] state: {:?}", c.contents.state);
+			eprintln!("[update_from_virtual] parsed.children[{i}].contents.state: {:?}", c.contents.state);
 		}
 
 		// Update contents (title, labels, state, comments, blockers)
@@ -1546,6 +1546,7 @@ impl Issue /*{{{1*/ {
 		let old_children: std::collections::HashMap<u64, Issue> = self.children.drain(..).filter_map(|c| c.number().map(|n| (n, c))).collect();
 
 		for mut new_child in parsed.children {
+			eprintln!("[update_from_virtual] new_child state before identity copy: {:?}", new_child.contents.state);
 			if let Some(number) = new_child.number()
 				&& let Some(old_child) = old_children.get(&number)
 			{
@@ -1554,6 +1555,7 @@ impl Issue /*{{{1*/ {
 				// Recursively preserve child identities
 				Self::preserve_child_identities(&mut new_child, old_child);
 			}
+			eprintln!("[update_from_virtual] new_child state after identity copy: {:?}", new_child.contents.state);
 			self.children.push(new_child);
 		}
 
@@ -2057,5 +2059,99 @@ mod tests {
 		assert!(github.contains("This is the body text."));
 		assert!(github.contains("# Blockers"));
 		assert!(github.contains("- task 1"));
+	}
+
+	#[test]
+	fn test_update_from_virtual_child_open_to_closed() {
+		use std::path::Path;
+
+		// Start with parent + open child
+		let initial = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
+	Body
+
+	- [ ] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
+		Child body
+"#;
+		let mut issue = Issue::parse_virtual(initial, Path::new("test.md")).unwrap();
+		assert_eq!(issue.children[0].contents.state, CloseState::Open);
+
+		// Update with closed child
+		let updated = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
+	Body
+
+	- [x] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
+		Child body
+"#;
+		issue.update_from_virtual(updated, Path::new("test.md")).unwrap();
+		assert_eq!(issue.children[0].contents.state, CloseState::Closed, "Child should be Closed after update");
+	}
+
+	#[test]
+	fn test_update_from_virtual_child_open_to_not_planned() {
+		use std::path::Path;
+
+		let initial = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
+	Body
+
+	- [ ] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
+		Child body
+"#;
+		let mut issue = Issue::parse_virtual(initial, Path::new("test.md")).unwrap();
+		assert_eq!(issue.children[0].contents.state, CloseState::Open);
+
+		let updated = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
+	Body
+
+	- [-] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
+		Child body
+"#;
+		issue.update_from_virtual(updated, Path::new("test.md")).unwrap();
+		assert_eq!(issue.children[0].contents.state, CloseState::NotPlanned, "Child should be NotPlanned after update");
+	}
+
+	#[test]
+	fn test_update_from_virtual_child_open_to_duplicate() {
+		use std::path::Path;
+
+		let initial = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
+	Body
+
+	- [ ] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
+		Child body
+"#;
+		let mut issue = Issue::parse_virtual(initial, Path::new("test.md")).unwrap();
+		assert_eq!(issue.children[0].contents.state, CloseState::Open);
+
+		let updated = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
+	Body
+
+	- [99] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
+		Child body
+"#;
+		issue.update_from_virtual(updated, Path::new("test.md")).unwrap();
+		assert_eq!(issue.children[0].contents.state, CloseState::Duplicate(99), "Child should be Duplicate(99) after update");
+	}
+
+	#[test]
+	fn test_update_from_virtual_child_closed_to_open() {
+		use std::path::Path;
+
+		let initial = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
+	Body
+
+	- [x] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
+		Child body
+"#;
+		let mut issue = Issue::parse_virtual(initial, Path::new("test.md")).unwrap();
+		assert_eq!(issue.children[0].contents.state, CloseState::Closed);
+
+		let updated = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
+	Body
+
+	- [ ] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
+		Child body
+"#;
+		issue.update_from_virtual(updated, Path::new("test.md")).unwrap();
+		assert_eq!(issue.children[0].contents.state, CloseState::Open, "Child should be Open after update");
 	}
 }
