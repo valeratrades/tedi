@@ -62,9 +62,9 @@ rstest = "0.26"
 v_fixtures = { version = "^0.3.2" }
 walkdir = "2"
 
-#[patch.crates-io]
+[patch.crates-io]
 #v_utils = { path = "../v_utils/v_utils" }
-#v_fixtures = { path = "../v_fixtures" }
+v_fixtures = { path = "../v_fixtures" }
 
 [[test]]
 name = "integration"

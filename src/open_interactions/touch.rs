@@ -192,6 +192,7 @@ fn match_single_or_none(children: &[String], pattern: &str) -> MatchOrNone {
 ///
 /// Ancestry contains owner/repo and parent lineage (if creating a sub-issue).
 /// If `virtual_project` is true, creates a virtual issue (local-only, no Github sync).
+#[deprecated] //TODO: switch to just a `default_from_ancestry` method directly on Issue (note that some components can have just simple Default derive)
 pub fn create_pending_issue(title: &str, ancestry: &Ancestry, virtual_project: bool) -> Result<tedi::Issue> {
 	use tedi::{CloseState, Comment, CommentIdentity, Events, Issue, IssueContents, IssueIdentity};
 

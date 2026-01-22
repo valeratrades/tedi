@@ -7,7 +7,7 @@ use std::path::Path;
 
 use tedi::Issue;
 
-use crate::common::{TestContext, git::GitExt, snapshot_issues_dir};
+use crate::common::{TestContext, git::GitExt, snapshot_issues_dir, snapshot_issues_dir_redacting};
 
 fn parse(content: &str) -> Issue {
 	Issue::parse_virtual(content, Path::new("test.md")).expect("failed to parse test issue")
@@ -269,7 +269,7 @@ fn test_closing_nested_issue_creates_bak_file() {
 		eprintln!("  {}", entry.path().display());
 	}
 
-	insta::assert_snapshot!(snapshot_issues_dir(&ctx), @r#"
+	insta::assert_snapshot!(snapshot_issues_dir_redacting(&ctx, &[20]), @r#"
 	//- /o/r/.meta.json
 	{
 	  "virtual_project": false,
@@ -289,14 +289,14 @@ fn test_closing_nested_issue_creates_bak_file() {
 	        "title": null,
 	        "description": null,
 	        "labels": null,
-	        "state": null,
+	        [REDACTED - non-deterministic timestamp]
 	        "comments": []
 	      }
 	    }
 	  }
 	}
-	//- /o/r/1_-_a/2_-_b.md
-	- [ ] b <!-- @mock_user https://github.com/o/r/issues/2 -->
+	//- /o/r/1_-_a/2_-_b.md.bak
+	- [x] b <!-- @mock_user https://github.com/o/r/issues/2 -->
 			nested body content
 	//- /o/r/1_-_a/__main__.md
 	- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->

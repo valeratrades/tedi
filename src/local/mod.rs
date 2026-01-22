@@ -404,20 +404,29 @@ impl Local {
 	/// Get the path for an issue file from an Issue.
 	/// Uses the issue's ancestry to resolve the path.
 	///
+	/// Checks if the issue exists in directory format on disk (has sub-issues) and returns
+	/// the appropriate path (`__main__.md` for directory format, flat file otherwise).
+	///
 	/// # Errors
 	/// Returns an error if ancestor directories can't be resolved from the ancestry.
 	pub fn issue_file_path(issue: &Issue) -> Result<PathBuf> {
 		let ancestry = &issue.identity.ancestry;
 		let ancestor_dir_names = Self::build_ancestor_dir_names(ancestry)?;
 		let closed = issue.contents.state.is_closed();
-		Ok(Self::issue_file_path_from_dir_names(
-			ancestry.owner(),
-			ancestry.repo(),
-			issue.number(),
-			&issue.contents.title,
-			closed,
-			&ancestor_dir_names,
-		))
+
+		// Check if issue exists in directory format on disk
+		let issue_dir = Self::issue_dir_path_from_dir_names(ancestry.owner(), ancestry.repo(), issue.number(), &issue.contents.title, &ancestor_dir_names);
+		if issue_dir.is_dir() {
+			return Ok(Self::main_file_path(&issue_dir, closed));
+		}
+
+		// Flat file format
+		let mut path = Self::project_dir(ancestry.owner(), ancestry.repo());
+		for dir_name in &ancestor_dir_names {
+			path = path.join(dir_name);
+		}
+		let filename = Self::format_issue_filename(issue.number(), &issue.contents.title, closed);
+		Ok(path.join(filename))
 	}
 
 	/// Get the path for an issue file using ancestor directory names directly.
@@ -434,9 +443,9 @@ impl Local {
 	}
 
 	/// Get the path to the issue directory (where sub-issues are stored).
-	pub fn issue_dir_path(issue_number: Option<u64>, title: &str, ancestry: Ancestry) -> PathBuf {
-		let ancestor_dir_names: Vec<_> = ancestors.iter().map(|a| Self::format_issue_dir_name(a)).collect();
-		Self::issue_dir_path_from_dir_names(owner, repo, issue_number, title, &ancestor_dir_names)
+	pub fn issue_dir_path(issue_number: Option<u64>, title: &str, ancestry: &Ancestry) -> PathBuf {
+		let ancestor_dir_names = Self::build_ancestor_dir_names(ancestry).unwrap_or_default();
+		Self::issue_dir_path_from_dir_names(ancestry.owner(), ancestry.repo(), issue_number, title, &ancestor_dir_names)
 	}
 
 	/// Get the path to the issue directory using ancestor directory names directly.

@@ -551,8 +551,8 @@ fn test_reset_syncs_changes_after_editor() {
 	    }
 	  }
 	}
-	//- /o/r/1_-_Test_Issue.md.bak
-	- [x] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+	//- /o/r/1_-_Test_Issue.md
+	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
 			remote body
 	"#);
 }
