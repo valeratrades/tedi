@@ -10,19 +10,10 @@ use serde::{Deserialize, Serialize};
 
 use super::protocol;
 
-static BLOCKER_STATE_FILENAME: &str = "blocker_state.txt";
-static WORKSPACE_SETTINGS_FILENAME: &str = "workspace_settings.json";
-
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct WorkspaceSettings {
 	pub fully_qualified: bool,
 }
-
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-struct WorkspaceCache {
-	workspaces: HashMap<String, WorkspaceSettings>,
-}
-
 #[derive(Clone, Debug, Default, Parser)]
 pub struct ResumeArgs {
 	/// Workspace ID or name (if omitted, use the user's active workspace)
@@ -45,18 +36,12 @@ pub struct ResumeArgs {
 	#[arg(short = 'b', long, default_value_t = false)]
 	pub billable: bool,
 }
-
 #[derive(Clone, Debug, Parser)]
 pub struct HaltArgs {
 	/// Workspace ID or name (if omitted, use the user's active workspace)
 	#[arg(short = 'w', long)]
 	pub workspace: Option<String>,
 }
-
-fn get_blocker_state_path() -> std::path::PathBuf {
-	v_utils::xdg_state_file!(BLOCKER_STATE_FILENAME)
-}
-
 /// Check if blocker tracking is enabled
 pub fn is_tracking_enabled() -> bool {
 	let state_path = get_blocker_state_path();
@@ -75,37 +60,12 @@ pub fn is_tracking_enabled() -> bool {
 		}
 	}
 }
-
 /// Set blocker tracking state (enabled/disabled)
 pub fn set_tracking_enabled(enabled: bool) -> Result<()> {
 	let state_path = get_blocker_state_path();
 	std::fs::write(&state_path, if enabled { "true" } else { "false" })?;
 	Ok(())
 }
-
-fn get_workspace_settings_path() -> std::path::PathBuf {
-	v_utils::xdg_cache_file!(WORKSPACE_SETTINGS_FILENAME)
-}
-
-fn load_workspace_cache() -> WorkspaceCache {
-	let cache_path = get_workspace_settings_path();
-	match std::fs::read_to_string(&cache_path) {
-		Ok(content) => match serde_json::from_str(&content) {
-			Ok(cache) => cache,
-			Err(e) => panic!("corrupted workspace cache at {}: {e}", cache_path.display()),
-		},
-		Err(e) if e.kind() == std::io::ErrorKind::NotFound => WorkspaceCache::default(),
-		Err(e) => panic!("failed to read workspace cache at {}: {e}", cache_path.display()),
-	}
-}
-
-fn save_workspace_cache(cache: &WorkspaceCache) -> Result<()> {
-	let cache_path = get_workspace_settings_path();
-	let content = serde_json::to_string_pretty(cache)?;
-	std::fs::write(&cache_path, content)?;
-	Ok(())
-}
-
 /// Get fully_qualified setting for a workspace, prompting user if not set
 pub fn get_workspace_fully_qualified_setting(workspace: &str) -> Result<bool> {
 	let cache = load_workspace_cache();
@@ -136,12 +96,10 @@ pub fn get_workspace_fully_qualified_setting(workspace: &str) -> Result<bool> {
 		Ok(use_fully_qualified)
 	}
 }
-
 /// Stop current time tracking
 pub async fn stop_current_tracking(workspace: Option<&str>) -> Result<()> {
 	protocol::stop_time_entry_with_defaults(workspace).await
 }
-
 /// Start tracking for a task with the given description
 ///
 /// `get_description` is a callback that returns the final description to use,
@@ -171,7 +129,6 @@ where
 	)
 	.await
 }
-
 /// Helper to restart tracking for a blocker sequence
 ///
 /// `get_current_description` is a callback that returns the current blocker description
@@ -188,5 +145,34 @@ where
 			eprintln!("Warning: Failed to start tracking for task: {e}");
 		}
 	}
+	Ok(())
+}
+static BLOCKER_STATE_FILENAME: &str = "blocker_state.txt";
+static WORKSPACE_SETTINGS_FILENAME: &str = "workspace_settings.json";
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+struct WorkspaceCache {
+	workspaces: HashMap<String, WorkspaceSettings>,
+}
+fn get_blocker_state_path() -> std::path::PathBuf {
+	v_utils::xdg_state_file!(BLOCKER_STATE_FILENAME)
+}
+fn get_workspace_settings_path() -> std::path::PathBuf {
+	v_utils::xdg_cache_file!(WORKSPACE_SETTINGS_FILENAME)
+}
+fn load_workspace_cache() -> WorkspaceCache {
+	let cache_path = get_workspace_settings_path();
+	match std::fs::read_to_string(&cache_path) {
+		Ok(content) => match serde_json::from_str(&content) {
+			Ok(cache) => cache,
+			Err(e) => panic!("corrupted workspace cache at {}: {e}", cache_path.display()),
+		},
+		Err(e) if e.kind() == std::io::ErrorKind::NotFound => WorkspaceCache::default(),
+		Err(e) => panic!("failed to read workspace cache at {}: {e}", cache_path.display()),
+	}
+}
+fn save_workspace_cache(cache: &WorkspaceCache) -> Result<()> {
+	let cache_path = get_workspace_settings_path();
+	let content = serde_json::to_string_pretty(cache)?;
+	std::fs::write(&cache_path, content)?;
 	Ok(())
 }
