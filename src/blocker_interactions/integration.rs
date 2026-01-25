@@ -163,7 +163,7 @@ pub async fn main_integrated(command: super::io::Command, format: DisplayFormat,
 			if let Some(urgent_path) = urgent::find_existing() {
 				let blockers = urgent::load_blockers(&urgent_path)?;
 				if let Some(current) = blockers.current_with_context(&[]) {
-					let prefix = if fully_qualified { "URGENT: " } else { "URGENT: " };
+					let prefix = if fully_qualified { "URGENT: " } else { "" };
 					let output = format!("{prefix}{current}");
 					const MAX_LEN: usize = 70;
 					match output.len() {
@@ -451,7 +451,7 @@ mod urgent {
 		let urgent_path = find_existing()?;
 		let blockers = load_blockers(&urgent_path).ok()?;
 		let current = blockers.current_with_context(&[])?;
-		let prefix = if fully_qualified { "URGENT: " } else { "URGENT: " };
+		let prefix = if fully_qualified { "URGENT: " } else { "" };
 		Some((format!("{prefix}{current}"), true))
 	}
 }

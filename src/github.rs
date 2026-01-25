@@ -10,7 +10,6 @@ use crate::config::LiveSettings;
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct GithubIssue {
-	pub id: u64,
 	pub number: u64,
 	pub title: String,
 	pub body: Option<String>,
@@ -20,9 +19,6 @@ pub struct GithubIssue {
 	/// Reason for the state (e.g., "completed", "not_planned", "duplicate")
 	/// Only present for closed issues.
 	pub state_reason: Option<String>,
-	/// Last time the issue was updated (ISO 8601 format).
-	/// Note: We now use GraphQL timeline API to get per-field timestamps, as we this `updated_at` reacts to literally any state change of the issue, including updating children (which we really don't want to react to)
-	pub _updated_at: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]

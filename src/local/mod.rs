@@ -793,14 +793,11 @@ impl Local {
 				if name.starts_with(&prefix_with_sep) || name == exact_match_dir {
 					return Some(name.to_string());
 				}
-			} else if path.is_file() {
-				// Flat file: strip .md or .md.bak extension to get dir name
-				// Use if-let instead of ? to avoid early return on non-.md files
-				if let Some(base) = name.strip_suffix(".md.bak").or_else(|| name.strip_suffix(".md")) {
-					if base.starts_with(&prefix_with_sep) || base == exact_match_dir {
-						return Some(base.to_string());
-					}
-				}
+			} else if path.is_file()
+				&& let Some(base) = name.strip_suffix(".md.bak").or_else(|| name.strip_suffix(".md"))
+				&& (base.starts_with(&prefix_with_sep) || base == exact_match_dir)
+			{
+				return Some(base.to_string());
 			}
 		}
 

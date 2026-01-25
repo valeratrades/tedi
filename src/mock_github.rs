@@ -268,7 +268,6 @@ impl MockGithubClient {
 
 	fn convert_issue_data(&self, data: &MockIssueData) -> GithubIssue {
 		GithubIssue {
-			id: data.number * 1000, // Mock ID based on number
 			number: data.number,
 			title: data.title.clone(),
 			body: if data.body.is_empty() { None } else { Some(data.body.clone()) },
@@ -276,7 +275,6 @@ impl MockGithubClient {
 			user: GithubUser { login: data.owner_login.clone() },
 			state: data.state.clone(),
 			state_reason: data.state_reason.clone(),
-			_updated_at: "2024-01-15T12:00:00Z".to_string(), // Mock timestamp
 		}
 	}
 }
@@ -752,7 +750,7 @@ mod tests {
 
 		// Fetch sub-issues
 		let sub_issues = client.fetch_sub_issues(repo, 1).await.unwrap();
-		assert_debug_snapshot!(format!("{sub_issues:?}"), @r#""[GithubIssue { id: 2000, number: 2, title: \"Child Issue\", body: None, labels: [], user: GithubUser { login: \"testuser\" }, state: \"open\", state_reason: None, _updated_at: \"2024-01-15T12:00:00Z\" }]""#);
+		assert_debug_snapshot!(format!("{sub_issues:?}"), @r#""[GithubIssue { number: 2, title: \"Child Issue\", body: None, labels: [], user: GithubUser { login: \"testuser\" }, state: \"open\", state_reason: None }]""#);
 	}
 
 	#[tokio::test]

@@ -90,11 +90,11 @@ pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Mo
 				let remote = <Issue as LazyIssue<Remote>>::load(remote_source).await?;
 
 				let mode = sync_opts.take_merge_mode();
-				let (resolved, changed) = core::sync_issue(issue, consensus, remote, mode, &owner, &repo, issue_number).await?;
+				let (resolved, changed) = core::sync_issue(issue, consensus, remote, mode, owner, repo, issue_number).await?;
 				issue = resolved;
 
 				if changed {
-					commit_issue_changes(&owner, &repo, issue_number)?;
+					commit_issue_changes(owner, repo, issue_number)?;
 				}
 			}
 		}
@@ -132,14 +132,14 @@ pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Mo
 		let remote = <Issue as LazyIssue<Remote>>::load(remote_source).await?;
 
 		let consensus = load_consensus_issue(&issue_file_path).await?;
-		let (resolved, changed) = core::sync_issue(issue, consensus, remote, mode, &owner, &repo, issue_number).await?;
+		let (resolved, changed) = core::sync_issue(issue, consensus, remote, mode, owner, repo, issue_number).await?;
 		issue = resolved;
 
 		if changed {
 			// Re-sink local in case issue numbers changed
 			<Issue as Sink<Submitted>>::sink(&mut issue, None).await?;
 			let actual_number = issue.number().unwrap_or(issue_number);
-			commit_issue_changes(&owner, &repo, actual_number)?;
+			commit_issue_changes(owner, repo, actual_number)?;
 		} else {
 			println!("No changes.");
 		}
@@ -148,7 +148,7 @@ pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Mo
 		<Issue as Sink<Remote>>::sink(&mut issue, None).await?;
 		<Issue as Sink<Submitted>>::sink(&mut issue, None).await?;
 		let actual_number = issue.number().unwrap_or(issue_number);
-		commit_issue_changes(&owner, &repo, actual_number)?;
+		commit_issue_changes(owner, repo, actual_number)?;
 	}
 
 	Ok(result)

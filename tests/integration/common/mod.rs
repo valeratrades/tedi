@@ -468,14 +468,12 @@ fn find_virtual_edit_file(base: &Path) -> Option<PathBuf> {
 				let path = entry.path();
 				if path.is_dir() {
 					walk(&path, best);
-				} else if path.extension().is_some_and(|e| e == "md") {
-					if let Ok(meta) = path.metadata() {
-						if let Ok(mtime) = meta.modified() {
-							if best.as_ref().map(|(_, t)| mtime > *t).unwrap_or(true) {
-								*best = Some((path, mtime));
-							}
-						}
-					}
+				} else if path.extension().is_some_and(|e| e == "md")
+					&& let Ok(meta) = path.metadata()
+					&& let Ok(mtime) = meta.modified()
+					&& best.as_ref().map(|(_, t)| mtime > *t).unwrap_or(true)
+				{
+					*best = Some((path, mtime));
 				}
 			}
 		}

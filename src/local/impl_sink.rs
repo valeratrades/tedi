@@ -258,10 +258,10 @@ fn remove_issue_files(issue: &Issue) -> Result<bool> {
 	}
 
 	// Remove directory variant
-	if let Ok(issue_dir) = local_path.dir_path(title) {
-		if issue_dir.is_dir() {
-			std::fs::remove_dir_all(&issue_dir)?;
-		}
+	if let Ok(issue_dir) = local_path.dir_path(title)
+		&& issue_dir.is_dir()
+	{
+		std::fs::remove_dir_all(&issue_dir)?;
 	}
 
 	// Remove metadata

@@ -143,44 +143,6 @@ impl CommentIdentity /*{{{1*/ {
 }
 //,}}}1
 
-/// An issue with its title - used when we need both identity and display name.
-/// This is what we have after fetching an issue from Github.
-#[deprecated(note = "HORRIBLE PRIMITIVE ERRONEOUSLY USED IN OLD BAD LEGACY CODE. USE ANCESTRY OR DIRECTORY NAMES DIRECTLY.")]
-#[derive(Clone, Debug)]
-pub struct FetchedIssue {
-	pub link: IssueLink,
-	pub title: String,
-}
-
-impl FetchedIssue /*{{{1*/ {
-	pub fn new(link: IssueLink, title: impl Into<String>) -> Self {
-		Self { link, title: title.into() }
-	}
-
-	/// Create from owner, repo, number, and title (constructs the URL internally).
-	pub fn from_parts(owner: &str, repo: &str, number: u64, title: impl Into<String>) -> Option<Self> {
-		let url_str = format!("https://github.com/{owner}/{repo}/issues/{number}");
-		let link = IssueLink::parse(&url_str)?;
-		Some(Self { link, title: title.into() })
-	}
-
-	/// Convenience: get the issue number
-	pub fn number(&self) -> u64 {
-		self.link.number()
-	}
-
-	/// Convenience: get owner
-	pub fn owner(&self) -> &str {
-		self.link.owner()
-	}
-
-	/// Convenience: get repo
-	pub fn repo(&self) -> &str {
-		self.link.repo()
-	}
-}
-//,}}}1
-
 use super::{
 	blocker::{BlockerSequence, classify_line, join_with_blockers},
 	error::{ParseContext, ParseError},
@@ -562,6 +524,7 @@ pub const MAX_TITLE_LENGTH: usize = 256;
 /// GitId is preferred when available, as title can change.
 /// Uses `ArrayString` for `Copy` semantics.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(clippy::large_enum_variant)] // Intentional: Title variant is large for Copy semantics
 pub enum IssueSelector {
 	/// Github issue number (stable identifier)
 	GitId(u64),
