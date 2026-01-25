@@ -676,6 +676,27 @@ impl Issue /*{{{1*/ {
 		}
 	}
 
+	/// Create a new pending issue with the given title and ancestry.
+	///
+	/// If `virtual_project` is true, creates a virtual issue (local-only, no Github sync).
+	/// Otherwise creates a pending Github issue that will be created on first sync.
+	pub fn pending_from_ancestry(title: impl Into<String>, ancestry: Ancestry, virtual_project: bool) -> Self {
+		let identity = if virtual_project {
+			IssueIdentity::virtual_issue(ancestry)
+		} else {
+			IssueIdentity::pending(ancestry)
+		};
+		let contents = IssueContents {
+			title: title.into(),
+			..Default::default()
+		};
+		Self {
+			identity,
+			contents,
+			children: vec![],
+		}
+	}
+
 	/// Check if this issue is linked to Github.
 	pub fn is_linked(&self) -> bool {
 		self.identity.is_linked()

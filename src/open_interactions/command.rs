@@ -13,7 +13,7 @@ use v_utils::prelude::*;
 use super::{
 	remote::{Remote, RemoteSource},
 	sync::{MergeMode, Modifier, Side, SyncOptions, modify_and_sync_issue},
-	touch::{TouchPathResult, create_pending_issue, parse_touch_path},
+	touch::{TouchPathResult, parse_touch_path},
 };
 use crate::{config::LiveSettings, github};
 
@@ -154,7 +154,15 @@ pub async fn open_command(settings: &LiveSettings, args: OpenArgs, offline: bool
 				// Create pending issue in memory, then use unified sync flow
 				// Modifier::Editor will write it to disk before opening
 				let project_is_virtual = Local::is_virtual_project(ancestry.repo_info());
-				let issue = create_pending_issue(&title, &ancestry, project_is_virtual)?;
+				let issue = Issue::pending_from_ancestry(&title, ancestry, project_is_virtual);
+				if !issue.identity.ancestry().lineage().is_empty() {
+					println!("Creating pending sub-issue: {title}");
+				} else {
+					println!("Creating pending issue: {title}");
+				}
+				if !project_is_virtual {
+					println!("Issue will be created on Github when you save and sync.");
+				}
 				modify_and_sync_issue(issue, project_is_virtual, Modifier::Editor { open_at_blocker: false }, local_sync_opts()).await?;
 				return Ok(());
 			}

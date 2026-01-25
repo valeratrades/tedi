@@ -125,50 +125,6 @@ pub fn parse_touch_path(user_input: &str) -> Result<TouchPathResult> {
 	Ok(TouchPathResult::Found(Ancestry::with_lineage(&owner, &repo, &lineage)))
 }
 
-/// Create a pending issue in memory (not written to disk).
-/// Returns the Issue object and the path where it would be stored.
-/// The issue will only be written to disk when the user saves changes.
-///
-/// Ancestry contains owner/repo and parent lineage (if creating a sub-issue).
-/// If `virtual_project` is true, creates a virtual issue (local-only, no Github sync).
-#[deprecated] //TODO: switch to just a `default_from_ancestry` method directly on Issue (note that some components can have just simple Default derive)
-pub fn create_pending_issue(title: &str, ancestry: &Ancestry, virtual_project: bool) -> Result<tedi::Issue> {
-	use tedi::{CloseState, Comment, CommentIdentity, Events, Issue, IssueContents, IssueIdentity};
-
-	// Create the Issue object in memory
-	let identity = if virtual_project {
-		IssueIdentity::virtual_issue(*ancestry)
-	} else {
-		IssueIdentity::pending(*ancestry)
-	};
-	let contents = IssueContents {
-		title: title.to_string(),
-		labels: vec![],
-		state: CloseState::Open,
-		comments: vec![Comment {
-			identity: CommentIdentity::Body,
-			body: Events::default(),
-		}],
-		blockers: Default::default(),
-	};
-
-	let issue = Issue {
-		identity,
-		contents,
-		children: vec![],
-	};
-
-	if !ancestry.lineage().is_empty() {
-		println!("Creating pending sub-issue: {title}");
-	} else {
-		println!("Creating pending issue: {title}");
-	}
-	if !virtual_project {
-		println!("Issue will be created on Github when you save and sync.");
-	}
-
-	Ok(issue)
-}
 /// Strip .md extension if present
 fn strip_md_extension(s: &str) -> &str {
 	s.strip_suffix(".md").unwrap_or(s)
