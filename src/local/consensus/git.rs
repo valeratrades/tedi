@@ -24,7 +24,6 @@ pub fn is_git_initialized() -> bool {
 }
 
 /// Stage and commit changes for an issue file.
-//TODO: update all callsites to pass corrected args
 pub fn commit_issue_changes(owner: &str, repo: &str, issue_number: u64) -> Result<()> {
 	let data_dir = Local::issues_dir();
 	let data_dir_str = data_dir.to_str().ok_or_else(|| eyre!("Invalid data directory path"))?;

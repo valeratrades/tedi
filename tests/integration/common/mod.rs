@@ -489,7 +489,7 @@ fn replace_issue_body(content: &str, new_body: &str) -> String {
 	let mut lines = content.lines();
 
 	// Keep the title line
-	let title_line = lines.next().unwrap_or("");
+	let title_line = lines.next().expect("content should not be empty");
 
 	// Build new content: title line + indented new body
 	let mut result = String::from(title_line);

@@ -424,7 +424,7 @@ impl TestContext {
 		// Load existing meta or create new
 		let mut project_meta: serde_json::Value = if meta_path.exists() {
 			let content = std::fs::read_to_string(&meta_path).unwrap();
-			serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({"issues": {}}))
+			serde_json::from_str(&content).expect("meta.json should be valid JSON")
 		} else {
 			serde_json::json!({"issues": {}})
 		};
@@ -458,11 +458,6 @@ fn extract_issue_coords(issue: &Issue) -> (String, String, u64) {
 	} else {
 		(DEFAULT_OWNER.to_string(), DEFAULT_REPO.to_string(), DEFAULT_NUMBER)
 	}
-}
-
-/// Extract child issue number from its identity, or use default.
-fn extract_child_number(child: &Issue, default: u64) -> u64 {
-	child.number().unwrap_or(default)
 }
 
 /// Recursively add an issue and all its children to the mock state.
@@ -518,8 +513,8 @@ fn add_issue_recursive(state: &mut GitState, owner: &str, repo: &str, number: u6
 	}
 
 	// Recursively add children (they inherit the same timestamps)
-	for (i, child) in issue.children.iter().enumerate() {
-		let child_number = extract_child_number(child, number * 100 + 1 + i as u64);
+	for child in &issue.children {
+		let child_number = child.number().expect("child issue must have number for remote mock state");
 		add_issue_recursive(state, owner, repo, child_number, Some(number), child, timestamps);
 	}
 }
@@ -557,12 +552,10 @@ struct SubIssueRelation {
 
 #[cfg(test)]
 mod tests {
-	use std::path::Path;
-
 	use super::*;
 
 	fn parse(content: &str) -> Issue {
-		Issue::parse_virtual(content, Path::new("test.md")).expect("failed to parse test issue")
+		Issue::parse_virtual(content, "test.md").expect("failed to parse test issue")
 	}
 
 	#[test]

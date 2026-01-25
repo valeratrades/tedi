@@ -14,14 +14,12 @@
 //! 6. Post-editor sync fetches remote (gets Github API content for sub-issues)
 //! 7. Consensus (with local content) != Remote (with API content) → FALSE CONFLICT
 
-use std::path::Path;
-
 use tedi::Issue;
 
 use crate::common::{TestContext, git::GitExt};
 
 fn parse(content: &str) -> Issue {
-	Issue::parse_virtual(content, Path::new("test.md")).expect("failed to parse test issue")
+	Issue::parse_virtual(content, "test.md").expect("failed to parse test issue")
 }
 
 /// Scenario from issue #46:

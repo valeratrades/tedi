@@ -3,14 +3,12 @@
 //! Tests that nested issues, blockers, and other content survive the
 //! parse -> edit -> serialize -> sync cycle intact.
 
-use std::path::Path;
-
 use tedi::Issue;
 
 use crate::common::{TestContext, git::GitExt, snapshot_issues_dir_redacting};
 
 fn parse(content: &str) -> Issue {
-	Issue::parse_virtual(content, Path::new("test.md")).expect("failed to parse test issue")
+	Issue::parse_virtual(content, "test.md").expect("failed to parse test issue")
 }
 
 #[test]

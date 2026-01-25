@@ -339,7 +339,7 @@ mod types {
 					eprintln!("[Modifier::Editor] reading from: {issue_file_path:?}");
 					let content = std::fs::read_to_string(issue_file_path)?;
 					eprintln!("[Modifier::Editor] content read:\n{content}");
-					issue.update_from_virtual(&content, issue_file_path)?;
+					issue.update_from_virtual(&content, issue_file_path.display().to_string())?;
 
 					eprintln!("[after update_from_virtual] issue state: {:?}", issue.contents.state);
 					for (i, c) in issue.children.iter().enumerate() {

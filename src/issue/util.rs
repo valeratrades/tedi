@@ -1,6 +1,5 @@
 //! Small utility functions for issue processing.
-//XXX: fundamentally flawed concept, is up for deprecation.
-// Markers should be taking care of all parts of parsing themselves
+//! Fundamentally flawed concept - Markers should handle all parsing themselves.
 
 use super::Marker;
 
@@ -10,6 +9,7 @@ use super::Marker;
 /// - `<!--blockers-->` (legacy, still supported)
 /// - `#{1,6} Blockers` (any header level)
 /// - `**Blockers**` (with optional trailing `:`)
+#[deprecated(note = "use Marker::decode directly - markers should handle their own parsing")]
 pub fn is_blockers_marker(line: &str) -> bool {
 	// Use Marker enum for standard formats
 	if matches!(Marker::decode(line), Some(Marker::BlockersSection(_))) {
@@ -25,6 +25,7 @@ pub fn is_blockers_marker(line: &str) -> bool {
 ///
 /// The function detects the first non-marker indented line to determine the space-per-indent ratio,
 /// then normalizes all indentation to tabs.
+#[deprecated(note = "indentation normalization should be handled during parsing")]
 pub fn normalize_issue_indentation(content: &str) -> String {
 	// Detect spaces-per-indent by finding the first indented line that starts with spaces
 	let spaces_per_indent = content

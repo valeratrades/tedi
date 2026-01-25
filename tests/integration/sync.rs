@@ -21,14 +21,12 @@
 //! The `.meta.json` file contains actual timestamps from seed-based generation,
 //! so snapshots verify both file content and timestamp values.
 
-use std::path::Path;
-
 use tedi::Issue;
 
 use crate::common::{TestContext, git::GitExt, snapshot_issues_dir, snapshot_issues_dir_redacting};
 
 fn parse(content: &str) -> Issue {
-	Issue::parse_virtual(content, Path::new("test.md")).expect("failed to parse test issue")
+	Issue::parse_virtual(content, "test.md").expect("failed to parse test issue")
 }
 
 #[test]

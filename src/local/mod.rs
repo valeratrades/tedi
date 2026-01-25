@@ -522,7 +522,7 @@ impl Local {
 	/// This parses one issue file (without loading children from separate files).
 	/// Children field will be empty - they're loaded separately via LazyIssue.
 	fn parse_single_node(content: &str, parent_index: IssueIndex, file_path: &Path) -> Result<Issue, LocalError> {
-		let mut issue = Issue::parse_virtual_with_parent(content, file_path, parent_index).map_err(|e| LocalError::ParseError {
+		let mut issue = Issue::parse_virtual_with_parent(content, file_path.display().to_string(), parent_index).map_err(|e| LocalError::ParseError {
 			path: file_path.to_path_buf(),
 			source: Box::new(e),
 		})?;

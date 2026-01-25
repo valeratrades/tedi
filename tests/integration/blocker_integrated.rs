@@ -3,15 +3,12 @@
 //! These tests verify that `blocker add` and `blocker pop` work correctly
 //! when operating on issue files (integrated mode) rather than standalone blocker files.
 
-use std::path::Path;
-
 use tedi::Issue;
 
 use crate::common::{TestContext, git::GitExt};
 
-//TODO!!!: use Issue::parse_virtual directly (once Path is no longer required)
 fn parse(content: &str) -> Issue {
-	Issue::parse_virtual(content, Path::new("test.md")).expect("failed to parse test issue")
+	Issue::parse_virtual(content, "test.md").expect("failed to parse test issue")
 }
 
 #[test]

@@ -7,14 +7,12 @@
 //! Also tests that old file placements are automatically cleaned up when the
 //! format changes (e.g., when an issue gains sub-issues).
 
-use std::path::Path;
-
 use tedi::Issue;
 
 use crate::common::{TestContext, git::GitExt};
 
 fn parse(content: &str) -> Issue {
-	Issue::parse_virtual(content, Path::new("test.md")).expect("failed to parse test issue")
+	Issue::parse_virtual(content, "test.md").expect("failed to parse test issue")
 }
 
 #[test]
