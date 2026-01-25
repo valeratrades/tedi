@@ -14,7 +14,7 @@
 /// - `Ok(None)` if file is not tracked (new file, no consensus yet)
 /// - `Err(LocalError)` if file exists but failed to load
 pub async fn load_consensus_issue(file_path: &Path) -> Result<Option<Issue>, LocalError> {
-	let source = LocalPath::consensus(file_path.to_path_buf());
+	let source = LocalPathLegacy::consensus(file_path.to_path_buf());
 
 	// Check if the file exists in git
 	if Local::read_content(&source).is_none() {
@@ -29,5 +29,5 @@ use std::path::Path;
 
 pub use git::{commit_issue_changes, is_git_initialized};
 
-use super::{Local, LocalError, LocalPath};
+use super::{Local, LocalError, LocalPathLegacy};
 use crate::{Issue, LazyIssue};

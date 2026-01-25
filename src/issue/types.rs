@@ -620,6 +620,66 @@ impl IssueIndex {
 	pub fn repo(&self) -> &str {
 		self.repo_info.repo()
 	}
+
+	/// Extract numeric issue numbers from the index (GitId selectors only).
+	/// Returns all GitId values in order, skipping Title selectors.
+	pub fn num_path(&self) -> Vec<u64> {
+		self.index
+			.iter()
+			.filter_map(|s| match s {
+				IssueSelector::GitId(n) => Some(*n),
+				IssueSelector::Title(_) => None,
+			})
+			.collect()
+	}
+
+	/// Get parent issue numbers.
+	/// If the issue has its own number (last selector is GitId), returns all preceding GitIds.
+	/// If the issue is pending (last selector is Title or empty), returns all GitIds.
+	pub fn parent_nums(&self) -> Vec<u64> {
+		match self.index.last() {
+			Some(IssueSelector::GitId(_)) => {
+				// Issue has its own number, parents are all preceding GitIds
+				self.index[..self.index.len() - 1]
+					.iter()
+					.filter_map(|s| match s {
+						IssueSelector::GitId(n) => Some(*n),
+						IssueSelector::Title(_) => None,
+					})
+					.collect()
+			}
+			Some(IssueSelector::Title(_)) | None => {
+				// Pending issue or empty - all GitIds are parents
+				self.num_path()
+			}
+		}
+	}
+
+	/// Get the issue's own number if the last selector is a GitId.
+	pub fn issue_number(&self) -> Option<u64> {
+		match self.index.last() {
+			Some(IssueSelector::GitId(n)) => Some(*n),
+			_ => None,
+		}
+	}
+}
+
+impl From<&Issue> for IssueIndex {
+	fn from(issue: &Issue) -> Self {
+		let ancestry = &issue.identity.ancestry;
+		let mut index: Vec<IssueSelector> = ancestry.lineage().iter().map(|&n| IssueSelector::GitId(n)).collect();
+		if let Some(n) = issue.number() {
+			// Issue has a number - add it as the last selector
+			index.push(IssueSelector::GitId(n));
+		} else {
+			// Pending issue - add title as last selector to distinguish from parent-only paths
+			index.push(IssueSelector::Title(issue.contents.title.clone()));
+		}
+		Self {
+			repo_info: ancestry.repo_info(),
+			index,
+		}
+	}
 }
 
 pub const MAX_LINEAGE_DEPTH: usize = 8;
