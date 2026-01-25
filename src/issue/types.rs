@@ -1687,6 +1687,11 @@ struct ParsedTitleLine {
 
 //,}}}1
 
+pub enum MinIssueDescriptor {
+	Touch { repo_info: RepoInfo, ancestry: Ancestry, title: String },
+	Index { repo_info: RepoInfo, num_path: Vec<u64> },
+}
+
 //==============================================================================
 // Index by issue number
 //==============================================================================

@@ -12,7 +12,6 @@ pub enum TouchPathResult {
 	/// Found an existing issue - ancestry identifies it completely
 	Found(Ancestry),
 	/// No existing issue found, but path is valid for creation.
-	/// Ancestry contains owner/repo and parent lineage (empty if root issue).
 	Create { title: String, ancestry: Ancestry },
 }
 
@@ -40,46 +39,51 @@ pub fn parse_touch_path(user_input: &str) -> Result<TouchPathResult> {
 		bail!("Path must have at least 3 components: owner/repo/issue, got: {user_input}")
 	}
 
+	let owner_rgx = segments[0];
+	let repo_rgx = segments[1];
+	let lineage_rgxs = &segments[2..];
+	let title = strip_md_extension(lineage_rgxs.last().unwrap());
+
 	let mut actual_path = Local::issues_dir();
 
 	// Match owner
 	let owner_children = list_children(&actual_path)?;
-	let owner = match match_single_or_none(&owner_children, segments[0]) {
+	let owner = match match_single_or_none(&owner_children, owner_rgx) {
 		MatchOrNone::Unique(matched) => matched,
 		MatchOrNone::NoMatch => {
 			// Owner doesn't exist - create request with literal names
 			return Ok(TouchPathResult::Create {
-				title: strip_md_extension(segments.last().unwrap()).to_string(),
-				ancestry: Ancestry::root(segments[0], segments[1]),
+				title: title.to_string(),
+				ancestry: Ancestry::root(owner_rgx, repo_rgx),
 			});
 		}
 		MatchOrNone::Ambiguous(matches) => {
-			bail!("Ambiguous owner: pattern '{}' matches multiple entries.\nMatches: {}", segments[0], matches.join(", "))
+			bail!("Ambiguous owner: pattern '{owner_rgx}' matches multiple entries.\nMatches: {}", matches.join(", "))
 		}
 	};
 	actual_path = actual_path.join(&owner);
 
 	// Match repo
 	let repo_children = list_children(&actual_path)?;
-	let repo = match match_single_or_none(&repo_children, segments[1]) {
+	let repo = match match_single_or_none(&repo_children, repo_rgx) {
 		MatchOrNone::Unique(matched) => matched,
 		MatchOrNone::NoMatch => {
 			// Repo doesn't exist - create request
 			return Ok(TouchPathResult::Create {
-				title: strip_md_extension(segments.last().unwrap()).to_string(),
-				ancestry: Ancestry::root(&owner, segments[1]),
+				title: title.to_string(),
+				ancestry: Ancestry::root(&owner, repo_rgx),
 			});
 		}
 		MatchOrNone::Ambiguous(matches) => {
-			bail!("Ambiguous repo: pattern '{}' matches multiple entries.\nMatches: {}", segments[1], matches.join(", "))
+			bail!("Ambiguous repo: pattern '{repo_rgx}' matches multiple entries.\nMatches: {}", matches.join(", "))
 		}
 	};
 	actual_path = actual_path.join(&repo);
 
 	// Match remaining segments (issue and optional sub-issues)
 	let mut lineage: Vec<u64> = Vec::new();
-	for (i, segment) in segments[2..].iter().enumerate() {
-		let is_last = i == segments.len() - 3; // -3 because we skip first 2 (owner/repo)
+	for (i, segment) in lineage_rgxs.iter().enumerate() {
+		let is_last = i == lineage_rgxs.len() - 1;
 		let pattern = strip_md_extension(segment);
 
 		let children = list_children(&actual_path)?;
@@ -96,11 +100,9 @@ pub fn parse_touch_path(user_input: &str) -> Result<TouchPathResult> {
 				// We still add the issue to lineage (done above) - the Sink will handle
 				// converting the flat file to directory format when creating the sub-issue.
 				if !is_last && matched_path.is_file() {
-					// Can't descend into a file, but we've recorded the parent in lineage.
-					// Remaining segments define what to create under this parent.
-					let remaining_title = segments[2 + i + 1..].last().map(|s| strip_md_extension(s)).unwrap_or(pattern);
+					let child_title = strip_md_extension(lineage_rgxs[i + 1]);
 					return Ok(TouchPathResult::Create {
-						title: remaining_title.to_string(),
+						title: child_title.to_string(),
 						ancestry: Ancestry::with_lineage(&owner, &repo, &lineage),
 					});
 				}
