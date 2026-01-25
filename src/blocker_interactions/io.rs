@@ -10,6 +10,9 @@ use tedi::DisplayFormat;
 
 use super::clockify::{HaltArgs, ResumeArgs};
 
+pub async fn main(args: BlockerArgs, offline: bool) -> Result<()> {
+	super::integration::main_integrated(args.command, args.format, offline).await
+}
 #[derive(Args, Clone, Debug)]
 pub struct BlockerArgs {
 	#[command(subcommand)]
@@ -62,8 +65,4 @@ pub enum Command {
 	Resume(ResumeArgs),
 	/// Pause tracking time via Clockify
 	Halt(HaltArgs),
-}
-
-pub async fn main(args: BlockerArgs, offline: bool) -> Result<()> {
-	super::integration::main_integrated(args.command, args.format, offline).await
 }

@@ -19,6 +19,10 @@
 //! Core types (HeaderLevel, Line, BlockerSequence, classify_line) are defined in the
 //! library crate (tedi::blocker_types) and re-exported here for convenience.
 
+/// Main entry point for blocker commands
+pub async fn main(args: BlockerArgs, offline: bool) -> Result<()> {
+	io::main(args, offline).await
+}
 pub mod clockify;
 pub(super) mod integration;
 mod io;
@@ -32,8 +36,3 @@ pub use io::BlockerArgs;
 // Re-export extended operations
 pub use operations::BlockerSequenceExt;
 pub use tedi::BlockerSequence;
-
-/// Main entry point for blocker commands
-pub async fn main(args: BlockerArgs, offline: bool) -> Result<()> {
-	io::main(args, offline).await
-}

@@ -14,9 +14,6 @@ use v_utils::{Percent, io::file_open::OpenMode, time::Timelike};
 
 use crate::utils;
 
-static PBS_FILENAME: &str = ".pbs.json";
-
-use crate::MANUAL_PATH_APPENDIX;
 pub async fn update_or_open(settings: &crate::config::LiveSettings, args: ManualArgs) -> Result<()> {
 	let date = utils::format_date(args.days_back, settings);
 
@@ -119,16 +116,6 @@ pub async fn update_or_open(settings: &crate::config::LiveSettings, args: Manual
 
 	Ok(())
 }
-
-fn process_manual_updates<T: AsRef<Path>>(path: T, settings: &crate::config::LiveSettings) -> Result<()> {
-	if !path.as_ref().exists() {
-		bail!("File does not exist, likely because you manually changed something.");
-	}
-	let day: Day = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
-	day.update_pbs(path.as_ref().parent().unwrap(), settings);
-	Ok(())
-}
-
 #[derive(Args)]
 pub struct ManualArgs {
 	#[arg(short, long, default_value = "0")]
@@ -181,13 +168,10 @@ pub struct OpenArgs {
 	#[arg(short, long)]
 	pub pbs: bool,
 }
-
 #[derive(Args)]
 pub struct PrintArgs;
-
 #[derive(Args)]
 pub struct LastEvUpdateArgs;
-
 #[derive(Args, Clone, Copy, Debug, Default, Deserialize, Serialize, derive_new::new)]
 pub struct CounterStepArgs {
 	/// Counter specifically for cargo_watch recompiles, as the metric is incocmpatible with workflow of other languages.
@@ -197,59 +181,6 @@ pub struct CounterStepArgs {
 	#[arg(long)]
 	pub dev_runs: bool,
 }
-
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-struct Transcendential {
-	making_food: Option<usize>,
-	eating_food: Option<usize>,
-}
-
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-struct Sleep {
-	yd_to_bed_t_plus: Option<i32>,
-	from_bed_t_plus: Option<i32>,
-	from_bed_abs_diff_from_day_before: Option<i32>,
-}
-
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-struct Morning {
-	alarm_to_run_M_colon_S: Option<Timelike>,
-	run: bool,
-	run_to_shower_M_colon_S: Option<Timelike>,
-	#[serde(flatten)]
-	transcendential: Transcendential,
-	breakfast_to_work: Option<usize>,
-}
-
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-// could be called `_8h`
-struct Midday {
-	hours_of_work: Option<usize>,
-	#[serde(flatten)]
-	transcendential: Transcendential,
-}
-
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-struct Evening {
-	focus_meditation: usize, // fixed at 13m under current sota, but why not keep it flexible
-	nsdr: usize,
-	#[serde(flatten)]
-	transcendential: Transcendential,
-}
-
-///// Accounts only for the time that is objectively wasted, aggregate positive ev situtations are not counted here.
-//#[derive(Clone, Debug, Default, Deserialize, Serialize, derive_new::new)]
-//struct Wasted {
-//	jofv: usize
-//	quazi_informational_content: usize,
-//}
-
-#[derive(Clone, Debug, Default, Deserialize, Serialize, derive_new::new)]
-struct Counters {
-	cargo_watch: usize,
-	dev_runs: usize,
-}
-
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 /// Unless specified otherwise, all times are in minutes
 pub struct Day {
@@ -436,6 +367,71 @@ impl Day {
 			.unwrap();
 		file.write_all(formatted_json.as_bytes()).unwrap();
 	}
+}
+
+static PBS_FILENAME: &str = ".pbs.json";
+
+use crate::MANUAL_PATH_APPENDIX;
+
+fn process_manual_updates<T: AsRef<Path>>(path: T, settings: &crate::config::LiveSettings) -> Result<()> {
+	if !path.as_ref().exists() {
+		bail!("File does not exist, likely because you manually changed something.");
+	}
+	let day: Day = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
+	day.update_pbs(path.as_ref().parent().unwrap(), settings);
+	Ok(())
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+struct Transcendential {
+	making_food: Option<usize>,
+	eating_food: Option<usize>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+struct Sleep {
+	yd_to_bed_t_plus: Option<i32>,
+	from_bed_t_plus: Option<i32>,
+	from_bed_abs_diff_from_day_before: Option<i32>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+struct Morning {
+	alarm_to_run_M_colon_S: Option<Timelike>,
+	run: bool,
+	run_to_shower_M_colon_S: Option<Timelike>,
+	#[serde(flatten)]
+	transcendential: Transcendential,
+	breakfast_to_work: Option<usize>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+// could be called `_8h`
+struct Midday {
+	hours_of_work: Option<usize>,
+	#[serde(flatten)]
+	transcendential: Transcendential,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+struct Evening {
+	focus_meditation: usize, // fixed at 13m under current sota, but why not keep it flexible
+	nsdr: usize,
+	#[serde(flatten)]
+	transcendential: Transcendential,
+}
+
+///// Accounts only for the time that is objectively wasted, aggregate positive ev situtations are not counted here.
+//#[derive(Clone, Debug, Default, Deserialize, Serialize, derive_new::new)]
+//struct Wasted {
+//	jofv: usize
+//	quazi_informational_content: usize,
+//}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, derive_new::new)]
+struct Counters {
+	cargo_watch: usize,
+	dev_runs: usize,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]

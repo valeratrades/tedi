@@ -5,15 +5,6 @@
 //! - Loading consensus issues via `LazyIssue<Local>` with `LocalSource::Consensus`
 //! - Committing changes as the new consensus
 
-mod git;
-
-use std::path::Path;
-
-pub use git::{commit_issue_changes, is_git_initialized};
-
-use super::{Local, LocalError, LocalPath};
-use crate::{Issue, LazyIssue};
-
 /// Load the consensus Issue tree from git (last committed state).
 ///
 /// Uses `LazyIssue<Local>` with `LocalSource::Consensus` to read from git HEAD.
@@ -32,3 +23,11 @@ pub async fn load_consensus_issue(file_path: &Path) -> Result<Option<Issue>, Loc
 
 	<Issue as LazyIssue<Local>>::load(source).await.map(Some)
 }
+mod git;
+
+use std::path::Path;
+
+pub use git::{commit_issue_changes, is_git_initialized};
+
+use super::{Local, LocalError, LocalPath};
+use crate::{Issue, LazyIssue};

@@ -47,12 +47,6 @@ use super::TestContext;
 /// Seed for deterministic timestamp generation. Must be in range -100..=100.
 pub type Seed = i64;
 
-/// Base timestamp: 2001-09-11 12:00:00 UTC (midday).
-const BASE_TIMESTAMP_SECS: i64 = 1000209600;
-
-/// 12 hours in seconds - the range for randomization.
-const HALF_DAY_SECS: i64 = 12 * 60 * 60;
-
 /// Generate timestamps from a seed value.
 ///
 /// Seed must be in range -100..=100. Each timestamp field gets:
@@ -78,7 +72,6 @@ pub fn timestamps_from_seed(seed: Seed) -> IssueTimestamps {
 		comments: vec![],
 	}
 }
-
 /// Set timestamps on an issue and all its children.
 pub fn set_timestamps(issue: &mut Issue, seed: Seed) {
 	let timestamps = timestamps_from_seed(seed);
@@ -86,6 +79,63 @@ pub fn set_timestamps(issue: &mut Issue, seed: Seed) {
 		node.identity.remote.as_linked_mut().unwrap().timestamps = timestamps.clone();
 	}
 }
+/// State tracking for additive operations
+#[derive(Default)]
+pub struct GitState {
+	/// Track which (owner, repo, number) have been used for local files
+	local_issues: HashSet<(String, String, u64)>,
+	/// Track which (owner, repo, number) have been used for consensus commits
+	consensus_issues: HashSet<(String, String, u64)>,
+	/// Accumulated mock remote state
+	remote_issues: Vec<MockIssue>,
+	remote_sub_issues: Vec<SubIssueRelation>,
+	remote_comments: Vec<MockComment>,
+	/// Track which (owner, repo, number) have been added to remote
+	remote_issue_ids: HashSet<(String, String, u64)>,
+}
+/// Extension trait for git and issue setup operations.
+pub trait GitExt {
+	/// Initialize git in the issues directory.
+	fn init_git(&self) -> Git;
+
+	/// Write issue to local file (uncommitted). Additive - can call multiple times.
+	/// Returns the path to the issue file.
+	/// Panics if same (owner, repo, number) is submitted twice.
+	///
+	/// If `seed` is provided, timestamps are generated from it and written to `.meta.json`.
+	fn local(&self, issue: &Issue, seed: Option<Seed>) -> PathBuf;
+
+	/// Write issue and commit to git as consensus state. Additive - can call multiple times.
+	/// Returns the path to the issue file.
+	/// Panics if same (owner, repo, number) is submitted twice.
+	///
+	/// If `seed` is provided, timestamps are generated from it and written to `.meta.json`.
+	fn consensus(&self, issue: &Issue, seed: Option<Seed>) -> PathBuf;
+
+	/// Set up mock Github API to return this issue. Additive - can call multiple times.
+	/// Handles sub-issues automatically.
+	/// Panics if same (owner, repo, number) is submitted twice.
+	///
+	/// If `seed` is provided, timestamps are generated from it for the mock response.
+	fn remote(&self, issue: &Issue, seed: Option<Seed>);
+
+	/// Get the flat format path for an issue: `{number}_-_{title}.md`
+	fn flat_issue_path(&self, owner: &str, repo: &str, number: u64, title: &str) -> PathBuf;
+
+	/// Get the directory format path for an issue: `{number}_-_{title}/__main__.md`
+	fn dir_issue_path(&self, owner: &str, repo: &str, number: u64, title: &str) -> PathBuf;
+
+	/// Get the issue path after sync (flat if no children, directory if has children).
+	fn issue_path_after_sync(&self, owner: &str, repo: &str, number: u64, title: &str, has_children: bool) -> PathBuf;
+
+	/// Get the path where an issue would be stored (flat format), extracting coords from issue.
+	fn issue_path(&self, issue: &Issue) -> PathBuf;
+}
+/// Base timestamp: 2001-09-11 12:00:00 UTC (midday).
+const BASE_TIMESTAMP_SECS: i64 = 1000209600;
+
+/// 12 hours in seconds - the range for randomization.
+const HALF_DAY_SECS: i64 = 12 * 60 * 60;
 
 /// Generate a timestamp for a specific field index.
 ///
@@ -124,21 +174,6 @@ const DEFAULT_REPO: &str = "repo";
 /// Default issue number for test issues without a link
 const DEFAULT_NUMBER: u64 = 1;
 
-/// State tracking for additive operations
-#[derive(Default)]
-pub struct GitState {
-	/// Track which (owner, repo, number) have been used for local files
-	local_issues: HashSet<(String, String, u64)>,
-	/// Track which (owner, repo, number) have been used for consensus commits
-	consensus_issues: HashSet<(String, String, u64)>,
-	/// Accumulated mock remote state
-	remote_issues: Vec<MockIssue>,
-	remote_sub_issues: Vec<SubIssueRelation>,
-	remote_comments: Vec<MockComment>,
-	/// Track which (owner, repo, number) have been added to remote
-	remote_issue_ids: HashSet<(String, String, u64)>,
-}
-
 thread_local! {
 	static GIT_STATE: RefCell<std::collections::HashMap<usize, GitState>> = RefCell::new(std::collections::HashMap::new());
 }
@@ -156,45 +191,6 @@ where
 		let entry = map.entry(id).or_default();
 		f(entry)
 	})
-}
-
-/// Extension trait for git and issue setup operations.
-pub trait GitExt {
-	/// Initialize git in the issues directory.
-	fn init_git(&self) -> Git;
-
-	/// Write issue to local file (uncommitted). Additive - can call multiple times.
-	/// Returns the path to the issue file.
-	/// Panics if same (owner, repo, number) is submitted twice.
-	///
-	/// If `seed` is provided, timestamps are generated from it and written to `.meta.json`.
-	fn local(&self, issue: &Issue, seed: Option<Seed>) -> PathBuf;
-
-	/// Write issue and commit to git as consensus state. Additive - can call multiple times.
-	/// Returns the path to the issue file.
-	/// Panics if same (owner, repo, number) is submitted twice.
-	///
-	/// If `seed` is provided, timestamps are generated from it and written to `.meta.json`.
-	fn consensus(&self, issue: &Issue, seed: Option<Seed>) -> PathBuf;
-
-	/// Set up mock Github API to return this issue. Additive - can call multiple times.
-	/// Handles sub-issues automatically.
-	/// Panics if same (owner, repo, number) is submitted twice.
-	///
-	/// If `seed` is provided, timestamps are generated from it for the mock response.
-	fn remote(&self, issue: &Issue, seed: Option<Seed>);
-
-	/// Get the flat format path for an issue: `{number}_-_{title}.md`
-	fn flat_issue_path(&self, owner: &str, repo: &str, number: u64, title: &str) -> PathBuf;
-
-	/// Get the directory format path for an issue: `{number}_-_{title}/__main__.md`
-	fn dir_issue_path(&self, owner: &str, repo: &str, number: u64, title: &str) -> PathBuf;
-
-	/// Get the issue path after sync (flat if no children, directory if has children).
-	fn issue_path_after_sync(&self, owner: &str, repo: &str, number: u64, title: &str, has_children: bool) -> PathBuf;
-
-	/// Get the path where an issue would be stored (flat format), extracting coords from issue.
-	fn issue_path(&self, issue: &Issue) -> PathBuf;
 }
 
 impl GitExt for TestContext {

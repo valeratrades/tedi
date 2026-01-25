@@ -187,26 +187,6 @@ use super::{
 	util::{is_blockers_marker, normalize_issue_indentation},
 };
 
-/// Result of parsing a checkbox prefix.
-enum CheckboxParseResult<'a> {
-	/// Successfully parsed checkbox
-	Ok(CloseState, &'a str),
-	/// Not a checkbox line (doesn't start with `- [`)
-	NotCheckbox,
-	/// Has checkbox syntax but invalid content (like `[abc]`)
-	InvalidContent(String),
-}
-
-/// Result of parsing a child title line.
-enum ChildTitleParseResult {
-	/// Successfully parsed child/sub-issue
-	Ok,
-	/// Not a child title line
-	NotChildTitle,
-	/// Has checkbox syntax but invalid content (like `[abc]`)
-	InvalidCheckbox(String),
-}
-
 /// Close state of an issue.
 /// Maps to Github's binary open/closed, but locally supports additional variants.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -224,7 +204,6 @@ pub enum CloseState {
 	/// These should be removed from local storage entirely.
 	Duplicate(u64),
 }
-
 impl CloseState /*{{{1*/ {
 	/// Returns true if the issue is closed (any close variant)
 	pub fn is_closed(&self) -> bool {
@@ -302,7 +281,6 @@ impl CloseState /*{{{1*/ {
 		}
 	}
 }
-//,}}}1
 
 /// Timestamps tracking when individual fields of an issue were last changed.
 /// Each node keeps change info about itself only (not sub-issues).
@@ -321,7 +299,6 @@ pub struct IssueTimestamps {
 	/// Empty vec means no timestamp info available.
 	pub comments: Vec<Timestamp>,
 }
-
 impl IssueTimestamps {
 	/// Update timestamps based on what changed between old and new issue contents.
 	/// Sets the current time for any field that changed.
@@ -377,7 +354,6 @@ pub struct LinkedIssueMeta {
 	/// Used for sync conflict resolution.
 	pub timestamps: IssueTimestamps,
 }
-
 impl LinkedIssueMeta {
 	/// Get the repository owner from the link.
 	pub fn owner(&self) -> &str {
@@ -410,7 +386,6 @@ pub enum IssueRemote {
 	/// Used for projects without a Github remote.
 	Virtual,
 }
-
 impl IssueRemote {
 	/// Returns true if this is a Github issue (linked or pending).
 	pub fn is_github(&self) -> bool {
@@ -457,7 +432,6 @@ pub struct IssueIdentity {
 	/// Remote connection status (Github linked/pending, or Virtual)
 	pub remote: IssueRemote,
 }
-
 impl IssueIdentity {
 	/// Create a new linked Github issue identity.
 	pub fn linked(ancestry: Ancestry, user: String, link: IssueLink, timestamps: IssueTimestamps) -> Self {
@@ -572,15 +546,8 @@ impl IssueIdentity {
 	}
 }
 
-impl PartialEq for IssueIdentity {
-	fn eq(&self, other: &IssueIdentity) -> bool {
-		self.ancestry == other.ancestry
-	}
-}
-
 /// Maximum nesting depth for issues (8 levels should be plenty).
 pub const MAX_LINEAGE_DEPTH: usize = 8;
-
 /// Ancestry information for an issue - where it lives in the filesystem.
 /// This is always defined, even for pending issues.
 /// Uses fixed-size storage to be `Copy`.
@@ -593,7 +560,6 @@ pub struct Ancestry {
 	lineage_arr: [u64; MAX_LINEAGE_DEPTH],
 	lineage_len: u8,
 }
-
 impl Ancestry {
 	/// Create ancestry for a root issue.
 	/// Panics if owner or repo exceed their max lengths.
@@ -670,7 +636,6 @@ pub struct Comment {
 	/// The markdown body stored as parsed events for lossless roundtripping
 	pub body: super::Events,
 }
-
 /// The full editable content of an issue.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct IssueContents {
@@ -680,27 +645,6 @@ pub struct IssueContents {
 	pub comments: Vec<Comment>,
 	pub blockers: BlockerSequence,
 }
-
-/// Parsed identity info from title line (internal helper).
-/// Represents what we can extract from the HTML comment marker.
-enum ParsedIdentityInfo {
-	/// Linked to Github: `@user url`
-	Linked { user: String, link: IssueLink },
-	/// Pending creation on Github: `local:` or empty
-	Pending,
-	/// Virtual (local-only, never sync): `virtual:`
-	Virtual,
-}
-
-/// Parsed title line components (internal helper)
-struct ParsedTitleLine {
-	title: String,
-	/// Identity info parsed from the title line
-	identity_info: ParsedIdentityInfo,
-	close_state: CloseState,
-	labels: Vec<String>,
-}
-
 /// Complete representation of an issue file
 #[derive(Clone, Debug, derive_more::IntoIterator, PartialEq)]
 pub struct Issue {
@@ -711,7 +655,6 @@ pub struct Issue {
 	#[into_iterator(owned, ref, ref_mut)]
 	pub children: Vec<Issue>,
 }
-
 impl Issue /*{{{1*/ {
 	/// Iterate over children by mutable reference.
 	pub fn iter_mut(&mut self) -> std::slice::IterMut<'_, Issue> {
@@ -1653,6 +1596,74 @@ impl Issue /*{{{1*/ {
 	}
 }
 
+/// Trait for lazy loading of issues from a source.
+///
+/// `S` is a marker type (e.g., `Local` for filesystem, `Remote` for GitHub).
+/// The associated `Source` type is what's actually passed to methods.
+/// Methods load data on demand; `&mut self` allows caching intermediate results.
+#[allow(async_fn_in_trait)]
+pub trait LazyIssue<S> {
+	/// The actual source reference type (e.g., `LocalPath` for Local, `RemoteSource` for Remote).
+	type Source: Clone;
+	/// Error type for operations on this source.
+	type Error: std::error::Error;
+
+	/// Resolve ancestry from the source.
+	async fn ancestry(source: &Self::Source) -> Result<Ancestry, Self::Error>;
+	async fn identity(&mut self, source: Self::Source) -> Result<IssueIdentity, Self::Error>;
+	async fn contents(&mut self, source: Self::Source) -> Result<IssueContents, Self::Error>;
+	async fn children(&mut self, source: Self::Source) -> Result<Vec<Issue>, Self::Error>;
+
+	/// Load a full issue tree from the source.
+	async fn load(source: Self::Source) -> Result<Issue, Self::Error>;
+}
+/// Result of parsing a checkbox prefix.
+enum CheckboxParseResult<'a> {
+	/// Successfully parsed checkbox
+	Ok(CloseState, &'a str),
+	/// Not a checkbox line (doesn't start with `- [`)
+	NotCheckbox,
+	/// Has checkbox syntax but invalid content (like `[abc]`)
+	InvalidContent(String),
+}
+
+/// Result of parsing a child title line.
+enum ChildTitleParseResult {
+	/// Successfully parsed child/sub-issue
+	Ok,
+	/// Not a child title line
+	NotChildTitle,
+	/// Has checkbox syntax but invalid content (like `[abc]`)
+	InvalidCheckbox(String),
+}
+//,}}}1
+
+impl PartialEq for IssueIdentity {
+	fn eq(&self, other: &IssueIdentity) -> bool {
+		self.ancestry == other.ancestry
+	}
+}
+
+/// Parsed identity info from title line (internal helper).
+/// Represents what we can extract from the HTML comment marker.
+enum ParsedIdentityInfo {
+	/// Linked to Github: `@user url`
+	Linked { user: String, link: IssueLink },
+	/// Pending creation on Github: `local:` or empty
+	Pending,
+	/// Virtual (local-only, never sync): `virtual:`
+	Virtual,
+}
+
+/// Parsed title line components (internal helper)
+struct ParsedTitleLine {
+	title: String,
+	/// Identity info parsed from the title line
+	identity_info: ParsedIdentityInfo,
+	close_state: CloseState,
+	labels: Vec<String>,
+}
+
 //,}}}1
 
 //==============================================================================
@@ -1685,28 +1696,6 @@ impl std::ops::IndexMut<u64> for Issue {
 			.find(|child| child.number() == Some(issue_number))
 			.unwrap_or_else(|| panic!("no child with issue number {issue_number}"))
 	}
-}
-
-/// Trait for lazy loading of issues from a source.
-///
-/// `S` is a marker type (e.g., `Local` for filesystem, `Remote` for GitHub).
-/// The associated `Source` type is what's actually passed to methods.
-/// Methods load data on demand; `&mut self` allows caching intermediate results.
-#[allow(async_fn_in_trait)]
-pub trait LazyIssue<S> {
-	/// The actual source reference type (e.g., `LocalPath` for Local, `RemoteSource` for Remote).
-	type Source: Clone;
-	/// Error type for operations on this source.
-	type Error: std::error::Error;
-
-	/// Resolve ancestry from the source.
-	async fn ancestry(source: &Self::Source) -> Result<Ancestry, Self::Error>;
-	async fn identity(&mut self, source: Self::Source) -> Result<IssueIdentity, Self::Error>;
-	async fn contents(&mut self, source: Self::Source) -> Result<IssueContents, Self::Error>;
-	async fn children(&mut self, source: Self::Source) -> Result<Vec<Issue>, Self::Error>;
-
-	/// Load a full issue tree from the source.
-	async fn load(source: Self::Source) -> Result<Issue, Self::Error>;
 }
 
 #[cfg(test)]

@@ -19,26 +19,6 @@
 //! ```
 
 pub mod git;
-mod snapshot;
-
-use std::{
-	io::Write,
-	path::{Path, PathBuf},
-	process::{Command, ExitStatus},
-	sync::OnceLock,
-};
-
-pub use snapshot::{snapshot_issues_dir, snapshot_issues_dir_redacting};
-use tedi::Issue;
-use v_fixtures::{Fixture, fs_standards::xdg::Xdg};
-
-/// Environment variable names derived from package name
-const ENV_GITHUB_TOKEN: &str = concat!(env!("CARGO_PKG_NAME"), "__GITHUB_TOKEN");
-const ENV_MOCK_STATE: &str = concat!(env!("CARGO_PKG_NAME"), "_MOCK_STATE");
-const ENV_MOCK_PIPE: &str = concat!(env!("CARGO_PKG_NAME"), "_MOCK_PIPE");
-
-static BINARY_COMPILED: OnceLock<()> = OnceLock::new();
-
 /// Compile the binary before running any tests
 pub fn ensure_binary_compiled() {
 	BINARY_COMPILED.get_or_init(|| {
@@ -49,17 +29,6 @@ pub fn ensure_binary_compiled() {
 		}
 	});
 }
-
-fn get_binary_path() -> PathBuf {
-	ensure_binary_compiled();
-
-	let mut path = std::env::current_exe().unwrap();
-	path.pop(); // Remove test binary name
-	path.pop(); // Remove 'deps'
-	path.push(env!("CARGO_PKG_NAME"));
-	path
-}
-
 /// Unified test context for integration tests.
 ///
 /// Combines functionality from the old `TodoTestContext` and `SyncTestContext`.
@@ -72,7 +41,6 @@ pub struct TestContext {
 	/// Path to named pipe for editor simulation (for sync tests)
 	pub pipe_path: PathBuf,
 }
-
 impl TestContext {
 	/// Create a new test context from a fixture string.
 	///
@@ -283,26 +251,6 @@ impl<'a> OpenBuilder<'a> {
 	}
 }
 
-/// Type of edit operation for the builder.
-#[derive(Clone)]
-enum EditOperation {
-	/// Edit using a full Issue (writes serialize_virtual)
-	FullIssue(Issue),
-	/// Edit just the contents/body (preserves header, replaces body)
-	ContentsOnly(String),
-	/// Edit the source file directly (unsafe, for testing filesystem behavior)
-	SourceFile(PathBuf, Issue),
-}
-
-/// The target for opening an issue (URL or touch pattern).
-#[derive(Clone)]
-enum OpenTarget {
-	/// Open by Github URL
-	Url(String),
-	/// Open by touch pattern (--touch flag)
-	Touch(String),
-}
-
 /// Builder for running the `open` command with a URL or touch pattern.
 pub struct OpenUrlBuilder<'a> {
 	ctx: &'a TestContext,
@@ -310,7 +258,6 @@ pub struct OpenUrlBuilder<'a> {
 	extra_args: Vec<&'a str>,
 	edit_op: Option<EditOperation>,
 }
-
 impl<'a> OpenUrlBuilder<'a> {
 	/// Create a builder for opening by URL.
 	fn with_url(ctx: &'a TestContext, url: String) -> Self {
@@ -455,6 +402,56 @@ impl<'a> OpenUrlBuilder<'a> {
 			String::from_utf8_lossy(&output.stderr).into_owned(),
 		)
 	}
+}
+
+mod snapshot;
+
+use std::{
+	io::Write,
+	path::{Path, PathBuf},
+	process::{Command, ExitStatus},
+	sync::OnceLock,
+};
+
+pub use snapshot::{snapshot_issues_dir, snapshot_issues_dir_redacting};
+use tedi::Issue;
+use v_fixtures::{Fixture, fs_standards::xdg::Xdg};
+
+/// Environment variable names derived from package name
+const ENV_GITHUB_TOKEN: &str = concat!(env!("CARGO_PKG_NAME"), "__GITHUB_TOKEN");
+const ENV_MOCK_STATE: &str = concat!(env!("CARGO_PKG_NAME"), "_MOCK_STATE");
+const ENV_MOCK_PIPE: &str = concat!(env!("CARGO_PKG_NAME"), "_MOCK_PIPE");
+
+static BINARY_COMPILED: OnceLock<()> = OnceLock::new();
+
+fn get_binary_path() -> PathBuf {
+	ensure_binary_compiled();
+
+	let mut path = std::env::current_exe().unwrap();
+	path.pop(); // Remove test binary name
+	path.pop(); // Remove 'deps'
+	path.push(env!("CARGO_PKG_NAME"));
+	path
+}
+
+/// Type of edit operation for the builder.
+#[derive(Clone)]
+enum EditOperation {
+	/// Edit using a full Issue (writes serialize_virtual)
+	FullIssue(Issue),
+	/// Edit just the contents/body (preserves header, replaces body)
+	ContentsOnly(String),
+	/// Edit the source file directly (unsafe, for testing filesystem behavior)
+	SourceFile(PathBuf, Issue),
+}
+
+/// The target for opening an issue (URL or touch pattern).
+#[derive(Clone)]
+enum OpenTarget {
+	/// Open by Github URL
+	Url(String),
+	/// Open by touch pattern (--touch flag)
+	Touch(String),
 }
 
 /// Find the most recently modified .md file under the virtual edit base path.

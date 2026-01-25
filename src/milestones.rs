@@ -28,16 +28,6 @@ pub enum MilestonesCommands {
 	Healthcheck,
 }
 
-#[derive(Debug, Deserialize)]
-struct Milestone {
-	number: u64,
-	title: String,
-	#[serde(rename = "state")]
-	_state: String,
-	due_on: Option<Timestamp>,
-	description: Option<String>,
-}
-
 pub async fn milestones_command(settings: &LiveSettings, args: MilestonesArgs) -> Result<()> {
 	match args.command {
 		MilestonesCommands::Get { tf } => {
@@ -49,6 +39,15 @@ pub async fn milestones_command(settings: &LiveSettings, args: MilestonesArgs) -
 		MilestonesCommands::Edit { tf } => edit_milestone(settings, tf).await,
 		MilestonesCommands::Healthcheck => healthcheck(settings).await,
 	}
+}
+#[derive(Debug, Deserialize)]
+struct Milestone {
+	number: u64,
+	title: String,
+	#[serde(rename = "state")]
+	_state: String,
+	due_on: Option<Timestamp>,
+	description: Option<String>,
 }
 
 async fn request_milestones(settings: &LiveSettings) -> Result<Vec<Milestone>> {

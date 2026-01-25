@@ -1,5 +1,0 @@
----
-source: src/mock_github.rs
-expression: "format!(\"{sub_issues:?}\")"
----
-"[GitHubIssue { number: 2, title: \"Child Issue\", body: None, labels: [], user: GitHubUser { login: \"testuser\" }, state: \"open\", updated_at: \"2024-01-15T12:00:00Z\" }]"
