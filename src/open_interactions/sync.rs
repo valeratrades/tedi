@@ -26,7 +26,7 @@ use std::path::Path;
 use color_eyre::eyre::{Result, bail};
 use tedi::{
 	Issue, IssueLink, LazyIssue,
-	local::{Local, Submitted},
+	local::{Local, LocalPath, Submitted},
 	sink::Sink,
 };
 
@@ -42,13 +42,21 @@ use super::{
 /// Caller is responsible for loading the issue (via `LazyIssue<Local>::load`).
 #[tracing::instrument]
 pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Modifier, sync_opts: SyncOptions) -> Result<ModifyResult> {
-	// Use ensure_issue_file_path which creates parent directories if needed (for pending sub-issues)
-	let issue_file_path = Local::ensure_issue_file_path(&issue)?;
 	let repo_info = issue.identity.ancestry.repo_info();
-	let (owner, repo) = (repo_info.owner(), repo_info.repo()); //HACK: feels redundant
+	let (owner, repo) = (repo_info.owner(), repo_info.repo());
 
-	let offline = offline || Local::is_virtual_project(issue.identity.ancestry.repo_info());
-	let meta = Local::parse_path_identity(&issue_file_path)?;
+	// Ensure parent directories exist (converts flat files to directory format as needed)
+	// This is needed before we can compute the file path or write to it
+	let mut local_path = LocalPath::from(&issue);
+	local_path.ensure_parent_dirs()?;
+
+	// Compute issue file path
+	let closed = issue.contents.state.is_closed();
+	let has_children = !issue.children.is_empty();
+	let issue_file_path = local_path.file_path(&issue.contents.title, closed, has_children)?;
+
+	let offline = offline || Local::is_virtual_project(repo_info);
+	let issue_number = issue.number().unwrap_or(0);
 
 	eprintln!("[after load] issue lineage: {:?}", issue.identity.ancestry.lineage());
 	for (i, c) in issue.children.iter().enumerate() {
@@ -65,7 +73,7 @@ pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Mo
 	}
 
 	// Pre-editor sync (if needed and online)
-	if !offline && meta.issue_number != 0 {
+	if !offline && issue_number != 0 {
 		let prefers_local = matches!(sync_opts.peek_merge_mode(), MergeMode::Reset { prefer: Side::Local } | MergeMode::Force { prefer: Side::Local });
 
 		if !prefers_local {
@@ -76,17 +84,17 @@ pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Mo
 				println!("{}", if sync_opts.pull { "Pulling latest..." } else { "Syncing..." });
 
 				// Load remote
-				let url = format!("https://github.com/{owner}/{repo}/issues/{}", meta.issue_number);
+				let url = format!("https://github.com/{owner}/{repo}/issues/{}", issue_number);
 				let link = IssueLink::parse(&url).expect("valid URL");
 				let remote_source = RemoteSource::with_lineage(link, issue.identity.ancestry().lineage());
 				let remote = <Issue as LazyIssue<Remote>>::load(remote_source).await?;
 
 				let mode = sync_opts.take_merge_mode();
-				let (resolved, changed) = core::sync_issue(issue, consensus, remote, mode, &owner, &repo, meta.issue_number).await?;
+				let (resolved, changed) = core::sync_issue(issue, consensus, remote, mode, &owner, &repo, issue_number).await?;
 				issue = resolved;
 
 				if changed {
-					commit_issue_changes(&owner, &repo, meta.issue_number)?;
+					commit_issue_changes(&owner, &repo, issue_number)?;
 				}
 			}
 		}
@@ -118,19 +126,19 @@ pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Mo
 
 	if issue.is_linked() {
 		// Load fresh remote state for sync
-		let url = format!("https://github.com/{owner}/{repo}/issues/{}", meta.issue_number);
+		let url = format!("https://github.com/{owner}/{repo}/issues/{}", issue_number);
 		let link = IssueLink::parse(&url).expect("valid URL");
 		let remote_source = RemoteSource::with_lineage(link, issue.identity.ancestry().lineage());
 		let remote = <Issue as LazyIssue<Remote>>::load(remote_source).await?;
 
 		let consensus = load_consensus_issue(&issue_file_path).await?;
-		let (resolved, changed) = core::sync_issue(issue, consensus, remote, mode, &owner, &repo, meta.issue_number).await?;
+		let (resolved, changed) = core::sync_issue(issue, consensus, remote, mode, &owner, &repo, issue_number).await?;
 		issue = resolved;
 
 		if changed {
 			// Re-sink local in case issue numbers changed
 			<Issue as Sink<Submitted>>::sink(&mut issue, None).await?;
-			let actual_number = issue.number().unwrap_or(meta.issue_number);
+			let actual_number = issue.number().unwrap_or(issue_number);
 			commit_issue_changes(&owner, &repo, actual_number)?;
 		} else {
 			println!("No changes.");
@@ -139,7 +147,7 @@ pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Mo
 		// New issue - just sink to remote
 		<Issue as Sink<Remote>>::sink(&mut issue, None).await?;
 		<Issue as Sink<Submitted>>::sink(&mut issue, None).await?;
-		let actual_number = issue.number().unwrap_or(meta.issue_number);
+		let actual_number = issue.number().unwrap_or(issue_number);
 		commit_issue_changes(&owner, &repo, actual_number)?;
 	}
 

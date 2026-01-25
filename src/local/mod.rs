@@ -16,8 +16,11 @@
 
 pub mod conflict;
 pub mod consensus;
+mod impl_sink;
 
 use std::path::{Path, PathBuf};
+
+pub use impl_sink::{Consensus, Submitted};
 
 //==============================================================================
 // Error Types
@@ -92,7 +95,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use v_utils::prelude::*;
 
-use crate::{Ancestry, FetchedIssue, Issue, IssueIndex, IssueSelector, RepoInfo, sink::Sink};
+use crate::{Ancestry, FetchedIssue, Issue, IssueIndex, RepoInfo};
 
 //==============================================================================
 // Local - The interface for local issue storage
@@ -112,12 +115,6 @@ pub enum LocalSource {
 	/// this tool.
 	Submitted,
 }
-
-/// Marker type for sinking to filesystem (submitted state).
-pub struct Submitted;
-
-/// Marker type for sinking to git (consensus state).
-pub struct Consensus;
 
 //==============================================================================
 // LocalPath - On-demand path construction
@@ -226,15 +223,15 @@ impl LocalPath {
 		Ok(result)
 	}
 
-	/// r[local.sink-only-mutation]
 	/// Ensure parent directories exist, converting flat files to directory format as needed.
 	///
-	/// This is called by Sink before writing an issue file. It handles:
+	/// This is called by Sink before writing an issue file and by `modify_and_sync_issue`
+	/// before opening the editor. It handles:
 	/// 1. Creating the project directory if needed
 	/// 2. Converting any parent flat files to directory format
 	///
 	/// Returns the ancestor directory names after ensuring they exist as directories.
-	pub(crate) fn ensure_parent_dirs(&mut self) -> Result<Vec<String>, color_eyre::Report> {
+	pub fn ensure_parent_dirs(&mut self) -> Result<Vec<String>, color_eyre::Report> {
 		let mut path = Local::project_dir(self.index.owner(), self.index.repo());
 
 		if !path.exists() {
@@ -596,67 +593,6 @@ impl Local {
 		for dir_name in &ancestor_dir_names {
 			path = path.join(dir_name);
 		}
-		let filename = Self::format_issue_filename(issue.number(), &issue.contents.title, closed);
-		Ok(path.join(filename))
-	}
-
-	/// Get the file path for an issue, creating parent directories as needed.
-	///
-	/// Unlike `issue_file_path`, this method will convert flat-file parents to directory format
-	/// if needed to accommodate a sub-issue. Use this when you need to write to a path that
-	/// may not exist yet (e.g., for pending sub-issues).
-	///
-	/// # Returns
-	/// The path where the issue file should be written.
-	#[deprecated(note = "a hack to plug a whole in the current logic coming from assuming that `Issue`s have constant paths. To be refactored out.")]
-	pub fn ensure_issue_file_path(issue: &Issue) -> Result<PathBuf> {
-		let ancestry = &issue.identity.ancestry;
-		let owner = ancestry.owner();
-		let repo = ancestry.repo();
-		let closed = issue.contents.state.is_closed();
-
-		let mut path = Self::project_dir(owner, repo);
-		if !path.exists() {
-			bail!("Project directory does not exist: {}", path.display());
-		}
-
-		let mut ancestor_dir_names = Vec::with_capacity(ancestry.lineage().len());
-
-		// For each parent in lineage, find and ensure it's a directory
-		for &issue_number in ancestry.lineage() {
-			let dir_name = Self::find_issue_dir_name_by_number(&path, issue_number)
-				.ok_or_else(|| eyre!("Parent issue #{issue_number} not found locally in {}. Fetch the parent issue first.", path.display()))?;
-
-			let parent_dir_path = path.join(&dir_name);
-
-			// If parent exists as flat file, convert to directory
-			if !parent_dir_path.is_dir() {
-				let flat_open = path.join(format!("{dir_name}.md"));
-				let flat_closed = path.join(format!("{dir_name}.md.bak"));
-
-				std::fs::create_dir_all(&parent_dir_path)?;
-
-				// Move flat file to __main__.md inside the directory
-				if flat_closed.exists() {
-					let main_path = Self::main_file_path(&parent_dir_path, true);
-					std::fs::rename(&flat_closed, &main_path)?;
-				} else if flat_open.exists() {
-					let main_path = Self::main_file_path(&parent_dir_path, false);
-					std::fs::rename(&flat_open, &main_path)?;
-				}
-			}
-
-			path = parent_dir_path;
-			ancestor_dir_names.push(dir_name);
-		}
-
-		// Check if issue exists in directory format on disk
-		let issue_dir = Self::issue_dir_path_from_dir_names(owner, repo, issue.number(), &issue.contents.title, &ancestor_dir_names);
-		if issue_dir.is_dir() {
-			return Ok(Self::main_file_path(&issue_dir, closed));
-		}
-
-		// Flat file format
 		let filename = Self::format_issue_filename(issue.number(), &issue.contents.title, closed);
 		Ok(path.join(filename))
 	}
@@ -1111,74 +1047,6 @@ impl Local {
 		Ok(None)
 	}
 
-	/// Parse issue identity from a file path.
-	pub fn parse_path_identity(issue_file_path: &Path) -> Result<PathIdentity> {
-		let _ancestry = Self::extract_ancestry(issue_file_path)?;
-
-		let filename = issue_file_path.file_name().and_then(|n| n.to_str()).ok_or_else(|| eyre!("Invalid issue file path"))?;
-
-		let filename_no_bak = filename.strip_suffix(".bak").unwrap_or(filename);
-
-		let (name_to_parse, parent_dir) = if filename_no_bak.starts_with(Self::MAIN_ISSUE_FILENAME) {
-			let parent_dir = issue_file_path.parent();
-			let name = parent_dir
-				.and_then(|p| p.file_name())
-				.and_then(|n| n.to_str())
-				.ok_or_else(|| eyre!("Could not extract parent directory for __main__ file"))?;
-			(name, parent_dir)
-		} else {
-			let name = filename_no_bak.strip_suffix(".md").unwrap_or(filename_no_bak);
-			(name, issue_file_path.parent())
-		};
-
-		let (issue_number, title) = if let Some(sep_pos) = name_to_parse.find("_-_") {
-			let number: u64 = name_to_parse[..sep_pos].parse()?;
-			let title = name_to_parse[sep_pos + 3..].replace('_', " ");
-			(number, title)
-		} else if let Ok(number) = name_to_parse.parse::<u64>() {
-			(number, String::new())
-		} else {
-			let title = name_to_parse.replace('_', " ");
-			(0, title)
-		};
-
-		let parent_issue = if let Some(parent) = parent_dir {
-			let check_dir = if filename_no_bak.starts_with(Self::MAIN_ISSUE_FILENAME) {
-				parent.parent()
-			} else {
-				Some(parent)
-			};
-
-			if let Some(dir) = check_dir {
-				let issues_base = Self::issues_dir();
-				if let Ok(rel) = dir.strip_prefix(&issues_base) {
-					let components: Vec<_> = rel.components().collect();
-					if components.len() > 2 {
-						if let Some(parent_dir_name) = components.last().and_then(|c| c.as_os_str().to_str()) {
-							if let Some(sep_pos) = parent_dir_name.find("_-_") {
-								parent_dir_name[..sep_pos].parse::<u64>().ok()
-							} else {
-								parent_dir_name.parse::<u64>().ok()
-							}
-						} else {
-							None
-						}
-					} else {
-						None
-					}
-				} else {
-					None
-				}
-			} else {
-				None
-			}
-		} else {
-			None
-		};
-
-		Ok(PathIdentity { issue_number, title, parent_issue })
-	}
-
 	/// Check if a project is virtual (has no Github remote)
 	pub fn is_virtual_project(repo_info: crate::RepoInfo) -> bool {
 		Self::load_project_meta(repo_info.owner(), repo_info.repo()).virtual_project //TODO: update all occurences of `owner, repo` to just `repo_info` everywhere
@@ -1313,14 +1181,6 @@ impl TryFrom<u8> for ExactMatchLevel {
 			_ => Err("--exact / -e can be specified at most 3 times"),
 		}
 	}
-}
-
-/// Issue identity extracted from a file path.
-#[derive(Clone, Debug)]
-pub struct PathIdentity {
-	pub issue_number: u64,
-	pub title: String,
-	pub parent_issue: Option<u64>,
 }
 
 /// Project-level metadata file.
@@ -1481,264 +1341,4 @@ impl crate::LazyIssue<Local> for Issue {
 		Box::pin(<Self as crate::LazyIssue<Local>>::children(&mut issue, source)).await?;
 		Ok(issue)
 	}
-}
-
-//==============================================================================
-// Sink Implementation
-//==============================================================================
-
-//TODO: @claude: create proper error type for Submitted sink (see ConsensusSinkError for reference)
-/// r[local.sink-only-mutation]
-impl Sink<Submitted> for Issue {
-	type Error = color_eyre::Report;
-
-	async fn sink(&mut self, old: Option<&Issue>) -> Result<bool, Self::Error> {
-		sink_issue_node(self, old)
-	}
-}
-
-/// r[local.sink-only-mutation]
-impl Sink<Consensus> for Issue {
-	type Error = ConsensusSinkError;
-
-	async fn sink(&mut self, old: Option<&Issue>) -> Result<bool, Self::Error> {
-		use std::process::Command;
-
-		let owner = self.identity.owner();
-		let repo = self.identity.repo();
-
-		// Write files to filesystem (same as Submitted)
-		let any_written = sink_issue_node(self, old).map_err(ConsensusSinkError::Write)?;
-
-		if !any_written {
-			return Ok(false);
-		}
-
-		// Stage and commit to git
-		let data_dir = Local::issues_dir();
-		let data_dir_str = data_dir.to_str().ok_or(ConsensusSinkError::InvalidDataDir)?;
-
-		// Stage all changes
-		let add_output = Command::new("git").args(["-C", data_dir_str, "add", "-A"]).output()?;
-		if !add_output.status.success() {
-			return Err(ConsensusSinkError::GitAdd(String::from_utf8_lossy(&add_output.stderr).into_owned()));
-		}
-
-		// Check if any files were ignored (would indicate .gitignore rejection)
-		let status_output = Command::new("git").args(["-C", data_dir_str, "status", "--porcelain"]).output()?;
-		if !status_output.status.success() {
-			return Err(ConsensusSinkError::GitStatus(String::from_utf8_lossy(&status_output.stderr).into_owned()));
-		}
-
-		// Check for ignored files that we tried to add
-		let project_dir = Local::project_dir(owner, repo);
-		if let Ok(rel) = project_dir.strip_prefix(&data_dir) {
-			let check_ignored = Command::new("git").args(["-C", data_dir_str, "check-ignore", "--no-index", "-v"]).arg(rel.join("**")).output()?;
-			// check-ignore returns 0 if files ARE ignored, 1 if none are ignored
-			if check_ignored.status.success() && !check_ignored.stdout.is_empty() {
-				return Err(ConsensusSinkError::GitIgnoreRejection(String::from_utf8_lossy(&check_ignored.stdout).into_owned()));
-			}
-		}
-
-		// Check if there are staged changes to commit
-		let diff_output = Command::new("git").args(["-C", data_dir_str, "diff", "--cached", "--quiet"]).status()?;
-		if diff_output.success() {
-			// No staged changes - nothing to commit
-			return Ok(false);
-		}
-
-		// Commit with a descriptive message
-		let issue_number = self.number().map(|n| format!("#{n}")).unwrap_or_else(|| "new".to_string());
-		let commit_msg = format!("sync: {owner}/{repo}{issue_number}");
-		let commit_output = Command::new("git").args(["-C", data_dir_str, "commit", "-m", &commit_msg]).output()?;
-		if !commit_output.status.success() {
-			return Err(ConsensusSinkError::GitCommit(String::from_utf8_lossy(&commit_output.stderr).into_owned()));
-		}
-
-		Ok(true)
-	}
-}
-
-/// r[local.sink-only-mutation]
-/// Sink an issue node to the local filesystem.
-///
-/// Uses LocalPath for path construction and handles all filesystem mutations:
-/// - Converting flat-file parents to directory format
-/// - Creating directories as needed
-/// - Removing old file locations when format changes
-/// - Writing issue content
-fn sink_issue_node(issue: &Issue, old: Option<&Issue>) -> Result<bool> {
-	// Duplicate issues self-eliminate: remove local files instead of writing
-	if let crate::CloseState::Duplicate(dup_of) = issue.contents.state {
-		tracing::info!(issue = ?issue.number(), duplicate_of = dup_of, "Removing duplicate issue from local storage");
-		return remove_issue_files(issue);
-	}
-
-	let title = &issue.contents.title;
-	let closed = issue.contents.state.is_closed();
-	let has_children = !issue.children.is_empty();
-	let old_has_children = old.map(|o| !o.children.is_empty()).unwrap_or(false);
-	let format_changed = has_children != old_has_children;
-
-	eprintln!("[sink_issue_node] issue #{:?} '{title}', closed: {closed}, state: {:?}", issue.number(), issue.contents.state);
-
-	// Use LocalPath for all path computation
-	let mut local_path = LocalPath::from(issue);
-	let owner = local_path.index().owner().to_string();
-	let repo = local_path.index().repo().to_string();
-
-	// Ensure parent directories exist (converts flat files to directories as needed)
-	local_path.ensure_parent_dirs()?;
-
-	// Compute the target file path
-	let issue_file_path = local_path.file_path(title, closed, has_children)?;
-
-	// Clean up old file locations if format changed, state changed, or issue got a number
-	// (issue getting a number means a pending file may exist that needs removal)
-	if format_changed || old.is_some() || issue.number().is_some() {
-		cleanup_old_locations(issue, old, has_children, closed)?;
-	}
-
-	// Ensure parent directory exists
-	if let Some(parent) = issue_file_path.parent() {
-		std::fs::create_dir_all(parent)?;
-	}
-
-	// Write content if changed
-	let content = issue.serialize_filesystem();
-	let node_changed = if format_changed {
-		true
-	} else if let Some(old_issue) = old {
-		content != old_issue.serialize_filesystem()
-	} else {
-		true
-	};
-
-	let mut any_written = false;
-
-	if node_changed {
-		std::fs::write(&issue_file_path, &content)?;
-		any_written = true;
-	}
-
-	// Save metadata
-	if let Some(issue_num) = issue.number()
-		&& let Some(timestamps) = issue.identity.timestamps()
-	{
-		let meta = IssueMeta { timestamps: timestamps.clone() };
-		Local::save_issue_meta(&owner, &repo, issue_num, &meta)?;
-	}
-
-	// Recursively sink children
-	let old_children_map: std::collections::HashMap<u64, &Issue> = old.map(|o| o.children.iter().filter_map(|c| c.number().map(|n| (n, c))).collect()).unwrap_or_default();
-
-	let new_child_numbers: std::collections::HashSet<u64> = issue.children.iter().filter_map(|c| c.number()).collect();
-
-	for child in &issue.children {
-		let old_child = child.number().and_then(|n| old_children_map.get(&n).copied());
-		any_written |= sink_issue_node(child, old_child)?;
-	}
-
-	// Remove deleted children
-	for (&old_num, &old_child) in &old_children_map {
-		if !new_child_numbers.contains(&old_num) {
-			remove_issue_files(old_child)?;
-			Local::remove_issue_meta(&owner, &repo, old_num)?;
-		}
-	}
-
-	Ok(any_written)
-}
-
-/// Clean up old file locations when format or state changes.
-fn cleanup_old_locations(issue: &Issue, old: Option<&Issue>, has_children: bool, closed: bool) -> Result<()> {
-	let mut local_path = LocalPath::from(issue);
-	let title = &issue.contents.title;
-	let issue_number = issue.number();
-
-	// Try to resolve ancestor dirs (may fail for new issues, that's ok)
-	if local_path.resolve_ancestor_dir_names().is_err() {
-		return Ok(());
-	}
-
-	let old_has_children = old.map(|o| !o.children.is_empty()).unwrap_or(false);
-	let format_changed = has_children != old_has_children;
-
-	if has_children && format_changed {
-		// Switching to directory format: remove old flat files
-		if let Ok(flat_open) = local_path.file_path(title, false, false) {
-			let _ = std::fs::remove_file(&flat_open);
-		}
-		if let Ok(flat_closed) = local_path.file_path(title, true, false) {
-			let _ = std::fs::remove_file(&flat_closed);
-		}
-	}
-
-	if has_children {
-		// Remove old main file with opposite closed state
-		if let Ok(old_main) = local_path.file_path(title, !closed, true) {
-			let _ = std::fs::remove_file(&old_main);
-		}
-	} else {
-		// Flat file: remove file with opposite closed state
-		if let Ok(old_flat) = local_path.file_path(title, !closed, false) {
-			let _ = std::fs::remove_file(&old_flat);
-		}
-
-		// If issue now has a number, clean up old pending file
-		if issue_number.is_some() {
-			// Create a pending version of the index to find old pending files
-			// This has parents as GitIds + Title (so issue_number() returns None)
-			let mut pending_selectors: Vec<IssueSelector> = local_path.index().parent_nums().into_iter().map(IssueSelector::GitId).collect();
-			pending_selectors.push(IssueSelector::Title(title.to_string()));
-			let pending_index = IssueIndex::with_index(local_path.index().owner(), local_path.index().repo(), pending_selectors);
-			let mut pending_path = LocalPath::from(pending_index);
-			if pending_path.resolve_ancestor_dir_names().is_ok() {
-				if let Ok(pending_open) = pending_path.file_path(title, false, false) {
-					let _ = std::fs::remove_file(&pending_open);
-				}
-				if let Ok(pending_closed) = pending_path.file_path(title, true, false) {
-					let _ = std::fs::remove_file(&pending_closed);
-				}
-			}
-		}
-	}
-
-	Ok(())
-}
-
-/// Remove all file variants for an issue.
-fn remove_issue_files(issue: &Issue) -> Result<bool> {
-	let mut local_path = LocalPath::from(issue);
-	let title = &issue.contents.title;
-	let owner = local_path.index().owner().to_string();
-	let repo = local_path.index().repo().to_string();
-
-	// Try to resolve ancestor dirs
-	if local_path.resolve_ancestor_dir_names().is_err() {
-		return Ok(false);
-	}
-
-	// Remove flat file variants
-	if let Ok(flat_open) = local_path.file_path(title, false, false) {
-		let _ = std::fs::remove_file(&flat_open);
-	}
-	if let Ok(flat_closed) = local_path.file_path(title, true, false) {
-		let _ = std::fs::remove_file(&flat_closed);
-	}
-
-	// Remove directory variant
-	if let Ok(issue_dir) = local_path.dir_path(title) {
-		if issue_dir.is_dir() {
-			std::fs::remove_dir_all(&issue_dir)?;
-		}
-	}
-
-	// Remove metadata
-	if let Some(num) = issue.number() {
-		Local::remove_issue_meta(&owner, &repo, num)?;
-	}
-
-	println!("Removed issue #{:?}", issue.number());
-	Ok(true)
 }
