@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use regex::Regex;
-use tedi::{Issue, IssueSelector, LazyIssue, MinIssueDescriptor, local::Local};
+use tedi::{Issue, IssueIndex, IssueSelector, LazyIssue, local::Local};
 use v_utils::prelude::*;
 
 /// Result of parsing a touch path.
@@ -11,7 +11,7 @@ pub enum TouchPathResult {
 	/// Found an existing issue file on disk.
 	Exists(PathBuf),
 	/// Issue doesn't exist, descriptor for creation.
-	Create(MinIssueDescriptor),
+	Create(IssueIndex),
 }
 
 /// Resolve a TouchPathResult to an Issue.
@@ -99,7 +99,7 @@ pub fn parse_touch_path(user_input: &str) -> Result<TouchPathResult> {
 					index.push(IssueSelector::GitId(parent_num));
 					let child_title = strip_md_extension(lineage_rgxs[i + 1]);
 					index.push(IssueSelector::Title(child_title.to_string()));
-					return Ok(TouchPathResult::Create(MinIssueDescriptor::with_index(&owner, &repo, index)));
+					return Ok(TouchPathResult::Create(IssueIndex::with_index(&owner, &repo, index)));
 				}
 
 				matched_lineage.push(matched);
@@ -109,7 +109,7 @@ pub fn parse_touch_path(user_input: &str) -> Result<TouchPathResult> {
 				// No match - this is a create request
 				let mut index: Vec<IssueSelector> = matched_lineage.iter().filter_map(|s| extract_issue_number(s).map(IssueSelector::GitId)).collect();
 				index.push(IssueSelector::Title(pattern.to_string()));
-				return Ok(TouchPathResult::Create(MinIssueDescriptor::with_index(&owner, &repo, index)));
+				return Ok(TouchPathResult::Create(IssueIndex::with_index(&owner, &repo, index)));
 			}
 			MatchOrNone::Ambiguous(matches) => {
 				let desc = if is_last { "issue" } else { "parent issue" };

@@ -560,13 +560,13 @@ pub enum IssueSelector {
 /// Minimal descriptor for locating an issue.
 /// Contains repo info and a path of selectors from root to the target issue (inclusive).
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct MinIssueDescriptor {
+pub struct IssueIndex {
 	repo_info: RepoInfo,
 	/// Path from root to target issue (inclusive). Empty for identifying just the repo.
 	index: Vec<IssueSelector>,
 }
 
-impl MinIssueDescriptor {
+impl IssueIndex {
 	/// Create descriptor for a root-level issue.
 	pub fn root(owner: &str, repo: &str, selector: IssueSelector) -> Self {
 		Self {
@@ -777,7 +777,7 @@ impl Issue /*{{{1*/ {
 	///
 	/// If `virtual_project` is true, creates a virtual issue (local-only, no Github sync).
 	/// Otherwise creates a pending Github issue that will be created on first sync.
-	pub fn pending_from_descriptor(descriptor: &MinIssueDescriptor, virtual_project: bool) -> Self {
+	pub fn pending_from_descriptor(descriptor: &IssueIndex, virtual_project: bool) -> Self {
 		let index = descriptor.index();
 		let (title, parent_nums): (String, Vec<u64>) = match index.last() {
 			Some(IssueSelector::Title(t)) => {
