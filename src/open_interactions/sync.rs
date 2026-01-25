@@ -84,7 +84,7 @@ pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Mo
 				println!("{}", if sync_opts.pull { "Pulling latest..." } else { "Syncing..." });
 
 				// Load remote
-				let url = format!("https://github.com/{owner}/{repo}/issues/{}", issue_number);
+				let url = format!("https://github.com/{owner}/{repo}/issues/{issue_number}");
 				let link = IssueLink::parse(&url).expect("valid URL");
 				let remote_source = RemoteSource::with_lineage(link, issue.identity.ancestry().lineage());
 				let remote = <Issue as LazyIssue<Remote>>::load(remote_source).await?;
@@ -126,7 +126,7 @@ pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Mo
 
 	if issue.is_linked() {
 		// Load fresh remote state for sync
-		let url = format!("https://github.com/{owner}/{repo}/issues/{}", issue_number);
+		let url = format!("https://github.com/{owner}/{repo}/issues/{issue_number}");
 		let link = IssueLink::parse(&url).expect("valid URL");
 		let remote_source = RemoteSource::with_lineage(link, issue.identity.ancestry().lineage());
 		let remote = <Issue as LazyIssue<Remote>>::load(remote_source).await?;

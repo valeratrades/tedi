@@ -16,16 +16,6 @@
 
 pub mod conflict;
 pub mod consensus;
-mod impl_sink;
-
-use std::path::{Path, PathBuf};
-
-pub use impl_sink::{Consensus, Submitted};
-
-//==============================================================================
-// Error Types
-//==============================================================================
-
 /// Error type for local issue loading operations.
 #[derive(Debug, miette::Diagnostic, thiserror::Error, derive_more::From)]
 pub enum LocalError {
@@ -58,7 +48,6 @@ pub enum LocalError {
 	#[diagnostic(transparent)]
 	ConflictBlocked(conflict::ConflictBlockedError),
 }
-
 /// Error type for consensus sink operations.
 #[derive(Debug, miette::Diagnostic, derive_more::Display, thiserror::Error)]
 pub enum ConsensusSinkError {
@@ -90,17 +79,6 @@ pub enum ConsensusSinkError {
 	#[diagnostic(code(tedi::consensus::io))]
 	Io(#[from] std::io::Error),
 }
-
-use regex::Regex;
-use serde::{Deserialize, Serialize};
-use v_utils::prelude::*;
-
-use crate::{Ancestry, FetchedIssue, Issue, IssueIndex, RepoInfo};
-
-//==============================================================================
-// Local - The interface for local issue storage
-//==============================================================================
-
 /// Source variant for local issue loading.
 ///
 /// Determines where to read issue content from.
@@ -115,11 +93,6 @@ pub enum LocalSource {
 	/// this tool.
 	Submitted,
 }
-
-//==============================================================================
-// LocalPath - On-demand path construction
-//==============================================================================
-
 /// On-demand path construction for local issue storage.
 ///
 /// r[local.sink-only-mutation]
@@ -132,7 +105,6 @@ pub struct LocalPath {
 	/// None means not yet computed.
 	ancestor_dir_names: Option<Vec<String>>,
 }
-
 impl LocalPath {
 	pub fn new(index: IssueIndex) -> Self {
 		Self { index, ancestor_dir_names: None }
@@ -274,18 +246,6 @@ impl LocalPath {
 	}
 }
 
-impl From<IssueIndex> for LocalPath {
-	fn from(index: IssueIndex) -> Self {
-		Self::new(index)
-	}
-}
-
-impl From<&Issue> for LocalPath {
-	fn from(issue: &Issue) -> Self {
-		Self::new(IssueIndex::from(issue))
-	}
-}
-
 /// Source for loading issues from local storage.
 #[deprecated(note = "has faulty assumption that issue has a stable path. It doesn't, - we can them when CloseState changes or when children are attached")]
 #[derive(Clone, Debug, derive_more::Deref)]
@@ -294,7 +254,6 @@ pub struct LocalPathLegacy {
 	pub path: PathBuf,
 	pub source: LocalSource,
 }
-
 impl LocalPathLegacy {
 	/// Create a new local path for reading from filesystem (submitted state).
 	pub fn submitted(path: PathBuf) -> Self {
@@ -318,12 +277,6 @@ impl LocalPathLegacy {
 			path: child_path,
 			source: self.source.clone(),
 		}
-	}
-}
-
-impl<P: Into<PathBuf>> From<P> for LocalPathLegacy {
-	fn from(path: P) -> Self {
-		Self::submitted(path.into())
 	}
 }
 
@@ -1151,14 +1104,6 @@ impl Local {
 	}
 }
 
-//NB: the reason we expose methods through Local, - is to shortcut the possibility of having them appear without clear reference to what part of logic owns them.
-// Note that conventionally, same effect is achieved by deciding to not export methods out of a module, but use them as `mod::method`, which would translate to almost tht exactly the same eg `local::issue_dir()`
-// Difference is: when using AI, I can't control how the methods are exported. This tag solves it.
-
-//==============================================================================
-// Types
-//==============================================================================
-
 /// Exact match level for fzf queries.
 #[derive(Clone, Copy, Debug, Default)]
 pub enum ExactMatchLevel {
@@ -1168,6 +1113,70 @@ pub enum ExactMatchLevel {
 	RegexSubstring,
 	RegexLine,
 }
+/// Project-level metadata file.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct ProjectMeta {
+	#[serde(default)]
+	pub virtual_project: bool,
+	#[serde(default)]
+	pub next_virtual_issue_number: u64,
+	#[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+	pub issues: std::collections::BTreeMap<u64, IssueMeta>,
+}
+/// Per-issue metadata stored in .meta.json.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct IssueMeta {
+	/// Timestamps for individual field changes.
+	#[serde(default)]
+	pub timestamps: crate::IssueTimestamps,
+}
+mod impl_sink;
+
+use std::path::{Path, PathBuf};
+
+pub use impl_sink::{Consensus, Submitted};
+//==============================================================================
+// Error Types
+//==============================================================================
+use regex::Regex;
+use serde::{Deserialize, Serialize};
+use v_utils::prelude::*;
+
+use crate::{Ancestry, FetchedIssue, Issue, IssueIndex, RepoInfo};
+
+//==============================================================================
+// Local - The interface for local issue storage
+//==============================================================================
+
+//==============================================================================
+// LocalPath - On-demand path construction
+//==============================================================================
+
+impl From<IssueIndex> for LocalPath {
+	fn from(index: IssueIndex) -> Self {
+		Self::new(index)
+	}
+}
+
+impl From<&Issue> for LocalPath {
+	fn from(issue: &Issue) -> Self {
+		Self::new(IssueIndex::from(issue))
+	}
+}
+
+impl<P: Into<PathBuf>> From<P> for LocalPathLegacy {
+	fn from(path: P) -> Self {
+		Self::submitted(path.into())
+	}
+}
+
+//NB: the reason we expose methods through Local, - is to shortcut the possibility of having them appear without clear reference to what part of logic owns them.
+// Note that conventionally, same effect is achieved by deciding to not export methods out of a module, but use them as `mod::method`, which would translate to almost tht exactly the same eg `local::issue_dir()`
+// Difference is: when using AI, I can't control how the methods are exported. This tag solves it.
+
+//==============================================================================
+// Types
+//==============================================================================
 
 impl TryFrom<u8> for ExactMatchLevel {
 	type Error = &'static str;
@@ -1181,25 +1190,6 @@ impl TryFrom<u8> for ExactMatchLevel {
 			_ => Err("--exact / -e can be specified at most 3 times"),
 		}
 	}
-}
-
-/// Project-level metadata file.
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-pub struct ProjectMeta {
-	#[serde(default)]
-	pub virtual_project: bool,
-	#[serde(default)]
-	pub next_virtual_issue_number: u64,
-	#[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
-	pub issues: std::collections::BTreeMap<u64, IssueMeta>,
-}
-
-/// Per-issue metadata stored in .meta.json.
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-pub struct IssueMeta {
-	/// Timestamps for individual field changes.
-	#[serde(default)]
-	pub timestamps: crate::IssueTimestamps,
 }
 
 //==============================================================================
