@@ -161,7 +161,12 @@ pub fn initiate_conflict_merge(owner: &str, repo: &str, issue_number: u64, local
 	std::fs::write(&conflict_file, &local_virtual)?;
 
 	// Stage and commit local state
-	let _ = Command::new("git").args(["-C", data_dir_str, "add", "-A"]).status()?;
+	let add_status = Command::new("git").args(["-C", data_dir_str, "add", "-A"]).status()?;
+	if !add_status.success() {
+		return Err(ConflictError::GitError {
+			message: "git add -A failed".into(),
+		});
+	}
 
 	let commit_msg = format!("__conflict: local state for {owner}/{repo}#{issue_number}");
 	let commit_output = Command::new("git").args(["-C", data_dir_str, "commit", "-m", &commit_msg]).output()?;
@@ -210,7 +215,13 @@ pub fn initiate_conflict_merge(owner: &str, repo: &str, issue_number: u64, local
 	std::fs::write(&conflict_file, &remote_virtual)?;
 
 	// Stage and commit remote state
-	let _ = Command::new("git").args(["-C", data_dir_str, "add", "-A"]).status()?;
+	let add_status = Command::new("git").args(["-C", data_dir_str, "add", "-A"]).status()?;
+	if !add_status.success() {
+		cleanup_branch(data_dir_str, &current_branch);
+		return Err(ConflictError::GitError {
+			message: "git add -A failed".into(),
+		});
+	}
 
 	// Check if there are changes to commit
 	let diff_status = Command::new("git").args(["-C", data_dir_str, "diff", "--cached", "--quiet"]).status()?;

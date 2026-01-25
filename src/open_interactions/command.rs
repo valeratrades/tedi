@@ -5,7 +5,7 @@ use std::path::Path;
 use clap::Args;
 use tedi::{
 	Issue, IssueLink, LazyIssue,
-	local::{ExactMatchLevel, Local, Submitted},
+	local::{ExactMatchLevel, FsReader, Local, LocalIssueSource, Submitted},
 	sink::Sink,
 };
 use v_utils::prelude::*;
@@ -161,7 +161,8 @@ pub async fn open_command(settings: &LiveSettings, args: OpenArgs, offline: bool
 			bail!("No issue files found. Use a Github URL to fetch an issue first.");
 		}
 		// Files are already sorted by modification time (most recent first)
-		let issue = <Issue as LazyIssue<Local>>::load(all_files[0].clone().into()).await?;
+		let source = LocalIssueSource::<FsReader>::from_path(&all_files[0])?;
+		let issue = <Issue as LazyIssue<Local>>::load(source).await?;
 		(issue, local_sync_opts(), offline)
 	} else if github::is_github_issue_url(input) {
 		// Github URL mode: unified with --pull behavior
@@ -178,7 +179,8 @@ pub async fn open_command(settings: &LiveSettings, args: OpenArgs, offline: bool
 		let issue = if let Some(path) = existing_path {
 			// File exists locally - proceed with unified sync (like --pull)
 			println!("Found existing local file, will sync with remote...");
-			<Issue as LazyIssue<Local>>::load(path.into()).await?
+			let source = LocalIssueSource::<FsReader>::from_path(&path)?;
+			<Issue as LazyIssue<Local>>::load(source).await?
 		} else {
 			// File doesn't exist - fetch and create it
 			println!("Fetching issue #{issue_number} from {owner}/{repo}...");
@@ -221,7 +223,8 @@ pub async fn open_command(settings: &LiveSettings, args: OpenArgs, offline: bool
 			}
 		};
 
-		let issue = <Issue as LazyIssue<Local>>::load(issue_file_path.into()).await?;
+		let source = LocalIssueSource::<FsReader>::from_path(&issue_file_path)?;
+		let issue = <Issue as LazyIssue<Local>>::load(source).await?;
 		(issue, local_sync_opts(), offline)
 	};
 

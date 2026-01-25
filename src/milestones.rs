@@ -244,7 +244,7 @@ async fn edit_milestone(settings: &LiveSettings, tf: Timeframe) -> Result<()> {
 	let milestone_number = milestone.number;
 
 	// Check if milestone is outdated (due_on in the past)
-	let is_outdated = milestone.due_on.map(|d| d < Timestamp::now()).unwrap_or(true);
+	let is_outdated = milestone.due_on.map(|d| d < Timestamp::now()).unwrap_or(true); //IGNORED_ERROR: no due date = treat as outdated
 
 	// Write to temp file
 	let tmp_path = format!("/tmp/milestone_{tf}.md");

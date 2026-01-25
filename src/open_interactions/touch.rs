@@ -3,7 +3,10 @@
 use std::path::PathBuf;
 
 use regex::Regex;
-use tedi::{Issue, IssueIndex, IssueSelector, LazyIssue, local::Local};
+use tedi::{
+	Issue, IssueIndex, IssueSelector, LazyIssue,
+	local::{FsReader, Local, LocalIssueSource},
+};
 use v_utils::prelude::*;
 
 /// Result of parsing a touch path.
@@ -18,7 +21,8 @@ pub enum TouchPathResult {
 pub async fn resolve_touch_path(result: TouchPathResult) -> Result<Issue> {
 	match result {
 		TouchPathResult::Exists(path) => {
-			let issue = <Issue as LazyIssue<Local>>::load(path.into()).await?;
+			let source = LocalIssueSource::<FsReader>::from_path(&path)?;
+			let issue = <Issue as LazyIssue<Local>>::load(source).await?;
 			Ok(issue)
 		}
 		TouchPathResult::Create(descriptor) => {

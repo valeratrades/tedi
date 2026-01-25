@@ -672,6 +672,20 @@ impl IssueIndex {
 			_ => None,
 		}
 	}
+
+	/// Get the parent's IssueIndex (all selectors except the last one).
+	/// For repo-only or single-selector indices, returns repo_only.
+	pub fn parent(&self) -> Self {
+		if self.index_len <= 1 {
+			Self::repo_only(self.repo_info.owner(), self.repo_info.repo())
+		} else {
+			Self {
+				repo_info: self.repo_info,
+				index_arr: self.index_arr,
+				index_len: self.index_len - 1,
+			}
+		}
+	}
 }
 
 impl From<&Issue> for IssueIndex {

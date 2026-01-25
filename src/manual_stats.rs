@@ -239,7 +239,7 @@ impl Day {
 		fn conditional_update<T>(pbs_as_value: &mut serde_json::Value, metric: &str, new_value: T, condition: fn(&T, &T) -> bool)
 		where
 			T: Serialize + DeserializeOwned + PartialEq + Clone + std::fmt::Display + std::fmt::Debug, {
-			let old_value = pbs_as_value.get(metric).and_then(|v| T::deserialize(v.clone()).ok()).map(|v| Some(v)).unwrap_or(None);
+			let old_value = pbs_as_value.get(metric).and_then(|v| T::deserialize(v.clone()).ok());
 
 			match old_value {
 				Some(old) =>
@@ -315,19 +315,19 @@ impl Day {
 		};
 
 		let jofv_condition = |d: &Day| d.jofv_mins.is_some_and(|x| x == 0);
-		let _ = streak_update("no_jofv", &jofv_condition);
+		streak_update("no_jofv", &jofv_condition);
 
 		let stable_sleep_condition = |d: &Day| d.sleep.yd_to_bed_t_plus == Some(0) && d.sleep.from_bed_t_plus == Some(0) && d.sleep.from_bed_abs_diff_from_day_before == Some(0);
-		let _ = streak_update("stable_sleep", &stable_sleep_condition);
+		streak_update("stable_sleep", &stable_sleep_condition);
 
 		let meditation_condition = |d: &Day| d.evening.focus_meditation > 0;
-		let _ = streak_update("focus_meditation", &meditation_condition);
+		streak_update("focus_meditation", &meditation_condition);
 
 		let math_condition = |d: &Day| d.math_hours.is_some_and(|q| q > 0.);
-		let _ = streak_update("math", &math_condition);
+		streak_update("math", &math_condition);
 
 		let nsdr_condition = |d: &Day| d.evening.nsdr > 0;
-		let _ = streak_update("nsdr", &nsdr_condition);
+		streak_update("nsdr", &nsdr_condition);
 
 		let perfect_morning_condition = |d: &Day| {
 			d.morning.alarm_to_run_M_colon_S.is_some_and(|v| v.inner() < 10) //? is_some_and consumes self, why?
@@ -335,25 +335,25 @@ impl Day {
 				&& d.morning.transcendential.eating_food.is_some_and(|v| v < 20)
 				&& d.morning.breakfast_to_work.is_some_and(|v| v <= 5)
 		};
-		let _ = streak_update("perfect_morning", &perfect_morning_condition);
+		streak_update("perfect_morning", &perfect_morning_condition);
 
 		let marafon_focus_condition = |d: &Day| d.percent_focused > 0.5;
-		let _ = streak_update("NOs_streak", &marafon_focus_condition);
+		streak_update("NOs_streak", &marafon_focus_condition);
 
 		let responsible_caffeine_condition = |d: &Day| d.caffeine_only_during_work == true;
-		let _ = streak_update("responsible_caffeine", &responsible_caffeine_condition);
+		streak_update("responsible_caffeine", &responsible_caffeine_condition);
 
 		let responsible_messengers_condition = |d: &Day| d.checked_messages_only_during_social_window == true;
-		let _ = streak_update("responsible_messengers", &responsible_messengers_condition);
+		streak_update("responsible_messengers", &responsible_messengers_condition);
 
 		let running_streak_condition = |d: &Day| d.morning.run == true;
-		let _ = streak_update("running_streak", &running_streak_condition);
+		streak_update("running_streak", &running_streak_condition);
 
 		let rejection_streak_condition = |d: &Day| d.number_of_rejections > 0;
-		let _ = streak_update("rejection_streak", &rejection_streak_condition);
+		streak_update("rejection_streak", &rejection_streak_condition);
 
 		let locked_phone_streak_condition = |d: &Day| d.phone_locked_away;
-		let _ = streak_update("locked_phone_streak", &locked_phone_streak_condition);
+		streak_update("locked_phone_streak", &locked_phone_streak_condition);
 
 		pbs_as_value["streaks"]["__last_date_processed"] = serde_json::Value::from(yd_date);
 

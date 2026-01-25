@@ -4,12 +4,25 @@
 //! Only `Sink<Submitted>` and `Sink<Consensus>` may mutate the local filesystem.
 //! All filesystem writes, deletes, and directory creation MUST go through these implementations.
 
-use std::collections::{HashMap, HashSet};
+use std::{
+	collections::{HashMap, HashSet},
+	path::Path,
+};
 
 use v_utils::prelude::*;
 
 use super::{ConsensusSinkError, IssueMeta, Local, LocalPath};
 use crate::{Issue, IssueIndex, IssueSelector, sink::Sink};
+
+/// Remove a file, ignoring NotFound errors (file may not exist).
+/// Propagates other errors (permission denied, etc.).
+fn try_remove_file(path: &Path) -> Result<()> {
+	match std::fs::remove_file(path) {
+		Ok(()) => Ok(()),
+		Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+		Err(e) => Err(e.into()),
+	}
+}
 
 /// Marker type for sinking to filesystem (submitted state).
 pub struct Submitted;
@@ -197,22 +210,22 @@ fn cleanup_old_locations(issue: &Issue, old: Option<&Issue>, has_children: bool,
 	if has_children && format_changed {
 		// Switching to directory format: remove old flat files
 		if let Ok(flat_open) = local_path.file_path(title, false, false) {
-			let _ = std::fs::remove_file(&flat_open);
+			try_remove_file(&flat_open)?;
 		}
 		if let Ok(flat_closed) = local_path.file_path(title, true, false) {
-			let _ = std::fs::remove_file(&flat_closed);
+			try_remove_file(&flat_closed)?;
 		}
 	}
 
 	if has_children {
 		// Remove old main file with opposite closed state
 		if let Ok(old_main) = local_path.file_path(title, !closed, true) {
-			let _ = std::fs::remove_file(&old_main);
+			try_remove_file(&old_main)?;
 		}
 	} else {
 		// Flat file: remove file with opposite closed state
 		if let Ok(old_flat) = local_path.file_path(title, !closed, false) {
-			let _ = std::fs::remove_file(&old_flat);
+			try_remove_file(&old_flat)?;
 		}
 
 		// If issue now has a number, clean up old pending file
@@ -225,10 +238,10 @@ fn cleanup_old_locations(issue: &Issue, old: Option<&Issue>, has_children: bool,
 			let mut pending_path = LocalPath::from(pending_index);
 			if pending_path.resolve_ancestor_dir_names().is_ok() {
 				if let Ok(pending_open) = pending_path.file_path(title, false, false) {
-					let _ = std::fs::remove_file(&pending_open);
+					try_remove_file(&pending_open)?;
 				}
 				if let Ok(pending_closed) = pending_path.file_path(title, true, false) {
-					let _ = std::fs::remove_file(&pending_closed);
+					try_remove_file(&pending_closed)?;
 				}
 			}
 		}
@@ -251,10 +264,10 @@ fn remove_issue_files(issue: &Issue) -> Result<bool> {
 
 	// Remove flat file variants
 	if let Ok(flat_open) = local_path.file_path(title, false, false) {
-		let _ = std::fs::remove_file(&flat_open);
+		try_remove_file(&flat_open)?;
 	}
 	if let Ok(flat_closed) = local_path.file_path(title, true, false) {
-		let _ = std::fs::remove_file(&flat_closed);
+		try_remove_file(&flat_closed)?;
 	}
 
 	// Remove directory variant

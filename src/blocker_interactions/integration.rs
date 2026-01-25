@@ -10,7 +10,10 @@
 use std::path::{Path, PathBuf};
 
 use color_eyre::eyre::{Result, bail, eyre};
-use tedi::{DisplayFormat, Issue, LazyIssue, Marker, local::Local};
+use tedi::{
+	DisplayFormat, Issue, LazyIssue, Marker,
+	local::{FsReader, Local, LocalIssueSource},
+};
 
 use super::{BlockerSequence, operations::BlockerSequenceExt, source::BlockerSource};
 use crate::open_interactions::local::ExactMatchLevel;
@@ -116,7 +119,8 @@ pub async fn main_integrated(command: super::io::Command, format: DisplayFormat,
 				};
 
 				// Use unified modify flow
-				let issue = <Issue as LazyIssue<Local>>::load(issue_path.clone().into()).await?;
+				let source = LocalIssueSource::<FsReader>::from_path(&issue_path)?;
+				let issue = <Issue as LazyIssue<Local>>::load(source).await?;
 				modify_and_sync_issue(issue, offline, Modifier::Editor { open_at_blocker: false }, SyncOptions::default()).await?;
 
 				// If set_after flag is set, update the current blocker issue
@@ -237,7 +241,8 @@ pub async fn main_integrated(command: super::io::Command, format: DisplayFormat,
 			}
 
 			// Use unified modify workflow
-			let issue = <Issue as LazyIssue<Local>>::load(issue_path.clone().into()).await?;
+			let source = LocalIssueSource::<FsReader>::from_path(&issue_path)?;
+			let issue = <Issue as LazyIssue<Local>>::load(source).await?;
 			let result = modify_and_sync_issue(issue, offline, Modifier::BlockerPop, SyncOptions::default()).await?;
 
 			// Output results
@@ -277,7 +282,8 @@ pub async fn main_integrated(command: super::io::Command, format: DisplayFormat,
 				let issue_path = get_current_blocker_issue().ok_or_else(|| eyre!("No blocker file set. Use `todo blocker set <pattern>` first."))?;
 
 				// Use unified modify workflow
-				let issue = <Issue as LazyIssue<Local>>::load(issue_path.clone().into()).await?;
+				let source = LocalIssueSource::<FsReader>::from_path(&issue_path)?;
+				let issue = <Issue as LazyIssue<Local>>::load(source).await?;
 				let result = modify_and_sync_issue(issue, offline, Modifier::BlockerAdd { text: name.clone() }, SyncOptions::default()).await?;
 
 				// Output results

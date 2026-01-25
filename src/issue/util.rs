@@ -43,7 +43,7 @@ pub fn normalize_issue_indentation(content: &str) -> String {
 				None
 			}
 		})
-		.unwrap_or(4); // Default to 4 spaces per indent if we can't detect
+		.unwrap_or(4); //IGNORED_ERROR: default indent size when no indented lines to detect from
 
 	content
 		.lines()

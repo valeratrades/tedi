@@ -436,7 +436,10 @@ impl GithubClient for RealGithubClient {
 		// Process timeline items
 		if let Some(nodes) = response.pointer("/data/repository/issue/timelineItems/nodes").and_then(|v| v.as_array()) {
 			for node in nodes {
-				let typename = node.get("__typename").and_then(|v| v.as_str()).unwrap_or("");
+				let Some(typename) = node.get("__typename").and_then(|v| v.as_str()) else {
+					tracing::warn!("GraphQL timeline node missing __typename: {node:?}");
+					continue;
+				};
 
 				match typename {
 					"RenamedTitleEvent" =>

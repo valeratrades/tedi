@@ -18,8 +18,9 @@ pub fn is_git_initialized() -> bool {
 	Command::new("git")
 		.args(["-C", data_dir_str, "rev-parse", "--git-dir"])
 		.output()
-		.map(|o| o.status.success())
-		.unwrap_or(false)
+		.expect("failed to execute git command")
+		.status
+		.success()
 }
 
 /// Stage and commit changes for an issue file.
@@ -29,7 +30,10 @@ pub fn commit_issue_changes(owner: &str, repo: &str, issue_number: u64) -> Resul
 	let data_dir_str = data_dir.to_str().ok_or_else(|| eyre!("Invalid data directory path"))?;
 
 	// Stage changes
-	let _ = Command::new("git").args(["-C", data_dir_str, "add", "-A"]).status()?;
+	let add_status = Command::new("git").args(["-C", data_dir_str, "add", "-A"]).status()?;
+	if !add_status.success() {
+		bail!("git add -A failed");
+	}
 
 	// Check if there are staged changes
 	let diff_output = Command::new("git").args(["-C", data_dir_str, "diff", "--cached", "--quiet"]).status()?;

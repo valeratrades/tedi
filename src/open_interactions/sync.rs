@@ -56,7 +56,7 @@ pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Mo
 	let issue_file_path = local_path.file_path(&issue.contents.title, closed, has_children)?;
 
 	let offline = offline || Local::is_virtual_project(repo_info);
-	let issue_number = issue.number().unwrap_or(0);
+	let issue_number = issue.number().unwrap_or(0); //IGNORED_ERROR: 0 is sentinel for "pending issue, no number yet"
 
 	eprintln!("[after load] issue lineage: {:?}", issue.identity.lineage());
 	for (i, c) in issue.children.iter().enumerate() {
@@ -77,7 +77,7 @@ pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Mo
 		let prefers_local = matches!(sync_opts.peek_merge_mode(), MergeMode::Reset { prefer: Side::Local } | MergeMode::Force { prefer: Side::Local });
 
 		if !prefers_local {
-			let consensus = load_consensus_issue(&issue_file_path).await?;
+			let consensus = load_consensus_issue(*local_path.index()).await?;
 			let local_differs = consensus.as_ref().map(|c| *c != issue).unwrap_or(false);
 
 			if sync_opts.pull || local_differs {
@@ -131,14 +131,14 @@ pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Mo
 		let remote_source = RemoteSource::with_lineage(link, &issue.identity.lineage());
 		let remote = <Issue as LazyIssue<Remote>>::load(remote_source).await?;
 
-		let consensus = load_consensus_issue(&issue_file_path).await?;
+		let consensus = load_consensus_issue(*local_path.index()).await?;
 		let (resolved, changed) = core::sync_issue(issue, consensus, remote, mode, owner, repo, issue_number).await?;
 		issue = resolved;
 
 		if changed {
 			// Re-sink local in case issue numbers changed
 			<Issue as Sink<Submitted>>::sink(&mut issue, None).await?;
-			let actual_number = issue.number().unwrap_or(issue_number);
+			let actual_number = issue.number().expect("issue must have number after sync");
 			commit_issue_changes(owner, repo, actual_number)?;
 		} else {
 			println!("No changes.");
@@ -147,7 +147,7 @@ pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Mo
 		// New issue - just sink to remote
 		<Issue as Sink<Remote>>::sink(&mut issue, None).await?;
 		<Issue as Sink<Submitted>>::sink(&mut issue, None).await?;
-		let actual_number = issue.number().unwrap_or(issue_number);
+		let actual_number = issue.number().expect("issue must have number after remote sink");
 		commit_issue_changes(owner, repo, actual_number)?;
 	}
 
@@ -200,7 +200,7 @@ mod core {
 		}
 
 		if let Some(ref consensus) = consensus {
-			let _ = local_merged.merge(consensus.clone(), false);
+			local_merged.merge(consensus.clone(), false)?;
 		}
 		local_merged.merge(remote.clone(), force)?;
 
@@ -211,7 +211,7 @@ mod core {
 		}
 
 		if let Some(consensus) = consensus {
-			let _ = remote_merged.merge(consensus, false);
+			remote_merged.merge(consensus, false)?;
 		}
 		remote_merged.merge(local, force)?;
 

@@ -285,7 +285,7 @@ impl tedi::LazyIssue<Remote> for Issue {
 			children.push(child);
 		}
 
-		children.sort_by_key(|c| c.number().unwrap_or(0));
+		children.sort_by_key(|c| c.number().expect("remote child must have issue number"));
 		self.children = children.clone();
 		Ok(children)
 	}
@@ -305,7 +305,7 @@ fn build_contents_from_github(issue: &GithubIssue, comments: &[GithubComment]) -
 	let close_state = CloseState::from_github(&issue.state, issue.state_reason.as_deref());
 	let labels: Vec<String> = issue.labels.iter().map(|l| l.name.clone()).collect();
 
-	let raw_body = issue.body.as_deref().unwrap_or("");
+	let raw_body = issue.body.as_deref().unwrap_or(""); //IGNORED_ERROR: GitHub API null body is valid (empty issue)
 	let (body, blockers) = split_blockers(raw_body);
 
 	let mut issue_comments = vec![Comment {
@@ -319,7 +319,7 @@ fn build_contents_from_github(issue: &GithubIssue, comments: &[GithubComment]) -
 				user: c.user.login.clone(),
 				id: c.id,
 			},
-			body: tedi::Events::parse(c.body.as_deref().unwrap_or("")),
+			body: tedi::Events::parse(c.body.as_deref().unwrap_or("")), //IGNORED_ERROR: GitHub API null comment body is valid
 		});
 	}
 

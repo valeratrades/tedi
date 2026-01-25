@@ -2,32 +2,31 @@
 //!
 //! The consensus state (last synced state) is stored in git.
 //! This module provides:
-//! - Loading consensus issues via `LazyIssue<Local>` with `LocalSource::Consensus`
+//! - Loading consensus issues via `LazyIssue<LocalConsensus>` with `GitReader`
 //! - Committing changes as the new consensus
 
 /// Load the consensus Issue tree from git (last committed state).
 ///
-/// Uses `LazyIssue<Local>` with `LocalSource::Consensus` to read from git HEAD.
+/// Uses `LazyIssue<LocalConsensus>` to read from git HEAD.
 ///
 /// Returns:
 /// - `Ok(Some(Issue))` if file is tracked and consensus loaded successfully
 /// - `Ok(None)` if file is not tracked (new file, no consensus yet)
 /// - `Err(LocalError)` if file exists but failed to load
-pub async fn load_consensus_issue(file_path: &Path) -> Result<Option<Issue>, LocalError> {
-	let source = LocalPathLegacy::consensus(file_path.to_path_buf());
+pub async fn load_consensus_issue(index: IssueIndex) -> Result<Option<Issue>, LocalError> {
+	let source = LocalIssueSource::<GitReader>::from(index);
 
 	// Check if the file exists in git
-	if Local::read_content(&source).is_none() {
+	let mut local_path = source.local_path.clone();
+	if local_path.find_file_path(&source.reader).is_err() {
 		return Ok(None);
 	}
 
-	<Issue as LazyIssue<Local>>::load(source).await.map(Some)
+	<Issue as LazyIssue<LocalConsensus>>::load(source).await.map(Some)
 }
 mod git;
 
-use std::path::Path;
-
 pub use git::{commit_issue_changes, is_git_initialized};
 
-use super::{Local, LocalError, LocalPathLegacy};
-use crate::{Issue, LazyIssue};
+use super::{GitReader, LocalConsensus, LocalError, LocalIssueSource};
+use crate::{Issue, IssueIndex, LazyIssue};
