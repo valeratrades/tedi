@@ -13,7 +13,7 @@ use v_utils::prelude::*;
 use super::{
 	remote::{Remote, RemoteSource},
 	sync::{MergeMode, Modifier, Side, SyncOptions, modify_and_sync_issue},
-	touch::{TouchPathResult, parse_touch_path},
+	touch::{TouchPathResult, parse_touch_path, resolve_touch_path},
 };
 use crate::{config::LiveSettings, github};
 
@@ -141,32 +141,23 @@ pub async fn open_command(settings: &LiveSettings, args: OpenArgs, offline: bool
 	} else if args.touch {
 		// Handle --touch mode
 		let touch_result = parse_touch_path(input)?;
+		let is_create = matches!(touch_result, TouchPathResult::Create(_));
+		let issue = resolve_touch_path(touch_result).await?;
+		let project_is_virtual = issue.identity.is_virtual();
 
-		match touch_result {
-			TouchPathResult::Found(ancestry) => {
-				// Found existing issue - look up the file path
-				let path = Local::find_issue_file_by_ancestry(&ancestry).ok_or_else(|| eyre!("Issue matched but file not found for ancestry: {ancestry:?}"))?;
-				let project_is_virtual = Local::is_virtual_project(ancestry.repo_info());
-				println!("Found existing issue: {path:?}");
-				(path, local_sync_opts(), offline || project_is_virtual)
+		if is_create {
+			if !issue.identity.ancestry().lineage().is_empty() {
+				println!("Creating pending sub-issue: {}", issue.contents.title);
+			} else {
+				println!("Creating pending issue: {}", issue.contents.title);
 			}
-			TouchPathResult::Create { title, ancestry } => {
-				// Create pending issue in memory, then use unified sync flow
-				// Modifier::Editor will write it to disk before opening
-				let project_is_virtual = Local::is_virtual_project(ancestry.repo_info());
-				let issue = Issue::pending_from_ancestry(&title, ancestry, project_is_virtual);
-				if !issue.identity.ancestry().lineage().is_empty() {
-					println!("Creating pending sub-issue: {title}");
-				} else {
-					println!("Creating pending issue: {title}");
-				}
-				if !project_is_virtual {
-					println!("Issue will be created on Github when you save and sync.");
-				}
-				modify_and_sync_issue(issue, project_is_virtual, Modifier::Editor { open_at_blocker: false }, local_sync_opts()).await?;
-				return Ok(());
+			if !project_is_virtual {
+				println!("Issue will be created on Github when you save and sync.");
 			}
 		}
+
+		modify_and_sync_issue(issue, project_is_virtual, Modifier::Editor { open_at_blocker }, local_sync_opts()).await?;
+		return Ok(());
 	} else if github::is_github_issue_url(input) {
 		// Github URL mode: unified with --pull behavior
 		// URL opening implies pull=true and prefers Remote for --force/--reset

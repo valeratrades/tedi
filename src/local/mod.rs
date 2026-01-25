@@ -92,7 +92,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use v_utils::prelude::*;
 
-use crate::{Ancestry, FetchedIssue, Issue, sink::Sink};
+use crate::{Ancestry, FetchedIssue, Issue, RepoInfo, sink::Sink};
 
 //==============================================================================
 // Local - The interface for local issue storage
@@ -470,6 +470,19 @@ impl Local {
 		issue_dir.join(filename)
 	}
 
+	/// Find the main file inside an issue directory (checks both open and closed).
+	pub fn main_file_in_dir(issue_dir: &Path) -> Option<PathBuf> {
+		let main_file = Self::main_file_path(issue_dir, false);
+		if main_file.exists() {
+			return Some(main_file);
+		}
+		let main_bak = Self::main_file_path(issue_dir, true);
+		if main_bak.exists() {
+			return Some(main_bak);
+		}
+		None
+	}
+
 	/// Find the actual file path for an issue, checking both flat and directory formats.
 	pub fn find_issue_file(owner: &str, repo: &str, issue_number: Option<u64>, title: &str, ancestor_dir_names: &[String]) -> Option<PathBuf> {
 		// Try flat format first (both open and closed)
@@ -595,26 +608,32 @@ impl Local {
 
 	/// Find the issue file for an ancestry.
 	/// Navigates the filesystem using issue numbers in the lineage.
+	#[deprecated = "use find_issue_file_by_num_path instead - ancestry semantically shouldn't include the issue's own number"]
 	pub fn find_issue_file_by_ancestry(ancestry: &Ancestry) -> Option<PathBuf> {
-		let mut path = Self::project_dir(ancestry.owner(), ancestry.repo());
+		Self::find_issue_file_by_num_path(ancestry.repo_info(), ancestry.lineage())
+	}
+
+	/// Find the issue file by repo info and full number path.
+	/// The num_path includes all ancestors plus the target issue's own number.
+	pub fn find_issue_file_by_num_path(repo_info: RepoInfo, num_path: &[u64]) -> Option<PathBuf> {
+		let mut path = Self::project_dir(repo_info.owner(), repo_info.repo());
 
 		if !path.exists() {
 			return None;
 		}
 
-		let lineage = ancestry.lineage();
-		if lineage.is_empty() {
+		if num_path.is_empty() {
 			return None;
 		}
 
 		// Navigate to parent directories
-		for &issue_number in &lineage[..lineage.len() - 1] {
+		for &issue_number in &num_path[..num_path.len() - 1] {
 			let dir = Self::find_issue_dir_by_number(&path, issue_number)?;
 			path = dir;
 		}
 
-		// Find the target issue (last in lineage)
-		let target_number = *lineage.last().unwrap();
+		// Find the target issue (last in num_path)
+		let target_number = *num_path.last().unwrap();
 
 		// Check for directory format first (issue with children)
 		if let Some(dir) = Self::find_issue_dir_by_number(&path, target_number) {

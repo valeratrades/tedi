@@ -547,6 +547,81 @@ impl IssueIdentity {
 }
 
 /// Maximum nesting depth for issues (8 levels should be plenty).
+/// Selector for identifying an issue within a repo.
+/// GitId is preferred when available, as title can change.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum IssueSelector {
+	/// Github issue number (stable identifier)
+	GitId(u64),
+	/// Issue title (for pending issues not yet synced to Github)
+	Title(String),
+}
+
+/// Minimal descriptor for locating an issue.
+/// Contains repo info and a path of selectors from root to the target issue (inclusive).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MinIssueDescriptor {
+	repo_info: RepoInfo,
+	/// Path from root to target issue (inclusive). Empty for identifying just the repo.
+	index: Vec<IssueSelector>,
+}
+
+impl MinIssueDescriptor {
+	/// Create descriptor for a root-level issue.
+	pub fn root(owner: &str, repo: &str, selector: IssueSelector) -> Self {
+		Self {
+			repo_info: RepoInfo::new(owner, repo),
+			index: vec![selector],
+		}
+	}
+
+	/// Create descriptor for repo only (no specific issue).
+	pub fn repo_only(owner: &str, repo: &str) -> Self {
+		Self {
+			repo_info: RepoInfo::new(owner, repo),
+			index: Vec::new(),
+		}
+	}
+
+	/// Create descriptor with full index path.
+	pub fn with_index(owner: &str, repo: &str, index: Vec<IssueSelector>) -> Self {
+		Self {
+			repo_info: RepoInfo::new(owner, repo),
+			index,
+		}
+	}
+
+	/// Add a child selector, returning new descriptor.
+	pub fn child(&self, selector: IssueSelector) -> Self {
+		let mut new_index = self.index.clone();
+		new_index.push(selector);
+		Self {
+			repo_info: self.repo_info,
+			index: new_index,
+		}
+	}
+
+	/// Get the index path.
+	pub fn index(&self) -> &[IssueSelector] {
+		&self.index
+	}
+
+	/// Get the repository info.
+	pub fn repo_info(&self) -> RepoInfo {
+		self.repo_info
+	}
+
+	/// Get the owner.
+	pub fn owner(&self) -> &str {
+		self.repo_info.owner()
+	}
+
+	/// Get the repo.
+	pub fn repo(&self) -> &str {
+		self.repo_info.repo()
+	}
+}
+
 pub const MAX_LINEAGE_DEPTH: usize = 8;
 /// Ancestry information for an issue - where it lives in the filesystem.
 /// This is always defined, even for pending issues.
@@ -695,6 +770,31 @@ impl Issue /*{{{1*/ {
 			contents,
 			children: vec![],
 		}
+	}
+
+	/// Create a new pending issue from a MinIssueDescriptor.
+	/// The last element of descriptor.index() must be a Title selector.
+	///
+	/// If `virtual_project` is true, creates a virtual issue (local-only, no Github sync).
+	/// Otherwise creates a pending Github issue that will be created on first sync.
+	pub fn pending_from_descriptor(descriptor: &MinIssueDescriptor, virtual_project: bool) -> Self {
+		let index = descriptor.index();
+		let (title, parent_nums): (String, Vec<u64>) = match index.last() {
+			Some(IssueSelector::Title(t)) => {
+				let nums = index[..index.len() - 1]
+					.iter()
+					.filter_map(|s| match s {
+						IssueSelector::GitId(n) => Some(*n),
+						IssueSelector::Title(_) => None,
+					})
+					.collect();
+				(t.clone(), nums)
+			}
+			Some(IssueSelector::GitId(_)) => panic!("pending_from_descriptor requires last selector to be Title"),
+			None => panic!("pending_from_descriptor requires non-empty index"),
+		};
+		let ancestry = Ancestry::with_lineage(descriptor.owner(), descriptor.repo(), &parent_nums);
+		Self::pending_from_ancestry(title, ancestry, virtual_project)
 	}
 
 	/// Check if this issue is linked to Github.
@@ -1686,11 +1786,6 @@ struct ParsedTitleLine {
 }
 
 //,}}}1
-
-pub enum MinIssueDescriptor {
-	Touch { repo_info: RepoInfo, ancestry: Ancestry, title: String },
-	Index { repo_info: RepoInfo, num_path: Vec<u64> },
-}
 
 //==============================================================================
 // Index by issue number
