@@ -38,11 +38,6 @@
           rs = v-utils.rs {
             inherit pkgs rust;
             deny = true;
-            style = {
-              modules = {
-                pub_first = false;
-              };
-            };
           };
           github =
             let

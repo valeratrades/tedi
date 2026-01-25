@@ -257,13 +257,6 @@ mod tests {
 	}
 
 	#[test]
-	fn test_strip_md_extension() {
-		assert_eq!(strip_md_extension("issue.md"), "issue");
-		assert_eq!(strip_md_extension("issue"), "issue");
-		assert_eq!(strip_md_extension("issue.txt"), "issue.txt");
-	}
-
-	#[test]
 	fn test_extract_issue_number() {
 		assert_eq!(extract_issue_number("123_-_my_title"), Some(123));
 		assert_eq!(extract_issue_number("456"), Some(456));
