@@ -98,7 +98,7 @@ pub fn parse_touch_path(user_input: &str) -> Result<TouchPathResult> {
 					let mut index: Vec<IssueSelector> = matched_lineage.iter().filter_map(|s| extract_issue_number(s).map(IssueSelector::GitId)).collect();
 					index.push(IssueSelector::GitId(parent_num));
 					let child_title = strip_md_extension(lineage_rgxs[i + 1]);
-					index.push(IssueSelector::Title(child_title.to_string()));
+					index.push(IssueSelector::title(child_title));
 					return Ok(TouchPathResult::Create(IssueIndex::with_index(&owner, &repo, index)));
 				}
 
@@ -108,7 +108,7 @@ pub fn parse_touch_path(user_input: &str) -> Result<TouchPathResult> {
 			MatchOrNone::NoMatch => {
 				// No match - this is a create request
 				let mut index: Vec<IssueSelector> = matched_lineage.iter().filter_map(|s| extract_issue_number(s).map(IssueSelector::GitId)).collect();
-				index.push(IssueSelector::Title(pattern.to_string()));
+				index.push(IssueSelector::title(pattern));
 				return Ok(TouchPathResult::Create(IssueIndex::with_index(&owner, &repo, index)));
 			}
 			MatchOrNone::Ambiguous(matches) => {

@@ -220,7 +220,7 @@ fn cleanup_old_locations(issue: &Issue, old: Option<&Issue>, has_children: bool,
 			// Create a pending version of the index to find old pending files
 			// This has parents as GitIds + Title (so issue_number() returns None)
 			let mut pending_selectors: Vec<IssueSelector> = local_path.index().parent_nums().into_iter().map(IssueSelector::GitId).collect();
-			pending_selectors.push(IssueSelector::Title(title.to_string()));
+			pending_selectors.push(IssueSelector::title(title));
 			let pending_index = IssueIndex::with_index(local_path.index().owner(), local_path.index().repo(), pending_selectors);
 			let mut pending_path = LocalPath::from(pending_index);
 			if pending_path.resolve_ancestor_dir_names().is_ok() {

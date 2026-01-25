@@ -546,32 +546,57 @@ impl IssueIdentity {
 	}
 }
 
-/// Maximum nesting depth for issues (8 levels should be plenty).
+/// Maximum title length enforced by Github.
+pub const MAX_TITLE_LENGTH: usize = 256;
+
 /// Selector for identifying an issue within a repo.
 /// GitId is preferred when available, as title can change.
-#[derive(Clone, Debug, Eq, PartialEq)]
+/// Uses `ArrayString` for `Copy` semantics.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum IssueSelector {
 	/// Github issue number (stable identifier)
 	GitId(u64),
 	/// Issue title (for pending issues not yet synced to Github)
-	Title(String),
+	Title(ArrayString<MAX_TITLE_LENGTH>),
 }
+
+impl IssueSelector {
+	/// Create a Title selector from a string.
+	/// Panics if title exceeds MAX_TITLE_LENGTH (256 chars).
+	pub fn title(title: &str) -> Self {
+		Self::Title(ArrayString::from(title).unwrap_or_else(|_| panic!("title too long (max {MAX_TITLE_LENGTH} chars): {}", title.len())))
+	}
+
+	/// Try to create a Title selector from a string.
+	/// Returns None if title exceeds MAX_TITLE_LENGTH.
+	pub fn try_title(title: &str) -> Option<Self> {
+		ArrayString::from(title).ok().map(Self::Title)
+	}
+}
+
+/// Maximum index depth (lineage + the issue itself).
+pub const MAX_INDEX_DEPTH: usize = MAX_LINEAGE_DEPTH + 1;
 
 /// Minimal descriptor for locating an issue.
 /// Contains repo info and a path of selectors from root to the target issue (inclusive).
-#[derive(Clone, Debug, Eq, PartialEq)]
+/// Uses fixed-size storage to be `Copy`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct IssueIndex {
 	repo_info: RepoInfo,
-	/// Path from root to target issue (inclusive). Empty for identifying just the repo.
-	index: Vec<IssueSelector>,
+	/// Path from root to target issue (inclusive). Uses fixed array with length tracking.
+	index_arr: [IssueSelector; MAX_INDEX_DEPTH],
+	index_len: u8,
 }
 
 impl IssueIndex {
 	/// Create descriptor for a root-level issue.
 	pub fn root(owner: &str, repo: &str, selector: IssueSelector) -> Self {
+		let mut index_arr = [IssueSelector::GitId(0); MAX_INDEX_DEPTH];
+		index_arr[0] = selector;
 		Self {
 			repo_info: RepoInfo::new(owner, repo),
-			index: vec![selector],
+			index_arr,
+			index_len: 1,
 		}
 	}
 
@@ -579,31 +604,43 @@ impl IssueIndex {
 	pub fn repo_only(owner: &str, repo: &str) -> Self {
 		Self {
 			repo_info: RepoInfo::new(owner, repo),
-			index: Vec::new(),
+			index_arr: [IssueSelector::GitId(0); MAX_INDEX_DEPTH],
+			index_len: 0,
 		}
 	}
 
 	/// Create descriptor with full index path.
+	/// Panics if index exceeds MAX_INDEX_DEPTH.
 	pub fn with_index(owner: &str, repo: &str, index: Vec<IssueSelector>) -> Self {
+		assert!(index.len() <= MAX_INDEX_DEPTH, "Index too deep (max {MAX_INDEX_DEPTH} levels)");
+		let mut index_arr = [IssueSelector::GitId(0); MAX_INDEX_DEPTH];
+		for (i, sel) in index.iter().enumerate() {
+			index_arr[i] = *sel;
+		}
 		Self {
 			repo_info: RepoInfo::new(owner, repo),
-			index,
+			index_arr,
+			index_len: index.len() as u8,
 		}
 	}
 
 	/// Add a child selector, returning new descriptor.
+	/// Panics if result would exceed MAX_INDEX_DEPTH.
 	pub fn child(&self, selector: IssueSelector) -> Self {
-		let mut new_index = self.index.clone();
-		new_index.push(selector);
+		let new_len = self.index_len as usize + 1;
+		assert!(new_len <= MAX_INDEX_DEPTH, "Index too deep (max {MAX_INDEX_DEPTH} levels)");
+		let mut new_arr = self.index_arr;
+		new_arr[self.index_len as usize] = selector;
 		Self {
 			repo_info: self.repo_info,
-			index: new_index,
+			index_arr: new_arr,
+			index_len: new_len as u8,
 		}
 	}
 
 	/// Get the index path.
 	pub fn index(&self) -> &[IssueSelector] {
-		&self.index
+		&self.index_arr[..self.index_len as usize]
 	}
 
 	/// Get the repository info.
@@ -624,7 +661,7 @@ impl IssueIndex {
 	/// Extract numeric issue numbers from the index (GitId selectors only).
 	/// Returns all GitId values in order, skipping Title selectors.
 	pub fn num_path(&self) -> Vec<u64> {
-		self.index
+		self.index()
 			.iter()
 			.filter_map(|s| match s {
 				IssueSelector::GitId(n) => Some(*n),
@@ -637,10 +674,11 @@ impl IssueIndex {
 	/// If the issue has its own number (last selector is GitId), returns all preceding GitIds.
 	/// If the issue is pending (last selector is Title or empty), returns all GitIds.
 	pub fn parent_nums(&self) -> Vec<u64> {
-		match self.index.last() {
+		let index = self.index();
+		match index.last() {
 			Some(IssueSelector::GitId(_)) => {
 				// Issue has its own number, parents are all preceding GitIds
-				self.index[..self.index.len() - 1]
+				index[..index.len() - 1]
 					.iter()
 					.filter_map(|s| match s {
 						IssueSelector::GitId(n) => Some(*n),
@@ -657,7 +695,7 @@ impl IssueIndex {
 
 	/// Get the issue's own number if the last selector is a GitId.
 	pub fn issue_number(&self) -> Option<u64> {
-		match self.index.last() {
+		match self.index().last() {
 			Some(IssueSelector::GitId(n)) => Some(*n),
 			_ => None,
 		}
@@ -667,17 +705,26 @@ impl IssueIndex {
 impl From<&Issue> for IssueIndex {
 	fn from(issue: &Issue) -> Self {
 		let ancestry = &issue.identity.ancestry;
-		let mut index: Vec<IssueSelector> = ancestry.lineage().iter().map(|&n| IssueSelector::GitId(n)).collect();
+		let lineage = ancestry.lineage();
+		let total_len = lineage.len() + 1; // lineage + the issue itself
+		assert!(total_len <= MAX_INDEX_DEPTH, "Index too deep (max {MAX_INDEX_DEPTH} levels)");
+
+		let mut index_arr = [IssueSelector::GitId(0); MAX_INDEX_DEPTH];
+		for (i, &n) in lineage.iter().enumerate() {
+			index_arr[i] = IssueSelector::GitId(n);
+		}
+
 		if let Some(n) = issue.number() {
 			// Issue has a number - add it as the last selector
-			index.push(IssueSelector::GitId(n));
+			index_arr[lineage.len()] = IssueSelector::GitId(n);
 		} else {
 			// Pending issue - add title as last selector to distinguish from parent-only paths
-			index.push(IssueSelector::Title(issue.contents.title.clone()));
+			index_arr[lineage.len()] = IssueSelector::title(&issue.contents.title);
 		}
 		Self {
 			repo_info: ancestry.repo_info(),
-			index,
+			index_arr,
+			index_len: total_len as u8,
 		}
 	}
 }
@@ -686,6 +733,7 @@ pub const MAX_LINEAGE_DEPTH: usize = 8;
 /// Ancestry information for an issue - where it lives in the filesystem.
 /// This is always defined, even for pending issues.
 /// Uses fixed-size storage to be `Copy`.
+#[deprecated(note = "save IssueIndex of the parent instead")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Ancestry {
 	/// Repository owner and name
@@ -848,7 +896,7 @@ impl Issue /*{{{1*/ {
 						IssueSelector::Title(_) => None,
 					})
 					.collect();
-				(t.clone(), nums)
+				(t.to_string(), nums)
 			}
 			Some(IssueSelector::GitId(_)) => panic!("pending_from_descriptor requires last selector to be Title"),
 			None => panic!("pending_from_descriptor requires non-empty index"),
