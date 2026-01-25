@@ -290,20 +290,19 @@ impl Local {
 
 	/// Get the virtual edit path for an issue.
 	///
-	/// Returns a path in `/tmp/{CARGO_PKG_NAME}/{ancestry}/{fname}.md` where:
-	/// - ancestry is `owner/repo/lineage[0]/lineage[1]/...` (lineage elements joined by `/`)
+	/// Returns a path in `/tmp/{CARGO_PKG_NAME}/{owner/repo/lineage...}/{fname}.md` where:
+	/// - lineage is the parent issue numbers joined by `/`
 	/// - fname is the proper issue filename based on number and title
 	///
 	/// This path is used when opening an editor for the user to edit the issue.
 	pub fn virtual_edit_path(issue: &crate::Issue) -> PathBuf {
-		let ancestry = &issue.identity.ancestry;
 		let mut path = PathBuf::from("/tmp").join(env!("CARGO_PKG_NAME"));
 
 		// Add owner/repo
-		path = path.join(ancestry.owner()).join(ancestry.repo());
+		path = path.join(issue.identity.owner()).join(issue.identity.repo());
 
 		// Add lineage components (parent issue numbers)
-		for &parent_num in ancestry.lineage() {
+		for parent_num in issue.identity.lineage() {
 			path = path.join(parent_num.to_string());
 		}
 
@@ -455,8 +454,8 @@ impl Local {
 	///
 	/// This parses one issue file (without loading children from separate files).
 	/// Children field will be empty - they're loaded separately via LazyIssue.
-	fn parse_single_node(content: &str, ancestry: Ancestry, file_path: &Path) -> Result<Issue, LocalError> {
-		let mut issue = Issue::parse_virtual_with_ancestry(content, file_path, ancestry).map_err(|e| LocalError::ParseError {
+	fn parse_single_node(content: &str, parent_index: IssueIndex, file_path: &Path) -> Result<Issue, LocalError> {
+		let mut issue = Issue::parse_virtual_with_parent(content, file_path, parent_index).map_err(|e| LocalError::ParseError {
 			path: file_path.to_path_buf(),
 			source: Box::new(e),
 		})?;
@@ -505,11 +504,6 @@ impl Local {
 		if closed { format!("{base}.bak") } else { base }
 	}
 
-	/// Format a FetchedIssue into a directory name: `{number}_-_{sanitized_title}`
-	fn format_issue_dir_name(issue: &FetchedIssue) -> String {
-		format!("{}_-_{}", issue.number(), Self::sanitize_title(&issue.title))
-	}
-
 	/// Get the directory name for an issue (used when it has sub-issues).
 	/// Format: {number}_-_{sanitized_title}
 	pub fn issue_dir_name(issue_number: Option<u64>, title: &str) -> String {
@@ -523,26 +517,27 @@ impl Local {
 	}
 
 	/// Get the path for an issue file from an Issue.
-	/// Uses the issue's ancestry to resolve the path.
+	/// Uses the issue's identity to resolve the path.
 	///
 	/// Checks if the issue exists in directory format on disk (has sub-issues) and returns
 	/// the appropriate path (`__main__.md` for directory format, flat file otherwise).
 	///
 	/// # Errors
-	/// Returns an error if ancestor directories can't be resolved from the ancestry.
+	/// Returns an error if ancestor directories can't be resolved.
 	pub fn issue_file_path(issue: &Issue) -> Result<PathBuf> {
-		let ancestry = &issue.identity.ancestry;
-		let ancestor_dir_names = Self::build_ancestor_dir_names(ancestry)?;
+		let repo_info = issue.identity.repo_info();
+		let lineage = issue.identity.lineage();
+		let ancestor_dir_names = Self::build_ancestor_dir_names_from_lineage(repo_info, &lineage)?;
 		let closed = issue.contents.state.is_closed();
 
 		// Check if issue exists in directory format on disk
-		let issue_dir = Self::issue_dir_path_from_dir_names(ancestry.owner(), ancestry.repo(), issue.number(), &issue.contents.title, &ancestor_dir_names);
+		let issue_dir = Self::issue_dir_path_from_dir_names(repo_info.owner(), repo_info.repo(), issue.number(), &issue.contents.title, &ancestor_dir_names);
 		if issue_dir.is_dir() {
 			return Ok(Self::main_file_path(&issue_dir, closed));
 		}
 
 		// Flat file format
-		let mut path = Self::project_dir(ancestry.owner(), ancestry.repo());
+		let mut path = Self::project_dir(repo_info.owner(), repo_info.repo());
 		for dir_name in &ancestor_dir_names {
 			path = path.join(dir_name);
 		}
@@ -561,12 +556,6 @@ impl Local {
 
 		let filename = Self::format_issue_filename(issue_number, title, closed);
 		path.join(filename)
-	}
-
-	/// Get the path to the issue directory (where sub-issues are stored).
-	pub fn issue_dir_path(issue_number: Option<u64>, title: &str, ancestry: &Ancestry) -> PathBuf {
-		let ancestor_dir_names = Self::build_ancestor_dir_names(ancestry).unwrap_or_default();
-		Self::issue_dir_path_from_dir_names(ancestry.owner(), ancestry.repo(), issue_number, title, &ancestor_dir_names)
 	}
 
 	/// Get the path to the issue directory using ancestor directory names directly.
@@ -677,18 +666,18 @@ impl Local {
 		Ok(matches)
 	}
 
-	/// Build ancestor directory names by traversing the filesystem for an ancestry.
+	/// Build ancestor directory names by traversing the filesystem for a lineage.
 	/// Finds issues by number (either flat file or directory) and returns the directory names.
-	pub fn build_ancestor_dir_names(ancestry: &Ancestry) -> Result<Vec<String>> {
-		let mut path = Self::project_dir(ancestry.owner(), ancestry.repo());
+	pub fn build_ancestor_dir_names_from_lineage(repo_info: RepoInfo, lineage: &[u64]) -> Result<Vec<String>> {
+		let mut path = Self::project_dir(repo_info.owner(), repo_info.repo());
 
 		if !path.exists() {
 			bail!("Project directory does not exist: {}", path.display());
 		}
 
-		let mut result = Vec::with_capacity(ancestry.lineage().len());
+		let mut result = Vec::with_capacity(lineage.len());
 
-		for &issue_number in ancestry.lineage() {
+		for &issue_number in lineage {
 			let dir_name = Self::find_issue_dir_name_by_number(&path, issue_number)
 				.ok_or_else(|| eyre!("Parent issue #{issue_number} not found locally in {}. Fetch the parent issue first.", path.display()))?;
 
@@ -697,41 +686,6 @@ impl Local {
 		}
 
 		Ok(result)
-	}
-
-	#[allow(deprecated)]
-	/// Build a chain of FetchedIssue by traversing the filesystem for an ancestry.
-	#[deprecated(note = "Use build_ancestor_dir_names instead")]
-	pub fn build_ancestry_path(ancestry: &Ancestry) -> Result<Vec<FetchedIssue>> {
-		let mut path = Self::project_dir(ancestry.owner(), ancestry.repo());
-
-		if !path.exists() {
-			bail!("Project directory does not exist: {}", path.display());
-		}
-
-		let mut result = Vec::with_capacity(ancestry.lineage().len());
-
-		for &issue_number in ancestry.lineage() {
-			let dir = Self::find_issue_dir_by_number(&path, issue_number)
-				.ok_or_else(|| eyre!("Parent issue #{issue_number} not found locally in {}. Fetch the parent issue first.", path.display()))?;
-
-			let dir_name = dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
-			let title = Self::extract_title_from_dir_name(dir_name, issue_number);
-
-			let fetched = FetchedIssue::from_parts(ancestry.owner(), ancestry.repo(), issue_number, &title).ok_or_else(|| eyre!("Failed to construct FetchedIssue for #{issue_number}"))?;
-			result.push(fetched);
-
-			path = dir;
-		}
-
-		Ok(result)
-	}
-
-	/// Find the issue file for an ancestry.
-	/// Navigates the filesystem using issue numbers in the lineage.
-	#[deprecated = "use find_issue_file_by_num_path instead - ancestry semantically shouldn't include the issue's own number"]
-	pub fn find_issue_file_by_ancestry(ancestry: &Ancestry) -> Option<PathBuf> {
-		Self::find_issue_file_by_num_path(ancestry.repo_info(), ancestry.lineage())
 	}
 
 	/// Find the issue file by repo info and full number path.
@@ -853,16 +807,6 @@ impl Local {
 		None
 	}
 
-	/// Extract title from directory name.
-	fn extract_title_from_dir_name(dir_name: &str, issue_number: u64) -> String {
-		let prefix = format!("{issue_number}_-_");
-		if let Some(title) = dir_name.strip_prefix(&prefix) {
-			title.replace('_', " ")
-		} else {
-			String::new()
-		}
-	}
-
 	/// Extract full ancestry (owner/repo/lineage) from an issue file path.
 	///
 	/// Path structure: `issues/{owner}/{repo}/{number}_-_{title}/.../file.md`
@@ -870,7 +814,11 @@ impl Local {
 	///
 	/// For directory format (`__main__.md`), the immediately containing directory is the issue itself,
 	/// not a parent, so it's excluded from lineage.
-	pub fn extract_ancestry(path: &Path) -> Result<Ancestry> {
+	/// Extract the parent's IssueIndex from an issue file path.
+	///
+	/// For root issues, returns `IssueIndex::repo_only(owner, repo)`.
+	/// For child issues, returns the parent's full IssueIndex.
+	pub fn extract_parent_index(path: &Path) -> Result<IssueIndex> {
 		let issues_base = Self::issues_dir();
 
 		let rel_path = path.strip_prefix(&issues_base).map_err(|_| eyre!("Issue file is not in issues directory: {path:?}"))?;
@@ -890,7 +838,7 @@ impl Local {
 		// Everything between repo and the final component is a potential parent issue directory
 		// Format: {number}_-_{title} or just {number}
 		// For directory format, exclude the last directory (that's the issue itself, not a parent)
-		let mut lineage = Vec::new();
+		let mut parent_selectors = Vec::new();
 		let end_offset = if is_dir_format { 2 } else { 1 }; // Skip filename + issue dir for dir format
 		for component in &components[2..components.len().saturating_sub(end_offset)] {
 			let name = component.as_os_str().to_str().ok_or_else(|| eyre!("Invalid path component: {component:?}"))?;
@@ -906,17 +854,10 @@ impl Local {
 			} else {
 				name.parse::<u64>().map_err(|_| eyre!("Invalid issue directory format: {name}"))?
 			};
-			lineage.push(issue_number);
+			parent_selectors.push(IssueSelector::GitId(issue_number));
 		}
 
-		Ok(Ancestry::with_lineage(owner, repo, &lineage))
-	}
-
-	/// Extract owner/repo from an issue file path.
-	#[deprecated(note = "Use extract_ancestry instead for full lineage information")]
-	pub fn extract_owner_repo(path: &Path) -> Result<(String, String)> {
-		let ancestry = Self::extract_ancestry(path)?;
-		Ok((ancestry.owner().to_string(), ancestry.repo().to_string()))
+		Ok(IssueIndex::with_index(owner, repo, parent_selectors))
 	}
 
 	/// Choose an issue file using fzf.
@@ -1142,7 +1083,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use v_utils::prelude::*;
 
-use crate::{Ancestry, FetchedIssue, Issue, IssueIndex, RepoInfo};
+use crate::{Issue, IssueIndex, IssueSelector, RepoInfo};
 
 //==============================================================================
 // Local - The interface for local issue storage
@@ -1200,8 +1141,8 @@ impl crate::LazyIssue<Local> for Issue {
 	type Error = LocalError;
 	type Source = LocalPathLegacy;
 
-	async fn ancestry(source: &Self::Source) -> Result<crate::Ancestry, Self::Error> {
-		Local::extract_ancestry(&source.path).map_err(|_| LocalError::FileNotFound { path: source.path.clone() })
+	async fn parent_index(source: &Self::Source) -> Result<crate::IssueIndex, Self::Error> {
+		Local::extract_parent_index(&source.path).map_err(|_| LocalError::FileNotFound { path: source.path.clone() })
 	}
 
 	async fn identity(&mut self, source: Self::Source) -> Result<crate::IssueIdentity, Self::Error> {
@@ -1209,17 +1150,17 @@ impl crate::LazyIssue<Local> for Issue {
 			return Ok(self.identity.clone());
 		}
 
-		let ancestry = Local::extract_ancestry(&source.path).map_err(|_| LocalError::FileNotFound { path: source.path.clone() })?;
+		let parent_index = Local::extract_parent_index(&source.path).map_err(|_| LocalError::FileNotFound { path: source.path.clone() })?;
 
 		if self.contents.title.is_empty() {
 			let content = Local::read_content(&source).ok_or_else(|| LocalError::FileNotFound { path: source.path.clone() })?;
-			let parsed = Local::parse_single_node(&content, ancestry, &source.path)?;
+			let parsed = Local::parse_single_node(&content, parent_index, &source.path)?;
 			self.identity = parsed.identity;
 			self.contents = parsed.contents;
 		}
 
 		if let Some(issue_number) = self.identity.number()
-			&& let Some(meta) = Local::load_issue_meta_from_source(ancestry.owner(), ancestry.repo(), issue_number, source.source.clone())
+			&& let Some(meta) = Local::load_issue_meta_from_source(self.identity.owner(), self.identity.repo(), issue_number, source.source.clone())
 			&& let Some(linked) = self.identity.remote.as_linked_mut()
 		{
 			linked.timestamps = meta.timestamps;
@@ -1233,10 +1174,10 @@ impl crate::LazyIssue<Local> for Issue {
 			return Ok(self.contents.clone());
 		}
 
-		let ancestry = Local::extract_ancestry(&source.path).map_err(|_| LocalError::FileNotFound { path: source.path.clone() })?;
+		let parent_index = Local::extract_parent_index(&source.path).map_err(|_| LocalError::FileNotFound { path: source.path.clone() })?;
 
 		let content = Local::read_content(&source).ok_or_else(|| LocalError::FileNotFound { path: source.path.clone() })?;
-		let parsed = Local::parse_single_node(&content, ancestry, &source.path)?;
+		let parsed = Local::parse_single_node(&content, parent_index, &source.path)?;
 		self.identity = parsed.identity;
 		self.contents = parsed.contents;
 
@@ -1320,12 +1261,12 @@ impl crate::LazyIssue<Local> for Issue {
 	async fn load(source: Self::Source) -> Result<Issue, Self::Error> {
 		// Check for unresolved conflicts (only for Submitted, and only for root loads)
 		if matches!(source.source, LocalSource::Submitted) {
-			let ancestry = Local::extract_ancestry(&source.path).map_err(|_| LocalError::FileNotFound { path: source.path.clone() })?;
-			conflict::check_conflict(ancestry.owner())?;
+			let parent_index = Local::extract_parent_index(&source.path).map_err(|_| LocalError::FileNotFound { path: source.path.clone() })?;
+			conflict::check_conflict(parent_index.owner())?;
 		}
 
-		let ancestry = <Self as crate::LazyIssue<Local>>::ancestry(&source).await?;
-		let mut issue = Issue::empty_local(ancestry);
+		let parent_index = <Self as crate::LazyIssue<Local>>::parent_index(&source).await?;
+		let mut issue = Issue::empty_local(parent_index);
 		<Self as crate::LazyIssue<Local>>::identity(&mut issue, source.clone()).await?;
 		<Self as crate::LazyIssue<Local>>::contents(&mut issue, source.clone()).await?;
 		Box::pin(<Self as crate::LazyIssue<Local>>::children(&mut issue, source)).await?;

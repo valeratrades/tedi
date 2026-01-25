@@ -343,7 +343,7 @@ impl IssueTimestamps {
 }
 
 /// Metadata for an issue linked to Github.
-/// Lineage is stored separately in `Ancestry`.
+/// Parent chain is stored in `IssueIdentity.parent_index`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LinkedIssueMeta {
 	/// User who created the issue
@@ -424,35 +424,37 @@ impl IssueRemote {
 	}
 }
 
-/// Identity of an issue - always has ancestry, with remote connection info.
+/// Identity of an issue - always has parent_index (for location) with remote connection info.
 #[derive(Clone, Debug)]
 pub struct IssueIdentity {
-	/// Where in the tree this issue lives (owner/repo/lineage)
-	pub ancestry: Ancestry,
+	/// Parent's IssueIndex, or repo-only index for root issues.
+	/// For root issues: `IssueIndex::repo_only(owner, repo)` (empty index)
+	/// For child issues: parent's full `IssueIndex` (includes parent's selector)
+	pub parent_index: IssueIndex,
 	/// Remote connection status (Github linked/pending, or Virtual)
 	pub remote: IssueRemote,
 }
 impl IssueIdentity {
 	/// Create a new linked Github issue identity.
-	pub fn linked(ancestry: Ancestry, user: String, link: IssueLink, timestamps: IssueTimestamps) -> Self {
+	pub fn linked(parent_index: IssueIndex, user: String, link: IssueLink, timestamps: IssueTimestamps) -> Self {
 		Self {
-			ancestry,
+			parent_index,
 			remote: IssueRemote::Github(Box::new(Some(LinkedIssueMeta { user, link, timestamps }))),
 		}
 	}
 
 	/// Create a new pending Github issue identity (will be created on first sync).
-	pub fn pending(ancestry: Ancestry) -> Self {
+	pub fn pending(parent_index: IssueIndex) -> Self {
 		Self {
-			ancestry,
+			parent_index,
 			remote: IssueRemote::Github(Box::new(None)),
 		}
 	}
 
 	/// Create a new virtual (local-only) issue identity.
-	pub fn virtual_issue(ancestry: Ancestry) -> Self {
+	pub fn virtual_issue(parent_index: IssueIndex) -> Self {
 		Self {
-			ancestry,
+			parent_index,
 			remote: IssueRemote::Virtual,
 		}
 	}
@@ -460,8 +462,8 @@ impl IssueIdentity {
 	/// Create a new local-only issue identity.
 	/// DEPRECATED: use `pending()` for Github issues or `virtual_issue()` for local-only.
 	/// This currently maps to `pending()` for backwards compatibility.
-	pub fn local(ancestry: Ancestry) -> Self {
-		Self::pending(ancestry)
+	pub fn local(parent_index: IssueIndex) -> Self {
+		Self::pending(parent_index)
 	}
 
 	/// Check if this issue is linked to Github.
@@ -510,25 +512,32 @@ impl IssueIdentity {
 		self.remote.as_linked().map(|m| &m.timestamps)
 	}
 
-	/// Get ancestry (always available).
-	pub fn ancestry(&self) -> &Ancestry {
-		&self.ancestry
+	/// Get the repository info.
+	pub fn repo_info(&self) -> RepoInfo {
+		self.parent_index.repo_info()
 	}
 
-	/// Get owner (always available via ancestry).
+	/// Get owner.
 	pub fn owner(&self) -> &str {
-		self.ancestry.owner()
+		self.parent_index.owner()
 	}
 
-	/// Get repo (always available via ancestry).
+	/// Get repo.
 	pub fn repo(&self) -> &str {
-		self.ancestry.repo()
+		self.parent_index.repo()
 	}
 
-	/// Create a child's ancestry by appending this issue's number.
+	/// Get lineage (parent issue numbers).
+	/// For root issues: empty slice.
+	/// For child issues: all GitId numbers in parent_index.
+	pub fn lineage(&self) -> Vec<u64> {
+		self.parent_index.num_path()
+	}
+
+	/// Create a child's parent_index by appending this issue's number.
 	/// Returns None if this issue is not linked (has no number to append).
-	pub fn child_ancestry(&self) -> Option<Ancestry> {
-		self.number().map(|n| self.ancestry.child(n))
+	pub fn child_parent_index(&self) -> Option<IssueIndex> {
+		self.number().map(|n| self.parent_index.child(IssueSelector::GitId(n)))
 	}
 
 	/// Encode for serialization.
@@ -704,112 +713,20 @@ impl IssueIndex {
 
 impl From<&Issue> for IssueIndex {
 	fn from(issue: &Issue) -> Self {
-		let ancestry = &issue.identity.ancestry;
-		let lineage = ancestry.lineage();
-		let total_len = lineage.len() + 1; // lineage + the issue itself
-		assert!(total_len <= MAX_INDEX_DEPTH, "Index too deep (max {MAX_INDEX_DEPTH} levels)");
-
-		let mut index_arr = [IssueSelector::GitId(0); MAX_INDEX_DEPTH];
-		for (i, &n) in lineage.iter().enumerate() {
-			index_arr[i] = IssueSelector::GitId(n);
-		}
+		// Build this issue's IssueIndex by extending parent_index with this issue's selector
+		let parent_index = issue.identity.parent_index;
 
 		if let Some(n) = issue.number() {
 			// Issue has a number - add it as the last selector
-			index_arr[lineage.len()] = IssueSelector::GitId(n);
+			parent_index.child(IssueSelector::GitId(n))
 		} else {
 			// Pending issue - add title as last selector to distinguish from parent-only paths
-			index_arr[lineage.len()] = IssueSelector::title(&issue.contents.title);
-		}
-		Self {
-			repo_info: ancestry.repo_info(),
-			index_arr,
-			index_len: total_len as u8,
+			parent_index.child(IssueSelector::title(&issue.contents.title))
 		}
 	}
 }
 
 pub const MAX_LINEAGE_DEPTH: usize = 8;
-/// Ancestry information for an issue - where it lives in the filesystem.
-/// This is always defined, even for pending issues.
-/// Uses fixed-size storage to be `Copy`.
-#[deprecated(note = "save IssueIndex of the parent instead")]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Ancestry {
-	/// Repository owner and name
-	repo_info: RepoInfo,
-	/// Chain of parent issue numbers from root to immediate parent.
-	/// Empty for root issues. Uses fixed array with length tracking.
-	lineage_arr: [u64; MAX_LINEAGE_DEPTH],
-	lineage_len: u8,
-}
-impl Ancestry {
-	/// Create ancestry for a root issue.
-	/// Panics if owner or repo exceed their max lengths.
-	pub fn root(owner: &str, repo: &str) -> Self {
-		Self {
-			repo_info: RepoInfo::new(owner, repo),
-			lineage_arr: [0; MAX_LINEAGE_DEPTH],
-			lineage_len: 0,
-		}
-	}
-
-	/// Create ancestry for a root issue from RepoInfo.
-	pub fn root_from_repo(repo_info: RepoInfo) -> Self {
-		Self {
-			repo_info,
-			lineage_arr: [0; MAX_LINEAGE_DEPTH],
-			lineage_len: 0,
-		}
-	}
-
-	/// Create ancestry with a pre-existing lineage.
-	/// Panics if [owner](Ancestry::owner)/[repo](Ancestry::repo) str are too large or lineage exceeds [MAX_LINEAGE_DEPTH].
-	pub fn with_lineage(owner: &str, repo: &str, lineage: &[u64]) -> Self {
-		assert!(lineage.len() <= MAX_LINEAGE_DEPTH, "Issue nesting too deep (max {MAX_LINEAGE_DEPTH} levels)");
-		let mut lineage_arr = [0; MAX_LINEAGE_DEPTH];
-		lineage_arr[..lineage.len()].copy_from_slice(lineage);
-		Self {
-			repo_info: RepoInfo::new(owner, repo),
-			lineage_arr,
-			lineage_len: lineage.len() as u8,
-		}
-	}
-
-	/// Create ancestry for a child issue.
-	/// Panics if lineage would exceed MAX_LINEAGE_DEPTH.
-	pub fn child(&self, parent_number: u64) -> Self {
-		let new_len = self.lineage_len as usize + 1;
-		assert!(new_len <= MAX_LINEAGE_DEPTH, "Issue nesting too deep (max {MAX_LINEAGE_DEPTH} levels)");
-		let mut new_arr = self.lineage_arr;
-		new_arr[self.lineage_len as usize] = parent_number;
-		Self {
-			repo_info: self.repo_info,
-			lineage_arr: new_arr,
-			lineage_len: new_len as u8,
-		}
-	}
-
-	/// Get the lineage as a slice.
-	pub fn lineage(&self) -> &[u64] {
-		&self.lineage_arr[..self.lineage_len as usize]
-	}
-
-	/// Get the repository info.
-	pub fn repo_info(&self) -> RepoInfo {
-		self.repo_info
-	}
-
-	/// Get the owner.
-	pub fn owner(&self) -> &str {
-		self.repo_info.owner()
-	}
-
-	/// Get the repo.
-	pub fn repo(&self) -> &str {
-		self.repo_info.repo()
-	}
-}
 
 /// A comment in the issue conversation (first one is always the issue body)
 #[derive(Clone, Debug, PartialEq)]
@@ -849,25 +766,33 @@ impl Issue /*{{{1*/ {
 		self.identity.is_local()
 	}
 
-	/// Create an empty local issue with the given ancestry.
+	/// Create an empty local issue with the given parent_index.
 	/// Used for comparison when an issue doesn't exist yet.
-	pub fn empty_local(ancestry: Ancestry) -> Self {
+	///
+	/// `parent_index` should be:
+	/// - `IssueIndex::repo_only(owner, repo)` for root issues
+	/// - Parent's `IssueIndex` for child issues
+	pub fn empty_local(parent_index: IssueIndex) -> Self {
 		Self {
-			identity: IssueIdentity::local(ancestry),
+			identity: IssueIdentity::local(parent_index),
 			contents: IssueContents::default(),
 			children: vec![],
 		}
 	}
 
-	/// Create a new pending issue with the given title and ancestry.
+	/// Create a new pending issue with the given title and parent_index.
 	///
 	/// If `virtual_project` is true, creates a virtual issue (local-only, no Github sync).
 	/// Otherwise creates a pending Github issue that will be created on first sync.
-	pub fn pending_from_ancestry(title: impl Into<String>, ancestry: Ancestry, virtual_project: bool) -> Self {
+	///
+	/// `parent_index` should be:
+	/// - `IssueIndex::repo_only(owner, repo)` for root issues
+	/// - Parent's `IssueIndex` for child issues
+	pub fn pending_with_parent(title: impl Into<String>, parent_index: IssueIndex, virtual_project: bool) -> Self {
 		let identity = if virtual_project {
-			IssueIdentity::virtual_issue(ancestry)
+			IssueIdentity::virtual_issue(parent_index)
 		} else {
-			IssueIdentity::pending(ancestry)
+			IssueIdentity::pending(parent_index)
 		};
 		let contents = IssueContents {
 			title: title.into(),
@@ -880,29 +805,23 @@ impl Issue /*{{{1*/ {
 		}
 	}
 
-	/// Create a new pending issue from a MinIssueDescriptor.
+	/// Create a new pending issue from an IssueIndex descriptor.
 	/// The last element of descriptor.index() must be a Title selector.
 	///
 	/// If `virtual_project` is true, creates a virtual issue (local-only, no Github sync).
 	/// Otherwise creates a pending Github issue that will be created on first sync.
 	pub fn pending_from_descriptor(descriptor: &IssueIndex, virtual_project: bool) -> Self {
 		let index = descriptor.index();
-		let (title, parent_nums): (String, Vec<u64>) = match index.last() {
+		let (title, parent_selectors): (String, Vec<IssueSelector>) = match index.last() {
 			Some(IssueSelector::Title(t)) => {
-				let nums = index[..index.len() - 1]
-					.iter()
-					.filter_map(|s| match s {
-						IssueSelector::GitId(n) => Some(*n),
-						IssueSelector::Title(_) => None,
-					})
-					.collect();
-				(t.to_string(), nums)
+				let selectors = index[..index.len() - 1].to_vec();
+				(t.to_string(), selectors)
 			}
 			Some(IssueSelector::GitId(_)) => panic!("pending_from_descriptor requires last selector to be Title"),
 			None => panic!("pending_from_descriptor requires non-empty index"),
 		};
-		let ancestry = Ancestry::with_lineage(descriptor.owner(), descriptor.repo(), &parent_nums);
-		Self::pending_from_ancestry(title, ancestry, virtual_project)
+		let parent_index = IssueIndex::with_index(descriptor.owner(), descriptor.repo(), parent_selectors);
+		Self::pending_with_parent(title, parent_index, virtual_project)
 	}
 
 	/// Check if this issue is linked to Github.
@@ -947,9 +866,19 @@ impl Issue /*{{{1*/ {
 		}
 	}
 
-	/// Get ancestry (always available).
-	pub fn ancestry(&self) -> &Ancestry {
-		self.identity.ancestry()
+	/// Get parent_index (always available).
+	pub fn parent_index(&self) -> IssueIndex {
+		self.identity.parent_index
+	}
+
+	/// Get lineage (parent issue numbers).
+	pub fn lineage(&self) -> Vec<u64> {
+		self.identity.lineage()
+	}
+
+	/// Get repository info.
+	pub fn repo_info(&self) -> RepoInfo {
+		self.identity.repo_info()
 	}
 
 	/// Get the full issue body including blockers section.
@@ -961,21 +890,21 @@ impl Issue /*{{{1*/ {
 
 	/// Parse virtual representation (markdown with full tree) into an Issue.
 	///
-	/// For linked issues, ancestry is derived from the URL in the content.
-	/// For pending/virtual issues, `ancestry` must be provided or parsing will fail.
-	pub fn parse_virtual_with_ancestry(content: &str, path: &std::path::Path, ancestry: Ancestry) -> Result<Self, ParseError> {
+	/// For linked issues, parent_index is derived from the URL in the content.
+	/// For pending/virtual issues, `parent_index` must be provided or parsing will fail.
+	pub fn parse_virtual_with_parent(content: &str, path: &std::path::Path, parent_index: IssueIndex) -> Result<Self, ParseError> {
 		let ctx = ParseContext::new(content.to_string(), path.display().to_string());
 
 		let normalized = normalize_issue_indentation(content);
 		let mut lines = normalized.lines().peekable();
 
-		Self::parse_virtual_at_depth(&mut lines, 0, 1, &ctx, Some(&ancestry))
+		Self::parse_virtual_at_depth(&mut lines, 0, 1, &ctx, Some(parent_index))
 	}
 
 	/// Parse virtual representation (markdown with full tree) into an Issue.
 	///
-	/// For linked issues, ancestry is derived from the URL in the content.
-	/// For pending/virtual root issues, this will panic - use `parse_virtual_with_ancestry` instead.
+	/// For linked issues, parent_index is derived from the URL in the content.
+	/// For pending/virtual root issues, this will panic - use `parse_virtual_with_parent` instead.
 	pub fn parse_virtual(content: &str, path: &std::path::Path) -> Result<Self, ParseError> {
 		let ctx = ParseContext::new(content.to_string(), path.display().to_string());
 
@@ -986,13 +915,13 @@ impl Issue /*{{{1*/ {
 	}
 
 	/// Parse virtual representation at given nesting depth.
-	/// `parent_ancestry` is the ancestry of the parent issue (if any) - used to derive child ancestry.
+	/// `parent_index` is the parent's IssueIndex (for non-root), or None for root issues parsed from file.
 	fn parse_virtual_at_depth(
 		lines: &mut std::iter::Peekable<std::str::Lines>,
 		depth: usize,
 		line_num: usize,
 		ctx: &ParseContext,
-		parent_ancestry: Option<&Ancestry>,
+		parent_index: Option<IssueIndex>,
 	) -> Result<Self, ParseError> {
 		let indent = "\t".repeat(depth);
 		let child_indent = "\t".repeat(depth + 1);
@@ -1220,23 +1149,21 @@ impl Issue /*{{{1*/ {
 				}
 
 				// Recursively parse the child
-				// Build child's parent ancestry from this issue's identity info
-				let child_parent_ancestry = match &parsed.identity_info {
+				// Build child's parent_index from this issue's identity info
+				let child_parent_idx = match &parsed.identity_info {
 					ParsedIdentityInfo::Linked { link, .. } => {
-						// Parent is linked - child ancestry extends from it
-						let base_ancestry = parent_ancestry
-							.map(|a| a.child(link.number()))
-							.unwrap_or_else(|| Ancestry::root(link.owner(), link.repo()).child(link.number()));
-						Some(base_ancestry)
+						// Parent is linked - child's parent_index is this issue's full index
+						let base = parent_index.unwrap_or_else(|| IssueIndex::repo_only(link.owner(), link.repo()));
+						Some(base.child(IssueSelector::GitId(link.number())))
 					}
 					ParsedIdentityInfo::Pending | ParsedIdentityInfo::Virtual => {
-						// Local/virtual parent - pass through parent ancestry (Copy)
-						parent_ancestry.copied()
+						// Local/virtual parent - pass through parent_index
+						parent_index
 					}
 				};
 				let child_content = child_lines.join("\n");
 				let mut child_lines_iter = child_content.lines().peekable();
-				let child = Self::parse_virtual_at_depth(&mut child_lines_iter, 0, current_line, ctx, child_parent_ancestry.as_ref())?;
+				let child = Self::parse_virtual_at_depth(&mut child_lines_iter, 0, current_line, ctx, child_parent_idx)?;
 				children.push(child);
 				continue;
 			}
@@ -1268,24 +1195,20 @@ impl Issue /*{{{1*/ {
 		// Build identity from identity_info
 		let identity = match parsed.identity_info {
 			ParsedIdentityInfo::Linked { user, link } => {
-				// Linked issues get ancestry from the URL, optionally extended by parent
-				let ancestry = parent_ancestry.copied().unwrap_or_else(|| Ancestry::root(link.owner(), link.repo()));
+				// Linked issues: use parent_index if provided, otherwise derive from link
+				let pi = parent_index.unwrap_or_else(|| IssueIndex::repo_only(link.owner(), link.repo()));
 				// Timestamps will be loaded from .meta.json separately
-				IssueIdentity::linked(ancestry, user, link, IssueTimestamps::default())
+				IssueIdentity::linked(pi, user, link, IssueTimestamps::default())
 			}
 			ParsedIdentityInfo::Pending => {
-				// Pending issues require ancestry from parent/caller
-				let ancestry = parent_ancestry
-					.copied()
-					.expect("BUG: pending issue without ancestry. Use parse_virtual_with_ancestry for pending root issues.");
-				IssueIdentity::pending(ancestry)
+				// Pending issues require parent_index from caller
+				let pi = parent_index.expect("BUG: pending issue without parent_index. Use parse_virtual_with_parent for pending root issues.");
+				IssueIdentity::pending(pi)
 			}
 			ParsedIdentityInfo::Virtual => {
-				// Virtual issues require ancestry from parent/caller
-				let ancestry = parent_ancestry
-					.copied()
-					.expect("BUG: virtual issue without ancestry. Use parse_virtual_with_ancestry for virtual root issues.");
-				IssueIdentity::virtual_issue(ancestry)
+				// Virtual issues require parent_index from caller
+				let pi = parent_index.expect("BUG: virtual issue without parent_index. Use parse_virtual_with_parent for virtual root issues.");
+				IssueIdentity::virtual_issue(pi)
 			}
 		};
 
@@ -1696,14 +1619,14 @@ impl Issue /*{{{1*/ {
 
 	/// Update this issue from virtual format content.
 	///
-	/// This preserves identity information (timestamps, link, user, ancestry) while
+	/// This preserves identity information (timestamps, link, user, parent_index) while
 	/// updating the contents from the parsed virtual format. For children, existing
 	/// issues are matched by issue number and their identities are preserved.
 	///
 	/// Use this instead of `parse_virtual` when re-loading an issue after editor edits.
 	pub fn update_from_virtual(&mut self, content: &str, path: &std::path::Path) -> Result<(), ParseError> {
 		// Parse the new content
-		let parsed = Self::parse_virtual_with_ancestry(content, path, self.identity.ancestry)?;
+		let parsed = Self::parse_virtual_with_parent(content, path, self.identity.parent_index)?;
 
 		eprintln!("[update_from_virtual] parsed.contents.state: {:?}", parsed.contents.state);
 		eprintln!("[update_from_virtual] parsed {} children", parsed.children.len());
@@ -1837,8 +1760,8 @@ pub trait LazyIssue<S> {
 	/// Error type for operations on this source.
 	type Error: std::error::Error;
 
-	/// Resolve ancestry from the source.
-	async fn ancestry(source: &Self::Source) -> Result<Ancestry, Self::Error>;
+	/// Resolve parent_index from the source.
+	async fn parent_index(source: &Self::Source) -> Result<IssueIndex, Self::Error>;
 	async fn identity(&mut self, source: Self::Source) -> Result<IssueIdentity, Self::Error>;
 	async fn contents(&mut self, source: Self::Source) -> Result<IssueContents, Self::Error>;
 	async fn children(&mut self, source: Self::Source) -> Result<Vec<Issue>, Self::Error>;
@@ -1869,7 +1792,7 @@ enum ChildTitleParseResult {
 
 impl PartialEq for IssueIdentity {
 	fn eq(&self, other: &IssueIdentity) -> bool {
-		self.ancestry == other.ancestry
+		self.parent_index == other.parent_index
 	}
 }
 

@@ -42,7 +42,7 @@ use super::{
 /// Caller is responsible for loading the issue (via `LazyIssue<Local>::load`).
 #[tracing::instrument]
 pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Modifier, sync_opts: SyncOptions) -> Result<ModifyResult> {
-	let repo_info = issue.identity.ancestry.repo_info();
+	let repo_info = issue.identity.parent_index.repo_info();
 	let (owner, repo) = (repo_info.owner(), repo_info.repo());
 
 	// Ensure parent directories exist (converts flat files to directory format as needed)
@@ -58,9 +58,9 @@ pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Mo
 	let offline = offline || Local::is_virtual_project(repo_info);
 	let issue_number = issue.number().unwrap_or(0);
 
-	eprintln!("[after load] issue lineage: {:?}", issue.identity.ancestry.lineage());
+	eprintln!("[after load] issue lineage: {:?}", issue.identity.lineage());
 	for (i, c) in issue.children.iter().enumerate() {
-		eprintln!("[after load] child[{i}] lineage: {:?}", c.identity.ancestry.lineage());
+		eprintln!("[after load] child[{i}] lineage: {:?}", c.identity.lineage());
 	}
 
 	// Handle virtual issues - they don't sync
@@ -86,7 +86,7 @@ pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Mo
 				// Load remote
 				let url = format!("https://github.com/{owner}/{repo}/issues/{issue_number}");
 				let link = IssueLink::parse(&url).expect("valid URL");
-				let remote_source = RemoteSource::with_lineage(link, issue.identity.ancestry().lineage());
+				let remote_source = RemoteSource::with_lineage(link, &issue.identity.lineage());
 				let remote = <Issue as LazyIssue<Remote>>::load(remote_source).await?;
 
 				let mode = sync_opts.take_merge_mode();
@@ -110,9 +110,9 @@ pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Mo
 	}
 
 	// Save locally (Sink<Submitted> handles duplicate removal)
-	eprintln!("[save locally] issue lineage: {:?}", issue.identity.ancestry.lineage());
+	eprintln!("[save locally] issue lineage: {:?}", issue.identity.lineage());
 	for (i, c) in issue.children.iter().enumerate() {
-		eprintln!("[save locally] child[{i}] lineage: {:?}", c.identity.ancestry.lineage());
+		eprintln!("[save locally] child[{i}] lineage: {:?}", c.identity.lineage());
 	}
 	<Issue as Sink<Submitted>>::sink(&mut issue, None).await?;
 
@@ -128,7 +128,7 @@ pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Mo
 		// Load fresh remote state for sync
 		let url = format!("https://github.com/{owner}/{repo}/issues/{issue_number}");
 		let link = IssueLink::parse(&url).expect("valid URL");
-		let remote_source = RemoteSource::with_lineage(link, issue.identity.ancestry().lineage());
+		let remote_source = RemoteSource::with_lineage(link, &issue.identity.lineage());
 		let remote = <Issue as LazyIssue<Remote>>::load(remote_source).await?;
 
 		let consensus = load_consensus_issue(&issue_file_path).await?;
@@ -190,13 +190,13 @@ mod core {
 		let mut remote_merged = remote.clone();
 
 		eprintln!("[sync_issue] Before merge:");
-		eprintln!("  local lineage: {:?}", local.identity.ancestry.lineage());
-		eprintln!("  remote lineage: {:?}", remote.identity.ancestry.lineage());
+		eprintln!("  local lineage: {:?}", local.identity.lineage());
+		eprintln!("  remote lineage: {:?}", remote.identity.lineage());
 		for (i, c) in local.children.iter().enumerate() {
-			eprintln!("  local child[{i}] lineage: {:?}", c.identity.ancestry.lineage());
+			eprintln!("  local child[{i}] lineage: {:?}", c.identity.lineage());
 		}
 		for (i, c) in remote.children.iter().enumerate() {
-			eprintln!("  remote child[{i}] lineage: {:?}", c.identity.ancestry.lineage());
+			eprintln!("  remote child[{i}] lineage: {:?}", c.identity.lineage());
 		}
 
 		if let Some(ref consensus) = consensus {
@@ -205,9 +205,9 @@ mod core {
 		local_merged.merge(remote.clone(), force)?;
 
 		eprintln!("[sync_issue] After merge:");
-		eprintln!("  local_merged lineage: {:?}", local_merged.identity.ancestry.lineage());
+		eprintln!("  local_merged lineage: {:?}", local_merged.identity.lineage());
 		for (i, c) in local_merged.children.iter().enumerate() {
-			eprintln!("  local_merged child[{i}] lineage: {:?}", c.identity.ancestry.lineage());
+			eprintln!("  local_merged child[{i}] lineage: {:?}", c.identity.lineage());
 		}
 
 		if let Some(consensus) = consensus {
