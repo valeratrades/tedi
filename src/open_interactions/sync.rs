@@ -25,8 +25,8 @@ use std::path::Path;
 
 use color_eyre::eyre::{Result, bail};
 use tedi::{
-	CloseState, Issue, IssueLink, LazyIssue,
-	local::{Local, LocalPath, Submitted},
+	Issue, IssueLink, LazyIssue,
+	local::{Local, Submitted},
 	sink::Sink,
 };
 
@@ -42,7 +42,8 @@ use super::{
 /// Caller is responsible for loading the issue (via `LazyIssue<Local>::load`).
 #[tracing::instrument]
 pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Modifier, sync_opts: SyncOptions) -> Result<ModifyResult> {
-	let issue_file_path = Local::issue_file_path(&issue)?;
+	// Use ensure_issue_file_path which creates parent directories if needed (for pending sub-issues)
+	let issue_file_path = Local::ensure_issue_file_path(&issue)?;
 	let repo_info = issue.identity.ancestry.repo_info();
 	let (owner, repo) = (repo_info.owner(), repo_info.repo()); //HACK: feels redundant
 

@@ -56,7 +56,6 @@ pub fn parse_touch_path(user_input: &str) -> Result<TouchPathResult> {
 	let owner_rgx = segments[0];
 	let repo_rgx = segments[1];
 	let lineage_rgxs = &segments[2..];
-	let title = strip_md_extension(lineage_rgxs.last().unwrap());
 
 	let mut actual_path = Local::issues_dir();
 

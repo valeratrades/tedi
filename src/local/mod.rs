@@ -120,6 +120,7 @@ pub struct Submitted;
 pub struct Consensus;
 
 /// Source for loading issues from local storage.
+#[deprecated(note = "has faulty assumption that issue has a stable path. It doesn't, - we can them when CloseState changes or when children are attached")]
 #[derive(Clone, Debug, derive_more::Deref)]
 pub struct LocalPath {
 	#[deref]
@@ -425,6 +426,67 @@ impl Local {
 		for dir_name in &ancestor_dir_names {
 			path = path.join(dir_name);
 		}
+		let filename = Self::format_issue_filename(issue.number(), &issue.contents.title, closed);
+		Ok(path.join(filename))
+	}
+
+	/// Get the file path for an issue, creating parent directories as needed.
+	///
+	/// Unlike `issue_file_path`, this method will convert flat-file parents to directory format
+	/// if needed to accommodate a sub-issue. Use this when you need to write to a path that
+	/// may not exist yet (e.g., for pending sub-issues).
+	///
+	/// # Returns
+	/// The path where the issue file should be written.
+	#[deprecated(note = "a hack to plug a whole in the current logic coming from assuming that `Issue`s have constant paths. To be refactored out.")]
+	pub fn ensure_issue_file_path(issue: &Issue) -> Result<PathBuf> {
+		let ancestry = &issue.identity.ancestry;
+		let owner = ancestry.owner();
+		let repo = ancestry.repo();
+		let closed = issue.contents.state.is_closed();
+
+		let mut path = Self::project_dir(owner, repo);
+		if !path.exists() {
+			bail!("Project directory does not exist: {}", path.display());
+		}
+
+		let mut ancestor_dir_names = Vec::with_capacity(ancestry.lineage().len());
+
+		// For each parent in lineage, find and ensure it's a directory
+		for &issue_number in ancestry.lineage() {
+			let dir_name = Self::find_issue_dir_name_by_number(&path, issue_number)
+				.ok_or_else(|| eyre!("Parent issue #{issue_number} not found locally in {}. Fetch the parent issue first.", path.display()))?;
+
+			let parent_dir_path = path.join(&dir_name);
+
+			// If parent exists as flat file, convert to directory
+			if !parent_dir_path.is_dir() {
+				let flat_open = path.join(format!("{dir_name}.md"));
+				let flat_closed = path.join(format!("{dir_name}.md.bak"));
+
+				std::fs::create_dir_all(&parent_dir_path)?;
+
+				// Move flat file to __main__.md inside the directory
+				if flat_closed.exists() {
+					let main_path = Self::main_file_path(&parent_dir_path, true);
+					std::fs::rename(&flat_closed, &main_path)?;
+				} else if flat_open.exists() {
+					let main_path = Self::main_file_path(&parent_dir_path, false);
+					std::fs::rename(&flat_open, &main_path)?;
+				}
+			}
+
+			path = parent_dir_path;
+			ancestor_dir_names.push(dir_name);
+		}
+
+		// Check if issue exists in directory format on disk
+		let issue_dir = Self::issue_dir_path_from_dir_names(owner, repo, issue.number(), &issue.contents.title, &ancestor_dir_names);
+		if issue_dir.is_dir() {
+			return Ok(Self::main_file_path(&issue_dir, closed));
+		}
+
+		// Flat file format
 		let filename = Self::format_issue_filename(issue.number(), &issue.contents.title, closed);
 		Ok(path.join(filename))
 	}
