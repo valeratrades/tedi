@@ -1319,6 +1319,9 @@ pub struct IssueMeta {
 	#[serde(default)]
 	pub timestamps: crate::IssueTimestamps,
 }
+/// Marker type for loading from consensus (git HEAD).
+/// Note: This is different from `impl_sink::Consensus` which is for writing.
+pub enum LocalConsensus {}
 mod impl_sink;
 
 use std::path::{Path, PathBuf};
@@ -1488,10 +1491,6 @@ impl crate::LazyIssue<Local> for Issue {
 //==============================================================================
 // LazyIssue Implementation for LocalIssueSource<GitReader> (Consensus loading)
 //==============================================================================
-
-/// Marker type for loading from consensus (git HEAD).
-/// Note: This is different from `impl_sink::Consensus` which is for writing.
-pub enum LocalConsensus {}
 
 impl crate::LazyIssue<LocalConsensus> for Issue {
 	type Error = LocalError;

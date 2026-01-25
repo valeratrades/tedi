@@ -14,6 +14,10 @@ use v_utils::prelude::*;
 use super::{ConsensusSinkError, IssueMeta, Local, LocalPath};
 use crate::{Issue, IssueIndex, IssueSelector, sink::Sink};
 
+/// Marker type for sinking to filesystem (submitted state).
+pub struct Submitted;
+/// Marker type for sinking to git (consensus state).
+pub struct Consensus;
 /// Remove a file, ignoring NotFound errors (file may not exist).
 /// Propagates other errors (permission denied, etc.).
 fn try_remove_file(path: &Path) -> Result<()> {
@@ -23,12 +27,6 @@ fn try_remove_file(path: &Path) -> Result<()> {
 		Err(e) => Err(e.into()),
 	}
 }
-
-/// Marker type for sinking to filesystem (submitted state).
-pub struct Submitted;
-
-/// Marker type for sinking to git (consensus state).
-pub struct Consensus;
 
 //TODO: @claude: create proper error type for Submitted sink (see ConsensusSinkError for reference)
 /// r[local.sink-only-mutation]

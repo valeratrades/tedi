@@ -14,7 +14,7 @@ pub enum TouchPathResult {
 	/// Found an existing issue file on disk.
 	Exists(PathBuf),
 	/// Issue doesn't exist, descriptor for creation.
-	Create(IssueIndex),
+	Create(Box<IssueIndex>),
 }
 
 /// Resolve a TouchPathResult to an Issue.
@@ -103,7 +103,7 @@ pub fn parse_touch_path(user_input: &str) -> Result<TouchPathResult> {
 					index.push(IssueSelector::GitId(parent_num));
 					let child_title = strip_md_extension(lineage_rgxs[i + 1]);
 					index.push(IssueSelector::title(child_title));
-					return Ok(TouchPathResult::Create(IssueIndex::with_index(&owner, &repo, index)));
+					return Ok(TouchPathResult::Create(Box::new(IssueIndex::with_index(&owner, &repo, index))));
 				}
 
 				matched_lineage.push(matched);
@@ -113,7 +113,7 @@ pub fn parse_touch_path(user_input: &str) -> Result<TouchPathResult> {
 				// No match - this is a create request
 				let mut index: Vec<IssueSelector> = matched_lineage.iter().filter_map(|s| extract_issue_number(s).map(IssueSelector::GitId)).collect();
 				index.push(IssueSelector::title(pattern));
-				return Ok(TouchPathResult::Create(IssueIndex::with_index(&owner, &repo, index)));
+				return Ok(TouchPathResult::Create(Box::new(IssueIndex::with_index(&owner, &repo, index))));
 			}
 			MatchOrNone::Ambiguous(matches) => {
 				let desc = if is_last { "issue" } else { "parent issue" };
