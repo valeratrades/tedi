@@ -4087,9 +4087,9 @@ dependencies = [
 
 [[package]]
 name = "v_utils"
-version = "2.15.21"
+version = "2.15.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1161069e560255905490ec5d32e5c92b6e0982338a814f5e182be554b7c2e593"
+checksum = "d5bda2c1067b0c5bdf9175fb0c1f99653d1a7ba5f6125bb3c08b433357485ca2"
 dependencies = [
  "config",
  "const_format",
@@ -4120,9 +4120,9 @@ dependencies = [
 
 [[package]]
 name = "v_utils_macros"
-version = "2.11.21"
+version = "2.11.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "34ab30325ced675074d450be537268f35f755c7272a43ddf03431f5a0215fbbe"
+checksum = "653dae1282ff3a12d82f30531707cdae7a800e4a1d755d973ad861cbb40c8b08"
 dependencies = [
  "eyre",
  "heck",
@@ -4738,18 +4738,18 @@ dependencies = [
 
 [[package]]
 name = "zerocopy"
-version = "0.8.33"
+version = "0.8.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "668f5168d10b9ee831de31933dc111a459c97ec93225beb307aed970d1372dfd"
+checksum = "71ddd76bcebeed25db614f82bf31a9f4222d3fbba300e6fb6c00afa26cbd4d9d"
 dependencies = [
  "zerocopy-derive",
 ]
 
 [[package]]
 name = "zerocopy-derive"
-version = "0.8.33"
+version = "0.8.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2c7962b26b0a8685668b671ee4b54d007a67d4eaf05fda79ac0ecf41e32270f1"
+checksum = "d8187381b52e32220d50b255276aa16a084ec0a9017a0ca2152a1f55c539758d"
 dependencies = [
  "proc-macro2",
  "quote",
