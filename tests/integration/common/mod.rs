@@ -19,26 +19,6 @@
 //! ```
 
 pub mod git;
-mod snapshot;
-
-use std::{
-	io::Write,
-	path::{Path, PathBuf},
-	process::{Command, ExitStatus},
-	sync::OnceLock,
-};
-
-pub use snapshot::{snapshot_issues_dir, snapshot_issues_dir_redacting};
-use tedi::Issue;
-use v_fixtures::{Fixture, fs_standards::xdg::Xdg};
-
-/// Environment variable names derived from package name
-const ENV_GITHUB_TOKEN: &str = concat!(env!("CARGO_PKG_NAME"), "__GITHUB_TOKEN");
-const ENV_MOCK_STATE: &str = concat!(env!("CARGO_PKG_NAME"), "_MOCK_STATE");
-const ENV_MOCK_PIPE: &str = concat!(env!("CARGO_PKG_NAME"), "_MOCK_PIPE");
-
-static BINARY_COMPILED: OnceLock<()> = OnceLock::new();
-
 /// Compile the binary before running any tests
 pub fn ensure_binary_compiled() {
 	BINARY_COMPILED.get_or_init(|| {
@@ -49,17 +29,6 @@ pub fn ensure_binary_compiled() {
 		}
 	});
 }
-
-fn get_binary_path() -> PathBuf {
-	ensure_binary_compiled();
-
-	let mut path = std::env::current_exe().unwrap();
-	path.pop(); // Remove test binary name
-	path.pop(); // Remove 'deps'
-	path.push(env!("CARGO_PKG_NAME"));
-	path
-}
-
 /// Unified test context for integration tests.
 ///
 /// Combines functionality from the old `TodoTestContext` and `SyncTestContext`.
@@ -72,7 +41,6 @@ pub struct TestContext {
 	/// Path to named pipe for editor simulation (for sync tests)
 	pub pipe_path: PathBuf,
 }
-
 impl TestContext {
 	/// Create a new test context from a fixture string.
 	///
@@ -185,21 +153,12 @@ impl TestContext {
 	/// Create an OpenUrlBuilder for running the `open` command with a Github URL.
 	pub fn open_url(&self, owner: &str, repo: &str, number: u64) -> OpenUrlBuilder<'_> {
 		let url = format!("https://github.com/{owner}/{repo}/issues/{number}");
-		OpenUrlBuilder {
-			ctx: self,
-			url,
-			extra_args: Vec::new(),
-			edit_op: None,
-		}
+		OpenUrlBuilder::with_url(self, url)
 	}
 
-	/// Create a TouchBuilder for running the `open --touch` command.
-	pub fn touch(&self, pattern: &str) -> TouchBuilder<'_> {
-		TouchBuilder {
-			ctx: self,
-			pattern: pattern.to_string(),
-			edit_op: None,
-		}
+	/// Create an OpenUrlBuilder for running the `open --touch` command.
+	pub fn touch(&self, pattern: &str) -> OpenUrlBuilder<'_> {
+		OpenUrlBuilder::with_touch(self, pattern.to_string())
 	}
 }
 
@@ -260,7 +219,9 @@ impl<'a> OpenBuilder<'a> {
 						// Edit the file while "editor is open" if requested
 						// Use serialize_virtual since that's what the user sees/edits (full tree with children)
 						if let Some(issue) = &edit_to {
-							std::fs::write(&issue_path, issue.serialize_virtual()).unwrap();
+							let content = issue.serialize_virtual();
+							eprintln!("[test:OpenBuilder] submitting user input // writing to {issue_path:?}:\n{content}");
+							std::fs::write(&issue_path, content).unwrap();
 						}
 
 						// Try to signal the pipe (use nix O_NONBLOCK to avoid blocking)
@@ -290,26 +251,34 @@ impl<'a> OpenBuilder<'a> {
 	}
 }
 
-/// Type of edit operation for the builder.
-#[derive(Clone)]
-enum EditOperation {
-	/// Edit using a full Issue (writes serialize_virtual)
-	FullIssue(Issue),
-	/// Edit just the contents/body (preserves header, replaces body)
-	ContentsOnly(String),
-	/// Edit the source file directly (unsafe, for testing filesystem behavior)
-	SourceFile(PathBuf, Issue),
-}
-
-/// Builder for running the `open` command with a URL (remote source).
+/// Builder for running the `open` command with a URL or touch pattern.
 pub struct OpenUrlBuilder<'a> {
 	ctx: &'a TestContext,
-	url: String,
+	target: OpenTarget,
 	extra_args: Vec<&'a str>,
 	edit_op: Option<EditOperation>,
 }
-
 impl<'a> OpenUrlBuilder<'a> {
+	/// Create a builder for opening by URL.
+	fn with_url(ctx: &'a TestContext, url: String) -> Self {
+		Self {
+			ctx,
+			target: OpenTarget::Url(url),
+			extra_args: Vec::new(),
+			edit_op: None,
+		}
+	}
+
+	/// Create a builder for opening by touch pattern.
+	fn with_touch(ctx: &'a TestContext, pattern: String) -> Self {
+		Self {
+			ctx,
+			target: OpenTarget::Touch(pattern),
+			extra_args: Vec::new(),
+			edit_op: None,
+		}
+	}
+
 	/// Add extra CLI arguments.
 	pub fn args(mut self, args: &[&'a str]) -> Self {
 		self.extra_args.extend(args);
@@ -348,7 +317,16 @@ impl<'a> OpenUrlBuilder<'a> {
 		let mut cmd = Command::new(get_binary_path());
 		cmd.arg("--mock").arg("open");
 		cmd.args(&self.extra_args);
-		cmd.arg(&self.url);
+
+		match &self.target {
+			OpenTarget::Url(url) => {
+				cmd.arg(url);
+			}
+			OpenTarget::Touch(pattern) => {
+				cmd.arg("--touch").arg(pattern);
+			}
+		}
+
 		cmd.env("__IS_INTEGRATION_TEST", "1");
 		cmd.env(ENV_GITHUB_TOKEN, "test_token");
 		for (key, value) in self.ctx.xdg.env_vars() {
@@ -426,6 +404,56 @@ impl<'a> OpenUrlBuilder<'a> {
 	}
 }
 
+mod snapshot;
+
+use std::{
+	io::Write,
+	path::{Path, PathBuf},
+	process::{Command, ExitStatus},
+	sync::OnceLock,
+};
+
+pub use snapshot::FixtureIssuesExt;
+use tedi::Issue;
+use v_fixtures::{Fixture, fs_standards::xdg::Xdg};
+
+/// Environment variable names derived from package name
+const ENV_GITHUB_TOKEN: &str = concat!(env!("CARGO_PKG_NAME"), "__GITHUB_TOKEN");
+const ENV_MOCK_STATE: &str = concat!(env!("CARGO_PKG_NAME"), "_MOCK_STATE");
+const ENV_MOCK_PIPE: &str = concat!(env!("CARGO_PKG_NAME"), "_MOCK_PIPE");
+
+static BINARY_COMPILED: OnceLock<()> = OnceLock::new();
+
+fn get_binary_path() -> PathBuf {
+	ensure_binary_compiled();
+
+	let mut path = std::env::current_exe().unwrap();
+	path.pop(); // Remove test binary name
+	path.pop(); // Remove 'deps'
+	path.push(env!("CARGO_PKG_NAME"));
+	path
+}
+
+/// Type of edit operation for the builder.
+#[derive(Clone)]
+enum EditOperation {
+	/// Edit using a full Issue (writes serialize_virtual)
+	FullIssue(Issue),
+	/// Edit just the contents/body (preserves header, replaces body)
+	ContentsOnly(String),
+	/// Edit the source file directly (unsafe, for testing filesystem behavior)
+	SourceFile(PathBuf, Issue),
+}
+
+/// The target for opening an issue (URL or touch pattern).
+#[derive(Clone)]
+enum OpenTarget {
+	/// Open by Github URL
+	Url(String),
+	/// Open by touch pattern (--touch flag)
+	Touch(String),
+}
+
 /// Find the most recently modified .md file under the virtual edit base path.
 fn find_virtual_edit_file(base: &Path) -> Option<PathBuf> {
 	if !base.exists() {
@@ -440,14 +468,12 @@ fn find_virtual_edit_file(base: &Path) -> Option<PathBuf> {
 				let path = entry.path();
 				if path.is_dir() {
 					walk(&path, best);
-				} else if path.extension().is_some_and(|e| e == "md") {
-					if let Ok(meta) = path.metadata() {
-						if let Ok(mtime) = meta.modified() {
-							if best.as_ref().map(|(_, t)| mtime > *t).unwrap_or(true) {
-								*best = Some((path, mtime));
-							}
-						}
-					}
+				} else if path.extension().is_some_and(|e| e == "md")
+					&& let Ok(meta) = path.metadata()
+					&& let Ok(mtime) = meta.modified()
+					&& best.as_ref().map(|(_, t)| mtime > *t).unwrap_or(true)
+				{
+					*best = Some((path, mtime));
 				}
 			}
 		}
@@ -463,7 +489,7 @@ fn replace_issue_body(content: &str, new_body: &str) -> String {
 	let mut lines = content.lines();
 
 	// Keep the title line
-	let title_line = lines.next().unwrap_or("");
+	let title_line = lines.next().expect("content should not be empty");
 
 	// Build new content: title line + indented new body
 	let mut result = String::from(title_line);
@@ -481,117 +507,4 @@ fn replace_issue_body(content: &str, new_body: &str) -> String {
 	}
 
 	result
-}
-
-/// Builder for running the `open --touch` command.
-pub struct TouchBuilder<'a> {
-	ctx: &'a TestContext,
-	pattern: String,
-	edit_op: Option<EditOperation>,
-}
-
-impl<'a> TouchBuilder<'a> {
-	/// Operates on the issue that is opened for the user in virtual format.
-	/// Sets the virtual serialization of the provided issue over the temp file.
-	/// The issue's identity determines the virtual edit path.
-	pub fn edit(mut self, issue: &Issue) -> Self {
-		self.edit_op = Some(EditOperation::FullIssue(issue.clone()));
-		self
-	}
-
-	/// Operates on the issue that is opened for the user in virtual format in a temp file.
-	/// Updates its **contents** (body) to the provided String and submits.
-	/// NB: don't submit the issue header at the top - just contents without any indentation.
-	pub fn edit_contents<T: AsRef<str>>(mut self, new_issue_body: T) -> Self {
-		self.edit_op = Some(EditOperation::ContentsOnly(new_issue_body.as_ref().to_string()));
-		self
-	}
-
-	/// Edit the file at the specified path while "editor is open".
-	/// NB: be very careful when using - the proper interface for submitting generic user-like edits
-	/// is [edit](Self::edit) or [edit_contents](Self::edit_contents). Operating on the filesystem
-	/// directly is ill-advised and should only be used in tests that specifically want to see
-	/// reaction to underlying filesystem changes.
-	pub fn unsafe_edit_source_file(mut self, path: &Path, issue: &tedi::Issue) -> Self {
-		self.edit_op = Some(EditOperation::SourceFile(path.to_path_buf(), issue.clone()));
-		self
-	}
-
-	/// Run the command and return (exit_status, stdout, stderr).
-	pub fn run(self) -> (ExitStatus, String, String) {
-		let mut cmd = Command::new(get_binary_path());
-		cmd.arg("--mock").arg("open").arg("--touch").arg(&self.pattern);
-		cmd.env("__IS_INTEGRATION_TEST", "1");
-		cmd.env(ENV_GITHUB_TOKEN, "test_token");
-		for (key, value) in self.ctx.xdg.env_vars() {
-			cmd.env(key, value);
-		}
-		cmd.env(ENV_MOCK_STATE, &self.ctx.mock_state_path);
-		cmd.env(ENV_MOCK_PIPE, &self.ctx.pipe_path);
-		cmd.stdout(std::process::Stdio::piped());
-		cmd.stderr(std::process::Stdio::piped());
-
-		let mut child = cmd.spawn().unwrap();
-
-		// Poll for process completion, signaling pipe when it's waiting
-		let pipe_path = self.ctx.pipe_path.clone();
-		let edit_op = self.edit_op.clone();
-		let mut signaled = false;
-
-		loop {
-			match child.try_wait().unwrap() {
-				Some(_status) => break,
-				None => {
-					if !signaled {
-						std::thread::sleep(std::time::Duration::from_millis(100));
-
-						// Edit the file while "editor is open" if requested
-						match &edit_op {
-							Some(EditOperation::FullIssue(issue)) => {
-								// Write to the virtual edit path computed from the issue
-								let vpath = tedi::local::Local::virtual_edit_path(issue);
-								if let Some(parent) = vpath.parent() {
-									std::fs::create_dir_all(parent).unwrap();
-								}
-								std::fs::write(&vpath, issue.serialize_virtual()).unwrap();
-							}
-							Some(EditOperation::ContentsOnly(new_body)) => {
-								// Find the virtual edit file, read it, replace body, write back
-								let virtual_edit_base = PathBuf::from("/tmp").join(env!("CARGO_PKG_NAME"));
-								if let Some(vpath) = find_virtual_edit_file(&virtual_edit_base) {
-									let content = std::fs::read_to_string(&vpath).unwrap();
-									let new_content = replace_issue_body(&content, new_body);
-									std::fs::write(&vpath, new_content).unwrap();
-								}
-							}
-							Some(EditOperation::SourceFile(path, issue)) => {
-								// Write directly to the source file (unsafe mode)
-								std::fs::write(path, issue.serialize_virtual()).unwrap();
-							}
-							None => {}
-						}
-
-						// Try to signal the pipe
-						#[cfg(unix)]
-						{
-							use std::os::unix::fs::OpenOptionsExt;
-							if let Ok(mut pipe) = std::fs::OpenOptions::new().write(true).custom_flags(0x800).open(&pipe_path)
-								&& pipe.write_all(b"x").is_ok()
-							{
-								signaled = true;
-							}
-						}
-					}
-					std::thread::sleep(std::time::Duration::from_millis(10));
-				}
-			}
-		}
-
-		let output = child.wait_with_output().unwrap();
-		(
-			output.status,
-			String::from_utf8_lossy(&output.stdout).into_owned(),
-			String::from_utf8_lossy(&output.stderr).into_owned(),
-		)
-	}
 }

@@ -3,14 +3,13 @@
 //! Tests that nested issues, blockers, and other content survive the
 //! parse -> edit -> serialize -> sync cycle intact.
 
-use std::path::Path;
-
 use tedi::Issue;
+use v_fixtures::FixtureRenderer;
 
-use crate::common::{TestContext, git::GitExt};
+use crate::common::{FixtureIssuesExt, TestContext, git::GitExt};
 
 fn parse(content: &str) -> Issue {
-	Issue::parse_virtual(content, Path::new("test.md")).expect("failed to parse test issue")
+	Issue::deserialize_virtual(content).expect("failed to parse test issue")
 }
 
 #[test]
@@ -268,6 +267,40 @@ fn test_closing_nested_issue_creates_bak_file() {
 	for entry in walkdir::WalkDir::new(&issues_dir).into_iter().filter_map(|e| e.ok()) {
 		eprintln!("  {}", entry.path().display());
 	}
+
+	insta::assert_snapshot!(FixtureRenderer::try_new(&ctx).unwrap().redact_timestamps(&[20]).render(), @r#"
+	//- /o/r/.meta.json
+	{
+	  "virtual_project": false,
+	  "next_virtual_issue_number": 0,
+	  "issues": {
+	    "1": {
+	      "timestamps": {
+	        "title": null,
+	        "description": null,
+	        "labels": null,
+	        "state": null,
+	        "comments": []
+	      }
+	    },
+	    "2": {
+	      "timestamps": {
+	        "title": null,
+	        "description": null,
+	        "labels": null,
+	        [REDACTED - non-deterministic timestamp]
+	        "comments": []
+	      }
+	    }
+	  }
+	}
+	//- /o/r/1_-_a/2_-_b.md.bak
+	- [x] b <!-- @mock_user https://github.com/o/r/issues/2 -->
+			nested body content
+	//- /o/r/1_-_a/__main__.md
+	- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->
+			lorem ipsum
+	"#);
 
 	assert!(status.success(), "stderr: {stderr}");
 

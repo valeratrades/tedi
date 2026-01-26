@@ -20,99 +20,6 @@ use crate::{
 	open_interactions::local::Local,
 };
 
-/// Scan the project directory for the maximum issue number in filenames.
-/// Looks at files/dirs matching pattern `{number}_-_*` or just `{number}`.
-fn scan_max_issue_number(owner: &str, repo: &str) -> u64 {
-	fn scan_dir(path: &std::path::Path, max: &mut u64) {
-		let Ok(entries) = std::fs::read_dir(path) else {
-			return;
-		};
-		for entry in entries.flatten() {
-			let name = entry.file_name();
-			let name_str = name.to_string_lossy();
-
-			// Skip hidden files and special files
-			if name_str.starts_with('.') {
-				continue;
-			}
-
-			// Extract issue number from name: either "{number}_-_..." or just "{number}"
-			let number_part = if let Some(sep_pos) = name_str.find("_-_") {
-				&name_str[..sep_pos]
-			} else {
-				// Strip .md or .md.bak extension if present
-				name_str.strip_suffix(".md.bak").or_else(|| name_str.strip_suffix(".md")).unwrap_or(&name_str)
-			};
-
-			if let Ok(num) = number_part.parse::<u64>() {
-				*max = (*max).max(num);
-			}
-
-			// Recurse into directories
-			let entry_path = entry.path();
-			if entry_path.is_dir() {
-				scan_dir(&entry_path, max);
-			}
-		}
-	}
-
-	let project_dir = Local::project_dir(owner, repo);
-	let mut max = 0u64;
-	scan_dir(&project_dir, &mut max);
-	max
-}
-
-/// Environment variable name for mock state file (integration tests)
-const ENV_MOCK_STATE: &str = concat!(env!("CARGO_PKG_NAME"), "_MOCK_STATE");
-
-/// Internal representation of an issue in the mock
-#[derive(Clone, Debug)]
-struct MockIssueData {
-	number: u64,
-	id: u64,
-	title: String,
-	body: String,
-	state: String,
-	state_reason: Option<String>,
-	labels: Vec<String>,
-	owner_login: String,
-	/// Timestamp for title changes
-	title_timestamp: Option<jiff::Timestamp>,
-	/// Timestamp for description/body changes
-	description_timestamp: Option<jiff::Timestamp>,
-	/// Timestamp for label changes
-	labels_timestamp: Option<jiff::Timestamp>,
-	/// Timestamp for state changes (open/closed)
-	state_timestamp: Option<jiff::Timestamp>,
-}
-
-/// Internal representation of a comment in the mock
-#[derive(Clone, Debug)]
-struct MockCommentData {
-	id: u64,
-	issue_number: u64,
-	body: String,
-	owner_login: String,
-	created_at: String,
-	updated_at: String,
-}
-
-/// Key for looking up issues/comments by owner/repo
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-struct RepoKey {
-	owner: String,
-	repo: String,
-}
-
-impl RepoKey {
-	fn new(owner: &str, repo: &str) -> Self {
-		Self {
-			owner: owner.to_string(),
-			repo: repo.to_string(),
-		}
-	}
-}
-
 /// Mock Github client that stores all state in memory.
 /// Thread-safe for use in async contexts.
 pub struct MockGithubClient {
@@ -137,7 +44,6 @@ pub struct MockGithubClient {
 	/// Call log for debugging
 	call_log: Mutex<Vec<String>>,
 }
-
 impl MockGithubClient {
 	/// Create a new mock client with the given authenticated user login
 	pub fn new(user_login: &str) -> Self {
@@ -362,7 +268,6 @@ impl MockGithubClient {
 
 	fn convert_issue_data(&self, data: &MockIssueData) -> GithubIssue {
 		GithubIssue {
-			id: data.number * 1000, // Mock ID based on number
 			number: data.number,
 			title: data.title.clone(),
 			body: if data.body.is_empty() { None } else { Some(data.body.clone()) },
@@ -370,7 +275,99 @@ impl MockGithubClient {
 			user: GithubUser { login: data.owner_login.clone() },
 			state: data.state.clone(),
 			state_reason: data.state_reason.clone(),
-			_updated_at: "2024-01-15T12:00:00Z".to_string(), // Mock timestamp
+		}
+	}
+}
+
+/// Scan the project directory for the maximum issue number in filenames.
+/// Looks at files/dirs matching pattern `{number}_-_*` or just `{number}`.
+fn scan_max_issue_number(owner: &str, repo: &str) -> u64 {
+	fn scan_dir(path: &std::path::Path, max: &mut u64) {
+		let Ok(entries) = std::fs::read_dir(path) else {
+			return;
+		};
+		for entry in entries.flatten() {
+			let name = entry.file_name();
+			let name_str = name.to_string_lossy();
+
+			// Skip hidden files and special files
+			if name_str.starts_with('.') {
+				continue;
+			}
+
+			// Extract issue number from name: either "{number}_-_..." or just "{number}"
+			let number_part = if let Some(sep_pos) = name_str.find("_-_") {
+				&name_str[..sep_pos]
+			} else {
+				// Strip .md or .md.bak extension if present
+				name_str.strip_suffix(".md.bak").or_else(|| name_str.strip_suffix(".md")).unwrap_or(&name_str)
+			};
+
+			if let Ok(num) = number_part.parse::<u64>() {
+				*max = (*max).max(num);
+			}
+
+			// Recurse into directories
+			let entry_path = entry.path();
+			if entry_path.is_dir() {
+				scan_dir(&entry_path, max);
+			}
+		}
+	}
+
+	let project_dir = Local::project_dir(owner, repo);
+	let mut max = 0u64;
+	scan_dir(&project_dir, &mut max);
+	max
+}
+
+/// Environment variable name for mock state file (integration tests)
+const ENV_MOCK_STATE: &str = concat!(env!("CARGO_PKG_NAME"), "_MOCK_STATE");
+
+/// Internal representation of an issue in the mock
+#[derive(Clone, Debug)]
+struct MockIssueData {
+	number: u64,
+	id: u64,
+	title: String,
+	body: String,
+	state: String,
+	state_reason: Option<String>,
+	labels: Vec<String>,
+	owner_login: String,
+	/// Timestamp for title changes
+	title_timestamp: Option<jiff::Timestamp>,
+	/// Timestamp for description/body changes
+	description_timestamp: Option<jiff::Timestamp>,
+	/// Timestamp for label changes
+	labels_timestamp: Option<jiff::Timestamp>,
+	/// Timestamp for state changes (open/closed)
+	state_timestamp: Option<jiff::Timestamp>,
+}
+
+/// Internal representation of a comment in the mock
+#[derive(Clone, Debug)]
+struct MockCommentData {
+	id: u64,
+	issue_number: u64,
+	body: String,
+	owner_login: String,
+	created_at: String,
+	updated_at: String,
+}
+
+/// Key for looking up issues/comments by owner/repo
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct RepoKey {
+	owner: String,
+	repo: String,
+}
+
+impl RepoKey {
+	fn new(owner: &str, repo: &str) -> Self {
+		Self {
+			owner: owner.to_string(),
+			repo: repo.to_string(),
 		}
 	}
 }
@@ -753,7 +750,7 @@ mod tests {
 
 		// Fetch sub-issues
 		let sub_issues = client.fetch_sub_issues(repo, 1).await.unwrap();
-		assert_debug_snapshot!(format!("{sub_issues:?}"), @r#""[GithubIssue { id: 2000, number: 2, title: \"Child Issue\", body: None, labels: [], user: GithubUser { login: \"testuser\" }, state: \"open\", state_reason: None, _updated_at: \"2024-01-15T12:00:00Z\" }]""#);
+		assert_debug_snapshot!(format!("{sub_issues:?}"), @r#""[GithubIssue { number: 2, title: \"Child Issue\", body: None, labels: [], user: GithubUser { login: \"testuser\" }, state: \"open\", state_reason: None }]""#);
 	}
 
 	#[tokio::test]

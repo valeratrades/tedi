@@ -188,16 +188,16 @@ pub trait Sink<S> {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::{Ancestry, BlockerSequence, CloseState, Events, IssueContents, IssueIdentity, IssueLink, IssueTimestamps};
+	use crate::{BlockerSequence, CloseState, Events, IssueContents, IssueIdentity, IssueIndex, IssueLink, IssueTimestamps};
 
 	fn make_issue(title: &str, number: Option<u64>) -> Issue {
-		let ancestry = Ancestry::root("o", "r");
+		let parent_index = IssueIndex::repo_only("o", "r");
 		let identity = match number {
 			Some(n) => {
 				let link = IssueLink::parse(&format!("https://github.com/o/r/issues/{n}")).unwrap();
-				IssueIdentity::linked(ancestry, "testuser".to_string(), link, IssueTimestamps::default())
+				IssueIdentity::linked(parent_index, "testuser".to_string(), link, IssueTimestamps::default())
 			}
-			None => IssueIdentity::local(ancestry),
+			None => IssueIdentity::local(parent_index),
 		};
 
 		Issue {

@@ -7,49 +7,6 @@ use libwayshot::WayshotConnection;
 
 use crate::config::LiveSettings;
 
-#[derive(Args, Debug)]
-pub struct WatchMonitorsArgs {}
-
-fn save_screenshot_png(image_buffer: &image::DynamicImage, path: &std::path::Path) -> Result<()> {
-	let rgba = image_buffer.to_rgba8();
-	let file = File::create(path).wrap_err(format!("Failed to create file: {}", path.display()))?;
-	let writer = BufWriter::new(file);
-
-	let mut encoder = png::Encoder::new(writer, rgba.width(), rgba.height());
-	encoder.set_color(png::ColorType::Rgba);
-	encoder.set_depth(png::BitDepth::Eight);
-
-	let mut writer = encoder.write_header().wrap_err("Failed to write PNG header")?;
-	writer.write_image_data(rgba.as_raw()).wrap_err("Failed to write PNG data")?;
-
-	Ok(())
-}
-
-fn cleanup_old_screenshots(cache_dir: &std::path::Path) -> Result<()> {
-	let threshold = Timestamp::now() - 1.day();
-
-	for entry in std::fs::read_dir(cache_dir)? {
-		let entry = entry?;
-		let path = entry.path();
-
-		if path.is_dir() {
-			// Try to parse directory name as date (YYYY-MM-DD format)
-			if let Some(dir_name) = path.file_name().and_then(|n| n.to_str())
-				&& let Ok(dir_date) = civil::Date::strptime("%Y-%m-%d", dir_name)
-			{
-				let dir_timestamp = dir_date.at(0, 0, 0, 0).to_zoned(jiff::tz::TimeZone::UTC)?.timestamp();
-
-				if dir_timestamp < threshold {
-					tracing::info!("Removing old screenshot directory: {}", path.display());
-					std::fs::remove_dir_all(&path)?;
-				}
-			}
-		}
-	}
-
-	Ok(())
-}
-
 pub fn main(_settings: &LiveSettings, _args: WatchMonitorsArgs) -> Result<()> {
 	let cache_dir = v_utils::xdg_cache_dir!("watch_monitors");
 
@@ -110,4 +67,46 @@ pub fn main(_settings: &LiveSettings, _args: WatchMonitorsArgs) -> Result<()> {
 		// Sleep for 60 seconds
 		thread::sleep(Duration::from_secs(60));
 	}
+}
+#[derive(Args, Debug)]
+pub struct WatchMonitorsArgs {}
+
+fn save_screenshot_png(image_buffer: &image::DynamicImage, path: &std::path::Path) -> Result<()> {
+	let rgba = image_buffer.to_rgba8();
+	let file = File::create(path).wrap_err(format!("Failed to create file: {}", path.display()))?;
+	let writer = BufWriter::new(file);
+
+	let mut encoder = png::Encoder::new(writer, rgba.width(), rgba.height());
+	encoder.set_color(png::ColorType::Rgba);
+	encoder.set_depth(png::BitDepth::Eight);
+
+	let mut writer = encoder.write_header().wrap_err("Failed to write PNG header")?;
+	writer.write_image_data(rgba.as_raw()).wrap_err("Failed to write PNG data")?;
+
+	Ok(())
+}
+
+fn cleanup_old_screenshots(cache_dir: &std::path::Path) -> Result<()> {
+	let threshold = Timestamp::now() - 1.day();
+
+	for entry in std::fs::read_dir(cache_dir)? {
+		let entry = entry?;
+		let path = entry.path();
+
+		if path.is_dir() {
+			// Try to parse directory name as date (YYYY-MM-DD format)
+			if let Some(dir_name) = path.file_name().and_then(|n| n.to_str())
+				&& let Ok(dir_date) = civil::Date::strptime("%Y-%m-%d", dir_name)
+			{
+				let dir_timestamp = dir_date.at(0, 0, 0, 0).to_zoned(jiff::tz::TimeZone::UTC)?.timestamp();
+
+				if dir_timestamp < threshold {
+					tracing::info!("Removing old screenshot directory: {}", path.display());
+					std::fs::remove_dir_all(&path)?;
+				}
+			}
+		}
+	}
+
+	Ok(())
 }

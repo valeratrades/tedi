@@ -3,17 +3,34 @@
 use std::path::PathBuf;
 
 use regex::Regex;
-use tedi::{Ancestry, local::Local};
+use tedi::{
+	Issue, IssueIndex, IssueSelector, LazyIssue,
+	local::{FsReader, Local, LocalIssueSource},
+};
 use v_utils::prelude::*;
 
-/// Result of parsing a touch path
-#[derive(Debug)]
+/// Result of parsing a touch path.
 pub enum TouchPathResult {
-	/// Found an existing issue - ancestry identifies it completely
-	Found(Ancestry),
-	/// No existing issue found, but path is valid for creation.
-	/// Ancestry contains owner/repo and parent lineage (empty if root issue).
-	Create { title: String, ancestry: Ancestry },
+	/// Found an existing issue file on disk.
+	Exists(PathBuf),
+	/// Issue doesn't exist, descriptor for creation.
+	Create(Box<IssueIndex>),
+}
+
+/// Resolve a TouchPathResult to an Issue.
+pub async fn resolve_touch_path(result: TouchPathResult) -> Result<Issue> {
+	match result {
+		TouchPathResult::Exists(path) => {
+			let source = LocalIssueSource::<FsReader>::from_path(&path)?;
+			let issue = <Issue as LazyIssue<Local>>::load(source).await?;
+			Ok(issue)
+		}
+		TouchPathResult::Create(descriptor) => {
+			let project_is_virtual = Local::is_virtual_project(descriptor.repo_info());
+			let issue = Issue::pending_from_descriptor(&descriptor, project_is_virtual);
+			Ok(issue)
+		}
+	}
 }
 
 /// Parse a path for --touch mode using regex matching against filesystem
@@ -25,8 +42,8 @@ pub enum TouchPathResult {
 /// - Second segment matches against repos under the matched owner
 /// - Remaining segments match against issue files/directories
 ///
-/// If all segments match, returns `Found` with the ancestry.
-/// If owner/repo match but issue doesn't exist, returns `Create` with details for creating a new issue.
+/// If all segments match, returns `Exists` with the file path.
+/// If owner/repo match but issue doesn't exist, returns `Create` with descriptor for creating a new issue.
 /// For nested paths, matches as far as possible, then returns `Create` for the remaining title.
 ///
 /// The final component may have `.md` extension which is stripped before matching.
@@ -40,46 +57,38 @@ pub fn parse_touch_path(user_input: &str) -> Result<TouchPathResult> {
 		bail!("Path must have at least 3 components: owner/repo/issue, got: {user_input}")
 	}
 
+	let owner_rgx = segments[0];
+	let repo_rgx = segments[1];
+	let lineage_rgxs = &segments[2..];
+
 	let mut actual_path = Local::issues_dir();
 
 	// Match owner
 	let owner_children = list_children(&actual_path)?;
-	let owner = match match_single_or_none(&owner_children, segments[0]) {
+	let owner = match match_single_or_none(&owner_children, owner_rgx) {
 		MatchOrNone::Unique(matched) => matched,
-		MatchOrNone::NoMatch => {
-			// Owner doesn't exist - create request with literal names
-			return Ok(TouchPathResult::Create {
-				title: strip_md_extension(segments.last().unwrap()).to_string(),
-				ancestry: Ancestry::root(segments[0], segments[1]),
-			});
-		}
+		MatchOrNone::NoMatch => bail!("No owner matches pattern '{owner_rgx}'"),
 		MatchOrNone::Ambiguous(matches) => {
-			bail!("Ambiguous owner: pattern '{}' matches multiple entries.\nMatches: {}", segments[0], matches.join(", "))
+			bail!("Ambiguous owner: pattern '{owner_rgx}' matches multiple entries.\nMatches: {}", matches.join(", "))
 		}
 	};
 	actual_path = actual_path.join(&owner);
 
 	// Match repo
 	let repo_children = list_children(&actual_path)?;
-	let repo = match match_single_or_none(&repo_children, segments[1]) {
+	let repo = match match_single_or_none(&repo_children, repo_rgx) {
 		MatchOrNone::Unique(matched) => matched,
-		MatchOrNone::NoMatch => {
-			// Repo doesn't exist - create request
-			return Ok(TouchPathResult::Create {
-				title: strip_md_extension(segments.last().unwrap()).to_string(),
-				ancestry: Ancestry::root(&owner, segments[1]),
-			});
-		}
+		MatchOrNone::NoMatch => bail!("No repo matches pattern '{repo_rgx}' under owner '{owner}'"),
 		MatchOrNone::Ambiguous(matches) => {
-			bail!("Ambiguous repo: pattern '{}' matches multiple entries.\nMatches: {}", segments[1], matches.join(", "))
+			bail!("Ambiguous repo: pattern '{repo_rgx}' matches multiple entries.\nMatches: {}", matches.join(", "))
 		}
 	};
 	actual_path = actual_path.join(&repo);
 
 	// Match remaining segments (issue and optional sub-issues)
-	let mut lineage: Vec<u64> = Vec::new();
-	for (i, segment) in segments[2..].iter().enumerate() {
-		let is_last = i == segments.len() - 3; // -3 because we skip first 2 (owner/repo)
+	let mut matched_lineage: Vec<String> = Vec::new();
+	for (i, segment) in lineage_rgxs.iter().enumerate() {
+		let is_last = i == lineage_rgxs.len() - 1;
 		let pattern = strip_md_extension(segment);
 
 		let children = list_children(&actual_path)?;
@@ -87,32 +96,24 @@ pub fn parse_touch_path(user_input: &str) -> Result<TouchPathResult> {
 			MatchOrNone::Unique(matched) => {
 				let matched_path = actual_path.join(&matched);
 
-				// Extract issue number from matched name
-				if let Some(issue_num) = extract_issue_number(&matched) {
-					lineage.push(issue_num);
-				}
-
 				// If matched a flat file but not the last segment, user wants to create a child.
-				// We still add the issue to lineage (done above) - the Sink will handle
-				// converting the flat file to directory format when creating the sub-issue.
 				if !is_last && matched_path.is_file() {
-					// Can't descend into a file, but we've recorded the parent in lineage.
-					// Remaining segments define what to create under this parent.
-					let remaining_title = segments[2 + i + 1..].last().map(|s| strip_md_extension(s)).unwrap_or(pattern);
-					return Ok(TouchPathResult::Create {
-						title: remaining_title.to_string(),
-						ancestry: Ancestry::with_lineage(&owner, &repo, &lineage),
-					});
+					let parent_num = extract_issue_number(&matched).ok_or_else(|| eyre!("Cannot extract issue number from '{matched}'"))?;
+					let mut index: Vec<IssueSelector> = matched_lineage.iter().filter_map(|s| extract_issue_number(s).map(IssueSelector::GitId)).collect();
+					index.push(IssueSelector::GitId(parent_num));
+					let child_title = strip_md_extension(lineage_rgxs[i + 1]);
+					index.push(IssueSelector::title(child_title));
+					return Ok(TouchPathResult::Create(Box::new(IssueIndex::with_index(&owner, &repo, index))));
 				}
 
+				matched_lineage.push(matched);
 				actual_path = matched_path;
 			}
 			MatchOrNone::NoMatch => {
 				// No match - this is a create request
-				return Ok(TouchPathResult::Create {
-					title: pattern.to_string(),
-					ancestry: Ancestry::with_lineage(&owner, &repo, &lineage),
-				});
+				let mut index: Vec<IssueSelector> = matched_lineage.iter().filter_map(|s| extract_issue_number(s).map(IssueSelector::GitId)).collect();
+				index.push(IssueSelector::title(pattern));
+				return Ok(TouchPathResult::Create(Box::new(IssueIndex::with_index(&owner, &repo, index))));
 			}
 			MatchOrNone::Ambiguous(matches) => {
 				let desc = if is_last { "issue" } else { "parent issue" };
@@ -121,8 +122,14 @@ pub fn parse_touch_path(user_input: &str) -> Result<TouchPathResult> {
 		}
 	}
 
-	// All segments matched - build ancestry from what we found
-	Ok(TouchPathResult::Found(Ancestry::with_lineage(&owner, &repo, &lineage)))
+	// All segments matched - resolve to file path
+	let file_path = if actual_path.is_file() {
+		actual_path
+	} else {
+		// Directory format - find main file inside
+		Local::main_file_in_dir(&actual_path).ok_or_else(|| eyre!("Matched directory but no main file found: {actual_path:?}"))?
+	};
+	Ok(TouchPathResult::Exists(file_path))
 }
 
 /// Strip .md extension if present
@@ -186,56 +193,6 @@ fn match_single_or_none(children: &[String], pattern: &str) -> MatchOrNone {
 	}
 }
 
-/// Create a pending issue in memory (not written to disk).
-/// Returns the Issue object and the path where it would be stored.
-/// The issue will only be written to disk when the user saves changes.
-///
-/// Ancestry contains owner/repo and parent lineage (if creating a sub-issue).
-/// If `virtual_project` is true, creates a virtual issue (local-only, no Github sync).
-pub fn create_pending_issue(title: &str, ancestry: &Ancestry, virtual_project: bool) -> Result<(tedi::Issue, PathBuf)> {
-	use tedi::{CloseState, Comment, CommentIdentity, Events, Issue, IssueContents, IssueIdentity};
-
-	// Build ancestor directory names if creating a sub-issue
-	let ancestor_dir_names = if ancestry.lineage().is_empty() { vec![] } else { Local::build_ancestor_dir_names(ancestry)? };
-
-	// Determine file path - None for number since it's pending
-	let issue_file_path = Local::issue_file_path_from_dir_names(ancestry.owner(), ancestry.repo(), None, title, false, &ancestor_dir_names);
-
-	// Create the Issue object in memory
-	let identity = if virtual_project {
-		IssueIdentity::virtual_issue(*ancestry)
-	} else {
-		IssueIdentity::pending(*ancestry)
-	};
-	let contents = IssueContents {
-		title: title.to_string(),
-		labels: vec![],
-		state: CloseState::Open,
-		comments: vec![Comment {
-			identity: CommentIdentity::Body,
-			body: Events::default(),
-		}],
-		blockers: Default::default(),
-	};
-
-	let issue = Issue {
-		identity,
-		contents,
-		children: vec![],
-	};
-
-	if !ancestry.lineage().is_empty() {
-		println!("Creating pending sub-issue: {title}");
-	} else {
-		println!("Creating pending issue: {title}");
-	}
-	if !virtual_project {
-		println!("Issue will be created on Github when you save and sync.");
-	}
-
-	Ok((issue, issue_file_path))
-}
-
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -248,25 +205,10 @@ mod tests {
 	}
 
 	#[test]
-	fn test_parse_touch_path_nonexistent_creates() {
-		// When nothing exists on filesystem, parse_touch_path returns Create
-		let result = parse_touch_path("nonexistent-owner/nonexistent-repo/my-issue.md").unwrap();
-		match result {
-			TouchPathResult::Create { title, ancestry } => {
-				assert_eq!(ancestry.owner(), "nonexistent-owner");
-				assert_eq!(ancestry.repo(), "nonexistent-repo");
-				assert_eq!(title, "my-issue");
-				assert!(ancestry.lineage().is_empty());
-			}
-			TouchPathResult::Found(_) => panic!("Expected Create, got Found"),
-		}
-	}
-
-	#[test]
-	fn test_strip_md_extension() {
-		assert_eq!(strip_md_extension("issue.md"), "issue");
-		assert_eq!(strip_md_extension("issue"), "issue");
-		assert_eq!(strip_md_extension("issue.txt"), "issue.txt");
+	fn test_parse_touch_path_nonexistent_owner_fails() {
+		// When owner doesn't exist, parse_touch_path fails
+		let result = parse_touch_path("nonexistent-owner/nonexistent-repo/my-issue.md");
+		assert!(result.is_err());
 	}
 
 	#[test]

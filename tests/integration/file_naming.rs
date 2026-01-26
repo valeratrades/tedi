@@ -7,14 +7,12 @@
 //! Also tests that old file placements are automatically cleaned up when the
 //! format changes (e.g., when an issue gains sub-issues).
 
-use std::path::Path;
-
 use tedi::Issue;
 
 use crate::common::{TestContext, git::GitExt};
 
 fn parse(content: &str) -> Issue {
-	Issue::parse_virtual(content, Path::new("test.md")).expect("failed to parse test issue")
+	Issue::deserialize_virtual(content).expect("failed to parse test issue")
 }
 
 #[test]
@@ -116,7 +114,7 @@ fn test_old_placement_discarded_with_pull() {
 }
 
 #[test]
-fn test_duplicate_reference_to_nonexistent_issue_fails() {
+fn test_duplicate_removes_local_file() {
 	let ctx = TestContext::new("");
 
 	// Set up a local issue
@@ -124,25 +122,23 @@ fn test_duplicate_reference_to_nonexistent_issue_fails() {
 	let issue_path = ctx.consensus(&original, None);
 	ctx.remote(&original, None);
 
-	// Modify the issue to mark it as duplicate of #999 (which doesn't exist)
+	// Modify the issue to mark it as duplicate
 	let mut duplicate = original.clone();
 	duplicate.contents.state = tedi::CloseState::Duplicate(999);
 
-	// Try to sync the duplicate state
+	// Sync the duplicate state
 	let (status, stdout, stderr) = ctx.open(&issue_path).edit(&duplicate).run();
 
 	eprintln!("stdout: {stdout}");
 	eprintln!("stderr: {stderr}");
 
-	// Should fail because issue #999 doesn't exist
-	assert!(!status.success(), "Should fail when marking as duplicate of non-existent issue");
-	assert!(
-		stderr.contains("does not exist") || stderr.contains("999"),
-		"Error should mention the missing issue. stderr: {stderr}"
-	);
+	assert!(status.success(), "Should succeed when marking as duplicate. stderr: {stderr}");
 
-	// Original file should still exist (not removed)
-	assert!(ctx.flat_issue_path("o", "r", 1, "Some Issue").exists(), "Issue file should still exist after failed duplicate");
+	// Original file should be removed (duplicate self-eliminates)
+	assert!(
+		!ctx.flat_issue_path("o", "r", 1, "Some Issue").exists(),
+		"Issue file should be removed after marking as duplicate"
+	);
 }
 
 #[test]

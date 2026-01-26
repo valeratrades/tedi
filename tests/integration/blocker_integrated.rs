@@ -3,15 +3,12 @@
 //! These tests verify that `blocker add` and `blocker pop` work correctly
 //! when operating on issue files (integrated mode) rather than standalone blocker files.
 
-use std::path::Path;
-
 use tedi::Issue;
 
 use crate::common::{TestContext, git::GitExt};
 
-//TODO!!!: use Issue::parse_virtual directly (once Path is no longer required)
 fn parse(content: &str) -> Issue {
-	Issue::parse_virtual(content, Path::new("test.md")).expect("failed to parse test issue")
+	Issue::deserialize_virtual(content).expect("failed to parse test issue")
 }
 
 #[test]
@@ -117,6 +114,48 @@ fn test_blocker_add_creates_blockers_section_if_missing() {
 	let content = std::fs::read_to_string(&issue_path).unwrap();
 	assert!(content.contains("# Blockers"), "Blockers section should be created. Got: {content}");
 	assert!(content.contains("New task"), "New blocker should be added. Got: {content}");
+}
+
+#[test]
+fn test_blocker_add_without_blocker_file_set_errors() {
+	// Non-urgent `blocker add` should fail when no blocker file is set.
+	let ctx = TestContext::new("");
+	ctx.init_git();
+
+	// NO blocker file set
+
+	// Run blocker add (without --urgent)
+	let (status, stdout, stderr) = ctx.run(&["--offline", "blocker", "add", "some task"]);
+
+	eprintln!("stdout: {stdout}");
+	eprintln!("stderr: {stderr}");
+
+	// The add command should fail
+	assert!(!status.success(), "blocker add without --urgent should fail when no blocker file set");
+	assert!(stderr.contains("No blocker file set"), "Should mention no blocker file set. stderr: {stderr}");
+}
+
+#[test]
+fn test_blocker_add_urgent_without_blocker_file_set() {
+	// Regression test: `blocker add --urgent` should work even without a blocker file set.
+	// The urgent file is owner-independent and doesn't need blocker file context.
+	// Previously this errored with "No blocker file set. Use `todo blocker set <pattern>` first."
+	let ctx = TestContext::new("");
+	ctx.init_git();
+
+	// NO blocker file set - this is the key part of the test
+
+	// Run blocker add --urgent
+	let (status, stdout, stderr) = ctx.run(&["--offline", "blocker", "add", "--urgent", "manage through 'urgent' until tool is working"]);
+
+	eprintln!("stdout: {stdout}");
+	eprintln!("stderr: {stderr}");
+
+	// The add command should succeed without a blocker file set
+	assert!(status.success(), "blocker add --urgent should succeed without blocker file set. stderr: {stderr}");
+
+	// Verify the blocker was added to an urgent file
+	assert!(stdout.contains("Added to urgent") || stdout.contains("urgent"), "Should confirm urgent add. stdout: {stdout}");
 }
 
 #[test]

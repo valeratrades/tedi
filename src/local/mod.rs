@@ -14,14 +14,10 @@
 //!
 //! All public access goes through methods on the `Local` type.
 
-use std::path::{Path, PathBuf};
-
-//==============================================================================
-// Error Types
-//==============================================================================
-
+pub mod conflict;
+pub mod consensus;
 /// Error type for local issue loading operations.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, miette::Diagnostic, thiserror::Error, derive_more::From)]
 pub enum LocalError {
 	/// File not found at the expected path.
 	#[error("issue file not found: {path}")]
@@ -43,15 +39,15 @@ pub enum LocalError {
 		source: Box<crate::ParseError>,
 	},
 
-	/// Invalid path structure - cannot extract owner/repo.
-	#[error("invalid issue path structure: {path}")]
-	InvalidPath { path: PathBuf },
-
 	/// Git operation failed (for consensus reads).
 	#[error("git operation failed: {message}")]
 	GitError { message: String },
-}
 
+	/// Unresolved merge conflict blocks operation.
+	#[error(transparent)]
+	#[diagnostic(transparent)]
+	ConflictBlocked(conflict::ConflictBlockedError),
+}
 /// Error type for consensus sink operations.
 #[derive(Debug, miette::Diagnostic, derive_more::Display, thiserror::Error)]
 pub enum ConsensusSinkError {
@@ -84,67 +80,316 @@ pub enum ConsensusSinkError {
 	Io(#[from] std::io::Error),
 }
 
-use regex::Regex;
-use serde::{Deserialize, Serialize};
-use v_utils::prelude::*;
-
-use crate::{Ancestry, FetchedIssue, Issue, sink::Sink};
-
 //==============================================================================
-// Local - The interface for local issue storage
+// LocalReader - Abstraction for reading from different sources
 //==============================================================================
 
-/// Source variant for local issue loading.
+/// Trait for reading content from different sources (filesystem or git).
 ///
-/// Determines where to read issue content from.
-#[derive(Clone, Debug)]
-pub enum LocalSource {
-	/// Read from git's committed state (HEAD).
-	/// This is the last agreed-upon synced state.
-	Consensus,
-	/// Read from the current filesystem state.
-	/// "Submitted" because it represents what the user has effectively submitted
-	/// to the local storage - accounts for offline edits or changes made outside
-	/// this tool.
-	Submitted,
+/// Separates the read abstraction from path computation.
+pub trait LocalReader: Clone {
+	/// Read file content at the given path.
+	fn read_content(&self, path: &Path) -> Option<String>;
+	/// List directory entries at the given path.
+	fn list_dir(&self, path: &Path) -> Vec<String>;
+	/// Check if the path is a directory.
+	fn is_dir(&self, path: &Path) -> bool;
+	/// Check if the path exists.
+	fn exists(&self, path: &Path) -> bool;
 }
 
-/// Marker type for sinking to filesystem (submitted state).
-pub struct Submitted;
+/// Reader that reads from the filesystem (submitted/current state).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FsReader;
 
-/// Marker type for sinking to git (consensus state).
-pub struct Consensus;
+impl LocalReader for FsReader {
+	fn read_content(&self, path: &Path) -> Option<String> {
+		std::fs::read_to_string(path).ok()
+	}
+
+	fn list_dir(&self, path: &Path) -> Vec<String> {
+		let Ok(entries) = std::fs::read_dir(path) else {
+			return Vec::new();
+		};
+		entries.flatten().filter_map(|e| e.file_name().to_str().map(|s| s.to_string())).collect()
+	}
+
+	fn is_dir(&self, path: &Path) -> bool {
+		path.is_dir()
+	}
+
+	fn exists(&self, path: &Path) -> bool {
+		path.exists()
+	}
+}
+
+/// Reader that reads from git HEAD (consensus state).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct GitReader;
+
+impl LocalReader for GitReader {
+	fn read_content(&self, path: &Path) -> Option<String> {
+		Local::read_git_content(path)
+	}
+
+	fn list_dir(&self, path: &Path) -> Vec<String> {
+		Local::list_git_entries(path)
+	}
+
+	fn is_dir(&self, path: &Path) -> bool {
+		Local::is_git_dir(path)
+	}
+
+	fn exists(&self, path: &Path) -> bool {
+		self.read_content(path).is_some() || self.is_dir(path)
+	}
+}
 
 /// Source for loading issues from local storage.
+///
+/// Combines a `LocalPath` (for path computation) with a reader (for reading from fs or git).
 #[derive(Clone, Debug)]
-pub struct LocalPath {
-	pub path: PathBuf,
-	pub source: LocalSource,
+pub struct LocalIssueSource<R: LocalReader> {
+	pub local_path: LocalPath,
+	pub reader: R,
 }
 
+impl<R: LocalReader> LocalIssueSource<R> {
+	pub fn new(local_path: LocalPath, reader: R) -> Self {
+		Self { local_path, reader }
+	}
+
+	/// Create a child source with the same reader.
+	pub fn child(&self, child_index: IssueIndex) -> Self {
+		Self {
+			local_path: LocalPath::new(child_index),
+			reader: self.reader.clone(),
+		}
+	}
+
+	/// Get the IssueIndex from the underlying LocalPath.
+	pub fn index(&self) -> &IssueIndex {
+		self.local_path.index()
+	}
+}
+
+impl LocalIssueSource<FsReader> {
+	/// Create a source for reading from filesystem (submitted state).
+	pub fn submitted(local_path: LocalPath) -> Self {
+		Self::new(local_path, FsReader)
+	}
+
+	/// Create a source from a filesystem path by extracting the IssueIndex.
+	///
+	/// This extracts the parent_index from the path, then constructs the full index
+	/// by adding the target issue's selector.
+	pub fn from_path(path: &Path) -> Result<Self, color_eyre::Report> {
+		let index = Local::extract_index_from_path(path)?;
+		Ok(Self::new(LocalPath::new(index), FsReader))
+	}
+}
+
+impl LocalIssueSource<GitReader> {
+	/// Create a source for reading from git HEAD (consensus state).
+	pub fn consensus(local_path: LocalPath) -> Self {
+		Self::new(local_path, GitReader)
+	}
+}
+
+impl<R: LocalReader> From<LocalPath> for LocalIssueSource<R>
+where
+	R: Default,
+{
+	fn from(local_path: LocalPath) -> Self {
+		Self::new(local_path, R::default())
+	}
+}
+
+impl<R: LocalReader> From<IssueIndex> for LocalIssueSource<R>
+where
+	R: Default,
+{
+	fn from(index: IssueIndex) -> Self {
+		Self::new(LocalPath::new(index), R::default())
+	}
+}
+
+/// On-demand path construction for local issue storage.
+///
+/// r[local.sink-only-mutation]
+/// This type computes paths but does NOT create directories or files.
+/// Only `Sink<Submitted>` and `Sink<Consensus>` may mutate the filesystem.
+#[derive(Clone, Debug)]
+pub struct LocalPath {
+	index: IssueIndex,
+	/// Cached directory names for ancestors (computed lazily on first path request).
+	/// None means not yet computed.
+	ancestor_dir_names: Option<Vec<String>>,
+}
 impl LocalPath {
-	/// Create a new local path for reading from filesystem (submitted state).
-	pub fn submitted(path: PathBuf) -> Self {
-		Self {
-			path,
-			source: LocalSource::Submitted,
+	pub fn new(index: IssueIndex) -> Self {
+		Self { index, ancestor_dir_names: None }
+	}
+
+	pub fn index(&self) -> &IssueIndex {
+		&self.index
+	}
+
+	/// Compute the file path for this issue.
+	///
+	/// Returns the path where the issue file should be located based on:
+	/// - `closed`: whether the issue is closed (affects .md vs .md.bak extension)
+	/// - `has_children`: whether stored in directory format (affects __main__.md vs flat file)
+	/// - `title`: the issue title (used in filename)
+	///
+	/// Note: This does NOT create any directories. Use Sink to write.
+	pub fn file_path(&mut self, title: &str, closed: bool, has_children: bool) -> Result<PathBuf, color_eyre::Report> {
+		// Clone index data before mutable borrow for caching
+		let owner = self.index.owner().to_string();
+		let repo = self.index.repo().to_string();
+		let issue_number = self.index.issue_number();
+
+		let ancestor_dir_names = self.resolve_ancestor_dir_names()?;
+
+		let mut path = Local::project_dir(&owner, &repo);
+		for dir_name in ancestor_dir_names {
+			path = path.join(dir_name);
+		}
+
+		if has_children {
+			let dir_name = Local::issue_dir_name(issue_number, title);
+			path = path.join(dir_name);
+			Ok(Local::main_file_path(&path, closed))
+		} else {
+			let filename = Local::format_issue_filename(issue_number, title, closed);
+			Ok(path.join(filename))
 		}
 	}
 
-	/// Create a new local path for reading from git (consensus state).
-	pub fn consensus(path: PathBuf) -> Self {
-		Self {
-			path,
-			source: LocalSource::Consensus,
+	/// Compute the directory path for this issue (where children would live).
+	pub fn dir_path(&mut self, title: &str) -> Result<PathBuf, color_eyre::Report> {
+		// Clone index data before mutable borrow for caching
+		let owner = self.index.owner().to_string();
+		let repo = self.index.repo().to_string();
+		let issue_number = self.index.issue_number();
+
+		let ancestor_dir_names = self.resolve_ancestor_dir_names()?;
+
+		let mut path = Local::project_dir(&owner, &repo);
+		for dir_name in ancestor_dir_names {
+			path = path.join(dir_name);
 		}
+
+		let dir_name = Local::issue_dir_name(issue_number, title);
+		Ok(path.join(dir_name))
 	}
 
-	/// Create a child path with the same source variant.
-	pub fn child(&self, child_path: PathBuf) -> Self {
-		Self {
-			path: child_path,
-			source: self.source.clone(),
+	/// Find the actual file path for this issue using the reader.
+	///
+	/// Searches for the issue file by number, checking both flat and directory formats,
+	/// and both open and closed states. Uses the provided reader to check existence.
+	pub fn find_file_path<R: LocalReader>(&mut self, reader: &R) -> Result<PathBuf, LocalError> {
+		let repo_info = self.index.repo_info();
+		let num_path = self.index.num_path();
+
+		Local::find_issue_file_by_num_path_with_reader(repo_info, &num_path, reader).ok_or_else(|| {
+			// Construct a descriptive path for the error
+			let base_path = Local::project_dir(repo_info.owner(), repo_info.repo());
+			let num_path_str = num_path.iter().map(|n| n.to_string()).collect::<Vec<_>>().join("/");
+			LocalError::FileNotFound { path: base_path.join(num_path_str) }
+		})
+	}
+
+	/// Find the directory path for this issue if it exists (has children).
+	///
+	/// Returns `Some(path)` if the issue is stored in directory format, `None` otherwise.
+	pub fn find_dir_path<R: LocalReader>(&mut self, reader: &R) -> Option<PathBuf> {
+		let repo_info = self.index.repo_info();
+		let num_path = self.index.num_path();
+
+		Local::find_issue_dir_by_num_path_with_reader(repo_info, &num_path, reader)
+	}
+
+	/// Resolve ancestor directory names by traversing filesystem.
+	/// Caches result for subsequent calls.
+	pub(crate) fn resolve_ancestor_dir_names(&mut self) -> Result<&Vec<String>, color_eyre::Report> {
+		if self.ancestor_dir_names.is_none() {
+			let names = self.compute_ancestor_dir_names()?;
+			self.ancestor_dir_names = Some(names);
 		}
+		Ok(self.ancestor_dir_names.as_ref().unwrap())
+	}
+
+	/// Find directory names for each ancestor by traversing filesystem.
+	fn compute_ancestor_dir_names(&self) -> Result<Vec<String>, color_eyre::Report> {
+		let mut path = Local::project_dir(self.index.owner(), self.index.repo());
+
+		if !path.exists() {
+			color_eyre::eyre::bail!("Project directory does not exist: {}", path.display());
+		}
+
+		let parent_nums = self.index.parent_nums();
+		let mut result = Vec::with_capacity(parent_nums.len());
+
+		for issue_number in parent_nums {
+			let dir_name = Local::find_issue_dir_name_by_number(&path, issue_number)
+				.ok_or_else(|| color_eyre::eyre::eyre!("Parent issue #{issue_number} not found locally in {}. Fetch the parent issue first.", path.display()))?;
+
+			path = path.join(&dir_name);
+			result.push(dir_name);
+		}
+
+		Ok(result)
+	}
+
+	/// Ensure parent directories exist, converting flat files to directory format as needed.
+	///
+	/// This is called by Sink before writing an issue file and by `modify_and_sync_issue`
+	/// before opening the editor. It handles:
+	/// 1. Creating the project directory if needed
+	/// 2. Converting any parent flat files to directory format
+	///
+	/// Returns the ancestor directory names after ensuring they exist as directories.
+	pub fn ensure_parent_dirs(&mut self) -> Result<Vec<String>, color_eyre::Report> {
+		let mut path = Local::project_dir(self.index.owner(), self.index.repo());
+
+		if !path.exists() {
+			std::fs::create_dir_all(&path)?;
+		}
+
+		let parent_nums = self.index.parent_nums();
+		let mut result = Vec::with_capacity(parent_nums.len());
+
+		for issue_number in parent_nums {
+			let dir_name = Local::find_issue_dir_name_by_number(&path, issue_number)
+				.ok_or_else(|| color_eyre::eyre::eyre!("Parent issue #{issue_number} not found locally in {}. Fetch the parent issue first.", path.display()))?;
+
+			let parent_dir_path = path.join(&dir_name);
+
+			// If parent exists as flat file, convert to directory
+			if !parent_dir_path.is_dir() {
+				let flat_open = path.join(format!("{dir_name}.md"));
+				let flat_closed = path.join(format!("{dir_name}.md.bak"));
+
+				std::fs::create_dir_all(&parent_dir_path)?;
+
+				// Move flat file to __main__.md inside the directory
+				if flat_closed.exists() {
+					let main_path = Local::main_file_path(&parent_dir_path, true);
+					std::fs::rename(&flat_closed, &main_path)?;
+				} else if flat_open.exists() {
+					let main_path = Local::main_file_path(&parent_dir_path, false);
+					std::fs::rename(&flat_open, &main_path)?;
+				}
+			}
+
+			path = parent_dir_path;
+			result.push(dir_name);
+		}
+
+		// Cache the result
+		self.ancestor_dir_names = Some(result.clone());
+		Ok(result)
 	}
 }
 
@@ -158,20 +403,19 @@ impl Local {
 
 	/// Get the virtual edit path for an issue.
 	///
-	/// Returns a path in `/tmp/{CARGO_PKG_NAME}/{ancestry}/{fname}.md` where:
-	/// - ancestry is `owner/repo/lineage[0]/lineage[1]/...` (lineage elements joined by `/`)
+	/// Returns a path in `/tmp/{CARGO_PKG_NAME}/{owner/repo/lineage...}/{fname}.md` where:
+	/// - lineage is the parent issue numbers joined by `/`
 	/// - fname is the proper issue filename based on number and title
 	///
 	/// This path is used when opening an editor for the user to edit the issue.
 	pub fn virtual_edit_path(issue: &crate::Issue) -> PathBuf {
-		let ancestry = &issue.identity.ancestry;
 		let mut path = PathBuf::from("/tmp").join(env!("CARGO_PKG_NAME"));
 
 		// Add owner/repo
-		path = path.join(ancestry.owner()).join(ancestry.repo());
+		path = path.join(issue.identity.owner()).join(issue.identity.repo());
 
 		// Add lineage components (parent issue numbers)
-		for &parent_num in ancestry.lineage() {
+		for parent_num in issue.identity.lineage() {
 			path = path.join(parent_num.to_string());
 		}
 
@@ -185,21 +429,8 @@ impl Local {
 		v_utils::xdg_data_dir!("issues")
 	}
 
-	/// Read file content from the specified source.
-	///
-	/// - `Submitted`: reads from filesystem
-	/// - `Consensus`: reads from git HEAD
-	///
-	/// Returns `None` if file doesn't exist (for Submitted) or isn't tracked (for Consensus).
-	pub fn read_content(local_path: &LocalPath) -> Option<String> {
-		match local_path.source {
-			LocalSource::Submitted => std::fs::read_to_string(&local_path.path).ok(),
-			LocalSource::Consensus => Self::read_git_content(&local_path.path),
-		}
-	}
-
 	/// Read file content from git HEAD.
-	fn read_git_content(file_path: &Path) -> Option<String> {
+	pub(crate) fn read_git_content(file_path: &Path) -> Option<String> {
 		use std::process::Command;
 
 		let data_dir = Self::issues_dir();
@@ -229,28 +460,8 @@ impl Local {
 		String::from_utf8(output.stdout).ok()
 	}
 
-	/// List directory entries from the specified source.
-	///
-	/// - `Submitted`: lists from filesystem
-	/// - `Consensus`: lists from git HEAD
-	fn list_dir_entries(local_path: &LocalPath) -> Vec<String> {
-		match local_path.source {
-			LocalSource::Submitted => Self::list_fs_entries(&local_path.path),
-			LocalSource::Consensus => Self::list_git_entries(&local_path.path),
-		}
-	}
-
-	/// List directory entries from filesystem.
-	fn list_fs_entries(dir: &Path) -> Vec<String> {
-		let Ok(entries) = std::fs::read_dir(dir) else {
-			return Vec::new();
-		};
-
-		entries.flatten().filter_map(|e| e.file_name().to_str().map(|s| s.to_string())).collect()
-	}
-
 	/// List directory entries from git HEAD.
-	fn list_git_entries(dir: &Path) -> Vec<String> {
+	pub(crate) fn list_git_entries(dir: &Path) -> Vec<String> {
 		use std::process::Command;
 
 		let data_dir = Self::issues_dir();
@@ -277,23 +488,15 @@ impl Local {
 
 		let prefix = format!("{rel_dir_str}/");
 		std::str::from_utf8(&output.stdout)
-			.unwrap_or("")
+			.expect("git output must be valid UTF-8")
 			.lines()
 			.filter_map(|line| line.strip_prefix(&prefix))
 			.map(|s| s.to_string())
 			.collect()
 	}
 
-	/// Check if a path is a directory in the specified source.
-	fn is_dir(local_path: &LocalPath) -> bool {
-		match local_path.source {
-			LocalSource::Submitted => local_path.path.is_dir(),
-			LocalSource::Consensus => Self::is_git_dir(&local_path.path),
-		}
-	}
-
 	/// Check if a path is a directory in git.
-	fn is_git_dir(dir: &Path) -> bool {
+	pub(crate) fn is_git_dir(dir: &Path) -> bool {
 		use std::process::Command;
 
 		let data_dir = Self::issues_dir();
@@ -307,24 +510,19 @@ impl Local {
 			return false;
 		};
 
-		let check = Command::new("git").args(["-C", data_dir_str, "ls-tree", "HEAD", &format!("{rel_dir_str}/")]).output();
-		check.map(|o| o.status.success() && !o.stdout.is_empty()).unwrap_or(false)
-	}
-
-	/// Check if a path exists in the specified source.
-	fn path_exists(local_path: &LocalPath) -> bool {
-		match local_path.source {
-			LocalSource::Submitted => local_path.path.exists(),
-			LocalSource::Consensus => Self::read_git_content(&local_path.path).is_some() || Self::is_git_dir(&local_path.path),
-		}
+		let check = Command::new("git")
+			.args(["-C", data_dir_str, "ls-tree", "HEAD", &format!("{rel_dir_str}/")])
+			.output()
+			.expect("failed to execute git command");
+		check.status.success() && !check.stdout.is_empty()
 	}
 
 	/// Parse a single issue node from filesystem content.
 	///
 	/// This parses one issue file (without loading children from separate files).
 	/// Children field will be empty - they're loaded separately via LazyIssue.
-	fn parse_single_node(content: &str, ancestry: Ancestry, file_path: &Path) -> Result<Issue, LocalError> {
-		let mut issue = Issue::parse_virtual_with_ancestry(content, file_path, ancestry).map_err(|e| LocalError::ParseError {
+	fn parse_single_node(content: &str, index: IssueIndex, file_path: &Path) -> Result<Issue, LocalError> {
+		let mut issue = Issue::parse_virtual(content, index).map_err(|e| LocalError::ParseError {
 			path: file_path.to_path_buf(),
 			source: Box::new(e),
 		})?;
@@ -373,11 +571,6 @@ impl Local {
 		if closed { format!("{base}.bak") } else { base }
 	}
 
-	/// Format a FetchedIssue into a directory name: `{number}_-_{sanitized_title}`
-	fn format_issue_dir_name(issue: &FetchedIssue) -> String {
-		format!("{}_-_{}", issue.number(), Self::sanitize_title(&issue.title))
-	}
-
 	/// Get the directory name for an issue (used when it has sub-issues).
 	/// Format: {number}_-_{sanitized_title}
 	pub fn issue_dir_name(issue_number: Option<u64>, title: &str) -> String {
@@ -390,32 +583,33 @@ impl Local {
 		}
 	}
 
-	/// Get the path for an issue file.
-	/// Structure: issues/{owner}/{repo}/{number}_-_{title}.md[.bak]
-	/// For nested: issues/{owner}/{repo}/{ancestor_dirs}/.../{number}_-_{title}.md[.bak]
-	pub fn issue_file_path(owner: &str, repo: &str, issue_number: Option<u64>, title: &str, closed: bool, ancestors: &[FetchedIssue]) -> PathBuf {
-		let ancestor_dir_names: Vec<_> = ancestors.iter().map(|a| Self::format_issue_dir_name(a)).collect();
-		Self::issue_file_path_from_dir_names(owner, repo, issue_number, title, closed, &ancestor_dir_names)
-	}
+	/// Get the path for an issue file from an Issue.
+	/// Uses the issue's identity to resolve the path.
+	///
+	/// Checks if the issue exists in directory format on disk (has sub-issues) and returns
+	/// the appropriate path (`__main__.md` for directory format, flat file otherwise).
+	///
+	/// # Errors
+	/// Returns an error if ancestor directories can't be resolved.
+	pub fn issue_file_path(issue: &Issue) -> Result<PathBuf> {
+		let repo_info = issue.identity.repo_info();
+		let lineage = issue.identity.lineage();
+		let ancestor_dir_names = Self::build_ancestor_dir_names_from_lineage(repo_info, &lineage)?;
+		let closed = issue.contents.state.is_closed();
 
-	/// Get the path for an issue file using ancestor directory names directly.
-	/// Use this when you have directory names but not full FetchedIssue objects.
-	pub fn issue_file_path_from_dir_names(owner: &str, repo: &str, issue_number: Option<u64>, title: &str, closed: bool, ancestor_dir_names: &[String]) -> PathBuf {
-		let mut path = Self::project_dir(owner, repo);
-
-		for dir_name in ancestor_dir_names {
-			path = path.join(dir_name);
+		// Check if issue exists in directory format on disk
+		let issue_dir = Self::issue_dir_path_from_dir_names(repo_info.owner(), repo_info.repo(), issue.number(), &issue.contents.title, &ancestor_dir_names);
+		if issue_dir.is_dir() {
+			return Ok(Self::main_file_path(&issue_dir, closed));
 		}
 
-		let filename = Self::format_issue_filename(issue_number, title, closed);
-		path.join(filename)
-	}
-
-	/// Get the path to the issue directory (where sub-issues are stored).
-	#[allow(deprecated)]
-	pub fn issue_dir_path(owner: &str, repo: &str, issue_number: Option<u64>, title: &str, ancestors: &[FetchedIssue]) -> PathBuf {
-		let ancestor_dir_names: Vec<_> = ancestors.iter().map(|a| Self::format_issue_dir_name(a)).collect();
-		Self::issue_dir_path_from_dir_names(owner, repo, issue_number, title, &ancestor_dir_names)
+		// Flat file format
+		let mut path = Self::project_dir(repo_info.owner(), repo_info.repo());
+		for dir_name in &ancestor_dir_names {
+			path = path.join(dir_name);
+		}
+		let filename = Self::format_issue_filename(issue.number(), &issue.contents.title, closed);
+		Ok(path.join(filename))
 	}
 
 	/// Get the path to the issue directory using ancestor directory names directly.
@@ -440,21 +634,40 @@ impl Local {
 		issue_dir.join(filename)
 	}
 
+	/// Find the main file inside an issue directory (checks both open and closed).
+	pub fn main_file_in_dir(issue_dir: &Path) -> Option<PathBuf> {
+		let main_file = Self::main_file_path(issue_dir, false);
+		if main_file.exists() {
+			return Some(main_file);
+		}
+		let main_bak = Self::main_file_path(issue_dir, true);
+		if main_bak.exists() {
+			return Some(main_bak);
+		}
+		None
+	}
+
 	/// Find the actual file path for an issue, checking both flat and directory formats.
-	pub fn find_issue_file(owner: &str, repo: &str, issue_number: Option<u64>, title: &str, ancestors: &[FetchedIssue]) -> Option<PathBuf> {
+	pub fn find_issue_file(owner: &str, repo: &str, issue_number: Option<u64>, title: &str, ancestor_dir_names: &[String]) -> Option<PathBuf> {
+		// Build base path: project_dir / ancestor_dir_names...
+		let mut base_path = Self::project_dir(owner, repo);
+		for dir_name in ancestor_dir_names {
+			base_path = base_path.join(dir_name);
+		}
+
 		// Try flat format first (both open and closed)
-		let flat_path = Self::issue_file_path(owner, repo, issue_number, title, false, ancestors);
+		let flat_path = base_path.join(Self::format_issue_filename(issue_number, title, false));
 		if flat_path.exists() {
 			return Some(flat_path);
 		}
 
-		let flat_closed_path = Self::issue_file_path(owner, repo, issue_number, title, true, ancestors);
+		let flat_closed_path = base_path.join(Self::format_issue_filename(issue_number, title, true));
 		if flat_closed_path.exists() {
 			return Some(flat_closed_path);
 		}
 
 		// Try directory format
-		let issue_dir = Self::issue_dir_path(owner, repo, issue_number, title, ancestors);
+		let issue_dir = Self::issue_dir_path_from_dir_names(owner, repo, issue_number, title, ancestor_dir_names);
 		if issue_dir.is_dir() {
 			let main_path = Self::main_file_path(&issue_dir, false);
 			if main_path.exists() {
@@ -470,61 +683,54 @@ impl Local {
 		None
 	}
 
-	/// Search for issue files matching a pattern.
-	//TODO: @v: check if we can deprecate this in favor of always using choose_issue_with_fzf
-	pub fn search_issue_files(pattern: &str) -> Result<Vec<PathBuf>> {
-		let issues_base = Self::issues_dir();
-		if !issues_base.exists() {
-			return Ok(vec![]);
-		}
-
-		let mut matches = Vec::new();
-		let pattern_lower = pattern.to_lowercase();
-
-		fn walk_dir(dir: &Path, pattern: &str, matches: &mut Vec<PathBuf>) -> std::io::Result<()> {
+	/// Get the most recently modified issue file.
+	pub fn most_recent_issue_file() -> Result<Option<PathBuf>> {
+		fn collect_issue_files(dir: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<()> {
 			for entry in std::fs::read_dir(dir)? {
 				let entry = entry?;
 				let path = entry.path();
-
 				if path.is_dir() {
-					walk_dir(&path, pattern, matches)?;
+					collect_issue_files(&path, files)?;
 				} else if path.is_file()
 					&& let Some(name) = path.file_name().and_then(|n| n.to_str())
 					&& (name.ends_with(".md") || name.ends_with(".md.bak"))
 				{
-					let name_lower = name.to_lowercase();
-					let path_str = path.to_string_lossy().to_lowercase();
-					if pattern.is_empty() || name_lower.contains(pattern) || path_str.contains(pattern) {
-						matches.push(path);
-					}
+					files.push(path);
 				}
 			}
 			Ok(())
 		}
 
-		walk_dir(&issues_base, &pattern_lower, &mut matches)?;
+		let issues_base = Self::issues_dir();
+		if !issues_base.exists() {
+			return Ok(None);
+		}
 
-		matches.sort_by(|a, b| {
+		let mut files = Vec::new();
+		collect_issue_files(&issues_base, &mut files)?;
+
+		// Sort by modification time (most recent first) and return the first
+		files.sort_by(|a, b| {
 			let a_time = std::fs::metadata(a).and_then(|m| m.modified()).ok();
 			let b_time = std::fs::metadata(b).and_then(|m| m.modified()).ok();
 			b_time.cmp(&a_time)
 		});
 
-		Ok(matches)
+		Ok(files.into_iter().next())
 	}
 
-	/// Build ancestor directory names by traversing the filesystem for an ancestry.
+	/// Build ancestor directory names by traversing the filesystem for a lineage.
 	/// Finds issues by number (either flat file or directory) and returns the directory names.
-	pub fn build_ancestor_dir_names(ancestry: &Ancestry) -> Result<Vec<String>> {
-		let mut path = Self::project_dir(ancestry.owner(), ancestry.repo());
+	pub fn build_ancestor_dir_names_from_lineage(repo_info: RepoInfo, lineage: &[u64]) -> Result<Vec<String>> {
+		let mut path = Self::project_dir(repo_info.owner(), repo_info.repo());
 
 		if !path.exists() {
 			bail!("Project directory does not exist: {}", path.display());
 		}
 
-		let mut result = Vec::with_capacity(ancestry.lineage().len());
+		let mut result = Vec::with_capacity(lineage.len());
 
-		for &issue_number in ancestry.lineage() {
+		for &issue_number in lineage {
 			let dir_name = Self::find_issue_dir_name_by_number(&path, issue_number)
 				.ok_or_else(|| eyre!("Parent issue #{issue_number} not found locally in {}. Fetch the parent issue first.", path.display()))?;
 
@@ -535,56 +741,27 @@ impl Local {
 		Ok(result)
 	}
 
-	#[allow(deprecated)]
-	/// Build a chain of FetchedIssue by traversing the filesystem for an ancestry.
-	#[deprecated(note = "Use build_ancestor_dir_names instead")]
-	pub fn build_ancestry_path(ancestry: &Ancestry) -> Result<Vec<FetchedIssue>> {
-		let mut path = Self::project_dir(ancestry.owner(), ancestry.repo());
-
-		if !path.exists() {
-			bail!("Project directory does not exist: {}", path.display());
-		}
-
-		let mut result = Vec::with_capacity(ancestry.lineage().len());
-
-		for &issue_number in ancestry.lineage() {
-			let dir = Self::find_issue_dir_by_number(&path, issue_number)
-				.ok_or_else(|| eyre!("Parent issue #{issue_number} not found locally in {}. Fetch the parent issue first.", path.display()))?;
-
-			let dir_name = dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
-			let title = Self::extract_title_from_dir_name(dir_name, issue_number);
-
-			let fetched = FetchedIssue::from_parts(ancestry.owner(), ancestry.repo(), issue_number, &title).ok_or_else(|| eyre!("Failed to construct FetchedIssue for #{issue_number}"))?;
-			result.push(fetched);
-
-			path = dir;
-		}
-
-		Ok(result)
-	}
-
-	/// Find the issue file for an ancestry.
-	/// Navigates the filesystem using issue numbers in the lineage.
-	pub fn find_issue_file_by_ancestry(ancestry: &Ancestry) -> Option<PathBuf> {
-		let mut path = Self::project_dir(ancestry.owner(), ancestry.repo());
+	/// Find the issue file by repo info and full number path.
+	/// The num_path includes all ancestors plus the target issue's own number.
+	pub fn find_issue_file_by_num_path(repo_info: RepoInfo, num_path: &[u64]) -> Option<PathBuf> {
+		let mut path = Self::project_dir(repo_info.owner(), repo_info.repo());
 
 		if !path.exists() {
 			return None;
 		}
 
-		let lineage = ancestry.lineage();
-		if lineage.is_empty() {
+		if num_path.is_empty() {
 			return None;
 		}
 
 		// Navigate to parent directories
-		for &issue_number in &lineage[..lineage.len() - 1] {
+		for &issue_number in &num_path[..num_path.len() - 1] {
 			let dir = Self::find_issue_dir_by_number(&path, issue_number)?;
 			path = dir;
 		}
 
-		// Find the target issue (last in lineage)
-		let target_number = *lineage.last().unwrap();
+		// Find the target issue (last in num_path)
+		let target_number = *num_path.last().unwrap();
 
 		// Check for directory format first (issue with children)
 		if let Some(dir) = Self::find_issue_dir_by_number(&path, target_number) {
@@ -669,27 +846,131 @@ impl Local {
 				if name.starts_with(&prefix_with_sep) || name == exact_match_dir {
 					return Some(name.to_string());
 				}
-			} else if path.is_file() {
-				// Flat file: strip .md or .md.bak extension to get dir name
-				// Use if-let instead of ? to avoid early return on non-.md files
-				if let Some(base) = name.strip_suffix(".md.bak").or_else(|| name.strip_suffix(".md")) {
-					if base.starts_with(&prefix_with_sep) || base == exact_match_dir {
-						return Some(base.to_string());
-					}
-				}
+			} else if path.is_file()
+				&& let Some(base) = name.strip_suffix(".md.bak").or_else(|| name.strip_suffix(".md"))
+				&& (base.starts_with(&prefix_with_sep) || base == exact_match_dir)
+			{
+				return Some(base.to_string());
 			}
 		}
 
 		None
 	}
 
-	/// Extract title from directory name.
-	fn extract_title_from_dir_name(dir_name: &str, issue_number: u64) -> String {
-		let prefix = format!("{issue_number}_-_");
-		if let Some(title) = dir_name.strip_prefix(&prefix) {
-			title.replace('_', " ")
+	/// Find the issue file by repo info and full number path, using the provided reader.
+	pub(crate) fn find_issue_file_by_num_path_with_reader<R: LocalReader>(repo_info: RepoInfo, num_path: &[u64], reader: &R) -> Option<PathBuf> {
+		let mut path = Self::project_dir(repo_info.owner(), repo_info.repo());
+
+		if !reader.exists(&path) {
+			return None;
+		}
+
+		if num_path.is_empty() {
+			return None;
+		}
+
+		// Navigate to parent directories
+		for &issue_number in &num_path[..num_path.len() - 1] {
+			let dir = Self::find_issue_dir_by_number_with_reader(&path, issue_number, reader)?;
+			path = dir;
+		}
+
+		// Find the target issue (last in num_path)
+		let target_number = *num_path.last().unwrap();
+
+		// Check for directory format first (issue with children)
+		if let Some(dir) = Self::find_issue_dir_by_number_with_reader(&path, target_number, reader) {
+			let main_file = Self::main_file_path(&dir, false);
+			if reader.exists(&main_file) {
+				return Some(main_file);
+			}
+			let main_bak = Self::main_file_path(&dir, true);
+			if reader.exists(&main_bak) {
+				return Some(main_bak);
+			}
+		}
+
+		// Check for flat file format
+		let entries = reader.list_dir(&path);
+		let prefix_with_sep = format!("{target_number}_-_");
+		let exact_match = format!("{target_number}.md");
+		let exact_match_bak = format!("{target_number}.md.bak");
+
+		for name in entries {
+			let entry_path = path.join(&name);
+
+			// Skip directories (already checked above)
+			if reader.is_dir(&entry_path) {
+				continue;
+			}
+
+			if name.starts_with(&prefix_with_sep) && (name.ends_with(".md") || name.ends_with(".md.bak")) {
+				return Some(entry_path);
+			}
+			if name == exact_match || name == exact_match_bak {
+				return Some(entry_path);
+			}
+		}
+
+		None
+	}
+
+	/// Find an issue directory by its number prefix, using the provided reader.
+	fn find_issue_dir_by_number_with_reader<R: LocalReader>(parent: &Path, issue_number: u64, reader: &R) -> Option<PathBuf> {
+		let entries = reader.list_dir(parent);
+
+		let prefix_with_sep = format!("{issue_number}_-_");
+		let exact_match = format!("{issue_number}");
+
+		for name in entries {
+			let path = parent.join(&name);
+
+			if !reader.is_dir(&path) {
+				continue;
+			}
+
+			if name.starts_with(&prefix_with_sep) || name == exact_match {
+				return Some(path);
+			}
+		}
+
+		None
+	}
+
+	/// Find the issue directory by repo info and full number path, using the provided reader.
+	/// Returns `Some(path)` if the issue exists in directory format (has children).
+	pub(crate) fn find_issue_dir_by_num_path_with_reader<R: LocalReader>(repo_info: RepoInfo, num_path: &[u64], reader: &R) -> Option<PathBuf> {
+		let mut path = Self::project_dir(repo_info.owner(), repo_info.repo());
+
+		if !reader.exists(&path) {
+			return None;
+		}
+
+		if num_path.is_empty() {
+			return None;
+		}
+
+		// Navigate through all directories in num_path
+		for &issue_number in num_path {
+			let dir = Self::find_issue_dir_by_number_with_reader(&path, issue_number, reader)?;
+			path = dir;
+		}
+
+		// Check that the final path is indeed a directory (has children)
+		if reader.is_dir(&path) { Some(path) } else { None }
+	}
+
+	/// Parse an IssueSelector from a filename or directory name.
+	/// Format: `{number}_-_{title}[.md[.bak]]` or just `{number}[.md[.bak]]`
+	pub(crate) fn parse_issue_selector_from_name(name: &str) -> Option<IssueSelector> {
+		// Strip file extensions if present
+		let base = name.strip_suffix(".md.bak").or_else(|| name.strip_suffix(".md")).unwrap_or(name);
+
+		// Extract issue number
+		if let Some(sep_pos) = base.find("_-_") {
+			base[..sep_pos].parse::<u64>().ok().map(IssueSelector::GitId)
 		} else {
-			String::new()
+			base.parse::<u64>().ok().map(IssueSelector::GitId)
 		}
 	}
 
@@ -700,7 +981,11 @@ impl Local {
 	///
 	/// For directory format (`__main__.md`), the immediately containing directory is the issue itself,
 	/// not a parent, so it's excluded from lineage.
-	pub fn extract_ancestry(path: &Path) -> Result<Ancestry> {
+	/// Extract the parent's IssueIndex from an issue file path.
+	///
+	/// For root issues, returns `IssueIndex::repo_only(owner, repo)`.
+	/// For child issues, returns the parent's full IssueIndex.
+	pub fn extract_parent_index(path: &Path) -> Result<IssueIndex> {
 		let issues_base = Self::issues_dir();
 
 		let rel_path = path.strip_prefix(&issues_base).map_err(|_| eyre!("Issue file is not in issues directory: {path:?}"))?;
@@ -714,13 +999,18 @@ impl Local {
 		let repo = components[1].as_os_str().to_str().ok_or_else(|| eyre!("Could not extract repo from path: {path:?}"))?;
 
 		// Check if this is a directory format file (__main__.md or __main__.md.bak)
-		let filename = components.last().and_then(|c| c.as_os_str().to_str()).unwrap_or("");
+		let filename = components
+			.last()
+			.expect("components verified to have at least 2 elements")
+			.as_os_str()
+			.to_str()
+			.ok_or_else(|| eyre!("Could not convert filename to str: {path:?}"))?;
 		let is_dir_format = filename.starts_with(Self::MAIN_ISSUE_FILENAME);
 
 		// Everything between repo and the final component is a potential parent issue directory
 		// Format: {number}_-_{title} or just {number}
 		// For directory format, exclude the last directory (that's the issue itself, not a parent)
-		let mut lineage = Vec::new();
+		let mut parent_selectors = Vec::new();
 		let end_offset = if is_dir_format { 2 } else { 1 }; // Skip filename + issue dir for dir format
 		for component in &components[2..components.len().saturating_sub(end_offset)] {
 			let name = component.as_os_str().to_str().ok_or_else(|| eyre!("Invalid path component: {component:?}"))?;
@@ -736,27 +1026,126 @@ impl Local {
 			} else {
 				name.parse::<u64>().map_err(|_| eyre!("Invalid issue directory format: {name}"))?
 			};
-			lineage.push(issue_number);
+			parent_selectors.push(IssueSelector::GitId(issue_number));
 		}
 
-		Ok(Ancestry::with_lineage(owner, repo, &lineage))
+		Ok(IssueIndex::with_index(owner, repo, parent_selectors))
 	}
 
-	/// Extract owner/repo from an issue file path.
-	#[deprecated(note = "Use extract_ancestry instead for full lineage information")]
-	pub fn extract_owner_repo(path: &Path) -> Result<(String, String)> {
-		let ancestry = Self::extract_ancestry(path)?;
-		Ok((ancestry.owner().to_string(), ancestry.repo().to_string()))
+	/// Extract the full IssueIndex from an issue file path (including the issue itself).
+	///
+	/// Unlike `extract_parent_index`, this includes the target issue's selector.
+	pub fn extract_index_from_path(path: &Path) -> Result<IssueIndex> {
+		let issues_base = Self::issues_dir();
+
+		let rel_path = path.strip_prefix(&issues_base).map_err(|_| eyre!("Issue file is not in issues directory: {path:?}"))?;
+
+		let components: Vec<_> = rel_path.components().collect();
+		if components.len() < 3 {
+			bail!("Path too short to extract issue: {path:?}");
+		}
+
+		let owner = components[0].as_os_str().to_str().ok_or_else(|| eyre!("Could not extract owner from path: {path:?}"))?;
+		let repo = components[1].as_os_str().to_str().ok_or_else(|| eyre!("Could not extract repo from path: {path:?}"))?;
+
+		// Check if this is a directory format file (__main__.md or __main__.md.bak)
+		let filename = components
+			.last()
+			.expect("components verified to have at least 3 elements")
+			.as_os_str()
+			.to_str()
+			.ok_or_else(|| eyre!("Could not convert filename to str: {path:?}"))?;
+		let is_dir_format = filename.starts_with(Self::MAIN_ISSUE_FILENAME);
+
+		// Collect all issue selectors including the target issue
+		let mut selectors = Vec::new();
+
+		// For directory format: path is owner/repo/dir1/dir2/.../issue_dir/__main__.md
+		//   - Loop processes dir1..issue_dir (index 2 to len-2 exclusive)
+		//   - Then add issue_dir (index len-2) separately
+		// For flat format: path is owner/repo/dir1/dir2/.../issue.md
+		//   - Loop processes dir1.. (index 2 to len-1 exclusive)
+		//   - Then add issue from filename
+		let dir_end = if is_dir_format {
+			components.len() - 2 // Stop before the issue directory (will be added separately)
+		} else {
+			components.len() - 1 // Stop before the filename
+		};
+
+		// Process ancestor issue directories (skip owner and repo)
+		for component in &components[2..dir_end] {
+			let name = component.as_os_str().to_str().ok_or_else(|| eyre!("Invalid path component: {component:?}"))?;
+
+			// Skip if this looks like a file (has .md extension)
+			if name.ends_with(".md") || name.ends_with(".md.bak") {
+				continue;
+			}
+
+			// Extract issue number from directory name
+			if let Some(selector) = Self::parse_issue_selector_from_name(name) {
+				selectors.push(selector);
+			}
+		}
+
+		// Add the target issue selector
+		if is_dir_format {
+			// The directory just before __main__.md is the issue
+			let dir_name = components[components.len() - 2].as_os_str().to_str().ok_or_else(|| eyre!("Invalid directory component"))?;
+			if let Some(selector) = Self::parse_issue_selector_from_name(dir_name) {
+				selectors.push(selector);
+			}
+		} else {
+			// The filename is the issue (e.g., 123_-_title.md)
+			if let Some(selector) = Self::parse_issue_selector_from_name(filename) {
+				selectors.push(selector);
+			}
+		}
+
+		Ok(IssueIndex::with_index(owner, repo, selectors))
 	}
 
-	/// Choose an issue file using fzf.
-	pub fn choose_issue_with_fzf(files: &[PathBuf], initial_query: &str, exact: ExactMatchLevel) -> Result<Option<PathBuf>> {
+	/// Interactive issue file selection using fzf.
+	/// Collects all issue files and presents them in fzf for selection.
+	pub fn fzf_issue(initial_query: &str, exact: ExactMatchLevel) -> Result<PathBuf> {
 		use std::{
 			io::Write,
 			process::{Command, Stdio},
 		};
 
+		fn collect_issue_files(dir: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<()> {
+			for entry in std::fs::read_dir(dir)? {
+				let entry = entry?;
+				let path = entry.path();
+				if path.is_dir() {
+					collect_issue_files(&path, files)?;
+				} else if path.is_file()
+					&& let Some(name) = path.file_name().and_then(|n| n.to_str())
+					&& (name.ends_with(".md") || name.ends_with(".md.bak"))
+				{
+					files.push(path);
+				}
+			}
+			Ok(())
+		}
+
 		let issues_base = Self::issues_dir();
+		if !issues_base.exists() {
+			bail!("No issue files found. Use a Github URL to fetch an issue first.");
+		}
+
+		let mut files = Vec::new();
+		collect_issue_files(&issues_base, &mut files)?;
+
+		if files.is_empty() {
+			bail!("No issue files found. Use a Github URL to fetch an issue first.");
+		}
+
+		// Sort by modification time (most recent first)
+		files.sort_by(|a, b| {
+			let a_time = std::fs::metadata(a).and_then(|m| m.modified()).ok();
+			let b_time = std::fs::metadata(b).and_then(|m| m.modified()).ok();
+			b_time.cmp(&a_time)
+		});
 
 		let file_list: Vec<String> = files
 			.iter()
@@ -823,84 +1212,16 @@ impl Local {
 		if output.status.success() {
 			let selected = String::from_utf8_lossy(&output.stdout).trim().to_string();
 			if !selected.is_empty() {
-				return Ok(Some(issues_base.join(selected)));
+				return Ok(issues_base.join(selected));
 			}
 		}
 
-		Ok(None)
-	}
-
-	/// Parse issue identity from a file path.
-	pub fn parse_path_identity(issue_file_path: &Path) -> Result<PathIdentity> {
-		let _ancestry = Self::extract_ancestry(issue_file_path)?;
-
-		let filename = issue_file_path.file_name().and_then(|n| n.to_str()).ok_or_else(|| eyre!("Invalid issue file path"))?;
-
-		let filename_no_bak = filename.strip_suffix(".bak").unwrap_or(filename);
-
-		let (name_to_parse, parent_dir) = if filename_no_bak.starts_with(Self::MAIN_ISSUE_FILENAME) {
-			let parent_dir = issue_file_path.parent();
-			let name = parent_dir
-				.and_then(|p| p.file_name())
-				.and_then(|n| n.to_str())
-				.ok_or_else(|| eyre!("Could not extract parent directory for __main__ file"))?;
-			(name, parent_dir)
-		} else {
-			let name = filename_no_bak.strip_suffix(".md").unwrap_or(filename_no_bak);
-			(name, issue_file_path.parent())
-		};
-
-		let (issue_number, title) = if let Some(sep_pos) = name_to_parse.find("_-_") {
-			let number: u64 = name_to_parse[..sep_pos].parse()?;
-			let title = name_to_parse[sep_pos + 3..].replace('_', " ");
-			(number, title)
-		} else if let Ok(number) = name_to_parse.parse::<u64>() {
-			(number, String::new())
-		} else {
-			let title = name_to_parse.replace('_', " ");
-			(0, title)
-		};
-
-		let parent_issue = if let Some(parent) = parent_dir {
-			let check_dir = if filename_no_bak.starts_with(Self::MAIN_ISSUE_FILENAME) {
-				parent.parent()
-			} else {
-				Some(parent)
-			};
-
-			if let Some(dir) = check_dir {
-				let issues_base = Self::issues_dir();
-				if let Ok(rel) = dir.strip_prefix(&issues_base) {
-					let components: Vec<_> = rel.components().collect();
-					if components.len() > 2 {
-						if let Some(parent_dir_name) = components.last().and_then(|c| c.as_os_str().to_str()) {
-							if let Some(sep_pos) = parent_dir_name.find("_-_") {
-								parent_dir_name[..sep_pos].parse::<u64>().ok()
-							} else {
-								parent_dir_name.parse::<u64>().ok()
-							}
-						} else {
-							None
-						}
-					} else {
-						None
-					}
-				} else {
-					None
-				}
-			} else {
-				None
-			}
-		} else {
-			None
-		};
-
-		Ok(PathIdentity { issue_number, title, parent_issue })
+		bail!("No issue selected")
 	}
 
 	/// Check if a project is virtual (has no Github remote)
-	pub fn is_virtual_project(owner: &str, repo: &str) -> bool {
-		Self::load_project_meta(owner, repo).virtual_project
+	pub fn is_virtual_project(repo_info: crate::RepoInfo) -> bool {
+		Self::load_project_meta(repo_info.owner(), repo_info.repo()).virtual_project //TODO: update all occurences of `owner, repo` to just `repo_info` everywhere
 	}
 
 	/// Ensure a virtual project exists (creates if needed).
@@ -948,24 +1269,7 @@ impl Local {
 
 	/// Load project metadata, creating empty if not exists
 	pub fn load_project_meta(owner: &str, repo: &str) -> ProjectMeta {
-		Self::load_project_meta_from_source(owner, repo, LocalSource::Submitted)
-	}
-
-	/// Load project metadata from a specific source (filesystem or git).
-	fn load_project_meta_from_source(owner: &str, repo: &str, source: LocalSource) -> ProjectMeta {
-		let meta_path = Self::project_meta_path(owner, repo);
-		let content = match source {
-			LocalSource::Submitted => std::fs::read_to_string(&meta_path).ok(),
-			LocalSource::Consensus => Self::read_git_content(&meta_path),
-		};
-
-		match content {
-			Some(c) => match serde_json::from_str(&c) {
-				Ok(meta) => meta,
-				Err(e) => panic!("corrupted project metadata at {}: {e}", meta_path.display()),
-			},
-			None => ProjectMeta::default(),
-		}
+		Self::load_project_meta_from_reader(RepoInfo::new(owner, repo), &FsReader)
 	}
 
 	/// Save project metadata
@@ -979,9 +1283,23 @@ impl Local {
 		Ok(())
 	}
 
-	/// Load metadata for a specific issue from a specific source.
-	fn load_issue_meta_from_source(owner: &str, repo: &str, issue_number: u64, source: LocalSource) -> Option<IssueMeta> {
-		let project_meta = Self::load_project_meta_from_source(owner, repo, source);
+	/// Load project metadata using the provided reader.
+	pub(crate) fn load_project_meta_from_reader<R: LocalReader>(repo_info: RepoInfo, reader: &R) -> ProjectMeta {
+		let meta_path = Self::project_meta_path(repo_info.owner(), repo_info.repo());
+		let content = reader.read_content(&meta_path);
+
+		match content {
+			Some(c) => match serde_json::from_str(&c) {
+				Ok(meta) => meta,
+				Err(e) => panic!("corrupted project metadata at {}: {e}", meta_path.display()),
+			},
+			None => ProjectMeta::default(),
+		}
+	}
+
+	/// Load metadata for a specific issue using the provided reader.
+	pub(crate) fn load_issue_meta_from_reader<R: LocalReader>(repo_info: RepoInfo, issue_number: u64, reader: &R) -> Option<IssueMeta> {
+		let project_meta = Self::load_project_meta_from_reader(repo_info, reader);
 		project_meta.issues.get(&issue_number).cloned()
 	}
 
@@ -1002,14 +1320,6 @@ impl Local {
 	}
 }
 
-//NB: the reason we expose methods through Local, - is to shortcut the possibility of having them appear without clear reference to what part of logic owns them.
-// Note that conventionally, same effect is achieved by deciding to not export methods out of a module, but use them as `mod::method`, which would translate to almost tht exactly the same eg `local::issue_dir()`
-// Difference is: when using AI, I can't control how the methods are exported. This tag solves it.
-
-//==============================================================================
-// Types
-//==============================================================================
-
 /// Exact match level for fzf queries.
 #[derive(Clone, Copy, Debug, Default)]
 pub enum ExactMatchLevel {
@@ -1019,6 +1329,67 @@ pub enum ExactMatchLevel {
 	RegexSubstring,
 	RegexLine,
 }
+/// Project-level metadata file.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct ProjectMeta {
+	#[serde(default)]
+	pub virtual_project: bool,
+	#[serde(default)]
+	pub next_virtual_issue_number: u64,
+	#[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+	pub issues: std::collections::BTreeMap<u64, IssueMeta>,
+}
+/// Per-issue metadata stored in .meta.json.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct IssueMeta {
+	/// Timestamps for individual field changes.
+	#[serde(default)]
+	pub timestamps: crate::IssueTimestamps,
+}
+/// Marker type for loading from consensus (git HEAD).
+/// Note: This is different from `impl_sink::Consensus` which is for writing.
+pub enum LocalConsensus {}
+mod impl_sink;
+
+use std::path::{Path, PathBuf};
+
+pub use impl_sink::{Consensus, Submitted};
+//==============================================================================
+// Error Types
+//==============================================================================
+use regex::Regex;
+use serde::{Deserialize, Serialize};
+use v_utils::prelude::*;
+
+use crate::{Issue, IssueIndex, IssueSelector, RepoInfo};
+
+//==============================================================================
+// Local - The interface for local issue storage
+//==============================================================================
+
+//==============================================================================
+// LocalPath - On-demand path construction
+//==============================================================================
+
+impl From<IssueIndex> for LocalPath {
+	fn from(index: IssueIndex) -> Self {
+		Self::new(index)
+	}
+}
+
+impl From<&Issue> for LocalPath {
+	fn from(issue: &Issue) -> Self {
+		Self::new(IssueIndex::from(issue))
+	}
+}
+
+//NB: the reason we expose methods through Local, - is to shortcut the possibility of having them appear without clear reference to what part of logic owns them.
+// Note that conventionally, same effect is achieved by deciding to not export methods out of a module, but use them as `mod::method`, which would translate to almost tht exactly the same eg `local::issue_dir()`
+// Difference is: when using AI, I can't control how the methods are exported. This tag solves it.
+
+//==============================================================================
+// Types
+//==============================================================================
 
 impl TryFrom<u8> for ExactMatchLevel {
 	type Error = &'static str;
@@ -1034,61 +1405,37 @@ impl TryFrom<u8> for ExactMatchLevel {
 	}
 }
 
-/// Issue identity extracted from a file path.
-#[derive(Clone, Debug)]
-pub struct PathIdentity {
-	pub issue_number: u64,
-	pub title: String,
-	pub parent_issue: Option<u64>,
-}
-
-/// Project-level metadata file.
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-pub struct ProjectMeta {
-	#[serde(default)]
-	pub virtual_project: bool,
-	#[serde(default)]
-	pub next_virtual_issue_number: u64,
-	#[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
-	pub issues: std::collections::BTreeMap<u64, IssueMeta>,
-}
-
-/// Per-issue metadata stored in .meta.json.
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-pub struct IssueMeta {
-	/// Timestamps for individual field changes.
-	#[serde(default)]
-	pub timestamps: crate::IssueTimestamps,
-}
-
 //==============================================================================
-// LazyIssue Implementation
+// LazyIssue Implementation for LocalIssueSource<FsReader>
 //==============================================================================
 
 impl crate::LazyIssue<Local> for Issue {
 	type Error = LocalError;
-	type Source = LocalPath;
+	type Source = LocalIssueSource<FsReader>;
 
-	async fn ancestry(source: &Self::Source) -> Result<crate::Ancestry, Self::Error> {
-		Local::extract_ancestry(&source.path).map_err(|_| LocalError::InvalidPath { path: source.path.clone() })
+	async fn parent_index(source: &Self::Source) -> Result<crate::IssueIndex, Self::Error> {
+		// The source's IssueIndex IS the issue's index; parent_index is derived from it
+		let index = source.index();
+		Ok(index.parent())
 	}
 
-	async fn identity(&mut self, source: Self::Source) -> Result<crate::IssueIdentity, Self::Error> {
+	async fn identity(&mut self, mut source: Self::Source) -> Result<crate::IssueIdentity, Self::Error> {
 		if self.identity.is_linked() {
 			return Ok(self.identity.clone());
 		}
 
-		let ancestry = Local::extract_ancestry(&source.path).map_err(|_| LocalError::InvalidPath { path: source.path.clone() })?;
+		let index = *source.index();
 
 		if self.contents.title.is_empty() {
-			let content = Local::read_content(&source).ok_or_else(|| LocalError::FileNotFound { path: source.path.clone() })?;
-			let parsed = Local::parse_single_node(&content, ancestry, &source.path)?;
+			let file_path = source.local_path.find_file_path(&source.reader)?;
+			let content = source.reader.read_content(&file_path).ok_or_else(|| LocalError::FileNotFound { path: file_path.clone() })?;
+			let parsed = Local::parse_single_node(&content, index, &file_path)?;
 			self.identity = parsed.identity;
 			self.contents = parsed.contents;
 		}
 
 		if let Some(issue_number) = self.identity.number()
-			&& let Some(meta) = Local::load_issue_meta_from_source(ancestry.owner(), ancestry.repo(), issue_number, source.source.clone())
+			&& let Some(meta) = Local::load_issue_meta_from_reader(index.repo_info(), issue_number, &source.reader)
 			&& let Some(linked) = self.identity.remote.as_linked_mut()
 		{
 			linked.timestamps = meta.timestamps;
@@ -1097,88 +1444,57 @@ impl crate::LazyIssue<Local> for Issue {
 		Ok(self.identity.clone())
 	}
 
-	async fn contents(&mut self, source: Self::Source) -> Result<crate::IssueContents, Self::Error> {
+	async fn contents(&mut self, mut source: Self::Source) -> Result<crate::IssueContents, Self::Error> {
 		if !self.contents.title.is_empty() {
 			return Ok(self.contents.clone());
 		}
 
-		let ancestry = Local::extract_ancestry(&source.path).map_err(|_| LocalError::InvalidPath { path: source.path.clone() })?;
-
-		let content = Local::read_content(&source).ok_or_else(|| LocalError::FileNotFound { path: source.path.clone() })?;
-		let parsed = Local::parse_single_node(&content, ancestry, &source.path)?;
+		let index = *source.index();
+		let file_path = source.local_path.find_file_path(&source.reader)?;
+		let content = source.reader.read_content(&file_path).ok_or_else(|| LocalError::FileNotFound { path: file_path.clone() })?;
+		let parsed = Local::parse_single_node(&content, index, &file_path)?;
 		self.identity = parsed.identity;
 		self.contents = parsed.contents;
 
 		Ok(self.contents.clone())
 	}
 
-	async fn children(&mut self, source: Self::Source) -> Result<Vec<Issue>, Self::Error> {
+	async fn children(&mut self, mut source: Self::Source) -> Result<Vec<Issue>, Self::Error> {
 		if !self.children.is_empty() {
 			return Ok(self.children.clone());
 		}
 
-		let is_dir_format = source
-			.path
-			.file_name()
-			.and_then(|n| n.to_str())
-			.map(|n| n.starts_with(Local::MAIN_ISSUE_FILENAME))
-			.unwrap_or(false);
-
-		if !is_dir_format {
-			return Ok(Vec::new());
-		}
-
-		let Some(dir) = source.path.parent() else {
+		// Check if this issue has a directory (children stored in separate files)
+		let dir_path = source.local_path.find_dir_path(&source.reader);
+		let Some(dir_path) = dir_path else {
 			return Ok(Vec::new());
 		};
 
-		let dir_source = LocalPath {
-			path: dir.to_path_buf(),
-			source: source.source.clone(),
-		};
-		let entries = Local::list_dir_entries(&dir_source);
-
+		let entries = source.reader.list_dir(&dir_path);
 		let mut children = Vec::new();
+		let this_index = *source.index();
 
 		for name in entries {
 			if name.starts_with(Local::MAIN_ISSUE_FILENAME) {
 				continue;
 			}
 
-			let entry_path = dir.join(&name);
-			let entry_source = source.child(entry_path.clone());
-
-			// Check if it's a file or directory
-			let is_file = name.ends_with(".md") || name.ends_with(".md.bak");
-			let is_directory = Local::is_dir(&entry_source);
-
-			let child_source = if is_file {
-				entry_source
-			} else if is_directory {
-				let main_path = Local::main_file_path(&entry_path, false);
-				let main_closed_path = Local::main_file_path(&entry_path, true);
-
-				let main_source = source.child(main_path);
-				let main_closed_source = source.child(main_closed_path);
-
-				if Local::path_exists(&main_source) {
-					main_source
-				} else if Local::path_exists(&main_closed_source) {
-					main_closed_source
-				} else {
-					continue;
-				}
-			} else {
-				continue;
+			// Parse child issue number from filename/dirname
+			let child_selector = match Local::parse_issue_selector_from_name(&name) {
+				Some(sel) => sel,
+				None => continue,
 			};
+
+			let child_index = this_index.child(child_selector);
+			let child_source = source.child(child_index);
 
 			let child = <Issue as crate::LazyIssue<Local>>::load(child_source).await?;
 			children.push(child);
 		}
 
 		children.sort_by(|a, b| {
-			let a_num = a.number().unwrap_or(0);
-			let b_num = b.number().unwrap_or(0);
+			let a_num = a.number().unwrap_or(0); //IGNORED_ERROR: pending issues (no number) sort first
+			let b_num = b.number().unwrap_or(0); //IGNORED_ERROR: pending issues (no number) sort first
 			a_num.cmp(&b_num)
 		});
 
@@ -1187,8 +1503,11 @@ impl crate::LazyIssue<Local> for Issue {
 	}
 
 	async fn load(source: Self::Source) -> Result<Issue, Self::Error> {
-		let ancestry = <Self as crate::LazyIssue<Local>>::ancestry(&source).await?;
-		let mut issue = Issue::empty_local(ancestry);
+		// Check for unresolved conflicts (only for FsReader/Submitted, and only for root loads)
+		conflict::check_conflict(source.index().owner())?;
+
+		let parent_index = <Self as crate::LazyIssue<Local>>::parent_index(&source).await?;
+		let mut issue = Issue::empty_local(parent_index);
 		<Self as crate::LazyIssue<Local>>::identity(&mut issue, source.clone()).await?;
 		<Self as crate::LazyIssue<Local>>::contents(&mut issue, source.clone()).await?;
 		Box::pin(<Self as crate::LazyIssue<Local>>::children(&mut issue, source)).await?;
@@ -1197,242 +1516,106 @@ impl crate::LazyIssue<Local> for Issue {
 }
 
 //==============================================================================
-// Sink Implementation
+// LazyIssue Implementation for LocalIssueSource<GitReader> (Consensus loading)
 //==============================================================================
 
-//TODO: @claude: create proper error type for Submitted sink (see ConsensusSinkError for reference)
-impl Sink<Submitted> for Issue {
-	type Error = color_eyre::Report;
+impl crate::LazyIssue<LocalConsensus> for Issue {
+	type Error = LocalError;
+	type Source = LocalIssueSource<GitReader>;
 
-	async fn sink(&mut self, old: Option<&Issue>) -> Result<bool, Self::Error> {
-		let owner = self.identity.owner();
-		let repo = self.identity.repo();
-
-		sink_issue_node(self, old, owner, repo, &[])
-	}
-}
-
-impl Sink<Consensus> for Issue {
-	type Error = ConsensusSinkError;
-
-	async fn sink(&mut self, old: Option<&Issue>) -> Result<bool, Self::Error> {
-		use std::process::Command;
-
-		let owner = self.identity.owner();
-		let repo = self.identity.repo();
-
-		// Write files to filesystem (same as Submitted)
-		let any_written = sink_issue_node(self, old, owner, repo, &[]).map_err(ConsensusSinkError::Write)?;
-
-		if !any_written {
-			return Ok(false);
-		}
-
-		// Stage and commit to git
-		let data_dir = Local::issues_dir();
-		let data_dir_str = data_dir.to_str().ok_or(ConsensusSinkError::InvalidDataDir)?;
-
-		// Stage all changes
-		let add_output = Command::new("git").args(["-C", data_dir_str, "add", "-A"]).output()?;
-		if !add_output.status.success() {
-			return Err(ConsensusSinkError::GitAdd(String::from_utf8_lossy(&add_output.stderr).into_owned()));
-		}
-
-		// Check if any files were ignored (would indicate .gitignore rejection)
-		let status_output = Command::new("git").args(["-C", data_dir_str, "status", "--porcelain"]).output()?;
-		if !status_output.status.success() {
-			return Err(ConsensusSinkError::GitStatus(String::from_utf8_lossy(&status_output.stderr).into_owned()));
-		}
-
-		// Check for ignored files that we tried to add
-		let project_dir = Local::project_dir(owner, repo);
-		if let Ok(rel) = project_dir.strip_prefix(&data_dir) {
-			let check_ignored = Command::new("git").args(["-C", data_dir_str, "check-ignore", "--no-index", "-v"]).arg(rel.join("**")).output()?;
-			// check-ignore returns 0 if files ARE ignored, 1 if none are ignored
-			if check_ignored.status.success() && !check_ignored.stdout.is_empty() {
-				return Err(ConsensusSinkError::GitIgnoreRejection(String::from_utf8_lossy(&check_ignored.stdout).into_owned()));
-			}
-		}
-
-		// Check if there are staged changes to commit
-		let diff_output = Command::new("git").args(["-C", data_dir_str, "diff", "--cached", "--quiet"]).status()?;
-		if diff_output.success() {
-			// No staged changes - nothing to commit
-			return Ok(false);
-		}
-
-		// Commit with a descriptive message
-		let issue_number = self.number().map(|n| format!("#{n}")).unwrap_or_else(|| "new".to_string());
-		let commit_msg = format!("sync: {owner}/{repo}{issue_number}");
-		let commit_output = Command::new("git").args(["-C", data_dir_str, "commit", "-m", &commit_msg]).output()?;
-		if !commit_output.status.success() {
-			return Err(ConsensusSinkError::GitCommit(String::from_utf8_lossy(&commit_output.stderr).into_owned()));
-		}
-
-		Ok(true)
-	}
-}
-
-/// Sink an issue node to the local filesystem.
-/// Uses issue's identity.ancestry for path construction.
-#[allow(deprecated)]
-fn sink_issue_node(issue: &Issue, old: Option<&Issue>, owner: &str, repo: &str, _ancestors: &[FetchedIssue]) -> Result<bool> {
-	let issue_number = issue.number();
-	let title = &issue.contents.title;
-	let closed = issue.contents.state.is_closed();
-	let has_children = !issue.children.is_empty();
-	let old_has_children = old.map(|o| !o.children.is_empty()).unwrap_or(false);
-
-	// Build ancestor directory names from issue's ancestry lineage
-	let lineage = issue.identity.ancestry.lineage();
-	eprintln!("[sink_issue_node] issue #{issue_number:?} '{title}', lineage: {lineage:?}");
-	let ancestor_dir_names = match Local::build_ancestor_dir_names(&issue.identity.ancestry) {
-		Ok(names) => names,
-		Err(e) => {
-			eprintln!("[sink_issue_node] build_ancestor_dir_names FAILED: {e}");
-			vec![]
-		}
-	};
-	eprintln!("[sink_issue_node] ancestor_dir_names: {ancestor_dir_names:?}");
-
-	// If this issue has a parent (lineage non-empty), ensure the parent is in directory format.
-	// The parent may currently be a flat file that needs to be converted to __main__.md.
-	if let Some(parent_dir_name) = ancestor_dir_names.last() {
-		let grandparent_dir_names = &ancestor_dir_names[..ancestor_dir_names.len() - 1];
-		let mut parent_dir = Local::project_dir(owner, repo);
-		for dir_name in grandparent_dir_names {
-			parent_dir = parent_dir.join(dir_name);
-		}
-		parent_dir = parent_dir.join(parent_dir_name);
-		eprintln!("[sink_issue_node] parent_dir: {}, is_dir: {}", parent_dir.display(), parent_dir.is_dir());
-
-		if !parent_dir.is_dir() {
-			// Parent exists as flat file, need to convert to directory
-			let flat_open = parent_dir.with_extension("md");
-			let flat_closed = PathBuf::from(format!("{}.md.bak", parent_dir.display()));
-			eprintln!("[sink_issue_node] flat_open: {}, exists: {}", flat_open.display(), flat_open.exists());
-			eprintln!("[sink_issue_node] flat_closed: {}, exists: {}", flat_closed.display(), flat_closed.exists());
-
-			std::fs::create_dir_all(&parent_dir)?;
-
-			// Move whichever flat file exists to __main__.md (preserving closed state)
-			if flat_closed.exists() {
-				let main_path = Local::main_file_path(&parent_dir, true);
-				eprintln!("[sink_issue_node] moving {} -> {}", flat_closed.display(), main_path.display());
-				std::fs::rename(&flat_closed, &main_path)?;
-			} else if flat_open.exists() {
-				let main_path = Local::main_file_path(&parent_dir, false);
-				eprintln!("[sink_issue_node] moving {} -> {}", flat_open.display(), main_path.display());
-				std::fs::rename(&flat_open, &main_path)?;
-			}
-		}
+	async fn parent_index(source: &Self::Source) -> Result<crate::IssueIndex, Self::Error> {
+		let index = source.index();
+		Ok(index.parent())
 	}
 
-	let format_changed = has_children != old_has_children;
-
-	let issue_file_path = if has_children {
-		let issue_dir = Local::issue_dir_path_from_dir_names(owner, repo, issue_number, title, &ancestor_dir_names);
-		std::fs::create_dir_all(&issue_dir)?;
-
-		if format_changed {
-			let old_flat_path = Local::issue_file_path_from_dir_names(owner, repo, issue_number, title, false, &ancestor_dir_names);
-			if old_flat_path.exists() {
-				std::fs::remove_file(&old_flat_path)?;
-			}
-			let old_flat_closed = Local::issue_file_path_from_dir_names(owner, repo, issue_number, title, true, &ancestor_dir_names);
-			if old_flat_closed.exists() {
-				std::fs::remove_file(&old_flat_closed)?;
-			}
+	async fn identity(&mut self, mut source: Self::Source) -> Result<crate::IssueIdentity, Self::Error> {
+		if self.identity.is_linked() {
+			return Ok(self.identity.clone());
 		}
 
-		let old_main_path = Local::main_file_path(&issue_dir, !closed);
-		if old_main_path.exists() {
-			std::fs::remove_file(&old_main_path)?;
+		let index = *source.index();
+
+		if self.contents.title.is_empty() {
+			let file_path = source.local_path.find_file_path(&source.reader)?;
+			let content = source.reader.read_content(&file_path).ok_or_else(|| LocalError::FileNotFound { path: file_path.clone() })?;
+			let parsed = Local::parse_single_node(&content, index, &file_path)?;
+			self.identity = parsed.identity;
+			self.contents = parsed.contents;
 		}
 
-		Local::main_file_path(&issue_dir, closed)
-	} else {
-		// Clean up old file with opposite closed state
-		let old_path = Local::issue_file_path_from_dir_names(owner, repo, issue_number, title, !closed, &ancestor_dir_names);
-		if old_path.exists() {
-			std::fs::remove_file(&old_path)?;
+		if let Some(issue_number) = self.identity.number()
+			&& let Some(meta) = Local::load_issue_meta_from_reader(index.repo_info(), issue_number, &source.reader)
+			&& let Some(linked) = self.identity.remote.as_linked_mut()
+		{
+			linked.timestamps = meta.timestamps;
 		}
 
-		// If issue now has a number, also clean up old pending file (without number)
-		if issue_number.is_some() {
-			let pending_path = Local::issue_file_path_from_dir_names(owner, repo, None, title, false, &ancestor_dir_names);
-			if pending_path.exists() {
-				std::fs::remove_file(&pending_path)?;
-			}
-			let pending_closed = Local::issue_file_path_from_dir_names(owner, repo, None, title, true, &ancestor_dir_names);
-			if pending_closed.exists() {
-				std::fs::remove_file(&pending_closed)?;
-			}
-		}
-
-		Local::issue_file_path_from_dir_names(owner, repo, issue_number, title, closed, &ancestor_dir_names)
-	};
-
-	let content = issue.serialize_filesystem();
-	let node_changed = if format_changed {
-		true
-	} else if let Some(old_issue) = old {
-		content != old_issue.serialize_filesystem()
-	} else {
-		true
-	};
-
-	let mut any_written = false;
-
-	if node_changed {
-		if let Some(parent) = issue_file_path.parent() {
-			std::fs::create_dir_all(parent)?;
-		}
-
-		std::fs::write(&issue_file_path, &content)?;
-		any_written = true;
+		Ok(self.identity.clone())
 	}
 
-	if let Some(issue_num) = issue_number
-		&& let Some(timestamps) = issue.identity.timestamps()
-	{
-		let meta = IssueMeta { timestamps: timestamps.clone() };
-		Local::save_issue_meta(owner, repo, issue_num, &meta)?;
-	}
-
-	let old_children_map: std::collections::HashMap<u64, &Issue> = old.map(|o| o.children.iter().filter_map(|c| c.number().map(|n| (n, c))).collect()).unwrap_or_default();
-
-	let new_child_numbers: std::collections::HashSet<u64> = issue.children.iter().filter_map(|c| c.number()).collect();
-
-	for child in &issue.children {
-		let old_child = child.number().and_then(|n| old_children_map.get(&n).copied());
-		// Children have their own ancestry in their identity, so pass empty ancestors
-		any_written |= sink_issue_node(child, old_child, owner, repo, &[])?;
-	}
-
-	for (&old_num, &old_child) in &old_children_map {
-		if !new_child_numbers.contains(&old_num) {
-			fn remove_issue_files(issue: &Issue, owner: &str, repo: &str) -> Result<()> {
-				let issue_number = issue.number();
-				let title = &issue.contents.title;
-				let ancestor_dir_names = Local::build_ancestor_dir_names(&issue.identity.ancestry).unwrap_or_default();
-
-				let flat_open = Local::issue_file_path_from_dir_names(owner, repo, issue_number, title, false, &ancestor_dir_names);
-				let flat_closed = Local::issue_file_path_from_dir_names(owner, repo, issue_number, title, true, &ancestor_dir_names);
-				let _ = std::fs::remove_file(&flat_open);
-				let _ = std::fs::remove_file(&flat_closed);
-
-				let issue_dir = Local::issue_dir_path_from_dir_names(owner, repo, issue_number, title, &ancestor_dir_names);
-				if issue_dir.is_dir() {
-					std::fs::remove_dir_all(&issue_dir)?;
-				}
-
-				Ok(())
-			}
-			remove_issue_files(old_child, owner, repo)?;
-			Local::remove_issue_meta(owner, repo, old_num)?;
+	async fn contents(&mut self, mut source: Self::Source) -> Result<crate::IssueContents, Self::Error> {
+		if !self.contents.title.is_empty() {
+			return Ok(self.contents.clone());
 		}
+
+		let index = *source.index();
+		let file_path = source.local_path.find_file_path(&source.reader)?;
+		let content = source.reader.read_content(&file_path).ok_or_else(|| LocalError::FileNotFound { path: file_path.clone() })?;
+		let parsed = Local::parse_single_node(&content, index, &file_path)?;
+		self.identity = parsed.identity;
+		self.contents = parsed.contents;
+
+		Ok(self.contents.clone())
 	}
 
-	Ok(any_written)
+	async fn children(&mut self, mut source: Self::Source) -> Result<Vec<Issue>, Self::Error> {
+		if !self.children.is_empty() {
+			return Ok(self.children.clone());
+		}
+
+		let dir_path = source.local_path.find_dir_path(&source.reader);
+		let Some(dir_path) = dir_path else {
+			return Ok(Vec::new());
+		};
+
+		let entries = source.reader.list_dir(&dir_path);
+		let mut children = Vec::new();
+		let this_index = *source.index();
+
+		for name in entries {
+			if name.starts_with(Local::MAIN_ISSUE_FILENAME) {
+				continue;
+			}
+
+			let child_selector = match Local::parse_issue_selector_from_name(&name) {
+				Some(sel) => sel,
+				None => continue,
+			};
+
+			let child_index = this_index.child(child_selector);
+			let child_source = source.child(child_index);
+
+			let child = <Issue as crate::LazyIssue<LocalConsensus>>::load(child_source).await?;
+			children.push(child);
+		}
+
+		children.sort_by(|a, b| {
+			let a_num = a.number().unwrap_or(0); //IGNORED_ERROR: pending issues (no number) sort first
+			let b_num = b.number().unwrap_or(0); //IGNORED_ERROR: pending issues (no number) sort first
+			a_num.cmp(&b_num)
+		});
+
+		self.children = children.clone();
+		Ok(children)
+	}
+
+	async fn load(source: Self::Source) -> Result<Issue, Self::Error> {
+		// No conflict check for consensus loading (we're reading committed state)
+		let parent_index = <Self as crate::LazyIssue<LocalConsensus>>::parent_index(&source).await?;
+		let mut issue = Issue::empty_local(parent_index);
+		<Self as crate::LazyIssue<LocalConsensus>>::identity(&mut issue, source.clone()).await?;
+		<Self as crate::LazyIssue<LocalConsensus>>::contents(&mut issue, source.clone()).await?;
+		Box::pin(<Self as crate::LazyIssue<LocalConsensus>>::children(&mut issue, source)).await?;
+		Ok(issue)
+	}
 }

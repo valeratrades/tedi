@@ -12,9 +12,6 @@ use crate::config::LiveSettings;
 #[cfg(test)]
 use crate::mocks::MockTimestamp as TimestampImpl;
 
-/// Environment variable name for mock pipe (integration tests)
-const ENV_MOCK_PIPE: &str = concat!(env!("CARGO_PKG_NAME"), "_MOCK_PIPE");
-
 /// Open a file in editor.
 ///
 /// Behavior depends on environment:
@@ -50,7 +47,6 @@ pub async fn open_file<P: AsRef<Path> + std::fmt::Debug>(path: P, position: Opti
 	client.open(path).await?;
 	Ok(())
 }
-
 /// Run fd (find alternative) with the given arguments.
 /// Panics if fd is not installed.
 pub fn fd(args: &[&str], dir: &Path) -> Result<String> {
@@ -65,7 +61,6 @@ pub fn fd(args: &[&str], dir: &Path) -> Result<String> {
 		Err(e) => bail!("Failed to run fd: {e}"),
 	}
 }
-
 /// Run rg (ripgrep) with the given arguments.
 /// Panics if rg is not installed.
 pub fn rg(args: &[&str], dir: &Path) -> Result<String> {
@@ -81,7 +76,6 @@ pub fn rg(args: &[&str], dir: &Path) -> Result<String> {
 		Err(e) => bail!("Failed to run rg: {e}"),
 	}
 }
-
 pub fn format_date(days_back: usize, settings: &LiveSettings) -> String {
 	let date = TimestampImpl::now() - SignedDuration::from_hours(days_back as i64 * 24);
 	let offset = same_day_buffer();
@@ -91,7 +85,6 @@ pub fn format_date(days_back: usize, settings: &LiveSettings) -> String {
 	let format_str = if format_str.is_empty() { "%Y-%m-%d" } else { format_str };
 	(date - offset).strftime(format_str).to_string()
 }
-
 /// Ends of each day-section as offset to wake-time
 #[derive(Clone, Copy, Debug, Default, derive_new::new)]
 pub struct DaySectionBorders {
@@ -99,6 +92,23 @@ pub struct DaySectionBorders {
 	pub day_end: f32,
 	pub evening_end: f32,
 }
+/// Diff of sleep time from 00:00 utc
+pub fn same_day_buffer() -> SignedDuration {
+	let waketime = std::env::var("WAKETIME").unwrap();
+	let waketime = civil::Time::strptime("%H:%M", waketime.as_str()).unwrap();
+
+	let borders = DaySectionBorders::from_str(&std::env::var("DAY_SECTION_BORDERS").unwrap()).unwrap();
+	let sleep_offset_mins = (borders.evening_end * 60.0) as i64;
+
+	// Calculate in total minutes from midnight, then wrap at 24h
+	let waketime_mins = waketime.hour() as i64 * 60 + waketime.minute() as i64;
+	let bedtime_mins = waketime_mins + sleep_offset_mins;
+	let new_day_mins = (bedtime_mins + 6 * 60) % (24 * 60); // wrap at 24h
+	SignedDuration::from_mins(new_day_mins)
+}
+/// Environment variable name for mock pipe (integration tests)
+const ENV_MOCK_PIPE: &str = concat!(env!("CARGO_PKG_NAME"), "_MOCK_PIPE");
+
 impl std::str::FromStr for DaySectionBorders {
 	type Err = Report;
 
@@ -117,21 +127,6 @@ impl std::str::FromStr for DaySectionBorders {
 			bail!("invalid dimensions");
 		}
 	}
-}
-
-/// Diff of sleep time from 00:00 utc
-pub fn same_day_buffer() -> SignedDuration {
-	let waketime = std::env::var("WAKETIME").unwrap();
-	let waketime = civil::Time::strptime("%H:%M", waketime.as_str()).unwrap();
-
-	let borders = DaySectionBorders::from_str(&std::env::var("DAY_SECTION_BORDERS").unwrap()).unwrap();
-	let sleep_offset_mins = (borders.evening_end * 60.0) as i64;
-
-	// Calculate in total minutes from midnight, then wrap at 24h
-	let waketime_mins = waketime.hour() as i64 * 60 + waketime.minute() as i64;
-	let bedtime_mins = waketime_mins + sleep_offset_mins;
-	let new_day_mins = (bedtime_mins + 6 * 60) % (24 * 60); // wrap at 24h
-	SignedDuration::from_mins(new_day_mins)
 }
 
 #[cfg(test)]

@@ -2,10 +2,11 @@
 //!
 //! Provides functions to commit issue changes to git.
 
-use std::{path::Path, process::Command};
+use std::process::Command;
 
-use tedi::local::Local;
 use v_utils::prelude::*;
+
+use super::super::Local;
 
 /// Check if git is initialized in the issues directory.
 pub fn is_git_initialized() -> bool {
@@ -17,17 +18,21 @@ pub fn is_git_initialized() -> bool {
 	Command::new("git")
 		.args(["-C", data_dir_str, "rev-parse", "--git-dir"])
 		.output()
-		.map(|o| o.status.success())
-		.unwrap_or(false)
+		.expect("failed to execute git command")
+		.status
+		.success()
 }
 
 /// Stage and commit changes for an issue file.
-pub fn commit_issue_changes(_file_path: &Path, owner: &str, repo: &str, issue_number: u64, message: Option<&str>) -> Result<()> {
+pub fn commit_issue_changes(owner: &str, repo: &str, issue_number: u64) -> Result<()> {
 	let data_dir = Local::issues_dir();
 	let data_dir_str = data_dir.to_str().ok_or_else(|| eyre!("Invalid data directory path"))?;
 
 	// Stage changes
-	let _ = Command::new("git").args(["-C", data_dir_str, "add", "-A"]).status()?;
+	let add_status = Command::new("git").args(["-C", data_dir_str, "add", "-A"]).status()?;
+	if !add_status.success() {
+		bail!("git add -A failed");
+	}
 
 	// Check if there are staged changes
 	let diff_output = Command::new("git").args(["-C", data_dir_str, "diff", "--cached", "--quiet"]).status()?;
@@ -37,9 +42,8 @@ pub fn commit_issue_changes(_file_path: &Path, owner: &str, repo: &str, issue_nu
 	}
 
 	// Commit with provided or default message
-	let default_msg = format!("sync: {owner}/{repo}#{issue_number}");
-	let commit_msg = message.unwrap_or(&default_msg);
-	Command::new("git").args(["-C", data_dir_str, "commit", "-m", commit_msg]).output()?;
+	let commit_msg = format!("sync: {owner}/{repo}#{issue_number}");
+	Command::new("git").args(["-C", data_dir_str, "commit", "-m", &commit_msg]).output()?;
 
 	Ok(())
 }

@@ -14,11 +14,11 @@
 use std::{path::PathBuf, process::Command};
 
 use miette::Diagnostic;
-use tedi::{Issue, local::Local};
 use thiserror::Error;
 use v_utils::prelude::*;
 
-use super::consensus::is_git_initialized;
+use super::{Local, consensus::is_git_initialized};
+use crate::Issue;
 
 //==============================================================================
 // Error Types
@@ -71,14 +71,6 @@ pub fn conflict_file_path(owner: &str) -> PathBuf {
 // Conflict Detection
 //==============================================================================
 
-/// Check if file content contains git conflict markers.
-fn has_conflict_markers(content: &str) -> bool {
-	let has_ours = content.contains("<<<<<<<");
-	let has_separator = content.contains("=======");
-	let has_theirs = content.contains(">>>>>>>");
-	has_ours && has_separator && has_theirs
-}
-
 /// Check for unresolved conflict for a given owner.
 ///
 /// Returns:
@@ -102,18 +94,6 @@ pub fn check_conflict(owner: &str) -> Result<(), ConflictBlockedError> {
 		Ok(())
 	}
 }
-
-/// Check if we're in the middle of a git merge.
-fn is_merge_in_progress() -> bool {
-	let data_dir = Local::issues_dir();
-	let merge_head = data_dir.join(".git/MERGE_HEAD");
-	merge_head.exists()
-}
-
-//==============================================================================
-// Conflict Resolution
-//==============================================================================
-
 /// Read the resolved conflict issue from `__conflict.md`.
 ///
 /// Call this after user has resolved the conflict (no more markers).
@@ -129,7 +109,6 @@ pub fn read_resolved_conflict(owner: &str) -> Result<Issue> {
 
 	Issue::deserialize_virtual(&content).map_err(|e| eyre!("Failed to parse resolved conflict: {e}"))
 }
-
 /// Remove the conflict file after successful resolution.
 pub fn remove_conflict_file(owner: &str) -> Result<()> {
 	let conflict_file = conflict_file_path(owner);
@@ -138,11 +117,6 @@ pub fn remove_conflict_file(owner: &str) -> Result<()> {
 	}
 	Ok(())
 }
-
-//==============================================================================
-// Conflict Creation (Git Branch Merge)
-//==============================================================================
-
 /// Outcome of initiating a conflict merge.
 pub enum ConflictOutcome {
 	/// Merge succeeded automatically (no conflicts).
@@ -152,7 +126,6 @@ pub enum ConflictOutcome {
 	/// Both sides are identical, no merge needed.
 	NoChanges,
 }
-
 /// Initiate a git merge conflict between local and remote issue states.
 ///
 /// This creates a real git conflict by:
@@ -188,7 +161,12 @@ pub fn initiate_conflict_merge(owner: &str, repo: &str, issue_number: u64, local
 	std::fs::write(&conflict_file, &local_virtual)?;
 
 	// Stage and commit local state
-	let _ = Command::new("git").args(["-C", data_dir_str, "add", "-A"]).status()?;
+	let add_status = Command::new("git").args(["-C", data_dir_str, "add", "-A"]).status()?;
+	if !add_status.success() {
+		return Err(ConflictError::GitError {
+			message: "git add -A failed".into(),
+		});
+	}
 
 	let commit_msg = format!("__conflict: local state for {owner}/{repo}#{issue_number}");
 	let commit_output = Command::new("git").args(["-C", data_dir_str, "commit", "-m", &commit_msg]).output()?;
@@ -237,7 +215,13 @@ pub fn initiate_conflict_merge(owner: &str, repo: &str, issue_number: u64, local
 	std::fs::write(&conflict_file, &remote_virtual)?;
 
 	// Stage and commit remote state
-	let _ = Command::new("git").args(["-C", data_dir_str, "add", "-A"]).status()?;
+	let add_status = Command::new("git").args(["-C", data_dir_str, "add", "-A"]).status()?;
+	if !add_status.success() {
+		cleanup_branch(data_dir_str, &current_branch);
+		return Err(ConflictError::GitError {
+			message: "git add -A failed".into(),
+		});
+	}
 
 	// Check if there are changes to commit
 	let diff_status = Command::new("git").args(["-C", data_dir_str, "diff", "--cached", "--quiet"]).status()?;
@@ -300,12 +284,6 @@ pub fn initiate_conflict_merge(owner: &str, repo: &str, issue_number: u64, local
 		})
 	}
 }
-
-/// Cleanup the remote-state branch after merge completes.
-fn cleanup_branch(data_dir_str: &str, _current_branch: &str) {
-	let _ = Command::new("git").args(["-C", data_dir_str, "branch", "-D", "remote-state"]).output();
-}
-
 /// Complete the conflict resolution process.
 ///
 /// Call this after user has resolved conflicts and committed.
@@ -327,17 +305,6 @@ pub fn complete_conflict_resolution(owner: &str) -> Result<()> {
 
 	Ok(())
 }
-
-//==============================================================================
-// Legacy API (deprecated, used by old sync.rs until rewrite)
-//==============================================================================
-
-/// Legacy: Get the conflicts directory (marker-file based approach).
-/// DEPRECATED: Will be removed when sync.rs is rewritten.
-fn legacy_conflicts_dir() -> PathBuf {
-	v_utils::xdg_state_dir!("conflicts")
-}
-
 /// Legacy: Check for any unresolved conflicts (marker-file based).
 /// DEPRECATED: Will be removed when sync.rs is rewritten.
 pub fn check_any_conflicts() -> Result<(), ConflictBlockedError> {
@@ -387,6 +354,43 @@ pub fn check_any_conflicts() -> Result<(), ConflictBlockedError> {
 	}
 
 	Ok(())
+}
+/// Check if file content contains git conflict markers.
+fn has_conflict_markers(content: &str) -> bool {
+	let has_ours = content.contains("<<<<<<<");
+	let has_separator = content.contains("=======");
+	let has_theirs = content.contains(">>>>>>>");
+	has_ours && has_separator && has_theirs
+}
+
+/// Check if we're in the middle of a git merge.
+fn is_merge_in_progress() -> bool {
+	let data_dir = Local::issues_dir();
+	let merge_head = data_dir.join(".git/MERGE_HEAD");
+	merge_head.exists()
+}
+
+//==============================================================================
+// Conflict Resolution
+//==============================================================================
+
+//==============================================================================
+// Conflict Creation (Git Branch Merge)
+//==============================================================================
+
+/// Cleanup the remote-state branch after merge completes.
+fn cleanup_branch(data_dir_str: &str, _current_branch: &str) {
+	let _ = Command::new("git").args(["-C", data_dir_str, "branch", "-D", "remote-state"]).output();
+}
+
+//==============================================================================
+// Legacy API (deprecated, used by old sync.rs until rewrite)
+//==============================================================================
+
+/// Legacy: Get the conflicts directory (marker-file based approach).
+/// DEPRECATED: Will be removed when sync.rs is rewritten.
+fn legacy_conflicts_dir() -> PathBuf {
+	v_utils::xdg_state_dir!("conflicts")
 }
 
 #[cfg(test)]

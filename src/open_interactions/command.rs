@@ -5,7 +5,7 @@ use std::path::Path;
 use clap::Args;
 use tedi::{
 	Issue, IssueLink, LazyIssue,
-	local::{ExactMatchLevel, Local, Submitted},
+	local::{ExactMatchLevel, FsReader, Local, LocalIssueSource, Submitted},
 	sink::Sink,
 };
 use v_utils::prelude::*;
@@ -13,7 +13,7 @@ use v_utils::prelude::*;
 use super::{
 	remote::{Remote, RemoteSource},
 	sync::{MergeMode, Modifier, Side, SyncOptions, modify_and_sync_issue},
-	touch::{TouchPathResult, create_pending_issue, parse_touch_path},
+	touch::{TouchPathResult, parse_touch_path, resolve_touch_path},
 };
 use crate::{config::LiveSettings, github};
 
@@ -129,37 +129,37 @@ pub async fn open_command(settings: &LiveSettings, args: OpenArgs, offline: bool
 	};
 	let input = input.as_str();
 
-	// Resolve the issue file path and sync options based on mode
-	let (issue_file_path, sync_opts, effective_offline) = if args.last {
-		// Handle --last mode: open the most recently modified issue file
-		let all_files = Local::search_issue_files("")?;
-		if all_files.is_empty() {
-			bail!("No issue files found. Use a Github URL to fetch an issue first.");
-		}
-		// Files are already sorted by modification time (most recent first)
-		(all_files[0].clone(), local_sync_opts(), offline)
-	} else if args.touch {
-		// Handle --touch mode
+	// Handle --touch mode first and separately
+	if args.touch {
 		let touch_result = parse_touch_path(input)?;
+		let is_create = matches!(touch_result, TouchPathResult::Create(_));
+		let issue = resolve_touch_path(touch_result).await?;
+		let project_is_virtual = issue.identity.is_virtual();
 
-		match touch_result {
-			TouchPathResult::Found(ancestry) => {
-				// Found existing issue - look up the file path
-				let path = Local::find_issue_file_by_ancestry(&ancestry).ok_or_else(|| eyre!("Issue matched but file not found for ancestry: {ancestry:?}"))?;
-				let project_is_virtual = Local::is_virtual_project(ancestry.owner(), ancestry.repo());
-				println!("Found existing issue: {path:?}");
-				(path, local_sync_opts(), offline || project_is_virtual)
+		if is_create {
+			if !issue.identity.lineage().is_empty() {
+				println!("Creating pending sub-issue: {}", issue.contents.title);
+			} else {
+				println!("Creating pending issue: {}", issue.contents.title);
 			}
-			TouchPathResult::Create { title, ancestry } => {
-				// Create pending issue, write to disk, then use unified sync flow
-				// Works the same for virtual and real projects - sync handles the difference
-				let project_is_virtual = Local::is_virtual_project(ancestry.owner(), ancestry.repo());
-				let (mut issue, path) = create_pending_issue(&title, &ancestry, project_is_virtual)?;
-				<Issue as Sink<Submitted>>::sink(&mut issue, None).await?;
-				modify_and_sync_issue(&path, project_is_virtual, Modifier::Editor { open_at_blocker: false }, local_sync_opts()).await?;
-				return Ok(());
+			if !project_is_virtual {
+				println!("Issue will be created on Github when you save and sync.");
 			}
+		} else {
+			println!("Found existing issue: {}", issue.contents.title);
 		}
+
+		modify_and_sync_issue(issue, project_is_virtual, Modifier::Editor { open_at_blocker }, local_sync_opts()).await?;
+		return Ok(());
+	}
+
+	// Resolve issue and sync options based on mode
+	let (issue, sync_opts, effective_offline) = if args.last {
+		// Handle --last mode: open the most recently modified issue file
+		let path = Local::most_recent_issue_file()?.ok_or_else(|| eyre!("No issue files found. Use a Github URL to fetch an issue first."))?;
+		let source = LocalIssueSource::<FsReader>::from_path(&path)?;
+		let issue = <Issue as LazyIssue<Local>>::load(source).await?;
+		(issue, local_sync_opts(), offline)
 	} else if github::is_github_issue_url(input) {
 		// Github URL mode: unified with --pull behavior
 		// URL opening implies pull=true and prefers Remote for --force/--reset
@@ -172,10 +172,11 @@ pub async fn open_command(settings: &LiveSettings, args: OpenArgs, offline: bool
 		// Check if we already have this issue locally
 		let existing_path = Local::find_issue_file(&owner, &repo, Some(issue_number), "", &[]);
 
-		let issue_file_path = if let Some(path) = existing_path {
+		let issue = if let Some(path) = existing_path {
 			// File exists locally - proceed with unified sync (like --pull)
 			println!("Found existing local file, will sync with remote...");
-			path
+			let source = LocalIssueSource::<FsReader>::from_path(&path)?;
+			<Issue as LazyIssue<Local>>::load(source).await?
 		} else {
 			// File doesn't exist - fetch and create it
 			println!("Fetching issue #{issue_number} from {owner}/{repo}...");
@@ -189,49 +190,41 @@ pub async fn open_command(settings: &LiveSettings, args: OpenArgs, offline: bool
 			// Write to local filesystem
 			<Issue as Sink<Submitted>>::sink(&mut issue, None).await?;
 
-			// Find the path where it was written
-			let path = Local::find_issue_file(&owner, &repo, Some(issue_number), &issue.contents.title, &[]).expect("just wrote the issue");
-			println!("Stored issue at: {path:?}");
+			println!("Stored issue");
 
 			// Commit the fetched state as the consensus baseline
 			use super::consensus::commit_issue_changes;
-			commit_issue_changes(&path, &owner, &repo, issue_number, Some("initial fetch"))?;
+			commit_issue_changes(&owner, &repo, issue_number)?;
 
-			path
+			issue
 		};
 
 		// URL mode uses remote_sync_opts: pull=true, --force/--reset prefer Remote
-		(issue_file_path, remote_sync_opts(), offline)
+		(issue, remote_sync_opts(), offline)
 	} else {
 		// Check if input is an existing file path (absolute or relative)
 		let input_path = Path::new(input);
-		if input_path.exists() && input_path.is_file() {
+		let issue_file_path = if input_path.exists() && input_path.is_file() {
 			// Direct file path - open it
-			(input_path.to_path_buf(), local_sync_opts(), offline)
+			input_path.to_path_buf()
 		} else {
-			// Local search mode: always pass all files to fzf, let it handle filtering
-			let all_files = Local::search_issue_files("")?;
-			if all_files.is_empty() {
-				bail!("No issue files found. Use a Github URL to fetch an issue first.");
-			}
-			let issue_file_path = match Local::choose_issue_with_fzf(&all_files, input, exact)? {
-				Some(path) => path,
-				None => bail!("No issue selected"),
-			};
+			// Local search mode: use fzf for interactive selection
+			Local::fzf_issue(input, exact)?
+		};
 
-			(issue_file_path, local_sync_opts(), offline)
-		}
+		let source = LocalIssueSource::<FsReader>::from_path(&issue_file_path)?;
+		let issue = <Issue as LazyIssue<Local>>::load(source).await?;
+		(issue, local_sync_opts(), offline)
 	};
 
-	// Open the local issue file for editing
-	// If using blocker mode, open at the last blocker position
-	modify_and_sync_issue(&issue_file_path, effective_offline, Modifier::Editor { open_at_blocker }, sync_opts).await?;
+	// Open the issue for editing
+	modify_and_sync_issue(issue, effective_offline, Modifier::Editor { open_at_blocker }, sync_opts).await?;
 
-	// If --blocker-set was used, set this issue as the current blocker issue
-	if args.blocker_set {
-		crate::blocker_interactions::integration::set_current_blocker_issue(&issue_file_path)?;
-		println!("Set current blocker issue to: {}", issue_file_path.display());
-	}
+	// TODO: --blocker-set needs issue file path, but we no longer track it here
+	// if args.blocker_set {
+	// 	crate::blocker_interactions::integration::set_current_blocker_issue(&issue_file_path)?;
+	// 	println!("Set current blocker issue to: {}", issue_file_path.display());
+	// }
 
 	Ok(())
 }

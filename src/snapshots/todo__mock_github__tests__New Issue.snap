@@ -1,5 +1,0 @@
----
-source: src/mock_github.rs
-expression: "\"New Issue\""
----
-New Issue

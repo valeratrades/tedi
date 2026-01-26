@@ -5,7 +5,7 @@
 
 use clap::ValueEnum;
 
-use super::util::is_blockers_marker;
+use super::Marker;
 
 /// Split text at the blockers marker, returning (content_before, blockers).
 /// If no blockers marker is found, returns the original text and an empty BlockerSequence.
@@ -13,7 +13,7 @@ pub fn split_blockers(text: &str) -> (String, BlockerSequence) {
 	let lines: Vec<&str> = text.lines().collect();
 
 	// Find the blockers marker
-	let marker_idx = lines.iter().position(|line| is_blockers_marker(line));
+	let marker_idx = lines.iter().position(|line| matches!(Marker::decode(line), Some(Marker::BlockersSection(_))));
 
 	match marker_idx {
 		Some(idx) => {

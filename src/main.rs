@@ -1,15 +1,85 @@
 #![allow(clippy::len_zero)]
-mod blocker_interactions;
 pub mod config;
+pub mod mocks;
+pub mod utils;
+#[tokio::main]
+async fn main() {
+	{
+		if let Some(filename) = extract_log_to() {
+			v_utils::clientside!(filename);
+		} else {
+			v_utils::clientside!();
+		}
+	}
+	if std::env::var("__IS_INTEGRATION_TEST").is_ok() {
+		// SAFETY: This is called at program start before any other threads are spawned
+		unsafe { std::env::set_var("LOG_DIRECTIVES", concat!("info,", env!("CARGO_PKG_NAME"), "=debug")) };
+	}
+
+	let cli = Cli::parse();
+
+	let settings = match config::LiveSettings::new(cli.settings_flags.clone(), Duration::from_secs(3)) {
+		Ok(s) => s,
+		Err(e) => {
+			eprintln!("Error: {e}");
+			std::process::exit(1);
+		}
+	};
+
+	// Commands that require GitHub client (when not offline)
+	let needs_github = matches!(cli.command, Commands::Open(_) | Commands::Blocker(_)) && !cli.offline;
+
+	let github_client: Option<github::BoxedGithubClient> = if cli.mock {
+		Some(std::sync::Arc::new(mock_github::MockGithubClient::new("mock_user")))
+	} else if needs_github {
+		match github::RealGithubClient::new(&settings) {
+			Ok(client) => Some(std::sync::Arc::new(client)),
+			Err(e) => {
+				eprintln!("Error: {e}");
+				std::process::exit(1);
+			}
+		}
+	} else {
+		// Commands that don't need GitHub - don't initialize client
+		None
+	};
+
+	// Set global GitHub client for sink operations (if initialized)
+	if let Some(client) = github_client {
+		github::client::set(client);
+	}
+
+	// All the functions here can rely on config being correct.
+	let success = match cli.command {
+		Commands::Manual(manual_args) => manual_stats::update_or_open(&settings, manual_args).await,
+		Commands::Milestones(milestones_command) => milestones::milestones_command(&settings, milestones_command).await,
+		Commands::Init(args) => {
+			shell_init::output(&settings, args);
+			Ok(())
+		}
+		Commands::Blocker(args) => blocker_interactions::main(args, cli.offline).await,
+		Commands::Clockify(args) => blocker_interactions::clockify::clockify_main(&settings, args).await,
+		Commands::PerfEval(args) => perf_eval::main(&settings, args).await,
+		Commands::WatchMonitors(args) => watch_monitors::main(&settings, args),
+		Commands::Open(args) => open_interactions::open_command(&settings, args, cli.offline).await,
+	};
+
+	match success {
+		Ok(_) => std::process::exit(0),
+		Err(e) => {
+			eprintln!("Error: {e}");
+			std::process::exit(1);
+		}
+	}
+}
+mod blocker_interactions;
 mod github;
 mod manual_stats;
 mod milestones;
 mod mock_github;
-pub mod mocks;
 mod open_interactions;
 mod perf_eval;
 mod shell_init;
-pub mod utils;
 mod watch_monitors;
 use std::time::Duration;
 
@@ -82,74 +152,4 @@ fn extract_log_to() -> Option<String> {
 	None
 }
 
-#[tokio::main]
-async fn main() {
-	{
-		if let Some(filename) = extract_log_to() {
-			v_utils::clientside!(filename);
-		} else {
-			v_utils::clientside!();
-		}
-	}
-	if std::env::var("__IS_INTEGRATION_TEST").is_ok() {
-		// SAFETY: This is called at program start before any other threads are spawned
-		unsafe { std::env::set_var("LOG_DIRECTIVES", concat!("info,", env!("CARGO_PKG_NAME"), "=debug")) };
-	}
-
-	let cli = Cli::parse();
-
-	let settings = match config::LiveSettings::new(cli.settings_flags.clone(), Duration::from_secs(3)) {
-		Ok(s) => s,
-		Err(e) => {
-			eprintln!("Error: {e}");
-			std::process::exit(1);
-		}
-	};
-
-	// Commands that require GitHub client (when not offline)
-	let needs_github = matches!(cli.command, Commands::Open(_) | Commands::Blocker(_)) && !cli.offline;
-
-	let github_client: Option<github::BoxedGithubClient> = if cli.mock {
-		Some(std::sync::Arc::new(mock_github::MockGithubClient::new("mock_user")))
-	} else if needs_github {
-		match github::RealGithubClient::new(&settings) {
-			Ok(client) => Some(std::sync::Arc::new(client)),
-			Err(e) => {
-				eprintln!("Error: {e}");
-				std::process::exit(1);
-			}
-		}
-	} else {
-		// Commands that don't need GitHub - don't initialize client
-		None
-	};
-
-	// Set global GitHub client for sink operations (if initialized)
-	if let Some(client) = github_client {
-		github::client::set(client);
-	}
-
-	// All the functions here can rely on config being correct.
-	let success = match cli.command {
-		Commands::Manual(manual_args) => manual_stats::update_or_open(&settings, manual_args).await,
-		Commands::Milestones(milestones_command) => milestones::milestones_command(&settings, milestones_command).await,
-		Commands::Init(args) => {
-			shell_init::output(&settings, args);
-			Ok(())
-		}
-		Commands::Blocker(args) => blocker_interactions::main(args, cli.offline).await,
-		Commands::Clockify(args) => blocker_interactions::clockify::clockify_main(&settings, args).await,
-		Commands::PerfEval(args) => perf_eval::main(&settings, args).await,
-		Commands::WatchMonitors(args) => watch_monitors::main(&settings, args),
-		Commands::Open(args) => open_interactions::open_command(&settings, args, cli.offline).await,
-	};
-
-	match success {
-		Ok(_) => std::process::exit(0),
-		Err(e) => {
-			eprintln!("Error: {e}");
-			std::process::exit(1);
-		}
-	}
-}
 // new work

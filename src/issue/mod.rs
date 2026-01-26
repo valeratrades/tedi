@@ -19,12 +19,9 @@ pub use marker::Marker;
 
 mod types;
 pub use types::{
-	Ancestry, CloseState, Comment, CommentIdentity, FetchedIssue, Issue, IssueContents, IssueIdentity, IssueLink, IssueRemote, IssueTimestamps, LazyIssue, LinkedIssueMeta,
-	MAX_LINEAGE_DEPTH, RepoInfo,
+	CloseState, Comment, CommentIdentity, Issue, IssueContents, IssueIdentity, IssueIndex, IssueLink, IssueRemote, IssueSelector, IssueTimestamps, LazyIssue, LinkedIssueMeta,
+	MAX_INDEX_DEPTH, MAX_LINEAGE_DEPTH, MAX_TITLE_LENGTH, RepoInfo,
 };
-
-mod util;
-pub use util::{is_blockers_marker, normalize_issue_indentation};
 
 // Re-export Header from parent
 pub use crate::Header;

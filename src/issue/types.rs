@@ -143,69 +143,11 @@ impl CommentIdentity /*{{{1*/ {
 }
 //,}}}1
 
-/// An issue with its title - used when we need both identity and display name.
-/// This is what we have after fetching an issue from Github.
-#[deprecated(note = "HORRIBLE PRIMITIVE ERRONEOUSLY USED IN OLD BAD LEGACY CODE. USE ANCESTRY OR DIRECTORY NAMES DIRECTLY.")]
-#[derive(Clone, Debug)]
-pub struct FetchedIssue {
-	pub link: IssueLink,
-	pub title: String,
-}
-
-impl FetchedIssue /*{{{1*/ {
-	pub fn new(link: IssueLink, title: impl Into<String>) -> Self {
-		Self { link, title: title.into() }
-	}
-
-	/// Create from owner, repo, number, and title (constructs the URL internally).
-	pub fn from_parts(owner: &str, repo: &str, number: u64, title: impl Into<String>) -> Option<Self> {
-		let url_str = format!("https://github.com/{owner}/{repo}/issues/{number}");
-		let link = IssueLink::parse(&url_str)?;
-		Some(Self { link, title: title.into() })
-	}
-
-	/// Convenience: get the issue number
-	pub fn number(&self) -> u64 {
-		self.link.number()
-	}
-
-	/// Convenience: get owner
-	pub fn owner(&self) -> &str {
-		self.link.owner()
-	}
-
-	/// Convenience: get repo
-	pub fn repo(&self) -> &str {
-		self.link.repo()
-	}
-}
-//,}}}1
-
 use super::{
+	Marker,
 	blocker::{BlockerSequence, classify_line, join_with_blockers},
 	error::{ParseContext, ParseError},
-	util::{is_blockers_marker, normalize_issue_indentation},
 };
-
-/// Result of parsing a checkbox prefix.
-enum CheckboxParseResult<'a> {
-	/// Successfully parsed checkbox
-	Ok(CloseState, &'a str),
-	/// Not a checkbox line (doesn't start with `- [`)
-	NotCheckbox,
-	/// Has checkbox syntax but invalid content (like `[abc]`)
-	InvalidContent(String),
-}
-
-/// Result of parsing a child title line.
-enum ChildTitleParseResult {
-	/// Successfully parsed child/sub-issue
-	Ok,
-	/// Not a child title line
-	NotChildTitle,
-	/// Has checkbox syntax but invalid content (like `[abc]`)
-	InvalidCheckbox(String),
-}
 
 /// Close state of an issue.
 /// Maps to Github's binary open/closed, but locally supports additional variants.
@@ -224,7 +166,6 @@ pub enum CloseState {
 	/// These should be removed from local storage entirely.
 	Duplicate(u64),
 }
-
 impl CloseState /*{{{1*/ {
 	/// Returns true if the issue is closed (any close variant)
 	pub fn is_closed(&self) -> bool {
@@ -302,7 +243,6 @@ impl CloseState /*{{{1*/ {
 		}
 	}
 }
-//,}}}1
 
 /// Timestamps tracking when individual fields of an issue were last changed.
 /// Each node keeps change info about itself only (not sub-issues).
@@ -321,7 +261,6 @@ pub struct IssueTimestamps {
 	/// Empty vec means no timestamp info available.
 	pub comments: Vec<Timestamp>,
 }
-
 impl IssueTimestamps {
 	/// Update timestamps based on what changed between old and new issue contents.
 	/// Sets the current time for any field that changed.
@@ -366,7 +305,7 @@ impl IssueTimestamps {
 }
 
 /// Metadata for an issue linked to Github.
-/// Lineage is stored separately in `Ancestry`.
+/// Parent chain is stored in `IssueIdentity.parent_index`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LinkedIssueMeta {
 	/// User who created the issue
@@ -377,7 +316,6 @@ pub struct LinkedIssueMeta {
 	/// Used for sync conflict resolution.
 	pub timestamps: IssueTimestamps,
 }
-
 impl LinkedIssueMeta {
 	/// Get the repository owner from the link.
 	pub fn owner(&self) -> &str {
@@ -410,7 +348,6 @@ pub enum IssueRemote {
 	/// Used for projects without a Github remote.
 	Virtual,
 }
-
 impl IssueRemote {
 	/// Returns true if this is a Github issue (linked or pending).
 	pub fn is_github(&self) -> bool {
@@ -449,36 +386,37 @@ impl IssueRemote {
 	}
 }
 
-/// Identity of an issue - always has ancestry, with remote connection info.
+/// Identity of an issue - always has parent_index (for location) with remote connection info.
 #[derive(Clone, Debug)]
 pub struct IssueIdentity {
-	/// Where in the tree this issue lives (owner/repo/lineage)
-	pub ancestry: Ancestry,
+	/// Parent's IssueIndex, or repo-only index for root issues.
+	/// For root issues: `IssueIndex::repo_only(owner, repo)` (empty index)
+	/// For child issues: parent's full `IssueIndex` (includes parent's selector)
+	pub parent_index: IssueIndex,
 	/// Remote connection status (Github linked/pending, or Virtual)
 	pub remote: IssueRemote,
 }
-
 impl IssueIdentity {
 	/// Create a new linked Github issue identity.
-	pub fn linked(ancestry: Ancestry, user: String, link: IssueLink, timestamps: IssueTimestamps) -> Self {
+	pub fn linked(parent_index: IssueIndex, user: String, link: IssueLink, timestamps: IssueTimestamps) -> Self {
 		Self {
-			ancestry,
+			parent_index,
 			remote: IssueRemote::Github(Box::new(Some(LinkedIssueMeta { user, link, timestamps }))),
 		}
 	}
 
 	/// Create a new pending Github issue identity (will be created on first sync).
-	pub fn pending(ancestry: Ancestry) -> Self {
+	pub fn pending(parent_index: IssueIndex) -> Self {
 		Self {
-			ancestry,
+			parent_index,
 			remote: IssueRemote::Github(Box::new(None)),
 		}
 	}
 
 	/// Create a new virtual (local-only) issue identity.
-	pub fn virtual_issue(ancestry: Ancestry) -> Self {
+	pub fn virtual_issue(parent_index: IssueIndex) -> Self {
 		Self {
-			ancestry,
+			parent_index,
 			remote: IssueRemote::Virtual,
 		}
 	}
@@ -486,8 +424,8 @@ impl IssueIdentity {
 	/// Create a new local-only issue identity.
 	/// DEPRECATED: use `pending()` for Github issues or `virtual_issue()` for local-only.
 	/// This currently maps to `pending()` for backwards compatibility.
-	pub fn local(ancestry: Ancestry) -> Self {
-		Self::pending(ancestry)
+	pub fn local(parent_index: IssueIndex) -> Self {
+		Self::pending(parent_index)
 	}
 
 	/// Check if this issue is linked to Github.
@@ -536,25 +474,32 @@ impl IssueIdentity {
 		self.remote.as_linked().map(|m| &m.timestamps)
 	}
 
-	/// Get ancestry (always available).
-	pub fn ancestry(&self) -> &Ancestry {
-		&self.ancestry
+	/// Get the repository info.
+	pub fn repo_info(&self) -> RepoInfo {
+		self.parent_index.repo_info()
 	}
 
-	/// Get owner (always available via ancestry).
+	/// Get owner.
 	pub fn owner(&self) -> &str {
-		self.ancestry.owner()
+		self.parent_index.owner()
 	}
 
-	/// Get repo (always available via ancestry).
+	/// Get repo.
 	pub fn repo(&self) -> &str {
-		self.ancestry.repo()
+		self.parent_index.repo()
 	}
 
-	/// Create a child's ancestry by appending this issue's number.
+	/// Get lineage (parent issue numbers).
+	/// For root issues: empty slice.
+	/// For child issues: all GitId numbers in parent_index.
+	pub fn lineage(&self) -> Vec<u64> {
+		self.parent_index.num_path()
+	}
+
+	/// Create a child's parent_index by appending this issue's number.
 	/// Returns None if this issue is not linked (has no number to append).
-	pub fn child_ancestry(&self) -> Option<Ancestry> {
-		self.number().map(|n| self.ancestry.child(n))
+	pub fn child_parent_index(&self) -> Option<IssueIndex> {
+		self.number().map(|n| self.parent_index.child(IssueSelector::GitId(n)))
 	}
 
 	/// Encode for serialization.
@@ -572,78 +517,102 @@ impl IssueIdentity {
 	}
 }
 
-impl PartialEq for IssueIdentity {
-	fn eq(&self, other: &IssueIdentity) -> bool {
-		self.ancestry == other.ancestry
+/// Maximum title length enforced by Github.
+pub const MAX_TITLE_LENGTH: usize = 256;
+
+/// Selector for identifying an issue within a repo.
+/// GitId is preferred when available, as title can change.
+/// Uses `ArrayString` for `Copy` semantics.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(clippy::large_enum_variant)] // Intentional: Title variant is large for Copy semantics
+pub enum IssueSelector {
+	/// Github issue number (stable identifier)
+	GitId(u64),
+	/// Issue title (for pending issues not yet synced to Github)
+	Title(ArrayString<MAX_TITLE_LENGTH>),
+}
+
+impl IssueSelector {
+	/// Create a Title selector from a string.
+	/// Panics if title exceeds MAX_TITLE_LENGTH (256 chars).
+	pub fn title(title: &str) -> Self {
+		Self::Title(ArrayString::from(title).unwrap_or_else(|_| panic!("title too long (max {MAX_TITLE_LENGTH} chars): {}", title.len())))
+	}
+
+	/// Try to create a Title selector from a string.
+	/// Returns None if title exceeds MAX_TITLE_LENGTH.
+	pub fn try_title(title: &str) -> Option<Self> {
+		ArrayString::from(title).ok().map(Self::Title)
 	}
 }
 
-/// Maximum nesting depth for issues (8 levels should be plenty).
-pub const MAX_LINEAGE_DEPTH: usize = 8;
+/// Maximum index depth (lineage + the issue itself).
+pub const MAX_INDEX_DEPTH: usize = MAX_LINEAGE_DEPTH + 1;
 
-/// Ancestry information for an issue - where it lives in the filesystem.
-/// This is always defined, even for pending issues.
+/// Minimal descriptor for locating an issue.
+/// Contains repo info and a path of selectors from root to the target issue (inclusive).
 /// Uses fixed-size storage to be `Copy`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Ancestry {
-	/// Repository owner and name
+pub struct IssueIndex {
 	repo_info: RepoInfo,
-	/// Chain of parent issue numbers from root to immediate parent.
-	/// Empty for root issues. Uses fixed array with length tracking.
-	lineage_arr: [u64; MAX_LINEAGE_DEPTH],
-	lineage_len: u8,
+	/// Path from root to target issue (inclusive). Uses fixed array with length tracking.
+	index_arr: [IssueSelector; MAX_INDEX_DEPTH],
+	index_len: u8,
 }
 
-impl Ancestry {
-	/// Create ancestry for a root issue.
-	/// Panics if owner or repo exceed their max lengths.
-	pub fn root(owner: &str, repo: &str) -> Self {
+impl IssueIndex {
+	/// Create descriptor for a root-level issue.
+	pub fn root(owner: &str, repo: &str, selector: IssueSelector) -> Self {
+		let mut index_arr = [IssueSelector::GitId(0); MAX_INDEX_DEPTH];
+		index_arr[0] = selector;
 		Self {
 			repo_info: RepoInfo::new(owner, repo),
-			lineage_arr: [0; MAX_LINEAGE_DEPTH],
-			lineage_len: 0,
+			index_arr,
+			index_len: 1,
 		}
 	}
 
-	/// Create ancestry for a root issue from RepoInfo.
-	pub fn root_from_repo(repo_info: RepoInfo) -> Self {
-		Self {
-			repo_info,
-			lineage_arr: [0; MAX_LINEAGE_DEPTH],
-			lineage_len: 0,
-		}
-	}
-
-	/// Create ancestry with a pre-existing lineage.
-	/// Panics if [owner](Ancestry::owner)/[repo](Ancestry::repo) str are too large or lineage exceeds [MAX_LINEAGE_DEPTH].
-	pub fn with_lineage(owner: &str, repo: &str, lineage: &[u64]) -> Self {
-		assert!(lineage.len() <= MAX_LINEAGE_DEPTH, "Issue nesting too deep (max {MAX_LINEAGE_DEPTH} levels)");
-		let mut lineage_arr = [0; MAX_LINEAGE_DEPTH];
-		lineage_arr[..lineage.len()].copy_from_slice(lineage);
+	/// Create descriptor for repo only (no specific issue).
+	pub fn repo_only(owner: &str, repo: &str) -> Self {
 		Self {
 			repo_info: RepoInfo::new(owner, repo),
-			lineage_arr,
-			lineage_len: lineage.len() as u8,
+			index_arr: [IssueSelector::GitId(0); MAX_INDEX_DEPTH],
+			index_len: 0,
 		}
 	}
 
-	/// Create ancestry for a child issue.
-	/// Panics if lineage would exceed MAX_LINEAGE_DEPTH.
-	pub fn child(&self, parent_number: u64) -> Self {
-		let new_len = self.lineage_len as usize + 1;
-		assert!(new_len <= MAX_LINEAGE_DEPTH, "Issue nesting too deep (max {MAX_LINEAGE_DEPTH} levels)");
-		let mut new_arr = self.lineage_arr;
-		new_arr[self.lineage_len as usize] = parent_number;
+	/// Create descriptor with full index path.
+	/// Panics if index exceeds MAX_INDEX_DEPTH.
+	pub fn with_index(owner: &str, repo: &str, index: Vec<IssueSelector>) -> Self {
+		assert!(index.len() <= MAX_INDEX_DEPTH, "Index too deep (max {MAX_INDEX_DEPTH} levels)");
+		let mut index_arr = [IssueSelector::GitId(0); MAX_INDEX_DEPTH];
+		for (i, sel) in index.iter().enumerate() {
+			index_arr[i] = *sel;
+		}
+		Self {
+			repo_info: RepoInfo::new(owner, repo),
+			index_arr,
+			index_len: index.len() as u8,
+		}
+	}
+
+	/// Add a child selector, returning new descriptor.
+	/// Panics if result would exceed MAX_INDEX_DEPTH.
+	pub fn child(&self, selector: IssueSelector) -> Self {
+		let new_len = self.index_len as usize + 1;
+		assert!(new_len <= MAX_INDEX_DEPTH, "Index too deep (max {MAX_INDEX_DEPTH} levels)");
+		let mut new_arr = self.index_arr;
+		new_arr[self.index_len as usize] = selector;
 		Self {
 			repo_info: self.repo_info,
-			lineage_arr: new_arr,
-			lineage_len: new_len as u8,
+			index_arr: new_arr,
+			index_len: new_len as u8,
 		}
 	}
 
-	/// Get the lineage as a slice.
-	pub fn lineage(&self) -> &[u64] {
-		&self.lineage_arr[..self.lineage_len as usize]
+	/// Get the index path.
+	pub fn index(&self) -> &[IssueSelector] {
+		&self.index_arr[..self.index_len as usize]
 	}
 
 	/// Get the repository info.
@@ -660,7 +629,94 @@ impl Ancestry {
 	pub fn repo(&self) -> &str {
 		self.repo_info.repo()
 	}
+
+	/// Extract numeric issue numbers from the index (GitId selectors only).
+	/// Returns all GitId values in order, skipping Title selectors.
+	pub fn num_path(&self) -> Vec<u64> {
+		self.index()
+			.iter()
+			.filter_map(|s| match s {
+				IssueSelector::GitId(n) => Some(*n),
+				IssueSelector::Title(_) => None,
+			})
+			.collect()
+	}
+
+	/// Get parent issue numbers.
+	/// If the issue has its own number (last selector is GitId), returns all preceding GitIds.
+	/// If the issue is pending (last selector is Title or empty), returns all GitIds.
+	pub fn parent_nums(&self) -> Vec<u64> {
+		let index = self.index();
+		match index.last() {
+			Some(IssueSelector::GitId(_)) => {
+				// Issue has its own number, parents are all preceding GitIds
+				index[..index.len() - 1]
+					.iter()
+					.filter_map(|s| match s {
+						IssueSelector::GitId(n) => Some(*n),
+						IssueSelector::Title(_) => None,
+					})
+					.collect()
+			}
+			Some(IssueSelector::Title(_)) | None => {
+				// Pending issue or empty - all GitIds are parents
+				self.num_path()
+			}
+		}
+	}
+
+	/// Get the issue's own number if the last selector is a GitId.
+	pub fn issue_number(&self) -> Option<u64> {
+		match self.index().last() {
+			Some(IssueSelector::GitId(n)) => Some(*n),
+			_ => None,
+		}
+	}
+
+	/// Get the parent's IssueIndex (all selectors except the last one).
+	/// For repo-only or single-selector indices, returns repo_only.
+	pub fn parent(&self) -> Self {
+		if self.index_len <= 1 {
+			Self::repo_only(self.repo_info.owner(), self.repo_info.repo())
+		} else {
+			Self {
+				repo_info: self.repo_info,
+				index_arr: self.index_arr,
+				index_len: self.index_len - 1,
+			}
+		}
+	}
 }
+
+impl std::fmt::Display for IssueIndex {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		write!(f, "{}/{}", self.repo_info.owner(), self.repo_info.repo())?;
+		for selector in self.index() {
+			match selector {
+				IssueSelector::GitId(n) => write!(f, "/#{n}")?,
+				IssueSelector::Title(t) => write!(f, "/{t}")?,
+			}
+		}
+		Ok(())
+	}
+}
+
+impl From<&Issue> for IssueIndex {
+	fn from(issue: &Issue) -> Self {
+		// Build this issue's IssueIndex by extending parent_index with this issue's selector
+		let parent_index = issue.identity.parent_index;
+
+		if let Some(n) = issue.number() {
+			// Issue has a number - add it as the last selector
+			parent_index.child(IssueSelector::GitId(n))
+		} else {
+			// Pending issue - add title as last selector to distinguish from parent-only paths
+			parent_index.child(IssueSelector::title(&issue.contents.title))
+		}
+	}
+}
+
+pub const MAX_LINEAGE_DEPTH: usize = 8;
 
 /// A comment in the issue conversation (first one is always the issue body)
 #[derive(Clone, Debug, PartialEq)]
@@ -670,7 +726,6 @@ pub struct Comment {
 	/// The markdown body stored as parsed events for lossless roundtripping
 	pub body: super::Events,
 }
-
 /// The full editable content of an issue.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct IssueContents {
@@ -680,27 +735,6 @@ pub struct IssueContents {
 	pub comments: Vec<Comment>,
 	pub blockers: BlockerSequence,
 }
-
-/// Parsed identity info from title line (internal helper).
-/// Represents what we can extract from the HTML comment marker.
-enum ParsedIdentityInfo {
-	/// Linked to Github: `@user url`
-	Linked { user: String, link: IssueLink },
-	/// Pending creation on Github: `local:` or empty
-	Pending,
-	/// Virtual (local-only, never sync): `virtual:`
-	Virtual,
-}
-
-/// Parsed title line components (internal helper)
-struct ParsedTitleLine {
-	title: String,
-	/// Identity info parsed from the title line
-	identity_info: ParsedIdentityInfo,
-	close_state: CloseState,
-	labels: Vec<String>,
-}
-
 /// Complete representation of an issue file
 #[derive(Clone, Debug, derive_more::IntoIterator, PartialEq)]
 pub struct Issue {
@@ -711,7 +745,6 @@ pub struct Issue {
 	#[into_iterator(owned, ref, ref_mut)]
 	pub children: Vec<Issue>,
 }
-
 impl Issue /*{{{1*/ {
 	/// Iterate over children by mutable reference.
 	pub fn iter_mut(&mut self) -> std::slice::IterMut<'_, Issue> {
@@ -723,14 +756,62 @@ impl Issue /*{{{1*/ {
 		self.identity.is_local()
 	}
 
-	/// Create an empty local issue with the given ancestry.
+	/// Create an empty local issue with the given parent_index.
 	/// Used for comparison when an issue doesn't exist yet.
-	pub fn empty_local(ancestry: Ancestry) -> Self {
+	///
+	/// `parent_index` should be:
+	/// - `IssueIndex::repo_only(owner, repo)` for root issues
+	/// - Parent's `IssueIndex` for child issues
+	pub fn empty_local(parent_index: IssueIndex) -> Self {
 		Self {
-			identity: IssueIdentity::local(ancestry),
+			identity: IssueIdentity::local(parent_index),
 			contents: IssueContents::default(),
 			children: vec![],
 		}
+	}
+
+	/// Create a new pending issue with the given title and parent_index.
+	///
+	/// If `virtual_project` is true, creates a virtual issue (local-only, no Github sync).
+	/// Otherwise creates a pending Github issue that will be created on first sync.
+	///
+	/// `parent_index` should be:
+	/// - `IssueIndex::repo_only(owner, repo)` for root issues
+	/// - Parent's `IssueIndex` for child issues
+	pub fn pending_with_parent(title: impl Into<String>, parent_index: IssueIndex, virtual_project: bool) -> Self {
+		let identity = if virtual_project {
+			IssueIdentity::virtual_issue(parent_index)
+		} else {
+			IssueIdentity::pending(parent_index)
+		};
+		let contents = IssueContents {
+			title: title.into(),
+			..Default::default()
+		};
+		Self {
+			identity,
+			contents,
+			children: vec![],
+		}
+	}
+
+	/// Create a new pending issue from an IssueIndex descriptor.
+	/// The last element of descriptor.index() must be a Title selector.
+	///
+	/// If `virtual_project` is true, creates a virtual issue (local-only, no Github sync).
+	/// Otherwise creates a pending Github issue that will be created on first sync.
+	pub fn pending_from_descriptor(descriptor: &IssueIndex, virtual_project: bool) -> Self {
+		let index = descriptor.index();
+		let (title, parent_selectors): (String, Vec<IssueSelector>) = match index.last() {
+			Some(IssueSelector::Title(t)) => {
+				let selectors = index[..index.len() - 1].to_vec();
+				(t.to_string(), selectors)
+			}
+			Some(IssueSelector::GitId(_)) => panic!("pending_from_descriptor requires last selector to be Title"),
+			None => panic!("pending_from_descriptor requires non-empty index"),
+		};
+		let parent_index = IssueIndex::with_index(descriptor.owner(), descriptor.repo(), parent_selectors);
+		Self::pending_with_parent(title, parent_index, virtual_project)
 	}
 
 	/// Check if this issue is linked to Github.
@@ -775,9 +856,29 @@ impl Issue /*{{{1*/ {
 		}
 	}
 
-	/// Get ancestry (always available).
-	pub fn ancestry(&self) -> &Ancestry {
-		self.identity.ancestry()
+	/// Get parent_index (always available).
+	pub fn parent_index(&self) -> IssueIndex {
+		self.identity.parent_index
+	}
+
+	/// Get full index pointing to this issue.
+	/// Combines parent_index with this issue's selector.
+	pub fn full_index(&self) -> IssueIndex {
+		let selector = match self.number() {
+			Some(n) => IssueSelector::GitId(n),
+			None => IssueSelector::title(&self.contents.title),
+		};
+		self.identity.parent_index.child(selector)
+	}
+
+	/// Get lineage (parent issue numbers).
+	pub fn lineage(&self) -> Vec<u64> {
+		self.identity.lineage()
+	}
+
+	/// Get repository info.
+	pub fn repo_info(&self) -> RepoInfo {
+		self.identity.repo_info()
 	}
 
 	/// Get the full issue body including blockers section.
@@ -789,38 +890,23 @@ impl Issue /*{{{1*/ {
 
 	/// Parse virtual representation (markdown with full tree) into an Issue.
 	///
-	/// For linked issues, ancestry is derived from the URL in the content.
-	/// For pending/virtual issues, `ancestry` must be provided or parsing will fail.
-	pub fn parse_virtual_with_ancestry(content: &str, path: &std::path::Path, ancestry: Ancestry) -> Result<Self, ParseError> {
-		let ctx = ParseContext::new(content.to_string(), path.display().to_string());
-
-		let normalized = normalize_issue_indentation(content);
-		let mut lines = normalized.lines().peekable();
-
-		Self::parse_virtual_at_depth(&mut lines, 0, 1, &ctx, Some(&ancestry))
-	}
-
-	/// Parse virtual representation (markdown with full tree) into an Issue.
-	///
-	/// For linked issues, ancestry is derived from the URL in the content.
-	/// For pending/virtual root issues, this will panic - use `parse_virtual_with_ancestry` instead.
-	pub fn parse_virtual(content: &str, path: &std::path::Path) -> Result<Self, ParseError> {
-		let ctx = ParseContext::new(content.to_string(), path.display().to_string());
-
-		let normalized = normalize_issue_indentation(content);
-		let mut lines = normalized.lines().peekable();
-
-		Self::parse_virtual_at_depth(&mut lines, 0, 1, &ctx, None)
+	/// Takes the full `IssueIndex` pointing to this issue (not the parent).
+	/// For pending/virtual issues, this index is used to derive the parent_index.
+	/// For linked issues, the parent_index can also be derived from the URL in content.
+	pub fn parse_virtual(content: &str, index: IssueIndex) -> Result<Self, ParseError> {
+		let ctx = ParseContext::new(content.to_string(), index.to_string());
+		let mut lines = content.lines().peekable();
+		Self::parse_virtual_at_depth(&mut lines, 0, 1, &ctx, Some(index.parent()))
 	}
 
 	/// Parse virtual representation at given nesting depth.
-	/// `parent_ancestry` is the ancestry of the parent issue (if any) - used to derive child ancestry.
+	/// `parent_index` is the parent's IssueIndex (for non-root), or None for root issues parsed from file.
 	fn parse_virtual_at_depth(
 		lines: &mut std::iter::Peekable<std::str::Lines>,
 		depth: usize,
 		line_num: usize,
 		ctx: &ParseContext,
-		parent_ancestry: Option<&Ancestry>,
+		parent_index: Option<IssueIndex>,
 	) -> Result<Self, ParseError> {
 		let indent = "\t".repeat(depth);
 		let child_indent = "\t".repeat(depth + 1);
@@ -871,7 +957,7 @@ impl Issue /*{{{1*/ {
 			let content = line.strip_prefix(&child_indent).unwrap_or(line);
 
 			// Check for blockers marker
-			if is_blockers_marker(content) {
+			if matches!(Marker::decode(content), Some(Marker::BlockersSection(_))) {
 				// Flush current comment/body
 				if in_body {
 					in_body = false;
@@ -1048,23 +1134,21 @@ impl Issue /*{{{1*/ {
 				}
 
 				// Recursively parse the child
-				// Build child's parent ancestry from this issue's identity info
-				let child_parent_ancestry = match &parsed.identity_info {
+				// Build child's parent_index from this issue's identity info
+				let child_parent_idx = match &parsed.identity_info {
 					ParsedIdentityInfo::Linked { link, .. } => {
-						// Parent is linked - child ancestry extends from it
-						let base_ancestry = parent_ancestry
-							.map(|a| a.child(link.number()))
-							.unwrap_or_else(|| Ancestry::root(link.owner(), link.repo()).child(link.number()));
-						Some(base_ancestry)
+						// Parent is linked - child's parent_index is this issue's full index
+						let base = parent_index.unwrap_or_else(|| IssueIndex::repo_only(link.owner(), link.repo()));
+						Some(base.child(IssueSelector::GitId(link.number())))
 					}
 					ParsedIdentityInfo::Pending | ParsedIdentityInfo::Virtual => {
-						// Local/virtual parent - pass through parent ancestry (Copy)
-						parent_ancestry.copied()
+						// Local/virtual parent - pass through parent_index
+						parent_index
 					}
 				};
 				let child_content = child_lines.join("\n");
 				let mut child_lines_iter = child_content.lines().peekable();
-				let child = Self::parse_virtual_at_depth(&mut child_lines_iter, 0, current_line, ctx, child_parent_ancestry.as_ref())?;
+				let child = Self::parse_virtual_at_depth(&mut child_lines_iter, 0, current_line, ctx, child_parent_idx)?;
 				children.push(child);
 				continue;
 			}
@@ -1096,24 +1180,20 @@ impl Issue /*{{{1*/ {
 		// Build identity from identity_info
 		let identity = match parsed.identity_info {
 			ParsedIdentityInfo::Linked { user, link } => {
-				// Linked issues get ancestry from the URL, optionally extended by parent
-				let ancestry = parent_ancestry.copied().unwrap_or_else(|| Ancestry::root(link.owner(), link.repo()));
+				// Linked issues: use parent_index if provided, otherwise derive from link
+				let pi = parent_index.unwrap_or_else(|| IssueIndex::repo_only(link.owner(), link.repo()));
 				// Timestamps will be loaded from .meta.json separately
-				IssueIdentity::linked(ancestry, user, link, IssueTimestamps::default())
+				IssueIdentity::linked(pi, user, link, IssueTimestamps::default())
 			}
 			ParsedIdentityInfo::Pending => {
-				// Pending issues require ancestry from parent/caller
-				let ancestry = parent_ancestry
-					.copied()
-					.expect("BUG: pending issue without ancestry. Use parse_virtual_with_ancestry for pending root issues.");
-				IssueIdentity::pending(ancestry)
+				// Pending issues require parent_index from caller
+				let pi = parent_index.expect("BUG: pending issue without parent_index - use parse_virtual with the issue's full IssueIndex");
+				IssueIdentity::pending(pi)
 			}
 			ParsedIdentityInfo::Virtual => {
-				// Virtual issues require ancestry from parent/caller
-				let ancestry = parent_ancestry
-					.copied()
-					.expect("BUG: virtual issue without ancestry. Use parse_virtual_with_ancestry for virtual root issues.");
-				IssueIdentity::virtual_issue(ancestry)
+				// Virtual issues require parent_index from caller
+				let pi = parent_index.expect("BUG: virtual issue without parent_index - use parse_virtual with the issue's full IssueIndex");
+				IssueIdentity::virtual_issue(pi)
 			}
 		};
 
@@ -1518,20 +1598,31 @@ impl Issue /*{{{1*/ {
 
 	/// Parse from virtual file content (full tree embedded).
 	/// This is the inverse of `serialize_virtual`.
+	///
+	/// Derives the issue index from the URL embedded in the content.
+	/// Only works for linked issues - pending/virtual issues will panic.
 	pub fn deserialize_virtual(content: &str) -> Result<Self, ParseError> {
-		Self::parse_virtual(content, std::path::Path::new("virtual.md"))
+		let ctx = ParseContext::new(content.to_string(), "virtual".to_string());
+		let mut lines = content.lines().peekable();
+		Self::parse_virtual_at_depth(&mut lines, 0, 1, &ctx, None)
 	}
 
 	/// Update this issue from virtual format content.
 	///
-	/// This preserves identity information (timestamps, link, user, ancestry) while
+	/// This preserves identity information (timestamps, link, user, parent_index) while
 	/// updating the contents from the parsed virtual format. For children, existing
 	/// issues are matched by issue number and their identities are preserved.
 	///
 	/// Use this instead of `parse_virtual` when re-loading an issue after editor edits.
-	pub fn update_from_virtual(&mut self, content: &str, path: &std::path::Path) -> Result<(), ParseError> {
-		// Parse the new content
-		let parsed = Self::parse_virtual_with_ancestry(content, path, self.identity.ancestry)?;
+	pub fn update_from_virtual(&mut self, content: &str) -> Result<(), ParseError> {
+		// Parse the new content using this issue's full index
+		let parsed = Self::parse_virtual(content, self.full_index())?;
+
+		eprintln!("[update_from_virtual] parsed.contents.state: {:?}", parsed.contents.state);
+		eprintln!("[update_from_virtual] parsed {} children", parsed.children.len());
+		for (i, c) in parsed.children.iter().enumerate() {
+			eprintln!("[update_from_virtual] parsed.children[{i}].contents.state: {:?}", c.contents.state);
+		}
 
 		// Update contents (title, labels, state, comments, blockers)
 		self.contents = parsed.contents;
@@ -1540,6 +1631,7 @@ impl Issue /*{{{1*/ {
 		let old_children: std::collections::HashMap<u64, Issue> = self.children.drain(..).filter_map(|c| c.number().map(|n| (n, c))).collect();
 
 		for mut new_child in parsed.children {
+			eprintln!("[update_from_virtual] new_child state before identity copy: {:?}", new_child.contents.state);
 			if let Some(number) = new_child.number()
 				&& let Some(old_child) = old_children.get(&number)
 			{
@@ -1548,6 +1640,7 @@ impl Issue /*{{{1*/ {
 				// Recursively preserve child identities
 				Self::preserve_child_identities(&mut new_child, old_child);
 			}
+			eprintln!("[update_from_virtual] new_child state after identity copy: {:?}", new_child.contents.state);
 			self.children.push(new_child);
 		}
 
@@ -1645,6 +1738,74 @@ impl Issue /*{{{1*/ {
 	}
 }
 
+/// Trait for lazy loading of issues from a source.
+///
+/// `S` is a marker type (e.g., `Local` for filesystem, `Remote` for GitHub).
+/// The associated `Source` type is what's actually passed to methods.
+/// Methods load data on demand; `&mut self` allows caching intermediate results.
+#[allow(async_fn_in_trait)]
+pub trait LazyIssue<S> {
+	/// The actual source reference type (e.g., `LocalPath` for Local, `RemoteSource` for Remote).
+	type Source: Clone;
+	/// Error type for operations on this source.
+	type Error: std::error::Error;
+
+	/// Resolve parent_index from the source.
+	async fn parent_index(source: &Self::Source) -> Result<IssueIndex, Self::Error>;
+	async fn identity(&mut self, source: Self::Source) -> Result<IssueIdentity, Self::Error>;
+	async fn contents(&mut self, source: Self::Source) -> Result<IssueContents, Self::Error>;
+	async fn children(&mut self, source: Self::Source) -> Result<Vec<Issue>, Self::Error>;
+
+	/// Load a full issue tree from the source.
+	async fn load(source: Self::Source) -> Result<Issue, Self::Error>;
+}
+/// Result of parsing a checkbox prefix.
+enum CheckboxParseResult<'a> {
+	/// Successfully parsed checkbox
+	Ok(CloseState, &'a str),
+	/// Not a checkbox line (doesn't start with `- [`)
+	NotCheckbox,
+	/// Has checkbox syntax but invalid content (like `[abc]`)
+	InvalidContent(String),
+}
+
+/// Result of parsing a child title line.
+enum ChildTitleParseResult {
+	/// Successfully parsed child/sub-issue
+	Ok,
+	/// Not a child title line
+	NotChildTitle,
+	/// Has checkbox syntax but invalid content (like `[abc]`)
+	InvalidCheckbox(String),
+}
+//,}}}1
+
+impl PartialEq for IssueIdentity {
+	fn eq(&self, other: &IssueIdentity) -> bool {
+		self.parent_index == other.parent_index
+	}
+}
+
+/// Parsed identity info from title line (internal helper).
+/// Represents what we can extract from the HTML comment marker.
+enum ParsedIdentityInfo {
+	/// Linked to Github: `@user url`
+	Linked { user: String, link: IssueLink },
+	/// Pending creation on Github: `local:` or empty
+	Pending,
+	/// Virtual (local-only, never sync): `virtual:`
+	Virtual,
+}
+
+/// Parsed title line components (internal helper)
+struct ParsedTitleLine {
+	title: String,
+	/// Identity info parsed from the title line
+	identity_info: ParsedIdentityInfo,
+	close_state: CloseState,
+	labels: Vec<String>,
+}
+
 //,}}}1
 
 //==============================================================================
@@ -1677,28 +1838,6 @@ impl std::ops::IndexMut<u64> for Issue {
 			.find(|child| child.number() == Some(issue_number))
 			.unwrap_or_else(|| panic!("no child with issue number {issue_number}"))
 	}
-}
-
-/// Trait for lazy loading of issues from a source.
-///
-/// `S` is a marker type (e.g., `Local` for filesystem, `Remote` for GitHub).
-/// The associated `Source` type is what's actually passed to methods.
-/// Methods load data on demand; `&mut self` allows caching intermediate results.
-#[allow(async_fn_in_trait)]
-pub trait LazyIssue<S> {
-	/// The actual source reference type (e.g., `LocalPath` for Local, `RemoteSource` for Remote).
-	type Source: Clone;
-	/// Error type for operations on this source.
-	type Error: std::error::Error;
-
-	/// Resolve ancestry from the source.
-	async fn ancestry(source: &Self::Source) -> Result<Ancestry, Self::Error>;
-	async fn identity(&mut self, source: Self::Source) -> Result<IssueIdentity, Self::Error>;
-	async fn contents(&mut self, source: Self::Source) -> Result<IssueContents, Self::Error>;
-	async fn children(&mut self, source: Self::Source) -> Result<Vec<Issue>, Self::Error>;
-
-	/// Load a full issue tree from the source.
-	async fn load(source: Self::Source) -> Result<Issue, Self::Error>;
 }
 
 #[cfg(test)]
@@ -1794,25 +1933,21 @@ mod tests {
 
 	#[test]
 	fn test_parse_invalid_checkbox_returns_error() {
-		use std::path::Path;
-
 		// Invalid checkbox on root issue
 		let content = "- [abc] Invalid issue <!-- @owner https://github.com/owner/repo/issues/123 -->\n\tBody\n";
-		let result = Issue::parse_virtual(content, Path::new("test.md"));
+		let result = Issue::deserialize_virtual(content);
 		assert!(matches!(result, Err(ParseError::InvalidCheckbox { content, .. }) if content == "abc"));
 
 		// Invalid checkbox on sub-issue
 		let content = "- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->\n\tBody\n\n\t- [xyz] Bad sub <!--sub @owner https://github.com/owner/repo/issues/2 -->\n";
-		let result = Issue::parse_virtual(content, Path::new("test.md"));
+		let result = Issue::deserialize_virtual(content);
 		assert!(matches!(result, Err(ParseError::InvalidCheckbox { content, .. }) if content == "xyz"));
 	}
 
 	#[test]
 	fn test_parse_and_serialize_not_planned() {
-		use std::path::Path;
-
 		let content = "- [-] Not planned issue <!-- @owner https://github.com/owner/repo/issues/123 -->\n\tBody text\n";
-		let issue = Issue::parse_virtual(content, Path::new("test.md")).unwrap();
+		let issue = Issue::deserialize_virtual(content).unwrap();
 
 		assert_eq!(issue.contents.state, CloseState::NotPlanned);
 		assert_eq!(issue.contents.title, "Not planned issue");
@@ -1824,10 +1959,8 @@ mod tests {
 
 	#[test]
 	fn test_parse_and_serialize_duplicate() {
-		use std::path::Path;
-
 		let content = "- [456] Duplicate issue <!-- @owner https://github.com/owner/repo/issues/123 -->\n\tBody text\n";
-		let issue = Issue::parse_virtual(content, Path::new("test.md")).unwrap();
+		let issue = Issue::deserialize_virtual(content).unwrap();
 
 		assert_eq!(issue.contents.state, CloseState::Duplicate(456));
 		assert_eq!(issue.contents.title, "Duplicate issue");
@@ -1839,8 +1972,6 @@ mod tests {
 
 	#[test]
 	fn test_parse_sub_issue_close_types() {
-		use std::path::Path;
-
 		// Set current user so content is serialized without extra indent
 		crate::current_user::set("owner".to_string());
 
@@ -1862,7 +1993,7 @@ mod tests {
 		duplicate body
 		<!--,}}}-->
 "#;
-		let issue = Issue::parse_virtual(content, Path::new("test.md")).unwrap();
+		let issue = Issue::deserialize_virtual(content).unwrap();
 		insta::assert_snapshot!(issue.serialize_virtual(), @"
 		- [ ] Parent issue <!-- @owner https://github.com/owner/repo/issues/1 -->
 			Body
@@ -1886,19 +2017,15 @@ mod tests {
 
 	#[test]
 	fn test_find_last_blocker_position_empty() {
-		use std::path::Path;
-
 		let content = "- [ ] Issue <!-- @owner https://github.com/owner/repo/issues/1 -->\n\tBody\n";
-		let issue = Issue::parse_virtual(content, Path::new("test.md")).unwrap();
+		let issue = Issue::deserialize_virtual(content).unwrap();
 		assert!(issue.find_last_blocker_position().is_none());
 	}
 
 	#[test]
 	fn test_find_last_blocker_position_single_item() {
-		use std::path::Path;
-
 		let content = "- [ ] Issue <!-- @owner https://github.com/owner/repo/issues/1 -->\n\tBody\n\n\t# Blockers\n\t- task 1\n";
-		let issue = Issue::parse_virtual(content, Path::new("test.md")).unwrap();
+		let issue = Issue::deserialize_virtual(content).unwrap();
 		let pos = issue.find_last_blocker_position();
 		assert!(pos.is_some());
 		let (line, col) = pos.unwrap();
@@ -1909,10 +2036,8 @@ mod tests {
 
 	#[test]
 	fn test_find_last_blocker_position_multiple_items() {
-		use std::path::Path;
-
 		let content = "- [ ] Issue <!-- @owner https://github.com/owner/repo/issues/1 -->\n\tBody\n\n\t# Blockers\n\t- task 1\n\t- task 2\n\t- task 3\n";
-		let issue = Issue::parse_virtual(content, Path::new("test.md")).unwrap();
+		let issue = Issue::deserialize_virtual(content).unwrap();
 		let pos = issue.find_last_blocker_position();
 		assert!(pos.is_some());
 		let (line, col) = pos.unwrap();
@@ -1922,10 +2047,8 @@ mod tests {
 
 	#[test]
 	fn test_find_last_blocker_position_with_headers() {
-		use std::path::Path;
-
 		let content = "- [ ] Issue <!-- @owner https://github.com/owner/repo/issues/1 -->\n\tBody\n\n\t# Blockers\n\t# Phase 1\n\t- task a\n\t# Phase 2\n\t- task b\n";
-		let issue = Issue::parse_virtual(content, Path::new("test.md")).unwrap();
+		let issue = Issue::deserialize_virtual(content).unwrap();
 		let pos = issue.find_last_blocker_position();
 		assert!(pos.is_some());
 		let (line, col) = pos.unwrap();
@@ -1935,10 +2058,8 @@ mod tests {
 
 	#[test]
 	fn test_find_last_blocker_position_before_sub_issues() {
-		use std::path::Path;
-
 		let content = "- [ ] Issue <!-- @owner https://github.com/owner/repo/issues/1 -->\n\tBody\n\n\t# Blockers\n\t- blocker task\n\n\t- [ ] Sub issue <!--sub @owner https://github.com/owner/repo/issues/2 -->\n";
-		let issue = Issue::parse_virtual(content, Path::new("test.md")).unwrap();
+		let issue = Issue::deserialize_virtual(content).unwrap();
 		let pos = issue.find_last_blocker_position();
 		assert!(pos.is_some());
 		let (line, col) = pos.unwrap();
@@ -1948,8 +2069,6 @@ mod tests {
 
 	#[test]
 	fn test_serialize_filesystem_no_children() {
-		use std::path::Path;
-
 		// Issue with children
 		let content = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
 	Parent body
@@ -1960,7 +2079,7 @@ mod tests {
 	- [ ] Child 2 <!--sub @owner https://github.com/owner/repo/issues/3 -->
 		Child 2 body
 "#;
-		let issue = Issue::parse_virtual(content, Path::new("test.md")).unwrap();
+		let issue = Issue::deserialize_virtual(content).unwrap();
 		assert_eq!(issue.children.len(), 2);
 
 		// Filesystem serialization should NOT include children
@@ -1972,15 +2091,13 @@ mod tests {
 
 	#[test]
 	fn test_serialize_virtual_includes_children() {
-		use std::path::Path;
-
 		let content = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
 	Parent body
 
 	- [ ] Child 1 <!--sub @owner https://github.com/owner/repo/issues/2 -->
 		Child 1 body
 "#;
-		let issue = Issue::parse_virtual(content, Path::new("test.md")).unwrap();
+		let issue = Issue::deserialize_virtual(content).unwrap();
 
 		// Virtual serialization should include children
 		let virtual_serialized = issue.serialize_virtual();
@@ -1991,8 +2108,6 @@ mod tests {
 
 	#[test]
 	fn test_parse_virtual_includes_inline_children() {
-		use std::path::Path;
-
 		// parse_virtual includes inline children (used for virtual file format)
 		let content = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
 	Parent body
@@ -2000,7 +2115,7 @@ mod tests {
 	- [ ] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
-		let issue = Issue::parse_virtual(content, Path::new("test.md")).unwrap();
+		let issue = Issue::deserialize_virtual(content).unwrap();
 		// parse_virtual preserves inline children
 		assert_eq!(issue.children.len(), 1);
 		assert_eq!(issue.contents.title, "Parent");
@@ -2009,15 +2124,13 @@ mod tests {
 
 	#[test]
 	fn test_virtual_roundtrip() {
-		use std::path::Path;
-
 		let content = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
 	Parent body
 
 	- [ ] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
-		let issue = Issue::parse_virtual(content, Path::new("test.md")).unwrap();
+		let issue = Issue::deserialize_virtual(content).unwrap();
 
 		// Serialize to virtual, then deserialize back
 		let serialized = issue.serialize_virtual();
@@ -2029,8 +2142,6 @@ mod tests {
 
 	#[test]
 	fn test_serialize_github_body_only() {
-		use std::path::Path;
-
 		let content = r#"- [ ] Issue <!-- @owner https://github.com/owner/repo/issues/1 -->
 	This is the body text.
 
@@ -2038,7 +2149,7 @@ mod tests {
 	- task 1
 	- task 2
 "#;
-		let issue = Issue::parse_virtual(content, Path::new("test.md")).unwrap();
+		let issue = Issue::deserialize_virtual(content).unwrap();
 
 		// GitHub serialization is just the body (with blockers)
 		let github = issue.serialize_github();
@@ -2051,5 +2162,91 @@ mod tests {
 		assert!(github.contains("This is the body text."));
 		assert!(github.contains("# Blockers"));
 		assert!(github.contains("- task 1"));
+	}
+
+	#[test]
+	fn test_update_from_virtual_child_open_to_closed() {
+		// Start with parent + open child
+		let initial = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
+	Body
+
+	- [ ] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
+		Child body
+"#;
+		let mut issue = Issue::deserialize_virtual(initial).unwrap();
+		assert_eq!(issue.children[0].contents.state, CloseState::Open);
+
+		// Update with closed child
+		let updated = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
+	Body
+
+	- [x] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
+		Child body
+"#;
+		issue.update_from_virtual(updated).unwrap();
+		assert_eq!(issue.children[0].contents.state, CloseState::Closed, "Child should be Closed after update");
+	}
+
+	#[test]
+	fn test_update_from_virtual_child_open_to_not_planned() {
+		let initial = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
+	Body
+
+	- [ ] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
+		Child body
+"#;
+		let mut issue = Issue::deserialize_virtual(initial).unwrap();
+		assert_eq!(issue.children[0].contents.state, CloseState::Open);
+
+		let updated = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
+	Body
+
+	- [-] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
+		Child body
+"#;
+		issue.update_from_virtual(updated).unwrap();
+		assert_eq!(issue.children[0].contents.state, CloseState::NotPlanned, "Child should be NotPlanned after update");
+	}
+
+	#[test]
+	fn test_update_from_virtual_child_open_to_duplicate() {
+		let initial = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
+	Body
+
+	- [ ] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
+		Child body
+"#;
+		let mut issue = Issue::deserialize_virtual(initial).unwrap();
+		assert_eq!(issue.children[0].contents.state, CloseState::Open);
+
+		let updated = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
+	Body
+
+	- [99] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
+		Child body
+"#;
+		issue.update_from_virtual(updated).unwrap();
+		assert_eq!(issue.children[0].contents.state, CloseState::Duplicate(99), "Child should be Duplicate(99) after update");
+	}
+
+	#[test]
+	fn test_update_from_virtual_child_closed_to_open() {
+		let initial = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
+	Body
+
+	- [x] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
+		Child body
+"#;
+		let mut issue = Issue::deserialize_virtual(initial).unwrap();
+		assert_eq!(issue.children[0].contents.state, CloseState::Closed);
+
+		let updated = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
+	Body
+
+	- [ ] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
+		Child body
+"#;
+		issue.update_from_virtual(updated).unwrap();
+		assert_eq!(issue.children[0].contents.state, CloseState::Open, "Child should be Open after update");
 	}
 }

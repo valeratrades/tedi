@@ -8,6 +8,19 @@ use crate::config::{EXE_NAME, LiveSettings};
 pub struct ShellInitArgs {
 	shell: Shell,
 }
+pub fn output(_settings: &LiveSettings, args: ShellInitArgs) {
+	let shell = args.shell;
+	let s = format!(
+		r#"{}
+{}
+{}"#,
+		shell.aliases(EXE_NAME),
+		shell.completions(),
+		shell.hooks()
+	);
+
+	println!("{s}");
+}
 #[derive(Clone, Copy, Debug, Display, FromStr)]
 enum Shell {
 	Dash,
@@ -69,18 +82,4 @@ alias tbc="{exe_name} blocker current"
 	fn hooks(&self) -> String {
 		"".to_owned()
 	}
-}
-
-pub fn output(_settings: &LiveSettings, args: ShellInitArgs) {
-	let shell = args.shell;
-	let s = format!(
-		r#"{}
-{}
-{}"#,
-		shell.aliases(EXE_NAME),
-		shell.completions(),
-		shell.hooks()
-	);
-
-	println!("{s}");
 }

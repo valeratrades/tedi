@@ -1,6 +1,6 @@
 [package]
 name = "tedi"
-version = "0.12.0"
+version = "0.13.0"
 edition = "2024"
 authors = ["Valeriy Sakharov <valeratrades@gmail.com>"]
 description = "Personal productivity CLI for task tracking, time management, and GitHub issue integration"
@@ -59,7 +59,7 @@ xdg = "3.0.0"
 derive_builder = "0.20"
 insta = "1.46"
 rstest = "0.26"
-v_fixtures = { version = "^0.3.2" }
+v_fixtures = { version = "^0.3.3" }
 walkdir = "2"
 
 #[patch.crates-io]

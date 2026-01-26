@@ -43,7 +43,7 @@ pub enum ParseError {
 	},
 
 	#[error("unexpected indentation")]
-	#[diagnostic(code(tedi::parse::bad_indent), help("check that indentation is consistent (use tabs)"))]
+	#[diagnostic(code(tedi::parse::bad_indent), help("indentation must use tabs, not spaces. configure your editor to preserve tabs in .tedi files"))]
 	BadIndentation {
 		#[source_code]
 		src: NamedSource<String>,
@@ -101,7 +101,12 @@ impl ParseContext {
 	/// Get span for an entire line (1-indexed line number).
 	pub fn line_span(&self, line_num: usize) -> SourceSpan {
 		let offset = self.line_offset(line_num);
-		let len = self.content.lines().nth(line_num.saturating_sub(1)).map(|l| l.len()).unwrap_or(0);
+		let len = self
+			.content
+			.lines()
+			.nth(line_num.saturating_sub(1))
+			.unwrap_or_else(|| panic!("line {line_num} out of bounds for content with {} lines", self.content.lines().count()))
+			.len();
 		(offset, len).into()
 	}
 }
