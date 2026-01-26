@@ -159,6 +159,47 @@ fn test_blocker_add_urgent_without_blocker_file_set() {
 }
 
 #[test]
+fn test_open_blocker_set_sets_current_blocker_issue() {
+	// Test that `open --blocker-set` sets the current blocker issue to the opened file.
+	let ctx = TestContext::new("");
+	ctx.init_git();
+
+	// Create issue with blockers section
+	let issue = parse(
+		"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
+		 \tBody text.\n\
+		 \n\
+		 \t# Blockers\n\
+		 \t- Task to work on\n",
+	);
+
+	// Set up: local and remote both exist with same content (so sync succeeds)
+	let issue_path = ctx.consensus(&issue, Some(10));
+	ctx.remote(&issue, Some(10));
+
+	// Verify no blocker is set initially
+	assert!(!ctx.xdg.cache_exists("current_blocker_issue.txt"), "No blocker should be set initially");
+
+	// Run open --blocker-set with the issue path (using OpenBuilder for proper pipe handling)
+	let (status, stdout, stderr) = ctx.open(&issue_path).args(&["--blocker-set"]).run();
+
+	eprintln!("stdout: {stdout}");
+	eprintln!("stderr: {stderr}");
+
+	// Command should succeed
+	assert!(status.success(), "open --blocker-set should succeed. stderr: {stderr}");
+
+	// Verify the blocker issue was set
+	assert!(ctx.xdg.cache_exists("current_blocker_issue.txt"), "Blocker issue should be set after --blocker-set");
+
+	let current = ctx.xdg.read_cache("current_blocker_issue.txt");
+	assert!(current.contains("issues"), "Current blocker path should point to issues directory. Got: {current}");
+
+	// Verify it printed the confirmation message
+	assert!(stdout.contains("Set current blocker issue to:"), "Should print confirmation. stdout: {stdout}");
+}
+
+#[test]
 fn test_blocker_add_with_header_context() {
 	let ctx = TestContext::new("");
 	ctx.init_git();

@@ -21,7 +21,7 @@
 //! The merge mode is consumed after first use (pre-editor sync), so post-editor
 //! sync always uses `Normal`. This prevents accidental data loss.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use color_eyre::eyre::{Result, bail};
 use tedi::{
@@ -311,6 +311,7 @@ mod types {
 	pub struct ModifyResult {
 		pub output: Option<String>,
 		pub file_modified: bool,
+		pub issue_file_path: PathBuf,
 	}
 
 	/// A modifier that can be applied to an issue file.
@@ -326,7 +327,7 @@ mod types {
 		pub(super) async fn apply(&self, issue: &mut Issue, issue_file_path: &Path) -> Result<ModifyResult> {
 			let old_issue = issue.clone();
 
-			let result = match self {
+			let (output, file_modified) = match self {
 				Modifier::Editor { open_at_blocker } => {
 					let content = issue.serialize_virtual();
 					std::fs::write(issue_file_path, &content)?;
@@ -354,28 +355,29 @@ mod types {
 						eprintln!("[after update_from_virtual] child[{i}] state: {:?}", c.contents.state);
 					}
 
-					ModifyResult { output: None, file_modified }
+					(None, file_modified)
 				}
 				Modifier::BlockerPop => {
 					use crate::blocker_interactions::BlockerSequenceExt;
 					let popped = issue.contents.blockers.pop();
-					ModifyResult {
-						output: popped.map(|text| format!("Popped: {text}")),
-						file_modified: true,
-					}
+					(popped.map(|text| format!("Popped: {text}")), true)
 				}
 				Modifier::BlockerAdd { text } => {
 					use crate::blocker_interactions::BlockerSequenceExt;
 					issue.contents.blockers.add(text);
-					ModifyResult { output: None, file_modified: true }
+					(None, true)
 				}
 			};
 
-			if result.file_modified {
+			if file_modified {
 				issue.update_timestamps_from_diff(&old_issue);
 			}
 
-			Ok(result)
+			Ok(ModifyResult {
+				output,
+				file_modified,
+				issue_file_path: issue_file_path.to_path_buf(),
+			})
 		}
 	}
 }
