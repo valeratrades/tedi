@@ -355,7 +355,7 @@ fn get_current_blocker_cache_path() -> PathBuf {
 impl super::source::BlockerSource for IssueSource {
 	fn load(&self) -> Result<BlockerSequence> {
 		let content = std::fs::read_to_string(&self.issue_path)?;
-		let issue = Issue::parse_virtual(&content, self.issue_path.display().to_string()).map_err(|e| eyre!("Failed to parse issue: {e}"))?;
+		let issue = Issue::deserialize_virtual(&content).map_err(|e| eyre!("Failed to parse issue: {e}"))?;
 
 		// Clone the blockers before caching the issue
 		let blockers = issue.contents.blockers.clone();
@@ -377,15 +377,7 @@ impl super::source::BlockerSource for IssueSource {
 
 /// Resolve an issue file from a pattern, using fzf if multiple matches.
 fn resolve_issue_file(pattern: &str) -> Result<PathBuf> {
-	// Always pass all files to fzf, let it handle filtering (uses fuzzy match by default)
-	let all_files = Local::search_issue_files("")?;
-	if all_files.is_empty() {
-		bail!("No issue files found. Use `todo open <url>` to fetch an issue first.");
-	}
-	match Local::choose_issue_with_fzf(&all_files, pattern, ExactMatchLevel::default())? {
-		Some(path) => Ok(path),
-		None => bail!("No issue selected"),
-	}
+	Local::fzf_issue(pattern, ExactMatchLevel::default())
 }
 
 /// Get the current issue source, or error if none set.
@@ -538,7 +530,7 @@ mod tests {
 	# Phase 2
 	- Third task
 "#;
-		let issue = Issue::parse_virtual(content, "test.md").unwrap();
+		let issue = Issue::deserialize_virtual(content).unwrap();
 
 		assert!(!issue.contents.blockers.is_empty());
 		insta::assert_snapshot!(issue.contents.blockers.serialize(tedi::DisplayFormat::Headers), @"
@@ -562,7 +554,7 @@ mod tests {
 	# Phase 2
 	- Third task
 "#;
-		let issue = Issue::parse_virtual(content, "test.md").unwrap();
+		let issue = Issue::deserialize_virtual(content).unwrap();
 
 		assert_eq!(issue.contents.blockers.current_with_context(&[]), Some("Phase 2: Third task".to_string()));
 
@@ -580,7 +572,7 @@ mod tests {
 	- Second task
 	- Third task
 "#;
-		let mut issue = Issue::parse_virtual(content, "test.md").unwrap();
+		let mut issue = Issue::deserialize_virtual(content).unwrap();
 
 		issue.contents.blockers.pop();
 
@@ -599,7 +591,7 @@ mod tests {
 	- First task
 	- Second task
 "#;
-		let issue = Issue::parse_virtual(content, "test.md").unwrap();
+		let issue = Issue::deserialize_virtual(content).unwrap();
 
 		let serialized = issue.serialize_virtual();
 		assert!(serialized.contains("# Blockers"));
@@ -613,7 +605,7 @@ mod tests {
 	Just some regular body text without blockers marker.
 	- This is NOT a blocker, just body content.
 "#;
-		let issue = Issue::parse_virtual(content, "test.md").unwrap();
+		let issue = Issue::deserialize_virtual(content).unwrap();
 
 		assert!(issue.contents.blockers.is_empty());
 	}
@@ -630,7 +622,7 @@ mod tests {
 	- [ ] Sub-issue <!--sub @owner https://github.com/owner/repo/issues/2 -->
 		Sub-issue body
 "#;
-		let issue = Issue::parse_virtual(content, "test.md").unwrap();
+		let issue = Issue::deserialize_virtual(content).unwrap();
 
 		// Blockers should only contain the blocker items, not the sub-issue
 		insta::assert_snapshot!(issue.contents.blockers.serialize(tedi::DisplayFormat::Headers), @"

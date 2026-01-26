@@ -688,6 +688,19 @@ impl IssueIndex {
 	}
 }
 
+impl std::fmt::Display for IssueIndex {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		write!(f, "{}/{}", self.repo_info.owner(), self.repo_info.repo())?;
+		for selector in self.index() {
+			match selector {
+				IssueSelector::GitId(n) => write!(f, "/#{n}")?,
+				IssueSelector::Title(t) => write!(f, "/{t}")?,
+			}
+		}
+		Ok(())
+	}
+}
+
 impl From<&Issue> for IssueIndex {
 	fn from(issue: &Issue) -> Self {
 		// Build this issue's IssueIndex by extending parent_index with this issue's selector
@@ -848,6 +861,16 @@ impl Issue /*{{{1*/ {
 		self.identity.parent_index
 	}
 
+	/// Get full index pointing to this issue.
+	/// Combines parent_index with this issue's selector.
+	pub fn full_index(&self) -> IssueIndex {
+		let selector = match self.number() {
+			Some(n) => IssueSelector::GitId(n),
+			None => IssueSelector::title(&self.contents.title),
+		};
+		self.identity.parent_index.child(selector)
+	}
+
 	/// Get lineage (parent issue numbers).
 	pub fn lineage(&self) -> Vec<u64> {
 		self.identity.lineage()
@@ -867,28 +890,16 @@ impl Issue /*{{{1*/ {
 
 	/// Parse virtual representation (markdown with full tree) into an Issue.
 	///
-	/// For linked issues, parent_index is derived from the URL in the content.
-	/// For pending/virtual issues, `parent_index` must be provided or parsing will fail.
-	pub fn parse_virtual_with_parent(content: &str, name: impl Into<String>, parent_index: IssueIndex) -> Result<Self, ParseError> {
-		let ctx = ParseContext::new(content.to_string(), name);
+	/// Takes the full `IssueIndex` pointing to this issue (not the parent).
+	/// For pending/virtual issues, this index is used to derive the parent_index.
+	/// For linked issues, the parent_index can also be derived from the URL in content.
+	pub fn parse_virtual(content: &str, index: IssueIndex) -> Result<Self, ParseError> {
+		let ctx = ParseContext::new(content.to_string(), index.to_string());
 
 		let normalized = normalize_issue_indentation(content);
 		let mut lines = normalized.lines().peekable();
 
-		Self::parse_virtual_at_depth(&mut lines, 0, 1, &ctx, Some(parent_index))
-	}
-
-	/// Parse virtual representation (markdown with full tree) into an Issue.
-	///
-	/// For linked issues, parent_index is derived from the URL in the content.
-	/// For pending/virtual root issues, this will panic - use `parse_virtual_with_parent` instead.
-	pub fn parse_virtual(content: &str, name: impl Into<String>) -> Result<Self, ParseError> {
-		let ctx = ParseContext::new(content.to_string(), name);
-
-		let normalized = normalize_issue_indentation(content);
-		let mut lines = normalized.lines().peekable();
-
-		Self::parse_virtual_at_depth(&mut lines, 0, 1, &ctx, None)
+		Self::parse_virtual_at_depth(&mut lines, 0, 1, &ctx, Some(index.parent()))
 	}
 
 	/// Parse virtual representation at given nesting depth.
@@ -1179,12 +1190,12 @@ impl Issue /*{{{1*/ {
 			}
 			ParsedIdentityInfo::Pending => {
 				// Pending issues require parent_index from caller
-				let pi = parent_index.expect("BUG: pending issue without parent_index. Use parse_virtual_with_parent for pending root issues.");
+				let pi = parent_index.expect("BUG: pending issue without parent_index - use parse_virtual with the issue's full IssueIndex");
 				IssueIdentity::pending(pi)
 			}
 			ParsedIdentityInfo::Virtual => {
 				// Virtual issues require parent_index from caller
-				let pi = parent_index.expect("BUG: virtual issue without parent_index. Use parse_virtual_with_parent for virtual root issues.");
+				let pi = parent_index.expect("BUG: virtual issue without parent_index - use parse_virtual with the issue's full IssueIndex");
 				IssueIdentity::virtual_issue(pi)
 			}
 		};
@@ -1590,8 +1601,14 @@ impl Issue /*{{{1*/ {
 
 	/// Parse from virtual file content (full tree embedded).
 	/// This is the inverse of `serialize_virtual`.
+	///
+	/// Derives the issue index from the URL embedded in the content.
+	/// Only works for linked issues - pending/virtual issues will panic.
 	pub fn deserialize_virtual(content: &str) -> Result<Self, ParseError> {
-		Self::parse_virtual(content, "virtual.md")
+		let ctx = ParseContext::new(content.to_string(), "virtual".to_string());
+		let normalized = normalize_issue_indentation(content);
+		let mut lines = normalized.lines().peekable();
+		Self::parse_virtual_at_depth(&mut lines, 0, 1, &ctx, None)
 	}
 
 	/// Update this issue from virtual format content.
@@ -1601,9 +1618,9 @@ impl Issue /*{{{1*/ {
 	/// issues are matched by issue number and their identities are preserved.
 	///
 	/// Use this instead of `parse_virtual` when re-loading an issue after editor edits.
-	pub fn update_from_virtual(&mut self, content: &str, name: impl Into<String>) -> Result<(), ParseError> {
-		// Parse the new content
-		let parsed = Self::parse_virtual_with_parent(content, name, self.identity.parent_index)?;
+	pub fn update_from_virtual(&mut self, content: &str) -> Result<(), ParseError> {
+		// Parse the new content using this issue's full index
+		let parsed = Self::parse_virtual(content, self.full_index())?;
 
 		eprintln!("[update_from_virtual] parsed.contents.state: {:?}", parsed.contents.state);
 		eprintln!("[update_from_virtual] parsed {} children", parsed.children.len());
@@ -1922,19 +1939,19 @@ mod tests {
 	fn test_parse_invalid_checkbox_returns_error() {
 		// Invalid checkbox on root issue
 		let content = "- [abc] Invalid issue <!-- @owner https://github.com/owner/repo/issues/123 -->\n\tBody\n";
-		let result = Issue::parse_virtual(content, "test.md");
+		let result = Issue::deserialize_virtual(content);
 		assert!(matches!(result, Err(ParseError::InvalidCheckbox { content, .. }) if content == "abc"));
 
 		// Invalid checkbox on sub-issue
 		let content = "- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->\n\tBody\n\n\t- [xyz] Bad sub <!--sub @owner https://github.com/owner/repo/issues/2 -->\n";
-		let result = Issue::parse_virtual(content, "test.md");
+		let result = Issue::deserialize_virtual(content);
 		assert!(matches!(result, Err(ParseError::InvalidCheckbox { content, .. }) if content == "xyz"));
 	}
 
 	#[test]
 	fn test_parse_and_serialize_not_planned() {
 		let content = "- [-] Not planned issue <!-- @owner https://github.com/owner/repo/issues/123 -->\n\tBody text\n";
-		let issue = Issue::parse_virtual(content, "test.md").unwrap();
+		let issue = Issue::deserialize_virtual(content).unwrap();
 
 		assert_eq!(issue.contents.state, CloseState::NotPlanned);
 		assert_eq!(issue.contents.title, "Not planned issue");
@@ -1947,7 +1964,7 @@ mod tests {
 	#[test]
 	fn test_parse_and_serialize_duplicate() {
 		let content = "- [456] Duplicate issue <!-- @owner https://github.com/owner/repo/issues/123 -->\n\tBody text\n";
-		let issue = Issue::parse_virtual(content, "test.md").unwrap();
+		let issue = Issue::deserialize_virtual(content).unwrap();
 
 		assert_eq!(issue.contents.state, CloseState::Duplicate(456));
 		assert_eq!(issue.contents.title, "Duplicate issue");
@@ -1980,7 +1997,7 @@ mod tests {
 		duplicate body
 		<!--,}}}-->
 "#;
-		let issue = Issue::parse_virtual(content, "test.md").unwrap();
+		let issue = Issue::deserialize_virtual(content).unwrap();
 		insta::assert_snapshot!(issue.serialize_virtual(), @"
 		- [ ] Parent issue <!-- @owner https://github.com/owner/repo/issues/1 -->
 			Body
@@ -2005,14 +2022,14 @@ mod tests {
 	#[test]
 	fn test_find_last_blocker_position_empty() {
 		let content = "- [ ] Issue <!-- @owner https://github.com/owner/repo/issues/1 -->\n\tBody\n";
-		let issue = Issue::parse_virtual(content, "test.md").unwrap();
+		let issue = Issue::deserialize_virtual(content).unwrap();
 		assert!(issue.find_last_blocker_position().is_none());
 	}
 
 	#[test]
 	fn test_find_last_blocker_position_single_item() {
 		let content = "- [ ] Issue <!-- @owner https://github.com/owner/repo/issues/1 -->\n\tBody\n\n\t# Blockers\n\t- task 1\n";
-		let issue = Issue::parse_virtual(content, "test.md").unwrap();
+		let issue = Issue::deserialize_virtual(content).unwrap();
 		let pos = issue.find_last_blocker_position();
 		assert!(pos.is_some());
 		let (line, col) = pos.unwrap();
@@ -2024,7 +2041,7 @@ mod tests {
 	#[test]
 	fn test_find_last_blocker_position_multiple_items() {
 		let content = "- [ ] Issue <!-- @owner https://github.com/owner/repo/issues/1 -->\n\tBody\n\n\t# Blockers\n\t- task 1\n\t- task 2\n\t- task 3\n";
-		let issue = Issue::parse_virtual(content, "test.md").unwrap();
+		let issue = Issue::deserialize_virtual(content).unwrap();
 		let pos = issue.find_last_blocker_position();
 		assert!(pos.is_some());
 		let (line, col) = pos.unwrap();
@@ -2035,7 +2052,7 @@ mod tests {
 	#[test]
 	fn test_find_last_blocker_position_with_headers() {
 		let content = "- [ ] Issue <!-- @owner https://github.com/owner/repo/issues/1 -->\n\tBody\n\n\t# Blockers\n\t# Phase 1\n\t- task a\n\t# Phase 2\n\t- task b\n";
-		let issue = Issue::parse_virtual(content, "test.md").unwrap();
+		let issue = Issue::deserialize_virtual(content).unwrap();
 		let pos = issue.find_last_blocker_position();
 		assert!(pos.is_some());
 		let (line, col) = pos.unwrap();
@@ -2046,7 +2063,7 @@ mod tests {
 	#[test]
 	fn test_find_last_blocker_position_before_sub_issues() {
 		let content = "- [ ] Issue <!-- @owner https://github.com/owner/repo/issues/1 -->\n\tBody\n\n\t# Blockers\n\t- blocker task\n\n\t- [ ] Sub issue <!--sub @owner https://github.com/owner/repo/issues/2 -->\n";
-		let issue = Issue::parse_virtual(content, "test.md").unwrap();
+		let issue = Issue::deserialize_virtual(content).unwrap();
 		let pos = issue.find_last_blocker_position();
 		assert!(pos.is_some());
 		let (line, col) = pos.unwrap();
@@ -2066,7 +2083,7 @@ mod tests {
 	- [ ] Child 2 <!--sub @owner https://github.com/owner/repo/issues/3 -->
 		Child 2 body
 "#;
-		let issue = Issue::parse_virtual(content, "test.md").unwrap();
+		let issue = Issue::deserialize_virtual(content).unwrap();
 		assert_eq!(issue.children.len(), 2);
 
 		// Filesystem serialization should NOT include children
@@ -2084,7 +2101,7 @@ mod tests {
 	- [ ] Child 1 <!--sub @owner https://github.com/owner/repo/issues/2 -->
 		Child 1 body
 "#;
-		let issue = Issue::parse_virtual(content, "test.md").unwrap();
+		let issue = Issue::deserialize_virtual(content).unwrap();
 
 		// Virtual serialization should include children
 		let virtual_serialized = issue.serialize_virtual();
@@ -2102,7 +2119,7 @@ mod tests {
 	- [ ] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
-		let issue = Issue::parse_virtual(content, "test.md").unwrap();
+		let issue = Issue::deserialize_virtual(content).unwrap();
 		// parse_virtual preserves inline children
 		assert_eq!(issue.children.len(), 1);
 		assert_eq!(issue.contents.title, "Parent");
@@ -2117,7 +2134,7 @@ mod tests {
 	- [ ] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
-		let issue = Issue::parse_virtual(content, "test.md").unwrap();
+		let issue = Issue::deserialize_virtual(content).unwrap();
 
 		// Serialize to virtual, then deserialize back
 		let serialized = issue.serialize_virtual();
@@ -2136,7 +2153,7 @@ mod tests {
 	- task 1
 	- task 2
 "#;
-		let issue = Issue::parse_virtual(content, "test.md").unwrap();
+		let issue = Issue::deserialize_virtual(content).unwrap();
 
 		// GitHub serialization is just the body (with blockers)
 		let github = issue.serialize_github();
@@ -2160,7 +2177,7 @@ mod tests {
 	- [ ] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
-		let mut issue = Issue::parse_virtual(initial, "test.md").unwrap();
+		let mut issue = Issue::deserialize_virtual(initial).unwrap();
 		assert_eq!(issue.children[0].contents.state, CloseState::Open);
 
 		// Update with closed child
@@ -2170,7 +2187,7 @@ mod tests {
 	- [x] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
-		issue.update_from_virtual(updated, "test.md").unwrap();
+		issue.update_from_virtual(updated).unwrap();
 		assert_eq!(issue.children[0].contents.state, CloseState::Closed, "Child should be Closed after update");
 	}
 
@@ -2182,7 +2199,7 @@ mod tests {
 	- [ ] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
-		let mut issue = Issue::parse_virtual(initial, "test.md").unwrap();
+		let mut issue = Issue::deserialize_virtual(initial).unwrap();
 		assert_eq!(issue.children[0].contents.state, CloseState::Open);
 
 		let updated = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
@@ -2191,7 +2208,7 @@ mod tests {
 	- [-] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
-		issue.update_from_virtual(updated, "test.md").unwrap();
+		issue.update_from_virtual(updated).unwrap();
 		assert_eq!(issue.children[0].contents.state, CloseState::NotPlanned, "Child should be NotPlanned after update");
 	}
 
@@ -2203,7 +2220,7 @@ mod tests {
 	- [ ] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
-		let mut issue = Issue::parse_virtual(initial, "test.md").unwrap();
+		let mut issue = Issue::deserialize_virtual(initial).unwrap();
 		assert_eq!(issue.children[0].contents.state, CloseState::Open);
 
 		let updated = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
@@ -2212,7 +2229,7 @@ mod tests {
 	- [99] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
-		issue.update_from_virtual(updated, "test.md").unwrap();
+		issue.update_from_virtual(updated).unwrap();
 		assert_eq!(issue.children[0].contents.state, CloseState::Duplicate(99), "Child should be Duplicate(99) after update");
 	}
 
@@ -2224,7 +2241,7 @@ mod tests {
 	- [x] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
-		let mut issue = Issue::parse_virtual(initial, "test.md").unwrap();
+		let mut issue = Issue::deserialize_virtual(initial).unwrap();
 		assert_eq!(issue.children[0].contents.state, CloseState::Closed);
 
 		let updated = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
@@ -2233,7 +2250,7 @@ mod tests {
 	- [ ] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
-		issue.update_from_virtual(updated, "test.md").unwrap();
+		issue.update_from_virtual(updated).unwrap();
 		assert_eq!(issue.children[0].contents.state, CloseState::Open, "Child should be Open after update");
 	}
 }

@@ -25,26 +25,24 @@
           pname = manifest.name;
           stdenv = pkgs.stdenvAdapters.useMoldLinker pkgs.stdenv;
 
-          alwaysPkgs = with pkgs; [
-            mold
-            openssl.dev
-            egl-wayland
-            wayland
-            libGL
-            libgbm
-          ];
+          # Shared runtime dependencies
+          # Note: openssl.out and openssl.dev are auto-added by v-utils for jobs
+          alwaysPkgNames = [ "mold" "egl-wayland" "wayland" "libGL" "libgbm" ];
+          alwaysPkgs = map (name: pkgs.${name}) alwaysPkgNames ++ [ pkgs.openssl.dev ];
 
           # v-utils modules {{{1
           rs = v-utils.rs {
             inherit pkgs rust;
             deny = true;
+            style = {
+              modules = {
+                ignored_error = false; #TODO: fix them all here or add comments explaining why they're valid // or update the logic in codestyle to not warn on some always-valid patterns like (unwrap_or_else(|| panic!...)
+              };
+            };
           };
           github =
             let
-              # nixpkgs attribute names for CI dependencies
-              #HACK: duplication with alwaysPkgs. #TODO: make a function to auto-generate these
-              # Note: openssl.out and openssl.dev are auto-added by v-utils
-              jobDeps = { packages = [ "mold" "egl-wayland" "wayland" "libGL" "libgbm" "fd" "pkg-config" ]; debug = true; };
+              jobDeps = { packages = alwaysPkgNames ++ [ "fd" "pkg-config" ]; debug = true; };
             in
             v-utils.github {
               inherit pkgs pname rs;

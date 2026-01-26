@@ -521,8 +521,8 @@ impl Local {
 	///
 	/// This parses one issue file (without loading children from separate files).
 	/// Children field will be empty - they're loaded separately via LazyIssue.
-	fn parse_single_node(content: &str, parent_index: IssueIndex, file_path: &Path) -> Result<Issue, LocalError> {
-		let mut issue = Issue::parse_virtual_with_parent(content, file_path.display().to_string(), parent_index).map_err(|e| LocalError::ParseError {
+	fn parse_single_node(content: &str, index: IssueIndex, file_path: &Path) -> Result<Issue, LocalError> {
+		let mut issue = Issue::parse_virtual(content, index).map_err(|e| LocalError::ParseError {
 			path: file_path.to_path_buf(),
 			source: Box::new(e),
 		})?;
@@ -683,47 +683,40 @@ impl Local {
 		None
 	}
 
-	/// Search for issue files matching a pattern.
-	//TODO: @v: check if we can deprecate this in favor of always using choose_issue_with_fzf
-	pub fn search_issue_files(pattern: &str) -> Result<Vec<PathBuf>> {
-		let issues_base = Self::issues_dir();
-		if !issues_base.exists() {
-			return Ok(vec![]);
-		}
-
-		let mut matches = Vec::new();
-		let pattern_lower = pattern.to_lowercase();
-
-		fn walk_dir(dir: &Path, pattern: &str, matches: &mut Vec<PathBuf>) -> std::io::Result<()> {
+	/// Get the most recently modified issue file.
+	pub fn most_recent_issue_file() -> Result<Option<PathBuf>> {
+		fn collect_issue_files(dir: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<()> {
 			for entry in std::fs::read_dir(dir)? {
 				let entry = entry?;
 				let path = entry.path();
-
 				if path.is_dir() {
-					walk_dir(&path, pattern, matches)?;
+					collect_issue_files(&path, files)?;
 				} else if path.is_file()
 					&& let Some(name) = path.file_name().and_then(|n| n.to_str())
 					&& (name.ends_with(".md") || name.ends_with(".md.bak"))
 				{
-					let name_lower = name.to_lowercase();
-					let path_str = path.to_string_lossy().to_lowercase();
-					if pattern.is_empty() || name_lower.contains(pattern) || path_str.contains(pattern) {
-						matches.push(path);
-					}
+					files.push(path);
 				}
 			}
 			Ok(())
 		}
 
-		walk_dir(&issues_base, &pattern_lower, &mut matches)?;
+		let issues_base = Self::issues_dir();
+		if !issues_base.exists() {
+			return Ok(None);
+		}
 
-		matches.sort_by(|a, b| {
+		let mut files = Vec::new();
+		collect_issue_files(&issues_base, &mut files)?;
+
+		// Sort by modification time (most recent first) and return the first
+		files.sort_by(|a, b| {
 			let a_time = std::fs::metadata(a).and_then(|m| m.modified()).ok();
 			let b_time = std::fs::metadata(b).and_then(|m| m.modified()).ok();
 			b_time.cmp(&a_time)
 		});
 
-		Ok(matches)
+		Ok(files.into_iter().next())
 	}
 
 	/// Build ancestor directory names by traversing the filesystem for a lineage.
@@ -1111,14 +1104,48 @@ impl Local {
 		Ok(IssueIndex::with_index(owner, repo, selectors))
 	}
 
-	/// Choose an issue file using fzf.
-	pub fn choose_issue_with_fzf(files: &[PathBuf], initial_query: &str, exact: ExactMatchLevel) -> Result<Option<PathBuf>> {
+	/// Interactive issue file selection using fzf.
+	/// Collects all issue files and presents them in fzf for selection.
+	pub fn fzf_issue(initial_query: &str, exact: ExactMatchLevel) -> Result<PathBuf> {
 		use std::{
 			io::Write,
 			process::{Command, Stdio},
 		};
 
+		fn collect_issue_files(dir: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<()> {
+			for entry in std::fs::read_dir(dir)? {
+				let entry = entry?;
+				let path = entry.path();
+				if path.is_dir() {
+					collect_issue_files(&path, files)?;
+				} else if path.is_file()
+					&& let Some(name) = path.file_name().and_then(|n| n.to_str())
+					&& (name.ends_with(".md") || name.ends_with(".md.bak"))
+				{
+					files.push(path);
+				}
+			}
+			Ok(())
+		}
+
 		let issues_base = Self::issues_dir();
+		if !issues_base.exists() {
+			bail!("No issue files found. Use a Github URL to fetch an issue first.");
+		}
+
+		let mut files = Vec::new();
+		collect_issue_files(&issues_base, &mut files)?;
+
+		if files.is_empty() {
+			bail!("No issue files found. Use a Github URL to fetch an issue first.");
+		}
+
+		// Sort by modification time (most recent first)
+		files.sort_by(|a, b| {
+			let a_time = std::fs::metadata(a).and_then(|m| m.modified()).ok();
+			let b_time = std::fs::metadata(b).and_then(|m| m.modified()).ok();
+			b_time.cmp(&a_time)
+		});
 
 		let file_list: Vec<String> = files
 			.iter()
@@ -1185,11 +1212,11 @@ impl Local {
 		if output.status.success() {
 			let selected = String::from_utf8_lossy(&output.stdout).trim().to_string();
 			if !selected.is_empty() {
-				return Ok(Some(issues_base.join(selected)));
+				return Ok(issues_base.join(selected));
 			}
 		}
 
-		Ok(None)
+		bail!("No issue selected")
 	}
 
 	/// Check if a project is virtual (has no Github remote)
@@ -1397,18 +1424,18 @@ impl crate::LazyIssue<Local> for Issue {
 			return Ok(self.identity.clone());
 		}
 
-		let parent_index = source.index().parent();
+		let index = *source.index();
 
 		if self.contents.title.is_empty() {
 			let file_path = source.local_path.find_file_path(&source.reader)?;
 			let content = source.reader.read_content(&file_path).ok_or_else(|| LocalError::FileNotFound { path: file_path.clone() })?;
-			let parsed = Local::parse_single_node(&content, parent_index, &file_path)?;
+			let parsed = Local::parse_single_node(&content, index, &file_path)?;
 			self.identity = parsed.identity;
 			self.contents = parsed.contents;
 		}
 
 		if let Some(issue_number) = self.identity.number()
-			&& let Some(meta) = Local::load_issue_meta_from_reader(source.index().repo_info(), issue_number, &source.reader)
+			&& let Some(meta) = Local::load_issue_meta_from_reader(index.repo_info(), issue_number, &source.reader)
 			&& let Some(linked) = self.identity.remote.as_linked_mut()
 		{
 			linked.timestamps = meta.timestamps;
@@ -1422,10 +1449,10 @@ impl crate::LazyIssue<Local> for Issue {
 			return Ok(self.contents.clone());
 		}
 
-		let parent_index = source.index().parent();
+		let index = *source.index();
 		let file_path = source.local_path.find_file_path(&source.reader)?;
 		let content = source.reader.read_content(&file_path).ok_or_else(|| LocalError::FileNotFound { path: file_path.clone() })?;
-		let parsed = Local::parse_single_node(&content, parent_index, &file_path)?;
+		let parsed = Local::parse_single_node(&content, index, &file_path)?;
 		self.identity = parsed.identity;
 		self.contents = parsed.contents;
 
@@ -1506,18 +1533,18 @@ impl crate::LazyIssue<LocalConsensus> for Issue {
 			return Ok(self.identity.clone());
 		}
 
-		let parent_index = source.index().parent();
+		let index = *source.index();
 
 		if self.contents.title.is_empty() {
 			let file_path = source.local_path.find_file_path(&source.reader)?;
 			let content = source.reader.read_content(&file_path).ok_or_else(|| LocalError::FileNotFound { path: file_path.clone() })?;
-			let parsed = Local::parse_single_node(&content, parent_index, &file_path)?;
+			let parsed = Local::parse_single_node(&content, index, &file_path)?;
 			self.identity = parsed.identity;
 			self.contents = parsed.contents;
 		}
 
 		if let Some(issue_number) = self.identity.number()
-			&& let Some(meta) = Local::load_issue_meta_from_reader(source.index().repo_info(), issue_number, &source.reader)
+			&& let Some(meta) = Local::load_issue_meta_from_reader(index.repo_info(), issue_number, &source.reader)
 			&& let Some(linked) = self.identity.remote.as_linked_mut()
 		{
 			linked.timestamps = meta.timestamps;
@@ -1531,10 +1558,10 @@ impl crate::LazyIssue<LocalConsensus> for Issue {
 			return Ok(self.contents.clone());
 		}
 
-		let parent_index = source.index().parent();
+		let index = *source.index();
 		let file_path = source.local_path.find_file_path(&source.reader)?;
 		let content = source.reader.read_content(&file_path).ok_or_else(|| LocalError::FileNotFound { path: file_path.clone() })?;
-		let parsed = Local::parse_single_node(&content, parent_index, &file_path)?;
+		let parsed = Local::parse_single_node(&content, index, &file_path)?;
 		self.identity = parsed.identity;
 		self.contents = parsed.contents;
 

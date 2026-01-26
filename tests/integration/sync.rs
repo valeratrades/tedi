@@ -21,12 +21,13 @@
 //! The `.meta.json` file contains actual timestamps from seed-based generation,
 //! so snapshots verify both file content and timestamp values.
 
+use rstest::rstest;
 use tedi::Issue;
 
 use crate::common::{TestContext, git::GitExt, snapshot_issues_dir, snapshot_issues_dir_redacting};
 
 fn parse(content: &str) -> Issue {
-	Issue::parse_virtual(content, "test.md").expect("failed to parse test issue")
+	Issue::deserialize_virtual(content).expect("failed to parse test issue")
 }
 
 #[test]
@@ -613,7 +614,6 @@ fn test_comment_shorthand_creates_comment() {
 /// Flag semantics:
 /// - `--force` alone: prefer local on conflicts
 /// - `--pull --force`: prefer remote on conflicts
-#[cfg(false)] //TODO!!!!!: pending switch to tree-based source of truth and facet reflexivity
 #[rstest]
 #[case::prefer_local(&["--force"], true)]
 #[case::prefer_remote(&["--pull", "--force"], false)]

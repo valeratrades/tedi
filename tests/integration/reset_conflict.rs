@@ -19,7 +19,7 @@ use tedi::Issue;
 use crate::common::{TestContext, git::GitExt};
 
 fn parse(content: &str) -> Issue {
-	Issue::parse_virtual(content, "test.md").expect("failed to parse test issue")
+	Issue::deserialize_virtual(content).expect("failed to parse test issue")
 }
 
 /// Scenario from issue #46:

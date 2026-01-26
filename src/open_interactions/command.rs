@@ -156,12 +156,8 @@ pub async fn open_command(settings: &LiveSettings, args: OpenArgs, offline: bool
 	// Resolve issue and sync options based on mode
 	let (issue, sync_opts, effective_offline) = if args.last {
 		// Handle --last mode: open the most recently modified issue file
-		let all_files = Local::search_issue_files("")?;
-		if all_files.is_empty() {
-			bail!("No issue files found. Use a Github URL to fetch an issue first.");
-		}
-		// Files are already sorted by modification time (most recent first)
-		let source = LocalIssueSource::<FsReader>::from_path(&all_files[0])?;
+		let path = Local::most_recent_issue_file()?.ok_or_else(|| eyre!("No issue files found. Use a Github URL to fetch an issue first."))?;
+		let source = LocalIssueSource::<FsReader>::from_path(&path)?;
 		let issue = <Issue as LazyIssue<Local>>::load(source).await?;
 		(issue, local_sync_opts(), offline)
 	} else if github::is_github_issue_url(input) {
@@ -212,15 +208,8 @@ pub async fn open_command(settings: &LiveSettings, args: OpenArgs, offline: bool
 			// Direct file path - open it
 			input_path.to_path_buf()
 		} else {
-			// Local search mode: always pass all files to fzf, let it handle filtering
-			let all_files = Local::search_issue_files("")?;
-			if all_files.is_empty() {
-				bail!("No issue files found. Use a Github URL to fetch an issue first.");
-			}
-			match Local::choose_issue_with_fzf(&all_files, input, exact)? {
-				Some(path) => path,
-				None => bail!("No issue selected"),
-			}
+			// Local search mode: use fzf for interactive selection
+			Local::fzf_issue(input, exact)?
 		};
 
 		let source = LocalIssueSource::<FsReader>::from_path(&issue_file_path)?;

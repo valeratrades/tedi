@@ -8,7 +8,7 @@ use tedi::Issue;
 use crate::common::{TestContext, git::GitExt, snapshot_issues_dir_redacting};
 
 fn parse(content: &str) -> Issue {
-	Issue::parse_virtual(content, "test.md").expect("failed to parse test issue")
+	Issue::deserialize_virtual(content).expect("failed to parse test issue")
 }
 
 #[test]
