@@ -43,7 +43,7 @@ pub enum ParseError {
 	},
 
 	#[error("unexpected indentation")]
-	#[diagnostic(code(tedi::parse::bad_indent), help("check that indentation is consistent (use tabs)"))]
+	#[diagnostic(code(tedi::parse::bad_indent), help("indentation must use tabs, not spaces. configure your editor to preserve tabs in .tedi files"))]
 	BadIndentation {
 		#[source_code]
 		src: NamedSource<String>,

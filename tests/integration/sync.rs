@@ -654,6 +654,9 @@ fn test_force_merge_preserves_both_sub_issues(#[case] args: &[&str], #[case] exp
 	eprintln!("stdout: {stdout}");
 	eprintln!("stderr: {stderr}");
 
+	// Snapshot BEFORE asserting success so we can see what was created even on failure
+	insta::assert_snapshot!(format!("force_merge_{}", args.join("_")), snapshot_issues_dir(&ctx));
+
 	assert!(status.success(), "Should succeed with {args:?}. stderr: {stderr}");
 
 	// Read the final file (may have moved to directory format due to sub-issues)

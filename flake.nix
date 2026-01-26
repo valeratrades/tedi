@@ -36,7 +36,7 @@
             deny = true;
             style = {
               modules = {
-                ignored_error = false; #TODO: fix them all here or add comments explaining why they're valid // or update the logic in codestyle to not warn on some always-valid patterns like (unwrap_or_else(|| panic!...)
+                ignored_error_comment = false; #TODO: fix them all here or add comments explaining why they're valid // or update the logic in codestyle to not warn on some always-valid patterns like (unwrap_or_else(|| panic!...)
               };
             };
           };

@@ -23,8 +23,5 @@ pub use types::{
 	MAX_INDEX_DEPTH, MAX_LINEAGE_DEPTH, MAX_TITLE_LENGTH, RepoInfo,
 };
 
-mod util;
-pub use util::{is_blockers_marker, normalize_issue_indentation};
-
 // Re-export Header from parent
 pub use crate::Header;

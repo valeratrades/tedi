@@ -144,9 +144,9 @@ impl CommentIdentity /*{{{1*/ {
 //,}}}1
 
 use super::{
+	Marker,
 	blocker::{BlockerSequence, classify_line, join_with_blockers},
 	error::{ParseContext, ParseError},
-	util::{is_blockers_marker, normalize_issue_indentation},
 };
 
 /// Close state of an issue.
@@ -895,10 +895,7 @@ impl Issue /*{{{1*/ {
 	/// For linked issues, the parent_index can also be derived from the URL in content.
 	pub fn parse_virtual(content: &str, index: IssueIndex) -> Result<Self, ParseError> {
 		let ctx = ParseContext::new(content.to_string(), index.to_string());
-
-		let normalized = normalize_issue_indentation(content);
-		let mut lines = normalized.lines().peekable();
-
+		let mut lines = content.lines().peekable();
 		Self::parse_virtual_at_depth(&mut lines, 0, 1, &ctx, Some(index.parent()))
 	}
 
@@ -960,7 +957,7 @@ impl Issue /*{{{1*/ {
 			let content = line.strip_prefix(&child_indent).unwrap_or(line);
 
 			// Check for blockers marker
-			if is_blockers_marker(content) {
+			if matches!(Marker::decode(content), Some(Marker::BlockersSection(_))) {
 				// Flush current comment/body
 				if in_body {
 					in_body = false;
@@ -1606,8 +1603,7 @@ impl Issue /*{{{1*/ {
 	/// Only works for linked issues - pending/virtual issues will panic.
 	pub fn deserialize_virtual(content: &str) -> Result<Self, ParseError> {
 		let ctx = ParseContext::new(content.to_string(), "virtual".to_string());
-		let normalized = normalize_issue_indentation(content);
-		let mut lines = normalized.lines().peekable();
+		let mut lines = content.lines().peekable();
 		Self::parse_virtual_at_depth(&mut lines, 0, 1, &ctx, None)
 	}
 
