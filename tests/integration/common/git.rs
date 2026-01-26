@@ -39,7 +39,7 @@
 
 use std::{cell::RefCell, collections::HashSet, path::PathBuf};
 
-use tedi::{Issue, IssueTimestamps};
+use tedi::{Issue, IssueTimestamps, RepoInfo};
 use v_fixtures::fs_standards::git::Git;
 
 use super::TestContext;
@@ -120,13 +120,13 @@ pub trait GitExt {
 	fn remote(&self, issue: &Issue, seed: Option<Seed>);
 
 	/// Get the flat format path for an issue: `{number}_-_{title}.md`
-	fn flat_issue_path(&self, owner: &str, repo: &str, number: u64, title: &str) -> PathBuf;
+	fn flat_issue_path(&self, repo_info: RepoInfo, number: u64, title: &str) -> PathBuf;
 
 	/// Get the directory format path for an issue: `{number}_-_{title}/__main__.md`
-	fn dir_issue_path(&self, owner: &str, repo: &str, number: u64, title: &str) -> PathBuf;
+	fn dir_issue_path(&self, repo_info: RepoInfo, number: u64, title: &str) -> PathBuf;
 
 	/// Get the issue path after sync (flat if no children, directory if has children).
-	fn issue_path_after_sync(&self, owner: &str, repo: &str, number: u64, title: &str, has_children: bool) -> PathBuf;
+	fn issue_path_after_sync(&self, repo_info: RepoInfo, number: u64, title: &str, has_children: bool) -> PathBuf;
 
 	/// Get the path where an issue would be stored (flat format), extracting coords from issue.
 	fn issue_path(&self, issue: &Issue) -> PathBuf;
@@ -199,66 +199,66 @@ impl GitExt for TestContext {
 	}
 
 	fn local(&self, issue: &Issue, seed: Option<Seed>) -> PathBuf {
-		let (owner, repo, number) = extract_issue_coords(issue);
-		let key = (owner.clone(), repo.clone(), number);
+		let (repo_info, number) = extract_issue_coords(issue);
+		let key = (repo_info.owner().to_string(), repo_info.repo().to_string(), number);
 
 		with_state(self, |state| {
 			if state.local_issues.contains(&key) {
-				panic!("local() called twice for same issue: {owner}/{repo}#{number}");
+				panic!("local() called twice for same issue: {}/{}#{number}", repo_info.owner(), repo_info.repo());
 			}
 			state.local_issues.insert(key);
 		});
 
-		let path = self.write_issue_tree(&owner, &repo, number, issue);
+		let path = self.write_issue_tree(repo_info, number, issue);
 
 		// Write timestamps to .meta.json if seed provided
 		if let Some(seed) = seed {
 			let timestamps = timestamps_from_seed(seed);
-			self.write_issue_meta(&owner, &repo, number, &timestamps);
+			self.write_issue_meta(repo_info, number, &timestamps);
 		}
 
 		path
 	}
 
 	fn consensus(&self, issue: &Issue, seed: Option<Seed>) -> PathBuf {
-		let (owner, repo, number) = extract_issue_coords(issue);
-		let key = (owner.clone(), repo.clone(), number);
+		let (repo_info, number) = extract_issue_coords(issue);
+		let key = (repo_info.owner().to_string(), repo_info.repo().to_string(), number);
 
 		with_state(self, |state| {
 			if state.consensus_issues.contains(&key) {
-				panic!("consensus() called twice for same issue: {owner}/{repo}#{number}");
+				panic!("consensus() called twice for same issue: {}/{}#{number}", repo_info.owner(), repo_info.repo());
 			}
 			state.consensus_issues.insert(key);
 		});
 
-		let path = self.write_issue_tree(&owner, &repo, number, issue);
+		let path = self.write_issue_tree(repo_info, number, issue);
 
 		// Write timestamps to .meta.json if seed provided
 		if let Some(seed) = seed {
 			let timestamps = timestamps_from_seed(seed);
-			self.write_issue_meta(&owner, &repo, number, &timestamps);
+			self.write_issue_meta(repo_info, number, &timestamps);
 		}
 
 		let git = self.init_git();
 		git.add_all();
-		git.commit(&format!("consensus {owner}/{repo}#{number}"));
+		git.commit(&format!("consensus {}/{}#{number}", repo_info.owner(), repo_info.repo()));
 
 		path
 	}
 
 	fn remote(&self, issue: &Issue, seed: Option<Seed>) {
-		let (owner, repo, number) = extract_issue_coords(issue);
-		let key = (owner.clone(), repo.clone(), number);
+		let (repo_info, number) = extract_issue_coords(issue);
+		let key = (repo_info.owner().to_string(), repo_info.repo().to_string(), number);
 
 		let timestamps = seed.map(timestamps_from_seed);
 
 		with_state(self, |state| {
 			if state.remote_issue_ids.contains(&key) {
-				panic!("remote() called twice for same issue: {owner}/{repo}#{number}");
+				panic!("remote() called twice for same issue: {}/{}#{number}", repo_info.owner(), repo_info.repo());
 			}
 
 			// Recursively add issue and all its children
-			add_issue_recursive(state, &owner, &repo, number, None, issue, timestamps.as_ref());
+			add_issue_recursive(state, repo_info, number, None, issue, timestamps.as_ref());
 		});
 
 		// Rebuild and write mock state
@@ -266,25 +266,25 @@ impl GitExt for TestContext {
 	}
 
 	fn issue_path(&self, issue: &Issue) -> PathBuf {
-		let (owner, repo, number) = extract_issue_coords(issue);
-		self.flat_issue_path(&owner, &repo, number, &issue.contents.title)
+		let (repo_info, number) = extract_issue_coords(issue);
+		self.flat_issue_path(repo_info, number, &issue.contents.title)
 	}
 
-	fn flat_issue_path(&self, owner: &str, repo: &str, number: u64, title: &str) -> PathBuf {
+	fn flat_issue_path(&self, repo_info: RepoInfo, number: u64, title: &str) -> PathBuf {
 		let sanitized = title.replace(' ', "_");
-		self.xdg.data_dir().join(format!("issues/{owner}/{repo}/{number}_-_{sanitized}.md"))
+		self.xdg.data_dir().join(format!("issues/{}/{}/{number}_-_{sanitized}.md", repo_info.owner(), repo_info.repo()))
 	}
 
-	fn dir_issue_path(&self, owner: &str, repo: &str, number: u64, title: &str) -> PathBuf {
+	fn dir_issue_path(&self, repo_info: RepoInfo, number: u64, title: &str) -> PathBuf {
 		let sanitized = title.replace(' ', "_");
-		self.xdg.data_dir().join(format!("issues/{owner}/{repo}/{number}_-_{sanitized}/__main__.md"))
+		self.xdg.data_dir().join(format!("issues/{}/{}/{number}_-_{sanitized}/__main__.md", repo_info.owner(), repo_info.repo()))
 	}
 
-	fn issue_path_after_sync(&self, owner: &str, repo: &str, number: u64, title: &str, has_children: bool) -> PathBuf {
+	fn issue_path_after_sync(&self, repo_info: RepoInfo, number: u64, title: &str, has_children: bool) -> PathBuf {
 		if has_children {
-			self.dir_issue_path(owner, repo, number, title)
+			self.dir_issue_path(repo_info, number, title)
 		} else {
-			self.flat_issue_path(owner, repo, number, title)
+			self.flat_issue_path(repo_info, number, title)
 		}
 	}
 }
@@ -292,16 +292,16 @@ impl GitExt for TestContext {
 impl TestContext {
 	/// Write an issue tree to the filesystem, with each node in its own file.
 	/// Returns the path to the root issue file.
-	fn write_issue_tree(&self, owner: &str, repo: &str, number: u64, issue: &Issue) -> PathBuf {
-		self.write_issue_tree_recursive(owner, repo, number, issue, &[])
+	fn write_issue_tree(&self, repo_info: RepoInfo, number: u64, issue: &Issue) -> PathBuf {
+		self.write_issue_tree_recursive(repo_info, number, issue, &[])
 	}
 
-	fn write_issue_tree_recursive(&self, owner: &str, repo: &str, number: u64, issue: &Issue, ancestors: &[String]) -> PathBuf {
+	fn write_issue_tree_recursive(&self, repo_info: RepoInfo, number: u64, issue: &Issue, ancestors: &[String]) -> PathBuf {
 		let sanitized_title = issue.contents.title.replace(' ', "_");
 		let has_children = !issue.children.is_empty();
 
 		// Build base path: issues/{owner}/{repo}/{ancestors...}
-		let mut base_path = format!("issues/{owner}/{repo}");
+		let mut base_path = format!("issues/{}/{}", repo_info.owner(), repo_info.repo());
 		for ancestor in ancestors {
 			base_path = format!("{base_path}/{ancestor}");
 		}
@@ -318,7 +318,7 @@ impl TestContext {
 			child_ancestors.push(dir_name);
 			for child in &issue.children {
 				let child_number = child.number().unwrap_or(0);
-				self.write_issue_tree_recursive(owner, repo, child_number, child, &child_ancestors);
+				self.write_issue_tree_recursive(repo_info, child_number, child, &child_ancestors);
 			}
 
 			self.xdg.data_dir().join(&dir_path).join("__main__.md")
@@ -418,8 +418,8 @@ impl TestContext {
 	}
 
 	/// Write timestamps to .meta.json for an issue.
-	fn write_issue_meta(&self, owner: &str, repo: &str, number: u64, timestamps: &IssueTimestamps) {
-		let meta_path = self.xdg.data_dir().join(format!("issues/{owner}/{repo}/.meta.json"));
+	fn write_issue_meta(&self, repo_info: RepoInfo, number: u64, timestamps: &IssueTimestamps) {
+		let meta_path = self.xdg.data_dir().join(format!("issues/{}/{}/.meta.json", repo_info.owner(), repo_info.repo()));
 
 		// Load existing meta or create new
 		let mut project_meta: serde_json::Value = if meta_path.exists() {
@@ -451,29 +451,29 @@ impl TestContext {
 	}
 }
 
-/// Extract owner, repo, number from an Issue's identity, with defaults.
-fn extract_issue_coords(issue: &Issue) -> (String, String, u64) {
+/// Extract repo_info and number from an Issue's identity, with defaults.
+fn extract_issue_coords(issue: &Issue) -> (RepoInfo, u64) {
 	if let Some(link) = issue.identity.link() {
-		(link.owner().to_string(), link.repo().to_string(), link.number())
+		(link.repo_info(), link.number())
 	} else {
-		(DEFAULT_OWNER.to_string(), DEFAULT_REPO.to_string(), DEFAULT_NUMBER)
+		(RepoInfo::new(DEFAULT_OWNER, DEFAULT_REPO), DEFAULT_NUMBER)
 	}
 }
 
 /// Recursively add an issue and all its children to the mock state.
-fn add_issue_recursive(state: &mut GitState, owner: &str, repo: &str, number: u64, parent_number: Option<u64>, issue: &Issue, timestamps: Option<&IssueTimestamps>) {
-	let key = (owner.to_string(), repo.to_string(), number);
+fn add_issue_recursive(state: &mut GitState, repo_info: RepoInfo, number: u64, parent_number: Option<u64>, issue: &Issue, timestamps: Option<&IssueTimestamps>) {
+	let key = (repo_info.owner().to_string(), repo_info.repo().to_string(), number);
 
 	if state.remote_issue_ids.contains(&key) {
-		panic!("remote() would add duplicate issue: {owner}/{repo}#{number}");
+		panic!("remote() would add duplicate issue: {}/{}#{number}", repo_info.owner(), repo_info.repo());
 	}
 	state.remote_issue_ids.insert(key);
 
 	// Add the issue itself
 	let issue_owner_login = issue.user().expect("issue identity must have user - use @user format in test fixtures").to_string();
 	state.remote_issues.push(MockIssue {
-		owner: owner.to_string(),
-		repo: repo.to_string(),
+		owner: repo_info.owner().to_string(),
+		repo: repo_info.repo().to_string(),
 		number,
 		title: issue.contents.title.clone(),
 		body: issue.body(),
@@ -486,8 +486,8 @@ fn add_issue_recursive(state: &mut GitState, owner: &str, repo: &str, number: u6
 	// Add sub-issue relation if this is a child
 	if let Some(parent) = parent_number {
 		state.remote_sub_issues.push(SubIssueRelation {
-			owner: owner.to_string(),
-			repo: repo.to_string(),
+			owner: repo_info.owner().to_string(),
+			repo: repo_info.repo().to_string(),
 			parent,
 			child: number,
 		});
@@ -501,8 +501,8 @@ fn add_issue_recursive(state: &mut GitState, owner: &str, repo: &str, number: u6
 			let comment_owner_login = comment.identity.user().expect("comment identity must have user - use @user format in test fixtures").to_string();
 			let comment_ts = comment_timestamps.and_then(|ts| ts.get(i).copied());
 			state.remote_comments.push(MockComment {
-				owner: owner.to_string(),
-				repo: repo.to_string(),
+				owner: repo_info.owner().to_string(),
+				repo: repo_info.repo().to_string(),
 				issue_number: number,
 				comment_id: id,
 				body: comment.body.render(),
@@ -515,7 +515,7 @@ fn add_issue_recursive(state: &mut GitState, owner: &str, repo: &str, number: u6
 	// Recursively add children (they inherit the same timestamps)
 	for child in &issue.children {
 		let child_number = child.number().expect("child issue must have number for remote mock state");
-		add_issue_recursive(state, owner, repo, child_number, Some(number), child, timestamps);
+		add_issue_recursive(state, repo_info, child_number, Some(number), child, timestamps);
 	}
 }
 

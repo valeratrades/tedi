@@ -45,8 +45,7 @@ impl Sink<Consensus> for Issue {
 	async fn sink(&mut self, old: Option<&Issue>) -> Result<bool, Self::Error> {
 		use std::process::Command;
 
-		let owner = self.identity.owner();
-		let repo = self.identity.repo();
+		let repo_info = self.identity.repo_info();
 
 		// Write files to filesystem (same as Submitted)
 		let any_written = sink_issue_node(self, old).map_err(ConsensusSinkError::Write)?;
@@ -72,7 +71,7 @@ impl Sink<Consensus> for Issue {
 		}
 
 		// Check for ignored files that we tried to add
-		let project_dir = Local::project_dir(owner, repo);
+		let project_dir = Local::project_dir(repo_info);
 		if let Ok(rel) = project_dir.strip_prefix(&data_dir) {
 			let check_ignored = Command::new("git").args(["-C", data_dir_str, "check-ignore", "--no-index", "-v"]).arg(rel.join("**")).output()?;
 			// check-ignore returns 0 if files ARE ignored, 1 if none are ignored
@@ -90,7 +89,7 @@ impl Sink<Consensus> for Issue {
 
 		// Commit with a descriptive message
 		let issue_number = self.number().map(|n| format!("#{n}")).unwrap_or_else(|| "new".to_string());
-		let commit_msg = format!("sync: {owner}/{repo}{issue_number}");
+		let commit_msg = format!("sync: {}/{}{issue_number}", repo_info.owner(), repo_info.repo());
 		let commit_output = Command::new("git").args(["-C", data_dir_str, "commit", "-m", &commit_msg]).output()?;
 		if !commit_output.status.success() {
 			return Err(ConsensusSinkError::GitCommit(String::from_utf8_lossy(&commit_output.stderr).into_owned()));
@@ -125,8 +124,7 @@ fn sink_issue_node(issue: &Issue, old: Option<&Issue>) -> Result<bool> {
 
 	// Use LocalPath for all path computation
 	let mut local_path = LocalPath::from(issue);
-	let owner = local_path.index().owner().to_string();
-	let repo = local_path.index().repo().to_string();
+	let repo_info = local_path.index().repo_info();
 
 	// Ensure parent directories exist (converts flat files to directories as needed)
 	local_path.ensure_parent_dirs()?;
@@ -167,7 +165,7 @@ fn sink_issue_node(issue: &Issue, old: Option<&Issue>) -> Result<bool> {
 		&& let Some(timestamps) = issue.identity.timestamps()
 	{
 		let meta = IssueMeta { timestamps: timestamps.clone() };
-		Local::save_issue_meta(&owner, &repo, issue_num, &meta)?;
+		Local::save_issue_meta(repo_info, issue_num, &meta)?;
 	}
 
 	// Recursively sink children
@@ -184,7 +182,7 @@ fn sink_issue_node(issue: &Issue, old: Option<&Issue>) -> Result<bool> {
 	for (&old_num, &old_child) in &old_children_map {
 		if !new_child_numbers.contains(&old_num) {
 			remove_issue_files(old_child)?;
-			Local::remove_issue_meta(&owner, &repo, old_num)?;
+			Local::remove_issue_meta(repo_info, old_num)?;
 		}
 	}
 
@@ -232,7 +230,7 @@ fn cleanup_old_locations(issue: &Issue, old: Option<&Issue>, has_children: bool,
 			// This has parents as GitIds + Title (so issue_number() returns None)
 			let mut pending_selectors: Vec<IssueSelector> = local_path.index().parent_nums().into_iter().map(IssueSelector::GitId).collect();
 			pending_selectors.push(IssueSelector::title(title));
-			let pending_index = IssueIndex::with_index(local_path.index().owner(), local_path.index().repo(), pending_selectors);
+			let pending_index = IssueIndex::with_index(local_path.index().repo_info(), pending_selectors);
 			let mut pending_path = LocalPath::from(pending_index);
 			if pending_path.resolve_ancestor_dir_names().is_ok() {
 				if let Ok(pending_open) = pending_path.file_path(title, false, false) {
@@ -252,8 +250,7 @@ fn cleanup_old_locations(issue: &Issue, old: Option<&Issue>, has_children: bool,
 fn remove_issue_files(issue: &Issue) -> Result<bool> {
 	let mut local_path = LocalPath::from(issue);
 	let title = &issue.contents.title;
-	let owner = local_path.index().owner().to_string();
-	let repo = local_path.index().repo().to_string();
+	let repo_info = local_path.index().repo_info();
 
 	// Try to resolve ancestor dirs
 	if local_path.resolve_ancestor_dir_names().is_err() {
@@ -277,7 +274,7 @@ fn remove_issue_files(issue: &Issue) -> Result<bool> {
 
 	// Remove metadata
 	if let Some(num) = issue.number() {
-		Local::remove_issue_meta(&owner, &repo, num)?;
+		Local::remove_issue_meta(repo_info, num)?;
 	}
 
 	println!("Removed issue #{:?}", issue.number());

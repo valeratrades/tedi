@@ -84,6 +84,7 @@ pub fn parse_touch_path(user_input: &str) -> Result<TouchPathResult> {
 		}
 	};
 	actual_path = actual_path.join(&repo);
+	let repo_info = tedi::RepoInfo::new(&owner, &repo);
 
 	// Match remaining segments (issue and optional sub-issues)
 	let mut matched_lineage: Vec<String> = Vec::new();
@@ -103,7 +104,7 @@ pub fn parse_touch_path(user_input: &str) -> Result<TouchPathResult> {
 					index.push(IssueSelector::GitId(parent_num));
 					let child_title = strip_md_extension(lineage_rgxs[i + 1]);
 					index.push(IssueSelector::title(child_title));
-					return Ok(TouchPathResult::Create(Box::new(IssueIndex::with_index(&owner, &repo, index))));
+					return Ok(TouchPathResult::Create(Box::new(IssueIndex::with_index(repo_info, index))));
 				}
 
 				matched_lineage.push(matched);
@@ -113,7 +114,7 @@ pub fn parse_touch_path(user_input: &str) -> Result<TouchPathResult> {
 				// No match - this is a create request
 				let mut index: Vec<IssueSelector> = matched_lineage.iter().filter_map(|s| extract_issue_number(s).map(IssueSelector::GitId)).collect();
 				index.push(IssueSelector::title(pattern));
-				return Ok(TouchPathResult::Create(Box::new(IssueIndex::with_index(&owner, &repo, index))));
+				return Ok(TouchPathResult::Create(Box::new(IssueIndex::with_index(repo_info, index))));
 			}
 			MatchOrNone::Ambiguous(matches) => {
 				let desc = if is_last { "issue" } else { "parent issue" };

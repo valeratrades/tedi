@@ -14,9 +14,13 @@
 //! 6. Post-editor sync fetches remote (gets Github API content for sub-issues)
 //! 7. Consensus (with local content) != Remote (with API content) → FALSE CONFLICT
 
-use tedi::Issue;
+use tedi::{Issue, RepoInfo};
 
 use crate::common::{TestContext, git::GitExt};
+
+fn repo() -> RepoInfo {
+	RepoInfo::new("o", "r")
+}
 
 fn parse(content: &str) -> Issue {
 	Issue::deserialize_virtual(content).expect("failed to parse test issue")
@@ -47,14 +51,14 @@ fn test_reset_then_mark_subissue_closed_no_conflict() {
 
 	// First: open via URL with --reset (this simulates `todo open --reset <url>`)
 	// This fetches from remote, stores locally, and commits as consensus
-	let (status, stdout, stderr) = ctx.open_url("o", "r", 1).args(&["--reset"]).run();
+	let (status, stdout, stderr) = ctx.open_url(repo(), 1).args(&["--reset"]).run();
 	eprintln!("First open stdout: {stdout}");
 	eprintln!("First open stderr: {stderr}");
 	assert!(status.success(), "First open with --reset should succeed. stderr: {stderr}");
 
 	// Now simulate user editing: mark the sub-issue as closed
 	// The user would do this by changing `- [ ]` to `- [x]` in the editor
-	let issue_path = ctx.dir_issue_path("o", "r", 1, "Parent Issue");
+	let issue_path = ctx.dir_issue_path(repo(), 1, "Parent Issue");
 
 	// The post-editor sync should NOT trigger a conflict because:
 	// - Consensus (from --reset) = remote state
@@ -89,11 +93,11 @@ fn test_reset_then_edit_body_no_conflict() {
 	ctx.remote(&issue, None);
 
 	// First: open via URL with --reset
-	let (status, _stdout, stderr) = ctx.open_url("o", "r", 1).args(&["--reset"]).run();
+	let (status, _stdout, stderr) = ctx.open_url(repo(), 1).args(&["--reset"]).run();
 	assert!(status.success(), "First open should succeed. stderr: {stderr}");
 
 	// Now edit the body
-	let issue_path = ctx.flat_issue_path("o", "r", 1, "Test Issue");
+	let issue_path = ctx.flat_issue_path(repo(), 1, "Test Issue");
 	let mut modified = issue.clone();
 	modified.contents.comments[0].body = tedi::Events::parse("modified body");
 
@@ -142,7 +146,7 @@ fn test_reset_with_preexisting_modified_subissue_files() {
 	// Step 1: First fetch - creates local files
 	// grandparent (#1) is at: 1_-_Grandparent_Issue/__main__.md
 	// parent (#2) gets its own dir because it has children: 1_-_Grandparent_Issue/2_-_Parent_Issue/__main__.md
-	let (status, stdout, stderr) = ctx.open_url("o", "r", 1).run();
+	let (status, stdout, stderr) = ctx.open_url(repo(), 1).run();
 	eprintln!("First fetch stdout: {stdout}");
 	eprintln!("First fetch stderr: {stderr}");
 	assert!(status.success(), "First fetch should succeed. stderr: {stderr}");
@@ -186,7 +190,7 @@ fn test_reset_with_preexisting_modified_subissue_files() {
 
 	// Step 3: User runs --reset on the GRANDPARENT issue
 	// BUG: format_issue will read the MODIFIED parent file and embed that content
-	let (status, stdout, stderr) = ctx.open_url("o", "r", 1).args(&["--reset"]).run();
+	let (status, stdout, stderr) = ctx.open_url(repo(), 1).args(&["--reset"]).run();
 	eprintln!("Reset stdout: {stdout}");
 	eprintln!("Reset stderr: {stderr}");
 	assert!(status.success(), "Reset should succeed. stderr: {stderr}");

@@ -168,9 +168,10 @@ pub async fn open_command(settings: &LiveSettings, args: OpenArgs, offline: bool
 		}
 
 		let (owner, repo, issue_number) = github::parse_github_issue_url(input)?;
+		let repo_info = tedi::RepoInfo::new(&owner, &repo);
 
 		// Check if we already have this issue locally
-		let existing_path = Local::find_issue_file(&owner, &repo, Some(issue_number), "", &[]);
+		let existing_path = Local::find_issue_file(repo_info, Some(issue_number), "", &[]);
 
 		let issue = if let Some(path) = existing_path {
 			// File exists locally - proceed with unified sync (like --pull)
@@ -194,7 +195,7 @@ pub async fn open_command(settings: &LiveSettings, args: OpenArgs, offline: bool
 
 			// Commit the fetched state as the consensus baseline
 			use super::consensus::commit_issue_changes;
-			commit_issue_changes(&owner, &repo, issue_number)?;
+			commit_issue_changes(repo_info, issue_number)?;
 
 			issue
 		};

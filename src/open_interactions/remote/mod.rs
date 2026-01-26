@@ -144,7 +144,7 @@ impl RemoteSource {
 		};
 		// Build parent_index with all parent numbers as GitId selectors
 		let selectors: Vec<IssueSelector> = lineage.iter().map(|&n| IssueSelector::GitId(n)).collect();
-		Ok(IssueIndex::with_index(repo_info.owner(), repo_info.repo(), selectors))
+		Ok(IssueIndex::with_index(repo_info, selectors))
 	}
 
 	/// Create a child source for a sub-issue.

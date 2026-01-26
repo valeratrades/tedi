@@ -188,10 +188,10 @@ pub trait Sink<S> {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::{BlockerSequence, CloseState, Events, IssueContents, IssueIdentity, IssueIndex, IssueLink, IssueTimestamps};
+	use crate::{BlockerSequence, CloseState, Events, IssueContents, IssueIdentity, IssueIndex, IssueLink, IssueTimestamps, RepoInfo};
 
 	fn make_issue(title: &str, number: Option<u64>) -> Issue {
-		let parent_index = IssueIndex::repo_only("o", "r");
+		let parent_index = IssueIndex::repo_only(RepoInfo::new("o", "r"));
 		let identity = match number {
 			Some(n) => {
 				let link = IssueLink::parse(&format!("https://github.com/o/r/issues/{n}")).unwrap();
