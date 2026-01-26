@@ -23,8 +23,9 @@
 
 use rstest::rstest;
 use tedi::Issue;
+use v_fixtures::FixtureRenderer;
 
-use crate::common::{TestContext, git::GitExt, snapshot_issues_dir, snapshot_issues_dir_redacting};
+use crate::common::{FixtureIssuesExt, TestContext, git::GitExt};
 
 fn parse(content: &str) -> Issue {
 	Issue::deserialize_virtual(content).expect("failed to parse test issue")
@@ -51,7 +52,7 @@ fn test_both_diverged_triggers_conflict() {
 	eprintln!("status: {status:?}");
 
 	// Capture the resulting directory state - this shows actual timestamps and merge result
-	insta::assert_snapshot!(snapshot_issues_dir(&ctx), @r#"
+	insta::assert_snapshot!(FixtureRenderer::try_new(&ctx).unwrap().render(), @r#"
 	//- /o/r/.meta.json
 	{
 	  "virtual_project": false,
@@ -95,7 +96,7 @@ fn test_both_diverged_with_git_initiates_merge() {
 	eprintln!("status: {status:?}");
 
 	// Capture the resulting directory state - this shows actual timestamps and merge result
-	insta::assert_snapshot!(snapshot_issues_dir(&ctx), @r#"
+	insta::assert_snapshot!(FixtureRenderer::try_new(&ctx).unwrap().render(), @r#"
 	//- /o/r/.meta.json
 	{
 	  "virtual_project": false,
@@ -169,7 +170,7 @@ fn test_only_local_changed_pushes_local() {
 	assert!(status.success(), "Should succeed when only local changed. stderr: {stderr}");
 
 	// Capture the resulting directory state
-	insta::assert_snapshot!(snapshot_issues_dir(&ctx), @r#"
+	insta::assert_snapshot!(FixtureRenderer::try_new(&ctx).unwrap().render(), @r#"
 	//- /o/r/.meta.json
 	{
 	  "virtual_project": false,
@@ -386,7 +387,7 @@ fn test_closing_issue_syncs_state_change() {
 
 	// Capture the resulting directory state
 	// Line 11 contains `state` timestamp set via Timestamp::now() when detecting state change
-	insta::assert_snapshot!(snapshot_issues_dir_redacting(&ctx, &[11]), @r#"
+	insta::assert_snapshot!(FixtureRenderer::try_new(&ctx).unwrap().redact_timestamps(&[11]).render(), @r#"
 	//- /o/r/.meta.json
 	{
 	  "virtual_project": false,
@@ -533,7 +534,7 @@ fn test_reset_syncs_changes_after_editor() {
 
 	// Capture the resulting directory state
 	// Line 11 contains `state` timestamp set via Timestamp::now() when detecting state change
-	insta::assert_snapshot!(snapshot_issues_dir_redacting(&ctx, &[11]), @r#"
+	insta::assert_snapshot!(FixtureRenderer::try_new(&ctx).unwrap().redact_timestamps(&[11]).render(), @r#"
 	//- /o/r/.meta.json
 	{
 	  "virtual_project": false,
@@ -584,7 +585,7 @@ fn test_comment_shorthand_creates_comment() {
 	eprintln!("stderr: {stderr}");
 
 	// Capture the resulting directory state
-	insta::assert_snapshot!(snapshot_issues_dir(&ctx), @"
+	insta::assert_snapshot!(FixtureRenderer::try_new(&ctx).unwrap().render(), @"
 	//- /o/__conflict.md
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
 			issue body
@@ -654,28 +655,36 @@ fn test_force_merge_preserves_both_sub_issues(#[case] args: &[&str], #[case] exp
 	eprintln!("stdout: {stdout}");
 	eprintln!("stderr: {stderr}");
 
-	// Snapshot BEFORE asserting success so we can see what was created even on failure
-	insta::assert_snapshot!(format!("force_merge_{}", args.join("_")), snapshot_issues_dir(&ctx));
-
 	assert!(status.success(), "Should succeed with {args:?}. stderr: {stderr}");
 
-	// Read the final file (may have moved to directory format due to sub-issues)
-	let content = std::fs::read_to_string(&issue_path).unwrap_or_else(|_| {
-		let dir_path = ctx.issue_path(&local);
-		std::fs::read_to_string(&dir_path).expect("Issue file should exist in flat or dir format")
-	});
-
-	eprintln!("Final content:\n{content}");
-
-	// Both sub-issues should be present regardless of which side is preferred
-	assert!(content.contains("Local Sub"), "Local sub-issue should be preserved with {args:?}. Got: {content}");
-	assert!(content.contains("Remote Sub"), "Remote sub-issue should be added with {args:?}. Got: {content}");
-
-	// Description line depends on which side is preferred
+	// Snapshot the result - different expectations based on which side wins conflicts
 	if expect_local_description {
-		assert!(content.contains("extra local line"), "Local description should be preserved with {args:?}. Got: {content}");
+		// --force: local wins conflicts, so "extra local line" should be present
+		insta::assert_snapshot!(FixtureRenderer::try_new(&ctx).unwrap().skip_meta().render(), @r#"
+		//- /o/r/1_-_Parent_Issue/2_-_Local_Sub.md
+		- [ ] Local Sub <!-- @mock_user https://github.com/o/r/issues/2 -->
+				local sub body
+		//- /o/r/1_-_Parent_Issue/3_-_Remote_Sub.md
+		- [ ] Remote Sub <!-- @mock_user https://github.com/o/r/issues/3 -->
+				remote sub body
+		//- /o/r/1_-_Parent_Issue/__main__.md
+		- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+				parent body
+				extra local line
+		"#);
 	} else {
-		assert!(!content.contains("extra local line"), "Remote description should win with {args:?}. Got: {content}");
+		// --pull --force: remote wins conflicts, so "extra local line" should NOT be present
+		insta::assert_snapshot!(FixtureRenderer::try_new(&ctx).unwrap().skip_meta().render(), @r#"
+		//- /o/r/1_-_Parent_Issue/2_-_Local_Sub.md
+		- [ ] Local Sub <!-- @mock_user https://github.com/o/r/issues/2 -->
+				local sub body
+		//- /o/r/1_-_Parent_Issue/3_-_Remote_Sub.md
+		- [ ] Remote Sub <!-- @mock_user https://github.com/o/r/issues/3 -->
+				remote sub body
+		//- /o/r/1_-_Parent_Issue/__main__.md
+		- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+				parent body
+		"#);
 	}
 }
 
@@ -706,7 +715,7 @@ fn test_consensus_sink_writes_meta_json_with_timestamps() {
 	assert!(status.success(), "Fetch should succeed. stderr: {stderr}");
 
 	// Capture the resulting directory state (includes .meta.json with timestamps)
-	insta::assert_snapshot!(snapshot_issues_dir(&ctx), @r#"
+	insta::assert_snapshot!(FixtureRenderer::try_new(&ctx).unwrap().render(), @r#"
 	//- /o/r/.meta.json
 	{
 	  "virtual_project": false,

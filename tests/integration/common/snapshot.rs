@@ -1,49 +1,47 @@
 //! Snapshot helpers for integration tests.
 
+use color_eyre::eyre::{Result, bail, eyre};
 use v_fixtures::{Fixture, FixtureRenderer};
 
 use super::TestContext;
 
-/// Capture the issues directory as a snapshot string.
-///
-/// Returns a fixture-format string showing all files in the issues directory.
-/// Automatically normalizes git hashes in conflict markers.
-pub fn snapshot_issues_dir(ctx: &TestContext) -> String {
-	snapshot_issues_dir_redacting(ctx, &[])
+/// Extension trait for creating and customizing issue fixture renderers.
+pub trait FixtureIssuesExt<'a> {
+	/// Create a renderer for the issues directory.
+	/// Errors if the directory doesn't exist or is empty.
+	/// Automatically normalizes git hashes.
+	fn try_new(ctx: &'a TestContext) -> Result<FixtureRenderer<'a>>;
+
+	/// Exclude .meta.json files from output.
+	fn skip_meta(self) -> Self;
+
+	/// Redact specific lines (1-indexed) with a timestamp-specific message.
+	///
+	/// Use this for timestamps set via `Timestamp::now()` which are non-deterministic.
+	fn redact_timestamps(self, lines: &[usize]) -> Self;
 }
 
-/// Redact specific lines from a snapshot output.
-///
-/// # Why this exists
-///
-/// Some timestamps in `.meta.json` are set via `Timestamp::now()` when the code
-/// detects local changes (e.g., user closes an issue). These timestamps are
-/// non-deterministic and change between test runs, causing snapshot failures.
-///
-/// We can't easily parse and redact them because:
-/// - The JSON is embedded in a multi-file fixture format
-/// - Timestamps from seeded test data vs `now()` are indistinguishable by format
-/// - Only certain fields (like `state`) get `now()` timestamps in certain tests
-///
-/// So we take the ugly-but-explicit approach: callers specify which output lines
-/// to redact. This makes it obvious in the test which values are non-deterministic.
-///
-/// # Arguments
-/// * `lines_to_redact` - 1-indexed line numbers to replace with "[REDACTED]"
-pub fn snapshot_issues_dir_redacting(ctx: &TestContext, lines_to_redact: &[usize]) -> String {
-	let issues_dir = ctx.xdg.data_dir().join("issues");
+impl<'a> FixtureIssuesExt<'a> for FixtureRenderer<'a> {
+	fn try_new(ctx: &'a TestContext) -> Result<FixtureRenderer<'a>> {
+		let issues_dir = ctx.xdg.data_dir().join("issues");
 
-	let Some(fixture) = Fixture::read_from_directory(&issues_dir) else {
-		return String::from("(empty - issues directory does not exist)");
-	};
+		let fixture = Fixture::read_from_directory(&issues_dir).ok_or_else(|| eyre!("issues directory doesn't exist: {}", issues_dir.display()))?;
 
-	if fixture.files.is_empty() {
-		return String::from("(empty - no files in issues directory)");
+		if fixture.files.is_empty() {
+			bail!("issues directory is empty: {}", issues_dir.display());
+		}
+
+		// Leak the fixture to get 'a lifetime - this is fine for tests
+		let fixture = Box::leak(Box::new(fixture));
+
+		Ok(FixtureRenderer::new(fixture).normalize_git_hashes())
 	}
 
-	FixtureRenderer::new(&fixture)
-		.normalize_git_hashes()
-		.redact_lines(lines_to_redact)
-		.redact_message("        [REDACTED - non-deterministic timestamp]")
-		.render()
+	fn skip_meta(self) -> Self {
+		self.regex(r"!\.meta\.json$")
+	}
+
+	fn redact_timestamps(self, lines: &[usize]) -> Self {
+		self.redact_lines(lines).redact_message("        [REDACTED - non-deterministic timestamp]")
+	}
 }

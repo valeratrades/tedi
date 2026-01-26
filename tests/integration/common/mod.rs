@@ -413,7 +413,7 @@ use std::{
 	sync::OnceLock,
 };
 
-pub use snapshot::{snapshot_issues_dir, snapshot_issues_dir_redacting};
+pub use snapshot::FixtureIssuesExt;
 use tedi::Issue;
 use v_fixtures::{Fixture, fs_standards::xdg::Xdg};
 

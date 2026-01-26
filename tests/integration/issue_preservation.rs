@@ -4,8 +4,9 @@
 //! parse -> edit -> serialize -> sync cycle intact.
 
 use tedi::Issue;
+use v_fixtures::FixtureRenderer;
 
-use crate::common::{TestContext, git::GitExt, snapshot_issues_dir_redacting};
+use crate::common::{FixtureIssuesExt, TestContext, git::GitExt};
 
 fn parse(content: &str) -> Issue {
 	Issue::deserialize_virtual(content).expect("failed to parse test issue")
@@ -267,7 +268,7 @@ fn test_closing_nested_issue_creates_bak_file() {
 		eprintln!("  {}", entry.path().display());
 	}
 
-	insta::assert_snapshot!(snapshot_issues_dir_redacting(&ctx, &[20]), @r#"
+	insta::assert_snapshot!(FixtureRenderer::try_new(&ctx).unwrap().redact_timestamps(&[20]).render(), @r#"
 	//- /o/r/.meta.json
 	{
 	  "virtual_project": false,

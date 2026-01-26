@@ -183,7 +183,15 @@ mod core {
 			};
 		}
 
-		let force = matches!(mode, MergeMode::Force { .. });
+		// In Force mode, we pass force=true only to the merge where `other` is the preferred side.
+		// merge(other, true) means "take other's values on conflicts".
+		// So: prefer Local → force on remote_merged.merge(local)
+		//     prefer Remote → force on local_merged.merge(remote)
+		let (force_local_wins, force_remote_wins) = match mode {
+			MergeMode::Force { prefer: Side::Local } => (true, false),
+			MergeMode::Force { prefer: Side::Remote } => (false, true),
+			_ => (false, false),
+		};
 
 		// Apply four-merge algorithm
 		let mut local_merged = local.clone();
@@ -202,7 +210,7 @@ mod core {
 		if let Some(ref consensus) = consensus {
 			local_merged.merge(consensus.clone(), false)?;
 		}
-		local_merged.merge(remote.clone(), force)?;
+		local_merged.merge(remote.clone(), force_remote_wins)?;
 
 		eprintln!("[sync_issue] After merge:");
 		eprintln!("  local_merged lineage: {:?}", local_merged.identity.lineage());
@@ -213,7 +221,7 @@ mod core {
 		if let Some(consensus) = consensus {
 			remote_merged.merge(consensus, false)?;
 		}
-		remote_merged.merge(local, force)?;
+		remote_merged.merge(local, force_local_wins)?;
 
 		// Compare results
 		if local_merged == remote_merged {
