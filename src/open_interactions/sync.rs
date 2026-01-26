@@ -25,7 +25,7 @@ use std::path::Path;
 
 use color_eyre::eyre::{Result, bail};
 use tedi::{
-	Issue, IssueLink, LazyIssue,
+	Issue, IssueLink, LazyIssue, RepoInfo,
 	local::{Local, LocalPath, Submitted},
 	sink::Sink,
 };
@@ -43,7 +43,6 @@ use super::{
 #[tracing::instrument]
 pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Modifier, sync_opts: SyncOptions) -> Result<ModifyResult> {
 	let repo_info = issue.identity.parent_index.repo_info();
-	let (owner, repo) = (repo_info.owner(), repo_info.repo());
 
 	// Ensure parent directories exist (converts flat files to directory format as needed)
 	// This is needed before we can compute the file path or write to it
@@ -84,17 +83,17 @@ pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Mo
 				println!("{}", if sync_opts.pull { "Pulling latest..." } else { "Syncing..." });
 
 				// Load remote
-				let url = format!("https://github.com/{owner}/{repo}/issues/{issue_number}");
+				let url = format!("https://github.com/{}/{}/issues/{issue_number}", repo_info.owner(), repo_info.repo());
 				let link = IssueLink::parse(&url).expect("valid URL");
 				let remote_source = RemoteSource::with_lineage(link, &issue.identity.lineage());
 				let remote = <Issue as LazyIssue<Remote>>::load(remote_source).await?;
 
 				let mode = sync_opts.take_merge_mode();
-				let (resolved, changed) = core::sync_issue(issue, consensus, remote, mode, owner, repo, issue_number).await?;
+				let (resolved, changed) = core::sync_issue(issue, consensus, remote, mode, repo_info, issue_number).await?;
 				issue = resolved;
 
 				if changed {
-					commit_issue_changes(owner, repo, issue_number)?;
+					commit_issue_changes(repo_info, issue_number)?;
 				}
 			}
 		}
@@ -126,20 +125,20 @@ pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Mo
 
 	if issue.is_linked() {
 		// Load fresh remote state for sync
-		let url = format!("https://github.com/{owner}/{repo}/issues/{issue_number}");
+		let url = format!("https://github.com/{}/{}/issues/{issue_number}", repo_info.owner(), repo_info.repo());
 		let link = IssueLink::parse(&url).expect("valid URL");
 		let remote_source = RemoteSource::with_lineage(link, &issue.identity.lineage());
 		let remote = <Issue as LazyIssue<Remote>>::load(remote_source).await?;
 
 		let consensus = load_consensus_issue(*local_path.index()).await?;
-		let (resolved, changed) = core::sync_issue(issue, consensus, remote, mode, owner, repo, issue_number).await?;
+		let (resolved, changed) = core::sync_issue(issue, consensus, remote, mode, repo_info, issue_number).await?;
 		issue = resolved;
 
 		if changed {
 			// Re-sink local in case issue numbers changed
 			<Issue as Sink<Submitted>>::sink(&mut issue, None).await?;
 			let actual_number = issue.number().expect("issue must have number after sync");
-			commit_issue_changes(owner, repo, actual_number)?;
+			commit_issue_changes(repo_info, actual_number)?;
 		} else {
 			println!("No changes.");
 		}
@@ -148,7 +147,7 @@ pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Mo
 		<Issue as Sink<Remote>>::sink(&mut issue, None).await?;
 		<Issue as Sink<Submitted>>::sink(&mut issue, None).await?;
 		let actual_number = issue.number().expect("issue must have number after remote sink");
-		commit_issue_changes(owner, repo, actual_number)?;
+		commit_issue_changes(repo_info, actual_number)?;
 	}
 
 	Ok(result)
@@ -166,7 +165,7 @@ mod core {
 	/// ```
 	///
 	/// Returns `(resolved_issue, changed)` where `changed` indicates if any updates were made.
-	pub(super) async fn sync_issue(local: Issue, consensus: Option<Issue>, remote: Issue, mode: MergeMode, owner: &str, repo: &str, issue_number: u64) -> Result<(Issue, bool)> {
+	pub(super) async fn sync_issue(local: Issue, consensus: Option<Issue>, remote: Issue, mode: MergeMode, repo_info: RepoInfo, issue_number: u64) -> Result<(Issue, bool)> {
 		// Handle Reset mode - take one side entirely
 		if let MergeMode::Reset { prefer } = mode {
 			return match prefer {
@@ -232,10 +231,10 @@ mod core {
 			Ok((resolved, true))
 		} else {
 			// Conflict - initiate git merge
-			match initiate_conflict_merge(owner, repo, issue_number, &local_merged, &remote_merged)? {
+			match initiate_conflict_merge(repo_info, issue_number, &local_merged, &remote_merged)? {
 				ConflictOutcome::AutoMerged => {
-					let resolved = read_resolved_conflict(owner)?;
-					complete_conflict_resolution(owner)?;
+					let resolved = read_resolved_conflict(repo_info.owner())?;
+					complete_conflict_resolution(repo_info.owner())?;
 					let mut resolved = resolved;
 					<Issue as Sink<Submitted>>::sink(&mut resolved, None).await?;
 					<Issue as Sink<Remote>>::sink(&mut resolved, None).await?;
@@ -243,8 +242,10 @@ mod core {
 				}
 				ConflictOutcome::NeedsResolution => {
 					bail!(
-						"Conflict detected for {owner}/{repo}#{issue_number}.\n\
-						Resolve using standard git tools, then re-run."
+						"Conflict detected for {}/{}#{issue_number}.\n\
+						Resolve using standard git tools, then re-run.",
+						repo_info.owner(),
+						repo_info.repo()
 					);
 				}
 				ConflictOutcome::NoChanges => {

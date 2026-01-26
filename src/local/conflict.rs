@@ -18,7 +18,7 @@ use thiserror::Error;
 use v_utils::prelude::*;
 
 use super::{Local, consensus::is_git_initialized};
-use crate::Issue;
+use crate::{Issue, RepoInfo};
 
 //==============================================================================
 // Error Types
@@ -134,7 +134,7 @@ pub enum ConflictOutcome {
 /// 3. Merging that branch (which may produce conflicts)
 ///
 /// Both local and remote are written to `{owner}/__conflict.md` in virtual format.
-pub fn initiate_conflict_merge(owner: &str, repo: &str, issue_number: u64, local_issue: &Issue, remote_issue: &Issue) -> Result<ConflictOutcome, ConflictError> {
+pub fn initiate_conflict_merge(repo_info: RepoInfo, issue_number: u64, local_issue: &Issue, remote_issue: &Issue) -> Result<ConflictOutcome, ConflictError> {
 	if !is_git_initialized() {
 		return Err(ConflictError::GitNotInitialized);
 	}
@@ -145,10 +145,10 @@ pub fn initiate_conflict_merge(owner: &str, repo: &str, issue_number: u64, local
 	})?;
 
 	// Ensure owner directory exists
-	let owner_dir = data_dir.join(owner);
+	let owner_dir = data_dir.join(repo_info.owner());
 	std::fs::create_dir_all(&owner_dir)?;
 
-	let conflict_file = conflict_file_path(owner);
+	let conflict_file = conflict_file_path(repo_info.owner());
 	let conflict_file_rel = conflict_file.strip_prefix(&data_dir).unwrap_or(&conflict_file);
 	let conflict_file_rel_str = conflict_file_rel.to_string_lossy();
 
@@ -168,7 +168,7 @@ pub fn initiate_conflict_merge(owner: &str, repo: &str, issue_number: u64, local
 		});
 	}
 
-	let commit_msg = format!("__conflict: local state for {owner}/{repo}#{issue_number}");
+	let commit_msg = format!("__conflict: local state for {}/{}#{issue_number}", repo_info.owner(), repo_info.repo());
 	let commit_output = Command::new("git").args(["-C", data_dir_str, "commit", "-m", &commit_msg]).output()?;
 
 	let local_committed = commit_output.status.success();
@@ -233,7 +233,7 @@ pub fn initiate_conflict_merge(owner: &str, repo: &str, issue_number: u64, local
 		return Ok(ConflictOutcome::NoChanges);
 	}
 
-	let remote_commit_msg = format!("__conflict: remote state for {owner}/{repo}#{issue_number}");
+	let remote_commit_msg = format!("__conflict: remote state for {}/{}#{issue_number}", repo_info.owner(), repo_info.repo());
 	let commit_status = Command::new("git").args(["-C", data_dir_str, "commit", "-m", &remote_commit_msg]).status()?;
 
 	if !commit_status.success() {
@@ -256,7 +256,7 @@ pub fn initiate_conflict_merge(owner: &str, repo: &str, issue_number: u64, local
 			"merge",
 			"remote-state",
 			"-m",
-			&format!("Merge remote state for {owner}/{repo}#{issue_number}"),
+			&format!("Merge remote state for {}/{}#{issue_number}", repo_info.owner(), repo_info.repo()),
 		])
 		.output()?;
 

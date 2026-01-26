@@ -176,8 +176,8 @@ impl MockGithubClient {
 	/// Add an issue to the mock state
 	#[cfg(test)]
 	#[expect(clippy::too_many_arguments)]
-	pub fn add_issue(&self, owner: &str, repo: &str, number: u64, title: &str, body: &str, state: &str, labels: Vec<&str>, owner_login: &str, timestamp: Option<jiff::Timestamp>) {
-		let key = RepoKey::new(owner, repo);
+	pub fn add_issue(&self, repo_info: RepoInfo, number: u64, title: &str, body: &str, state: &str, labels: Vec<&str>, owner_login: &str, timestamp: Option<jiff::Timestamp>) {
+		let key = RepoKey::from(repo_info);
 		let id = self.next_issue_id.fetch_add(1, Ordering::SeqCst);
 
 		let issue = MockIssueData {
@@ -202,8 +202,8 @@ impl MockGithubClient {
 	/// Add a comment to an issue
 	#[cfg(test)]
 	#[expect(clippy::too_many_arguments, reason = "test helper, extra verbosity is fine")]
-	pub fn add_comment(&self, owner: &str, repo: &str, issue_number: u64, comment_id: u64, body: &str, owner_login: &str, timestamp: jiff::Timestamp) {
-		let key = RepoKey::new(owner, repo);
+	pub fn add_comment(&self, repo_info: RepoInfo, issue_number: u64, comment_id: u64, body: &str, owner_login: &str, timestamp: jiff::Timestamp) {
+		let key = RepoKey::from(repo_info);
 
 		let ts_str = timestamp.to_string();
 		let comment = MockCommentData {
@@ -221,8 +221,8 @@ impl MockGithubClient {
 
 	/// Add a sub-issue relationship
 	#[cfg(test)]
-	pub fn add_sub_issue_relation(&self, owner: &str, repo: &str, parent_number: u64, child_number: u64) {
-		let key = RepoKey::new(owner, repo);
+	pub fn add_sub_issue_relation(&self, repo_info: RepoInfo, parent_number: u64, child_number: u64) {
+		let key = RepoKey::from(repo_info);
 
 		let mut sub_issues = self.sub_issues.lock().unwrap();
 		sub_issues.entry(key).or_default().entry(parent_number).or_default().push(child_number);
@@ -248,7 +248,7 @@ impl MockGithubClient {
 	fn with_issue_mut<F, R>(&self, repo: RepoInfo, issue_number: u64, f: F) -> Result<R>
 	where
 		F: FnOnce(&mut MockIssueData) -> R, {
-		let key = RepoKey::new(repo.owner(), repo.repo());
+		let key = RepoKey::from(repo);
 		let mut issues = self.issues.lock().unwrap();
 		let repo_issues = issues.get_mut(&key).ok_or_else(|| eyre!("Repository not found: {}/{}", repo.owner(), repo.repo()))?;
 		let issue = repo_issues.get_mut(&issue_number).ok_or_else(|| eyre!("Issue not found: #{issue_number}"))?;
@@ -259,7 +259,7 @@ impl MockGithubClient {
 	fn with_comment_mut<F, R>(&self, repo: RepoInfo, comment_id: u64, f: F) -> Result<R>
 	where
 		F: FnOnce(&mut MockCommentData) -> R, {
-		let key = RepoKey::new(repo.owner(), repo.repo());
+		let key = RepoKey::from(repo);
 		let mut comments = self.comments.lock().unwrap();
 		let repo_comments = comments.get_mut(&key).ok_or_else(|| eyre!("Repository not found: {}/{}", repo.owner(), repo.repo()))?;
 		let comment = repo_comments.get_mut(&comment_id).ok_or_else(|| eyre!("Comment not found: {comment_id}"))?;
@@ -281,7 +281,7 @@ impl MockGithubClient {
 
 /// Scan the project directory for the maximum issue number in filenames.
 /// Looks at files/dirs matching pattern `{number}_-_*` or just `{number}`.
-fn scan_max_issue_number(owner: &str, repo: &str) -> u64 {
+fn scan_max_issue_number(repo_info: RepoInfo) -> u64 {
 	fn scan_dir(path: &std::path::Path, max: &mut u64) {
 		let Ok(entries) = std::fs::read_dir(path) else {
 			return;
@@ -315,7 +315,7 @@ fn scan_max_issue_number(owner: &str, repo: &str) -> u64 {
 		}
 	}
 
-	let project_dir = Local::project_dir(owner, repo);
+	let project_dir = Local::project_dir(repo_info);
 	let mut max = 0u64;
 	scan_dir(&project_dir, &mut max);
 	max
@@ -372,6 +372,12 @@ impl RepoKey {
 	}
 }
 
+impl From<RepoInfo> for RepoKey {
+	fn from(repo_info: RepoInfo) -> Self {
+		Self::new(repo_info.owner(), repo_info.repo())
+	}
+}
+
 #[async_trait]
 impl GithubClient for MockGithubClient {
 	#[instrument(skip(self), name = "MockGithubClient::fetch_authenticated_user")]
@@ -388,7 +394,7 @@ impl GithubClient for MockGithubClient {
 		tracing::info!(target: "mock_github", owner, repo_name, issue_number, "fetch_issue");
 		self.log_call(&format!("fetch_issue({owner}, {repo_name}, {issue_number})"));
 
-		let key = RepoKey::new(owner, repo_name);
+		let key = RepoKey::from(repo);
 		let issues = self.issues.lock().unwrap();
 
 		let repo_issues = issues.get(&key).ok_or_else(|| eyre!("Repository not found: {owner}/{repo_name}"))?;
@@ -405,7 +411,7 @@ impl GithubClient for MockGithubClient {
 		tracing::info!(target: "mock_github", owner, repo_name, issue_number, "fetch_comments");
 		self.log_call(&format!("fetch_comments({owner}, {repo_name}, {issue_number})"));
 
-		let key = RepoKey::new(owner, repo_name);
+		let key = RepoKey::from(repo);
 		let comments = self.comments.lock().unwrap();
 
 		let repo_comments = match comments.get(&key) {
@@ -435,7 +441,7 @@ impl GithubClient for MockGithubClient {
 		tracing::info!(target: "mock_github", owner, repo_name, issue_number, "fetch_sub_issues");
 		self.log_call(&format!("fetch_sub_issues({owner}, {repo_name}, {issue_number})"));
 
-		let key = RepoKey::new(owner, repo_name);
+		let key = RepoKey::from(repo);
 
 		let sub_issue_numbers = {
 			let sub_issues = self.sub_issues.lock().unwrap();
@@ -493,7 +499,7 @@ impl GithubClient for MockGithubClient {
 		tracing::info!(target: "mock_github", owner, repo_name, issue_number, "create_comment");
 		self.log_call(&format!("create_comment({owner}, {repo_name}, {issue_number}, <body>)"));
 
-		let key = RepoKey::new(owner, repo_name);
+		let key = RepoKey::from(repo);
 		let comment_id = self.next_comment_id.fetch_add(1, Ordering::SeqCst);
 
 		let now = jiff::Timestamp::now().to_string();
@@ -519,7 +525,7 @@ impl GithubClient for MockGithubClient {
 		tracing::info!(target: "mock_github", owner, repo_name, comment_id, "delete_comment");
 		self.log_call(&format!("delete_comment({owner}, {repo_name}, {comment_id})"));
 
-		let key = RepoKey::new(owner, repo_name);
+		let key = RepoKey::from(repo);
 		let mut comments = self.comments.lock().unwrap();
 
 		if let Some(repo_comments) = comments.get_mut(&key) {
@@ -536,13 +542,13 @@ impl GithubClient for MockGithubClient {
 		tracing::info!(target: "mock_github", owner, repo_name, title, "create_issue");
 		self.log_call(&format!("create_issue({owner}, {repo_name}, {title}, <body>)"));
 
-		let key = RepoKey::new(owner, repo_name);
+		let key = RepoKey::from(repo);
 		let id = self.next_issue_id.fetch_add(1, Ordering::SeqCst);
 
 		// Get next issue number: scan filesystem for max existing issue number + 1
 		let number = {
-			let max_from_files = scan_max_issue_number(owner, repo_name);
-			let project_meta = Local::load_project_meta(owner, repo_name);
+			let max_from_files = scan_max_issue_number(repo);
+			let project_meta = Local::load_project_meta(repo);
 			let max_from_meta = project_meta.issues.keys().max().copied().unwrap_or(0);
 			max_from_files.max(max_from_meta) + 1
 		};
@@ -580,7 +586,7 @@ impl GithubClient for MockGithubClient {
 		tracing::info!(target: "mock_github", owner, repo_name, parent_issue_number, child_issue_id, "add_sub_issue");
 		self.log_call(&format!("add_sub_issue({owner}, {repo_name}, parent={parent_issue_number}, child_id={child_issue_id})"));
 
-		let key = RepoKey::new(owner, repo_name);
+		let key = RepoKey::from(repo);
 
 		// Find the issue number that matches the child_issue_id
 		let child_number = {
@@ -607,7 +613,7 @@ impl GithubClient for MockGithubClient {
 		tracing::info!(target: "mock_github", owner, repo_name, title, "find_issue_by_title");
 		self.log_call(&format!("find_issue_by_title({owner}, {repo_name}, {title})"));
 
-		let key = RepoKey::new(owner, repo_name);
+		let key = RepoKey::from(repo);
 		let issues = self.issues.lock().unwrap();
 
 		let repo_issues = match issues.get(&key) {
@@ -631,7 +637,7 @@ impl GithubClient for MockGithubClient {
 		tracing::info!(target: "mock_github", owner, repo_name, issue_number, "issue_exists");
 		self.log_call(&format!("issue_exists({owner}, {repo_name}, {issue_number})"));
 
-		let key = RepoKey::new(owner, repo_name);
+		let key = RepoKey::from(repo);
 		let issues = self.issues.lock().unwrap();
 
 		if let Some(repo_issues) = issues.get(&key) {
@@ -648,7 +654,7 @@ impl GithubClient for MockGithubClient {
 		tracing::info!(target: "mock_github", owner, repo_name, issue_number, "fetch_parent_issue");
 		self.log_call(&format!("fetch_parent_issue({owner}, {repo_name}, {issue_number})"));
 
-		let key = RepoKey::new(owner, repo_name);
+		let key = RepoKey::from(repo);
 
 		// Find the parent by searching through sub_issues relationships
 		let parent_number = {
@@ -682,7 +688,7 @@ impl GithubClient for MockGithubClient {
 		self.log_call(&format!("fetch_timeline_timestamps({owner}, {repo_name}, {issue_number})"));
 
 		let issues = self.issues.lock().unwrap();
-		let key = RepoKey::new(owner, repo_name);
+		let key = RepoKey::from(repo);
 
 		if let Some(repo_issues) = issues.get(&key)
 			&& let Some(issue) = repo_issues.get(&issue_number)
@@ -716,7 +722,7 @@ mod tests {
 		let repo = RepoInfo::new("owner", "repo");
 
 		// Add an issue
-		client.add_issue("owner", "repo", 123, "Test Issue", "Body content", "open", vec!["bug"], "testuser", Some(test_ts()));
+		client.add_issue(repo, 123, "Test Issue", "Body content", "open", vec!["bug"], "testuser", Some(test_ts()));
 
 		// Fetch it
 		let issue = client.fetch_issue(repo, 123).await.unwrap();
@@ -742,11 +748,11 @@ mod tests {
 		let repo = RepoInfo::new("owner", "repo");
 
 		// Add parent and child issues
-		client.add_issue("owner", "repo", 1, "Parent Issue", "", "open", vec![], "testuser", Some(test_ts()));
-		client.add_issue("owner", "repo", 2, "Child Issue", "", "open", vec![], "testuser", Some(test_ts()));
+		client.add_issue(repo, 1, "Parent Issue", "", "open", vec![], "testuser", Some(test_ts()));
+		client.add_issue(repo, 2, "Child Issue", "", "open", vec![], "testuser", Some(test_ts()));
 
 		// Add sub-issue relationship
-		client.add_sub_issue_relation("owner", "repo", 1, 2);
+		client.add_sub_issue_relation(repo, 1, 2);
 
 		// Fetch sub-issues
 		let sub_issues = client.fetch_sub_issues(repo, 1).await.unwrap();
@@ -772,9 +778,9 @@ mod tests {
 		let client = MockGithubClient::new("testuser");
 		let repo = RepoInfo::new("owner", "repo");
 
-		client.add_issue("owner", "repo", 1, "Issue", "", "open", vec![], "testuser", Some(test_ts()));
-		client.add_comment("owner", "repo", 1, 100, "First comment", "testuser", test_ts());
-		client.add_comment("owner", "repo", 1, 101, "Second comment", "other", test_ts());
+		client.add_issue(repo, 1, "Issue", "", "open", vec![], "testuser", Some(test_ts()));
+		client.add_comment(repo, 1, 100, "First comment", "testuser", test_ts());
+		client.add_comment(repo, 1, 101, "Second comment", "other", test_ts());
 
 		let comments = client.fetch_comments(repo, 1).await.unwrap();
 		assert_eq!(comments.len(), 2);
@@ -790,7 +796,7 @@ mod tests {
 		let client = MockGithubClient::new("testuser");
 		let repo = RepoInfo::new("owner", "repo");
 
-		client.add_issue("owner", "repo", 1, "Issue", "", "open", vec![], "testuser", Some(test_ts()));
+		client.add_issue(repo, 1, "Issue", "", "open", vec![], "testuser", Some(test_ts()));
 		let _ = client.fetch_issue(repo, 1).await;
 		let _ = client.fetch_comments(repo, 1).await;
 
@@ -809,13 +815,13 @@ mod tests {
 		let repo = RepoInfo::new("owner", "repo");
 
 		// Add parent and child issues
-		client.add_issue("owner", "repo", 1, "Parent Issue", "", "open", vec![], "testuser", Some(test_ts()));
-		client.add_issue("owner", "repo", 2, "Child Issue", "", "open", vec![], "testuser", Some(test_ts()));
-		client.add_issue("owner", "repo", 3, "Grandchild Issue", "", "open", vec![], "testuser", Some(test_ts()));
+		client.add_issue(repo, 1, "Parent Issue", "", "open", vec![], "testuser", Some(test_ts()));
+		client.add_issue(repo, 2, "Child Issue", "", "open", vec![], "testuser", Some(test_ts()));
+		client.add_issue(repo, 3, "Grandchild Issue", "", "open", vec![], "testuser", Some(test_ts()));
 
 		// Add sub-issue relationships
-		client.add_sub_issue_relation("owner", "repo", 1, 2);
-		client.add_sub_issue_relation("owner", "repo", 2, 3);
+		client.add_sub_issue_relation(repo, 1, 2);
+		client.add_sub_issue_relation(repo, 2, 3);
 
 		// Root issue has no parent
 		let parent = client.fetch_parent_issue(repo, 1).await.unwrap();

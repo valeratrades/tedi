@@ -7,6 +7,7 @@ use std::process::Command;
 use v_utils::prelude::*;
 
 use super::super::Local;
+use crate::RepoInfo;
 
 /// Check if git is initialized in the issues directory.
 pub fn is_git_initialized() -> bool {
@@ -24,7 +25,7 @@ pub fn is_git_initialized() -> bool {
 }
 
 /// Stage and commit changes for an issue file.
-pub fn commit_issue_changes(owner: &str, repo: &str, issue_number: u64) -> Result<()> {
+pub fn commit_issue_changes(repo_info: RepoInfo, issue_number: u64) -> Result<()> {
 	let data_dir = Local::issues_dir();
 	let data_dir_str = data_dir.to_str().ok_or_else(|| eyre!("Invalid data directory path"))?;
 
@@ -42,7 +43,7 @@ pub fn commit_issue_changes(owner: &str, repo: &str, issue_number: u64) -> Resul
 	}
 
 	// Commit with provided or default message
-	let commit_msg = format!("sync: {owner}/{repo}#{issue_number}");
+	let commit_msg = format!("sync: {}/{}#{issue_number}", repo_info.owner(), repo_info.repo());
 	Command::new("git").args(["-C", data_dir_str, "commit", "-m", &commit_msg]).output()?;
 
 	Ok(())

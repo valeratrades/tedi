@@ -22,10 +22,14 @@
 //! so snapshots verify both file content and timestamp values.
 
 use rstest::rstest;
-use tedi::Issue;
+use tedi::{Issue, RepoInfo};
 use v_fixtures::FixtureRenderer;
 
 use crate::common::{FixtureIssuesExt, TestContext, git::GitExt};
+
+fn repo() -> RepoInfo {
+	RepoInfo::new("o", "r")
+}
 
 fn parse(content: &str) -> Issue {
 	Issue::deserialize_virtual(content).expect("failed to parse test issue")
@@ -233,10 +237,10 @@ fn test_url_open_creates_local_file_from_remote() {
 	ctx.remote(&remote, Some(15));
 
 	// No local file exists - URL open should create it
-	let expected_path = ctx.flat_issue_path("o", "r", 1, "Test Issue");
+	let expected_path = ctx.flat_issue_path(repo(), 1, "Test Issue");
 	assert!(!expected_path.exists(), "Local file should not exist before open");
 
-	let (status, stdout, stderr) = ctx.open_url("o", "r", 1).run();
+	let (status, stdout, stderr) = ctx.open_url(repo(), 1).run();
 
 	eprintln!("stdout: {stdout}");
 	eprintln!("stderr: {stderr}");
@@ -264,7 +268,7 @@ fn test_reset_with_remote_url_nukes_local_state() {
 	ctx.remote(&remote, Some(80));
 
 	// Open via URL with --reset should nuke local and use remote
-	let (status, stdout, stderr) = ctx.open_url("o", "r", 1).args(&["--reset"]).run();
+	let (status, stdout, stderr) = ctx.open_url(repo(), 1).args(&["--reset"]).run();
 
 	eprintln!("stdout: {stdout}");
 	eprintln!("stderr: {stderr}");
@@ -293,7 +297,7 @@ fn test_reset_with_remote_url_skips_merge_on_divergence() {
 	ctx.remote(&remote, Some(35));
 
 	// Open via URL with --reset should NOT trigger merge conflict
-	let (status, stdout, stderr) = ctx.open_url("o", "r", 1).args(&["--reset"]).run();
+	let (status, stdout, stderr) = ctx.open_url(repo(), 1).args(&["--reset"]).run();
 
 	eprintln!("stdout: {stdout}");
 	eprintln!("stderr: {stderr}");
@@ -434,7 +438,7 @@ fn test_duplicate_sub_issues_filtered_from_remote() {
 	ctx.remote(&parent_with_children, Some(-10));
 
 	// Open via URL to fetch from remote
-	let (status, stdout, stderr) = ctx.open_url("o", "r", 1).run();
+	let (status, stdout, stderr) = ctx.open_url(repo(), 1).run();
 
 	eprintln!("stdout: {stdout}");
 	eprintln!("stderr: {stderr}");
@@ -442,7 +446,7 @@ fn test_duplicate_sub_issues_filtered_from_remote() {
 	assert!(status.success(), "Should succeed. stderr: {stderr}");
 
 	// Check that the normal closed sub-issue file exists (with .bak suffix)
-	let issue_dir = ctx.dir_issue_path("o", "r", 1, "Parent Issue").parent().unwrap().to_path_buf();
+	let issue_dir = ctx.dir_issue_path(repo(), 1, "Parent Issue").parent().unwrap().to_path_buf();
 	let normal_closed_path = issue_dir.join("2_-_Normal_Closed_Sub.md.bak");
 	assert!(normal_closed_path.exists(), "Normal closed sub-issue file should exist");
 
@@ -473,11 +477,11 @@ fn test_open_unchanged_succeeds() {
 	ctx.remote(&issue, Some(10));
 
 	// First open via URL
-	let (status, _stdout, stderr) = ctx.open_url("o", "r", 1).run();
+	let (status, _stdout, stderr) = ctx.open_url(repo(), 1).run();
 	assert!(status.success(), "First open should succeed. stderr: {stderr}");
 
 	// Second open - should also succeed (no-op since nothing changed)
-	let issue_path = ctx.flat_issue_path("o", "r", 1, "Test Issue");
+	let issue_path = ctx.flat_issue_path(repo(), 1, "Test Issue");
 	let (status, _stdout, stderr) = ctx.open(&issue_path).run();
 	assert!(status.success(), "Second open (unchanged) should succeed. stderr: {stderr}");
 }
@@ -498,14 +502,14 @@ fn test_open_by_number_unchanged_succeeds() {
 	ctx.remote(&issue, None);
 
 	// First open via URL with --reset
-	let (status, stdout, stderr) = ctx.open_url("o", "r", 1).args(&["--reset"]).run();
+	let (status, stdout, stderr) = ctx.open_url(repo(), 1).args(&["--reset"]).run();
 	eprintln!("First open stdout: {stdout}");
 	eprintln!("First open stderr: {stderr}");
 	assert!(status.success(), "First open should succeed. stderr: {stderr}");
 
 	// Second open by number (simulating the failing case)
 	// This uses the mock, so remote state is the same
-	let (status, stdout, stderr) = ctx.open_url("o", "r", 1).run();
+	let (status, stdout, stderr) = ctx.open_url(repo(), 1).run();
 	eprintln!("Second open stdout: {stdout}");
 	eprintln!("Second open stderr: {stderr}");
 	assert!(status.success(), "Second open (unchanged) should succeed. stderr: {stderr}");
@@ -527,7 +531,7 @@ fn test_reset_syncs_changes_after_editor() {
 	modified_issue.contents.state = tedi::CloseState::Closed;
 
 	// Open with --reset and make changes while editor is open
-	let (_status, stdout, stderr) = ctx.open_url("o", "r", 1).args(&["--reset"]).edit(&modified_issue).run();
+	let (_status, stdout, stderr) = ctx.open_url(repo(), 1).args(&["--reset"]).edit(&modified_issue).run();
 
 	eprintln!("stdout: {stdout}");
 	eprintln!("stderr: {stderr}");
@@ -707,7 +711,7 @@ fn test_consensus_sink_writes_meta_json_with_timestamps() {
 	ctx.remote(&remote, None);
 
 	// Fetch the issue via URL - this should sink to Consensus and write .meta.json
-	let (status, stdout, stderr) = ctx.open_url("o", "r", 1).run();
+	let (status, stdout, stderr) = ctx.open_url(repo(), 1).run();
 
 	eprintln!("stdout: {stdout}");
 	eprintln!("stderr: {stderr}");

@@ -244,14 +244,12 @@ impl LocalPath {
 	///
 	/// Note: This does NOT create any directories. Use Sink to write.
 	pub fn file_path(&mut self, title: &str, closed: bool, has_children: bool) -> Result<PathBuf, color_eyre::Report> {
-		// Clone index data before mutable borrow for caching
-		let owner = self.index.owner().to_string();
-		let repo = self.index.repo().to_string();
+		let repo_info = self.index.repo_info();
 		let issue_number = self.index.issue_number();
 
 		let ancestor_dir_names = self.resolve_ancestor_dir_names()?;
 
-		let mut path = Local::project_dir(&owner, &repo);
+		let mut path = Local::project_dir(repo_info);
 		for dir_name in ancestor_dir_names {
 			path = path.join(dir_name);
 		}
@@ -268,14 +266,12 @@ impl LocalPath {
 
 	/// Compute the directory path for this issue (where children would live).
 	pub fn dir_path(&mut self, title: &str) -> Result<PathBuf, color_eyre::Report> {
-		// Clone index data before mutable borrow for caching
-		let owner = self.index.owner().to_string();
-		let repo = self.index.repo().to_string();
+		let repo_info = self.index.repo_info();
 		let issue_number = self.index.issue_number();
 
 		let ancestor_dir_names = self.resolve_ancestor_dir_names()?;
 
-		let mut path = Local::project_dir(&owner, &repo);
+		let mut path = Local::project_dir(repo_info);
 		for dir_name in ancestor_dir_names {
 			path = path.join(dir_name);
 		}
@@ -294,7 +290,7 @@ impl LocalPath {
 
 		Local::find_issue_file_by_num_path_with_reader(repo_info, &num_path, reader).ok_or_else(|| {
 			// Construct a descriptive path for the error
-			let base_path = Local::project_dir(repo_info.owner(), repo_info.repo());
+			let base_path = Local::project_dir(repo_info);
 			let num_path_str = num_path.iter().map(|n| n.to_string()).collect::<Vec<_>>().join("/");
 			LocalError::FileNotFound { path: base_path.join(num_path_str) }
 		})
@@ -322,7 +318,7 @@ impl LocalPath {
 
 	/// Find directory names for each ancestor by traversing filesystem.
 	fn compute_ancestor_dir_names(&self) -> Result<Vec<String>, color_eyre::Report> {
-		let mut path = Local::project_dir(self.index.owner(), self.index.repo());
+		let mut path = Local::project_dir(self.index.repo_info());
 
 		if !path.exists() {
 			color_eyre::eyre::bail!("Project directory does not exist: {}", path.display());
@@ -351,7 +347,7 @@ impl LocalPath {
 	///
 	/// Returns the ancestor directory names after ensuring they exist as directories.
 	pub fn ensure_parent_dirs(&mut self) -> Result<Vec<String>, color_eyre::Report> {
-		let mut path = Local::project_dir(self.index.owner(), self.index.repo());
+		let mut path = Local::project_dir(self.index.repo_info());
 
 		if !path.exists() {
 			std::fs::create_dir_all(&path)?;
@@ -533,8 +529,8 @@ impl Local {
 
 	/// Get the project directory path (where .meta.json lives).
 	/// Structure: issues/{owner}/{repo}/
-	pub fn project_dir(owner: &str, repo: &str) -> PathBuf {
-		Self::issues_dir().join(owner).join(repo)
+	pub fn project_dir(repo_info: RepoInfo) -> PathBuf {
+		Self::issues_dir().join(repo_info.owner()).join(repo_info.repo())
 	}
 
 	/// Sanitize a title for use in filenames.
@@ -598,13 +594,13 @@ impl Local {
 		let closed = issue.contents.state.is_closed();
 
 		// Check if issue exists in directory format on disk
-		let issue_dir = Self::issue_dir_path_from_dir_names(repo_info.owner(), repo_info.repo(), issue.number(), &issue.contents.title, &ancestor_dir_names);
+		let issue_dir = Self::issue_dir_path_from_dir_names(repo_info, issue.number(), &issue.contents.title, &ancestor_dir_names);
 		if issue_dir.is_dir() {
 			return Ok(Self::main_file_path(&issue_dir, closed));
 		}
 
 		// Flat file format
-		let mut path = Self::project_dir(repo_info.owner(), repo_info.repo());
+		let mut path = Self::project_dir(repo_info);
 		for dir_name in &ancestor_dir_names {
 			path = path.join(dir_name);
 		}
@@ -613,8 +609,8 @@ impl Local {
 	}
 
 	/// Get the path to the issue directory using ancestor directory names directly.
-	pub fn issue_dir_path_from_dir_names(owner: &str, repo: &str, issue_number: Option<u64>, title: &str, ancestor_dir_names: &[String]) -> PathBuf {
-		let mut path = Self::project_dir(owner, repo);
+	pub fn issue_dir_path_from_dir_names(repo_info: RepoInfo, issue_number: Option<u64>, title: &str, ancestor_dir_names: &[String]) -> PathBuf {
+		let mut path = Self::project_dir(repo_info);
 
 		for dir_name in ancestor_dir_names {
 			path = path.join(dir_name);
@@ -648,9 +644,9 @@ impl Local {
 	}
 
 	/// Find the actual file path for an issue, checking both flat and directory formats.
-	pub fn find_issue_file(owner: &str, repo: &str, issue_number: Option<u64>, title: &str, ancestor_dir_names: &[String]) -> Option<PathBuf> {
+	pub fn find_issue_file(repo_info: RepoInfo, issue_number: Option<u64>, title: &str, ancestor_dir_names: &[String]) -> Option<PathBuf> {
 		// Build base path: project_dir / ancestor_dir_names...
-		let mut base_path = Self::project_dir(owner, repo);
+		let mut base_path = Self::project_dir(repo_info);
 		for dir_name in ancestor_dir_names {
 			base_path = base_path.join(dir_name);
 		}
@@ -667,7 +663,7 @@ impl Local {
 		}
 
 		// Try directory format
-		let issue_dir = Self::issue_dir_path_from_dir_names(owner, repo, issue_number, title, ancestor_dir_names);
+		let issue_dir = Self::issue_dir_path_from_dir_names(repo_info, issue_number, title, ancestor_dir_names);
 		if issue_dir.is_dir() {
 			let main_path = Self::main_file_path(&issue_dir, false);
 			if main_path.exists() {
@@ -722,7 +718,7 @@ impl Local {
 	/// Build ancestor directory names by traversing the filesystem for a lineage.
 	/// Finds issues by number (either flat file or directory) and returns the directory names.
 	pub fn build_ancestor_dir_names_from_lineage(repo_info: RepoInfo, lineage: &[u64]) -> Result<Vec<String>> {
-		let mut path = Self::project_dir(repo_info.owner(), repo_info.repo());
+		let mut path = Self::project_dir(repo_info);
 
 		if !path.exists() {
 			bail!("Project directory does not exist: {}", path.display());
@@ -744,7 +740,7 @@ impl Local {
 	/// Find the issue file by repo info and full number path.
 	/// The num_path includes all ancestors plus the target issue's own number.
 	pub fn find_issue_file_by_num_path(repo_info: RepoInfo, num_path: &[u64]) -> Option<PathBuf> {
-		let mut path = Self::project_dir(repo_info.owner(), repo_info.repo());
+		let mut path = Self::project_dir(repo_info);
 
 		if !path.exists() {
 			return None;
@@ -859,7 +855,7 @@ impl Local {
 
 	/// Find the issue file by repo info and full number path, using the provided reader.
 	pub(crate) fn find_issue_file_by_num_path_with_reader<R: LocalReader>(repo_info: RepoInfo, num_path: &[u64], reader: &R) -> Option<PathBuf> {
-		let mut path = Self::project_dir(repo_info.owner(), repo_info.repo());
+		let mut path = Self::project_dir(repo_info);
 
 		if !reader.exists(&path) {
 			return None;
@@ -940,7 +936,7 @@ impl Local {
 	/// Find the issue directory by repo info and full number path, using the provided reader.
 	/// Returns `Some(path)` if the issue exists in directory format (has children).
 	pub(crate) fn find_issue_dir_by_num_path_with_reader<R: LocalReader>(repo_info: RepoInfo, num_path: &[u64], reader: &R) -> Option<PathBuf> {
-		let mut path = Self::project_dir(repo_info.owner(), repo_info.repo());
+		let mut path = Self::project_dir(repo_info);
 
 		if !reader.exists(&path) {
 			return None;
@@ -1029,7 +1025,7 @@ impl Local {
 			parent_selectors.push(IssueSelector::GitId(issue_number));
 		}
 
-		Ok(IssueIndex::with_index(owner, repo, parent_selectors))
+		Ok(IssueIndex::with_index(RepoInfo::new(owner, repo), parent_selectors))
 	}
 
 	/// Extract the full IssueIndex from an issue file path (including the issue itself).
@@ -1047,6 +1043,7 @@ impl Local {
 
 		let owner = components[0].as_os_str().to_str().ok_or_else(|| eyre!("Could not extract owner from path: {path:?}"))?;
 		let repo = components[1].as_os_str().to_str().ok_or_else(|| eyre!("Could not extract repo from path: {path:?}"))?;
+		let repo_info = RepoInfo::new(owner, repo);
 
 		// Check if this is a directory format file (__main__.md or __main__.md.bak)
 		let filename = components
@@ -1101,7 +1098,7 @@ impl Local {
 			}
 		}
 
-		Ok(IssueIndex::with_index(owner, repo, selectors))
+		Ok(IssueIndex::with_index(repo_info, selectors))
 	}
 
 	/// Interactive issue file selection using fzf.
@@ -1220,17 +1217,17 @@ impl Local {
 	}
 
 	/// Check if a project is virtual (has no Github remote)
-	pub fn is_virtual_project(repo_info: crate::RepoInfo) -> bool {
-		Self::load_project_meta(repo_info.owner(), repo_info.repo()).virtual_project //TODO: update all occurences of `owner, repo` to just `repo_info` everywhere
+	pub fn is_virtual_project(repo_info: RepoInfo) -> bool {
+		Self::load_project_meta(repo_info).virtual_project
 	}
 
 	/// Ensure a virtual project exists (creates if needed).
-	pub fn ensure_virtual_project(owner: &str, repo: &str) -> Result<ProjectMeta> {
-		let meta_path = Self::project_meta_path(owner, repo);
+	pub fn ensure_virtual_project(repo_info: RepoInfo) -> Result<ProjectMeta> {
+		let meta_path = Self::project_meta_path(repo_info);
 		if meta_path.exists() {
-			let project_meta = Self::load_project_meta(owner, repo);
+			let project_meta = Self::load_project_meta(repo_info);
 			if !project_meta.virtual_project {
-				bail!("Project {owner}/{repo} exists but is not a virtual project");
+				bail!("Project {}/{} exists but is not a virtual project", repo_info.owner(), repo_info.repo());
 			}
 			Ok(project_meta)
 		} else {
@@ -1239,16 +1236,16 @@ impl Local {
 				next_virtual_issue_number: 1,
 				issues: std::collections::BTreeMap::new(),
 			};
-			Self::save_project_meta(owner, repo, &project_meta)?;
+			Self::save_project_meta(repo_info, &project_meta)?;
 			Ok(project_meta)
 		}
 	}
 
 	/// Allocate the next issue number for a virtual project.
-	pub fn allocate_virtual_issue_number(owner: &str, repo: &str) -> Result<u64> {
-		let mut project_meta = Self::load_project_meta(owner, repo);
+	pub fn allocate_virtual_issue_number(repo_info: RepoInfo) -> Result<u64> {
+		let mut project_meta = Self::load_project_meta(repo_info);
 		if !project_meta.virtual_project {
-			bail!("Cannot allocate virtual issue number for non-virtual project {owner}/{repo}");
+			bail!("Cannot allocate virtual issue number for non-virtual project {}/{}", repo_info.owner(), repo_info.repo());
 		}
 
 		if project_meta.next_virtual_issue_number == 0 {
@@ -1257,24 +1254,24 @@ impl Local {
 
 		let issue_number = project_meta.next_virtual_issue_number;
 		project_meta.next_virtual_issue_number += 1;
-		Self::save_project_meta(owner, repo, &project_meta)?;
+		Self::save_project_meta(repo_info, &project_meta)?;
 
 		Ok(issue_number)
 	}
 
 	/// Get the metadata file path for a project
-	fn project_meta_path(owner: &str, repo: &str) -> PathBuf {
-		Self::project_dir(owner, repo).join(".meta.json")
+	fn project_meta_path(repo_info: RepoInfo) -> PathBuf {
+		Self::project_dir(repo_info).join(".meta.json")
 	}
 
 	/// Load project metadata, creating empty if not exists
-	pub fn load_project_meta(owner: &str, repo: &str) -> ProjectMeta {
-		Self::load_project_meta_from_reader(RepoInfo::new(owner, repo), &FsReader)
+	pub fn load_project_meta(repo_info: RepoInfo) -> ProjectMeta {
+		Self::load_project_meta_from_reader(repo_info, &FsReader)
 	}
 
 	/// Save project metadata
-	fn save_project_meta(owner: &str, repo: &str, meta: &ProjectMeta) -> Result<()> {
-		let meta_path = Self::project_meta_path(owner, repo);
+	fn save_project_meta(repo_info: RepoInfo, meta: &ProjectMeta) -> Result<()> {
+		let meta_path = Self::project_meta_path(repo_info);
 		if let Some(parent) = meta_path.parent() {
 			std::fs::create_dir_all(parent)?;
 		}
@@ -1285,7 +1282,7 @@ impl Local {
 
 	/// Load project metadata using the provided reader.
 	pub(crate) fn load_project_meta_from_reader<R: LocalReader>(repo_info: RepoInfo, reader: &R) -> ProjectMeta {
-		let meta_path = Self::project_meta_path(repo_info.owner(), repo_info.repo());
+		let meta_path = Self::project_meta_path(repo_info);
 		let content = reader.read_content(&meta_path);
 
 		match content {
@@ -1304,17 +1301,17 @@ impl Local {
 	}
 
 	/// Save metadata for a specific issue to the project's .meta.json.
-	fn save_issue_meta(owner: &str, repo: &str, issue_number: u64, meta: &IssueMeta) -> Result<()> {
-		let mut project_meta = Self::load_project_meta(owner, repo);
+	fn save_issue_meta(repo_info: RepoInfo, issue_number: u64, meta: &IssueMeta) -> Result<()> {
+		let mut project_meta = Self::load_project_meta(repo_info);
 		project_meta.issues.insert(issue_number, meta.clone());
-		Self::save_project_meta(owner, repo, &project_meta)
+		Self::save_project_meta(repo_info, &project_meta)
 	}
 
 	/// Remove metadata for a specific issue from the project's .meta.json.
-	fn remove_issue_meta(owner: &str, repo: &str, issue_number: u64) -> Result<()> {
-		let mut project_meta = Self::load_project_meta(owner, repo);
+	fn remove_issue_meta(repo_info: RepoInfo, issue_number: u64) -> Result<()> {
+		let mut project_meta = Self::load_project_meta(repo_info);
 		if project_meta.issues.remove(&issue_number).is_some() {
-			Self::save_project_meta(owner, repo, &project_meta)?;
+			Self::save_project_meta(repo_info, &project_meta)?;
 		}
 		Ok(())
 	}

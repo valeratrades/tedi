@@ -151,8 +151,8 @@ impl TestContext {
 	}
 
 	/// Create an OpenUrlBuilder for running the `open` command with a Github URL.
-	pub fn open_url(&self, owner: &str, repo: &str, number: u64) -> OpenUrlBuilder<'_> {
-		let url = format!("https://github.com/{owner}/{repo}/issues/{number}");
+	pub fn open_url(&self, repo_info: tedi::RepoInfo, number: u64) -> OpenUrlBuilder<'_> {
+		let url = format!("https://github.com/{}/{}/issues/{number}", repo_info.owner(), repo_info.repo());
 		OpenUrlBuilder::with_url(self, url)
 	}
 
