@@ -88,7 +88,7 @@ pub enum ConsensusSinkError {
 ///
 /// Only covers failures possible from both FsReader and GitReader.
 /// Random unrecoverable errors go to Other.
-#[derive(Debug, thiserror::Error, derive_more::From, derive_more::Display)]
+#[derive(Debug, derive_more::Display, thiserror::Error, derive_more::From)]
 pub enum ReaderError {
 	/// Path does not exist
 	#[display("path not found: {}", path.display())]
@@ -376,6 +376,11 @@ where
 /// r[local.sink-only-mutation]
 /// This type computes paths but does NOT create directories or files.
 /// Only `Sink<Submitted>` and `Sink<Consensus>` may mutate the filesystem.
+///
+/// r[local.path-reader-only]
+/// All filesystem interactions in this type MUST go through `LocalReader` trait methods.
+/// Never use `std::fs`, `Path::exists()`, `Path::is_dir()`, etc. directly.
+/// This ensures the same code works for both filesystem reads and git HEAD reads.
 #[derive(Clone, Debug)]
 pub struct LocalPath {
 	pub(crate) index: IssueIndex,
