@@ -6,6 +6,7 @@ pub use common::*;
 mod blocker_integrated;
 mod file_naming;
 mod issue_preservation;
+mod path_parsing;
 mod reset_conflict;
 mod sync;
 mod touch;

@@ -286,18 +286,34 @@ impl LocalPath {
 
 	/// Find the actual file path for this issue using the reader.
 	///
-	/// Searches for the issue file by number, checking both flat and directory formats,
+	/// Searches for the issue file by number or title, checking both flat and directory formats,
 	/// and both open and closed states. Uses the provided reader to check existence.
 	pub fn find_file_path<R: LocalReader>(&mut self, reader: &R) -> Result<PathBuf, LocalError> {
 		let repo_info = self.index.repo_info();
-		let num_path = self.index.num_path();
 
-		Local::find_issue_file_by_num_path_with_reader(repo_info, &num_path, reader).ok_or_else(|| {
-			// Construct a descriptive path for the error
-			let base_path = Local::project_dir(repo_info.owner(), repo_info.repo());
-			let num_path_str = num_path.iter().map(|n| n.to_string()).collect::<Vec<_>>().join("/");
-			LocalError::FileNotFound { path: base_path.join(num_path_str) }
-		})
+		// Check if last selector is Title (pending issue) or GitId (synced issue)
+		match self.index.index().last() {
+			Some(IssueSelector::Title(title)) => {
+				// Title-based lookup: navigate to parent, then search by title
+				let parent_nums = self.index.parent_nums();
+				Local::find_issue_file_by_title_with_reader(repo_info, &parent_nums, title.as_str(), reader).ok_or_else(|| {
+					let base_path = Local::project_dir(repo_info.owner(), repo_info.repo());
+					let parent_path: PathBuf = parent_nums.iter().map(|n| n.to_string()).collect::<Vec<_>>().join("/").into();
+					LocalError::FileNotFound {
+						path: base_path.join(parent_path).join(format!("{title}.md")),
+					}
+				})
+			}
+			Some(IssueSelector::GitId(_)) | None => {
+				// Number-based lookup
+				let num_path = self.index.num_path();
+				Local::find_issue_file_by_num_path_with_reader(repo_info, &num_path, reader).ok_or_else(|| {
+					let base_path = Local::project_dir(repo_info.owner(), repo_info.repo());
+					let num_path_str = num_path.iter().map(|n| n.to_string()).collect::<Vec<_>>().join("/");
+					LocalError::FileNotFound { path: base_path.join(num_path_str) }
+				})
+			}
+		}
 	}
 
 	/// Find the directory path for this issue if it exists (has children).
@@ -915,6 +931,54 @@ impl Local {
 		None
 	}
 
+	/// Find an issue file by title (for pending issues without numbers).
+	/// Navigates to parent using parent_nums, then searches for file matching title.
+	fn find_issue_file_by_title_with_reader<R: LocalReader>(repo_info: RepoInfo, parent_nums: &[u64], title: &str, reader: &R) -> Option<PathBuf> {
+		let mut path = Self::project_dir(repo_info.owner(), repo_info.repo());
+
+		if !reader.exists(&path) {
+			return None;
+		}
+
+		// Navigate to parent directory using issue numbers
+		for &issue_number in parent_nums {
+			let dir = Self::find_issue_dir_by_number_with_reader(&path, issue_number, reader)?;
+			path = dir;
+		}
+
+		// Search for file matching the title
+		let entries = reader.list_dir(&path);
+		let sanitized_title = Self::sanitize_title(title);
+
+		// Check for exact title match first
+		let exact_match = format!("{sanitized_title}.md");
+		let exact_match_bak = format!("{sanitized_title}.md.bak");
+
+		for name in entries {
+			let entry_path = path.join(&name);
+
+			if reader.is_dir(&entry_path) {
+				continue;
+			}
+
+			// Exact title match (title.md or title.md.bak)
+			if name == exact_match || name == exact_match_bak {
+				return Some(entry_path);
+			}
+
+			// Also check for number_-_title format where title part matches
+			// (in case the issue was synced and got a number)
+			if let Some(pos) = name.find("_-_") {
+				let name_title = name[pos + 3..].strip_suffix(".md.bak").or_else(|| name[pos + 3..].strip_suffix(".md"));
+				if name_title == Some(&sanitized_title) {
+					return Some(entry_path);
+				}
+			}
+		}
+
+		None
+	}
+
 	/// Find an issue directory by its number prefix, using the provided reader.
 	fn find_issue_dir_by_number_with_reader<R: LocalReader>(parent: &Path, issue_number: u64, reader: &R) -> Option<PathBuf> {
 		let entries = reader.list_dir(parent);
@@ -961,16 +1025,28 @@ impl Local {
 	}
 
 	/// Parse an IssueSelector from a filename or directory name.
-	/// Format: `{number}_-_{title}[.md[.bak]]` or just `{number}[.md[.bak]]`
+	/// Format: `{number}_-_{title}[.md[.bak]]` or just `{title}[.md[.bak]]` for pending issues.
+	///
+	/// Returns `GitId` if an issue number is found, `Title` for title-only .md files.
+	/// Returns `None` for non-issue files (directories without numbers, non-.md files).
 	pub(crate) fn parse_issue_selector_from_name(name: &str) -> Option<IssueSelector> {
 		// Strip file extensions if present
 		let base = name.strip_suffix(".md.bak").or_else(|| name.strip_suffix(".md")).unwrap_or(name);
 
-		// Extract issue number
+		// Try to extract issue number
 		if let Some(sep_pos) = base.find("_-_") {
-			base[..sep_pos].parse::<u64>().ok().map(IssueSelector::GitId)
+			if let Ok(num) = base[..sep_pos].parse::<u64>() {
+				return Some(IssueSelector::GitId(num));
+			}
+		} else if let Ok(num) = base.parse::<u64>() {
+			return Some(IssueSelector::GitId(num));
+		}
+
+		// No number - only return Title for .md files (pending issues), not directories
+		if name.ends_with(".md") || name.ends_with(".md.bak") {
+			IssueSelector::try_title(base)
 		} else {
-			base.parse::<u64>().ok().map(IssueSelector::GitId)
+			None
 		}
 	}
 
