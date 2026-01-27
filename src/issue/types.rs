@@ -632,6 +632,7 @@ impl IssueIndex {
 
 	/// Extract numeric issue numbers from the index (GitId selectors only).
 	/// Returns all GitId values in order, skipping Title selectors.
+	#[deprecated(note = "a very problematic primitive, completely invalidating the whole point of having IssueSelector type in the first place")]
 	pub fn num_path(&self) -> Vec<u64> {
 		self.index()
 			.iter()
@@ -645,6 +646,7 @@ impl IssueIndex {
 	/// Get parent issue numbers.
 	/// If the issue has its own number (last selector is GitId), returns all preceding GitIds.
 	/// If the issue is pending (last selector is Title or empty), returns all GitIds.
+	#[deprecated(note = "very problematic as it will lead to logical issues when constructing paths over uninitiaziled issues")]
 	pub fn parent_nums(&self) -> Vec<u64> {
 		let index = self.index();
 		match index.last() {
