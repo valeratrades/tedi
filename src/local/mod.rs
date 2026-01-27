@@ -84,42 +84,100 @@ pub enum ConsensusSinkError {
 // LocalReader - Abstraction for reading from different sources
 //==============================================================================
 
+/// Error type for LocalReader operations.
+///
+/// Only covers failures possible from both FsReader and GitReader.
+/// Random unrecoverable errors go to Other.
+#[derive(Debug, thiserror::Error, derive_more::From, derive_more::Display)]
+pub enum ReaderError {
+	/// Path does not exist
+	#[display("path not found: {}", path.display())]
+	NotFound { path: PathBuf },
+
+	/// Permission denied reading path
+	#[display("permission denied: {}", path.display())]
+	PermissionDenied { path: PathBuf },
+
+	/// File content is not valid UTF-8
+	#[display("invalid UTF-8 in file: {}", path.display())]
+	InvalidUtf8 { path: PathBuf },
+
+	/// Path is outside the issues directory (security boundary)
+	#[display("path outside issues directory: {}", path.display())]
+	OutsideIssuesDir { path: PathBuf },
+
+	/// Git repository not initialized
+	#[display("git not initialized in issues directory")]
+	GitNotInitialized,
+
+	/// Other errors
+	#[display("{_0}")]
+	#[from]
+	Other(color_eyre::Report),
+}
+
 /// Trait for reading content from different sources (filesystem or git).
 ///
 /// Separates the read abstraction from path computation.
 pub trait LocalReader: Clone {
 	/// Read file content at the given path.
-	fn read_content(&self, path: &Path) -> Option<String>;
+	fn read_content(&self, path: &Path) -> Result<String, ReaderError>;
 	/// List directory entries at the given path.
-	fn list_dir(&self, path: &Path) -> Vec<String>;
+	fn list_dir(&self, path: &Path) -> Result<Vec<String>, ReaderError>;
 	/// Check if the path is a directory.
-	fn is_dir(&self, path: &Path) -> bool;
+	fn is_dir(&self, path: &Path) -> Result<bool, ReaderError>;
 	/// Check if the path exists.
-	fn exists(&self, path: &Path) -> bool;
+	fn exists(&self, path: &Path) -> Result<bool, ReaderError>;
 }
 
 /// Reader that reads from the filesystem (submitted/current state).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct FsReader;
 
+impl FsReader {
+	/// Convert std::io::Error to ReaderError with path context.
+	fn io_err(e: std::io::Error, path: &Path) -> ReaderError {
+		match e.kind() {
+			std::io::ErrorKind::NotFound => ReaderError::NotFound { path: path.to_path_buf() },
+			std::io::ErrorKind::PermissionDenied => ReaderError::PermissionDenied { path: path.to_path_buf() },
+			_ => ReaderError::Other(color_eyre::eyre::eyre!("I/O error on {}: {e}", path.display())),
+		}
+	}
+}
+
 impl LocalReader for FsReader {
-	fn read_content(&self, path: &Path) -> Option<String> {
-		std::fs::read_to_string(path).ok()
+	fn read_content(&self, path: &Path) -> Result<String, ReaderError> {
+		match std::fs::read(path) {
+			Ok(bytes) => String::from_utf8(bytes).map_err(|_| ReaderError::InvalidUtf8 { path: path.to_path_buf() }),
+			Err(e) => Err(Self::io_err(e, path)),
+		}
 	}
 
-	fn list_dir(&self, path: &Path) -> Vec<String> {
-		let Ok(entries) = std::fs::read_dir(path) else {
-			return Vec::new();
-		};
-		entries.flatten().filter_map(|e| e.file_name().to_str().map(|s| s.to_string())).collect()
+	fn list_dir(&self, path: &Path) -> Result<Vec<String>, ReaderError> {
+		let entries = std::fs::read_dir(path).map_err(|e| Self::io_err(e, path))?;
+		let mut result = Vec::new();
+		for entry in entries {
+			let entry = entry.map_err(|e| Self::io_err(e, path))?;
+			if let Some(name) = entry.file_name().to_str() {
+				result.push(name.to_string());
+			}
+		}
+		Ok(result)
 	}
 
-	fn is_dir(&self, path: &Path) -> bool {
-		path.is_dir()
+	fn is_dir(&self, path: &Path) -> Result<bool, ReaderError> {
+		match std::fs::metadata(path) {
+			Ok(meta) => Ok(meta.is_dir()),
+			Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+			Err(e) => Err(Self::io_err(e, path)),
+		}
 	}
 
-	fn exists(&self, path: &Path) -> bool {
-		path.exists()
+	fn exists(&self, path: &Path) -> Result<bool, ReaderError> {
+		match path.try_exists() {
+			Ok(exists) => Ok(exists),
+			Err(e) => Err(Self::io_err(e, path)),
+		}
 	}
 }
 
@@ -127,21 +185,120 @@ impl LocalReader for FsReader {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct GitReader;
 
+impl GitReader {
+	/// Get relative path within issues dir, or error if outside.
+	fn rel_path(path: &Path) -> Result<(&Path, PathBuf), ReaderError> {
+		let data_dir = Local::issues_dir();
+		let rel_path = path.strip_prefix(&data_dir).map_err(|_| ReaderError::OutsideIssuesDir { path: path.to_path_buf() })?;
+		Ok((rel_path, data_dir))
+	}
+
+	/// Check if git is initialized in the issues directory.
+	fn check_git_initialized(data_dir: &Path) -> Result<(), ReaderError> {
+		use std::process::Command;
+		let data_dir_str = data_dir.to_str().ok_or_else(|| ReaderError::Other(color_eyre::eyre::eyre!("issues dir path not valid UTF-8")))?;
+		let git_check = Command::new("git")
+			.args(["-C", data_dir_str, "rev-parse", "--git-dir"])
+			.output()
+			.map_err(|e| ReaderError::Other(color_eyre::eyre::eyre!("failed to run git: {e}")))?;
+		if !git_check.status.success() {
+			return Err(ReaderError::GitNotInitialized);
+		}
+		Ok(())
+	}
+}
+
 impl LocalReader for GitReader {
-	fn read_content(&self, path: &Path) -> Option<String> {
-		Local::read_git_content(path)
+	fn read_content(&self, path: &Path) -> Result<String, ReaderError> {
+		use std::process::Command;
+
+		let (rel_path, data_dir) = Self::rel_path(path)?;
+		let data_dir_str = data_dir.to_str().ok_or_else(|| ReaderError::Other(color_eyre::eyre::eyre!("issues dir path not valid UTF-8")))?;
+		let rel_path_str = rel_path
+			.to_str()
+			.ok_or_else(|| ReaderError::Other(color_eyre::eyre::eyre!("path not valid UTF-8: {}", path.display())))?;
+
+		Self::check_git_initialized(&data_dir)?;
+
+		// Check if file is tracked
+		let ls_output = Command::new("git")
+			.args(["-C", data_dir_str, "ls-files", rel_path_str])
+			.output()
+			.map_err(|e| ReaderError::Other(color_eyre::eyre::eyre!("git ls-files failed: {e}")))?;
+		if !ls_output.status.success() || ls_output.stdout.is_empty() {
+			return Err(ReaderError::NotFound { path: path.to_path_buf() });
+		}
+
+		// Read from HEAD
+		let output = Command::new("git")
+			.args(["-C", data_dir_str, "show", &format!("HEAD:./{rel_path_str}")])
+			.output()
+			.map_err(|e| ReaderError::Other(color_eyre::eyre::eyre!("git show failed: {e}")))?;
+
+		if !output.status.success() {
+			return Err(ReaderError::NotFound { path: path.to_path_buf() });
+		}
+
+		String::from_utf8(output.stdout).map_err(|_| ReaderError::InvalidUtf8 { path: path.to_path_buf() })
 	}
 
-	fn list_dir(&self, path: &Path) -> Vec<String> {
-		Local::list_git_entries(path)
+	fn list_dir(&self, path: &Path) -> Result<Vec<String>, ReaderError> {
+		use std::process::Command;
+
+		let (rel_dir, data_dir) = Self::rel_path(path)?;
+		let data_dir_str = data_dir.to_str().ok_or_else(|| ReaderError::Other(color_eyre::eyre::eyre!("issues dir path not valid UTF-8")))?;
+		let rel_dir_str = rel_dir
+			.to_str()
+			.ok_or_else(|| ReaderError::Other(color_eyre::eyre::eyre!("path not valid UTF-8: {}", path.display())))?;
+
+		Self::check_git_initialized(&data_dir)?;
+
+		let output = Command::new("git")
+			.args(["-C", data_dir_str, "ls-tree", "--name-only", "HEAD", &format!("{rel_dir_str}/")])
+			.output()
+			.map_err(|e| ReaderError::Other(color_eyre::eyre::eyre!("git ls-tree failed: {e}")))?;
+
+		if !output.status.success() {
+			// Directory doesn't exist in git
+			return Err(ReaderError::NotFound { path: path.to_path_buf() });
+		}
+
+		let prefix = format!("{rel_dir_str}/");
+		let entries = std::str::from_utf8(&output.stdout)
+			.map_err(|_| ReaderError::Other(color_eyre::eyre::eyre!("git output not valid UTF-8")))?
+			.lines()
+			.filter_map(|line| line.strip_prefix(&prefix))
+			.map(|s| s.to_string())
+			.collect();
+		Ok(entries)
 	}
 
-	fn is_dir(&self, path: &Path) -> bool {
-		Local::is_git_dir(path)
+	fn is_dir(&self, path: &Path) -> Result<bool, ReaderError> {
+		use std::process::Command;
+
+		let (rel_dir, data_dir) = Self::rel_path(path)?;
+		let data_dir_str = data_dir.to_str().ok_or_else(|| ReaderError::Other(color_eyre::eyre::eyre!("issues dir path not valid UTF-8")))?;
+		let rel_dir_str = rel_dir
+			.to_str()
+			.ok_or_else(|| ReaderError::Other(color_eyre::eyre::eyre!("path not valid UTF-8: {}", path.display())))?;
+
+		Self::check_git_initialized(&data_dir)?;
+
+		let check = Command::new("git")
+			.args(["-C", data_dir_str, "ls-tree", "HEAD", &format!("{rel_dir_str}/")])
+			.output()
+			.map_err(|e| ReaderError::Other(color_eyre::eyre::eyre!("git ls-tree failed: {e}")))?;
+
+		Ok(check.status.success() && !check.stdout.is_empty())
 	}
 
-	fn exists(&self, path: &Path) -> bool {
-		self.read_content(path).is_some() || self.is_dir(path)
+	fn exists(&self, path: &Path) -> Result<bool, ReaderError> {
+		// For git, existence = either file content readable or is a directory
+		match self.read_content(path) {
+			Ok(_) => Ok(true),
+			Err(ReaderError::NotFound { .. }) => self.is_dir(path),
+			Err(e) => Err(e),
+		}
 	}
 }
 
@@ -169,7 +326,7 @@ impl<R: LocalReader> LocalIssueSource<R> {
 
 	/// Get the IssueIndex from the underlying LocalPath.
 	pub fn index(&self) -> &IssueIndex {
-		self.local_path.index()
+		&self.local_path.index
 	}
 }
 
@@ -221,17 +378,13 @@ where
 /// Only `Sink<Submitted>` and `Sink<Consensus>` may mutate the filesystem.
 #[derive(Clone, Debug)]
 pub struct LocalPath {
-	index: IssueIndex,
+	pub(crate) index: IssueIndex,
 	/// Cached parent directory path. Invalidated if path no longer exists on disk.
 	__cached_parent_dir: Option<PathBuf>,
 }
 impl LocalPath {
 	pub fn new(index: IssueIndex) -> Self {
 		Self { index, __cached_parent_dir: None }
-	}
-
-	pub fn index(&self) -> &IssueIndex {
-		&self.index
 	}
 
 	/// Compute the file path for this issue.
@@ -268,7 +421,7 @@ impl LocalPath {
 	}
 
 	/// Compute the parent directory path by traversing all parent selectors.
-	fn compute_parent_dir(&self) -> Result<PathBuf, color_eyre::Report> {
+	fn compute_parent_dir<R: LocalReader>(&self, reader: R) -> Result<PathBuf, color_eyre::Report> {
 		let mut path = Local::project_dir(self.index.owner(), self.index.repo());
 
 		// Get parent selectors (all except the last one which is this issue)
@@ -300,7 +453,7 @@ impl LocalPath {
 			Some(IssueSelector::GitId(n)) => Local::format_issue_filename(Some(*n), title, closed),
 			Some(IssueSelector::Title(_)) | None => {
 				let ext = if closed { ".md.bak" } else { ".md" };
-				format!("{}{}", Local::sanitize_title(title), ext)
+				format!("{}{ext}", Local::sanitize_title(title))
 			}
 		}
 	}
@@ -342,98 +495,13 @@ impl Local {
 		v_utils::xdg_data_dir!("issues")
 	}
 
-	/// Read file content from git HEAD.
-	pub(crate) fn read_git_content(file_path: &Path) -> Option<String> {
-		use std::process::Command;
-
-		let data_dir = Self::issues_dir();
-		let data_dir_str = data_dir.to_str()?;
-		let rel_path = file_path.strip_prefix(&data_dir).ok()?;
-		let rel_path_str = rel_path.to_str()?;
-
-		// Check if git is initialized
-		let git_check = Command::new("git").args(["-C", data_dir_str, "rev-parse", "--git-dir"]).output().ok()?;
-		if !git_check.status.success() {
-			return None;
-		}
-
-		// Check if file is tracked
-		let ls_output = Command::new("git").args(["-C", data_dir_str, "ls-files", rel_path_str]).output().ok()?;
-		if !ls_output.status.success() || ls_output.stdout.is_empty() {
-			return None;
-		}
-
-		// Read from HEAD
-		let output = Command::new("git").args(["-C", data_dir_str, "show", &format!("HEAD:./{rel_path_str}")]).output().ok()?;
-
-		if !output.status.success() {
-			return None;
-		}
-
-		String::from_utf8(output.stdout).ok()
-	}
-
-	/// List directory entries from git HEAD.
-	pub(crate) fn list_git_entries(dir: &Path) -> Vec<String> {
-		use std::process::Command;
-
-		let data_dir = Self::issues_dir();
-		let Some(data_dir_str) = data_dir.to_str() else {
-			return Vec::new();
-		};
-		let Some(rel_dir) = dir.strip_prefix(&data_dir).ok() else {
-			return Vec::new();
-		};
-		let Some(rel_dir_str) = rel_dir.to_str() else {
-			return Vec::new();
-		};
-
-		let output = Command::new("git")
-			.args(["-C", data_dir_str, "ls-tree", "--name-only", "HEAD", &format!("{rel_dir_str}/")])
-			.output();
-
-		let Ok(output) = output else {
-			return Vec::new();
-		};
-		if !output.status.success() {
-			return Vec::new();
-		}
-
-		let prefix = format!("{rel_dir_str}/");
-		std::str::from_utf8(&output.stdout)
-			.expect("git output must be valid UTF-8")
-			.lines()
-			.filter_map(|line| line.strip_prefix(&prefix))
-			.map(|s| s.to_string())
-			.collect()
-	}
-
-	/// Check if a path is a directory in git.
-	pub(crate) fn is_git_dir(dir: &Path) -> bool {
-		use std::process::Command;
-
-		let data_dir = Self::issues_dir();
-		let Some(data_dir_str) = data_dir.to_str() else {
-			return false;
-		};
-		let Some(rel_dir) = dir.strip_prefix(&data_dir).ok() else {
-			return false;
-		};
-		let Some(rel_dir_str) = rel_dir.to_str() else {
-			return false;
-		};
-
-		let check = Command::new("git")
-			.args(["-C", data_dir_str, "ls-tree", "HEAD", &format!("{rel_dir_str}/")])
-			.output()
-			.expect("failed to execute git command");
-		check.status.success() && !check.stdout.is_empty()
-	}
-
 	/// Parse a single issue node from filesystem content.
 	///
 	/// This parses one issue file (without loading children from separate files).
 	/// Children field will be empty - they're loaded separately via LazyIssue.
+	#[deprecated(
+		note = "needs to be removed or reimplemented, - why on earth is it parsing virtual. And needs to be generic over Reader, - has no business taking `file_path`; instead constructing LocalPath from IssueIndex"
+	)]
 	fn parse_single_node(content: &str, index: IssueIndex, file_path: &Path) -> Result<Issue, LocalError> {
 		let mut issue = Issue::parse_virtual(content, index).map_err(|e| LocalError::ParseError {
 			path: file_path.to_path_buf(),

@@ -123,10 +123,12 @@ fn sink_issue_node(issue: &Issue, old: Option<&Issue>) -> Result<bool> {
 
 	eprintln!("[sink_issue_node] issue #{:?} '{title}', closed: {closed}, state: {:?}", issue.number(), issue.contents.state);
 
-	// Use LocalPath for all path computation
+	// Extract owner/repo directly from issue
+	let owner = issue.identity.owner().to_string();
+	let repo = issue.identity.repo().to_string();
+
+	// Use LocalPath for path computation
 	let mut local_path = LocalPath::from(issue);
-	let owner = local_path.index().owner().to_string();
-	let repo = local_path.index().repo().to_string();
 
 	// Ensure parent directories exist (converts flat files to directories as needed)
 	local_path.ensure_parent_dirs()?;
@@ -230,9 +232,10 @@ fn cleanup_old_locations(issue: &Issue, old: Option<&Issue>, has_children: bool,
 		if issue_number.is_some() {
 			// Create a pending version of the index to find old pending files
 			// This has parents as GitIds + Title (so issue_number() returns None)
-			let mut pending_selectors: Vec<IssueSelector> = local_path.index().parent_nums().into_iter().map(IssueSelector::GitId).collect();
+			let issue_index = IssueIndex::from(issue);
+			let mut pending_selectors: Vec<IssueSelector> = issue_index.parent_nums().into_iter().map(IssueSelector::GitId).collect();
 			pending_selectors.push(IssueSelector::title(title));
-			let pending_index = IssueIndex::with_index(local_path.index().owner(), local_path.index().repo(), pending_selectors);
+			let pending_index = IssueIndex::with_index(issue_index.owner(), issue_index.repo(), pending_selectors);
 			let mut pending_path = LocalPath::from(pending_index);
 			if pending_path.resolve_ancestor_dir_names().is_ok() {
 				if let Ok(pending_open) = pending_path.file_path(title, false, false) {
@@ -250,10 +253,11 @@ fn cleanup_old_locations(issue: &Issue, old: Option<&Issue>, has_children: bool,
 
 /// Remove all file variants for an issue.
 fn remove_issue_files(issue: &Issue) -> Result<bool> {
-	let mut local_path = LocalPath::from(issue);
 	let title = &issue.contents.title;
-	let owner = local_path.index().owner().to_string();
-	let repo = local_path.index().repo().to_string();
+	let owner = issue.identity.owner().to_string();
+	let repo = issue.identity.repo().to_string();
+
+	let mut local_path = LocalPath::from(issue);
 
 	// Try to resolve ancestor dirs
 	if local_path.resolve_ancestor_dir_names().is_err() {

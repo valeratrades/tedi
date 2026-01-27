@@ -25,7 +25,7 @@ use std::path::Path;
 
 use color_eyre::eyre::{Result, bail};
 use tedi::{
-	Issue, IssueLink, LazyIssue,
+	Issue, IssueIndex, IssueLink, LazyIssue,
 	local::{Local, LocalPath, Submitted},
 	sink::Sink,
 };
@@ -45,9 +45,12 @@ pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Mo
 	let repo_info = issue.identity.parent_index.repo_info();
 	let (owner, repo) = (repo_info.owner(), repo_info.repo());
 
+	// Get IssueIndex for consensus loading
+	let issue_index = IssueIndex::from(&issue);
+
 	// Ensure parent directories exist (converts flat files to directory format as needed)
 	// This is needed before we can compute the file path or write to it
-	let mut local_path = LocalPath::from(&issue);
+	let mut local_path = LocalPath::from(issue_index);
 	local_path.ensure_parent_dirs()?;
 
 	// Compute issue file path
@@ -77,7 +80,7 @@ pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Mo
 		let prefers_local = matches!(sync_opts.peek_merge_mode(), MergeMode::Reset { prefer: Side::Local } | MergeMode::Force { prefer: Side::Local });
 
 		if !prefers_local {
-			let consensus = load_consensus_issue(*local_path.index()).await?;
+			let consensus = load_consensus_issue(issue_index).await?;
 			let local_differs = consensus.as_ref().map(|c| *c != issue).unwrap_or(false);
 
 			if sync_opts.pull || local_differs {
@@ -131,7 +134,7 @@ pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Mo
 		let remote_source = RemoteSource::with_lineage(link, &issue.identity.lineage());
 		let remote = <Issue as LazyIssue<Remote>>::load(remote_source).await?;
 
-		let consensus = load_consensus_issue(*local_path.index()).await?;
+		let consensus = load_consensus_issue(issue_index).await?;
 		let (resolved, changed) = core::sync_issue(issue, consensus, remote, mode, owner, repo, issue_number).await?;
 		issue = resolved;
 
