@@ -1,8 +1,6 @@
 //! Sink implementations for local filesystem mutations.
 //!
 //! r[local.sink-only-mutation]
-//! Only `Sink<Submitted>` and `Sink<Consensus>` may mutate the local filesystem.
-//! All filesystem writes, deletes, and directory creation MUST go through these implementations.
 
 use std::{
 	collections::{HashMap, HashSet},

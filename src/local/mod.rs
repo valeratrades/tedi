@@ -374,13 +374,7 @@ where
 /// On-demand path construction for local issue storage.
 ///
 /// r[local.sink-only-mutation]
-/// This type computes paths but does NOT create directories or files.
-/// Only `Sink<Submitted>` and `Sink<Consensus>` may mutate the filesystem.
-///
 /// r[local.path-reader-only]
-/// All filesystem interactions in this type MUST go through `LocalReader` trait methods.
-/// Never use `std::fs`, `Path::exists()`, `Path::is_dir()`, etc. directly.
-/// This ensures the same code works for both filesystem reads and git HEAD reads.
 #[derive(Clone, Debug)]
 pub struct LocalPath {
 	pub(crate) index: IssueIndex,
@@ -394,17 +388,17 @@ impl LocalPath {
 
 	/// Compute the file path for this issue.
 	///
+	/// r[local.path-reader-only]
 	/// Returns the path where the issue file should be located based on:
 	/// - `closed`: whether the issue is closed (affects .md vs .md.bak extension)
 	/// - `has_children`: whether stored in directory format (affects __main__.md vs flat file)
 	/// - `title`: the issue title (used in filename)
 	///
 	/// Note: This does NOT create any directories. Use Sink to write.
-	pub fn file_path<R: LocalReader>(&mut self, title: &str, closed: bool, has_children: bool, reader: R) -> Result<PathBuf, color_eyre::Report> {
+	pub fn file_path<R: LocalReader>(&mut self, title: &str, closed: bool, has_children: bool, reader: &R) -> Result<PathBuf, color_eyre::Report> {
 		let parent_dir: PathBuf = {
-			// Check cache validity
 			if let Some(ref cached) = self.__cached_parent_dir
-				&& cached.exists()
+				&& reader.exists(cached).unwrap_or(false)
 			{
 				cached.clone()
 			} else {
@@ -426,7 +420,9 @@ impl LocalPath {
 	}
 
 	/// Compute the parent directory path by traversing all parent selectors.
-	fn compute_parent_dir<R: LocalReader>(&self, reader: R) -> Result<PathBuf, color_eyre::Report> {
+	///
+	/// r[local.path-reader-only]
+	fn compute_parent_dir<R: LocalReader>(&self, reader: &R) -> Result<PathBuf, color_eyre::Report> {
 		let mut path = Local::project_dir(self.index.owner(), self.index.repo());
 
 		// Get parent selectors (all except the last one which is this issue)
@@ -434,12 +430,57 @@ impl LocalPath {
 		let parent_selectors = if selectors.is_empty() { &[] } else { &selectors[..selectors.len() - 1] };
 
 		for selector in parent_selectors {
-			let dir_name = Local::find_dir_name_by_selector(&path, selector)
+			let dir_name = self
+				.find_dir_name_by_selector(reader, &path, selector)
 				.ok_or_else(|| color_eyre::eyre::eyre!("Parent issue {selector:?} not found locally in {}. Fetch the parent issue first.", path.display()))?;
 			path = path.join(dir_name);
 		}
 
 		Ok(path)
+	}
+
+	/// Find directory name matching a selector using reader.
+	///
+	/// r[local.path-reader-only]
+	/// For GitId: looks for `{number}_-_*` directories or flat files.
+	/// For Title: looks for directories matching the sanitized title.
+	fn find_dir_name_by_selector<R: LocalReader>(&self, reader: &R, parent: &Path, selector: &IssueSelector) -> Option<String> {
+		let entries = reader.list_dir(parent).ok()?;
+
+		match selector {
+			IssueSelector::GitId(issue_number) => {
+				let prefix_with_sep = format!("{issue_number}_-_");
+				let exact_match_dir = format!("{issue_number}");
+
+				for name in entries {
+					let entry_path = parent.join(&name);
+
+					if reader.is_dir(&entry_path).unwrap_or(false) {
+						if name.starts_with(&prefix_with_sep) || name == exact_match_dir {
+							return Some(name);
+						}
+					} else if let Some(base) = name.strip_suffix(".md.bak").or_else(|| name.strip_suffix(".md"))
+						&& (base.starts_with(&prefix_with_sep) || base == exact_match_dir)
+					{
+						return Some(base.to_string());
+					}
+				}
+				None
+			}
+			IssueSelector::Title(title) => {
+				let sanitized = Local::sanitize_title(title.as_str());
+
+				for name in entries {
+					let entry_path = parent.join(&name);
+
+					// For Title selectors, look for directory with matching name
+					if reader.is_dir(&entry_path).unwrap_or(false) && name == sanitized {
+						return Some(name);
+					}
+				}
+				None
+			}
+		}
 	}
 
 	/// Format the directory name for this issue (when it has children).
@@ -816,6 +857,7 @@ impl Local {
 	/// Find a directory name matching a selector (GitId or Title).
 	/// For GitId: looks for `{number}_-_*` directories or flat files.
 	/// For Title: looks for directories matching the sanitized title.
+	#[deprecated(note = "use LocalPath instead")]
 	fn find_dir_name_by_selector(parent: &Path, selector: &IssueSelector) -> Option<String> {
 		let entries = std::fs::read_dir(parent).ok()?;
 
@@ -865,11 +907,13 @@ impl Local {
 	/// Find an issue by number (flat file or directory) and return the directory name it would use.
 	/// For flat file `99_-_title.md` returns `99_-_title`.
 	/// For directory `99_-_title/` returns `99_-_title`.
+	#[deprecated(note = "use LocalPath instead")]
 	fn find_issue_dir_name_by_number(parent: &Path, issue_number: u64) -> Option<String> {
 		Self::find_dir_name_by_selector(parent, &IssueSelector::GitId(issue_number))
 	}
 
 	/// Find the issue file by repo info and full number path, using the provided reader.
+	#[deprecated(note = "use LocalPath instead")]
 	pub(crate) fn find_issue_file_by_num_path_with_reader<R: LocalReader>(repo_info: RepoInfo, num_path: &[u64], reader: &R) -> Option<PathBuf> {
 		let mut path = Self::project_dir(repo_info.owner(), repo_info.repo());
 
@@ -929,6 +973,7 @@ impl Local {
 
 	/// Find an issue file by title (for pending issues without numbers).
 	/// Navigates to parent using parent_nums, then searches for file matching title.
+	#[deprecated(note = "use LocalPath instead")]
 	fn find_issue_file_by_title_with_reader<R: LocalReader>(repo_info: RepoInfo, parent_nums: &[u64], title: &str, reader: &R) -> Option<PathBuf> {
 		let mut path = Self::project_dir(repo_info.owner(), repo_info.repo());
 
