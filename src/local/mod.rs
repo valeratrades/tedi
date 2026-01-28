@@ -949,17 +949,30 @@ mod local_path {
 	#[derive(Debug, miette::Diagnostic, thiserror::Error)]
 	pub enum LocalPathError {
 		/// Parent issue not found at expected location.
-		#[error("parent issue {selector:?} not found in {}", searched_path.display())]
-		#[diagnostic(help("Fetch the parent issue first"))]
+		#[error("parent issue {selector:?} not found")]
+		#[diagnostic(
+			code(tedi::local::missing_parent),
+			help("Fetch the parent issue first.\n  Searched in: {}", searched_path.display())
+		)]
 		MissingParent { selector: IssueSelector, searched_path: PathBuf },
 
 		/// Issue file not found (search failed).
-		#[error("issue file {selector:?} not found in {}", searched_path.display())]
+		#[error("issue file {selector:?} not found")]
+		#[diagnostic(
+			code(tedi::local::not_found),
+			help("Searched in: {}", searched_path.display())
+		)]
 		NotFound { selector: IssueSelector, searched_path: PathBuf },
 
 		/// Multiple files match the selector.
-		#[error("multiple files match {selector:?} in {}: {}", searched_path.display(), matching_paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", "))]
-		#[diagnostic(help("Specify a more precise selector to disambiguate"))]
+		#[error("multiple files match {selector:?}")]
+		#[diagnostic(
+			code(tedi::local::not_unique),
+			help("Specify a more precise selector to disambiguate.\n  Searched in: {}\n  Matching files:\n{}",
+				searched_path.display(),
+				matching_paths.iter().map(|p| format!("    - {}", p.display())).collect::<Vec<_>>().join("\n")
+			)
+		)]
 		NotUnique {
 			selector: IssueSelector,
 			searched_path: PathBuf,
@@ -968,6 +981,7 @@ mod local_path {
 
 		/// Reader operation failed.
 		#[error(transparent)]
+		#[diagnostic(transparent)]
 		Reader(#[from] ReaderError),
 	}
 
@@ -980,60 +994,52 @@ mod local_path {
 		File(String),
 	}
 
-	/// Check if an entry name matches the selector.
-	fn entry_matches_selector<R: LocalReader>(reader: &R, parent: &Path, name: &str, selector: &IssueSelector) -> Option<FoundEntry> {
-		let entry_path = parent.join(name);
-		let is_dir = reader.is_dir(&entry_path).unwrap_or(false);
+	/// Find all entries (dirs or files) matching a selector in a directory.
+	fn find_all_entries_by_selector<R: LocalReader>(reader: &R, parent: &Path, selector: &IssueSelector) -> Result<Vec<FoundEntry>, ReaderError> {
+		let entries = reader.list_dir(parent)?;
 
-		match selector {
-			IssueSelector::GitId(issue_number) => {
-				let prefix = format!("{issue_number}_-_");
-				let exact = format!("{issue_number}");
+		let mut results = Vec::new();
+		for name in &entries {
+			/// Check if an entry name matches the selector.
+			fn entry_matches_selector<R: LocalReader>(reader: &R, parent: &Path, name: &str, selector: &IssueSelector) -> Result<Option<FoundEntry>, ReaderError> {
+				let entry_path = parent.join(name);
+				let is_dir = reader.is_dir(&entry_path)?;
 
-				if is_dir && (name.starts_with(&prefix) || name == exact) {
-					return Some(FoundEntry::Dir(name.to_string()));
+				match selector {
+					IssueSelector::GitId(issue_number) => {
+						let prefix = format!("{issue_number}_-_");
+						let exact = format!("{issue_number}");
+
+						if is_dir && (name.starts_with(&prefix) || name == exact) {
+							return Ok(Some(FoundEntry::Dir(name.to_string())));
+						}
+						if let Some(base) = name.strip_suffix(".md.bak").or_else(|| name.strip_suffix(".md"))
+							&& (base.starts_with(&prefix) || base == exact)
+						{
+							return Ok(Some(FoundEntry::File(name.to_string())));
+						}
+						Ok(None)
+					}
+					IssueSelector::Title(title) => {
+						let sanitized = Local::sanitize_title(title.as_str());
+
+						if is_dir && name == sanitized {
+							return Ok(Some(FoundEntry::Dir(name.to_string())));
+						}
+						if let Some(base) = name.strip_suffix(".md.bak").or_else(|| name.strip_suffix(".md"))
+							&& base == sanitized
+						{
+							return Ok(Some(FoundEntry::File(name.to_string())));
+						}
+						Ok(None)
+					}
 				}
-				if let Some(base) = name.strip_suffix(".md.bak").or_else(|| name.strip_suffix(".md"))
-					&& (base.starts_with(&prefix) || base == exact)
-				{
-					return Some(FoundEntry::File(name.to_string()));
-				}
-				None
 			}
-			IssueSelector::Title(title) => {
-				let sanitized = Local::sanitize_title(title.as_str());
-
-				if is_dir && name == sanitized {
-					return Some(FoundEntry::Dir(name.to_string()));
-				}
-				if let Some(base) = name.strip_suffix(".md.bak").or_else(|| name.strip_suffix(".md"))
-					&& base == sanitized
-				{
-					return Some(FoundEntry::File(name.to_string()));
-				}
-				None
+			if let Some(entry) = entry_matches_selector(reader, parent, name, selector)? {
+				results.push(entry);
 			}
 		}
-	}
-
-	/// Find all entries (dirs or files) matching a selector in a directory.
-	fn find_all_entries_by_selector<R: LocalReader>(reader: &R, parent: &Path, selector: &IssueSelector) -> Vec<FoundEntry> {
-		let entries = match reader.list_dir(parent) {
-			Ok(e) => e,
-			Err(_) => return Vec::new(),
-		};
-
-		entries.iter().filter_map(|name| entry_matches_selector(reader, parent, name, selector)).collect()
-	}
-
-	/// Find an entry (dir or file) matching a selector in a directory.
-	///
-	/// For GitId: looks for `{number}_-_*` directories or `{number}_-_*.md[.bak]` files.
-	/// For Title: looks for directories or files matching the sanitized title.
-	///
-	/// Returns the first match found. Use `find_all_entries_by_selector` to get all matches.
-	fn find_entry_by_selector<R: LocalReader>(reader: &R, parent: &Path, selector: &IssueSelector) -> Option<FoundEntry> {
-		find_all_entries_by_selector(reader, parent, selector).into_iter().next()
+		Ok(results)
 	}
 
 	/// On-demand path construction for local issue storage.
@@ -1069,14 +1075,32 @@ mod local_path {
 			};
 
 			for selector in parent_selectors {
-				let dir_name = match find_entry_by_selector(&reader, &path, selector) {
-					Some(FoundEntry::Dir(name)) => name,
-					Some(FoundEntry::File(name)) => name.strip_suffix(".md.bak").or_else(|| name.strip_suffix(".md")).unwrap().to_string(),
-					None =>
+				let all_matches = find_all_entries_by_selector(&reader, &path, selector)?;
+				let dir_name = match all_matches.len() {
+					0 =>
 						return Err(LocalPathError::MissingParent {
 							selector: selector.clone(),
 							searched_path: path.clone(),
 						}),
+					1 => match &all_matches[0] {
+						FoundEntry::Dir(name) => name.clone(),
+						FoundEntry::File(name) => name.strip_suffix(".md.bak").or_else(|| name.strip_suffix(".md")).unwrap().to_string(),
+					},
+					_ => {
+						let matching_paths = all_matches
+							.iter()
+							.map(|e| {
+								path.join(match e {
+									FoundEntry::Dir(name) | FoundEntry::File(name) => name,
+								})
+							})
+							.collect();
+						return Err(LocalPathError::NotUnique {
+							selector: selector.clone(),
+							searched_path: path.clone(),
+							matching_paths,
+						});
+					}
 				};
 				path = path.join(dir_name);
 			}
@@ -1123,9 +1147,10 @@ mod local_path {
 		/// # Errors
 		/// - `NotFound` if no matching entry exists
 		/// - `NotUnique` if multiple entries match the selector
+		/// - `Reader` if filesystem/git operations fail
 		pub fn search(mut self) -> Result<Self, LocalPathError> {
 			let selector = self.unresolved_selector_nodes.pop_front().expect("Cannot search with empty selectors");
-			let all_matches = find_all_entries_by_selector(&self.reader, &self.resolved_path, &selector);
+			let all_matches = find_all_entries_by_selector(&self.reader, &self.resolved_path, &selector)?;
 
 			match all_matches.len() {
 				0 =>
@@ -1155,11 +1180,11 @@ mod local_path {
 				FoundEntry::Dir(name) => {
 					let dir_path = self.resolved_path.join(name);
 					let main_open = Local::main_file_path(&dir_path, false);
-					if self.reader.exists(&main_open).unwrap_or(false) {
+					if self.reader.exists(&main_open)? {
 						self.resolved_path = main_open;
 					} else {
 						let main_closed = Local::main_file_path(&dir_path, true);
-						if self.reader.exists(&main_closed).unwrap_or(false) {
+						if self.reader.exists(&main_closed)? {
 							self.resolved_path = main_closed;
 						} else {
 							return Err(LocalPathError::NotFound { selector, searched_path: dir_path });
@@ -1211,49 +1236,54 @@ mod local_path {
 		/// Get the resolved issue directory (if issue is in directory format). Consumes self.
 		///
 		/// Returns `Some(dir)` if the issue is in directory format, `None` for flat files.
-		/// Panics if selectors queue is not empty.
+		/// Panics if selectors queue is not empty or if reader operations fail (indicates corrupted state).
 		pub fn issue_dir(self) -> Option<PathBuf> {
 			assert!(
 				self.unresolved_selector_nodes.is_empty(),
 				"issue_dir() called with remaining selectors: {:?}",
 				self.unresolved_selector_nodes
 			);
-			if self.reader.is_dir(&self.resolved_path).unwrap_or(false) {
+			// These unwraps are intentional: if we successfully resolved the path via search(),
+			// is_dir() failing indicates filesystem corruption - panic is appropriate.
+			if self.reader.is_dir(&self.resolved_path).unwrap() {
 				Some(self.resolved_path)
 			} else {
-				self.resolved_path.parent().filter(|p| self.reader.is_dir(p).unwrap_or(false)).map(|p| p.to_path_buf())
+				self.resolved_path.parent().filter(|p| self.reader.is_dir(p).unwrap()).map(|p| p.to_path_buf())
 			}
 		}
 
 		/// Get all paths matching the next selector (same logic as `search`).
 		///
-		/// Unlike `search`, this never fails - returns empty Vec if no matches.
+		/// Returns empty Vec if no matches.
 		/// Returns file paths for flat files, `__main__.md` paths for directories.
 		///
 		/// Does not consume the selector from the queue.
-		pub fn matching_subpaths(&self) -> Vec<PathBuf> {
+		pub fn matching_subpaths(&self) -> Result<Vec<PathBuf>, LocalPathError> {
 			let Some(selector) = self.unresolved_selector_nodes.front() else {
-				return Vec::new();
+				return Ok(Vec::new());
 			};
 
-			let all_matches = find_all_entries_by_selector(&self.reader, &self.resolved_path, selector);
+			let all_matches = find_all_entries_by_selector(&self.reader, &self.resolved_path, selector)?;
 
-			all_matches
-				.into_iter()
-				.filter_map(|entry| match entry {
+			let mut results = Vec::new();
+			for entry in all_matches {
+				match entry {
 					FoundEntry::Dir(name) => {
 						let dir_path = self.resolved_path.join(&name);
 						let main_open = Local::main_file_path(&dir_path, false);
-						if self.reader.exists(&main_open).unwrap_or(false) {
-							Some(main_open)
+						if self.reader.exists(&main_open)? {
+							results.push(main_open);
 						} else {
 							let main_closed = Local::main_file_path(&dir_path, true);
-							if self.reader.exists(&main_closed).unwrap_or(false) { Some(main_closed) } else { None }
+							if self.reader.exists(&main_closed)? {
+								results.push(main_closed);
+							}
 						}
 					}
-					FoundEntry::File(name) => Some(self.resolved_path.join(name)),
-				})
-				.collect()
+					FoundEntry::File(name) => results.push(self.resolved_path.join(name)),
+				}
+			}
+			Ok(results)
 		}
 
 		fn format_dir_name(&self, selector: Option<&IssueSelector>, title: &str) -> String {
@@ -1398,7 +1428,7 @@ impl crate::LazyIssue<Local> for Issue {
 			return Ok(Vec::new()); // Flat file, no children
 		};
 
-		let entries = source.reader.list_dir(&dir_path).unwrap_or_default();
+		let entries = source.reader.list_dir(&dir_path)?;
 		let mut children = Vec::new();
 		let this_index = *source.index();
 
@@ -1419,11 +1449,7 @@ impl crate::LazyIssue<Local> for Issue {
 			children.push(child);
 		}
 
-		children.sort_by(|a, b| {
-			let a_num = a.number().unwrap_or(0); //IGNORED_ERROR: pending issues (no number) sort first
-			let b_num = b.number().unwrap_or(0); //IGNORED_ERROR: pending issues (no number) sort first
-			a_num.cmp(&b_num)
-		});
+		children.sort_by_key(|issue| issue.number().unwrap_or(0)); //IGNORED_ERROR: pending issues (no number) sort first
 
 		self.children = children.clone();
 		Ok(children)
@@ -1505,7 +1531,7 @@ impl crate::LazyIssue<LocalConsensus> for Issue {
 			return Ok(Vec::new()); // Flat file, no children
 		};
 
-		let entries = source.reader.list_dir(&dir_path).unwrap_or_default();
+		let entries = source.reader.list_dir(&dir_path)?;
 		let mut children = Vec::new();
 		let this_index = *source.index();
 
@@ -1526,11 +1552,7 @@ impl crate::LazyIssue<LocalConsensus> for Issue {
 			children.push(child);
 		}
 
-		children.sort_by(|a, b| {
-			let a_num = a.number().unwrap_or(0); //IGNORED_ERROR: pending issues (no number) sort first
-			let b_num = b.number().unwrap_or(0); //IGNORED_ERROR: pending issues (no number) sort first
-			a_num.cmp(&b_num)
-		});
+		children.sort_by_key(|issue| issue.number().unwrap_or(0)); //IGNORED_ERROR: pending issues (no number) sort first
 
 		self.children = children.clone();
 		Ok(children)

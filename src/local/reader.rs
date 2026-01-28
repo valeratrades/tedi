@@ -11,30 +11,36 @@ use super::Local;
 ///
 /// Only covers failures possible from both FsReader and GitReader.
 /// Random unrecoverable errors go to Other.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, miette::Diagnostic, thiserror::Error)]
 pub enum ReaderError {
 	/// Path does not exist
 	#[error("path not found: {}", path.display())]
+	#[diagnostic(code(tedi::reader::not_found))]
 	NotFound { path: PathBuf },
 
 	/// Permission denied reading path
 	#[error("permission denied: {}", path.display())]
+	#[diagnostic(code(tedi::reader::permission_denied))]
 	PermissionDenied { path: PathBuf },
 
 	/// File content is not valid UTF-8
 	#[error("invalid UTF-8 in file: {}", path.display())]
+	#[diagnostic(code(tedi::reader::invalid_utf8))]
 	InvalidUtf8 { path: PathBuf },
 
 	/// Path is outside the issues directory (security boundary)
 	#[error("path outside issues directory: {}", path.display())]
+	#[diagnostic(code(tedi::reader::outside_issues_dir))]
 	OutsideIssuesDir { path: PathBuf },
 
 	/// Git repository not initialized
 	#[error("git not initialized in issues directory")]
+	#[diagnostic(code(tedi::reader::git_not_initialized), help("Run 'git init' in the issues directory"))]
 	GitNotInitialized,
 
 	/// Other errors
 	#[error("{0}")]
+	#[diagnostic(code(tedi::reader::other))]
 	Other(#[from] color_eyre::Report),
 }
 
