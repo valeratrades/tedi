@@ -7,10 +7,11 @@ use std::{
 	path::Path,
 };
 
+use miette::bail;
 use v_utils::prelude::*;
 
 use super::{ConsensusSinkError, FsReader, IssueMeta, Local, LocalPath, LocalReader};
-use crate::{Issue, IssueIndex, IssueSelector, sink::Sink};
+use crate::{Issue, IssueIndex, IssueSelector, local::LocalPathError, sink::Sink};
 
 /// Marker type for sinking to filesystem (submitted state).
 pub struct Submitted;
@@ -310,28 +311,20 @@ fn cleanup_old_locations<R: LocalReader>(issue: &Issue, old: Option<&Issue>, has
 
 /// Remove all file variants for an issue.
 fn remove_issue_files<R: LocalReader>(issue: &Issue, reader: &R) -> Result<bool> {
-	let title = &issue.contents.title;
 	let owner = issue.identity.owner().to_string();
 	let repo = issue.identity.repo().to_string();
 
-	let mut local_path = LocalPath::from(issue);
-
-	// Remove flat file variants (ok if they don't exist)
-	if let Ok(flat_open) = local_path.file_path(title, false, false, reader) {
-		try_remove_file(&flat_open)?;
-	}
-	if let Ok(flat_closed) = local_path.file_path(title, true, false, reader) {
-		try_remove_file(&flat_closed)?;
-	}
-
-	// Remove directory variant - get path via file_path with has_children=true
-	if let Ok(main_file) = local_path.file_path(title, false, true, reader) {
-		if let Some(issue_dir) = main_file.parent() {
-			if issue_dir.is_dir() {
-				std::fs::remove_dir_all(issue_dir)?;
-			}
-		}
-	}
+	match LocalPath::from(issue).resolve_parent(*reader)?.search() {
+		Ok(resolved_path) =>
+			if let Some(dir) = resolved_path.clone().issue_dir() {
+				std::fs::remove_dir_all(dir)?;
+			} else {
+				let p = resolved_path.path();
+				try_remove_file(&p)?;
+			},
+		Err(LocalPathError::NotFound { .. }) => {}
+		Err(e) => color_eyre::eyre::bail!(e),
+	};
 
 	// Remove metadata
 	if let Some(num) = issue.number() {

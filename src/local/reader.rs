@@ -41,7 +41,7 @@ pub enum ReaderError {
 /// Trait for reading content from different sources (filesystem or git).
 ///
 /// Separates the read abstraction from path computation.
-pub trait LocalReader: Clone {
+pub trait LocalReader: Copy {
 	/// Read file content at the given path.
 	fn read_content(&self, path: &Path) -> Result<String, ReaderError>;
 	/// List directory entries at the given path.

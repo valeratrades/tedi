@@ -873,14 +873,14 @@ impl Local {
 	/// Load project metadata using the provided reader.
 	pub(crate) fn load_project_meta_from_reader<R: LocalReader>(repo_info: RepoInfo, reader: &R) -> ProjectMeta {
 		let meta_path = Self::project_meta_path(repo_info.owner(), repo_info.repo());
-		let content = reader.read_content(&meta_path);
 
-		match content {
-			Some(c) => match serde_json::from_str(&c) {
+		match reader.read_content(&meta_path) {
+			Ok(c) => match serde_json::from_str(&c) {
 				Ok(meta) => meta,
 				Err(e) => panic!("corrupted project metadata at {}: {e}", meta_path.display()),
 			},
-			None => ProjectMeta::default(),
+			Err(ReaderError::NotFound { .. }) => ProjectMeta::default(),
+			Err(e) => panic!("failed to read project metadata at {}: {e}", meta_path.display()),
 		}
 	}
 
