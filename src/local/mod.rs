@@ -957,12 +957,22 @@ mod local_path {
 		#[error("issue file {selector:?} not found in {}", searched_path.display())]
 		NotFound { selector: IssueSelector, searched_path: PathBuf },
 
+		/// Multiple files match the selector.
+		#[error("multiple files match {selector:?} in {}: {}", searched_path.display(), matching_paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", "))]
+		#[diagnostic(help("Specify a more precise selector to disambiguate"))]
+		NotUnique {
+			selector: IssueSelector,
+			searched_path: PathBuf,
+			matching_paths: Vec<PathBuf>,
+		},
+
 		/// Reader operation failed.
 		#[error(transparent)]
 		Reader(#[from] ReaderError),
 	}
 
 	/// Result of finding an entry matching a selector.
+	#[derive(Clone)]
 	enum FoundEntry {
 		/// Found a directory with this name.
 		Dir(String),
@@ -970,50 +980,60 @@ mod local_path {
 		File(String),
 	}
 
-	/// Find an entry (dir or file) matching a selector in a directory.
-	///
-	/// For GitId: looks for `{number}_-_*` directories or `{number}_-_*.md[.bak]` files.
-	/// For Title: looks for directories or files matching the sanitized title.
-	fn find_entry_by_selector<R: LocalReader>(reader: &R, parent: &Path, selector: &IssueSelector) -> Option<FoundEntry> {
-		let entries = reader.list_dir(parent).ok()?;
+	/// Check if an entry name matches the selector.
+	fn entry_matches_selector<R: LocalReader>(reader: &R, parent: &Path, name: &str, selector: &IssueSelector) -> Option<FoundEntry> {
+		let entry_path = parent.join(name);
+		let is_dir = reader.is_dir(&entry_path).unwrap_or(false);
 
 		match selector {
 			IssueSelector::GitId(issue_number) => {
 				let prefix = format!("{issue_number}_-_");
 				let exact = format!("{issue_number}");
 
-				for name in entries {
-					let entry_path = parent.join(&name);
-
-					if reader.is_dir(&entry_path).unwrap_or(false) && (name.starts_with(&prefix) || name == exact) {
-						return Some(FoundEntry::Dir(name));
-					}
-					if let Some(base) = name.strip_suffix(".md.bak").or_else(|| name.strip_suffix(".md"))
-						&& (base.starts_with(&prefix) || base == exact)
-					{
-						return Some(FoundEntry::File(name));
-					}
+				if is_dir && (name.starts_with(&prefix) || name == exact) {
+					return Some(FoundEntry::Dir(name.to_string()));
+				}
+				if let Some(base) = name.strip_suffix(".md.bak").or_else(|| name.strip_suffix(".md"))
+					&& (base.starts_with(&prefix) || base == exact)
+				{
+					return Some(FoundEntry::File(name.to_string()));
 				}
 				None
 			}
 			IssueSelector::Title(title) => {
 				let sanitized = Local::sanitize_title(title.as_str());
 
-				for name in entries {
-					let entry_path = parent.join(&name);
-
-					if reader.is_dir(&entry_path).unwrap_or(false) && name == sanitized {
-						return Some(FoundEntry::Dir(name));
-					}
-					if let Some(base) = name.strip_suffix(".md.bak").or_else(|| name.strip_suffix(".md"))
-						&& base == sanitized
-					{
-						return Some(FoundEntry::File(name));
-					}
+				if is_dir && name == sanitized {
+					return Some(FoundEntry::Dir(name.to_string()));
+				}
+				if let Some(base) = name.strip_suffix(".md.bak").or_else(|| name.strip_suffix(".md"))
+					&& base == sanitized
+				{
+					return Some(FoundEntry::File(name.to_string()));
 				}
 				None
 			}
 		}
+	}
+
+	/// Find all entries (dirs or files) matching a selector in a directory.
+	fn find_all_entries_by_selector<R: LocalReader>(reader: &R, parent: &Path, selector: &IssueSelector) -> Vec<FoundEntry> {
+		let entries = match reader.list_dir(parent) {
+			Ok(e) => e,
+			Err(_) => return Vec::new(),
+		};
+
+		entries.iter().filter_map(|name| entry_matches_selector(reader, parent, name, selector)).collect()
+	}
+
+	/// Find an entry (dir or file) matching a selector in a directory.
+	///
+	/// For GitId: looks for `{number}_-_*` directories or `{number}_-_*.md[.bak]` files.
+	/// For Title: looks for directories or files matching the sanitized title.
+	///
+	/// Returns the first match found. Use `find_all_entries_by_selector` to get all matches.
+	fn find_entry_by_selector<R: LocalReader>(reader: &R, parent: &Path, selector: &IssueSelector) -> Option<FoundEntry> {
+		find_all_entries_by_selector(reader, parent, selector).into_iter().next()
 	}
 
 	/// On-demand path construction for local issue storage.
@@ -1099,12 +1119,41 @@ mod local_path {
 		///
 		/// Checks both flat and directory formats, open and closed states.
 		/// Consumes one selector from the queue.
+		///
+		/// # Errors
+		/// - `NotFound` if no matching entry exists
+		/// - `NotUnique` if multiple entries match the selector
 		pub fn search(mut self) -> Result<Self, LocalPathError> {
 			let selector = self.unresolved_selector_nodes.pop_front().expect("Cannot search with empty selectors");
+			let all_matches = find_all_entries_by_selector(&self.reader, &self.resolved_path, &selector);
 
-			match find_entry_by_selector(&self.reader, &self.resolved_path, &selector) {
-				Some(FoundEntry::Dir(name)) => {
-					let dir_path = self.resolved_path.join(&name);
+			match all_matches.len() {
+				0 =>
+					return Err(LocalPathError::NotFound {
+						selector,
+						searched_path: self.resolved_path.clone(),
+					}),
+				1 => {}
+				_ => {
+					let matching_paths = all_matches
+						.iter()
+						.map(|e| {
+							self.resolved_path.join(match e {
+								FoundEntry::Dir(name) | FoundEntry::File(name) => name,
+							})
+						})
+						.collect();
+					return Err(LocalPathError::NotUnique {
+						selector,
+						searched_path: self.resolved_path.clone(),
+						matching_paths,
+					});
+				}
+			}
+
+			match &all_matches[0] {
+				FoundEntry::Dir(name) => {
+					let dir_path = self.resolved_path.join(name);
 					let main_open = Local::main_file_path(&dir_path, false);
 					if self.reader.exists(&main_open).unwrap_or(false) {
 						self.resolved_path = main_open;
@@ -1117,14 +1166,9 @@ mod local_path {
 						}
 					}
 				}
-				Some(FoundEntry::File(name)) => {
+				FoundEntry::File(name) => {
 					self.resolved_path = self.resolved_path.join(name);
 				}
-				None =>
-					return Err(LocalPathError::NotFound {
-						selector,
-						searched_path: self.resolved_path.clone(),
-					}),
 			};
 			Ok(self)
 		}
@@ -1179,6 +1223,37 @@ mod local_path {
 			} else {
 				self.resolved_path.parent().filter(|p| self.reader.is_dir(p).unwrap_or(false)).map(|p| p.to_path_buf())
 			}
+		}
+
+		/// Get all paths matching the next selector (same logic as `search`).
+		///
+		/// Unlike `search`, this never fails - returns empty Vec if no matches.
+		/// Returns file paths for flat files, `__main__.md` paths for directories.
+		///
+		/// Does not consume the selector from the queue.
+		pub fn matching_subpaths(&self) -> Vec<PathBuf> {
+			let Some(selector) = self.unresolved_selector_nodes.front() else {
+				return Vec::new();
+			};
+
+			let all_matches = find_all_entries_by_selector(&self.reader, &self.resolved_path, selector);
+
+			all_matches
+				.into_iter()
+				.filter_map(|entry| match entry {
+					FoundEntry::Dir(name) => {
+						let dir_path = self.resolved_path.join(&name);
+						let main_open = Local::main_file_path(&dir_path, false);
+						if self.reader.exists(&main_open).unwrap_or(false) {
+							Some(main_open)
+						} else {
+							let main_closed = Local::main_file_path(&dir_path, true);
+							if self.reader.exists(&main_closed).unwrap_or(false) { Some(main_closed) } else { None }
+						}
+					}
+					FoundEntry::File(name) => Some(self.resolved_path.join(name)),
+				})
+				.collect()
 		}
 
 		fn format_dir_name(&self, selector: Option<&IssueSelector>, title: &str) -> String {
