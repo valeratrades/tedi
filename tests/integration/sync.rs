@@ -154,9 +154,9 @@ fn test_only_local_changed_pushes_local() {
 
 	// Local changed, remote still matches consensus
 	// Seeds: consensus=-25, local=85, remote=-25 (local much newer than unchanged remote)
-	let issue_path = ctx.consensus(&consensus, Some(Seed::new(-25)));
-	ctx.local(&local, Some(Seed::new(85)));
-	ctx.remote(&consensus, Some(Seed::new(-25)));
+	let issue_path = ctx.consensus(&consensus, Some(Seed::new(-100)));
+	ctx.local(&local, Some(Seed::new(100)));
+	ctx.remote(&consensus, Some(Seed::new(-100)));
 
 	let out = ctx.open(&issue_path).run();
 

@@ -20,6 +20,11 @@ pub enum ReaderError {
 	#[diagnostic(code(tedi::reader::not_found))]
 	NotFound { path: PathBuf },
 
+	/// Path is not a directory (tried to list_dir on a file)
+	#[error("not a directory: {}", path.display())]
+	#[diagnostic(code(tedi::reader::not_a_directory))]
+	NotADirectory { path: PathBuf },
+
 	/// Permission denied reading path
 	#[error("permission denied: {}", path.display())]
 	#[diagnostic(code(tedi::reader::permission_denied))]
@@ -69,6 +74,7 @@ impl FsReader {
 	fn io_err(e: std::io::Error, path: &Path) -> ReaderError {
 		match e.kind() {
 			std::io::ErrorKind::NotFound => ReaderError::NotFound { path: path.to_path_buf() },
+			std::io::ErrorKind::NotADirectory => ReaderError::NotADirectory { path: path.to_path_buf() },
 			std::io::ErrorKind::PermissionDenied => ReaderError::PermissionDenied { path: path.to_path_buf() },
 			_ => ReaderError::Other(color_eyre::eyre::eyre!("I/O error on {}: {e}", path.display())),
 		}

@@ -987,9 +987,14 @@ mod local_path {
 		},
 
 		/// Reader operation failed.
-		#[error(transparent)]
-		#[diagnostic(transparent)]
-		Reader(#[from] ReaderError),
+		#[error("while resolving {selector:?}")]
+		#[diagnostic(code(tedi::local::reader))]
+		Reader {
+			selector: IssueSelector,
+			#[source]
+			#[diagnostic_source]
+			source: ReaderError,
+		},
 	}
 
 	/// Result of finding an entry matching a selector.
@@ -1002,7 +1007,7 @@ mod local_path {
 	}
 
 	/// Find all entries (dirs or files) matching a selector in a directory.
-	#[instrument(skip(reader))]
+	#[instrument(skip(reader), fields(parent = %parent.display()))]
 	//TODO!!!!!!: rewrite the entire thing without pointless distinction between SoundEntry::Dir and FoundEntry::File, - just check once when deciding the whether the final one should be nested into /__main__.md and that's it
 	pub(crate) fn find_all_entries_by_selector<R: LocalReader>(reader: &R, parent: &Path, selector: &IssueSelector) -> Result<Vec<FoundEntry>, ReaderError> {
 		let entries = reader.list_dir(parent)?;
@@ -1079,7 +1084,7 @@ mod local_path {
 			};
 
 			for selector in parent_selectors {
-				let all_matches = find_all_entries_by_selector(&reader, &path, selector)?;
+				let all_matches = find_all_entries_by_selector(&reader, &path, selector).map_err(|source| LocalPathError::Reader { selector: selector.clone(), source })?;
 				let dir_name = match all_matches.len() {
 					0 =>
 						return Err(LocalPathError::MissingParent {
@@ -1157,9 +1162,10 @@ mod local_path {
 		/// - `NotFound` if no matching entry exists
 		/// - `NotUnique` if multiple entries match the selector
 		/// - `Reader` if filesystem/git operations fail
+		#[tracing::instrument(skip(self), fields(resolved_path = %self.resolved_path.display(), selector = ?self.unresolved_selector_nodes.front()))]
 		pub fn search(mut self) -> Result<Self, LocalPathError> {
 			let selector = self.unresolved_selector_nodes.pop_front().expect("Cannot search with empty selectors");
-			let all_matches = find_all_entries_by_selector(&self.reader, &self.resolved_path, &selector)?;
+			let all_matches = find_all_entries_by_selector(&self.reader, &self.resolved_path, &selector).map_err(|source| LocalPathError::Reader { selector: selector.clone(), source })?;
 
 			match all_matches.len() {
 				0 =>
@@ -1185,15 +1191,17 @@ mod local_path {
 				}
 			}
 
+			let map_err = |source| LocalPathError::Reader { selector: selector.clone(), source };
+
 			match &all_matches[0] {
 				FoundEntry::Dir(name) => {
 					let dir_path = self.resolved_path.join(name);
 					let main_open = Local::main_file_path(&dir_path, false);
-					if self.reader.exists(&main_open)? {
+					if self.reader.exists(&main_open).map_err(map_err)? {
 						self.resolved_path = main_open;
 					} else {
 						let main_closed = Local::main_file_path(&dir_path, true);
-						if self.reader.exists(&main_closed)? {
+						if self.reader.exists(&main_closed).map_err(map_err)? {
 							self.resolved_path = main_closed;
 						} else {
 							return Err(LocalPathError::NotFound { selector, searched_path: dir_path });
@@ -1272,7 +1280,9 @@ mod local_path {
 				return Ok(Vec::new());
 			};
 
-			let all_matches = find_all_entries_by_selector(&self.reader, &self.resolved_path, selector)?;
+			let map_err = |source| LocalPathError::Reader { selector: selector.clone(), source };
+
+			let all_matches = find_all_entries_by_selector(&self.reader, &self.resolved_path, selector).map_err(map_err)?;
 
 			let mut results = Vec::new();
 			for entry in all_matches {
@@ -1280,11 +1290,11 @@ mod local_path {
 					FoundEntry::Dir(name) => {
 						let dir_path = self.resolved_path.join(&name);
 						let main_open = Local::main_file_path(&dir_path, false);
-						if self.reader.exists(&main_open)? {
+						if self.reader.exists(&main_open).map_err(map_err)? {
 							results.push(main_open);
 						} else {
 							let main_closed = Local::main_file_path(&dir_path, true);
-							if self.reader.exists(&main_closed)? {
+							if self.reader.exists(&main_closed).map_err(map_err)? {
 								results.push(main_closed);
 							}
 						}

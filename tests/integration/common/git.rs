@@ -45,7 +45,7 @@ use v_fixtures::fs_standards::git::Git;
 use super::TestContext;
 
 /// Seed for deterministic timestamp generation. Must be in range -100..=100.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, derive_more::Into, derive_more::Deref, derive_more::DerefMut, derive_more::Display)]
+#[derive(Clone, Copy, Debug, derive_more::Deref, derive_more::DerefMut, derive_more::Display, Eq, derive_more::Into, PartialEq)]
 pub struct Seed(i64);
 
 impl Seed {

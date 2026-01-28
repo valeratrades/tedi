@@ -205,7 +205,10 @@ fn cleanup_old_locations<R: LocalReader>(issue: &Issue, _old: Option<&Issue>, ha
 	// If the directory doesn't exist yet (NotFound from Reader), there's nothing to clean up
 	let matching = match resolved.matching_subpaths() {
 		Ok(m) => m,
-		Err(LocalPathError::Reader(ReaderError::NotFound { .. })) => return Ok(()),
+		Err(LocalPathError::Reader {
+			source: ReaderError::NotFound { .. },
+			..
+		}) => return Ok(()),
 		Err(e) => return Err(e.into()),
 	};
 	if matching.is_empty() {
