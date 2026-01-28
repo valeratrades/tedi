@@ -1002,6 +1002,8 @@ mod local_path {
 	}
 
 	/// Find all entries (dirs or files) matching a selector in a directory.
+	#[instrument(skip(reader))]
+	//TODO!!!!!!: rewrite the entire thing without pointless distinction between SoundEntry::Dir and FoundEntry::File, - just check once when deciding the whether the final one should be nested into /__main__.md and that's it
 	pub(crate) fn find_all_entries_by_selector<R: LocalReader>(reader: &R, parent: &Path, selector: &IssueSelector) -> Result<Vec<FoundEntry>, ReaderError> {
 		let entries = reader.list_dir(parent)?;
 
@@ -1015,28 +1017,23 @@ mod local_path {
 				match selector {
 					IssueSelector::GitId(issue_number) => {
 						let prefix = format!("{issue_number}_-_");
-						let exact = format!("{issue_number}");
 
-						if is_dir && (name.starts_with(&prefix) || name == exact) {
-							return Ok(Some(FoundEntry::Dir(name.to_string())));
-						}
-						if let Some(base) = name.strip_suffix(".md.bak").or_else(|| name.strip_suffix(".md"))
-							&& (base.starts_with(&prefix) || base == exact)
-						{
-							return Ok(Some(FoundEntry::File(name.to_string())));
+						if name.starts_with(&prefix) {
+							match is_dir {
+								true => return Ok(Some(FoundEntry::Dir(name.to_string()))),
+								false => return Ok(Some(FoundEntry::File(name.to_string()))),
+							}
 						}
 						Ok(None)
 					}
 					IssueSelector::Title(title) => {
 						let sanitized = Local::sanitize_title(title.as_str());
 
-						if is_dir && name == sanitized {
-							return Ok(Some(FoundEntry::Dir(name.to_string())));
-						}
-						if let Some(base) = name.strip_suffix(".md.bak").or_else(|| name.strip_suffix(".md"))
-							&& base == sanitized
-						{
-							return Ok(Some(FoundEntry::File(name.to_string())));
+						if name.contains(&sanitized) {
+							match is_dir {
+								true => return Ok(Some(FoundEntry::Dir(name.to_string()))),
+								false => return Ok(Some(FoundEntry::File(name.to_string()))),
+							}
 						}
 						Ok(None)
 					}
@@ -1089,9 +1086,13 @@ mod local_path {
 							selector: selector.clone(),
 							searched_path: path.clone(),
 						}),
+					//1 => match &all_matches[0] {
+					//	FoundEntry::Dir(name) => name.clone(),
+					//	FoundEntry::File(name) => name.strip_suffix(".md.bak").or_else(|| name.strip_suffix(".md")).unwrap().to_string(), //XXX: this loses information. horrible, horrendous bug
+					//},
 					1 => match &all_matches[0] {
 						FoundEntry::Dir(name) => name.clone(),
-						FoundEntry::File(name) => name.strip_suffix(".md.bak").or_else(|| name.strip_suffix(".md")).unwrap().to_string(), //XXX: this loses information. horrible, horrendous bug
+						FoundEntry::File(name) => name.clone(),
 					},
 					_ => {
 						let matching_paths = all_matches
