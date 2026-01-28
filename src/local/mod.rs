@@ -32,6 +32,11 @@ pub enum LocalError {
 		source: Box<crate::ParseError>,
 	},
 
+	//Q: LocalPathError also contains ReaderError. Seems suboptimal, - wonder if I can restructure somehow to remove this proprietor level ambiguity
+	/// Reader operation failed.
+	#[error(transparent)]
+	Reader(ReaderError),
+
 	/// Git operation failed (for consensus reads).
 	//TODO: check if it covers cases that ReaderError doesn't when it comes to git operations. If not, we should nuke this and rely on `Io` which already references LocalPathError (which nests ReaderError)
 	#[error("git operation failed: {message}")]
@@ -528,159 +533,6 @@ impl Local {
 	#[deprecated(note = "use LocalPath instead")]
 	fn find_issue_dir_name_by_number(parent: &Path, issue_number: u64) -> Option<String> {
 		Self::find_dir_name_by_selector(parent, &IssueSelector::GitId(issue_number))
-	}
-
-	/// Find the issue file by repo info and full number path, using the provided reader.
-	#[deprecated(note = "use LocalPath instead")]
-	pub(crate) fn find_issue_file_by_num_path_with_reader<R: LocalReader>(repo_info: RepoInfo, num_path: &[u64], reader: &R) -> Option<PathBuf> {
-		let mut path = Self::project_dir(repo_info.owner(), repo_info.repo());
-
-		if !reader.exists(&path) {
-			return None;
-		}
-
-		if num_path.is_empty() {
-			return None;
-		}
-
-		// Navigate to parent directories
-		for &issue_number in &num_path[..num_path.len() - 1] {
-			let dir = Self::find_issue_dir_by_number_with_reader(&path, issue_number, reader)?;
-			path = dir;
-		}
-
-		// Find the target issue (last in num_path)
-		let target_number = *num_path.last().unwrap();
-
-		// Check for directory format first (issue with children)
-		if let Some(dir) = Self::find_issue_dir_by_number_with_reader(&path, target_number, reader) {
-			let main_file = Self::main_file_path(&dir, false);
-			if reader.exists(&main_file) {
-				return Some(main_file);
-			}
-			let main_bak = Self::main_file_path(&dir, true);
-			if reader.exists(&main_bak) {
-				return Some(main_bak);
-			}
-		}
-
-		// Check for flat file format
-		let entries = reader.list_dir(&path);
-		let prefix_with_sep = format!("{target_number}_-_");
-		let exact_match = format!("{target_number}.md");
-		let exact_match_bak = format!("{target_number}.md.bak");
-
-		for name in entries {
-			let entry_path = path.join(&name);
-
-			// Skip directories (already checked above)
-			if reader.is_dir(&entry_path) {
-				continue;
-			}
-
-			if name.starts_with(&prefix_with_sep) && (name.ends_with(".md") || name.ends_with(".md.bak")) {
-				return Some(entry_path);
-			}
-			if name == exact_match || name == exact_match_bak {
-				return Some(entry_path);
-			}
-		}
-
-		None
-	}
-
-	/// Find an issue file by title (for pending issues without numbers).
-	/// Navigates to parent using parent_nums, then searches for file matching title.
-	#[deprecated(note = "use LocalPath instead")]
-	fn find_issue_file_by_title_with_reader<R: LocalReader>(repo_info: RepoInfo, parent_nums: &[u64], title: &str, reader: &R) -> Option<PathBuf> {
-		let mut path = Self::project_dir(repo_info.owner(), repo_info.repo());
-
-		if !reader.exists(&path) {
-			return None;
-		}
-
-		// Navigate to parent directory using issue numbers
-		for &issue_number in parent_nums {
-			let dir = Self::find_issue_dir_by_number_with_reader(&path, issue_number, reader)?;
-			path = dir;
-		}
-
-		// Search for file matching the title
-		let entries = reader.list_dir(&path);
-		let sanitized_title = Self::sanitize_title(title);
-
-		// Check for exact title match first
-		let exact_match = format!("{sanitized_title}.md");
-		let exact_match_bak = format!("{sanitized_title}.md.bak");
-
-		for name in entries {
-			let entry_path = path.join(&name);
-
-			if reader.is_dir(&entry_path) {
-				continue;
-			}
-
-			// Exact title match (title.md or title.md.bak)
-			if name == exact_match || name == exact_match_bak {
-				return Some(entry_path);
-			}
-
-			// Also check for number_-_title format where title part matches
-			// (in case the issue was synced and got a number)
-			if let Some(pos) = name.find("_-_") {
-				let name_title = name[pos + 3..].strip_suffix(".md.bak").or_else(|| name[pos + 3..].strip_suffix(".md"));
-				if name_title == Some(&sanitized_title) {
-					return Some(entry_path);
-				}
-			}
-		}
-
-		None
-	}
-
-	/// Find an issue directory by its number prefix, using the provided reader.
-	fn find_issue_dir_by_number_with_reader<R: LocalReader>(parent: &Path, issue_number: u64, reader: &R) -> Option<PathBuf> {
-		let entries = reader.list_dir(parent);
-
-		let prefix_with_sep = format!("{issue_number}_-_");
-		let exact_match = format!("{issue_number}");
-
-		for name in entries {
-			let path = parent.join(&name);
-
-			if !reader.is_dir(&path) {
-				continue;
-			}
-
-			if name.starts_with(&prefix_with_sep) || name == exact_match {
-				return Some(path);
-			}
-		}
-
-		None
-	}
-
-	/// Find the issue directory by repo info and full number path, using the provided reader.
-	/// Returns `Some(path)` if the issue exists in directory format (has children).
-	pub(crate) fn find_issue_dir_by_num_path_with_reader<R: LocalReader>(repo_info: RepoInfo, num_path: &[u64], reader: &R) -> Option<PathBuf> {
-		let mut path = Self::project_dir(repo_info.owner(), repo_info.repo());
-
-		if !reader.exists(&path) {
-			return None;
-		}
-
-		if num_path.is_empty() {
-			return None;
-		}
-
-		// Navigate through all directories in num_path
-		for &issue_number in num_path {
-			let dir = Self::find_issue_dir_by_number_with_reader(&path, issue_number, reader)?;
-			path = dir;
-		}
-
-		// Check that the final path is indeed a directory (has children)
-		if reader.is_dir(&path) { Some(path) } else { None }
 	}
 
 	/// Parse an IssueSelector from a filename or directory name.
