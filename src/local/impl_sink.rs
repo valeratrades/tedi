@@ -7,7 +7,6 @@ use std::{
 	path::Path,
 };
 
-use miette::bail;
 use v_utils::prelude::*;
 
 use super::{ConsensusSinkError, FsReader, IssueMeta, Local, LocalPath, LocalReader};
@@ -130,7 +129,7 @@ fn sink_issue_node<R: LocalReader>(issue: &Issue, old: Option<&Issue>, reader: &
 	let mut local_path = LocalPath::from(issue);
 
 	// Ensure parent directories exist (converts flat files to directories as needed)
-	ensure_parent_dirs(&mut local_path, reader)?;
+	nest_if_needed(&mut local_path, reader)?;
 
 	// Compute the target file path
 	let issue_file_path = local_path.file_path(title, closed, has_children, reader)?;
@@ -192,28 +191,28 @@ fn sink_issue_node<R: LocalReader>(issue: &Issue, old: Option<&Issue>, reader: &
 	Ok(any_written)
 }
 
-/// Ensure parent directories exist, converting flat files to directory format as needed.
+/// Converting flat file to directory format if needed.
 ///
 /// r[local.sink-only-mutation]
-fn ensure_parent_dirs<R: LocalReader>(local_path: &mut LocalPath, reader: &R) -> Result<()> {
-	let mut path = Local::project_dir(local_path.index.owner(), local_path.index.repo());
-
-	if !path.exists() {
-		std::fs::create_dir_all(&path)?;
+fn nest_if_needed<R: LocalReader>(local_path: &mut LocalPath, reader: &R) -> Result<()> {
+	let mut top_level_project_path = Local::project_dir(local_path.index.owner(), local_path.index.repo());
+	if !top_level_project_path.exists() {
+		std::fs::create_dir_all(&top_level_project_path)?;
 	}
 
 	let parent_nums = local_path.index.parent_nums();
 
+	//TODO!!!: it does a lot of work `local_path` does already
 	for issue_number in parent_nums {
 		// Find existing dir name using reader
-		let entries = reader.list_dir(&path).unwrap_or_default();
+		let entries = reader.list_dir(&top_level_project_path).unwrap_or_default();
 		let prefix_with_sep = format!("{issue_number}_-_");
 		let exact_match = format!("{issue_number}");
 
 		let dir_name = entries
 			.iter()
 			.find(|name| {
-				let entry_path = path.join(name);
+				let entry_path = top_level_project_path.join(name);
 				if reader.is_dir(&entry_path).unwrap_or(false) {
 					name.starts_with(&prefix_with_sep) || *name == &exact_match
 				} else if let Some(base) = name.strip_suffix(".md.bak").or_else(|| name.strip_suffix(".md")) {
@@ -223,16 +222,21 @@ fn ensure_parent_dirs<R: LocalReader>(local_path: &mut LocalPath, reader: &R) ->
 				}
 			})
 			.cloned()
-			.ok_or_else(|| color_eyre::eyre::eyre!("Parent issue #{issue_number} not found locally in {}. Fetch the parent issue first.", path.display()))?;
+			.ok_or_else(|| {
+				color_eyre::eyre::eyre!(
+					"Parent issue #{issue_number} not found locally in {}. Fetch the parent issue first.",
+					top_level_project_path.display()
+				)
+			})?;
 
 		// Strip extension if it's a flat file name
 		let dir_name = dir_name.strip_suffix(".md.bak").or_else(|| dir_name.strip_suffix(".md")).unwrap_or(&dir_name);
-		let parent_dir_path = path.join(dir_name);
+		let parent_dir_path = top_level_project_path.join(dir_name);
 
 		// If parent exists as flat file, convert to directory
 		if !parent_dir_path.is_dir() {
-			let flat_open = path.join(format!("{dir_name}.md"));
-			let flat_closed = path.join(format!("{dir_name}.md.bak"));
+			let flat_open = top_level_project_path.join(format!("{dir_name}.md"));
+			let flat_closed = top_level_project_path.join(format!("{dir_name}.md.bak"));
 
 			std::fs::create_dir_all(&parent_dir_path)?;
 
@@ -246,7 +250,7 @@ fn ensure_parent_dirs<R: LocalReader>(local_path: &mut LocalPath, reader: &R) ->
 			}
 		}
 
-		path = parent_dir_path;
+		top_level_project_path = parent_dir_path;
 	}
 
 	Ok(())
@@ -267,12 +271,11 @@ fn cleanup_old_locations<R: LocalReader>(issue: &Issue, old: Option<&Issue>, has
 	let format_changed = has_children != old_has_children;
 
 	if has_children && format_changed {
-		// Switching to directory format: remove old flat files
-		if let Ok(flat_open) = local_path.file_path(title, false, false, reader) {
-			try_remove_file(&flat_open)?;
-		}
-		if let Ok(flat_closed) = local_path.file_path(title, true, false, reader) {
-			try_remove_file(&flat_closed)?;
+		if let Ok(path) = local_path.resolve_parent(*reader)?.search() {
+			let p = path.path();
+			if reader.is_dir(&p)? {
+				try_remove_file(&p)?;
+			}
 		}
 	}
 
@@ -291,11 +294,10 @@ fn cleanup_old_locations<R: LocalReader>(issue: &Issue, old: Option<&Issue>, has
 		if issue_number.is_some() {
 			// Create a pending version of the index to find old pending files
 			// This has parents as GitIds + Title (so issue_number() returns None)
-			let issue_index = IssueIndex::from(issue);
-			let mut pending_selectors: Vec<IssueSelector> = issue_index.parent_nums().into_iter().map(IssueSelector::GitId).collect();
-			pending_selectors.push(IssueSelector::title(title));
-			let pending_index = IssueIndex::with_index(issue_index.owner(), issue_index.repo(), pending_selectors);
-			let mut pending_path = LocalPath::from(pending_index);
+			let mut issue_index = IssueIndex::from(issue);
+			issue_index[issue_index.len()] = IssueSelector::title(title);
+
+			let mut pending_path = LocalPath::from(issue_index);
 			// Try cleanup - ok if paths don't exist
 			if let Ok(pending_open) = pending_path.file_path(title, false, false, reader) {
 				try_remove_file(&pending_open)?;

@@ -1,3 +1,5 @@
+#![feature(vec_peek_mut)]
+
 pub mod issue;
 pub mod local;
 pub mod sink;

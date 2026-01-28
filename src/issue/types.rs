@@ -552,10 +552,12 @@ pub const MAX_INDEX_DEPTH: usize = MAX_LINEAGE_DEPTH + 1;
 /// Minimal descriptor for locating an issue.
 /// Contains repo info and a path of selectors from root to the target issue (inclusive).
 /// Uses fixed-size storage to be `Copy`.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, derive_more::Deref, derive_more::DerefMut)]
 pub struct IssueIndex {
 	repo_info: RepoInfo,
 	/// Path from root to target issue (inclusive). Uses fixed array with length tracking.
+	#[deref]
+	#[deref_mut]
 	index_arr: [IssueSelector; MAX_INDEX_DEPTH],
 	index_len: u8,
 }
