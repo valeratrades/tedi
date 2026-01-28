@@ -45,7 +45,21 @@ use v_fixtures::fs_standards::git::Git;
 use super::TestContext;
 
 /// Seed for deterministic timestamp generation. Must be in range -100..=100.
-pub type Seed = i64;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, derive_more::Into, derive_more::Deref, derive_more::DerefMut, derive_more::Display)]
+pub struct Seed(i64);
+
+impl Seed {
+	pub fn new(value: i64) -> Self {
+		assert!((-100..=100).contains(&value), "seed must be in range -100..=100, got {value}");
+		Self(value)
+	}
+}
+
+impl From<i8> for Seed {
+	fn from(value: i8) -> Self {
+		Self(value as i64)
+	}
+}
 
 /// Generate timestamps from a seed value.
 ///
@@ -62,8 +76,6 @@ pub type Seed = i64;
 /// - labels: 0
 /// - comments: 1 (aggregate timestamp for "most recent comment")
 pub fn timestamps_from_seed(seed: Seed) -> IssueTimestamps {
-	assert!((-100..=100).contains(&seed), "seed must be in range -100..=100, got {seed}");
-
 	IssueTimestamps {
 		title: Some(timestamp_for_field(seed, -2)),
 		description: Some(timestamp_for_field(seed, -1)),
@@ -146,7 +158,7 @@ fn timestamp_for_field(seed: Seed, field_index: i64) -> jiff::Timestamp {
 
 	// Deterministic offset: seed maps linearly to ±12h
 	// -100 → -12h, 0 → 0, +100 → +12h
-	let deterministic_offset = (seed * HALF_DAY_SECS) / 100;
+	let deterministic_offset = (*seed * HALF_DAY_SECS) / 100;
 
 	let total_offset = random_offset + deterministic_offset;
 	jiff::Timestamp::from_second(BASE_TIMESTAMP_SECS + total_offset).expect("valid timestamp")
@@ -156,7 +168,7 @@ fn timestamp_for_field(seed: Seed, field_index: i64) -> jiff::Timestamp {
 /// Returns a value in range [-HALF_DAY_SECS, +HALF_DAY_SECS].
 fn pseudo_random_offset(seed: Seed, index: i64) -> i64 {
 	// Combine seed and index into a single value, then hash it
-	let combined = (seed as u64).wrapping_mul(31).wrapping_add(index as u64);
+	let combined = (*seed as u64).wrapping_mul(31).wrapping_add(index as u64);
 	// Simple xorshift-style mixing
 	let mut x = combined;
 	x ^= x << 13;
