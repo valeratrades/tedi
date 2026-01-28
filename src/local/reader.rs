@@ -5,6 +5,8 @@
 
 use std::path::{Path, PathBuf};
 
+use tracing::{info, instrument};
+
 use super::Local;
 
 /// Error type for LocalReader operations.
@@ -137,6 +139,7 @@ impl GitReader {
 }
 
 impl LocalReader for GitReader {
+	#[instrument]
 	fn read_content(&self, path: &Path) -> Result<String, ReaderError> {
 		use std::process::Command;
 
@@ -170,6 +173,7 @@ impl LocalReader for GitReader {
 		String::from_utf8(output.stdout).map_err(|_| ReaderError::InvalidUtf8 { path: path.to_path_buf() })
 	}
 
+	#[instrument]
 	fn list_dir(&self, path: &Path) -> Result<Vec<String>, ReaderError> {
 		use std::process::Command;
 
@@ -188,7 +192,9 @@ impl LocalReader for GitReader {
 
 		if !output.status.success() {
 			// Directory doesn't exist in git
-			return Err(ReaderError::NotFound { path: path.to_path_buf() });
+			let e = ReaderError::NotFound { path: path.to_path_buf() };
+			info!("directory doesn't exist in git: {e}");
+			return Err(e);
 		}
 
 		let prefix = format!("{rel_dir_str}/");

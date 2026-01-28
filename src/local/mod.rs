@@ -1091,14 +1091,15 @@ mod local_path {
 						}),
 					1 => match &all_matches[0] {
 						FoundEntry::Dir(name) => name.clone(),
-						FoundEntry::File(name) => name.strip_suffix(".md.bak").or_else(|| name.strip_suffix(".md")).unwrap().to_string(),
+						FoundEntry::File(name) => name.strip_suffix(".md.bak").or_else(|| name.strip_suffix(".md")).unwrap().to_string(), //XXX: this loses information. horrible, horrendous bug
 					},
 					_ => {
 						let matching_paths = all_matches
 							.iter()
-							.map(|e| {
-								path.join(match e {
-									FoundEntry::Dir(name) | FoundEntry::File(name) => name,
+							.map(|entry| {
+								path.join(match entry {
+									FoundEntry::Dir(name) => name,
+									FoundEntry::File(name) => name,
 								})
 							})
 							.collect();

@@ -47,6 +47,9 @@ pub async fn resolve_touch_path(result: TouchPathResult) -> Result<Issue> {
 /// For nested paths, matches as far as possible, then returns `Create` for the remaining title.
 ///
 /// The final component may have `.md` extension which is stripped before matching.
+//TODO!!!: this has duplication against LocalPath logic. I think I should do both:
+//a) update IssueSelector to have a Regex variant (same for application logic as here; preference even below Title)
+//b) have this one only regex against owner and repo; delegate the rest
 pub fn parse_touch_path(user_input: &str) -> Result<TouchPathResult> {
 	if user_input.starts_with('/') {
 		bail!("Expecting semantic per-component match string for owner/repo/issue/optional-sub-issues, got: {user_input}")
