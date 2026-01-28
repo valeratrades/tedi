@@ -26,7 +26,7 @@ use std::path::Path;
 use color_eyre::eyre::{Result, bail};
 use tedi::{
 	Issue, IssueIndex, IssueLink, LazyIssue,
-	local::{Local, LocalPath, Submitted},
+	local::{FsReader, Local, LocalPath, Submitted},
 	sink::Sink,
 };
 
@@ -48,15 +48,13 @@ pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Mo
 	// Get IssueIndex for consensus loading
 	let issue_index = IssueIndex::from(&issue);
 
-	// Ensure parent directories exist (converts flat files to directory format as needed)
-	// This is needed before we can compute the file path or write to it
 	let mut local_path = LocalPath::from(issue_index);
 	local_path.ensure_parent_dirs()?;
 
 	// Compute issue file path
 	let closed = issue.contents.state.is_closed();
 	let has_children = !issue.children.is_empty();
-	let issue_file_path = local_path.file_path(&issue.contents.title, closed, has_children)?;
+	let issue_file_path = local_path.file_path(&issue.contents.title, closed, has_children, &FsReader)?;
 
 	let offline = offline || Local::is_virtual_project(repo_info);
 	let issue_number = issue.number().unwrap_or(0); //IGNORED_ERROR: 0 is sentinel for "pending issue, no number yet"

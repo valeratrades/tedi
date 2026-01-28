@@ -483,6 +483,105 @@ impl LocalPath {
 		}
 	}
 
+	/// Find the file path for this issue by searching with reader.
+	///
+	/// r[local.path-reader-only]
+	/// Unlike `file_path` which constructs a path from known state, this searches
+	/// for an existing file matching the issue's selector (checking both flat and
+	/// directory formats, open and closed states).
+	#[deprecated(
+		note = "to new builder pattern. Also should reuse same logic for finding the parent dir as what's already available in Self::file_path (well, that's the reason we're rewriting to builder in the first place)"
+	)]
+	pub fn find_file<R: LocalReader>(&mut self, reader: &R) -> Result<PathBuf, LocalError> {
+		let parent_dir = self.compute_parent_dir(reader).map_err(|e| LocalError::Other(e))?;
+
+		match self.index.index().last() {
+			Some(IssueSelector::GitId(issue_number)) => {
+				let prefix = format!("{issue_number}_-_");
+				let exact = format!("{issue_number}");
+
+				// Search for matching file or directory
+				let entries = reader.list_dir(&parent_dir).unwrap_or_default();
+				for name in entries {
+					let entry_path = parent_dir.join(&name);
+
+					// Check directory format
+					if reader.is_dir(&entry_path).unwrap_or(false) && (name.starts_with(&prefix) || name == exact) {
+						// Found directory - return __main__.md path (check both open/closed)
+						let main_open = Local::main_file_path(&entry_path, false);
+						if reader.exists(&main_open).unwrap_or(false) {
+							return Ok(main_open);
+						}
+						let main_closed = Local::main_file_path(&entry_path, true);
+						if reader.exists(&main_closed).unwrap_or(false) {
+							return Ok(main_closed);
+						}
+					}
+
+					// Check flat file format
+					if let Some(base) = name.strip_suffix(".md.bak").or_else(|| name.strip_suffix(".md")) {
+						if base.starts_with(&prefix) || base == exact {
+							return Ok(entry_path);
+						}
+					}
+				}
+
+				Err(LocalError::FileNotFound {
+					path: parent_dir.join(format!("{issue_number}_-_*")),
+				})
+			}
+			Some(IssueSelector::Title(title)) => {
+				let sanitized = Local::sanitize_title(title.as_str());
+
+				let entries = reader.list_dir(&parent_dir).unwrap_or_default();
+				for name in entries {
+					let entry_path = parent_dir.join(&name);
+
+					// Check directory format
+					if reader.is_dir(&entry_path).unwrap_or(false) && name == sanitized {
+						let main_open = Local::main_file_path(&entry_path, false);
+						if reader.exists(&main_open).unwrap_or(false) {
+							return Ok(main_open);
+						}
+						let main_closed = Local::main_file_path(&entry_path, true);
+						if reader.exists(&main_closed).unwrap_or(false) {
+							return Ok(main_closed);
+						}
+					}
+
+					// Check flat file format
+					if let Some(base) = name.strip_suffix(".md.bak").or_else(|| name.strip_suffix(".md")) {
+						if base == sanitized {
+							return Ok(entry_path);
+						}
+					}
+				}
+
+				Err(LocalError::FileNotFound {
+					path: parent_dir.join(format!("{}.md", sanitized)),
+				})
+			}
+			None => Err(LocalError::Other(color_eyre::eyre::eyre!("Cannot find file for empty index"))),
+		}
+	}
+
+	/// Find the directory path for this issue if it exists (has children).
+	///
+	/// r[local.path-reader-only]
+	/// Returns `Some(path)` if the issue is stored in directory format, `None` otherwise.
+	pub fn find_dir<R: LocalReader>(&mut self, reader: &R) -> Option<PathBuf> {
+		let file_path = self.find_file(reader).ok()?;
+		let parent = file_path.parent()?;
+
+		// Check if the parent is the issue's directory (not the repo dir)
+		// by checking if the file is __main__.md
+		if file_path.file_name()?.to_str()?.starts_with(Local::MAIN_ISSUE_FILENAME) {
+			Some(parent.to_path_buf())
+		} else {
+			None
+		}
+	}
+
 	/// Format the directory name for this issue (when it has children).
 	fn format_self_dir_name(&self, title: &str) -> String {
 		match self.index.index().last() {
