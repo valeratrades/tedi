@@ -16,253 +16,6 @@
 
 pub mod conflict;
 pub mod consensus;
-mod reader;
-
-pub use reader::{FsReader, GitReader, LocalReader, ReaderError};
-
-mod local_path {
-	use super::*;
-
-	/// Error type for LocalPath operations.
-	#[derive(Debug, miette::Diagnostic, thiserror::Error)]
-	pub enum LocalPathError {
-		/// Parent issue not found at expected location.
-		#[error("parent issue {selector:?} not found in {}", searched_path.display())]
-		#[diagnostic(help("Fetch the parent issue first"))]
-		MissingParent { selector: IssueSelector, searched_path: PathBuf },
-
-		/// Issue file not found (search failed).
-		#[error("issue file {selector:?} not found in {}", searched_path.display())]
-		NotFound { selector: IssueSelector, searched_path: PathBuf },
-
-		/// Reader operation failed.
-		#[error(transparent)]
-		Reader(#[from] ReaderError),
-	}
-
-	/// Result of finding an entry matching a selector.
-	enum FoundEntry {
-		/// Found a directory with this name.
-		Dir(String),
-		/// Found a flat file with this full filename (including extension).
-		File(String),
-	}
-
-	/// Find an entry (dir or file) matching a selector in a directory.
-	///
-	/// For GitId: looks for `{number}_-_*` directories or `{number}_-_*.md[.bak]` files.
-	/// For Title: looks for directories or files matching the sanitized title.
-	fn find_entry_by_selector<R: LocalReader>(reader: &R, parent: &Path, selector: &IssueSelector) -> Option<FoundEntry> {
-		let entries = reader.list_dir(parent).ok()?;
-
-		match selector {
-			IssueSelector::GitId(issue_number) => {
-				let prefix = format!("{issue_number}_-_");
-				let exact = format!("{issue_number}");
-
-				for name in entries {
-					let entry_path = parent.join(&name);
-
-					if reader.is_dir(&entry_path).unwrap_or(false) && (name.starts_with(&prefix) || name == exact) {
-						return Some(FoundEntry::Dir(name));
-					}
-					if let Some(base) = name.strip_suffix(".md.bak").or_else(|| name.strip_suffix(".md"))
-						&& (base.starts_with(&prefix) || base == exact)
-					{
-						return Some(FoundEntry::File(name));
-					}
-				}
-				None
-			}
-			IssueSelector::Title(title) => {
-				let sanitized = Local::sanitize_title(title.as_str());
-
-				for name in entries {
-					let entry_path = parent.join(&name);
-
-					if reader.is_dir(&entry_path).unwrap_or(false) && name == sanitized {
-						return Some(FoundEntry::Dir(name));
-					}
-					if let Some(base) = name.strip_suffix(".md.bak").or_else(|| name.strip_suffix(".md"))
-						&& base == sanitized
-					{
-						return Some(FoundEntry::File(name));
-					}
-				}
-				None
-			}
-		}
-	}
-
-	/// On-demand path construction for local issue storage.
-	///
-	/// Use the builder pattern:
-	/// - Reading: `local_path.resolve_parent(reader)?.search()?`
-	/// - Writing: `local_path.resolve_parent(reader)?.deterministic(title, closed, has_children)`
-	///
-	/// r[local.path-reader-only]
-	#[derive(Clone, Debug)]
-	pub struct LocalPath {
-		pub(crate) index: IssueIndex,
-	}
-
-	impl LocalPath {
-		pub fn new(index: IssueIndex) -> Self {
-			Self { index }
-		}
-
-		/// Resolve parent directory and prepare for final path resolution.
-		///
-		/// Consumes self and returns a `LocalPathResolved` that can be used to:
-		/// - `search()`: find existing file matching the final selector
-		/// - `deterministic(title, closed, has_children)`: construct target path for writes
-		pub fn resolve_parent<R: LocalReader>(self, reader: R) -> Result<LocalPathResolved<R>, LocalPathError> {
-			let mut path = Local::project_dir(self.index.owner(), self.index.repo());
-
-			let selectors = self.index.index();
-			let (parent_selectors, final_selector) = if selectors.is_empty() {
-				(&[][..], None)
-			} else {
-				(&selectors[..selectors.len() - 1], selectors.last().cloned())
-			};
-
-			for selector in parent_selectors {
-				let dir_name = match find_entry_by_selector(&reader, &path, selector) {
-					Some(FoundEntry::Dir(name)) => name,
-					Some(FoundEntry::File(name)) => name.strip_suffix(".md.bak").or_else(|| name.strip_suffix(".md")).unwrap().to_string(),
-					None =>
-						return Err(LocalPathError::MissingParent {
-							selector: selector.clone(),
-							searched_path: path.clone(),
-						}),
-				};
-				path = path.join(dir_name);
-			}
-
-			Ok(LocalPathResolved {
-				parent_dir: path,
-				final_selector,
-				reader,
-			})
-		}
-	}
-
-	impl From<IssueIndex> for LocalPath {
-		fn from(index: IssueIndex) -> Self {
-			Self::new(index)
-		}
-	}
-
-	impl From<&Issue> for LocalPath {
-		fn from(issue: &Issue) -> Self {
-			Self::new(IssueIndex::from(issue))
-		}
-	}
-
-	/// Resolved parent directory, ready for final path resolution.
-	///
-	/// Created by `LocalPath::resolve_parent()`. Use:
-	/// - `search()` to find an existing file
-	/// - `deterministic(...)` to construct a target path for writes
-	#[derive(Clone, Debug)]
-	pub struct LocalPathResolved<R: LocalReader> {
-		parent_dir: PathBuf,
-		final_selector: Option<IssueSelector>,
-		reader: R,
-	}
-
-	impl<R: LocalReader> LocalPathResolved<R> {
-		/// Search for an existing file matching the final selector.
-		///
-		/// Checks both flat and directory formats, open and closed states.
-		pub fn search(&self) -> Result<PathBuf, LocalPathError> {
-			let Some(ref selector) = self.final_selector else {
-				panic!("Cannot search with empty index - no selector to match");
-			};
-
-			match find_entry_by_selector(&self.reader, &self.parent_dir, selector) {
-				Some(FoundEntry::Dir(name)) => {
-					let dir_path = self.parent_dir.join(&name);
-					// Check for __main__.md (open or closed)
-					let main_open = Local::main_file_path(&dir_path, false);
-					if self.reader.exists(&main_open).unwrap_or(false) {
-						return Ok(main_open);
-					}
-					let main_closed = Local::main_file_path(&dir_path, true);
-					if self.reader.exists(&main_closed).unwrap_or(false) {
-						return Ok(main_closed);
-					}
-					// Directory exists but no __main__.md - this shouldn't happen in valid state
-					Err(LocalPathError::NotFound {
-						selector: selector.clone(),
-						searched_path: self.parent_dir.clone(),
-					})
-				}
-				Some(FoundEntry::File(name)) => Ok(self.parent_dir.join(name)),
-				None => Err(LocalPathError::NotFound {
-					selector: selector.clone(),
-					searched_path: self.parent_dir.clone(),
-				}),
-			}
-		}
-
-		/// Search for the issue's directory if it exists (has children).
-		///
-		/// Returns `Some(path)` if the issue is stored in directory format, `None` otherwise.
-		pub fn search_dir(&self) -> Option<PathBuf> {
-			let file_path = self.search().ok()?;
-			let parent = file_path.parent()?;
-
-			if file_path.file_name()?.to_str()?.starts_with(Local::MAIN_ISSUE_FILENAME) {
-				Some(parent.to_path_buf())
-			} else {
-				None
-			}
-		}
-
-		/// Construct the deterministic target path for writing.
-		///
-		/// Returns the path where the issue file should be located based on:
-		/// - `title`: the issue title (used in filename)
-		/// - `closed`: whether the issue is closed (affects .md vs .md.bak extension)
-		/// - `has_children`: whether stored in directory format (affects __main__.md vs flat file)
-		///
-		/// Note: This does NOT create any directories. Use Sink to write.
-		pub fn deterministic(&self, title: &str, closed: bool, has_children: bool) -> PathBuf {
-			if has_children {
-				let dir_name = self.format_dir_name(title);
-				let issue_dir = self.parent_dir.join(dir_name);
-				Local::main_file_path(&issue_dir, closed)
-			} else {
-				let filename = self.format_filename(title, closed);
-				self.parent_dir.join(filename)
-			}
-		}
-
-		/// Get the resolved parent directory.
-		pub fn parent_dir(&self) -> &Path {
-			&self.parent_dir
-		}
-
-		fn format_dir_name(&self, title: &str) -> String {
-			match &self.final_selector {
-				Some(IssueSelector::GitId(n)) => Local::issue_dir_name(Some(*n), title),
-				Some(IssueSelector::Title(_)) | None => Local::sanitize_title(title),
-			}
-		}
-
-		fn format_filename(&self, title: &str, closed: bool) -> String {
-			match &self.final_selector {
-				Some(IssueSelector::GitId(n)) => Local::format_issue_filename(Some(*n), title, closed),
-				Some(IssueSelector::Title(_)) | None => {
-					let ext = if closed { ".md.bak" } else { ".md" };
-					format!("{}{ext}", Local::sanitize_title(title))
-				}
-			}
-		}
-	}
-}
-pub use local_path::{LocalPath, LocalPathError, LocalPathResolved};
 /// Error type for local issue loading operations.
 #[derive(Debug, miette::Diagnostic, thiserror::Error, derive_more::From)]
 pub enum LocalError {
@@ -326,7 +79,6 @@ pub enum ConsensusSinkError {
 	#[diagnostic(code(tedi::consensus::io))]
 	Io(#[from] std::io::Error),
 }
-
 /// Source for loading issues from local storage.
 ///
 /// Combines a `LocalPath` (for path computation) with a reader (for reading from fs or git).
@@ -335,7 +87,6 @@ pub struct LocalIssueSource<R: LocalReader> {
 	pub local_path: LocalPath,
 	pub reader: R,
 }
-
 impl<R: LocalReader> LocalIssueSource<R> {
 	pub fn new(local_path: LocalPath, reader: R) -> Self {
 		Self { local_path, reader }
@@ -354,7 +105,6 @@ impl<R: LocalReader> LocalIssueSource<R> {
 		&self.local_path.index
 	}
 }
-
 impl LocalIssueSource<FsReader> {
 	/// Create a source for reading from filesystem (submitted state).
 	pub fn submitted(local_path: LocalPath) -> Self {
@@ -370,29 +120,10 @@ impl LocalIssueSource<FsReader> {
 		Ok(Self::new(LocalPath::new(index), FsReader))
 	}
 }
-
 impl LocalIssueSource<GitReader> {
 	/// Create a source for reading from git HEAD (consensus state).
 	pub fn consensus(local_path: LocalPath) -> Self {
 		Self::new(local_path, GitReader)
-	}
-}
-
-impl<R: LocalReader> From<LocalPath> for LocalIssueSource<R>
-where
-	R: Default,
-{
-	fn from(local_path: LocalPath) -> Self {
-		Self::new(local_path, R::default())
-	}
-}
-
-impl<R: LocalReader> From<IssueIndex> for LocalIssueSource<R>
-where
-	R: Default,
-{
-	fn from(index: IssueIndex) -> Self {
-		Self::new(LocalPath::new(index), R::default())
 	}
 }
 
@@ -491,6 +222,7 @@ impl Local {
 
 	/// Get the directory name for an issue (used when it has sub-issues).
 	/// Format: {number}_-_{sanitized_title}
+	//TODO: start adding `.bak` for closed
 	pub fn issue_dir_name(issue_number: Option<u64>, title: &str) -> String {
 		let sanitized = Self::sanitize_title(title);
 		match issue_number {
@@ -1357,6 +1089,267 @@ pub struct IssueMeta {
 /// Marker type for loading from consensus (git HEAD).
 /// Note: This is different from `impl_sink::Consensus` which is for writing.
 pub enum LocalConsensus {}
+mod reader;
+
+pub use reader::{FsReader, GitReader, LocalReader, ReaderError};
+
+mod local_path {
+	use super::*;
+
+	/// Error type for LocalPath operations.
+	#[derive(Debug, miette::Diagnostic, thiserror::Error)]
+	pub enum LocalPathError {
+		/// Parent issue not found at expected location.
+		#[error("parent issue {selector:?} not found in {}", searched_path.display())]
+		#[diagnostic(help("Fetch the parent issue first"))]
+		MissingParent { selector: IssueSelector, searched_path: PathBuf },
+
+		/// Issue file not found (search failed).
+		#[error("issue file {selector:?} not found in {}", searched_path.display())]
+		NotFound { selector: IssueSelector, searched_path: PathBuf },
+
+		/// Reader operation failed.
+		#[error(transparent)]
+		Reader(#[from] ReaderError),
+	}
+
+	/// Result of finding an entry matching a selector.
+	enum FoundEntry {
+		/// Found a directory with this name.
+		Dir(String),
+		/// Found a flat file with this full filename (including extension).
+		File(String),
+	}
+
+	/// Find an entry (dir or file) matching a selector in a directory.
+	///
+	/// For GitId: looks for `{number}_-_*` directories or `{number}_-_*.md[.bak]` files.
+	/// For Title: looks for directories or files matching the sanitized title.
+	fn find_entry_by_selector<R: LocalReader>(reader: &R, parent: &Path, selector: &IssueSelector) -> Option<FoundEntry> {
+		let entries = reader.list_dir(parent).ok()?;
+
+		match selector {
+			IssueSelector::GitId(issue_number) => {
+				let prefix = format!("{issue_number}_-_");
+				let exact = format!("{issue_number}");
+
+				for name in entries {
+					let entry_path = parent.join(&name);
+
+					if reader.is_dir(&entry_path).unwrap_or(false) && (name.starts_with(&prefix) || name == exact) {
+						return Some(FoundEntry::Dir(name));
+					}
+					if let Some(base) = name.strip_suffix(".md.bak").or_else(|| name.strip_suffix(".md"))
+						&& (base.starts_with(&prefix) || base == exact)
+					{
+						return Some(FoundEntry::File(name));
+					}
+				}
+				None
+			}
+			IssueSelector::Title(title) => {
+				let sanitized = Local::sanitize_title(title.as_str());
+
+				for name in entries {
+					let entry_path = parent.join(&name);
+
+					if reader.is_dir(&entry_path).unwrap_or(false) && name == sanitized {
+						return Some(FoundEntry::Dir(name));
+					}
+					if let Some(base) = name.strip_suffix(".md.bak").or_else(|| name.strip_suffix(".md"))
+						&& base == sanitized
+					{
+						return Some(FoundEntry::File(name));
+					}
+				}
+				None
+			}
+		}
+	}
+
+	/// On-demand path construction for local issue storage.
+	///
+	/// Use the builder pattern:
+	/// - Reading: `local_path.resolve_parent(reader)?.search()?`
+	/// - Writing: `local_path.resolve_parent(reader)?.deterministic(title, closed, has_children)`
+	///
+	/// r[local.path-reader-only]
+	#[derive(Clone, Debug)]
+	pub struct LocalPath {
+		pub(crate) index: IssueIndex,
+	}
+
+	impl LocalPath {
+		pub fn new(index: IssueIndex) -> Self {
+			Self { index }
+		}
+
+		/// Resolve parent directory and prepare for final path resolution.
+		///
+		/// Consumes self and returns a `LocalPathResolved` that can be used to:
+		/// - `search()`: find existing file matching the final selector
+		/// - `deterministic(title, closed, has_children)`: construct target path for writes
+		pub fn resolve_parent<R: LocalReader>(self, reader: R) -> Result<LocalPathResolved<R>, LocalPathError> {
+			let mut path = Local::project_dir(self.index.owner(), self.index.repo());
+
+			let selectors = self.index.index();
+			let (parent_selectors, final_selector) = if selectors.is_empty() {
+				(&[][..], None)
+			} else {
+				(&selectors[..selectors.len() - 1], selectors.last().cloned())
+			};
+
+			for selector in parent_selectors {
+				let dir_name = match find_entry_by_selector(&reader, &path, selector) {
+					Some(FoundEntry::Dir(name)) => name,
+					Some(FoundEntry::File(name)) => name.strip_suffix(".md.bak").or_else(|| name.strip_suffix(".md")).unwrap().to_string(),
+					None =>
+						return Err(LocalPathError::MissingParent {
+							selector: selector.clone(),
+							searched_path: path.clone(),
+						}),
+				};
+				path = path.join(dir_name);
+			}
+
+			Ok(LocalPathResolved {
+				parent_dir: path,
+				final_selector,
+				reader,
+				resolved_path: None,
+			})
+		}
+	}
+
+	impl From<IssueIndex> for LocalPath {
+		fn from(index: IssueIndex) -> Self {
+			Self::new(index)
+		}
+	}
+
+	impl From<&Issue> for LocalPath {
+		fn from(issue: &Issue) -> Self {
+			Self::new(IssueIndex::from(issue))
+		}
+	}
+
+	/// Resolved parent directory, ready for final path resolution.
+	///
+	/// Created by `LocalPath::resolve_parent()`. Use:
+	/// - `search()` to find an existing file
+	/// - `deterministic(...)` to construct a target path for writes
+	/// Then call `path()` to get the final `PathBuf`.
+	#[derive(Clone, Debug)]
+	pub struct LocalPathResolved<R: LocalReader> {
+		parent_dir: PathBuf,
+		final_selector: Option<IssueSelector>,
+		reader: R,
+		resolved_path: Option<PathBuf>,
+	}
+
+	impl<R: LocalReader> LocalPathResolved<R> {
+		/// Search for an existing file matching the final selector.
+		///
+		/// Checks both flat and directory formats, open and closed states.
+		pub fn search(mut self) -> Result<Self, LocalPathError> {
+			let Some(ref selector) = self.final_selector else {
+				panic!("Cannot search with empty index - no selector to match");
+			};
+
+			let path = match find_entry_by_selector(&self.reader, &self.parent_dir, selector) {
+				Some(FoundEntry::Dir(name)) => {
+					let dir_path = self.parent_dir.join(&name);
+					// Check for __main__.md (open or closed)
+					let main_open = Local::main_file_path(&dir_path, false);
+					if self.reader.exists(&main_open).unwrap_or(false) {
+						main_open
+					} else {
+						let main_closed = Local::main_file_path(&dir_path, true);
+						if self.reader.exists(&main_closed).unwrap_or(false) {
+							main_closed
+						} else {
+							return Err(LocalPathError::NotFound {
+								selector: selector.clone(),
+								searched_path: self.parent_dir.clone(),
+							});
+						}
+					}
+				}
+				Some(FoundEntry::File(name)) => self.parent_dir.join(name),
+				None =>
+					return Err(LocalPathError::NotFound {
+						selector: selector.clone(),
+						searched_path: self.parent_dir.clone(),
+					}),
+			};
+			self.resolved_path = Some(path);
+			Ok(self)
+		}
+
+		/// Construct the deterministic target path for writing.
+		///
+		/// Returns the path where the issue file should be located based on:
+		/// - `title`: the issue title (used in filename)
+		/// - `closed`: whether the issue is closed (affects .md vs .md.bak extension)
+		/// - `has_children`: whether stored in directory format (affects __main__.md vs flat file)
+		///
+		/// Note: This does NOT create any directories. Use Sink to write.
+		pub fn deterministic(mut self, title: &str, closed: bool, has_children: bool) -> Self {
+			let path = if has_children {
+				let dir_name = self.format_dir_name(title);
+				let issue_dir = self.parent_dir.join(dir_name);
+				Local::main_file_path(&issue_dir, closed)
+			} else {
+				let filename = self.format_filename(title, closed);
+				self.parent_dir.join(filename)
+			};
+			self.resolved_path = Some(path);
+			self
+		}
+
+		/// Get the resolved path.
+		pub fn path(self) -> PathBuf {
+			self.resolved_path.expect("path() called before search() or deterministic()")
+		}
+
+		fn format_dir_name(&self, title: &str) -> String {
+			match &self.final_selector {
+				Some(IssueSelector::GitId(n)) => Local::issue_dir_name(Some(*n), title),
+				Some(IssueSelector::Title(_)) | None => Local::sanitize_title(title),
+			}
+		}
+
+		fn format_filename(&self, title: &str, closed: bool) -> String {
+			match &self.final_selector {
+				Some(IssueSelector::GitId(n)) => Local::format_issue_filename(Some(*n), title, closed),
+				Some(IssueSelector::Title(_)) | None => {
+					let ext = if closed { ".md.bak" } else { ".md" };
+					format!("{}{ext}", Local::sanitize_title(title))
+				}
+			}
+		}
+	}
+}
+pub use local_path::{LocalPath, LocalPathError, LocalPathResolved};
+
+impl<R: LocalReader> From<LocalPath> for LocalIssueSource<R>
+where
+	R: Default,
+{
+	fn from(local_path: LocalPath) -> Self {
+		Self::new(local_path, R::default())
+	}
+}
+
+impl<R: LocalReader> From<IssueIndex> for LocalIssueSource<R>
+where
+	R: Default,
+{
+	fn from(index: IssueIndex) -> Self {
+		Self::new(LocalPath::new(index), R::default())
+	}
+}
+
 mod impl_sink;
 
 use std::path::{Path, PathBuf};
