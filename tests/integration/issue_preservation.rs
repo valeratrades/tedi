@@ -30,10 +30,11 @@ fn test_comments_with_ids_sync_correctly() {
 
 	let path = ctx.issue_path(&issue);
 	let out = ctx.open(&path).args(&["--force"]).run();
-	eprintln!("stdout: {stdout}\nstderr: {stderr}");
+	eprintln!("stdout: {}", out.stdout);
+	eprintln!("stderr: {}", out.stderr);
 
 	// This should NOT fail with "comment X not found in consensus"
-	assert!(out.status.success(), "sync failed: {stderr}");
+	assert!(out.status.success(), "sync failed: {}", out.stderr);
 }
 
 #[test]
@@ -55,9 +56,10 @@ fn test_nested_issues_preserved_through_sync() {
 	ctx.remote(&issue, None);
 
 	let out = ctx.run_open(&path);
-	eprintln!("stdout: {stdout}\nstderr: {stderr}");
+	eprintln!("stdout: {}", out.stdout);
+	eprintln!("stderr: {}", out.stderr);
 
-	assert!(out.status.success(), "stderr: {stderr}");
+	assert!(out.status.success(), "stderr: {}", out.stderr);
 
 	// With the new model, children are stored in separate files in the parent's directory
 	let parent_dir = path.parent().unwrap();
@@ -92,9 +94,10 @@ fn test_mixed_open_closed_nested_issues_preserved() {
 	ctx.remote(&issue, None);
 
 	let out = ctx.run_open(&path);
-	eprintln!("stdout: {stdout}\nstderr: {stderr}");
+	eprintln!("stdout: {}", out.stdout);
+	eprintln!("stderr: {}", out.stderr);
 
-	assert!(out.status.success(), "stderr: {stderr}");
+	assert!(out.status.success(), "stderr: {}", out.stderr);
 
 	// With the new model, children are stored in separate files
 	let parent_dir = path.parent().unwrap();
@@ -125,9 +128,10 @@ fn test_blockers_preserved_through_sync() {
 	ctx.remote(&issue, None);
 
 	let out = ctx.run_open(&path);
-	eprintln!("stdout: {stdout}\nstderr: {stderr}");
+	eprintln!("stdout: {}", out.stdout);
+	eprintln!("stderr: {}", out.stderr);
 
-	assert!(out.status.success(), "stderr: {stderr}");
+	assert!(out.status.success(), "stderr: {}", out.stderr);
 
 	let final_content = std::fs::read_to_string(&path).unwrap();
 	assert!(final_content.contains("# Blockers"), "blockers section lost");
@@ -155,9 +159,10 @@ fn test_blockers_added_during_edit_preserved() {
 	);
 
 	let out = ctx.open(&path).edit(&edited_issue).run();
-	eprintln!("stdout: {stdout}\nstderr: {stderr}");
+	eprintln!("stdout: {}", out.stdout);
+	eprintln!("stderr: {}", out.stderr);
 
-	assert!(out.status.success(), "stderr: {stderr}");
+	assert!(out.status.success(), "stderr: {}", out.stderr);
 
 	let final_content = std::fs::read_to_string(&path).unwrap();
 	assert!(final_content.contains("# Blockers"), "blockers section not preserved");
@@ -185,9 +190,10 @@ fn test_blockers_with_headers_preserved() {
 	ctx.remote(&issue, None);
 
 	let out = ctx.run_open(&path);
-	eprintln!("stdout: {stdout}\nstderr: {stderr}");
+	eprintln!("stdout: {}", out.stdout);
+	eprintln!("stderr: {}", out.stderr);
 
-	assert!(out.status.success(), "stderr: {stderr}");
+	assert!(out.status.success(), "stderr: {}", out.stderr);
 
 	let final_content = std::fs::read_to_string(&path).unwrap();
 	assert!(final_content.contains("# phase 1"), "phase 1 header lost");
@@ -217,9 +223,10 @@ fn test_nested_issues_and_blockers_together() {
 	ctx.remote(&issue, None);
 
 	let out = ctx.run_open(&path);
-	eprintln!("stdout: {stdout}\nstderr: {stderr}");
+	eprintln!("stdout: {}", out.stdout);
+	eprintln!("stderr: {}", out.stderr);
 
-	assert!(out.status.success(), "stderr: {stderr}");
+	assert!(out.status.success(), "stderr: {}", out.stderr);
 
 	// File is in directory format (path points to __main__.md)
 	let final_content = std::fs::read_to_string(&path).unwrap();
@@ -259,7 +266,8 @@ fn test_closing_nested_issue_creates_bak_file() {
 	);
 
 	let out = ctx.open(&path).edit(&edited_issue).run();
-	eprintln!("stdout: {stdout}\nstderr: {stderr}");
+	eprintln!("stdout: {}", out.stdout);
+	eprintln!("stderr: {}", out.stderr);
 
 	// Debug: list files in the issues directory
 	let issues_dir = ctx.data_dir().join("issues/o/r");
@@ -302,7 +310,7 @@ fn test_closing_nested_issue_creates_bak_file() {
 			lorem ipsum
 	"#);
 
-	assert!(out.status.success(), "stderr: {stderr}");
+	assert!(out.status.success(), "stderr: {}", out.stderr);
 
 	// With the new model, closed child is in a separate .bak file
 	let closed_child_path = path.parent().unwrap().join("2_-_b.md.bak");

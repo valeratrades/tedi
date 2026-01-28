@@ -48,9 +48,9 @@ fn test_reset_then_mark_subissue_closed_no_conflict() {
 	// First: open via URL with --reset (this simulates `todo open --reset <url>`)
 	// This fetches from remote, stores locally, and commits as consensus
 	let out = ctx.open_url("o", "r", 1).args(&["--reset"]).run();
-	eprintln!("First open stdout: {stdout}");
-	eprintln!("First open stderr: {stderr}");
-	assert!(out.status.success(), "First open with --reset should succeed. stderr: {stderr}");
+	eprintln!("First open stdout: {}", out.stdout);
+	eprintln!("First open stderr: {}", out.stderr);
+	assert!(out.status.success(), "First open with --reset should succeed. stderr: {}", out.stderr);
 
 	// Now simulate user editing: mark the sub-issue as closed
 	// The user would do this by changing `- [ ]` to `- [x]` in the editor
@@ -69,13 +69,17 @@ fn test_reset_then_mark_subissue_closed_no_conflict() {
 		 \t\tsub body\n",
 	);
 	let out = ctx.open(&issue_path).edit(&modified_parent).run();
-	eprintln!("Second open stdout: {stdout}");
-	eprintln!("Second open stderr: {stderr}");
+	eprintln!("Second open stdout: {}", out.stdout);
+	eprintln!("Second open stderr: {}", out.stderr);
 
 	// THE BUG: This was triggering "Conflict detected" even though it should be a simple LocalOnly change
-	assert!(out.status.success(), "Second open (marking sub-issue closed) should succeed without conflict. stderr: {stderr}");
-	assert!(!stderr.contains("Conflict"), "Should not mention conflict. stderr: {stderr}");
-	assert!(!stdout.contains("Merging remote"), "Should not attempt merge. stdout: {stdout}");
+	assert!(
+		out.status.success(),
+		"Second open (marking sub-issue closed) should succeed without conflict. stderr: {}",
+		out.stderr
+	);
+	assert!(!out.stderr.contains("Conflict"), "Should not mention conflict. stderr: {}", out.stderr);
+	assert!(!out.stdout.contains("Merging remote"), "Should not attempt merge. stdout: {}", out.stdout);
 }
 
 /// Simpler version: just body change on a single issue (no sub-issues)
@@ -90,7 +94,7 @@ fn test_reset_then_edit_body_no_conflict() {
 
 	// First: open via URL with --reset
 	let out = ctx.open_url("o", "r", 1).args(&["--reset"]).run();
-	assert!(out.status.success(), "First open should succeed. stderr: {stderr}");
+	assert!(out.status.success(), "First open should succeed. stderr: {}", out.stderr);
 
 	// Now edit the body
 	let issue_path = ctx.flat_issue_path("o", "r", 1, "Test Issue");
@@ -99,11 +103,11 @@ fn test_reset_then_edit_body_no_conflict() {
 
 	// Second open: edit the body
 	let out = ctx.open(&issue_path).edit(&modified).run();
-	eprintln!("Second open stdout: {stdout}");
-	eprintln!("Second open stderr: {stderr}");
+	eprintln!("Second open stdout: {}", out.stdout);
+	eprintln!("Second open stderr: {}", out.stderr);
 
-	assert!(out.status.success(), "Edit should succeed. stderr: {stderr}");
-	assert!(!stderr.contains("Conflict"), "Should not have conflict. stderr: {stderr}");
+	assert!(out.status.success(), "Edit should succeed. stderr: {}", out.stderr);
+	assert!(!out.stderr.contains("Conflict"), "Should not have conflict. stderr: {}", out.stderr);
 }
 
 /// THE ACTUAL BUG SCENARIO:
@@ -143,9 +147,9 @@ fn test_reset_with_preexisting_modified_subissue_files() {
 	// grandparent (#1) is at: 1_-_Grandparent_Issue/__main__.md
 	// parent (#2) gets its own dir because it has children: 1_-_Grandparent_Issue/2_-_Parent_Issue/__main__.md
 	let out = ctx.open_url("o", "r", 1).run();
-	eprintln!("First fetch stdout: {stdout}");
-	eprintln!("First fetch stderr: {stderr}");
-	assert!(out.status.success(), "First fetch should succeed. stderr: {stderr}");
+	eprintln!("First fetch stdout: {}", out.stdout);
+	eprintln!("First fetch stderr: {}", out.stderr);
+	assert!(out.status.success(), "First fetch should succeed. stderr: {}", out.stderr);
 
 	// Step 2: User opens and modifies the parent sub-issue (adds blockers, expands content)
 	// This simulates what happens when user works on issues over time
@@ -180,16 +184,16 @@ fn test_reset_with_preexisting_modified_subissue_files() {
 		 \t\tchild body\n",
 	);
 	let out = ctx.open(&parent_subissue_path).edit(&modified_parent).run();
-	eprintln!("Parent edit stdout: {stdout}");
-	eprintln!("Parent edit stderr: {stderr}");
-	assert!(out.status.success(), "Parent edit should succeed. stderr: {stderr}");
+	eprintln!("Parent edit stdout: {}", out.stdout);
+	eprintln!("Parent edit stderr: {}", out.stderr);
+	assert!(out.status.success(), "Parent edit should succeed. stderr: {}", out.stderr);
 
 	// Step 3: User runs --reset on the GRANDPARENT issue
 	// BUG: format_issue will read the MODIFIED parent file and embed that content
 	let out = ctx.open_url("o", "r", 1).args(&["--reset"]).run();
-	eprintln!("Reset stdout: {stdout}");
-	eprintln!("Reset stderr: {stderr}");
-	assert!(out.status.success(), "Reset should succeed. stderr: {stderr}");
+	eprintln!("Reset stdout: {}", out.stdout);
+	eprintln!("Reset stderr: {}", out.stderr);
+	assert!(out.status.success(), "Reset should succeed. stderr: {}", out.stderr);
 
 	// Step 4: User makes a small edit (mark child issue as closed)
 	let grandparent_path = ctx.data_dir().join("issues/o/r/1_-_Grandparent_Issue/__main__.md");
@@ -211,16 +215,17 @@ fn test_reset_with_preexisting_modified_subissue_files() {
 	// - Remote has parent with ORIGINAL API content
 	// - These don't match → divergence detected → merge initiated
 	let out = ctx.open(&grandparent_path).edit(&modified_grandparent).run();
-	eprintln!("Edit stdout: {stdout}");
-	eprintln!("Edit stderr: {stderr}");
+	eprintln!("Edit stdout: {}", out.stdout);
+	eprintln!("Edit stderr: {}", out.stderr);
 
 	// After --reset, there should be NO merging. The consensus should match remote exactly.
 	// Any change user makes should be detected as LocalOnly (user changed, remote unchanged from consensus).
 	// If we see "Merging" it means --reset didn't properly reset to remote state.
-	assert!(out.status.success(), "Edit after reset should succeed. stderr: {stderr}");
-	assert!(!stderr.contains("Conflict"), "Should not have conflict. stderr: {stderr}");
+	assert!(out.status.success(), "Edit after reset should succeed. stderr: {}", out.stderr);
+	assert!(!out.stderr.contains("Conflict"), "Should not have conflict. stderr: {}", out.stderr);
 	assert!(
-		!stdout.contains("Merging"),
-		"BUG: --reset should make consensus match remote, so no merge should be needed. stdout: {stdout}"
+		!out.stdout.contains("Merging"),
+		"BUG: --reset should make consensus match remote, so no merge should be needed. stdout: {}",
+		out.stdout
 	);
 }

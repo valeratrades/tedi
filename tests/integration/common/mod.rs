@@ -95,6 +95,11 @@ impl TestContext {
 		}
 	}
 
+	/// Run `open` command with mock Github state and editor pipe.
+	pub fn run_open(&self, issue_path: &Path) -> RunOutput {
+		self.open(issue_path).run()
+	}
+
 	/// Read a file from the data directory.
 	pub fn read(&self, relative_path: &str) -> String {
 		self.xdg.read_data(relative_path.trim_start_matches('/'))
@@ -404,6 +409,12 @@ impl<'a> OpenUrlBuilder<'a> {
 	}
 }
 
+/// Output from running a command.
+pub struct RunOutput {
+	pub status: ExitStatus,
+	pub stdout: String,
+	pub stderr: String,
+}
 mod snapshot;
 
 use std::{
@@ -416,13 +427,6 @@ use std::{
 pub use snapshot::FixtureIssuesExt;
 use tedi::Issue;
 use v_fixtures::{Fixture, FixtureRenderer, fs_standards::xdg::Xdg};
-
-/// Output from running a command.
-pub struct RunOutput {
-	pub status: ExitStatus,
-	pub stdout: String,
-	pub stderr: String,
-}
 
 /// Environment variable names derived from package name
 const ENV_GITHUB_TOKEN: &str = concat!(env!("CARGO_PKG_NAME"), "__GITHUB_TOKEN");

@@ -28,7 +28,7 @@ fn test_flat_format_preserved_when_no_sub_issues() {
 	eprintln!("stdout: {}", out.stdout);
 	eprintln!("stderr: {}", out.stderr);
 
-	assert!(out.status.success(), "Should succeed. stderr: {stderr}");
+	assert!(out.status.success(), "Should succeed. stderr: {}", out.stderr);
 
 	// Flat file should still exist
 	assert!(ctx.flat_issue_path("o", "r", 1, "Parent Issue").exists(), "Flat format file should still exist");
@@ -62,7 +62,7 @@ fn test_old_flat_file_removed_when_sub_issues_appear() {
 	eprintln!("stdout: {}", out.stdout);
 	eprintln!("stderr: {}", out.stderr);
 
-	assert!(out.status.success(), "Should succeed. stderr: {stderr}");
+	assert!(out.status.success(), "Should succeed. stderr: {}", out.stderr);
 
 	// Old flat file should be removed
 	assert!(!ctx.flat_issue_path("o", "r", 1, "Parent Issue").exists(), "Old flat format file should be removed");
@@ -98,7 +98,7 @@ fn test_old_placement_discarded_with_pull() {
 	eprintln!("stdout: {}", out.stdout);
 	eprintln!("stderr: {}", out.stderr);
 
-	assert!(out.status.success(), "Should succeed. stderr: {stderr}");
+	assert!(out.status.success(), "Should succeed. stderr: {}", out.stderr);
 
 	// The critical assertion: old flat file must be gone
 	let flat_path = ctx.flat_issue_path("o", "r", 1, "Parent Issue");
@@ -132,7 +132,7 @@ fn test_duplicate_removes_local_file() {
 	eprintln!("stdout: {}", out.stdout);
 	eprintln!("stderr: {}", out.stderr);
 
-	assert!(out.status.success(), "Should succeed when marking as duplicate. stderr: {stderr}");
+	assert!(out.status.success(), "Should succeed when marking as duplicate. stderr: {}", out.stderr);
 
 	// Original file should be removed (duplicate self-eliminates)
 	assert!(
@@ -165,7 +165,7 @@ fn test_duplicate_reference_to_existing_issue_succeeds() {
 	eprintln!("stderr: {}", out.stderr);
 
 	// Should succeed because issue #2 exists
-	assert!(out.status.success(), "Should succeed when marking as duplicate of existing issue. stderr: {stderr}");
+	assert!(out.status.success(), "Should succeed when marking as duplicate of existing issue. stderr: {}", out.stderr);
 
 	// Original file should be removed (duplicate handling)
 	assert!(

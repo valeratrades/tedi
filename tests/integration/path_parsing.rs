@@ -32,9 +32,9 @@ fn test_open_file_without_issue_number_in_name_gives_clear_error() {
 	assert!(!out.status.success(), "Should fail when file content isn't valid issue format");
 
 	// The error should mention parsing failure and the filename, not "file not found"
-	assert!(stderr.contains("failed to parse issue file"), "Error should mention parse failure, got: {stderr}");
-	assert!(stderr.contains("uni.md"), "Error should mention the actual filename, got: {stderr}");
-	assert!(!stderr.contains("owner/repo/\n"), "Error should NOT be the old confusing 'file not found' for parent dir");
+	assert!(out.stderr.contains("failed to parse issue file"), "Error should mention parse failure, got: {}", out.stderr);
+	assert!(out.stderr.contains("uni.md"), "Error should mention the actual filename, got: {}", out.stderr);
+	assert!(!out.stderr.contains("owner/repo/\n"), "Error should NOT be the old confusing 'file not found' for parent dir");
 }
 
 /// Same test but for a file in a subdirectory (like valeratrades/math/uni.md)
@@ -55,9 +55,12 @@ fn test_open_file_in_repo_subdir_without_issue_number() {
 	assert!(!out.status.success(), "Should fail when file content isn't valid issue format");
 
 	// The error should mention parsing failure and the filename
-	assert!(stderr.contains("failed to parse issue file"), "Error should mention parse failure, got: {stderr}");
-	assert!(stderr.contains("uni.md"), "Error should mention the actual filename, got: {stderr}");
-	assert!(!stderr.contains("valeratrades/math/\n"), "Error should NOT be the old confusing 'file not found' for parent dir");
+	assert!(out.stderr.contains("failed to parse issue file"), "Error should mention parse failure, got: {}", out.stderr);
+	assert!(out.stderr.contains("uni.md"), "Error should mention the actual filename, got: {}", out.stderr);
+	assert!(
+		!out.stderr.contains("valeratrades/math/\n"),
+		"Error should NOT be the old confusing 'file not found' for parent dir"
+	);
 }
 
 /// Test that nested issues work when the parent directory uses title-only naming (not synced to git).
@@ -96,7 +99,7 @@ fn test_nested_issue_under_unsynced_parent() {
 	let out = ctx.run_open(&child_file_path);
 
 	// Should succeed
-	assert!(out.status.success(), "Should succeed opening child under unsynced parent. stderr: {stderr}");
+	assert!(out.status.success(), "Should succeed opening child under unsynced parent. stderr: {}", out.stderr);
 
 	// Verify the file structure is preserved
 	insta::assert_snapshot!(FixtureRenderer::try_new(&ctx).unwrap().skip_meta().render(), @"");
