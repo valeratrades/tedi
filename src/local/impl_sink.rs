@@ -10,7 +10,7 @@ use std::{
 use v_utils::prelude::*;
 
 use super::{ConsensusSinkError, FsReader, IssueMeta, Local, LocalPath, LocalReader};
-use crate::{Issue, local::LocalPathError, sink::Sink};
+use crate::{Issue, IssueIndex, local::LocalPathError, sink::Sink};
 
 /// Marker type for sinking to filesystem (submitted state).
 pub struct Submitted;
@@ -125,13 +125,9 @@ fn sink_issue_node<R: LocalReader>(issue: &Issue, old: Option<&Issue>, reader: &
 	let owner = issue.identity.owner().to_string();
 	let repo = issue.identity.repo().to_string();
 
-	// Use LocalPath for path computation
-	let mut local_path = LocalPath::from(issue);
+	let index = IssueIndex::from(issue);
 
-	// Ensure parent directories exist (converts flat files to directories as needed)
-	nest_if_needed(&mut local_path, reader)?;
-
-	let issue_file_path = local_path.resolve_parent(*reader)?.deterministic(title, closed, has_children).path();
+	let issue_file_path = LocalPath::from(index).resolve_parent(*reader)?.deterministic(title, closed, has_children).path();
 
 	// Clean up old file locations if format changed, state changed, or issue got a number
 	// (issue getting a number means a pending file may exist that needs removal)
@@ -188,71 +184,6 @@ fn sink_issue_node<R: LocalReader>(issue: &Issue, old: Option<&Issue>, reader: &
 	}
 
 	Ok(any_written)
-}
-
-/// Converting flat file to directory format if needed.
-///
-/// r[local.sink-only-mutation]
-fn nest_if_needed<R: LocalReader>(local_path: &mut LocalPath, reader: &R) -> Result<()> {
-	let mut top_level_project_path = Local::project_dir(local_path.index.owner(), local_path.index.repo());
-	if !top_level_project_path.exists() {
-		std::fs::create_dir_all(&top_level_project_path)?;
-	}
-
-	let parent_nums = local_path.index.parent_nums();
-
-	//TODO!!!: it does a lot of work `local_path` does already
-	for issue_number in parent_nums {
-		// Find existing dir name using reader
-		let entries = reader.list_dir(&top_level_project_path).unwrap_or_default();
-		let prefix_with_sep = format!("{issue_number}_-_");
-		let exact_match = format!("{issue_number}");
-
-		let dir_name = entries
-			.iter()
-			.find(|name| {
-				let entry_path = top_level_project_path.join(name);
-				if reader.is_dir(&entry_path).unwrap_or(false) {
-					name.starts_with(&prefix_with_sep) || *name == &exact_match
-				} else if let Some(base) = name.strip_suffix(".md.bak").or_else(|| name.strip_suffix(".md")) {
-					base.starts_with(&prefix_with_sep) || base == exact_match
-				} else {
-					false
-				}
-			})
-			.cloned()
-			.ok_or_else(|| {
-				color_eyre::eyre::eyre!(
-					"Parent issue #{issue_number} not found locally in {}. Fetch the parent issue first.",
-					top_level_project_path.display()
-				)
-			})?;
-
-		// Strip extension if it's a flat file name
-		let dir_name = dir_name.strip_suffix(".md.bak").or_else(|| dir_name.strip_suffix(".md")).unwrap_or(&dir_name);
-		let parent_dir_path = top_level_project_path.join(dir_name);
-
-		// If parent exists as flat file, convert to directory
-		if !parent_dir_path.is_dir() {
-			let flat_open = top_level_project_path.join(format!("{dir_name}.md"));
-			let flat_closed = top_level_project_path.join(format!("{dir_name}.md.bak"));
-
-			std::fs::create_dir_all(&parent_dir_path)?;
-
-			// Move flat file to __main__.md inside the directory
-			if flat_closed.exists() {
-				let main_path = Local::main_file_path(&parent_dir_path, true);
-				std::fs::rename(&flat_closed, &main_path)?;
-			} else if flat_open.exists() {
-				let main_path = Local::main_file_path(&parent_dir_path, false);
-				std::fs::rename(&flat_open, &main_path)?;
-			}
-		}
-
-		top_level_project_path = parent_dir_path;
-	}
-
-	Ok(())
 }
 
 /// Clean up old file locations when format or state changes.

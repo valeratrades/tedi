@@ -48,16 +48,15 @@ pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Mo
 	// Get IssueIndex for consensus loading
 	let issue_index = IssueIndex::from(&issue);
 
-	let mut local_path = LocalPath::from(issue_index);
-	local_path.ensure_parent_dirs()?;
-
 	// Compute issue file path
 	let closed = issue.contents.state.is_closed();
 	let has_children = !issue.children.is_empty();
-	let issue_file_path = local_path.file_path(&issue.contents.title, closed, has_children, &FsReader)?;
+	let issue_file_path = LocalPath::from(issue_index)
+		.resolve_parent(FsReader)?
+		.deterministic(&issue.contents.title, closed, has_children)
+		.path();
 
 	let offline = offline || Local::is_virtual_project(repo_info);
-	let issue_number = issue.number().unwrap_or(0); //IGNORED_ERROR: 0 is sentinel for "pending issue, no number yet"
 
 	eprintln!("[after load] issue lineage: {:?}", issue.identity.lineage());
 	for (i, c) in issue.children.iter().enumerate() {
@@ -74,7 +73,7 @@ pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Mo
 	}
 
 	// Pre-editor sync (if needed and online)
-	if !offline && issue_number != 0 {
+	if !offline && let Some(issue_number) = issue.number() {
 		let prefers_local = matches!(sync_opts.peek_merge_mode(), MergeMode::Reset { prefer: Side::Local } | MergeMode::Force { prefer: Side::Local });
 
 		if !prefers_local {
@@ -126,6 +125,9 @@ pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Mo
 	let mode = sync_opts.take_merge_mode();
 
 	if issue.is_linked() {
+		let issue_number = issue.number().expect(
+			"can't be linked and not have number associated\nunless we die in a weird moment I guess. If this ever triggers, should fix it to set issue as pending (not linked) and sink",
+		);
 		// Load fresh remote state for sync
 		let url = format!("https://github.com/{owner}/{repo}/issues/{issue_number}");
 		let link = IssueLink::parse(&url).expect("valid URL");

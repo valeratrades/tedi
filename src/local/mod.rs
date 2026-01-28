@@ -987,7 +987,7 @@ mod local_path {
 
 	/// Result of finding an entry matching a selector.
 	#[derive(Clone)]
-	enum FoundEntry {
+	pub(crate) enum FoundEntry {
 		/// Found a directory with this name.
 		Dir(String),
 		/// Found a flat file with this full filename (including extension).
@@ -995,7 +995,7 @@ mod local_path {
 	}
 
 	/// Find all entries (dirs or files) matching a selector in a directory.
-	fn find_all_entries_by_selector<R: LocalReader>(reader: &R, parent: &Path, selector: &IssueSelector) -> Result<Vec<FoundEntry>, ReaderError> {
+	pub(crate) fn find_all_entries_by_selector<R: LocalReader>(reader: &R, parent: &Path, selector: &IssueSelector) -> Result<Vec<FoundEntry>, ReaderError> {
 		let entries = reader.list_dir(parent)?;
 
 		let mut results = Vec::new();
