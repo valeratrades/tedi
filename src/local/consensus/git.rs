@@ -43,7 +43,10 @@ pub fn commit_issue_changes(owner: &str, repo: &str, issue_number: u64) -> Resul
 
 	// Commit with provided or default message
 	let commit_msg = format!("sync: {owner}/{repo}#{issue_number}");
-	Command::new("git").args(["-C", data_dir_str, "commit", "-m", &commit_msg]).output()?;
+	let commit_output = Command::new("git").args(["-C", data_dir_str, "commit", "-m", &commit_msg]).output()?;
+	if !commit_output.status.success() {
+		bail!("git commit failed: {}", String::from_utf8_lossy(&commit_output.stderr));
+	}
 
 	Ok(())
 }
