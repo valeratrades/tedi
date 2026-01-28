@@ -1073,6 +1073,7 @@ mod local_path {
 		/// Consumes self and returns a `LocalPathResolved` that can be used to:
 		/// - `search()`: find existing file matching the final selector
 		/// - `deterministic(title, closed, has_children)`: construct target path for writes
+		#[tracing::instrument(skip(reader))]
 		pub fn resolve_parent<R: LocalReader>(self, reader: R) -> Result<LocalPathResolved<R>, LocalPathError> {
 			let mut path = Local::project_dir(self.index.owner(), self.index.repo());
 
@@ -1254,6 +1255,7 @@ mod local_path {
 		///
 		/// Returns `Some(dir)` if the issue is in directory format, `None` for flat files.
 		/// Panics if selectors queue is not empty or if reader operations fail (indicates corrupted state).
+		#[tracing::instrument(skip(self), fields(resolved_path = %self.resolved_path.display()))]
 		pub fn issue_dir(self) -> Option<PathBuf> {
 			assert!(
 				self.unresolved_selector_nodes.is_empty(),
@@ -1275,6 +1277,7 @@ mod local_path {
 		/// Returns file paths for flat files, `__main__.md` paths for directories.
 		///
 		/// Does not consume the selector from the queue.
+		#[tracing::instrument(skip(self), fields(resolved_path = %self.resolved_path.display(), selector = ?self.unresolved_selector_nodes.front()))]
 		pub fn matching_subpaths(&self) -> Result<Vec<PathBuf>, LocalPathError> {
 			let Some(selector) = self.unresolved_selector_nodes.front() else {
 				return Ok(Vec::new());

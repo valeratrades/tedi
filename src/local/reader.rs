@@ -5,6 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
+use miette::{NamedSource, SourceSpan};
 use tracing::{info, instrument};
 
 use super::Local;
@@ -21,9 +22,15 @@ pub enum ReaderError {
 	NotFound { path: PathBuf },
 
 	/// Path is not a directory (tried to list_dir on a file)
-	#[error("not a directory: {}", path.display())]
+	#[error("expected directory, found file")]
 	#[diagnostic(code(tedi::reader::not_a_directory))]
-	NotADirectory { path: PathBuf },
+	NotADirectory {
+		path: PathBuf,
+		#[source_code]
+		path_source: NamedSource<String>,
+		#[label("this is a file, not a directory")]
+		span: SourceSpan,
+	},
 
 	/// Permission denied reading path
 	#[error("permission denied: {}", path.display())]
@@ -74,9 +81,26 @@ impl FsReader {
 	fn io_err(e: std::io::Error, path: &Path) -> ReaderError {
 		match e.kind() {
 			std::io::ErrorKind::NotFound => ReaderError::NotFound { path: path.to_path_buf() },
-			std::io::ErrorKind::NotADirectory => ReaderError::NotADirectory { path: path.to_path_buf() },
+			std::io::ErrorKind::NotADirectory => ReaderError::not_a_directory(path),
 			std::io::ErrorKind::PermissionDenied => ReaderError::PermissionDenied { path: path.to_path_buf() },
 			_ => ReaderError::Other(color_eyre::eyre::eyre!("I/O error on {}: {e}", path.display())),
+		}
+	}
+}
+
+impl ReaderError {
+	/// Create a NotADirectory error with source highlighting for the problematic path component.
+	pub fn not_a_directory(path: &Path) -> Self {
+		let path_str = path.display().to_string();
+		// Find the last component to highlight
+		let last_component = path.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+		let span_start = path_str.len().saturating_sub(last_component.len());
+		let span_len = last_component.len();
+
+		Self::NotADirectory {
+			path: path.to_path_buf(),
+			path_source: NamedSource::new("path", path_str),
+			span: (span_start, span_len).into(),
 		}
 	}
 }
