@@ -96,7 +96,7 @@ impl<R: LocalReader> LocalIssueSource<R> {
 	pub fn child(&self, child_index: IssueIndex) -> Self {
 		Self {
 			local_path: LocalPath::new(child_index),
-			reader: self.reader.clone(),
+			reader: self.reader,
 		}
 	}
 
@@ -960,6 +960,7 @@ mod local_path {
 			code(tedi::local::missing_parent),
 			help("Fetch the parent issue first.\n  Searched in: {}", searched_path.display())
 		)]
+		#[allow(unused_assignments)] // false positive
 		MissingParent { selector: IssueSelector, searched_path: PathBuf },
 
 		/// Issue file not found (search failed).
@@ -1488,14 +1489,18 @@ impl crate::LazyIssue<LocalConsensus> for Issue {
 	}
 
 	async fn identity(&mut self, source: Self::Source) -> Result<crate::IssueIdentity, Self::Error> {
+		tracing::debug!(is_linked = self.identity.is_linked(), "LazyIssue<LocalConsensus>::identity");
 		if self.identity.is_linked() {
 			return Ok(self.identity.clone());
 		}
 
 		let index = *source.index();
+		tracing::debug!(?index, title_empty = self.contents.title.is_empty(), "LazyIssue<LocalConsensus>::identity check title");
 
 		if self.contents.title.is_empty() {
-			let file_path = source.local_path.clone().resolve_parent(source.reader.clone())?.search()?.path();
+			let search_result = source.local_path.clone().resolve_parent(source.reader.clone()).and_then(|r| r.search());
+			tracing::debug!(?search_result, "LazyIssue<LocalConsensus>::identity search");
+			let file_path = search_result?.path();
 			let content = source.reader.read_content(&file_path)?;
 			let parsed = Local::parse_single_node(&content, index, &file_path)?;
 			self.identity = parsed.identity;

@@ -8,7 +8,7 @@ async fn main() {
 		color_eyre::install().unwrap();
 		if std::env::var("__IS_INTEGRATION_TEST").is_ok() {
 			// SAFETY: This is called at program start before any other threads are spawned
-			unsafe { std::env::set_var("LOG_DIRECTIVES", concat!("info,", env!("CARGO_PKG_NAME"), "=debug")) };
+			unsafe { std::env::set_var("LOG_DIRECTIVES", concat!("debug,", env!("CARGO_PKG_NAME"), "=debug")) };
 			v_utils::utils::init_subscriber(v_utils::utils::LogDestination::default());
 		} else if let Some(filename) = extract_log_to() {
 			v_utils::utils::init_subscriber(v_utils::utils::LogDestination::xdg(env!("CARGO_PKG_NAME")).fname(filename).stderr_errors(true));
