@@ -380,14 +380,15 @@ fn test_closing_issue_syncs_state_change() {
 	let mut closed_issue = open_issue.clone();
 	closed_issue.contents.state = tedi::CloseState::Closed;
 
-	let (_status, stdout, stderr) = ctx.open(&issue_path).edit(&closed_issue).run();
+	let (status, stdout, stderr) = ctx.open(&issue_path).edit(&closed_issue).run();
 
-	eprintln!("stdout: {stdout}");
-	eprintln!("stderr: {stderr}");
-
-	// Capture the resulting directory state
 	// Line 11 contains `state` timestamp set via Timestamp::now() when detecting state change
-	insta::assert_snapshot!(FixtureRenderer::try_new(&ctx).unwrap().redact_timestamps(&[11]).render(), @r#"
+	let mut result_str = FixtureRenderer::try_new(&ctx).unwrap().redact_timestamps(&[11]).render();
+	if !status.success() {
+		result_str.push_str(&format!("\n\nBINARY FAILED\nstdout:\n{stdout}\nstderr:\n{stderr}"))
+	}
+
+	insta::assert_snapshot!(result_str, @r#"
 	//- /o/r/.meta.json
 	{
 	  "virtual_project": false,

@@ -855,6 +855,9 @@ impl Local {
 	}
 
 	/// Load project metadata, creating empty if not exists
+	#[deprecated(
+		note = "move `load_project_meta_from_reader` logic in here, force callers to use RepoInfo and pass FsReader themselves // 'deprecated' as in this interface, not function itself"
+	)]
 	pub fn load_project_meta(owner: &str, repo: &str) -> ProjectMeta {
 		Self::load_project_meta_from_reader(RepoInfo::new(owner, repo), &FsReader)
 	}
@@ -871,6 +874,7 @@ impl Local {
 	}
 
 	/// Load project metadata using the provided reader.
+	#[instrument(skip(reader))]
 	pub(crate) fn load_project_meta_from_reader<R: LocalReader>(repo_info: RepoInfo, reader: &R) -> ProjectMeta {
 		let meta_path = Self::project_meta_path(repo_info.owner(), repo_info.repo());
 
@@ -891,6 +895,7 @@ impl Local {
 	}
 
 	/// Save metadata for a specific issue to the project's .meta.json.
+	#[instrument]
 	fn save_issue_meta(owner: &str, repo: &str, issue_number: u64, meta: &IssueMeta) -> Result<()> {
 		let mut project_meta = Self::load_project_meta(owner, repo);
 		project_meta.issues.insert(issue_number, meta.clone());
@@ -898,6 +903,7 @@ impl Local {
 	}
 
 	/// Remove metadata for a specific issue from the project's .meta.json.
+	#[instrument]
 	fn remove_issue_meta(owner: &str, repo: &str, issue_number: u64) -> Result<()> {
 		let mut project_meta = Self::load_project_meta(owner, repo);
 		if project_meta.issues.remove(&issue_number).is_some() {

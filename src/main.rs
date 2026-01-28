@@ -5,15 +5,16 @@ pub mod utils;
 #[tokio::main]
 async fn main() {
 	{
-		if let Some(filename) = extract_log_to() {
-			v_utils::clientside!(filename);
+		color_eyre::install().unwrap();
+		if std::env::var("__IS_INTEGRATION_TEST").is_ok() {
+			// SAFETY: This is called at program start before any other threads are spawned
+			unsafe { std::env::set_var("LOG_DIRECTIVES", concat!("info,", env!("CARGO_PKG_NAME"), "=debug")) };
+			v_utils::utils::init_subscriber(v_utils::utils::LogDestination::default());
+		} else if let Some(filename) = extract_log_to() {
+			v_utils::utils::init_subscriber(v_utils::utils::LogDestination::xdg(env!("CARGO_PKG_NAME")).fname(filename).stderr_errors(true));
 		} else {
-			v_utils::clientside!();
+			v_utils::utils::init_subscriber(v_utils::utils::LogDestination::xdg(env!("CARGO_PKG_NAME")).stderr_errors(true));
 		}
-	}
-	if std::env::var("__IS_INTEGRATION_TEST").is_ok() {
-		// SAFETY: This is called at program start before any other threads are spawned
-		unsafe { std::env::set_var("LOG_DIRECTIVES", concat!("info,", env!("CARGO_PKG_NAME"), "=debug")) };
 	}
 
 	let cli = Cli::parse();
