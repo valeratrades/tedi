@@ -1017,8 +1017,6 @@ mod local_path {
 						let exact = format!("{issue_number}");
 
 						if is_dir && (name.starts_with(&prefix) || name == exact) {
-							panic!("DEBUG: Returning Dir for name={name:?}, is_dir={is_dir}, prefix={prefix}, entry_path={entry_path:?}");
-							#[allow(unreachable_code)]
 							return Ok(Some(FoundEntry::Dir(name.to_string())));
 						}
 						if let Some(base) = name.strip_suffix(".md.bak").or_else(|| name.strip_suffix(".md"))

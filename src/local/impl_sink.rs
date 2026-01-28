@@ -9,7 +9,7 @@ use std::{
 
 use v_utils::prelude::*;
 
-use super::{ConsensusSinkError, FsReader, IssueMeta, Local, LocalPath, LocalReader};
+use super::{ConsensusSinkError, FsReader, IssueMeta, Local, LocalPath, LocalReader, ReaderError};
 use crate::{Issue, IssueIndex, local::LocalPathError, sink::Sink};
 
 /// Marker type for sinking to filesystem (submitted state).
@@ -202,7 +202,12 @@ fn cleanup_old_locations<R: LocalReader>(issue: &Issue, _old: Option<&Issue>, ha
 	};
 
 	// Get all existing paths that match our selector
-	let matching = resolved.matching_subpaths()?;
+	// If the directory doesn't exist yet (NotFound from Reader), there's nothing to clean up
+	let matching = match resolved.matching_subpaths() {
+		Ok(m) => m,
+		Err(LocalPathError::Reader(ReaderError::NotFound { .. })) => return Ok(()),
+		Err(e) => return Err(e.into()),
+	};
 	if matching.is_empty() {
 		return Ok(()); // Nothing exists yet, nothing to clean up
 	}

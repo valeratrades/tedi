@@ -276,7 +276,9 @@ fn test_closing_nested_issue_creates_bak_file() {
 		eprintln!("  {}", entry.path().display());
 	}
 
-	insta::assert_snapshot!(FixtureRenderer::try_new(&ctx).unwrap().redact_timestamps(&[20]).render(), @r#"
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+
+	insta::assert_snapshot!(ctx.render_fixture(FixtureRenderer::try_new(&ctx).unwrap().redact_timestamps(&[20]), &out), @r#"
 	//- /o/r/.meta.json
 	{
 	  "virtual_project": false,
@@ -309,8 +311,6 @@ fn test_closing_nested_issue_creates_bak_file() {
 	- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->
 			lorem ipsum
 	"#);
-
-	assert!(out.status.success(), "stderr: {}", out.stderr);
 
 	// With the new model, closed child is in a separate .bak file
 	let closed_child_path = path.parent().unwrap().join("2_-_b.md.bak");

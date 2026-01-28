@@ -102,5 +102,5 @@ fn test_nested_issue_under_unsynced_parent() {
 	assert!(out.status.success(), "Should succeed opening child under unsynced parent. stderr: {}", out.stderr);
 
 	// Verify the file structure is preserved
-	insta::assert_snapshot!(FixtureRenderer::try_new(&ctx).unwrap().skip_meta().render(), @"");
+	insta::assert_snapshot!(ctx.render_fixture(FixtureRenderer::try_new(&ctx).unwrap().skip_meta(), &out), @"");
 }

@@ -83,8 +83,10 @@ fn test_touch_path_with_more_segments_after_flat_file_match() {
 	eprintln!("{:?}", out.stdout);
 	eprintln!("{:?}", out.stderr);
 
+	assert!(out.status.success(), "Expected success, got stderr: {}", out.stderr);
+
 	// Verify: flat file converted to directory, sub-issue created inside
-	insta::assert_snapshot!(FixtureRenderer::try_new(&ctx).unwrap().render(), @r#"
+	insta::assert_snapshot!(ctx.render_fixture(FixtureRenderer::try_new(&ctx).unwrap(), &out), @r#"
 	//- /testowner/testrepo/.meta.json
 	{
 	  "virtual_project": false,
@@ -116,8 +118,6 @@ fn test_touch_path_with_more_segments_after_flat_file_match() {
 	- [ ] ancestry resolve for ind <!--https://github.com/testowner/testrepo/issues/99-->
 		body content here
 	"#);
-
-	assert!(out.status.success(), "Expected success, got stderr: {}", out.stderr);
 }
 
 /// Test that touching a new sub-issue but making no edits does NOT create the issue.
@@ -152,8 +152,11 @@ fn test_touch_new_subissue_no_edits_does_not_create() {
 	// Touch a new sub-issue path but don't make any edits (just close editor)
 	let out = ctx.touch("testowner/testrepo/parent/new_child").run();
 
+	// Should succeed (editor opened and closed)
+	assert!(out.status.success(), "Expected success, got stderr: {}", out.stderr);
+
 	// Verify: no changes - parent still flat file, no sub-issue created
-	insta::assert_snapshot!(FixtureRenderer::try_new(&ctx).unwrap().render(), @r#"
+	insta::assert_snapshot!(ctx.render_fixture(FixtureRenderer::try_new(&ctx).unwrap(), &out), @r#"
 	//- /testowner/testrepo/.meta.json
 	{
 	  "virtual_project": false,
@@ -185,7 +188,4 @@ fn test_touch_new_subissue_no_edits_does_not_create() {
 	- [ ] parent issue <!--https://github.com/testowner/testrepo/issues/99-->
 		parent body
 	"#);
-
-	// Should succeed (editor opened and closed)
-	assert!(out.status.success(), "Expected success, got stderr: {}", out.stderr);
 }
