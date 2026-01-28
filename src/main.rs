@@ -5,7 +5,9 @@ pub mod utils;
 #[tokio::main]
 async fn main() {
 	{
+		//TODO: deprecate color_eyre::install() after full miette migration
 		color_eyre::install().unwrap();
+		miette::set_hook(Box::new(|_| Box::new(miette::MietteHandlerOpts::new().terminal_links(true).context_lines(3).build()))).expect("miette hook already set");
 		if std::env::var("__IS_INTEGRATION_TEST").is_ok() {
 			// SAFETY: This is called at program start before any other threads are spawned
 			unsafe { std::env::set_var("LOG_DIRECTIVES", concat!("debug,", env!("CARGO_PKG_NAME"), "=debug")) };
@@ -68,7 +70,27 @@ async fn main() {
 	match success {
 		Ok(_) => std::process::exit(0),
 		Err(e) => {
-			eprintln!("Error: {e}");
+			// Try to downcast to miette-compatible error types for better diagnostics
+			// Otherwise fall back to eyre's debug format
+			use tedi::local::{LocalError, LocalPathError};
+
+			let e = match e.downcast::<LocalError>() {
+				Ok(local_err) => {
+					let report = miette::Report::new(local_err);
+					eprintln!("{report:?}");
+					std::process::exit(1);
+				}
+				Err(e) => e,
+			};
+			let e = match e.downcast::<LocalPathError>() {
+				Ok(path_err) => {
+					let report = miette::Report::new(path_err);
+					eprintln!("{report:?}");
+					std::process::exit(1);
+				}
+				Err(e) => e,
+			};
+			eprintln!("{e:?}");
 			std::process::exit(1);
 		}
 	}
