@@ -131,8 +131,7 @@ fn sink_issue_node<R: LocalReader>(issue: &Issue, old: Option<&Issue>, reader: &
 	// Ensure parent directories exist (converts flat files to directories as needed)
 	nest_if_needed(&mut local_path, reader)?;
 
-	// Compute the target file path
-	let issue_file_path = local_path.file_path(title, closed, has_children, reader)?;
+	let issue_file_path = local_path.resolve_parent(*reader)?.deterministic(title, closed, has_children).path();
 
 	// Clean up old file locations if format changed, state changed, or issue got a number
 	// (issue getting a number means a pending file may exist that needs removal)
@@ -258,55 +257,57 @@ fn nest_if_needed<R: LocalReader>(local_path: &mut LocalPath, reader: &R) -> Res
 
 /// Clean up old file locations when format or state changes.
 fn cleanup_old_locations<R: LocalReader>(issue: &Issue, old: Option<&Issue>, has_children: bool, closed: bool, reader: &R) -> Result<()> {
-	let mut local_path = LocalPath::from(issue);
-	let title = &issue.contents.title;
-	let issue_number = issue.number();
+	todo!();
+	//TODO!!!!!: instead of the outdated logic, first resolve the path (constructed from issue) -> get all `matching_subpaths`, then construct the new correct one with `deterministic` -> remove all matching that are not the correct one.
 
-	// Try to get file path (may fail for new issues, that's ok)
-	if local_path.file_path(title, closed, has_children, reader).is_err() {
-		return Ok(());
-	}
-
-	let old_has_children = old.map(|o| !o.children.is_empty()).unwrap_or(false);
-	let format_changed = has_children != old_has_children;
-
-	if has_children && format_changed {
-		if let Ok(path) = local_path.resolve_parent(*reader)?.search() {
-			let p = path.path();
-			if reader.is_dir(&p)? {
-				try_remove_file(&p)?;
-			}
-		}
-	}
-
-	if has_children {
-		// Remove old main file with opposite closed state
-		if let Ok(old_main) = local_path.file_path(title, !closed, true, reader) {
-			try_remove_file(&old_main)?;
-		}
-	} else {
-		// Flat file: remove file with opposite closed state
-		if let Ok(old_flat) = local_path.file_path(title, !closed, false, reader) {
-			try_remove_file(&old_flat)?;
-		}
-
-		// If issue now has a number, clean up old pending file
-		if issue_number.is_some() {
-			// Create a pending version of the index to find old pending files
-			// This has parents as GitIds + Title (so issue_number() returns None)
-			let mut issue_index = IssueIndex::from(issue);
-			issue_index[issue_index.len()] = IssueSelector::title(title);
-
-			let mut pending_path = LocalPath::from(issue_index);
-			// Try cleanup - ok if paths don't exist
-			if let Ok(pending_open) = pending_path.file_path(title, false, false, reader) {
-				try_remove_file(&pending_open)?;
-			}
-			if let Ok(pending_closed) = pending_path.file_path(title, true, false, reader) {
-				try_remove_file(&pending_closed)?;
-			}
-		}
-	}
+	//let mut local_path = LocalPath::from(issue);
+	//let title = &issue.contents.title;
+	//let issue_number = issue.number();
+	//// Try to get file path (may fail for new issues, that's ok)
+	//if local_path.file_path(title, closed, has_children, reader).is_err() {
+	//	return Ok(());
+	//}
+	//
+	//let old_has_children = old.map(|o| !o.children.is_empty()).unwrap_or(false);
+	//let format_changed = has_children != old_has_children;
+	//
+	//if has_children && format_changed {
+	//	if let Ok(path) = local_path.resolve_parent(*reader)?.search() {
+	//		let p = path.path();
+	//		if reader.is_dir(&p)? {
+	//			try_remove_file(&p)?;
+	//		}
+	//	}
+	//}
+	//
+	//if has_children {
+	//	// Remove old main file with opposite closed state
+	//	if let Ok(old_main) = local_path.file_path(title, !closed, true, reader) {
+	//		try_remove_file(&old_main)?;
+	//	}
+	//} else {
+	//	// Flat file: remove file with opposite closed state
+	//	if let Ok(old_flat) = local_path.file_path(title, !closed, false, reader) {
+	//		try_remove_file(&old_flat)?;
+	//	}
+	//
+	//	// If issue now has a number, clean up old pending file
+	//	if issue_number.is_some() {
+	//		// Create a pending version of the index to find old pending files
+	//		// This has parents as GitIds + Title (so issue_number() returns None)
+	//		let mut issue_index = IssueIndex::from(issue);
+	//		issue_index[issue_index.len()] = IssueSelector::title(title);
+	//
+	//		let mut pending_path = LocalPath::from(issue_index);
+	//		// Try cleanup - ok if paths don't exist
+	//		if let Ok(pending_open) = pending_path.file_path(title, false, false, reader) {
+	//			try_remove_file(&pending_open)?;
+	//		}
+	//		if let Ok(pending_closed) = pending_path.file_path(title, true, false, reader) {
+	//			try_remove_file(&pending_closed)?;
+	//		}
+	//	}
+	//}
 
 	Ok(())
 }
