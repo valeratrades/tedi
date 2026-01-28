@@ -55,7 +55,7 @@ fn test_nested_issues_preserved_through_sync() {
 	let path = ctx.consensus(&issue, None);
 	ctx.remote(&issue, None);
 
-	let out = ctx.run_open(&path);
+	let out = ctx.open(&path).run();
 	eprintln!("stdout: {}", out.stdout);
 	eprintln!("stderr: {}", out.stderr);
 
@@ -93,7 +93,7 @@ fn test_mixed_open_closed_nested_issues_preserved() {
 	let path = ctx.consensus(&issue, None);
 	ctx.remote(&issue, None);
 
-	let out = ctx.run_open(&path);
+	let out = ctx.open(&path).run();
 	eprintln!("stdout: {}", out.stdout);
 	eprintln!("stderr: {}", out.stderr);
 
@@ -127,7 +127,7 @@ fn test_blockers_preserved_through_sync() {
 	let path = ctx.consensus(&issue, None);
 	ctx.remote(&issue, None);
 
-	let out = ctx.run_open(&path);
+	let out = ctx.open(&path).run();
 	eprintln!("stdout: {}", out.stdout);
 	eprintln!("stderr: {}", out.stderr);
 
@@ -189,7 +189,7 @@ fn test_blockers_with_headers_preserved() {
 	let path = ctx.consensus(&issue, None);
 	ctx.remote(&issue, None);
 
-	let out = ctx.run_open(&path);
+	let out = ctx.open(&path).run();
 	eprintln!("stdout: {}", out.stdout);
 	eprintln!("stderr: {}", out.stderr);
 
@@ -222,7 +222,7 @@ fn test_nested_issues_and_blockers_together() {
 	let path = ctx.consensus(&issue, None);
 	ctx.remote(&issue, None);
 
-	let out = ctx.run_open(&path);
+	let out = ctx.open(&path).run();
 	eprintln!("stdout: {}", out.stdout);
 	eprintln!("stderr: {}", out.stderr);
 

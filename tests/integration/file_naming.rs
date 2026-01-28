@@ -23,7 +23,7 @@ fn test_flat_format_preserved_when_no_sub_issues() {
 	let issue_path = ctx.consensus(&parent, None);
 	ctx.remote(&parent, None);
 
-	let out = ctx.run_open(&issue_path);
+	let out = ctx.open(&issue_path).run();
 
 	eprintln!("stdout: {}", out.stdout);
 	eprintln!("stderr: {}", out.stderr);

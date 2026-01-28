@@ -47,12 +47,8 @@ fn test_both_diverged_triggers_conflict() {
 
 	let out = ctx.open(&issue_path).run();
 
-	eprintln!("stdout: {}", out.stdout);
-	eprintln!("stderr: {}", out.stderr);
-	eprintln!("status: {:?}", out.status);
-
 	// Capture the resulting directory state - this shows actual timestamps and merge result
-	insta::assert_snapshot!(FixtureRenderer::try_new(&ctx).unwrap().render(), @r#"
+	insta::assert_snapshot!(ctx.render_fixture(FixtureRenderer::try_new(&ctx).unwrap(), &out), @r#"
 	//- /o/r/.meta.json
 	{
 	  "virtual_project": false,
@@ -91,12 +87,8 @@ fn test_both_diverged_with_git_initiates_merge() {
 
 	let out = ctx.open(&issue_path).run();
 
-	eprintln!("stdout: {}", out.stdout);
-	eprintln!("stderr: {}", out.stderr);
-	eprintln!("status: {:?}", out.status);
-
 	// Capture the resulting directory state - this shows actual timestamps and merge result
-	insta::assert_snapshot!(FixtureRenderer::try_new(&ctx).unwrap().render(), @r#"
+	insta::assert_snapshot!(ctx.render_fixture(FixtureRenderer::try_new(&ctx).unwrap(), &out), @r#"
 	//- /o/r/.meta.json
 	{
 	  "virtual_project": false,
@@ -165,14 +157,10 @@ fn test_only_local_changed_pushes_local() {
 
 	let out = ctx.open(&issue_path).run();
 
-	eprintln!("stdout: {}", out.stdout);
-	eprintln!("stderr: {}", out.stderr);
-	eprintln!("status: {:?}", out.status);
-
 	assert!(out.status.success(), "Should succeed when only local changed. stderr: {}", out.stderr);
 
 	// Capture the resulting directory state
-	insta::assert_snapshot!(FixtureRenderer::try_new(&ctx).unwrap().render(), @r#"
+	insta::assert_snapshot!(ctx.render_fixture(FixtureRenderer::try_new(&ctx).unwrap(), &out), @r#"
 	//- /o/r/.meta.json
 	{
 	  "virtual_project": false,
@@ -532,12 +520,9 @@ fn test_reset_syncs_changes_after_editor() {
 	// Open with --reset and make changes while editor is open
 	let out = ctx.open_url("o", "r", 1).args(&["--reset"]).edit(&modified_issue).run();
 
-	eprintln!("stdout: {}", out.stdout);
-	eprintln!("stderr: {}", out.stderr);
-
 	// Capture the resulting directory state
 	// Line 11 contains `state` timestamp set via Timestamp::now() when detecting state change
-	insta::assert_snapshot!(FixtureRenderer::try_new(&ctx).unwrap().redact_timestamps(&[11]).render(), @r#"
+	insta::assert_snapshot!(ctx.render_fixture(FixtureRenderer::try_new(&ctx).unwrap().redact_timestamps(&[11]), &out), @r#"
 	//- /o/r/.meta.json
 	{
 	  "virtual_project": false,

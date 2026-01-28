@@ -95,11 +95,6 @@ impl TestContext {
 		}
 	}
 
-	/// Run `open` command with mock Github state and editor pipe.
-	pub fn run_open(&self, issue_path: &Path) -> RunOutput {
-		self.open(issue_path).run()
-	}
-
 	/// Read a file from the data directory.
 	pub fn read(&self, relative_path: &str) -> String {
 		self.xdg.read_data(relative_path.trim_start_matches('/'))
