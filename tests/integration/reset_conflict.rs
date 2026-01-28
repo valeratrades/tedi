@@ -47,10 +47,10 @@ fn test_reset_then_mark_subissue_closed_no_conflict() {
 
 	// First: open via URL with --reset (this simulates `todo open --reset <url>`)
 	// This fetches from remote, stores locally, and commits as consensus
-	let (status, stdout, stderr) = ctx.open_url("o", "r", 1).args(&["--reset"]).run();
+	let out = ctx.open_url("o", "r", 1).args(&["--reset"]).run();
 	eprintln!("First open stdout: {stdout}");
 	eprintln!("First open stderr: {stderr}");
-	assert!(status.success(), "First open with --reset should succeed. stderr: {stderr}");
+	assert!(out.status.success(), "First open with --reset should succeed. stderr: {stderr}");
 
 	// Now simulate user editing: mark the sub-issue as closed
 	// The user would do this by changing `- [ ]` to `- [x]` in the editor
@@ -68,12 +68,12 @@ fn test_reset_then_mark_subissue_closed_no_conflict() {
 		 \t- [x] Sub Issue <!--sub @mock_user https://github.com/o/r/issues/2 -->\n\
 		 \t\tsub body\n",
 	);
-	let (status, stdout, stderr) = ctx.open(&issue_path).edit(&modified_parent).run();
+	let out = ctx.open(&issue_path).edit(&modified_parent).run();
 	eprintln!("Second open stdout: {stdout}");
 	eprintln!("Second open stderr: {stderr}");
 
 	// THE BUG: This was triggering "Conflict detected" even though it should be a simple LocalOnly change
-	assert!(status.success(), "Second open (marking sub-issue closed) should succeed without conflict. stderr: {stderr}");
+	assert!(out.status.success(), "Second open (marking sub-issue closed) should succeed without conflict. stderr: {stderr}");
 	assert!(!stderr.contains("Conflict"), "Should not mention conflict. stderr: {stderr}");
 	assert!(!stdout.contains("Merging remote"), "Should not attempt merge. stdout: {stdout}");
 }
@@ -89,8 +89,8 @@ fn test_reset_then_edit_body_no_conflict() {
 	ctx.remote(&issue, None);
 
 	// First: open via URL with --reset
-	let (status, _stdout, stderr) = ctx.open_url("o", "r", 1).args(&["--reset"]).run();
-	assert!(status.success(), "First open should succeed. stderr: {stderr}");
+	let out = ctx.open_url("o", "r", 1).args(&["--reset"]).run();
+	assert!(out.status.success(), "First open should succeed. stderr: {stderr}");
 
 	// Now edit the body
 	let issue_path = ctx.flat_issue_path("o", "r", 1, "Test Issue");
@@ -98,11 +98,11 @@ fn test_reset_then_edit_body_no_conflict() {
 	modified.contents.comments[0].body = tedi::Events::parse("modified body");
 
 	// Second open: edit the body
-	let (status, stdout, stderr) = ctx.open(&issue_path).edit(&modified).run();
+	let out = ctx.open(&issue_path).edit(&modified).run();
 	eprintln!("Second open stdout: {stdout}");
 	eprintln!("Second open stderr: {stderr}");
 
-	assert!(status.success(), "Edit should succeed. stderr: {stderr}");
+	assert!(out.status.success(), "Edit should succeed. stderr: {stderr}");
 	assert!(!stderr.contains("Conflict"), "Should not have conflict. stderr: {stderr}");
 }
 
@@ -142,10 +142,10 @@ fn test_reset_with_preexisting_modified_subissue_files() {
 	// Step 1: First fetch - creates local files
 	// grandparent (#1) is at: 1_-_Grandparent_Issue/__main__.md
 	// parent (#2) gets its own dir because it has children: 1_-_Grandparent_Issue/2_-_Parent_Issue/__main__.md
-	let (status, stdout, stderr) = ctx.open_url("o", "r", 1).run();
+	let out = ctx.open_url("o", "r", 1).run();
 	eprintln!("First fetch stdout: {stdout}");
 	eprintln!("First fetch stderr: {stderr}");
-	assert!(status.success(), "First fetch should succeed. stderr: {stderr}");
+	assert!(out.status.success(), "First fetch should succeed. stderr: {stderr}");
 
 	// Step 2: User opens and modifies the parent sub-issue (adds blockers, expands content)
 	// This simulates what happens when user works on issues over time
@@ -179,17 +179,17 @@ fn test_reset_with_preexisting_modified_subissue_files() {
 		 \t- [ ] Child Issue <!--sub @mock_user https://github.com/o/r/issues/3 -->\n\
 		 \t\tchild body\n",
 	);
-	let (status, stdout, stderr) = ctx.open(&parent_subissue_path).edit(&modified_parent).run();
+	let out = ctx.open(&parent_subissue_path).edit(&modified_parent).run();
 	eprintln!("Parent edit stdout: {stdout}");
 	eprintln!("Parent edit stderr: {stderr}");
-	assert!(status.success(), "Parent edit should succeed. stderr: {stderr}");
+	assert!(out.status.success(), "Parent edit should succeed. stderr: {stderr}");
 
 	// Step 3: User runs --reset on the GRANDPARENT issue
 	// BUG: format_issue will read the MODIFIED parent file and embed that content
-	let (status, stdout, stderr) = ctx.open_url("o", "r", 1).args(&["--reset"]).run();
+	let out = ctx.open_url("o", "r", 1).args(&["--reset"]).run();
 	eprintln!("Reset stdout: {stdout}");
 	eprintln!("Reset stderr: {stderr}");
-	assert!(status.success(), "Reset should succeed. stderr: {stderr}");
+	assert!(out.status.success(), "Reset should succeed. stderr: {stderr}");
 
 	// Step 4: User makes a small edit (mark child issue as closed)
 	let grandparent_path = ctx.data_dir().join("issues/o/r/1_-_Grandparent_Issue/__main__.md");
@@ -210,14 +210,14 @@ fn test_reset_with_preexisting_modified_subissue_files() {
 	// - Consensus has parent with MODIFIED local content (from format_issue reading local file)
 	// - Remote has parent with ORIGINAL API content
 	// - These don't match → divergence detected → merge initiated
-	let (status, stdout, stderr) = ctx.open(&grandparent_path).edit(&modified_grandparent).run();
+	let out = ctx.open(&grandparent_path).edit(&modified_grandparent).run();
 	eprintln!("Edit stdout: {stdout}");
 	eprintln!("Edit stderr: {stderr}");
 
 	// After --reset, there should be NO merging. The consensus should match remote exactly.
 	// Any change user makes should be detected as LocalOnly (user changed, remote unchanged from consensus).
 	// If we see "Merging" it means --reset didn't properly reset to remote state.
-	assert!(status.success(), "Edit after reset should succeed. stderr: {stderr}");
+	assert!(out.status.success(), "Edit after reset should succeed. stderr: {stderr}");
 	assert!(!stderr.contains("Conflict"), "Should not have conflict. stderr: {stderr}");
 	assert!(
 		!stdout.contains("Merging"),

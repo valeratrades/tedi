@@ -25,11 +25,11 @@ fn test_open_file_without_issue_number_in_name_gives_clear_error() {
 	let issue_file_path = ctx.xdg.data_dir().join(malformed_path);
 
 	// Try to open this file directly
-	let (status, _stdout, stderr) = ctx.run_open(&issue_file_path);
+	let out = ctx.run_open(&issue_file_path);
 
 	// Should fail because the content isn't valid issue format,
 	// but the error should mention the actual file path (not just the parent directory)
-	assert!(!status.success(), "Should fail when file content isn't valid issue format");
+	assert!(!out.status.success(), "Should fail when file content isn't valid issue format");
 
 	// The error should mention parsing failure and the filename, not "file not found"
 	assert!(stderr.contains("failed to parse issue file"), "Error should mention parse failure, got: {stderr}");
@@ -49,10 +49,10 @@ fn test_open_file_in_repo_subdir_without_issue_number() {
 	let issue_file_path = ctx.xdg.data_dir().join(malformed_path);
 
 	// Try to open this file directly
-	let (status, _stdout, stderr) = ctx.run_open(&issue_file_path);
+	let out = ctx.run_open(&issue_file_path);
 
 	// Should fail because content isn't valid issue format, with clear error
-	assert!(!status.success(), "Should fail when file content isn't valid issue format");
+	assert!(!out.status.success(), "Should fail when file content isn't valid issue format");
 
 	// The error should mention parsing failure and the filename
 	assert!(stderr.contains("failed to parse issue file"), "Error should mention parse failure, got: {stderr}");
@@ -93,10 +93,10 @@ fn test_nested_issue_under_unsynced_parent() {
 	let child_file_path = ctx.xdg.data_dir().join(child_path);
 
 	// Try to open the child issue - this should work even though parent has no git number
-	let (status, _stdout, stderr) = ctx.run_open(&child_file_path);
+	let out = ctx.run_open(&child_file_path);
 
 	// Should succeed
-	assert!(status.success(), "Should succeed opening child under unsynced parent. stderr: {stderr}");
+	assert!(out.status.success(), "Should succeed opening child under unsynced parent. stderr: {stderr}");
 
 	// Verify the file structure is preserved
 	insta::assert_snapshot!(FixtureRenderer::try_new(&ctx).unwrap().skip_meta().render(), @"");

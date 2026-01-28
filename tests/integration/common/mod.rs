@@ -14,8 +14,8 @@
 //!     - task 1
 //! "#);
 //!
-//! let (status, stdout, stderr) = ctx.run(&["blocker", "list"]);
-//! assert!(status.success());
+//! let out = ctx.run(&["blocker", "list"]);
+//! assert!(out.status.success());
 //! ```
 
 pub mod git;
@@ -69,9 +69,7 @@ impl TestContext {
 	}
 
 	/// Run a command with proper XDG environment.
-	///
-	/// Returns (exit_status, stdout, stderr) for easy assertions.
-	pub fn run(&self, args: &[&str]) -> (ExitStatus, String, String) {
+	pub fn run(&self, args: &[&str]) -> RunOutput {
 		let mut cmd = Command::new(get_binary_path());
 		cmd.args(args);
 		cmd.env("__IS_INTEGRATION_TEST", "1");
@@ -80,18 +78,11 @@ impl TestContext {
 			cmd.env(key, value);
 		}
 		let output = cmd.output().unwrap();
-		(
-			output.status,
-			String::from_utf8_lossy(&output.stdout).into_owned(),
-			String::from_utf8_lossy(&output.stderr).into_owned(),
-		)
-	}
-
-	/// Run `open` command with mock Github state and editor pipe.
-	///
-	/// Returns (exit_status, stdout, stderr).
-	pub fn run_open(&self, issue_path: &Path) -> (ExitStatus, String, String) {
-		self.open(issue_path).run()
+		RunOutput {
+			status: output.status,
+			stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+			stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+		}
 	}
 
 	/// Create an OpenBuilder for running the `open` command with various options.
@@ -160,6 +151,15 @@ impl TestContext {
 	pub fn touch(&self, pattern: &str) -> OpenUrlBuilder<'_> {
 		OpenUrlBuilder::with_touch(self, pattern.to_string())
 	}
+
+	/// Render a fixture with optional error output if the command failed.
+	pub fn render_fixture(&self, renderer: FixtureRenderer<'_>, output: &RunOutput) -> String {
+		let mut result = renderer.render();
+		if !output.status.success() {
+			result.push_str(&format!("\n\nBINARY FAILED\nstdout:\n{}\nstderr:\n{}", output.stdout, output.stderr));
+		}
+		result
+	}
 }
 
 /// Builder for running the `open` command with various options.
@@ -182,8 +182,8 @@ impl<'a> OpenBuilder<'a> {
 		self
 	}
 
-	/// Run the command and return (exit_status, stdout, stderr).
-	pub fn run(self) -> (ExitStatus, String, String) {
+	/// Run the command and return RunOutput.
+	pub fn run(self) -> RunOutput {
 		let mut cmd = Command::new(get_binary_path());
 		cmd.arg("--mock").arg("open");
 		cmd.args(&self.extra_args);
@@ -243,11 +243,11 @@ impl<'a> OpenBuilder<'a> {
 		}
 
 		let output = child.wait_with_output().unwrap();
-		(
-			output.status,
-			String::from_utf8_lossy(&output.stdout).into_owned(),
-			String::from_utf8_lossy(&output.stderr).into_owned(),
-		)
+		RunOutput {
+			status: output.status,
+			stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+			stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+		}
 	}
 }
 
@@ -312,8 +312,8 @@ impl<'a> OpenUrlBuilder<'a> {
 		self
 	}
 
-	/// Run the command and return (exit_status, stdout, stderr).
-	pub fn run(self) -> (ExitStatus, String, String) {
+	/// Run the command and return RunOutput.
+	pub fn run(self) -> RunOutput {
 		let mut cmd = Command::new(get_binary_path());
 		cmd.arg("--mock").arg("open");
 		cmd.args(&self.extra_args);
@@ -396,11 +396,11 @@ impl<'a> OpenUrlBuilder<'a> {
 		}
 
 		let output = child.wait_with_output().unwrap();
-		(
-			output.status,
-			String::from_utf8_lossy(&output.stdout).into_owned(),
-			String::from_utf8_lossy(&output.stderr).into_owned(),
-		)
+		RunOutput {
+			status: output.status,
+			stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+			stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+		}
 	}
 }
 
@@ -415,7 +415,14 @@ use std::{
 
 pub use snapshot::FixtureIssuesExt;
 use tedi::Issue;
-use v_fixtures::{Fixture, fs_standards::xdg::Xdg};
+use v_fixtures::{Fixture, FixtureRenderer, fs_standards::xdg::Xdg};
+
+/// Output from running a command.
+pub struct RunOutput {
+	pub status: ExitStatus,
+	pub stdout: String,
+	pub stderr: String,
+}
 
 /// Environment variable names derived from package name
 const ENV_GITHUB_TOKEN: &str = concat!(env!("CARGO_PKG_NAME"), "__GITHUB_TOKEN");

@@ -32,13 +32,13 @@ fn test_blocker_add_in_integrated_mode() {
 	ctx.xdg.write_cache("current_blocker_issue.txt", issue_path.to_str().unwrap());
 
 	// Run blocker add in integrated mode (no --individual-files flag)
-	let (status, stdout, stderr) = ctx.run(&["--offline", "blocker", "add", "New task from CLI"]);
+	let out = ctx.run(&["--offline", "blocker", "add", "New task from CLI"]);
 
-	eprintln!("stdout: {stdout}");
-	eprintln!("stderr: {stderr}");
+	eprintln!("stdout: {}", out.stdout);
+	eprintln!("stderr: {}", out.stderr);
 
 	// The add command should succeed
-	assert!(status.success(), "blocker add should succeed in integrated mode. stderr: {stderr}");
+	assert!(out.status.success(), "blocker add should succeed in integrated mode. stderr: {}", out.stderr);
 
 	// Verify the blocker was added to the issue file
 	let content = std::fs::read_to_string(&issue_path).unwrap();
@@ -69,16 +69,20 @@ fn test_blocker_pop_in_integrated_mode() {
 	ctx.xdg.write_cache("current_blocker_issue.txt", issue_path.to_str().unwrap());
 
 	// Run blocker pop in integrated mode (no --individual-files flag)
-	let (status, stdout, stderr) = ctx.run(&["--offline", "blocker", "pop"]);
+	let out = ctx.run(&["--offline", "blocker", "pop"]);
 
-	eprintln!("stdout: {stdout}");
-	eprintln!("stderr: {stderr}");
+	eprintln!("stdout: {}", out.stdout);
+	eprintln!("stderr: {}", out.stderr);
 
 	// The pop command should succeed
-	assert!(status.success(), "blocker pop should succeed in integrated mode. stderr: {stderr}");
+	assert!(out.status.success(), "blocker pop should succeed in integrated mode. stderr: {}", out.stderr);
 
 	// Should show what was popped
-	assert!(stdout.contains("Popped") || stdout.contains("Third task"), "Should show popped task. stdout: {stdout}");
+	assert!(
+		out.stdout.contains("Popped") || out.stdout.contains("Third task"),
+		"Should show popped task. stdout: {}",
+		out.stdout
+	);
 
 	// Verify the blocker was removed from the issue file
 	let content = std::fs::read_to_string(&issue_path).unwrap();
@@ -102,13 +106,13 @@ fn test_blocker_add_creates_blockers_section_if_missing() {
 	ctx.xdg.write_cache("current_blocker_issue.txt", issue_path.to_str().unwrap());
 
 	// Run blocker add in integrated mode
-	let (status, stdout, stderr) = ctx.run(&["--offline", "blocker", "add", "New task"]);
+	let out = ctx.run(&["--offline", "blocker", "add", "New task"]);
 
-	eprintln!("stdout: {stdout}");
-	eprintln!("stderr: {stderr}");
+	eprintln!("stdout: {}", out.stdout);
+	eprintln!("stderr: {}", out.stderr);
 
 	// The add command should succeed
-	assert!(status.success(), "blocker add should succeed even without existing blockers section. stderr: {stderr}");
+	assert!(out.status.success(), "blocker add should succeed even without existing blockers section. stderr: {}", out.stderr);
 
 	// Verify the blockers section was created with the new task
 	let content = std::fs::read_to_string(&issue_path).unwrap();
@@ -125,14 +129,14 @@ fn test_blocker_add_without_blocker_file_set_errors() {
 	// NO blocker file set
 
 	// Run blocker add (without --urgent)
-	let (status, stdout, stderr) = ctx.run(&["--offline", "blocker", "add", "some task"]);
+	let out = ctx.run(&["--offline", "blocker", "add", "some task"]);
 
-	eprintln!("stdout: {stdout}");
-	eprintln!("stderr: {stderr}");
+	eprintln!("stdout: {}", out.stdout);
+	eprintln!("stderr: {}", out.stderr);
 
 	// The add command should fail
-	assert!(!status.success(), "blocker add without --urgent should fail when no blocker file set");
-	assert!(stderr.contains("No blocker file set"), "Should mention no blocker file set. stderr: {stderr}");
+	assert!(!out.status.success(), "blocker add without --urgent should fail when no blocker file set");
+	assert!(out.stderr.contains("No blocker file set"), "Should mention no blocker file set. stderr: {}", out.stderr);
 }
 
 #[test]
@@ -146,16 +150,20 @@ fn test_blocker_add_urgent_without_blocker_file_set() {
 	// NO blocker file set - this is the key part of the test
 
 	// Run blocker add --urgent
-	let (status, stdout, stderr) = ctx.run(&["--offline", "blocker", "add", "--urgent", "manage through 'urgent' until tool is working"]);
+	let out = ctx.run(&["--offline", "blocker", "add", "--urgent", "manage through 'urgent' until tool is working"]);
 
-	eprintln!("stdout: {stdout}");
-	eprintln!("stderr: {stderr}");
+	eprintln!("stdout: {}", out.stdout);
+	eprintln!("stderr: {}", out.stderr);
 
 	// The add command should succeed without a blocker file set
-	assert!(status.success(), "blocker add --urgent should succeed without blocker file set. stderr: {stderr}");
+	assert!(out.status.success(), "blocker add --urgent should succeed without blocker file set. stderr: {}", out.stderr);
 
 	// Verify the blocker was added to an urgent file
-	assert!(stdout.contains("Added to urgent") || stdout.contains("urgent"), "Should confirm urgent add. stdout: {stdout}");
+	assert!(
+		out.stdout.contains("Added to urgent") || out.stdout.contains("urgent"),
+		"Should confirm urgent add. stdout: {}",
+		out.stdout
+	);
 }
 
 #[test]
@@ -182,13 +190,13 @@ fn test_blocker_add_with_header_context() {
 	ctx.xdg.write_cache("current_blocker_issue.txt", issue_path.to_str().unwrap());
 
 	// Run blocker add in integrated mode
-	let (status, stdout, stderr) = ctx.run(&["--offline", "blocker", "add", "New sub-task"]);
+	let out = ctx.run(&["--offline", "blocker", "add", "New sub-task"]);
 
-	eprintln!("stdout: {stdout}");
-	eprintln!("stderr: {stderr}");
+	eprintln!("stdout: {}", out.stdout);
+	eprintln!("stderr: {}", out.stderr);
 
 	// The add command should succeed
-	assert!(status.success(), "blocker add should succeed. stderr: {stderr}");
+	assert!(out.status.success(), "blocker add should succeed. stderr: {}", out.stderr);
 
 	// Verify the blocker was added (should be under Phase 2, the last header with items)
 	let content = std::fs::read_to_string(&issue_path).unwrap();

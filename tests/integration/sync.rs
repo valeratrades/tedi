@@ -45,11 +45,11 @@ fn test_both_diverged_triggers_conflict() {
 	ctx.local(&local, Some(40));
 	ctx.remote(&remote, Some(45));
 
-	let (status, stdout, stderr) = ctx.run_open(&issue_path);
+	let out = ctx.open(&issue_path).run();
 
-	eprintln!("stdout: {stdout}");
-	eprintln!("stderr: {stderr}");
-	eprintln!("status: {status:?}");
+	eprintln!("stdout: {}", out.stdout);
+	eprintln!("stderr: {}", out.stderr);
+	eprintln!("status: {:?}", out.status);
 
 	// Capture the resulting directory state - this shows actual timestamps and merge result
 	insta::assert_snapshot!(FixtureRenderer::try_new(&ctx).unwrap().render(), @r#"
@@ -89,11 +89,11 @@ fn test_both_diverged_with_git_initiates_merge() {
 	ctx.local(&local, Some(60));
 	ctx.remote(&remote, Some(65));
 
-	let (status, stdout, stderr) = ctx.run_open(&issue_path);
+	let out = ctx.open(&issue_path).run();
 
-	eprintln!("stdout: {stdout}");
-	eprintln!("stderr: {stderr}");
-	eprintln!("status: {status:?}");
+	eprintln!("stdout: {}", out.stdout);
+	eprintln!("stderr: {}", out.stderr);
+	eprintln!("status: {:?}", out.status);
 
 	// Capture the resulting directory state - this shows actual timestamps and merge result
 	insta::assert_snapshot!(FixtureRenderer::try_new(&ctx).unwrap().render(), @r#"
@@ -134,17 +134,19 @@ fn test_only_remote_changed_takes_remote_with_pull() {
 	ctx.remote(&remote, Some(90));
 
 	// Must use --pull to fetch remote changes when local is unchanged
-	let (status, stdout, stderr) = ctx.open(&issue_path).args(&["--pull"]).run();
+	let out = ctx.open(&issue_path).args(&["--pull"]).run();
 
-	eprintln!("stdout: {stdout}");
-	eprintln!("stderr: {stderr}");
-	eprintln!("status: {status:?}");
+	eprintln!("stdout: {}", out.stdout);
+	eprintln!("stderr: {}", out.stderr);
+	eprintln!("status: {:?}", out.status);
 
-	assert!(status.success(), "Should succeed with --pull when only remote changed. stderr: {stderr}");
+	assert!(out.status.success(), "Should succeed with --pull when only remote changed. stderr: {}", out.stderr);
 	// Verify we pulled (shows "Pulling latest...")
 	assert!(
-		stdout.contains("Pulling") || stdout.contains("pull"),
-		"Expected pull activity message. stdout: {stdout}, stderr: {stderr}"
+		out.stdout.contains("Pulling") || out.stdout.contains("pull"),
+		"Expected pull activity message. stdout: {}, stderr: {}",
+		out.stdout,
+		out.stderr
 	);
 }
 
@@ -161,13 +163,13 @@ fn test_only_local_changed_pushes_local() {
 	ctx.local(&local, Some(85));
 	ctx.remote(&consensus, Some(-25));
 
-	let (status, stdout, stderr) = ctx.run_open(&issue_path);
+	let out = ctx.open(&issue_path).run();
 
-	eprintln!("stdout: {stdout}");
-	eprintln!("stderr: {stderr}");
-	eprintln!("status: {status:?}");
+	eprintln!("stdout: {}", out.stdout);
+	eprintln!("stderr: {}", out.stderr);
+	eprintln!("status: {:?}", out.status);
 
-	assert!(status.success(), "Should succeed when only local changed. stderr: {stderr}");
+	assert!(out.status.success(), "Should succeed when only local changed. stderr: {}", out.stderr);
 
 	// Capture the resulting directory state
 	insta::assert_snapshot!(FixtureRenderer::try_new(&ctx).unwrap().render(), @r#"
@@ -208,14 +210,14 @@ fn test_reset_with_local_source_skips_sync() {
 	ctx.remote(&remote, Some(25));
 
 	// Run with --reset flag
-	let (status, stdout, stderr) = ctx.open(&issue_path).args(&["--reset"]).run();
+	let out = ctx.open(&issue_path).args(&["--reset"]).run();
 
-	eprintln!("stdout: {stdout}");
-	eprintln!("stderr: {stderr}");
-	eprintln!("status: {status:?}");
+	eprintln!("stdout: {}", out.stdout);
+	eprintln!("stderr: {}", out.stderr);
+	eprintln!("status: {:?}", out.status);
 
 	// With --reset, should reset to local state without sync
-	assert!(status.success(), "Should succeed with --reset. stderr: {stderr}");
+	assert!(out.status.success(), "Should succeed with --reset. stderr: {}", out.stderr);
 
 	// Local file should still have local changes (not overwritten by remote)
 	let content = std::fs::read_to_string(&issue_path).unwrap();
@@ -236,12 +238,12 @@ fn test_url_open_creates_local_file_from_remote() {
 	let expected_path = ctx.flat_issue_path("o", "r", 1, "Test Issue");
 	assert!(!expected_path.exists(), "Local file should not exist before open");
 
-	let (status, stdout, stderr) = ctx.open_url("o", "r", 1).run();
+	let out = ctx.open_url("o", "r", 1).run();
 
-	eprintln!("stdout: {stdout}");
-	eprintln!("stderr: {stderr}");
+	eprintln!("stdout: {}", out.stdout);
+	eprintln!("stderr: {}", out.stderr);
 
-	assert!(status.success(), "Should succeed creating from URL. stderr: {stderr}");
+	assert!(out.status.success(), "Should succeed creating from URL. stderr: {}", out.stderr);
 
 	// File should now exist with remote content
 	assert!(expected_path.exists(), "Local file should be created");
@@ -264,12 +266,12 @@ fn test_reset_with_remote_url_nukes_local_state() {
 	ctx.remote(&remote, Some(80));
 
 	// Open via URL with --reset should nuke local and use remote
-	let (status, stdout, stderr) = ctx.open_url("o", "r", 1).args(&["--reset"]).run();
+	let out = ctx.open_url("o", "r", 1).args(&["--reset"]).run();
 
-	eprintln!("stdout: {stdout}");
-	eprintln!("stderr: {stderr}");
+	eprintln!("stdout: {}", out.stdout);
+	eprintln!("stderr: {}", out.stderr);
 
-	assert!(status.success(), "Should succeed with --reset via URL. stderr: {stderr}");
+	assert!(out.status.success(), "Should succeed with --reset via URL. stderr: {}", out.stderr);
 
 	// Local file should now have remote content
 	let content = std::fs::read_to_string(&issue_path).unwrap();
@@ -293,15 +295,15 @@ fn test_reset_with_remote_url_skips_merge_on_divergence() {
 	ctx.remote(&remote, Some(35));
 
 	// Open via URL with --reset should NOT trigger merge conflict
-	let (status, stdout, stderr) = ctx.open_url("o", "r", 1).args(&["--reset"]).run();
+	let out = ctx.open_url("o", "r", 1).args(&["--reset"]).run();
 
-	eprintln!("stdout: {stdout}");
-	eprintln!("stderr: {stderr}");
+	eprintln!("stdout: {}", out.stdout);
+	eprintln!("stderr: {}", out.stderr);
 
 	// Should succeed without merge conflict
-	assert!(status.success(), "Should succeed without merge conflict. stderr: {stderr}");
-	assert!(!stderr.contains("Conflict"), "Should not mention conflict with --reset");
-	assert!(!stdout.contains("Merging"), "Should not attempt merge with --reset");
+	assert!(out.status.success(), "Should succeed without merge conflict. stderr: {}", out.stderr);
+	assert!(!out.stderr.contains("Conflict"), "Should not mention conflict with --reset");
+	assert!(!out.stdout.contains("Merging"), "Should not attempt merge with --reset");
 
 	// Local should have remote content
 	let content = std::fs::read_to_string(&issue_path).unwrap();
@@ -323,17 +325,18 @@ fn test_pull_fetches_before_editor() {
 	ctx.remote(&remote, Some(70));
 
 	// --pull should fetch from Github before opening editor
-	let (status, stdout, stderr) = ctx.open(&issue_path).args(&["--pull"]).run();
+	let out = ctx.open(&issue_path).args(&["--pull"]).run();
 
-	eprintln!("stdout: {stdout}");
-	eprintln!("stderr: {stderr}");
+	eprintln!("stdout: {}", out.stdout);
+	eprintln!("stderr: {}", out.stderr);
 
-	assert!(status.success(), "Should succeed with --pull. stderr: {stderr}");
+	assert!(out.status.success(), "Should succeed with --pull. stderr: {}", out.stderr);
 
 	// Should show fetch activity
 	assert!(
-		stdout.contains("Fetching") || stdout.contains("Pulling"),
-		"Should show fetch/pull activity with --pull. stdout: {stdout}"
+		out.stdout.contains("Fetching") || out.stdout.contains("Pulling"),
+		"Should show fetch/pull activity with --pull. stdout: {}",
+		out.stdout
 	);
 }
 
@@ -353,16 +356,18 @@ fn test_pull_with_divergence_runs_sync_before_editor() {
 	ctx.remote(&remote, Some(55));
 
 	// --pull should attempt to sync/merge BEFORE editor opens
-	let (_status, stdout, stderr) = ctx.open(&issue_path).args(&["--pull"]).run();
+	let out = ctx.open(&issue_path).args(&["--pull"]).run();
 
-	eprintln!("stdout: {stdout}");
-	eprintln!("stderr: {stderr}");
+	eprintln!("stdout: {}", out.stdout);
+	eprintln!("stderr: {}", out.stderr);
 
 	// Should either succeed (auto-resolved) or fail with conflict
 	// But importantly, it should attempt sync BEFORE editor
 	assert!(
-		stdout.contains("Merging") || stdout.contains("Conflict") || stderr.contains("Conflict") || stdout.contains("Pulling"),
-		"Should attempt sync/merge with --pull before editor. stdout: {stdout}, stderr: {stderr}"
+		out.stdout.contains("Merging") || out.stdout.contains("Conflict") || out.stderr.contains("Conflict") || out.stdout.contains("Pulling"),
+		"Should attempt sync/merge with --pull before editor. stdout: {}, stderr: {}",
+		out.stdout,
+		out.stderr
 	);
 }
 
@@ -380,13 +385,10 @@ fn test_closing_issue_syncs_state_change() {
 	let mut closed_issue = open_issue.clone();
 	closed_issue.contents.state = tedi::CloseState::Closed;
 
-	let (status, stdout, stderr) = ctx.open(&issue_path).edit(&closed_issue).run();
+	let out = ctx.open(&issue_path).edit(&closed_issue).run();
 
 	// Line 11 contains `state` timestamp set via Timestamp::now() when detecting state change
-	let mut result_str = FixtureRenderer::try_new(&ctx).unwrap().redact_timestamps(&[11]).render();
-	if !status.success() {
-		result_str.push_str(&format!("\n\nBINARY FAILED\nstdout:\n{stdout}\nstderr:\n{stderr}"))
-	}
+	let result_str = ctx.render_fixture(FixtureRenderer::try_new(&ctx).unwrap().redact_timestamps(&[11]), &out);
 
 	insta::assert_snapshot!(result_str, @r#"
 	//- /o/r/.meta.json
@@ -435,12 +437,12 @@ fn test_duplicate_sub_issues_filtered_from_remote() {
 	ctx.remote(&parent_with_children, Some(-10));
 
 	// Open via URL to fetch from remote
-	let (status, stdout, stderr) = ctx.open_url("o", "r", 1).run();
+	let out = ctx.open_url("o", "r", 1).run();
 
-	eprintln!("stdout: {stdout}");
-	eprintln!("stderr: {stderr}");
+	eprintln!("stdout: {}", out.stdout);
+	eprintln!("stderr: {}", out.stderr);
 
-	assert!(status.success(), "Should succeed. stderr: {stderr}");
+	assert!(out.status.success(), "Should succeed. stderr: {}", out.stderr);
 
 	// Check that the normal closed sub-issue file exists (with .bak suffix)
 	let issue_dir = ctx.dir_issue_path("o", "r", 1, "Parent Issue").parent().unwrap().to_path_buf();
@@ -474,13 +476,13 @@ fn test_open_unchanged_succeeds() {
 	ctx.remote(&issue, Some(10));
 
 	// First open via URL
-	let (status, _stdout, stderr) = ctx.open_url("o", "r", 1).run();
-	assert!(status.success(), "First open should succeed. stderr: {stderr}");
+	let out = ctx.open_url("o", "r", 1).run();
+	assert!(out.status.success(), "First open should succeed. stderr: {}", out.stderr);
 
 	// Second open - should also succeed (no-op since nothing changed)
 	let issue_path = ctx.flat_issue_path("o", "r", 1, "Test Issue");
-	let (status, _stdout, stderr) = ctx.open(&issue_path).run();
-	assert!(status.success(), "Second open (unchanged) should succeed. stderr: {stderr}");
+	let out = ctx.open(&issue_path).run();
+	assert!(out.status.success(), "Second open (unchanged) should succeed. stderr: {}", out.stderr);
 }
 
 /// Opening an issue by number when remote state matches local should succeed.
@@ -499,17 +501,17 @@ fn test_open_by_number_unchanged_succeeds() {
 	ctx.remote(&issue, None);
 
 	// First open via URL with --reset
-	let (status, stdout, stderr) = ctx.open_url("o", "r", 1).args(&["--reset"]).run();
-	eprintln!("First open stdout: {stdout}");
-	eprintln!("First open stderr: {stderr}");
-	assert!(status.success(), "First open should succeed. stderr: {stderr}");
+	let out = ctx.open_url("o", "r", 1).args(&["--reset"]).run();
+	eprintln!("First open stdout: {}", out.stdout);
+	eprintln!("First open stderr: {}", out.stderr);
+	assert!(out.status.success(), "First open should succeed. stderr: {}", out.stderr);
 
 	// Second open by number (simulating the failing case)
 	// This uses the mock, so remote state is the same
-	let (status, stdout, stderr) = ctx.open_url("o", "r", 1).run();
-	eprintln!("Second open stdout: {stdout}");
-	eprintln!("Second open stderr: {stderr}");
-	assert!(status.success(), "Second open (unchanged) should succeed. stderr: {stderr}");
+	let out = ctx.open_url("o", "r", 1).run();
+	eprintln!("Second open stdout: {}", out.stdout);
+	eprintln!("Second open stderr: {}", out.stderr);
+	assert!(out.status.success(), "Second open (unchanged) should succeed. stderr: {}", out.stderr);
 }
 
 /// --reset should only apply to the first sync (before editor).
@@ -528,10 +530,10 @@ fn test_reset_syncs_changes_after_editor() {
 	modified_issue.contents.state = tedi::CloseState::Closed;
 
 	// Open with --reset and make changes while editor is open
-	let (_status, stdout, stderr) = ctx.open_url("o", "r", 1).args(&["--reset"]).edit(&modified_issue).run();
+	let out = ctx.open_url("o", "r", 1).args(&["--reset"]).edit(&modified_issue).run();
 
-	eprintln!("stdout: {stdout}");
-	eprintln!("stderr: {stderr}");
+	eprintln!("stdout: {}", out.stdout);
+	eprintln!("stderr: {}", out.stderr);
 
 	// Capture the resulting directory state
 	// Line 11 contains `state` timestamp set via Timestamp::now() when detecting state change
@@ -580,10 +582,10 @@ fn test_comment_shorthand_creates_comment() {
 	std::fs::write(&issue_path, edited_content).unwrap();
 
 	// Run open to trigger sync (which should expand !c and create the comment)
-	let (_status, stdout, stderr) = ctx.run_open(&issue_path);
+	let out = ctx.open(&issue_path).run();
 
-	eprintln!("stdout: {stdout}");
-	eprintln!("stderr: {stderr}");
+	eprintln!("stdout: {}", out.stdout);
+	eprintln!("stderr: {}", out.stderr);
 
 	// Capture the resulting directory state
 	insta::assert_snapshot!(FixtureRenderer::try_new(&ctx).unwrap().render(), @"
@@ -651,12 +653,12 @@ fn test_force_merge_preserves_both_sub_issues(#[case] args: &[&str], #[case] exp
 	ctx.local(&local, None);
 	ctx.remote(&remote, None);
 
-	let (status, stdout, stderr) = ctx.open(&issue_path).args(args).run();
+	let out = ctx.open(&issue_path).args(args).run();
 
-	eprintln!("stdout: {stdout}");
-	eprintln!("stderr: {stderr}");
+	eprintln!("stdout: {}", out.stdout);
+	eprintln!("stderr: {}", out.stderr);
 
-	assert!(status.success(), "Should succeed with {args:?}. stderr: {stderr}");
+	assert!(out.status.success(), "Should succeed with {args:?}. stderr: {}", out.stderr);
 
 	// Snapshot the result - different expectations based on which side wins conflicts
 	if expect_local_description {
@@ -708,12 +710,12 @@ fn test_consensus_sink_writes_meta_json_with_timestamps() {
 	ctx.remote(&remote, None);
 
 	// Fetch the issue via URL - this should sink to Consensus and write .meta.json
-	let (status, stdout, stderr) = ctx.open_url("o", "r", 1).run();
+	let out = ctx.open_url("o", "r", 1).run();
 
-	eprintln!("stdout: {stdout}");
-	eprintln!("stderr: {stderr}");
+	eprintln!("stdout: {}", out.stdout);
+	eprintln!("stderr: {}", out.stderr);
 
-	assert!(status.success(), "Fetch should succeed. stderr: {stderr}");
+	assert!(out.status.success(), "Fetch should succeed. stderr: {}", out.stderr);
 
 	// Capture the resulting directory state (includes .meta.json with timestamps)
 	insta::assert_snapshot!(FixtureRenderer::try_new(&ctx).unwrap().render(), @r#"
