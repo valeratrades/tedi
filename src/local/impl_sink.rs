@@ -10,7 +10,7 @@ use std::{
 use v_utils::prelude::*;
 
 use super::{ConsensusSinkError, FsReader, IssueMeta, Local, LocalPath, LocalReader};
-use crate::{Issue, IssueIndex, IssueSelector, local::LocalPathError, sink::Sink};
+use crate::{Issue, local::LocalPathError, sink::Sink};
 
 /// Marker type for sinking to filesystem (submitted state).
 pub struct Submitted;
@@ -256,58 +256,46 @@ fn nest_if_needed<R: LocalReader>(local_path: &mut LocalPath, reader: &R) -> Res
 }
 
 /// Clean up old file locations when format or state changes.
-fn cleanup_old_locations<R: LocalReader>(issue: &Issue, old: Option<&Issue>, has_children: bool, closed: bool, reader: &R) -> Result<()> {
-	todo!();
-	//TODO!!!!!: instead of the outdated logic, first resolve the path (constructed from issue) -> get all `matching_subpaths`, then construct the new correct one with `deterministic` -> remove all matching that are not the correct one.
+///
+/// Strategy: find all matching paths via `matching_subpaths`, compute the correct target path
+/// via `deterministic`, then remove any matching paths that aren't the target.
+fn cleanup_old_locations<R: LocalReader>(issue: &Issue, _old: Option<&Issue>, has_children: bool, closed: bool, reader: &R) -> Result<()> {
+	let local_path = LocalPath::from(issue);
+	let title = &issue.contents.title;
 
-	//let mut local_path = LocalPath::from(issue);
-	//let title = &issue.contents.title;
-	//let issue_number = issue.number();
-	//// Try to get file path (may fail for new issues, that's ok)
-	//if local_path.file_path(title, closed, has_children, reader).is_err() {
-	//	return Ok(());
-	//}
-	//
-	//let old_has_children = old.map(|o| !o.children.is_empty()).unwrap_or(false);
-	//let format_changed = has_children != old_has_children;
-	//
-	//if has_children && format_changed {
-	//	if let Ok(path) = local_path.resolve_parent(*reader)?.search() {
-	//		let p = path.path();
-	//		if reader.is_dir(&p)? {
-	//			try_remove_file(&p)?;
-	//		}
-	//	}
-	//}
-	//
-	//if has_children {
-	//	// Remove old main file with opposite closed state
-	//	if let Ok(old_main) = local_path.file_path(title, !closed, true, reader) {
-	//		try_remove_file(&old_main)?;
-	//	}
-	//} else {
-	//	// Flat file: remove file with opposite closed state
-	//	if let Ok(old_flat) = local_path.file_path(title, !closed, false, reader) {
-	//		try_remove_file(&old_flat)?;
-	//	}
-	//
-	//	// If issue now has a number, clean up old pending file
-	//	if issue_number.is_some() {
-	//		// Create a pending version of the index to find old pending files
-	//		// This has parents as GitIds + Title (so issue_number() returns None)
-	//		let mut issue_index = IssueIndex::from(issue);
-	//		issue_index[issue_index.len()] = IssueSelector::title(title);
-	//
-	//		let mut pending_path = LocalPath::from(issue_index);
-	//		// Try cleanup - ok if paths don't exist
-	//		if let Ok(pending_open) = pending_path.file_path(title, false, false, reader) {
-	//			try_remove_file(&pending_open)?;
-	//		}
-	//		if let Ok(pending_closed) = pending_path.file_path(title, true, false, reader) {
-	//			try_remove_file(&pending_closed)?;
-	//		}
-	//	}
-	//}
+	// Resolve parent - if this fails, there's nothing to clean up (new issue in new location)
+	let resolved = match local_path.resolve_parent(*reader) {
+		Ok(r) => r,
+		Err(LocalPathError::MissingParent { .. } | LocalPathError::NotFound { .. }) => return Ok(()),
+		Err(e) => return Err(e.into()),
+	};
+
+	// Get all existing paths that match our selector
+	let matching = resolved.matching_subpaths()?;
+	if matching.is_empty() {
+		return Ok(()); // Nothing exists yet, nothing to clean up
+	}
+
+	// Compute the correct target path
+	let target = LocalPath::from(issue).resolve_parent(*reader)?.deterministic(title, closed, has_children).path();
+
+	// Remove any matching paths that aren't the target
+	for path in matching {
+		if path != target {
+			// If it's a __main__.md file, we need to check if the parent dir should be removed
+			// (only if we're moving from directory to flat format)
+			if path.file_name().map(|n| n.to_string_lossy().starts_with(Local::MAIN_ISSUE_FILENAME)).unwrap_or(false) {
+				if let Some(parent_dir) = path.parent() {
+					// Remove the whole directory if we're converting to flat format
+					if !has_children {
+						std::fs::remove_dir_all(parent_dir)?;
+						continue;
+					}
+				}
+			}
+			try_remove_file(&path)?;
+		}
+	}
 
 	Ok(())
 }
