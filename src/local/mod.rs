@@ -19,17 +19,10 @@ pub mod consensus;
 /// Error type for local issue loading operations.
 #[derive(Debug, miette::Diagnostic, thiserror::Error, derive_more::From)]
 pub enum LocalError {
-	/// File not found at the expected path.
-	#[error("issue file not found: {path}")]
-	FileNotFound { path: PathBuf },
-
-	/// Failed to read file contents.
-	#[error("failed to read file: {path}")]
-	ReadError {
-		path: PathBuf,
-		#[source]
-		source: std::io::Error,
-	},
+	/// Path resolution or IO error.
+	#[error(transparent)]
+	#[diagnostic(transparent)]
+	Io(LocalPathError),
 
 	/// Failed to parse issue content.
 	#[error("failed to parse issue file: {path}")]
@@ -40,6 +33,7 @@ pub enum LocalError {
 	},
 
 	/// Git operation failed (for consensus reads).
+	//TODO: check if it covers cases that ReaderError doesn't when it comes to git operations. If not, we should nuke this and rely on `Io` which already references LocalPathError (which nests ReaderError)
 	#[error("git operation failed: {message}")]
 	GitError { message: String },
 
@@ -48,6 +42,7 @@ pub enum LocalError {
 	#[diagnostic(transparent)]
 	ConflictBlocked(conflict::ConflictBlockedError),
 }
+
 /// Error type for consensus sink operations.
 #[derive(Debug, miette::Diagnostic, derive_more::Display, thiserror::Error)]
 pub enum ConsensusSinkError {
@@ -1094,6 +1089,8 @@ mod reader;
 pub use reader::{FsReader, GitReader, LocalReader, ReaderError};
 
 mod local_path {
+	use std::collections::VecDeque;
+
 	use super::*;
 
 	/// Error type for LocalPath operations.
@@ -1193,10 +1190,10 @@ mod local_path {
 			let mut path = Local::project_dir(self.index.owner(), self.index.repo());
 
 			let selectors = self.index.index();
-			let (parent_selectors, final_selector) = if selectors.is_empty() {
-				(&[][..], None)
+			let (parent_selectors, remaining) = if selectors.is_empty() {
+				(&[][..], VecDeque::new())
 			} else {
-				(&selectors[..selectors.len() - 1], selectors.last().cloned())
+				(&selectors[..selectors.len() - 1], VecDeque::from(vec![selectors.last().cloned().unwrap()]))
 			};
 
 			for selector in parent_selectors {
@@ -1213,10 +1210,9 @@ mod local_path {
 			}
 
 			Ok(LocalPathResolved {
-				parent_dir: path,
-				final_selector,
+				resolved_path: path,
+				unresolved_selector_nodes: remaining,
 				reader,
-				resolved_path: None,
 			})
 		}
 	}
@@ -1238,89 +1234,110 @@ mod local_path {
 	/// Created by `LocalPath::resolve_parent()`. Use:
 	/// - `search()` to find an existing file
 	/// - `deterministic(...)` to construct a target path for writes
-	/// Then call `path()` to get the final `PathBuf`.
+	/// Then call `path()` or `issue_dir()` to get the final `PathBuf`.
 	#[derive(Clone, Debug)]
 	pub struct LocalPathResolved<R: LocalReader> {
-		parent_dir: PathBuf,
-		final_selector: Option<IssueSelector>,
+		resolved_path: PathBuf,
+		unresolved_selector_nodes: VecDeque<IssueSelector>,
 		reader: R,
-		resolved_path: Option<PathBuf>,
 	}
 
 	impl<R: LocalReader> LocalPathResolved<R> {
-		/// Search for an existing file matching the final selector.
+		/// Search for an existing file matching the next selector.
 		///
 		/// Checks both flat and directory formats, open and closed states.
+		/// Consumes one selector from the queue.
 		pub fn search(mut self) -> Result<Self, LocalPathError> {
-			let Some(ref selector) = self.final_selector else {
-				panic!("Cannot search with empty index - no selector to match");
-			};
+			let selector = self.unresolved_selector_nodes.pop_front().expect("Cannot search with empty selectors");
 
-			let path = match find_entry_by_selector(&self.reader, &self.parent_dir, selector) {
+			match find_entry_by_selector(&self.reader, &self.resolved_path, &selector) {
 				Some(FoundEntry::Dir(name)) => {
-					let dir_path = self.parent_dir.join(&name);
-					// Check for __main__.md (open or closed)
+					let dir_path = self.resolved_path.join(&name);
 					let main_open = Local::main_file_path(&dir_path, false);
 					if self.reader.exists(&main_open).unwrap_or(false) {
-						main_open
+						self.resolved_path = main_open;
 					} else {
 						let main_closed = Local::main_file_path(&dir_path, true);
 						if self.reader.exists(&main_closed).unwrap_or(false) {
-							main_closed
+							self.resolved_path = main_closed;
 						} else {
-							return Err(LocalPathError::NotFound {
-								selector: selector.clone(),
-								searched_path: self.parent_dir.clone(),
-							});
+							return Err(LocalPathError::NotFound { selector, searched_path: dir_path });
 						}
 					}
 				}
-				Some(FoundEntry::File(name)) => self.parent_dir.join(name),
+				Some(FoundEntry::File(name)) => {
+					self.resolved_path = self.resolved_path.join(name);
+				}
 				None =>
 					return Err(LocalPathError::NotFound {
-						selector: selector.clone(),
-						searched_path: self.parent_dir.clone(),
+						selector,
+						searched_path: self.resolved_path.clone(),
 					}),
 			};
-			self.resolved_path = Some(path);
 			Ok(self)
 		}
 
 		/// Construct the deterministic target path for writing.
 		///
-		/// Returns the path where the issue file should be located based on:
+		/// Based on:
 		/// - `title`: the issue title (used in filename)
 		/// - `closed`: whether the issue is closed (affects .md vs .md.bak extension)
 		/// - `has_children`: whether stored in directory format (affects __main__.md vs flat file)
 		///
+		/// Consumes one selector from the queue.
 		/// Note: This does NOT create any directories. Use Sink to write.
 		pub fn deterministic(mut self, title: &str, closed: bool, has_children: bool) -> Self {
-			let path = if has_children {
-				let dir_name = self.format_dir_name(title);
-				let issue_dir = self.parent_dir.join(dir_name);
-				Local::main_file_path(&issue_dir, closed)
+			let selector = self.unresolved_selector_nodes.pop_front();
+
+			if has_children {
+				let dir_name = self.format_dir_name(selector.as_ref(), title);
+				let issue_dir = self.resolved_path.join(&dir_name);
+				self.resolved_path = Local::main_file_path(&issue_dir, closed);
 			} else {
-				let filename = self.format_filename(title, closed);
-				self.parent_dir.join(filename)
+				let filename = self.format_filename(selector.as_ref(), title, closed);
+				self.resolved_path = self.resolved_path.join(filename);
 			};
-			self.resolved_path = Some(path);
 			self
 		}
 
-		/// Get the resolved path.
+		/// Get the resolved file path. Consumes self.
+		///
+		/// Panics if selectors queue is not empty.
 		pub fn path(self) -> PathBuf {
-			self.resolved_path.expect("path() called before search() or deterministic()")
+			assert!(
+				self.unresolved_selector_nodes.is_empty(),
+				"path() called with remaining selectors: {:?}",
+				self.unresolved_selector_nodes
+			);
+			self.resolved_path
 		}
 
-		fn format_dir_name(&self, title: &str) -> String {
-			match &self.final_selector {
+		/// Get the resolved issue directory (if issue is in directory format). Consumes self.
+		///
+		/// Returns `Some(dir)` if the issue is in directory format, `None` for flat files.
+		/// Panics if selectors queue is not empty.
+		pub fn issue_dir(self) -> Option<PathBuf> {
+			assert!(
+				self.unresolved_selector_nodes.is_empty(),
+				"issue_dir() called with remaining selectors: {:?}",
+				self.unresolved_selector_nodes
+			);
+			if self.reader.is_dir(&self.resolved_path).unwrap_or(false) {
+				Some(self.resolved_path)
+			} else {
+				self.resolved_path.parent().filter(|p| self.reader.is_dir(p).unwrap_or(false)).map(|p| p.to_path_buf())
+			}
+		}
+
+		fn format_dir_name(&self, selector: Option<&IssueSelector>, title: &str) -> String {
+			match selector {
 				Some(IssueSelector::GitId(n)) => Local::issue_dir_name(Some(*n), title),
 				Some(IssueSelector::Title(_)) | None => Local::sanitize_title(title),
 			}
 		}
 
-		fn format_filename(&self, title: &str, closed: bool) -> String {
-			match &self.final_selector {
+		fn format_filename(&self, selector: Option<&IssueSelector>, title: &str, closed: bool) -> String {
+			match selector {
 				Some(IssueSelector::GitId(n)) => Local::format_issue_filename(Some(*n), title, closed),
 				Some(IssueSelector::Title(_)) | None => {
 					let ext = if closed { ".md.bak" } else { ".md" };
@@ -1404,7 +1421,7 @@ impl crate::LazyIssue<Local> for Issue {
 		Ok(index.parent())
 	}
 
-	async fn identity(&mut self, mut source: Self::Source) -> Result<crate::IssueIdentity, Self::Error> {
+	async fn identity(&mut self, source: Self::Source) -> Result<crate::IssueIdentity, Self::Error> {
 		if self.identity.is_linked() {
 			return Ok(self.identity.clone());
 		}
@@ -1412,8 +1429,8 @@ impl crate::LazyIssue<Local> for Issue {
 		let index = *source.index();
 
 		if self.contents.title.is_empty() {
-			let file_path = source.local_path.find_file_path(&source.reader)?;
-			let content = source.reader.read_content(&file_path).ok_or_else(|| LocalError::FileNotFound { path: file_path.clone() })?;
+			let file_path = source.local_path.clone().resolve_parent(source.reader.clone())?.search()?.path();
+			let content = source.reader.read_content(&file_path)?;
 			let parsed = Local::parse_single_node(&content, index, &file_path)?;
 			self.identity = parsed.identity;
 			self.contents = parsed.contents;
@@ -1429,14 +1446,14 @@ impl crate::LazyIssue<Local> for Issue {
 		Ok(self.identity.clone())
 	}
 
-	async fn contents(&mut self, mut source: Self::Source) -> Result<crate::IssueContents, Self::Error> {
+	async fn contents(&mut self, source: Self::Source) -> Result<crate::IssueContents, Self::Error> {
 		if !self.contents.title.is_empty() {
 			return Ok(self.contents.clone());
 		}
 
 		let index = *source.index();
-		let file_path = source.local_path.find_file_path(&source.reader)?;
-		let content = source.reader.read_content(&file_path).ok_or_else(|| LocalError::FileNotFound { path: file_path.clone() })?;
+		let file_path = source.local_path.clone().resolve_parent(source.reader.clone())?.search()?.path();
+		let content = source.reader.read_content(&file_path)?;
 		let parsed = Local::parse_single_node(&content, index, &file_path)?;
 		self.identity = parsed.identity;
 		self.contents = parsed.contents;
@@ -1444,18 +1461,17 @@ impl crate::LazyIssue<Local> for Issue {
 		Ok(self.contents.clone())
 	}
 
-	async fn children(&mut self, mut source: Self::Source) -> Result<Vec<Issue>, Self::Error> {
+	async fn children(&mut self, source: Self::Source) -> Result<Vec<Issue>, Self::Error> {
 		if !self.children.is_empty() {
 			return Ok(self.children.clone());
 		}
 
-		// Check if this issue has a directory (children stored in separate files)
-		let dir_path = source.local_path.find_dir_path(&source.reader);
+		let dir_path = source.local_path.clone().resolve_parent(source.reader.clone())?.search()?.issue_dir();
 		let Some(dir_path) = dir_path else {
-			return Ok(Vec::new());
+			return Ok(Vec::new()); // Flat file, no children
 		};
 
-		let entries = source.reader.list_dir(&dir_path);
+		let entries = source.reader.list_dir(&dir_path).unwrap_or_default();
 		let mut children = Vec::new();
 		let this_index = *source.index();
 
@@ -1464,7 +1480,6 @@ impl crate::LazyIssue<Local> for Issue {
 				continue;
 			}
 
-			// Parse child issue number from filename/dirname
 			let child_selector = match Local::parse_issue_selector_from_name(&name) {
 				Some(sel) => sel,
 				None => continue,
@@ -1513,7 +1528,7 @@ impl crate::LazyIssue<LocalConsensus> for Issue {
 		Ok(index.parent())
 	}
 
-	async fn identity(&mut self, mut source: Self::Source) -> Result<crate::IssueIdentity, Self::Error> {
+	async fn identity(&mut self, source: Self::Source) -> Result<crate::IssueIdentity, Self::Error> {
 		if self.identity.is_linked() {
 			return Ok(self.identity.clone());
 		}
@@ -1521,8 +1536,8 @@ impl crate::LazyIssue<LocalConsensus> for Issue {
 		let index = *source.index();
 
 		if self.contents.title.is_empty() {
-			let file_path = source.local_path.find_file_path(&source.reader)?;
-			let content = source.reader.read_content(&file_path).ok_or_else(|| LocalError::FileNotFound { path: file_path.clone() })?;
+			let file_path = source.local_path.clone().resolve_parent(source.reader.clone())?.search()?.path();
+			let content = source.reader.read_content(&file_path)?;
 			let parsed = Local::parse_single_node(&content, index, &file_path)?;
 			self.identity = parsed.identity;
 			self.contents = parsed.contents;
@@ -1538,14 +1553,14 @@ impl crate::LazyIssue<LocalConsensus> for Issue {
 		Ok(self.identity.clone())
 	}
 
-	async fn contents(&mut self, mut source: Self::Source) -> Result<crate::IssueContents, Self::Error> {
+	async fn contents(&mut self, source: Self::Source) -> Result<crate::IssueContents, Self::Error> {
 		if !self.contents.title.is_empty() {
 			return Ok(self.contents.clone());
 		}
 
 		let index = *source.index();
-		let file_path = source.local_path.find_file_path(&source.reader)?;
-		let content = source.reader.read_content(&file_path).ok_or_else(|| LocalError::FileNotFound { path: file_path.clone() })?;
+		let file_path = source.local_path.clone().resolve_parent(source.reader.clone())?.search()?.path();
+		let content = source.reader.read_content(&file_path)?;
 		let parsed = Local::parse_single_node(&content, index, &file_path)?;
 		self.identity = parsed.identity;
 		self.contents = parsed.contents;
@@ -1553,17 +1568,17 @@ impl crate::LazyIssue<LocalConsensus> for Issue {
 		Ok(self.contents.clone())
 	}
 
-	async fn children(&mut self, mut source: Self::Source) -> Result<Vec<Issue>, Self::Error> {
+	async fn children(&mut self, source: Self::Source) -> Result<Vec<Issue>, Self::Error> {
 		if !self.children.is_empty() {
 			return Ok(self.children.clone());
 		}
 
-		let dir_path = source.local_path.find_dir_path(&source.reader);
+		let dir_path = source.local_path.clone().resolve_parent(source.reader.clone())?.search()?.issue_dir();
 		let Some(dir_path) = dir_path else {
-			return Ok(Vec::new());
+			return Ok(Vec::new()); // Flat file, no children
 		};
 
-		let entries = source.reader.list_dir(&dir_path);
+		let entries = source.reader.list_dir(&dir_path).unwrap_or_default();
 		let mut children = Vec::new();
 		let this_index = *source.index();
 

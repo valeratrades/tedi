@@ -17,8 +17,8 @@ pub async fn load_consensus_issue(index: IssueIndex) -> Result<Option<Issue>, Lo
 	let source = LocalIssueSource::<GitReader>::from(index);
 
 	// Check if the file exists in git
-	let mut local_path = source.local_path.clone();
-	if local_path.find_file_path(&source.reader).is_err() {
+	let exists = source.local_path.clone().resolve_parent(source.reader.clone()).and_then(|r| r.search()).is_ok();
+	if !exists {
 		return Ok(None);
 	}
 
