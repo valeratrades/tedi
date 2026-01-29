@@ -17,7 +17,7 @@
 pub mod conflict;
 pub mod consensus;
 /// Error type for local issue loading operations.
-#[derive(Debug, miette::Diagnostic, thiserror::Error, derive_more::From)]
+#[derive(Debug, thiserror::Error, derive_more::From)]
 pub enum LocalError {
 	/// Path resolution or IO error.
 	#[error(transparent)]
@@ -43,7 +43,6 @@ pub enum LocalError {
 
 	/// Unresolved merge conflict blocks operation.
 	#[error(transparent)]
-	#[diagnostic(transparent)]
 	ConflictBlocked(conflict::ConflictBlockedError),
 }
 
