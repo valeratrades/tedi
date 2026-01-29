@@ -883,7 +883,7 @@ impl Local {
 				Ok(meta) => meta,
 				Err(e) => panic!("corrupted project metadata at {}: {e}", meta_path.display()),
 			},
-			Err(ReaderError::NotFound { .. }) => ProjectMeta::default(),
+			Err(e) if e.is_not_found() => ProjectMeta::default(),
 			Err(e) => panic!("failed to read project metadata at {}: {e}", meta_path.display()),
 		}
 	}
@@ -987,14 +987,9 @@ mod local_path {
 		},
 
 		/// Reader operation failed.
-		#[error("while resolving {selector:?}")]
+		#[error("while resolving {selector:?}: {source}")]
 		#[diagnostic(code(tedi::local::reader))]
-		Reader {
-			selector: IssueSelector,
-			#[source]
-			#[diagnostic_source]
-			source: ReaderError,
-		},
+		Reader { selector: IssueSelector, source: ReaderError },
 	}
 
 	/// Result of finding an entry matching a selector.
@@ -1394,12 +1389,14 @@ impl crate::LazyIssue<Local> for Issue {
 	type Error = LocalError;
 	type Source = LocalIssueSource<FsReader>;
 
+	#[tracing::instrument(skip(source))]
 	async fn parent_index(source: &Self::Source) -> Result<crate::IssueIndex, Self::Error> {
 		// The source's IssueIndex IS the issue's index; parent_index is derived from it
 		let index = source.index();
 		Ok(index.parent())
 	}
 
+	#[tracing::instrument(skip(self, source))]
 	async fn identity(&mut self, source: Self::Source) -> Result<crate::IssueIdentity, Self::Error> {
 		if self.identity.is_linked() {
 			return Ok(self.identity.clone());
@@ -1425,6 +1422,7 @@ impl crate::LazyIssue<Local> for Issue {
 		Ok(self.identity.clone())
 	}
 
+	#[tracing::instrument(skip(self, source))]
 	async fn contents(&mut self, source: Self::Source) -> Result<crate::IssueContents, Self::Error> {
 		if !self.contents.title.is_empty() {
 			return Ok(self.contents.clone());
@@ -1440,6 +1438,7 @@ impl crate::LazyIssue<Local> for Issue {
 		Ok(self.contents.clone())
 	}
 
+	#[tracing::instrument(skip(self, source))]
 	async fn children(&mut self, source: Self::Source) -> Result<Vec<Issue>, Self::Error> {
 		if !self.children.is_empty() {
 			return Ok(self.children.clone());
@@ -1477,6 +1476,7 @@ impl crate::LazyIssue<Local> for Issue {
 		Ok(children)
 	}
 
+	#[tracing::instrument(skip(source))]
 	async fn load(source: Self::Source) -> Result<Issue, Self::Error> {
 		// Check for unresolved conflicts (only for FsReader/Submitted, and only for root loads)
 		conflict::check_conflict(source.index().owner())?;

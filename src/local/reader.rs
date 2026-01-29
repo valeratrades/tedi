@@ -5,59 +5,127 @@
 
 use std::path::{Path, PathBuf};
 
+use color_eyre::owo_colors::OwoColorize;
 use miette::{NamedSource, SourceSpan};
 use tracing::{info, instrument};
+use tracing_error::SpanTrace;
 
 use super::Local;
 
 /// Error type for LocalReader operations.
 ///
-/// Only covers failures possible from both FsReader and GitReader.
-/// Random unrecoverable errors go to Other.
+/// Contains the error kind (for matching), pre-rendered miette diagnostic,
+/// and a SpanTrace captured at error creation time.
+#[derive(Debug, thiserror::Error)]
+#[error("{rendered}\n\n{spantrace}")]
+pub struct ReaderError {
+	pub kind: ReaderErrorKind,
+	rendered: String,
+	spantrace: SpanTrace,
+}
+
+/// The kind of reader error (for pattern matching).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReaderErrorKind {
+	NotFound,
+	NotADirectory,
+	PermissionDenied,
+	InvalidUtf8,
+	OutsideIssuesDir,
+	GitNotInitialized,
+	Other,
+}
+
+/// Internal miette diagnostic for nice error rendering with source highlighting.
 #[derive(Debug, miette::Diagnostic, thiserror::Error)]
-pub enum ReaderError {
-	/// Path does not exist
+enum ReaderDiagnostic {
 	#[error("path not found: {}", path.display())]
 	#[diagnostic(code(tedi::reader::not_found))]
 	NotFound { path: PathBuf },
 
-	/// Path is not a directory (tried to list_dir on a file)
 	#[error("expected directory, found file")]
 	#[diagnostic(code(tedi::reader::not_a_directory))]
 	NotADirectory {
-		path: PathBuf,
 		#[source_code]
 		path_source: NamedSource<String>,
 		#[label("this is a file, not a directory")]
 		span: SourceSpan,
 	},
 
-	/// Permission denied reading path
 	#[error("permission denied: {}", path.display())]
 	#[diagnostic(code(tedi::reader::permission_denied))]
 	PermissionDenied { path: PathBuf },
 
-	/// File content is not valid UTF-8
 	#[error("invalid UTF-8 in file: {}", path.display())]
 	#[diagnostic(code(tedi::reader::invalid_utf8))]
 	InvalidUtf8 { path: PathBuf },
 
-	/// Path is outside the issues directory (security boundary)
 	#[error("path outside issues directory: {}", path.display())]
 	#[diagnostic(code(tedi::reader::outside_issues_dir))]
 	OutsideIssuesDir { path: PathBuf },
 
-	/// Git repository not initialized
 	#[error("git not initialized in issues directory")]
 	#[diagnostic(code(tedi::reader::git_not_initialized), help("Run 'git init' in the issues directory"))]
 	GitNotInitialized,
 
-	/// Other errors
 	#[error("{0}")]
 	#[diagnostic(code(tedi::reader::other))]
-	Other(#[from] color_eyre::Report),
+	Other(String),
 }
 
+impl ReaderError {
+	fn from_diagnostic(kind: ReaderErrorKind, diag: ReaderDiagnostic) -> Self {
+		let rendered = format!("{:?}", miette::Report::new(diag));
+		Self {
+			kind,
+			rendered,
+			spantrace: SpanTrace::capture(),
+		}
+	}
+
+	pub fn not_found(path: &Path) -> Self {
+		Self::from_diagnostic(ReaderErrorKind::NotFound, ReaderDiagnostic::NotFound { path: path.to_path_buf() })
+	}
+
+	pub fn not_a_directory(path: &Path) -> Self {
+		let path_str = path.display().to_string();
+		let last_component = path.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+		let span_start = path_str.len().saturating_sub(last_component.len());
+		let span_len = last_component.len();
+
+		Self::from_diagnostic(
+			ReaderErrorKind::NotADirectory,
+			ReaderDiagnostic::NotADirectory {
+				path_source: NamedSource::new("path", path_str),
+				span: (span_start, span_len).into(),
+			},
+		)
+	}
+
+	pub fn permission_denied(path: &Path) -> Self {
+		Self::from_diagnostic(ReaderErrorKind::PermissionDenied, ReaderDiagnostic::PermissionDenied { path: path.to_path_buf() })
+	}
+
+	pub fn invalid_utf8(path: &Path) -> Self {
+		Self::from_diagnostic(ReaderErrorKind::InvalidUtf8, ReaderDiagnostic::InvalidUtf8 { path: path.to_path_buf() })
+	}
+
+	pub fn outside_issues_dir(path: &Path) -> Self {
+		Self::from_diagnostic(ReaderErrorKind::OutsideIssuesDir, ReaderDiagnostic::OutsideIssuesDir { path: path.to_path_buf() })
+	}
+
+	pub fn git_not_initialized() -> Self {
+		Self::from_diagnostic(ReaderErrorKind::GitNotInitialized, ReaderDiagnostic::GitNotInitialized)
+	}
+
+	pub fn other(err: impl std::fmt::Display) -> Self {
+		Self::from_diagnostic(ReaderErrorKind::Other, ReaderDiagnostic::Other(err.to_string()))
+	}
+
+	pub fn is_not_found(&self) -> bool {
+		self.kind == ReaderErrorKind::NotFound
+	}
+}
 /// Trait for reading content from different sources (filesystem or git).
 ///
 /// Separates the read abstraction from path computation.
@@ -80,27 +148,10 @@ impl FsReader {
 	/// Convert std::io::Error to ReaderError with path context.
 	fn io_err(e: std::io::Error, path: &Path) -> ReaderError {
 		match e.kind() {
-			std::io::ErrorKind::NotFound => ReaderError::NotFound { path: path.to_path_buf() },
+			std::io::ErrorKind::NotFound => ReaderError::not_found(path),
 			std::io::ErrorKind::NotADirectory => ReaderError::not_a_directory(path),
-			std::io::ErrorKind::PermissionDenied => ReaderError::PermissionDenied { path: path.to_path_buf() },
-			_ => ReaderError::Other(color_eyre::eyre::eyre!("I/O error on {}: {e}", path.display())),
-		}
-	}
-}
-
-impl ReaderError {
-	/// Create a NotADirectory error with source highlighting for the problematic path component.
-	pub fn not_a_directory(path: &Path) -> Self {
-		let path_str = path.display().to_string();
-		// Find the last component to highlight
-		let last_component = path.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
-		let span_start = path_str.len().saturating_sub(last_component.len());
-		let span_len = last_component.len();
-
-		Self::NotADirectory {
-			path: path.to_path_buf(),
-			path_source: NamedSource::new("path", path_str),
-			span: (span_start, span_len).into(),
+			std::io::ErrorKind::PermissionDenied => ReaderError::permission_denied(path),
+			_ => ReaderError::other(format!("I/O error on {}: {e}", path.display())),
 		}
 	}
 }
@@ -108,7 +159,7 @@ impl ReaderError {
 impl LocalReader for FsReader {
 	fn read_content(&self, path: &Path) -> Result<String, ReaderError> {
 		match std::fs::read(path) {
-			Ok(bytes) => String::from_utf8(bytes).map_err(|_| ReaderError::InvalidUtf8 { path: path.to_path_buf() }),
+			Ok(bytes) => String::from_utf8(bytes).map_err(|_| ReaderError::invalid_utf8(path)),
 			Err(e) => Err(Self::io_err(e, path)),
 		}
 	}
@@ -149,20 +200,20 @@ impl GitReader {
 	/// Get relative path within issues dir, or error if outside.
 	fn rel_path(path: &Path) -> Result<(&Path, PathBuf), ReaderError> {
 		let data_dir = Local::issues_dir();
-		let rel_path = path.strip_prefix(&data_dir).map_err(|_| ReaderError::OutsideIssuesDir { path: path.to_path_buf() })?;
+		let rel_path = path.strip_prefix(&data_dir).map_err(|_| ReaderError::outside_issues_dir(path))?;
 		Ok((rel_path, data_dir))
 	}
 
 	/// Check if git is initialized in the issues directory.
 	fn check_git_initialized(data_dir: &Path) -> Result<(), ReaderError> {
 		use std::process::Command;
-		let data_dir_str = data_dir.to_str().ok_or_else(|| ReaderError::Other(color_eyre::eyre::eyre!("issues dir path not valid UTF-8")))?;
+		let data_dir_str = data_dir.to_str().ok_or_else(|| ReaderError::other(format!("issues dir path not valid UTF-8")))?;
 		let git_check = Command::new("git")
 			.args(["-C", data_dir_str, "rev-parse", "--git-dir"])
 			.output()
-			.map_err(|e| ReaderError::Other(color_eyre::eyre::eyre!("failed to run git: {e}")))?;
+			.map_err(|e| ReaderError::other(format!("failed to run git: {e}")))?;
 		if !git_check.status.success() {
-			return Err(ReaderError::GitNotInitialized);
+			return Err(ReaderError::git_not_initialized());
 		}
 		Ok(())
 	}
@@ -174,10 +225,8 @@ impl LocalReader for GitReader {
 		use std::process::Command;
 
 		let (rel_path, data_dir) = Self::rel_path(path)?;
-		let data_dir_str = data_dir.to_str().ok_or_else(|| ReaderError::Other(color_eyre::eyre::eyre!("issues dir path not valid UTF-8")))?;
-		let rel_path_str = rel_path
-			.to_str()
-			.ok_or_else(|| ReaderError::Other(color_eyre::eyre::eyre!("path not valid UTF-8: {}", path.display())))?;
+		let data_dir_str = data_dir.to_str().ok_or_else(|| ReaderError::other(format!("issues dir path not valid UTF-8")))?;
+		let rel_path_str = rel_path.to_str().ok_or_else(|| ReaderError::other(format!("path not valid UTF-8: {}", path.display())))?;
 
 		Self::check_git_initialized(&data_dir)?;
 
@@ -185,22 +234,22 @@ impl LocalReader for GitReader {
 		let ls_output = Command::new("git")
 			.args(["-C", data_dir_str, "ls-files", rel_path_str])
 			.output()
-			.map_err(|e| ReaderError::Other(color_eyre::eyre::eyre!("git ls-files failed: {e}")))?;
+			.map_err(|e| ReaderError::other(format!("git ls-files failed: {e}")))?;
 		if !ls_output.status.success() || ls_output.stdout.is_empty() {
-			return Err(ReaderError::NotFound { path: path.to_path_buf() });
+			return Err(ReaderError::not_found(path));
 		}
 
 		// Read from HEAD
 		let output = Command::new("git")
 			.args(["-C", data_dir_str, "show", &format!("HEAD:./{rel_path_str}")])
 			.output()
-			.map_err(|e| ReaderError::Other(color_eyre::eyre::eyre!("git show failed: {e}")))?;
+			.map_err(|e| ReaderError::other(format!("git show failed: {e}")))?;
 
 		if !output.status.success() {
-			return Err(ReaderError::NotFound { path: path.to_path_buf() });
+			return Err(ReaderError::not_found(path));
 		}
 
-		String::from_utf8(output.stdout).map_err(|_| ReaderError::InvalidUtf8 { path: path.to_path_buf() })
+		String::from_utf8(output.stdout).map_err(|_| ReaderError::invalid_utf8(path))
 	}
 
 	#[instrument]
@@ -208,28 +257,26 @@ impl LocalReader for GitReader {
 		use std::process::Command;
 
 		let (rel_dir, data_dir) = Self::rel_path(path)?;
-		let data_dir_str = data_dir.to_str().ok_or_else(|| ReaderError::Other(color_eyre::eyre::eyre!("issues dir path not valid UTF-8")))?;
-		let rel_dir_str = rel_dir
-			.to_str()
-			.ok_or_else(|| ReaderError::Other(color_eyre::eyre::eyre!("path not valid UTF-8: {}", path.display())))?;
+		let data_dir_str = data_dir.to_str().ok_or_else(|| ReaderError::other(format!("issues dir path not valid UTF-8")))?;
+		let rel_dir_str = rel_dir.to_str().ok_or_else(|| ReaderError::other(format!("path not valid UTF-8: {}", path.display())))?;
 
 		Self::check_git_initialized(&data_dir)?;
 
 		let output = Command::new("git")
 			.args(["-C", data_dir_str, "ls-tree", "--name-only", "HEAD", &format!("{rel_dir_str}/")])
 			.output()
-			.map_err(|e| ReaderError::Other(color_eyre::eyre::eyre!("git ls-tree failed: {e}")))?;
+			.map_err(|e| ReaderError::other(format!("git ls-tree failed: {e}")))?;
 
 		if !output.status.success() {
 			// Directory doesn't exist in git
-			let e = ReaderError::NotFound { path: path.to_path_buf() };
+			let e = ReaderError::not_found(path);
 			info!("directory doesn't exist in git: {e}");
 			return Err(e);
 		}
 
 		let prefix = format!("{rel_dir_str}/");
 		let entries = std::str::from_utf8(&output.stdout)
-			.map_err(|_| ReaderError::Other(color_eyre::eyre::eyre!("git output not valid UTF-8")))?
+			.map_err(|_| ReaderError::other(format!("git output not valid UTF-8")))?
 			.lines()
 			.filter_map(|line| line.strip_prefix(&prefix))
 			.map(|s| s.to_string())
@@ -241,17 +288,15 @@ impl LocalReader for GitReader {
 		use std::process::Command;
 
 		let (rel_dir, data_dir) = Self::rel_path(path)?;
-		let data_dir_str = data_dir.to_str().ok_or_else(|| ReaderError::Other(color_eyre::eyre::eyre!("issues dir path not valid UTF-8")))?;
-		let rel_dir_str = rel_dir
-			.to_str()
-			.ok_or_else(|| ReaderError::Other(color_eyre::eyre::eyre!("path not valid UTF-8: {}", path.display())))?;
+		let data_dir_str = data_dir.to_str().ok_or_else(|| ReaderError::other(format!("issues dir path not valid UTF-8")))?;
+		let rel_dir_str = rel_dir.to_str().ok_or_else(|| ReaderError::other(format!("path not valid UTF-8: {}", path.display())))?;
 
 		Self::check_git_initialized(&data_dir)?;
 
 		let check = Command::new("git")
 			.args(["-C", data_dir_str, "ls-tree", "HEAD", &format!("{rel_dir_str}/")])
 			.output()
-			.map_err(|e| ReaderError::Other(color_eyre::eyre::eyre!("git ls-tree failed: {e}")))?;
+			.map_err(|e| ReaderError::other(format!("git ls-tree failed: {e}")))?;
 
 		Ok(check.status.success() && !check.stdout.is_empty())
 	}
@@ -260,7 +305,7 @@ impl LocalReader for GitReader {
 		// For git, existence = either file content readable or is a directory
 		match self.read_content(path) {
 			Ok(_) => Ok(true),
-			Err(ReaderError::NotFound { .. }) => self.is_dir(path),
+			Err(e) if e.is_not_found() => self.is_dir(path),
 			Err(e) => Err(e),
 		}
 	}
