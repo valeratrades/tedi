@@ -1509,7 +1509,7 @@ impl crate::LazyIssue<Local> for Issue {
 			return Ok(self.children.clone());
 		}
 
-		let dir_path = source.local_path.clone().resolve_parent(source.reader.clone())?.search()?.issue_dir();
+		let dir_path = source.local_path.clone().resolve_parent(source.reader)?.search()?.issue_dir();
 		let Some(dir_path) = dir_path else {
 			return Ok(Vec::new()); // Flat file, no children
 		};
@@ -1568,6 +1568,7 @@ impl crate::LazyIssue<LocalConsensus> for Issue {
 		Ok(index.parent())
 	}
 
+	#[instrument]
 	async fn identity(&mut self, source: Self::Source) -> Result<crate::IssueIdentity, Self::Error> {
 		tracing::debug!(is_linked = self.identity.is_linked(), "LazyIssue<LocalConsensus>::identity");
 		if self.identity.is_linked() {
@@ -1597,6 +1598,7 @@ impl crate::LazyIssue<LocalConsensus> for Issue {
 		Ok(self.identity.clone())
 	}
 
+	#[instrument]
 	async fn contents(&mut self, source: Self::Source) -> Result<crate::IssueContents, Self::Error> {
 		if !self.contents.title.is_empty() {
 			return Ok(self.contents.clone());
@@ -1612,12 +1614,13 @@ impl crate::LazyIssue<LocalConsensus> for Issue {
 		Ok(self.contents.clone())
 	}
 
+	#[instrument]
 	async fn children(&mut self, source: Self::Source) -> Result<Vec<Issue>, Self::Error> {
 		if !self.children.is_empty() {
 			return Ok(self.children.clone());
 		}
 
-		let dir_path = source.local_path.clone().resolve_parent(source.reader.clone())?.search()?.issue_dir();
+		let dir_path = source.local_path.clone().resolve_parent(source.reader)?.search()?.issue_dir();
 		let Some(dir_path) = dir_path else {
 			return Ok(Vec::new()); // Flat file, no children
 		};
@@ -1649,6 +1652,7 @@ impl crate::LazyIssue<LocalConsensus> for Issue {
 		Ok(children)
 	}
 
+	#[instrument]
 	async fn load(source: Self::Source) -> Result<Issue, Self::Error> {
 		// No conflict check for consensus loading (we're reading committed state)
 		let parent_index = <Self as crate::LazyIssue<LocalConsensus>>::parent_index(&source).await?.unwrap();

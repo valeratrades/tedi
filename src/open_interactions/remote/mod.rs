@@ -145,7 +145,7 @@ impl RemoteSource {
 		// Build parent_index with all parent numbers as GitId selectors
 		// Return None for root-level issues (empty lineage)
 		if lineage.is_empty() {
-			Ok(None)
+			Ok(Some(IssueIndex::repo_only(repo_info.owner(), repo_info.repo())))
 		} else {
 			let selectors: Vec<IssueSelector> = lineage.iter().map(|&n| IssueSelector::GitId(n)).collect();
 			Ok(Some(IssueIndex::with_index(repo_info.owner(), repo_info.repo(), selectors)))
@@ -176,6 +176,7 @@ impl tedi::LazyIssue<Remote> for Issue {
 		source.resolve_parent_index().await
 	}
 
+	#[instrument]
 	async fn identity(&mut self, source: Self::Source) -> Result<IssueIdentity, Self::Error> {
 		if self.identity.is_linked() {
 			return Ok(self.identity.clone());
@@ -209,6 +210,7 @@ impl tedi::LazyIssue<Remote> for Issue {
 		Ok(self.identity.clone())
 	}
 
+	#[instrument]
 	async fn contents(&mut self, source: Self::Source) -> Result<IssueContents, Self::Error> {
 		if !self.contents.title.is_empty() {
 			return Ok(self.contents.clone());
@@ -253,6 +255,7 @@ impl tedi::LazyIssue<Remote> for Issue {
 		Ok(self.contents.clone())
 	}
 
+	#[instrument]
 	async fn children(&mut self, source: Self::Source) -> Result<Vec<Issue>, Self::Error> {
 		if !self.children.is_empty() {
 			return Ok(self.children.clone());
@@ -295,6 +298,7 @@ impl tedi::LazyIssue<Remote> for Issue {
 		Ok(children)
 	}
 
+	#[instrument]
 	async fn load(source: Self::Source) -> Result<Issue, Self::Error> {
 		let parent_index = <Self as tedi::LazyIssue<Remote>>::parent_index(&source).await?.unwrap();
 		let mut issue = Issue::empty_local(parent_index);
@@ -306,6 +310,7 @@ impl tedi::LazyIssue<Remote> for Issue {
 }
 
 /// Build IssueContents from GitHub API data.
+#[instrument]
 fn build_contents_from_github(issue: &GithubIssue, comments: &[GithubComment]) -> IssueContents {
 	let close_state = CloseState::from_github(&issue.state, issue.state_reason.as_deref());
 	let labels: Vec<String> = issue.labels.iter().map(|l| l.name.clone()).collect();

@@ -76,6 +76,7 @@ pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Mo
 	if !offline && let Some(issue_number) = issue.number() {
 		let prefers_local = matches!(sync_opts.peek_merge_mode(), MergeMode::Reset { prefer: Side::Local } | MergeMode::Force { prefer: Side::Local });
 
+		//Q: why are we only doing for `!prefers_local`? What about if it's `--force` not `--reset`?
 		if !prefers_local {
 			let consensus = load_consensus_issue(issue_index).await?;
 			let local_differs = consensus.as_ref().map(|c| *c != issue).unwrap_or(false);

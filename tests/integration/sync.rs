@@ -642,9 +642,9 @@ async fn test_force_merge_preserves_both_sub_issues(#[case] args: &[&str], #[cas
 		 \tparent body\n",
 	);
 
-	ctx.consensus(&consensus, None).await;
-	ctx.local(&local, None).await;
-	ctx.remote(&remote, None);
+	ctx.consensus(&consensus, Some(Seed::new(-100))).await;
+	ctx.local(&local, Some(Seed::new(100))).await;
+	ctx.remote(&remote, Some(Seed::new(100)));
 
 	let out = ctx.open(&local).args(args).run();
 
