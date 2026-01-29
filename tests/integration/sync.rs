@@ -637,8 +637,8 @@ fn test_force_merge_preserves_both_sub_issues(#[case] args: &[&str], #[case] exp
 		 \tparent body\n",
 	);
 
-	let issue_path = ctx.consensus(&consensus, None);
-	ctx.local(&local, None);
+	ctx.consensus(&consensus, None);
+	let issue_path = ctx.local(&local, None);
 	ctx.remote(&remote, None);
 
 	let out = ctx.open(&issue_path).args(args).run();

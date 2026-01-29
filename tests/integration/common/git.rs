@@ -39,7 +39,11 @@
 
 use std::{cell::RefCell, collections::HashSet, path::PathBuf};
 
-use tedi::{Issue, IssueTimestamps};
+use tedi::{
+	Issue, IssueTimestamps,
+	local::{Consensus, FsReader, LocalPath, Submitted},
+	sink::Sink,
+};
 use v_fixtures::fs_standards::git::Git;
 
 use super::TestContext;
@@ -106,6 +110,7 @@ pub struct GitState {
 	remote_issue_ids: HashSet<(String, String, u64)>,
 }
 /// Extension trait for git and issue setup operations.
+#[allow(async_fn_in_trait)]
 pub trait GitExt {
 	/// Initialize git in the issues directory.
 	fn init_git(&self) -> Git;
@@ -115,14 +120,14 @@ pub trait GitExt {
 	/// Panics if same (owner, repo, number) is submitted twice.
 	///
 	/// If `seed` is provided, timestamps are generated from it and written to `.meta.json`.
-	fn local(&self, issue: &Issue, seed: Option<Seed>) -> PathBuf;
+	async fn local(&self, issue: &Issue, seed: Option<Seed>) -> PathBuf;
 
 	/// Write issue and commit to git as consensus state. Additive - can call multiple times.
 	/// Returns the path to the issue file.
 	/// Panics if same (owner, repo, number) is submitted twice.
 	///
 	/// If `seed` is provided, timestamps are generated from it and written to `.meta.json`.
-	fn consensus(&self, issue: &Issue, seed: Option<Seed>) -> PathBuf;
+	async fn consensus(&self, issue: &Issue, seed: Option<Seed>) -> PathBuf;
 
 	/// Set up mock Github API to return this issue. Additive - can call multiple times.
 	/// Handles sub-issues automatically.
@@ -210,7 +215,7 @@ impl GitExt for TestContext {
 		Git::init(self.xdg.data_dir().join("issues"))
 	}
 
-	fn local(&self, issue: &Issue, seed: Option<Seed>) -> PathBuf {
+	async fn local(&self, issue: &Issue, seed: Option<Seed>) -> PathBuf {
 		let (owner, repo, number) = extract_issue_coords(issue);
 		let key = (owner.clone(), repo.clone(), number);
 
@@ -221,7 +226,13 @@ impl GitExt for TestContext {
 			state.local_issues.insert(key);
 		});
 
-		let path = self.write_issue_tree(&owner, &repo, number, issue);
+		// Set XDG env vars and sink using actual library implementation
+		self.set_xdg_env();
+		let mut issue_clone = issue.clone();
+		<Issue as Sink<Submitted>>::sink(&mut issue_clone, None).await.expect("local sink failed");
+
+		// Find actual path where issue was written
+		let path = LocalPath::from(issue).resolve_parent(FsReader).unwrap().search().unwrap().path();
 
 		// Write timestamps to .meta.json if seed provided
 		if let Some(seed) = seed {
@@ -232,7 +243,7 @@ impl GitExt for TestContext {
 		path
 	}
 
-	fn consensus(&self, issue: &Issue, seed: Option<Seed>) -> PathBuf {
+	async fn consensus(&self, issue: &Issue, seed: Option<Seed>) -> PathBuf {
 		let (owner, repo, number) = extract_issue_coords(issue);
 		let key = (owner.clone(), repo.clone(), number);
 
@@ -243,17 +254,19 @@ impl GitExt for TestContext {
 			state.consensus_issues.insert(key);
 		});
 
-		let path = self.write_issue_tree(&owner, &repo, number, issue);
+		// Set XDG env vars and sink using actual library implementation
+		self.set_xdg_env();
+		let mut issue_clone = issue.clone();
+		<Issue as Sink<Consensus>>::sink(&mut issue_clone, None).await.expect("consensus sink failed");
+
+		// Find actual path where issue was written
+		let path = LocalPath::from(issue).resolve_parent(FsReader).unwrap().search().unwrap().path();
 
 		// Write timestamps to .meta.json if seed provided
 		if let Some(seed) = seed {
 			let timestamps = timestamps_from_seed(seed);
 			self.write_issue_meta(&owner, &repo, number, &timestamps);
 		}
-
-		let git = self.init_git();
-		git.add_all();
-		git.commit(&format!("consensus {owner}/{repo}#{number}"));
 
 		path
 	}
@@ -302,46 +315,14 @@ impl GitExt for TestContext {
 }
 
 impl TestContext {
-	/// Write an issue tree to the filesystem, with each node in its own file.
-	/// Returns the path to the root issue file.
-	#[deprecated(note = "should use actualy logic from the actual lib instead of reimplementing it")]
-	fn write_issue_tree(&self, owner: &str, repo: &str, number: u64, issue: &Issue) -> PathBuf {
-		self.write_issue_tree_recursive(owner, repo, number, issue, &[])
-	}
-
-	#[deprecated(note = "should use actualy logic from the actual lib instead of reimplementing it")]
-	fn write_issue_tree_recursive(&self, owner: &str, repo: &str, number: u64, issue: &Issue, ancestors: &[String]) -> PathBuf {
-		let sanitized_title = issue.contents.title.replace(' ', "_");
-		let has_children = !issue.children.is_empty();
-
-		// Build base path: issues/{owner}/{repo}/{ancestors...}
-		let mut base_path = format!("issues/{owner}/{repo}");
-		for ancestor in ancestors {
-			base_path = format!("{base_path}/{ancestor}");
-		}
-
-		if has_children {
-			// Directory format: {base}/{number}_-_{title}/__main__.md
-			let dir_name = format!("{number}_-_{sanitized_title}");
-			let dir_path = format!("{base_path}/{dir_name}");
-			let file_path = format!("{dir_path}/__main__.md");
-			self.xdg.write_data(&file_path, &issue.serialize_filesystem());
-
-			// Write each child recursively
-			let mut child_ancestors = ancestors.to_vec();
-			child_ancestors.push(dir_name);
-			for child in &issue.children {
-				let child_number = child.number().unwrap_or(0);
-				self.write_issue_tree_recursive(owner, repo, child_number, child, &child_ancestors);
+	/// Set XDG environment variables to point to our temp fixture.
+	/// Required before calling any library functions that use `Local::issues_dir()`.
+	fn set_xdg_env(&self) {
+		// SAFETY: Tests use unique temp dirs, so env var "leakage" between parallel tests is harmless
+		unsafe {
+			for (key, value) in self.xdg.env_vars() {
+				std::env::set_var(key, value);
 			}
-
-			self.xdg.data_dir().join(&dir_path).join("__main__.md")
-		} else {
-			// Flat format: {base}/{number}_-_{title}.md
-			let filename = format!("{number}_-_{sanitized_title}.md");
-			let file_path = format!("{base_path}/{filename}");
-			self.xdg.write_data(&file_path, &issue.serialize_filesystem());
-			self.xdg.data_dir().join(&base_path).join(&filename)
 		}
 	}
 
