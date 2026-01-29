@@ -3,6 +3,7 @@
 //! This module contains the pure Issue type with parsing and serialization.
 
 use arrayvec::ArrayString;
+use copy_arrayvec::CopyArrayVec;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use url::Url;
@@ -555,22 +556,20 @@ pub const MAX_INDEX_DEPTH: usize = MAX_LINEAGE_DEPTH + 1;
 #[derive(Clone, Copy, Debug, derive_more::Deref, derive_more::DerefMut, Eq, PartialEq)]
 pub struct IssueIndex {
 	repo_info: RepoInfo,
-	/// Path from root to target issue (inclusive). Uses fixed array with length tracking.
+	/// Path from root to target issue (inclusive).
 	#[deref]
 	#[deref_mut]
-	index_arr: [IssueSelector; MAX_INDEX_DEPTH],
-	index_len: u8,
+	index: CopyArrayVec<IssueSelector, MAX_INDEX_DEPTH>,
 }
 
 impl IssueIndex {
 	/// Create descriptor for a root-level issue.
 	pub fn root(owner: &str, repo: &str, selector: IssueSelector) -> Self {
-		let mut index_arr = [IssueSelector::GitId(0); MAX_INDEX_DEPTH];
-		index_arr[0] = selector;
+		let mut index = CopyArrayVec::new();
+		index.push(selector);
 		Self {
 			repo_info: RepoInfo::new(owner, repo),
-			index_arr,
-			index_len: 1,
+			index,
 		}
 	}
 
@@ -578,43 +577,30 @@ impl IssueIndex {
 	pub fn repo_only(owner: &str, repo: &str) -> Self {
 		Self {
 			repo_info: RepoInfo::new(owner, repo),
-			index_arr: [IssueSelector::GitId(0); MAX_INDEX_DEPTH],
-			index_len: 0,
+			index: CopyArrayVec::new(),
 		}
 	}
 
 	/// Create descriptor with full index path.
 	/// Panics if index exceeds MAX_INDEX_DEPTH.
 	pub fn with_index(owner: &str, repo: &str, index: Vec<IssueSelector>) -> Self {
-		assert!(index.len() <= MAX_INDEX_DEPTH, "Index too deep (max {MAX_INDEX_DEPTH} levels)");
-		let mut index_arr = [IssueSelector::GitId(0); MAX_INDEX_DEPTH];
-		for (i, sel) in index.iter().enumerate() {
-			index_arr[i] = *sel;
-		}
 		Self {
 			repo_info: RepoInfo::new(owner, repo),
-			index_arr,
-			index_len: index.len() as u8,
+			index: index.into_iter().collect(),
 		}
 	}
 
 	/// Add a child selector, returning new descriptor.
 	/// Panics if result would exceed MAX_INDEX_DEPTH.
 	pub fn child(&self, selector: IssueSelector) -> Self {
-		let new_len = self.index_len as usize + 1;
-		assert!(new_len <= MAX_INDEX_DEPTH, "Index too deep (max {MAX_INDEX_DEPTH} levels)");
-		let mut new_arr = self.index_arr;
-		new_arr[self.index_len as usize] = selector;
-		Self {
-			repo_info: self.repo_info,
-			index_arr: new_arr,
-			index_len: new_len as u8,
-		}
+		let mut index = self.index;
+		index.push(selector);
+		Self { repo_info: self.repo_info, index }
 	}
 
 	/// Get the index path.
 	pub fn index(&self) -> &[IssueSelector] {
-		&self.index_arr[..self.index_len as usize]
+		&self.index
 	}
 
 	/// Get the repository info.
@@ -680,14 +666,12 @@ impl IssueIndex {
 	/// Get the parent's IssueIndex (all selectors except the last one).
 	/// For repo-only or single-selector indices, returns repo_only.
 	pub fn parent(&self) -> Self {
-		if self.index_len <= 1 {
+		if self.index.len() <= 1 {
 			Self::repo_only(self.repo_info.owner(), self.repo_info.repo())
 		} else {
-			Self {
-				repo_info: self.repo_info,
-				index_arr: self.index_arr,
-				index_len: self.index_len - 1,
-			}
+			let mut index = self.index;
+			index.pop();
+			Self { repo_info: self.repo_info, index }
 		}
 	}
 }

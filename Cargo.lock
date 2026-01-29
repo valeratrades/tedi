@@ -592,6 +592,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "copy_arrayvec"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b37dfc2f5b40505b3096176e7d8f1d79b6b55a7f05ff0ff984508a92f1b079d0"
+
+[[package]]
 name = "core-foundation"
 version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3545,6 +3551,7 @@ dependencies = [
  "clap_complete",
  "color-eyre",
  "config",
+ "copy_arrayvec",
  "derive-new",
  "derive_builder",
  "derive_more",
