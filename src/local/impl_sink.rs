@@ -7,6 +7,7 @@ use std::{
 	path::Path,
 };
 
+use tracing::{debug, info, instrument, trace, warn};
 use v_utils::prelude::*;
 
 use super::{ConsensusSinkError, FsReader, IssueMeta, Local, LocalPath, LocalReader};
@@ -106,10 +107,16 @@ impl Sink<Consensus> for Issue {
 /// - Creating directories as needed
 /// - Removing old file locations when format changes
 /// - Writing issue content
+#[instrument(skip(issue, old, reader), fields(
+	issue_number = ?issue.number(),
+	title = %issue.contents.title,
+	has_children = !issue.children.is_empty(),
+	old_has_children = old.map(|o| !o.children.is_empty()),
+))]
 fn sink_issue_node<R: LocalReader>(issue: &Issue, old: Option<&Issue>, reader: &R) -> Result<bool> {
 	// Duplicate issues self-eliminate: remove local files instead of writing
 	if let crate::CloseState::Duplicate(dup_of) = issue.contents.state {
-		tracing::info!(issue = ?issue.number(), duplicate_of = dup_of, "Removing duplicate issue from local storage");
+		info!(issue = ?issue.number(), duplicate_of = dup_of, "Removing duplicate issue from local storage");
 		return remove_issue_files(issue, reader);
 	}
 
@@ -119,7 +126,7 @@ fn sink_issue_node<R: LocalReader>(issue: &Issue, old: Option<&Issue>, reader: &
 	let old_has_children = old.map(|o| !o.children.is_empty()).unwrap_or(false);
 	let format_changed = has_children != old_has_children;
 
-	eprintln!("[sink_issue_node] issue #{:?} '{title}', closed: {closed}, state: {:?}", issue.number(), issue.contents.state);
+	debug!(closed, has_children, old_has_children, format_changed, old_is_some = old.is_some(), "sink_issue_node state");
 
 	// Extract owner/repo directly from issue
 	let owner = issue.identity.owner().to_string();
@@ -128,15 +135,25 @@ fn sink_issue_node<R: LocalReader>(issue: &Issue, old: Option<&Issue>, reader: &
 	let index = IssueIndex::from(issue);
 
 	let issue_file_path = LocalPath::from(index).resolve_parent(*reader)?.deterministic(title, closed, has_children).path();
+	debug!(issue_file_path = %issue_file_path.display(), "computed target path");
 
 	// Clean up old file locations if format changed, state changed, or issue got a number
 	// (issue getting a number means a pending file may exist that needs removal)
-	if format_changed || old.is_some() || issue.number().is_some() {
+	let should_cleanup = format_changed || old.is_some() || issue.number().is_some();
+	debug!(
+		should_cleanup,
+		format_changed,
+		old_is_some = old.is_some(),
+		has_number = issue.number().is_some(),
+		"cleanup decision"
+	);
+	if should_cleanup {
 		cleanup_old_locations(issue, old, has_children, closed, reader)?;
 	}
 
 	// Ensure parent directory exists
 	if let Some(parent) = issue_file_path.parent() {
+		trace!(parent = %parent.display(), "ensuring parent directory exists");
 		std::fs::create_dir_all(parent)?;
 	}
 
@@ -190,6 +207,12 @@ fn sink_issue_node<R: LocalReader>(issue: &Issue, old: Option<&Issue>, reader: &
 ///
 /// Strategy: find all matching paths via `matching_subpaths`, compute the correct target path
 /// via `deterministic`, then remove any matching paths that aren't the target.
+#[instrument(skip(issue, _old, reader), fields(
+	issue_number = ?issue.number(),
+	title = %issue.contents.title,
+	has_children,
+	closed,
+))]
 fn cleanup_old_locations<R: LocalReader>(issue: &Issue, _old: Option<&Issue>, has_children: bool, closed: bool, reader: &R) -> Result<()> {
 	let local_path = LocalPath::from(issue);
 	let title = &issue.contents.title;
@@ -197,7 +220,10 @@ fn cleanup_old_locations<R: LocalReader>(issue: &Issue, _old: Option<&Issue>, ha
 	// Resolve parent - if this fails, there's nothing to clean up (new issue in new location)
 	let resolved = match local_path.resolve_parent(*reader) {
 		Ok(r) => r,
-		Err(e) if matches!(e.kind, LocalPathErrorKind::MissingParent | LocalPathErrorKind::NotFound) => return Ok(()),
+		Err(e) if matches!(e.kind, LocalPathErrorKind::MissingParent | LocalPathErrorKind::NotFound) => {
+			debug!("parent missing or not found, nothing to clean up");
+			return Ok(());
+		}
 		Err(e) => return Err(e.into()),
 	};
 
@@ -205,31 +231,43 @@ fn cleanup_old_locations<R: LocalReader>(issue: &Issue, _old: Option<&Issue>, ha
 	// If the directory doesn't exist yet, there's nothing to clean up
 	let matching = match resolved.matching_subpaths() {
 		Ok(m) => m,
-		Err(e) if e.kind == LocalPathErrorKind::Reader => return Ok(()), // Directory doesn't exist yet
+		Err(e) if e.kind == LocalPathErrorKind::Reader => {
+			debug!("directory doesn't exist yet, nothing to clean up");
+			return Ok(()); // Directory doesn't exist yet
+		}
 		Err(e) => return Err(e.into()),
 	};
 	if matching.is_empty() {
+		debug!("no matching paths found, nothing to clean up");
 		return Ok(()); // Nothing exists yet, nothing to clean up
 	}
 
+	debug!(matching_count = matching.len(), ?matching, "found matching paths");
+
 	// Compute the correct target path
 	let target = LocalPath::from(issue).resolve_parent(*reader)?.deterministic(title, closed, has_children).path();
+	debug!(target = %target.display(), "computed target path for cleanup comparison");
 
 	// Remove any matching paths that aren't the target
 	for path in matching {
 		if path != target {
+			debug!(path = %path.display(), "path differs from target, will remove");
 			// If it's a __main__.md file, we need to check if the parent dir should be removed
 			// (only if we're moving from directory to flat format)
 			if path.file_name().map(|n| n.to_string_lossy().starts_with(Local::MAIN_ISSUE_FILENAME)).unwrap_or(false) {
 				if let Some(parent_dir) = path.parent() {
 					// Remove the whole directory if we're converting to flat format
 					if !has_children {
+						info!(parent_dir = %parent_dir.display(), "removing directory (converting to flat format)");
 						std::fs::remove_dir_all(parent_dir)?;
 						continue;
 					}
 				}
 			}
+			info!(path = %path.display(), "removing old file location");
 			try_remove_file(&path)?;
+		} else {
+			trace!(path = %path.display(), "path matches target, keeping");
 		}
 	}
 
@@ -237,6 +275,7 @@ fn cleanup_old_locations<R: LocalReader>(issue: &Issue, _old: Option<&Issue>, ha
 }
 
 /// Remove all file variants for an issue.
+#[instrument(skip(issue, reader), fields(issue_number = ?issue.number(), title = %issue.contents.title))]
 fn remove_issue_files<R: LocalReader>(issue: &Issue, reader: &R) -> Result<bool> {
 	let owner = issue.identity.owner().to_string();
 	let repo = issue.identity.repo().to_string();
@@ -244,20 +283,25 @@ fn remove_issue_files<R: LocalReader>(issue: &Issue, reader: &R) -> Result<bool>
 	match LocalPath::from(issue).resolve_parent(*reader)?.search() {
 		Ok(resolved_path) =>
 			if let Some(dir) = resolved_path.clone().issue_dir() {
+				info!(dir = %dir.display(), "removing issue directory");
 				std::fs::remove_dir_all(dir)?;
 			} else {
 				let p = resolved_path.path();
+				info!(path = %p.display(), "removing issue file");
 				try_remove_file(&p)?;
 			},
-		Err(e) if e.kind == LocalPathErrorKind::NotFound => {}
+		Err(e) if e.kind == LocalPathErrorKind::NotFound => {
+			debug!("issue not found, nothing to remove");
+		}
 		Err(e) => color_eyre::eyre::bail!(e),
 	};
 
 	// Remove metadata
 	if let Some(num) = issue.number() {
+		trace!(num, "removing issue metadata");
 		Local::remove_issue_meta(&owner, &repo, num)?;
 	}
 
-	println!("Removed issue #{:?}", issue.number());
+	info!(issue_number = ?issue.number(), "removed issue");
 	Ok(true)
 }

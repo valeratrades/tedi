@@ -1056,7 +1056,7 @@ mod local_path {
 	}
 
 	/// Result of finding an entry matching a selector.
-	#[derive(Clone)]
+	#[derive(Clone, Debug)]
 	pub(crate) enum FoundEntry {
 		/// Found a directory with this name.
 		Dir(String),
@@ -1329,12 +1329,14 @@ mod local_path {
 		#[tracing::instrument(skip(self), fields(resolved_path = %self.resolved_path.display(), selector = ?self.unresolved_selector_nodes.front()))]
 		pub fn matching_subpaths(&self) -> Result<Vec<PathBuf>, LocalPathError> {
 			let Some(selector) = self.unresolved_selector_nodes.front() else {
+				tracing::trace!("no selector in queue, returning empty");
 				return Ok(Vec::new());
 			};
 
 			let map_err = |source| LocalPathError::reader(selector.clone(), source);
 
 			let all_matches = find_all_entries_by_selector(&self.reader, &self.resolved_path, selector).map_err(map_err)?;
+			tracing::debug!(?all_matches, "find_all_entries_by_selector returned");
 
 			let mut results = Vec::new();
 			for entry in all_matches {
@@ -1343,17 +1345,26 @@ mod local_path {
 						let dir_path = self.resolved_path.join(&name);
 						let main_open = Local::main_file_path(&dir_path, false);
 						if self.reader.exists(&main_open).map_err(map_err)? {
+							tracing::trace!(path = %main_open.display(), "found open __main__.md in dir");
 							results.push(main_open);
 						} else {
 							let main_closed = Local::main_file_path(&dir_path, true);
 							if self.reader.exists(&main_closed).map_err(map_err)? {
+								tracing::trace!(path = %main_closed.display(), "found closed __main__.md.bak in dir");
 								results.push(main_closed);
+							} else {
+								tracing::warn!(dir = %dir_path.display(), "directory exists but has no __main__.md - skipping");
 							}
 						}
 					}
-					FoundEntry::File(name) => results.push(self.resolved_path.join(name)),
+					FoundEntry::File(name) => {
+						let file_path = self.resolved_path.join(&name);
+						tracing::trace!(path = %file_path.display(), "found flat file");
+						results.push(file_path);
+					}
 				}
 			}
+			tracing::debug!(?results, "matching_subpaths returning");
 			Ok(results)
 		}
 
