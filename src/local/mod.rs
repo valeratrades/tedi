@@ -1266,7 +1266,14 @@ mod local_path {
 			if self.reader.is_dir(&self.resolved_path).unwrap() {
 				Some(self.resolved_path)
 			} else {
-				self.resolved_path.parent().filter(|p| self.reader.is_dir(p).unwrap()).map(|p| p.to_path_buf())
+				// Only return parent if this is a __main__.md file (directory format).
+				// For flat files like `1_-_Title.md`, there is no issue directory.
+				let is_main_file = self
+					.resolved_path
+					.file_name()
+					.map(|n| n.to_string_lossy().starts_with(Local::MAIN_ISSUE_FILENAME))
+					.unwrap_or(false);
+				if is_main_file { self.resolved_path.parent().map(|p| p.to_path_buf()) } else { None }
 			}
 		}
 

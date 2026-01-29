@@ -171,10 +171,10 @@ fn test_only_local_changed_pushes_local() {
 	  "issues": {
 	    "1": {
 	      "timestamps": {
-	        "title": "2001-09-12T03:55:22Z",
-	        "description": "2001-09-12T03:30:04Z",
-	        "labels": "2001-09-12T01:22:28Z",
-	        "state": "2001-09-11T17:16:14Z",
+	        "title": "2001-09-12T11:20:39Z",
+	        "description": "2001-09-12T10:04:12Z",
+	        "labels": "2001-09-12T01:55:52Z",
+	        "state": "2001-09-12T00:39:25Z",
 	        "comments": []
 	      }
 	    }
