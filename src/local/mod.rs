@@ -987,9 +987,13 @@ mod local_path {
 		},
 
 		/// Reader operation failed.
-		#[error("while resolving {selector:?}: {source}")]
+		#[error("while resolving {selector:?}")]
 		#[diagnostic(code(tedi::local::reader))]
-		Reader { selector: IssueSelector, source: ReaderError },
+		Reader {
+			selector: IssueSelector,
+			#[source]
+			source: ReaderError,
+		},
 	}
 
 	/// Result of finding an entry matching a selector.
