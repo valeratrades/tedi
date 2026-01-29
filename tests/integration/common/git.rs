@@ -92,7 +92,7 @@ pub fn timestamps_from_seed(seed: Seed) -> IssueTimestamps {
 pub fn set_timestamps(issue: &mut Issue, seed: Seed) {
 	let timestamps = timestamps_from_seed(seed);
 	for node in issue.iter_mut() {
-		node.identity.remote.as_linked_mut().unwrap().timestamps = timestamps.clone();
+		node.identity.mut_linked_issue_meta().unwrap().timestamps = timestamps.clone();
 	}
 }
 /// State tracking for additive operations
@@ -254,6 +254,9 @@ impl GitExt for TestContext {
 			state.consensus_issues.insert(key);
 		});
 
+		// Ensure git is initialized (Sink<Consensus> needs it)
+		self.init_git();
+
 		// Set XDG env vars and sink using actual library implementation
 		self.set_xdg_env();
 		let mut issue_clone = issue.clone();
@@ -261,6 +264,7 @@ impl GitExt for TestContext {
 
 		// Find actual path where issue was written
 		let path = LocalPath::from(issue).resolve_parent(FsReader).unwrap().search().unwrap().path();
+		eprintln!("[consensus] path after sink: {path:?}");
 
 		// Write timestamps to .meta.json if seed provided
 		if let Some(seed) = seed {

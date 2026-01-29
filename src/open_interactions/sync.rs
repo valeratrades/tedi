@@ -42,7 +42,7 @@ use super::{
 /// Caller is responsible for loading the issue (via `LazyIssue<Local>::load`).
 #[tracing::instrument]
 pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Modifier, sync_opts: SyncOptions) -> Result<ModifyResult> {
-	let repo_info = issue.identity.parent_index.repo_info();
+	let repo_info = issue.identity.repo_info();
 	let (owner, repo) = (repo_info.owner(), repo_info.repo());
 
 	// Get IssueIndex for consensus loading
@@ -64,7 +64,7 @@ pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Mo
 	}
 
 	// Handle virtual issues - they don't sync
-	if issue.identity.remote.is_virtual() {
+	if issue.identity.is_virtual() {
 		let result = modifier.apply(&mut issue, &issue_file_path).await?;
 		if result.file_modified {
 			<Issue as Sink<Submitted>>::sink(&mut issue, None).await?;

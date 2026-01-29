@@ -15,13 +15,16 @@ fn parse(content: &str) -> Issue {
 	Issue::deserialize_virtual(content).expect("failed to parse test issue")
 }
 
-#[test]
-fn test_flat_format_preserved_when_no_sub_issues() {
+#[tokio::test]
+async fn test_flat_format_preserved_when_no_sub_issues() {
 	let ctx = TestContext::new("");
 
 	let parent = parse("- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tparent body\n");
-	let issue_path = ctx.consensus(&parent, None);
+	let issue_path = ctx.consensus(&parent, None).await;
 	ctx.remote(&parent, None);
+
+	eprintln!("[test] issue_path: {issue_path:?}");
+	eprintln!("[test] file exists: {}", issue_path.exists());
 
 	let out = ctx.open(&issue_path).run();
 
@@ -37,13 +40,13 @@ fn test_flat_format_preserved_when_no_sub_issues() {
 	assert!(!ctx.dir_issue_path("o", "r", 1, "Parent Issue").exists(), "Directory format should not be created");
 }
 
-#[test]
-fn test_old_flat_file_removed_when_sub_issues_appear() {
+#[tokio::test]
+async fn test_old_flat_file_removed_when_sub_issues_appear() {
 	let ctx = TestContext::new("");
 
 	// Start with a flat issue locally
 	let parent = parse("- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tparent body\n");
-	let issue_path = ctx.consensus(&parent, None);
+	let issue_path = ctx.consensus(&parent, None).await;
 
 	// Remote now has sub-issues - create a version with children for mock
 	let with_children = parse(
@@ -71,8 +74,8 @@ fn test_old_flat_file_removed_when_sub_issues_appear() {
 	assert!(ctx.dir_issue_path("o", "r", 1, "Parent Issue").exists(), "Directory format file should be created");
 }
 
-#[test]
-fn test_old_placement_discarded_with_pull() {
+#[tokio::test]
+async fn test_old_placement_discarded_with_pull() {
 	// This test verifies that when remote gains sub-issues and we use --pull,
 	// the old flat file is cleaned up and replaced with the directory format.
 
@@ -80,7 +83,7 @@ fn test_old_placement_discarded_with_pull() {
 
 	// Set up a flat issue locally, committed to git
 	let parent = parse("- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tparent body\n");
-	let issue_path = ctx.consensus(&parent, None);
+	let issue_path = ctx.consensus(&parent, None).await;
 
 	// Remote has sub-issues now (simulating someone else adding them)
 	let with_children = parse(
@@ -113,13 +116,13 @@ fn test_old_placement_discarded_with_pull() {
 	assert!(sub_issue_dir.is_dir(), "Sub-issue directory should exist");
 }
 
-#[test]
-fn test_duplicate_removes_local_file() {
+#[tokio::test]
+async fn test_duplicate_removes_local_file() {
 	let ctx = TestContext::new("");
 
 	// Set up a local issue
 	let original = parse("- [ ] Some Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tbody\n");
-	let issue_path = ctx.consensus(&original, None);
+	let issue_path = ctx.consensus(&original, None).await;
 	ctx.remote(&original, None);
 
 	// Modify the issue to mark it as duplicate
@@ -141,14 +144,14 @@ fn test_duplicate_removes_local_file() {
 	);
 }
 
-#[test]
-fn test_duplicate_reference_to_existing_issue_succeeds() {
+#[tokio::test]
+async fn test_duplicate_reference_to_existing_issue_succeeds() {
 	let ctx = TestContext::new("");
 
 	// Set up a local issue and a target duplicate issue
 	let original = parse("- [ ] Some Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tbody\n");
 	let dup_target = parse("- [ ] Target Issue <!-- @mock_user https://github.com/o/r/issues/2 -->\n\ttarget body\n");
-	let issue_path = ctx.consensus(&original, None);
+	let issue_path = ctx.consensus(&original, None).await;
 
 	// Set up mock Github with both issues
 	ctx.remote(&original, None);

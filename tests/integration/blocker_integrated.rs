@@ -11,8 +11,8 @@ fn parse(content: &str) -> Issue {
 	Issue::deserialize_virtual(content).expect("failed to parse test issue")
 }
 
-#[test]
-fn test_blocker_add_in_integrated_mode() {
+#[tokio::test]
+async fn test_blocker_add_in_integrated_mode() {
 	let ctx = TestContext::new("");
 	ctx.init_git();
 
@@ -26,7 +26,7 @@ fn test_blocker_add_in_integrated_mode() {
 	);
 
 	// Set up: local issue file exists
-	let issue_path = ctx.local(&issue, None);
+	let issue_path = ctx.local(&issue, None).await;
 
 	// Set this issue as the current blocker issue
 	ctx.xdg.write_cache("current_blocker_issue.txt", issue_path.to_str().unwrap());
@@ -46,8 +46,8 @@ fn test_blocker_add_in_integrated_mode() {
 	assert!(content.contains("First task"), "Existing blockers should be preserved. Got: {content}");
 }
 
-#[test]
-fn test_blocker_pop_in_integrated_mode() {
+#[tokio::test]
+async fn test_blocker_pop_in_integrated_mode() {
 	let ctx = TestContext::new("");
 	ctx.init_git();
 
@@ -63,7 +63,7 @@ fn test_blocker_pop_in_integrated_mode() {
 	);
 
 	// Set up: local issue file exists
-	let issue_path = ctx.local(&issue, None);
+	let issue_path = ctx.local(&issue, None).await;
 
 	// Set this issue as the current blocker issue
 	ctx.xdg.write_cache("current_blocker_issue.txt", issue_path.to_str().unwrap());
@@ -91,8 +91,8 @@ fn test_blocker_pop_in_integrated_mode() {
 	assert!(content.contains("Second task"), "Second task should remain. Got: {content}");
 }
 
-#[test]
-fn test_blocker_add_creates_blockers_section_if_missing() {
+#[tokio::test]
+async fn test_blocker_add_creates_blockers_section_if_missing() {
 	let ctx = TestContext::new("");
 	ctx.init_git();
 
@@ -100,7 +100,7 @@ fn test_blocker_add_creates_blockers_section_if_missing() {
 	let issue = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tBody text without blockers section.\n");
 
 	// Set up: local issue file exists
-	let issue_path = ctx.local(&issue, None);
+	let issue_path = ctx.local(&issue, None).await;
 
 	// Set this issue as the current blocker issue
 	ctx.xdg.write_cache("current_blocker_issue.txt", issue_path.to_str().unwrap());
@@ -120,8 +120,8 @@ fn test_blocker_add_creates_blockers_section_if_missing() {
 	assert!(content.contains("New task"), "New blocker should be added. Got: {content}");
 }
 
-#[test]
-fn test_blocker_add_without_blocker_file_set_errors() {
+#[tokio::test]
+async fn test_blocker_add_without_blocker_file_set_errors() {
 	// Non-urgent `blocker add` should fail when no blocker file is set.
 	let ctx = TestContext::new("");
 	ctx.init_git();
@@ -139,8 +139,8 @@ fn test_blocker_add_without_blocker_file_set_errors() {
 	assert!(out.stderr.contains("No blocker file set"), "Should mention no blocker file set. stderr: {}", out.stderr);
 }
 
-#[test]
-fn test_blocker_add_urgent_without_blocker_file_set() {
+#[tokio::test]
+async fn test_blocker_add_urgent_without_blocker_file_set() {
 	// Regression test: `blocker add --urgent` should work even without a blocker file set.
 	// The urgent file is owner-independent and doesn't need blocker file context.
 	// Previously this errored with "No blocker file set. Use `todo blocker set <pattern>` first."
@@ -166,8 +166,8 @@ fn test_blocker_add_urgent_without_blocker_file_set() {
 	);
 }
 
-#[test]
-fn test_blocker_add_with_header_context() {
+#[tokio::test]
+async fn test_blocker_add_with_header_context() {
 	let ctx = TestContext::new("");
 	ctx.init_git();
 
@@ -184,7 +184,7 @@ fn test_blocker_add_with_header_context() {
 	);
 
 	// Set up: local issue file exists
-	let issue_path = ctx.local(&issue, None);
+	let issue_path = ctx.local(&issue, None).await;
 
 	// Set this issue as the current blocker issue
 	ctx.xdg.write_cache("current_blocker_issue.txt", issue_path.to_str().unwrap());
