@@ -37,11 +37,11 @@
 //! Owner/repo/number are extracted from the Issue's identity (IssueLink).
 //! If no link exists, defaults are used: owner="owner", repo="repo", number=1.
 
-use std::{cell::RefCell, collections::HashSet, path::PathBuf};
+use std::{cell::RefCell, collections::HashSet};
 
 use tedi::{
 	Issue, IssueTimestamps,
-	local::{Consensus, FsReader, LocalPath, Submitted},
+	local::{Consensus, Submitted},
 	sink::Sink,
 };
 use v_fixtures::fs_standards::git::Git;
@@ -116,18 +116,16 @@ pub trait GitExt {
 	fn init_git(&self) -> Git;
 
 	/// Write issue to local file (uncommitted). Additive - can call multiple times.
-	/// Returns the path to the issue file.
 	/// Panics if same (owner, repo, number) is submitted twice.
 	///
 	/// If `seed` is provided, timestamps are generated from it and written to `.meta.json`.
-	async fn local(&self, issue: &Issue, seed: Option<Seed>) -> PathBuf;
+	async fn local(&self, issue: &Issue, seed: Option<Seed>);
 
 	/// Write issue and commit to git as consensus state. Additive - can call multiple times.
-	/// Returns the path to the issue file.
 	/// Panics if same (owner, repo, number) is submitted twice.
 	///
 	/// If `seed` is provided, timestamps are generated from it and written to `.meta.json`.
-	async fn consensus(&self, issue: &Issue, seed: Option<Seed>) -> PathBuf;
+	async fn consensus(&self, issue: &Issue, seed: Option<Seed>);
 
 	/// Set up mock Github API to return this issue. Additive - can call multiple times.
 	/// Handles sub-issues automatically.
@@ -135,18 +133,6 @@ pub trait GitExt {
 	///
 	/// If `seed` is provided, timestamps are generated from it for the mock response.
 	fn remote(&self, issue: &Issue, seed: Option<Seed>);
-
-	/// Get the flat format path for an issue: `{number}_-_{title}.md`
-	fn flat_issue_path(&self, owner: &str, repo: &str, number: u64, title: &str) -> PathBuf;
-
-	/// Get the directory format path for an issue: `{number}_-_{title}/__main__.md`
-	fn dir_issue_path(&self, owner: &str, repo: &str, number: u64, title: &str) -> PathBuf;
-
-	/// Get the issue path after sync (flat if no children, directory if has children).
-	fn issue_path_after_sync(&self, owner: &str, repo: &str, number: u64, title: &str, has_children: bool) -> PathBuf;
-
-	/// Get the path where an issue would be stored (flat format), extracting coords from issue.
-	fn issue_path(&self, issue: &Issue) -> PathBuf;
 }
 /// Base timestamp: 2001-09-11 12:00:00 UTC (midday).
 const BASE_TIMESTAMP_SECS: i64 = 1000209600;
@@ -215,7 +201,7 @@ impl GitExt for TestContext {
 		Git::init(self.xdg.data_dir().join("issues"))
 	}
 
-	async fn local(&self, issue: &Issue, seed: Option<Seed>) -> PathBuf {
+	async fn local(&self, issue: &Issue, seed: Option<Seed>) {
 		let (owner, repo, number) = extract_issue_coords(issue);
 		let key = (owner.clone(), repo.clone(), number);
 
@@ -231,19 +217,14 @@ impl GitExt for TestContext {
 		let mut issue_clone = issue.clone();
 		<Issue as Sink<Submitted>>::sink(&mut issue_clone, None).await.expect("local sink failed");
 
-		// Find actual path where issue was written
-		let path = LocalPath::from(issue).resolve_parent(FsReader).unwrap().search().unwrap().path();
-
 		// Write timestamps to .meta.json if seed provided
 		if let Some(seed) = seed {
 			let timestamps = timestamps_from_seed(seed);
 			self.write_issue_meta(&owner, &repo, number, &timestamps);
 		}
-
-		path
 	}
 
-	async fn consensus(&self, issue: &Issue, seed: Option<Seed>) -> PathBuf {
+	async fn consensus(&self, issue: &Issue, seed: Option<Seed>) {
 		let (owner, repo, number) = extract_issue_coords(issue);
 		let key = (owner.clone(), repo.clone(), number);
 
@@ -262,17 +243,11 @@ impl GitExt for TestContext {
 		let mut issue_clone = issue.clone();
 		<Issue as Sink<Consensus>>::sink(&mut issue_clone, None).await.expect("consensus sink failed");
 
-		// Find actual path where issue was written
-		let path = LocalPath::from(issue).resolve_parent(FsReader).unwrap().search().unwrap().path();
-		eprintln!("[consensus] path after sink: {path:?}");
-
 		// Write timestamps to .meta.json if seed provided
 		if let Some(seed) = seed {
 			let timestamps = timestamps_from_seed(seed);
 			self.write_issue_meta(&owner, &repo, number, &timestamps);
 		}
-
-		path
 	}
 
 	fn remote(&self, issue: &Issue, seed: Option<Seed>) {
@@ -293,35 +268,12 @@ impl GitExt for TestContext {
 		// Rebuild and write mock state
 		self.rebuild_mock_state();
 	}
-
-	fn issue_path(&self, issue: &Issue) -> PathBuf {
-		let (owner, repo, number) = extract_issue_coords(issue);
-		self.flat_issue_path(&owner, &repo, number, &issue.contents.title)
-	}
-
-	fn flat_issue_path(&self, owner: &str, repo: &str, number: u64, title: &str) -> PathBuf {
-		let sanitized = title.replace(' ', "_");
-		self.xdg.data_dir().join(format!("issues/{owner}/{repo}/{number}_-_{sanitized}.md"))
-	}
-
-	fn dir_issue_path(&self, owner: &str, repo: &str, number: u64, title: &str) -> PathBuf {
-		let sanitized = title.replace(' ', "_");
-		self.xdg.data_dir().join(format!("issues/{owner}/{repo}/{number}_-_{sanitized}/__main__.md"))
-	}
-
-	fn issue_path_after_sync(&self, owner: &str, repo: &str, number: u64, title: &str, has_children: bool) -> PathBuf {
-		if has_children {
-			self.dir_issue_path(owner, repo, number, title)
-		} else {
-			self.flat_issue_path(owner, repo, number, title)
-		}
-	}
 }
 
 impl TestContext {
 	/// Set XDG environment variables to point to our temp fixture.
 	/// Required before calling any library functions that use `Local::issues_dir()`.
-	fn set_xdg_env(&self) {
+	pub(crate) fn set_xdg_env(&self) {
 		// SAFETY: Tests use unique temp dirs, so env var "leakage" between parallel tests is harmless
 		unsafe {
 			for (key, value) in self.xdg.env_vars() {
