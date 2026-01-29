@@ -23,56 +23,6 @@ pub struct ReaderError {
 	rendered: String,
 	spantrace: SpanTrace,
 }
-
-/// The kind of reader error (for pattern matching).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReaderErrorKind {
-	NotFound,
-	NotADirectory,
-	PermissionDenied,
-	InvalidUtf8,
-	OutsideIssuesDir,
-	GitNotInitialized,
-	Other,
-}
-
-/// Internal miette diagnostic for nice error rendering with source highlighting.
-#[derive(Debug, miette::Diagnostic, thiserror::Error)]
-enum ReaderDiagnostic {
-	#[error("path not found: {}", path.display())]
-	#[diagnostic(code(tedi::reader::not_found))]
-	NotFound { path: PathBuf },
-
-	#[error("expected directory, found file")]
-	#[diagnostic(code(tedi::reader::not_a_directory))]
-	NotADirectory {
-		#[source_code]
-		path_source: NamedSource<String>,
-		#[label("this is a file, not a directory")]
-		span: SourceSpan,
-	},
-
-	#[error("permission denied: {}", path.display())]
-	#[diagnostic(code(tedi::reader::permission_denied))]
-	PermissionDenied { path: PathBuf },
-
-	#[error("invalid UTF-8 in file: {}", path.display())]
-	#[diagnostic(code(tedi::reader::invalid_utf8))]
-	InvalidUtf8 { path: PathBuf },
-
-	#[error("path outside issues directory: {}", path.display())]
-	#[diagnostic(code(tedi::reader::outside_issues_dir))]
-	OutsideIssuesDir { path: PathBuf },
-
-	#[error("git not initialized in issues directory")]
-	#[diagnostic(code(tedi::reader::git_not_initialized), help("Run 'git init' in the issues directory"))]
-	GitNotInitialized,
-
-	#[error("{0}")]
-	#[diagnostic(code(tedi::reader::other))]
-	Other(String),
-}
-
 impl ReaderError {
 	fn from_diagnostic(kind: ReaderErrorKind, diag: ReaderDiagnostic) -> Self {
 		let rendered = format!("{:?}", miette::Report::new(diag));
@@ -126,6 +76,19 @@ impl ReaderError {
 		self.kind == ReaderErrorKind::NotFound
 	}
 }
+
+/// The kind of reader error (for pattern matching).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReaderErrorKind {
+	NotFound,
+	NotADirectory,
+	PermissionDenied,
+	InvalidUtf8,
+	OutsideIssuesDir,
+	GitNotInitialized,
+	Other,
+}
+
 /// Trait for reading content from different sources (filesystem or git).
 ///
 /// Separates the read abstraction from path computation.
@@ -139,11 +102,9 @@ pub trait LocalReader: Copy {
 	/// Check if the path exists.
 	fn exists(&self, path: &Path) -> Result<bool, ReaderError>;
 }
-
 /// Reader that reads from the filesystem (submitted/current state).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct FsReader;
-
 impl FsReader {
 	/// Convert std::io::Error to ReaderError with path context.
 	fn io_err(e: std::io::Error, path: &Path) -> ReaderError {
@@ -154,6 +115,69 @@ impl FsReader {
 			_ => ReaderError::other(format!("I/O error on {}: {e}", path.display())),
 		}
 	}
+}
+
+/// Reader that reads from git HEAD (consensus state).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct GitReader;
+impl GitReader {
+	/// Get relative path within issues dir, or error if outside.
+	fn rel_path(path: &Path) -> Result<(&Path, PathBuf), ReaderError> {
+		let data_dir = Local::issues_dir();
+		let rel_path = path.strip_prefix(&data_dir).map_err(|_| ReaderError::outside_issues_dir(path))?;
+		Ok((rel_path, data_dir))
+	}
+
+	/// Check if git is initialized in the issues directory.
+	fn check_git_initialized(data_dir: &Path) -> Result<(), ReaderError> {
+		use std::process::Command;
+		let data_dir_str = data_dir.to_str().ok_or_else(|| ReaderError::other(format!("issues dir path not valid UTF-8")))?;
+		let git_check = Command::new("git")
+			.args(["-C", data_dir_str, "rev-parse", "--git-dir"])
+			.output()
+			.map_err(|e| ReaderError::other(format!("failed to run git: {e}")))?;
+		if !git_check.status.success() {
+			return Err(ReaderError::git_not_initialized());
+		}
+		Ok(())
+	}
+}
+
+/// Internal miette diagnostic for nice error rendering with source highlighting.
+#[derive(Debug, miette::Diagnostic, thiserror::Error)]
+enum ReaderDiagnostic {
+	#[error("path not found: {}", path.display())]
+	#[diagnostic(code(tedi::reader::not_found))]
+	NotFound { path: PathBuf },
+
+	#[error("expected directory, found file")]
+	#[diagnostic(code(tedi::reader::not_a_directory))]
+	NotADirectory {
+		#[source_code]
+		path_source: NamedSource<String>,
+		#[label("this is a file, not a directory")]
+		span: SourceSpan,
+	},
+
+	#[error("permission denied: {}", path.display())]
+	#[diagnostic(code(tedi::reader::permission_denied))]
+	PermissionDenied { path: PathBuf },
+
+	#[error("invalid UTF-8 in file: {}", path.display())]
+	#[diagnostic(code(tedi::reader::invalid_utf8))]
+	InvalidUtf8 { path: PathBuf },
+
+	#[error("path outside issues directory: {}", path.display())]
+	#[diagnostic(code(tedi::reader::outside_issues_dir))]
+	OutsideIssuesDir { path: PathBuf },
+
+	#[error("git not initialized in issues directory")]
+	#[diagnostic(code(tedi::reader::git_not_initialized), help("Run 'git init' in the issues directory"))]
+	GitNotInitialized,
+
+	#[error("{0}")]
+	#[diagnostic(code(tedi::reader::other))]
+	Other(String),
 }
 
 impl LocalReader for FsReader {
@@ -189,33 +213,6 @@ impl LocalReader for FsReader {
 			Ok(exists) => Ok(exists),
 			Err(e) => Err(Self::io_err(e, path)),
 		}
-	}
-}
-
-/// Reader that reads from git HEAD (consensus state).
-#[derive(Clone, Copy, Debug, Default)]
-pub struct GitReader;
-
-impl GitReader {
-	/// Get relative path within issues dir, or error if outside.
-	fn rel_path(path: &Path) -> Result<(&Path, PathBuf), ReaderError> {
-		let data_dir = Local::issues_dir();
-		let rel_path = path.strip_prefix(&data_dir).map_err(|_| ReaderError::outside_issues_dir(path))?;
-		Ok((rel_path, data_dir))
-	}
-
-	/// Check if git is initialized in the issues directory.
-	fn check_git_initialized(data_dir: &Path) -> Result<(), ReaderError> {
-		use std::process::Command;
-		let data_dir_str = data_dir.to_str().ok_or_else(|| ReaderError::other(format!("issues dir path not valid UTF-8")))?;
-		let git_check = Command::new("git")
-			.args(["-C", data_dir_str, "rev-parse", "--git-dir"])
-			.output()
-			.map_err(|e| ReaderError::other(format!("failed to run git: {e}")))?;
-		if !git_check.status.success() {
-			return Err(ReaderError::git_not_initialized());
-		}
-		Ok(())
 	}
 }
 
