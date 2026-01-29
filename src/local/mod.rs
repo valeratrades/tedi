@@ -135,25 +135,14 @@ impl Local {
 
 	/// Get the virtual edit path for an issue.
 	///
-	/// Returns a path in `/tmp/{CARGO_PKG_NAME}/{owner/repo/lineage...}/{fname}.md` where:
-	/// - lineage is the parent issue numbers joined by `/`
-	/// - fname is the proper issue filename based on number and title
+	/// Returns a path in `/tmp/{CARGO_PKG_NAME}/{index}.md` where index is the
+	/// Display representation of the issue's full index (e.g. `owner/repo/123/456`).
 	///
 	/// This path is used when opening an editor for the user to edit the issue.
 	pub fn virtual_edit_path(issue: &crate::Issue) -> PathBuf {
-		let mut path = PathBuf::from("/tmp").join(env!("CARGO_PKG_NAME"));
-
-		// Add owner/repo
-		path = path.join(issue.identity.owner()).join(issue.identity.repo());
-
-		// Add lineage components (parent issue numbers)
-		for parent_num in issue.identity.lineage() {
-			path = path.join(parent_num.to_string());
-		}
-
-		// Add the issue filename
-		let fname = Self::format_issue_filename(issue.number(), &issue.contents.title, false);
-		path.join(fname)
+		let path = PathBuf::from("/tmp").join(env!("CARGO_PKG_NAME"));
+		let index_path = issue.full_index().to_string();
+		path.join(format!("{index_path}.md"))
 	}
 
 	/// Returns the base directory for issue storage: XDG_DATA_HOME/todo/issues/
@@ -166,7 +155,7 @@ impl Local {
 	/// This parses one issue file (without loading children from separate files).
 	/// Children field will be empty - they're loaded separately via LazyIssue.
 	#[deprecated(
-		note = "needs to be removed or reimplemented, - why on earth is it parsing virtual. And needs to be generic over Reader, - has no business taking `file_path`; instead constructing LocalPath from IssueIndex"
+		note = "needs to be reimplemented. Should take `Reader` implementor for reading contents, and `file_path` is excessive since we already have IssueIndex, - at most pass LocalPathResolved here"
 	)]
 	fn parse_single_node(content: &str, index: IssueIndex, file_path: &Path) -> Result<Issue, LocalError> {
 		let mut issue = Issue::parse_virtual(content, index).map_err(|e| LocalError::ParseError {
@@ -241,7 +230,7 @@ impl Local {
 	/// Returns an error if ancestor directories can't be resolved.
 	pub fn issue_file_path(issue: &Issue) -> Result<PathBuf> {
 		let repo_info = issue.identity.repo_info();
-		let lineage = issue.identity.lineage();
+		let lineage = issue.identity.git_lineage()?;
 		let ancestor_dir_names = Self::build_ancestor_dir_names_from_lineage(repo_info, &lineage)?;
 		let closed = issue.contents.state.is_closed();
 
@@ -1268,14 +1257,21 @@ mod local_path {
 		/// Consumes one selector from the queue.
 		/// Note: This does NOT create any directories. Use Sink to write.
 		pub fn deterministic(mut self, title: &str, closed: bool, has_children: bool) -> Self {
-			let selector = self.unresolved_selector_nodes.pop_front();
+			let selector = self
+				.unresolved_selector_nodes
+				.pop_front()
+				.expect("implementation error, - this should only be called when we know it's not empty");
 
+			let git_id = match selector {
+				IssueSelector::GitId(n) => Some(n),
+				_ => None,
+			};
 			if has_children {
-				let dir_name = self.format_dir_name(selector.as_ref(), title);
+				let dir_name = Local::issue_dir_name(git_id, title);
 				let issue_dir = self.resolved_path.join(&dir_name);
 				self.resolved_path = Local::main_file_path(&issue_dir, closed);
 			} else {
-				let filename = self.format_filename(selector.as_ref(), title, closed);
+				let filename = Local::format_issue_filename(git_id, title, closed);
 				self.resolved_path = self.resolved_path.join(filename);
 			};
 			self
@@ -1366,23 +1362,6 @@ mod local_path {
 			}
 			tracing::debug!(?results, "matching_subpaths returning");
 			Ok(results)
-		}
-
-		fn format_dir_name(&self, selector: Option<&IssueSelector>, title: &str) -> String {
-			match selector {
-				Some(IssueSelector::GitId(n)) => Local::issue_dir_name(Some(*n), title),
-				Some(IssueSelector::Title(_)) | None => Local::sanitize_title(title),
-			}
-		}
-
-		fn format_filename(&self, selector: Option<&IssueSelector>, title: &str, closed: bool) -> String {
-			match selector {
-				Some(IssueSelector::GitId(n)) => Local::format_issue_filename(Some(*n), title, closed),
-				Some(IssueSelector::Title(_)) | None => {
-					let ext = if closed { ".md.bak" } else { ".md" };
-					format!("{}{ext}", Local::sanitize_title(title))
-				}
-			}
 		}
 	}
 }

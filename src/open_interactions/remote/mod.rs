@@ -378,7 +378,7 @@ impl Sink<Remote> for Issue {
 			}
 
 			// Link to parent if this issue has one
-			let lineage = self.identity.lineage();
+			let lineage = self.identity.git_lineage()?;
 			if let Some(&parent_number) = lineage.last() {
 				gh.add_sub_issue(repo_info, parent_number, created.id).await?;
 			}

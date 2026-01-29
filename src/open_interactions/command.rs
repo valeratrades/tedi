@@ -137,7 +137,7 @@ pub async fn open_command(settings: &LiveSettings, args: OpenArgs, offline: bool
 		let project_is_virtual = issue.identity.is_virtual();
 
 		if is_create {
-			if !issue.identity.lineage().is_empty() {
+			if !issue.identity.git_lineage().unwrap().is_empty() {
 				println!("Creating pending sub-issue: {}", issue.contents.title);
 			} else {
 				println!("Creating pending issue: {}", issue.contents.title);

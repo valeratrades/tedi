@@ -13,7 +13,7 @@ mod events;
 pub use events::{Events, OwnedCodeBlockKind, OwnedEvent, OwnedTag, OwnedTagEnd};
 
 mod error;
-pub use error::ParseError;
+pub use error::{ParseError, TitleInGitPathError};
 mod marker;
 pub use marker::Marker;
 

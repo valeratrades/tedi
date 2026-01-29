@@ -494,8 +494,11 @@ impl IssueIdentity {
 	/// Get lineage (parent issue numbers).
 	/// For root issues: empty slice.
 	/// For child issues: all GitId numbers in parent_index.
-	pub fn lineage(&self) -> Vec<u64> {
-		self.parent_index.num_path()
+	///
+	/// # Errors
+	/// Returns `TitleInGitPathError` if any parent selector is a Title (pending issue).
+	pub fn git_lineage(&self) -> Result<Vec<u64>, super::error::TitleInGitPathError> {
+		self.parent_index.git_num_path()
 	}
 
 	/// Create a child's parent_index by appending this issue's number.
@@ -620,40 +623,32 @@ impl IssueIndex {
 	}
 
 	/// Extract numeric issue numbers from the index (GitId selectors only).
-	/// Returns all GitId values in order, skipping Title selectors.
-	#[deprecated(note = "a very problematic primitive, completely invalidating the whole point of having IssueSelector type in the first place")]
-	pub fn num_path(&self) -> Vec<u64> {
-		self.index()
-			.iter()
-			.filter_map(|s| match s {
-				IssueSelector::GitId(n) => Some(*n),
-				IssueSelector::Title(_) => None,
-			})
-			.collect()
-	}
+	///
+	/// # Errors
+	/// Returns `TitleInGitPathError` if any selector is a Title (pending issue).
+	pub fn git_num_path(&self) -> Result<Vec<u64>, super::error::TitleInGitPathError> {
+		use miette::{NamedSource, SourceSpan};
 
-	/// Get parent issue numbers.
-	/// If the issue has its own number (last selector is GitId), returns all preceding GitIds.
-	/// If the issue is pending (last selector is Title or empty), returns all GitIds.
-	#[deprecated(note = "very problematic as it will lead to logical issues when constructing paths over uninitiaziled issues")]
-	pub fn parent_nums(&self) -> Vec<u64> {
-		let index = self.index();
-		match index.last() {
-			Some(IssueSelector::GitId(_)) => {
-				// Issue has its own number, parents are all preceding GitIds
-				index[..index.len() - 1]
-					.iter()
-					.filter_map(|s| match s {
-						IssueSelector::GitId(n) => Some(*n),
-						IssueSelector::Title(_) => None,
-					})
-					.collect()
-			}
-			Some(IssueSelector::Title(_)) | None => {
-				// Pending issue or empty - all GitIds are parents
-				self.num_path()
+		let mut result = Vec::with_capacity(self.index().len());
+		let mut offset = format!("{}/{}", self.repo_info.owner(), self.repo_info.repo()).len();
+
+		for selector in self.index() {
+			match selector {
+				IssueSelector::GitId(n) => {
+					let s = format!("/{n}");
+					offset += s.len();
+					result.push(*n);
+				}
+				IssueSelector::Title(title) => {
+					let span: SourceSpan = (offset + 1, title.len()).into(); // +1 to skip the '/'
+					return Err(super::error::TitleInGitPathError {
+						index_display: NamedSource::new("IssueIndex", self.to_string()),
+						span,
+					});
+				}
 			}
 		}
+		Ok(result)
 	}
 
 	/// Get the issue's own number if the last selector is a GitId.
@@ -854,8 +849,11 @@ impl Issue /*{{{1*/ {
 	}
 
 	/// Get lineage (parent issue numbers).
-	pub fn lineage(&self) -> Vec<u64> {
-		self.identity.lineage()
+	///
+	/// # Errors
+	/// Returns `TitleInGitPathError` if any parent selector is a Title (pending issue).
+	pub fn lineage(&self) -> Result<Vec<u64>, super::error::TitleInGitPathError> {
+		self.identity.git_lineage()
 	}
 
 	/// Get repository info.

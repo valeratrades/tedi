@@ -58,9 +58,9 @@ pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Mo
 
 	let offline = offline || Local::is_virtual_project(repo_info);
 
-	eprintln!("[after load] issue lineage: {:?}", issue.identity.lineage());
+	eprintln!("[after load] issue lineage: {:?}", issue.identity.git_lineage());
 	for (i, c) in issue.children.iter().enumerate() {
-		eprintln!("[after load] child[{i}] lineage: {:?}", c.identity.lineage());
+		eprintln!("[after load] child[{i}] lineage: {:?}", c.identity.git_lineage());
 	}
 
 	// Handle virtual issues - they don't sync
@@ -87,7 +87,7 @@ pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Mo
 				// Load remote
 				let url = format!("https://github.com/{owner}/{repo}/issues/{issue_number}");
 				let link = IssueLink::parse(&url).expect("valid URL");
-				let remote_source = RemoteSource::with_lineage(link, &issue.identity.lineage());
+				let remote_source = RemoteSource::with_lineage(link, &issue.identity.git_lineage()?);
 				let remote = <Issue as LazyIssue<Remote>>::load(remote_source).await?;
 
 				let mode = sync_opts.take_merge_mode();
@@ -111,9 +111,9 @@ pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Mo
 	}
 
 	// Save locally (Sink<Submitted> handles duplicate removal)
-	eprintln!("[save locally] issue lineage: {:?}", issue.identity.lineage());
+	eprintln!("[save locally] issue lineage: {:?}", issue.identity.git_lineage());
 	for (i, c) in issue.children.iter().enumerate() {
-		eprintln!("[save locally] child[{i}] lineage: {:?}", c.identity.lineage());
+		eprintln!("[save locally] child[{i}] lineage: {:?}", c.identity.git_lineage());
 	}
 	<Issue as Sink<Submitted>>::sink(&mut issue, None).await?;
 
@@ -132,7 +132,7 @@ pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Mo
 		// Load fresh remote state for sync
 		let url = format!("https://github.com/{owner}/{repo}/issues/{issue_number}");
 		let link = IssueLink::parse(&url).expect("valid URL");
-		let remote_source = RemoteSource::with_lineage(link, &issue.identity.lineage());
+		let remote_source = RemoteSource::with_lineage(link, &issue.identity.git_lineage()?);
 		let remote = <Issue as LazyIssue<Remote>>::load(remote_source).await?;
 
 		let consensus = load_consensus_issue(issue_index).await?;
@@ -202,13 +202,13 @@ mod core {
 		let mut remote_merged = remote.clone();
 
 		eprintln!("[sync_issue] Before merge:");
-		eprintln!("  local lineage: {:?}", local.identity.lineage());
-		eprintln!("  remote lineage: {:?}", remote.identity.lineage());
+		eprintln!("  local lineage: {:?}", local.identity.git_lineage());
+		eprintln!("  remote lineage: {:?}", remote.identity.git_lineage());
 		for (i, c) in local.children.iter().enumerate() {
-			eprintln!("  local child[{i}] lineage: {:?}", c.identity.lineage());
+			eprintln!("  local child[{i}] lineage: {:?}", c.identity.git_lineage());
 		}
 		for (i, c) in remote.children.iter().enumerate() {
-			eprintln!("  remote child[{i}] lineage: {:?}", c.identity.lineage());
+			eprintln!("  remote child[{i}] lineage: {:?}", c.identity.git_lineage());
 		}
 
 		if let Some(ref consensus) = consensus {
@@ -217,9 +217,9 @@ mod core {
 		local_merged.merge(remote.clone(), force_remote_wins)?;
 
 		eprintln!("[sync_issue] After merge:");
-		eprintln!("  local_merged lineage: {:?}", local_merged.identity.lineage());
+		eprintln!("  local_merged lineage: {:?}", local_merged.identity.git_lineage());
 		for (i, c) in local_merged.children.iter().enumerate() {
-			eprintln!("  local_merged child[{i}] lineage: {:?}", c.identity.lineage());
+			eprintln!("  local_merged child[{i}] lineage: {:?}", c.identity.git_lineage());
 		}
 
 		if let Some(consensus) = consensus {

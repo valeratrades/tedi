@@ -33,7 +33,7 @@ pub mod current_user {
 pub use issue::{
 	BlockerItem, BlockerSequence, CloseState, Comment, CommentIdentity, DisplayFormat, Events, HeaderLevel, Issue, IssueContents, IssueIdentity, IssueIndex, IssueLink, IssueSelector,
 	IssueTimestamps, LazyIssue, Line, LinkedIssueMeta, MAX_INDEX_DEPTH, MAX_LINEAGE_DEPTH, MAX_TITLE_LENGTH, Marker, OwnedCodeBlockKind, OwnedEvent, OwnedTag, OwnedTagEnd, ParseError,
-	RepoInfo, classify_line, join_with_blockers, split_blockers,
+	RepoInfo, TitleInGitPathError, classify_line, join_with_blockers, split_blockers,
 };
 
 /// A header with a level and content.
