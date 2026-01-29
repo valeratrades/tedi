@@ -23,7 +23,7 @@ async fn test_flat_format_preserved_when_no_sub_issues() {
 	let issue_path = ctx.consensus(&parent, None).await;
 	ctx.remote(&parent, None);
 
-	eprintln!("[test] issue_path: {:?}", issue_path);
+	eprintln!("[test] issue_path: {issue_path:?}");
 	eprintln!("[test] file exists: {}", issue_path.exists());
 
 	let out = ctx.open(&issue_path).run();

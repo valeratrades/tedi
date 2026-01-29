@@ -264,7 +264,7 @@ impl GitExt for TestContext {
 
 		// Find actual path where issue was written
 		let path = LocalPath::from(issue).resolve_parent(FsReader).unwrap().search().unwrap().path();
-		eprintln!("[consensus] path after sink: {:?}", path);
+		eprintln!("[consensus] path after sink: {path:?}");
 
 		// Write timestamps to .meta.json if seed provided
 		if let Some(seed) = seed {
