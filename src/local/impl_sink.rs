@@ -9,8 +9,8 @@ use std::{
 
 use v_utils::prelude::*;
 
-use super::{ConsensusSinkError, FsReader, IssueMeta, Local, LocalPath, LocalReader, ReaderError};
-use crate::{Issue, IssueIndex, local::LocalPathError, sink::Sink};
+use super::{ConsensusSinkError, FsReader, IssueMeta, Local, LocalPath, LocalReader};
+use crate::{Issue, IssueIndex, local::LocalPathErrorKind, sink::Sink};
 
 /// Marker type for sinking to filesystem (submitted state).
 pub struct Submitted;
@@ -197,7 +197,7 @@ fn cleanup_old_locations<R: LocalReader>(issue: &Issue, _old: Option<&Issue>, ha
 	// Resolve parent - if this fails, there's nothing to clean up (new issue in new location)
 	let resolved = match local_path.resolve_parent(*reader) {
 		Ok(r) => r,
-		Err(LocalPathError::MissingParent { .. } | LocalPathError::NotFound { .. }) => return Ok(()),
+		Err(e) if matches!(e.kind, LocalPathErrorKind::MissingParent | LocalPathErrorKind::NotFound) => return Ok(()),
 		Err(e) => return Err(e.into()),
 	};
 
@@ -205,7 +205,7 @@ fn cleanup_old_locations<R: LocalReader>(issue: &Issue, _old: Option<&Issue>, ha
 	// If the directory doesn't exist yet, there's nothing to clean up
 	let matching = match resolved.matching_subpaths() {
 		Ok(m) => m,
-		Err(LocalPathError::Reader { .. }) => return Ok(()), // Directory doesn't exist yet
+		Err(e) if e.kind == LocalPathErrorKind::Reader => return Ok(()), // Directory doesn't exist yet
 		Err(e) => return Err(e.into()),
 	};
 	if matching.is_empty() {
@@ -249,7 +249,7 @@ fn remove_issue_files<R: LocalReader>(issue: &Issue, reader: &R) -> Result<bool>
 				let p = resolved_path.path();
 				try_remove_file(&p)?;
 			},
-		Err(LocalPathError::NotFound { .. }) => {}
+		Err(e) if e.kind == LocalPathErrorKind::NotFound => {}
 		Err(e) => color_eyre::eyre::bail!(e),
 	};
 

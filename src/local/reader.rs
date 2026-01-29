@@ -5,7 +5,6 @@
 
 use std::path::{Path, PathBuf};
 
-use color_eyre::owo_colors::OwoColorize;
 use miette::{NamedSource, SourceSpan};
 use tracing::{info, instrument};
 use tracing_error::SpanTrace;

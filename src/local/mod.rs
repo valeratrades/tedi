@@ -21,7 +21,6 @@ pub mod consensus;
 pub enum LocalError {
 	/// Path resolution or IO error.
 	#[error(transparent)]
-	#[diagnostic(transparent)]
 	Io(LocalPathError),
 
 	/// Failed to parse issue content.
@@ -949,18 +948,81 @@ pub use reader::{FsReader, GitReader, LocalReader, ReaderError};
 mod local_path {
 	use std::collections::VecDeque;
 
+	use miette::SourceSpan;
+	use tracing_error::SpanTrace;
+
 	use super::*;
 
 	/// Error type for LocalPath operations.
+	///
+	/// Contains the error kind (for matching), pre-rendered miette diagnostic,
+	/// and a SpanTrace captured at error creation time.
+	#[derive(Debug, thiserror::Error)]
+	#[error("{rendered}\n\n{spantrace}")]
+	pub struct LocalPathError {
+		pub kind: LocalPathErrorKind,
+		rendered: String,
+		spantrace: SpanTrace,
+	}
+
+	impl LocalPathError {
+		fn from_diagnostic(kind: LocalPathErrorKind, diag: LocalPathDiagnostic) -> Self {
+			let rendered = format!("{:?}", miette::Report::new(diag));
+			Self {
+				kind,
+				rendered,
+				spantrace: SpanTrace::capture(),
+			}
+		}
+
+		pub fn missing_parent(selector: IssueSelector, searched_path: PathBuf) -> Self {
+			Self::from_diagnostic(LocalPathErrorKind::MissingParent, LocalPathDiagnostic::MissingParent { selector, searched_path })
+		}
+
+		pub fn not_found(selector: IssueSelector, searched_path: PathBuf) -> Self {
+			Self::from_diagnostic(LocalPathErrorKind::NotFound, LocalPathDiagnostic::NotFound { selector, searched_path })
+		}
+
+		pub fn not_unique(selector: IssueSelector, searched_path: PathBuf, matching_paths: Vec<PathBuf>) -> Self {
+			// Build source code display showing all matching paths
+			let paths_display = matching_paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join("\n");
+			let first_path_len = matching_paths.first().map(|p| p.display().to_string().len()).unwrap_or(0);
+
+			Self::from_diagnostic(
+				LocalPathErrorKind::NotUnique,
+				LocalPathDiagnostic::NotUnique {
+					selector,
+					searched_path,
+					paths_source: miette::NamedSource::new("matching files", paths_display),
+					span: (0, first_path_len).into(),
+					matching_paths,
+				},
+			)
+		}
+
+		pub fn reader(selector: IssueSelector, source: ReaderError) -> Self {
+			Self::from_diagnostic(LocalPathErrorKind::Reader, LocalPathDiagnostic::Reader { selector, source })
+		}
+	}
+
+	/// The kind of local path error (for pattern matching).
+	#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+	pub enum LocalPathErrorKind {
+		MissingParent,
+		NotFound,
+		NotUnique,
+		Reader,
+	}
+
+	/// Internal miette diagnostic for nice error rendering with source highlighting.
 	#[derive(Debug, miette::Diagnostic, thiserror::Error)]
-	pub enum LocalPathError {
+	enum LocalPathDiagnostic {
 		/// Parent issue not found at expected location.
 		#[error("parent issue {selector:?} not found")]
 		#[diagnostic(
 			code(tedi::local::missing_parent),
 			help("Fetch the parent issue first.\n  Searched in: {}", searched_path.display())
 		)]
-		#[allow(unused_assignments)] // false positive
 		MissingParent { selector: IssueSelector, searched_path: PathBuf },
 
 		/// Issue file not found (search failed).
@@ -973,16 +1035,14 @@ mod local_path {
 
 		/// Multiple files match the selector.
 		#[error("multiple files match {selector:?}")]
-		#[diagnostic(
-			code(tedi::local::not_unique),
-			help("Specify a more precise selector to disambiguate.\n  Searched in: {}\n  Matching files:\n{}",
-				searched_path.display(),
-				matching_paths.iter().map(|p| format!("    - {}", p.display())).collect::<Vec<_>>().join("\n")
-			)
-		)]
+		#[diagnostic(code(tedi::local::not_unique), help("Specify a more precise selector to disambiguate"))]
 		NotUnique {
 			selector: IssueSelector,
 			searched_path: PathBuf,
+			#[source_code]
+			paths_source: miette::NamedSource<String>,
+			#[label("conflicts with other matches below")]
+			span: SourceSpan,
 			matching_paths: Vec<PathBuf>,
 		},
 
@@ -1084,13 +1144,9 @@ mod local_path {
 			};
 
 			for selector in parent_selectors {
-				let all_matches = find_all_entries_by_selector(&reader, &path, selector).map_err(|source| LocalPathError::Reader { selector: selector.clone(), source })?;
+				let all_matches = find_all_entries_by_selector(&reader, &path, selector).map_err(|source| LocalPathError::reader(selector.clone(), source))?;
 				let dir_name = match all_matches.len() {
-					0 =>
-						return Err(LocalPathError::MissingParent {
-							selector: selector.clone(),
-							searched_path: path.clone(),
-						}),
+					0 => return Err(LocalPathError::missing_parent(selector.clone(), path.clone())),
 					//1 => match &all_matches[0] {
 					//	FoundEntry::Dir(name) => name.clone(),
 					//	FoundEntry::File(name) => name.strip_suffix(".md.bak").or_else(|| name.strip_suffix(".md")).unwrap().to_string(), //XXX: this loses information. horrible, horrendous bug
@@ -1109,11 +1165,7 @@ mod local_path {
 								})
 							})
 							.collect();
-						return Err(LocalPathError::NotUnique {
-							selector: selector.clone(),
-							searched_path: path.clone(),
-							matching_paths,
-						});
+						return Err(LocalPathError::not_unique(selector.clone(), path.clone(), matching_paths));
 					}
 				};
 				path = path.join(dir_name);
@@ -1165,14 +1217,10 @@ mod local_path {
 		#[tracing::instrument(skip(self), fields(resolved_path = %self.resolved_path.display(), selector = ?self.unresolved_selector_nodes.front()))]
 		pub fn search(mut self) -> Result<Self, LocalPathError> {
 			let selector = self.unresolved_selector_nodes.pop_front().expect("Cannot search with empty selectors");
-			let all_matches = find_all_entries_by_selector(&self.reader, &self.resolved_path, &selector).map_err(|source| LocalPathError::Reader { selector, source })?;
+			let all_matches = find_all_entries_by_selector(&self.reader, &self.resolved_path, &selector).map_err(|source| LocalPathError::reader(selector, source))?;
 
 			match all_matches.len() {
-				0 =>
-					return Err(LocalPathError::NotFound {
-						selector,
-						searched_path: self.resolved_path.clone(),
-					}),
+				0 => return Err(LocalPathError::not_found(selector, self.resolved_path.clone())),
 				1 => {}
 				_ => {
 					let matching_paths = all_matches
@@ -1183,15 +1231,11 @@ mod local_path {
 							})
 						})
 						.collect();
-					return Err(LocalPathError::NotUnique {
-						selector,
-						searched_path: self.resolved_path.clone(),
-						matching_paths,
-					});
+					return Err(LocalPathError::not_unique(selector, self.resolved_path.clone(), matching_paths));
 				}
 			}
 
-			let map_err = |source| LocalPathError::Reader { selector, source };
+			let map_err = |source| LocalPathError::reader(selector, source);
 
 			match &all_matches[0] {
 				FoundEntry::Dir(name) => {
@@ -1204,7 +1248,7 @@ mod local_path {
 						if self.reader.exists(&main_closed).map_err(map_err)? {
 							self.resolved_path = main_closed;
 						} else {
-							return Err(LocalPathError::NotFound { selector, searched_path: dir_path });
+							return Err(LocalPathError::not_found(selector, dir_path));
 						}
 					}
 				}
@@ -1289,7 +1333,7 @@ mod local_path {
 				return Ok(Vec::new());
 			};
 
-			let map_err = |source| LocalPathError::Reader { selector: selector.clone(), source };
+			let map_err = |source| LocalPathError::reader(selector.clone(), source);
 
 			let all_matches = find_all_entries_by_selector(&self.reader, &self.resolved_path, selector).map_err(map_err)?;
 
@@ -1332,7 +1376,7 @@ mod local_path {
 		}
 	}
 }
-pub use local_path::{LocalPath, LocalPathError, LocalPathResolved};
+pub use local_path::{LocalPath, LocalPathError, LocalPathErrorKind, LocalPathResolved};
 
 impl<R: LocalReader> From<LocalPath> for LocalIssueSource<R>
 where
