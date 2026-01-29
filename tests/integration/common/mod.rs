@@ -154,9 +154,11 @@ impl TestContext {
 
 	/// Render a fixture with optional error output if the command failed.
 	pub fn render_fixture(&self, renderer: FixtureRenderer<'_>, output: &RunOutput) -> String {
-		let mut result = renderer.render();
+		let result = renderer.render();
 		if !output.status.success() {
-			result.push_str(&format!("\n\nBINARY FAILED\nstdout:\n{}\nstderr:\n{}", output.stdout, output.stderr));
+			let s = format!("\n\nBINARY FAILED\nstdout:\n{}\nstderr:\n{}", output.stdout, output.stderr);
+			//result.push_str(s); //Q: embedding it into a snapshot feels a bit bizzare. And I don't get color-coding
+			eprintln!("{s}");
 		}
 		result
 	}
