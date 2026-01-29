@@ -1750,7 +1750,7 @@ impl Issue /*{{{1*/ {
 #[allow(async_fn_in_trait)]
 pub trait LazyIssue<S> {
 	/// The actual source reference type (e.g., `LocalPath` for Local, `RemoteSource` for Remote).
-	type Source: Clone;
+	type Source: Clone + std::fmt::Debug;
 	/// Error type for operations on this source.
 	type Error: std::error::Error;
 

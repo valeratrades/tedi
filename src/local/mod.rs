@@ -1165,7 +1165,7 @@ mod local_path {
 		#[tracing::instrument(skip(self), fields(resolved_path = %self.resolved_path.display(), selector = ?self.unresolved_selector_nodes.front()))]
 		pub fn search(mut self) -> Result<Self, LocalPathError> {
 			let selector = self.unresolved_selector_nodes.pop_front().expect("Cannot search with empty selectors");
-			let all_matches = find_all_entries_by_selector(&self.reader, &self.resolved_path, &selector).map_err(|source| LocalPathError::Reader { selector: selector.clone(), source })?;
+			let all_matches = find_all_entries_by_selector(&self.reader, &self.resolved_path, &selector).map_err(|source| LocalPathError::Reader { selector, source })?;
 
 			match all_matches.len() {
 				0 =>
@@ -1191,7 +1191,7 @@ mod local_path {
 				}
 			}
 
-			let map_err = |source| LocalPathError::Reader { selector: selector.clone(), source };
+			let map_err = |source| LocalPathError::Reader { selector, source };
 
 			match &all_matches[0] {
 				FoundEntry::Dir(name) => {
@@ -1393,14 +1393,14 @@ impl crate::LazyIssue<Local> for Issue {
 	type Error = LocalError;
 	type Source = LocalIssueSource<FsReader>;
 
-	#[tracing::instrument(skip(source))]
+	#[tracing::instrument(skip_all)]
 	async fn parent_index(source: &Self::Source) -> Result<crate::IssueIndex, Self::Error> {
 		// The source's IssueIndex IS the issue's index; parent_index is derived from it
 		let index = source.index();
 		Ok(index.parent())
 	}
 
-	#[tracing::instrument(skip(self, source))]
+	#[tracing::instrument(skip_all)]
 	async fn identity(&mut self, source: Self::Source) -> Result<crate::IssueIdentity, Self::Error> {
 		if self.identity.is_linked() {
 			return Ok(self.identity.clone());
@@ -1409,7 +1409,7 @@ impl crate::LazyIssue<Local> for Issue {
 		let index = *source.index();
 
 		if self.contents.title.is_empty() {
-			let file_path = source.local_path.clone().resolve_parent(source.reader.clone())?.search()?.path();
+			let file_path = source.local_path.clone().resolve_parent(source.reader)?.search()?.path();
 			let content = source.reader.read_content(&file_path)?;
 			let parsed = Local::parse_single_node(&content, index, &file_path)?;
 			self.identity = parsed.identity;
@@ -1433,7 +1433,7 @@ impl crate::LazyIssue<Local> for Issue {
 		}
 
 		let index = *source.index();
-		let file_path = source.local_path.clone().resolve_parent(source.reader.clone())?.search()?.path();
+		let file_path = source.local_path.clone().resolve_parent(source.reader)?.search()?.path();
 		let content = source.reader.read_content(&file_path)?;
 		let parsed = Local::parse_single_node(&content, index, &file_path)?;
 		self.identity = parsed.identity;
@@ -1442,7 +1442,7 @@ impl crate::LazyIssue<Local> for Issue {
 		Ok(self.contents.clone())
 	}
 
-	#[tracing::instrument(skip(self, source))]
+	#[tracing::instrument(skip_all)]
 	async fn children(&mut self, source: Self::Source) -> Result<Vec<Issue>, Self::Error> {
 		if !self.children.is_empty() {
 			return Ok(self.children.clone());
@@ -1480,7 +1480,7 @@ impl crate::LazyIssue<Local> for Issue {
 		Ok(children)
 	}
 
-	#[tracing::instrument(skip(source))]
+	#[tracing::instrument]
 	async fn load(source: Self::Source) -> Result<Issue, Self::Error> {
 		// Check for unresolved conflicts (only for FsReader/Submitted, and only for root loads)
 		conflict::check_conflict(source.index().owner())?;

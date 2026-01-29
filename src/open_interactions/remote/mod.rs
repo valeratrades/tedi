@@ -80,7 +80,7 @@ pub enum Remote {}
 ///
 /// Contains the issue link and optional lineage (parent issue numbers from root to immediate parent).
 /// If lineage is None, it will be fetched from GitHub by traversing parent issues.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct RemoteSource {
 	pub link: IssueLink,
 	lineage: Option<[u64; MAX_LINEAGE_DEPTH]>,
