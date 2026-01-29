@@ -5,7 +5,11 @@
 
 use tedi::Issue;
 
-use crate::common::{TestContext, git::GitExt};
+use crate::common::{
+	TestContext,
+	are_you_sure::{UnsafePathExt, read_issue_file},
+	git::GitExt,
+};
 
 fn parse(content: &str) -> Issue {
 	Issue::deserialize_virtual(content).expect("failed to parse test issue")
@@ -26,7 +30,8 @@ async fn test_blocker_add_in_integrated_mode() {
 	);
 
 	// Set up: local issue file exists
-	let issue_path = ctx.local(&issue, None).await;
+	ctx.local(&issue, None).await;
+	let issue_path = ctx.resolve_issue_path(&issue);
 
 	// Set this issue as the current blocker issue
 	ctx.xdg.write_cache("current_blocker_issue.txt", issue_path.to_str().unwrap());
@@ -41,7 +46,7 @@ async fn test_blocker_add_in_integrated_mode() {
 	assert!(out.status.success(), "blocker add should succeed in integrated mode. stderr: {}", out.stderr);
 
 	// Verify the blocker was added to the issue file
-	let content = std::fs::read_to_string(&issue_path).unwrap();
+	let content = read_issue_file(&issue_path);
 	assert!(content.contains("New task from CLI"), "New blocker should be added to issue file. Got: {content}");
 	assert!(content.contains("First task"), "Existing blockers should be preserved. Got: {content}");
 }
@@ -63,7 +68,8 @@ async fn test_blocker_pop_in_integrated_mode() {
 	);
 
 	// Set up: local issue file exists
-	let issue_path = ctx.local(&issue, None).await;
+	ctx.local(&issue, None).await;
+	let issue_path = ctx.resolve_issue_path(&issue);
 
 	// Set this issue as the current blocker issue
 	ctx.xdg.write_cache("current_blocker_issue.txt", issue_path.to_str().unwrap());
@@ -85,7 +91,7 @@ async fn test_blocker_pop_in_integrated_mode() {
 	);
 
 	// Verify the blocker was removed from the issue file
-	let content = std::fs::read_to_string(&issue_path).unwrap();
+	let content = read_issue_file(&issue_path);
 	assert!(!content.contains("Third task"), "Third task should be removed. Got: {content}");
 	assert!(content.contains("First task"), "First task should remain. Got: {content}");
 	assert!(content.contains("Second task"), "Second task should remain. Got: {content}");
@@ -100,7 +106,8 @@ async fn test_blocker_add_creates_blockers_section_if_missing() {
 	let issue = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tBody text without blockers section.\n");
 
 	// Set up: local issue file exists
-	let issue_path = ctx.local(&issue, None).await;
+	ctx.local(&issue, None).await;
+	let issue_path = ctx.resolve_issue_path(&issue);
 
 	// Set this issue as the current blocker issue
 	ctx.xdg.write_cache("current_blocker_issue.txt", issue_path.to_str().unwrap());
@@ -115,7 +122,7 @@ async fn test_blocker_add_creates_blockers_section_if_missing() {
 	assert!(out.status.success(), "blocker add should succeed even without existing blockers section. stderr: {}", out.stderr);
 
 	// Verify the blockers section was created with the new task
-	let content = std::fs::read_to_string(&issue_path).unwrap();
+	let content = read_issue_file(&issue_path);
 	assert!(content.contains("# Blockers"), "Blockers section should be created. Got: {content}");
 	assert!(content.contains("New task"), "New blocker should be added. Got: {content}");
 }
@@ -184,7 +191,8 @@ async fn test_blocker_add_with_header_context() {
 	);
 
 	// Set up: local issue file exists
-	let issue_path = ctx.local(&issue, None).await;
+	ctx.local(&issue, None).await;
+	let issue_path = ctx.resolve_issue_path(&issue);
 
 	// Set this issue as the current blocker issue
 	ctx.xdg.write_cache("current_blocker_issue.txt", issue_path.to_str().unwrap());
@@ -199,6 +207,6 @@ async fn test_blocker_add_with_header_context() {
 	assert!(out.status.success(), "blocker add should succeed. stderr: {}", out.stderr);
 
 	// Verify the blocker was added (should be under Phase 2, the last header with items)
-	let content = std::fs::read_to_string(&issue_path).unwrap();
+	let content = read_issue_file(&issue_path);
 	assert!(content.contains("New sub-task"), "New blocker should be added. Got: {content}");
 }

@@ -86,10 +86,14 @@ impl TestContext {
 	}
 
 	/// Create an OpenBuilder for running the `open` command with various options.
-	pub fn open<'a>(&'a self, issue_path: &'a Path) -> OpenBuilder<'a> {
+	///
+	/// Takes an `&Issue` and uses `IssueIndex::from(issue).to_string()` as the selector
+	/// pattern passed to the CLI. This is the correct way to identify issues without
+	/// relying on absolute paths.
+	pub fn open<'a>(&'a self, issue: &'a Issue) -> OpenBuilder<'a> {
 		OpenBuilder {
 			ctx: self,
-			issue_path,
+			issue,
 			extra_args: Vec::new(),
 			edit_to: None,
 		}
@@ -167,9 +171,10 @@ impl TestContext {
 /// Builder for running the `open` command with various options.
 pub struct OpenBuilder<'a> {
 	ctx: &'a TestContext,
-	issue_path: &'a Path,
+	/// The issue to open (used to derive selector pattern and virtual edit path)
+	issue: &'a Issue,
 	extra_args: Vec<&'a str>,
-	edit_to: Option<tedi::Issue>,
+	edit_to: Option<Issue>,
 }
 impl<'a> OpenBuilder<'a> {
 	/// Add extra CLI arguments.
@@ -179,17 +184,20 @@ impl<'a> OpenBuilder<'a> {
 	}
 
 	/// Edit the file to this issue while "editor is open".
-	pub fn edit(mut self, issue: &tedi::Issue) -> Self {
+	pub fn edit(mut self, issue: &Issue) -> Self {
 		self.edit_to = Some(issue.clone());
 		self
 	}
 
 	/// Run the command and return RunOutput.
 	pub fn run(self) -> RunOutput {
+		// Use IssueIndex Display impl to generate the selector pattern
+		let selector = tedi::IssueIndex::from(self.issue).to_string();
+
 		let mut cmd = Command::new(get_binary_path());
 		cmd.arg("--mock").arg("open");
 		cmd.args(&self.extra_args);
-		cmd.arg(self.issue_path.to_str().unwrap());
+		cmd.arg(&selector);
 		cmd.env("__IS_INTEGRATION_TEST", "1");
 		cmd.env(ENV_GITHUB_TOKEN, "test_token");
 		for (key, value) in self.ctx.xdg.env_vars() {
@@ -204,7 +212,6 @@ impl<'a> OpenBuilder<'a> {
 
 		// Poll for process completion, signaling pipe when it's waiting
 		let pipe_path = self.ctx.pipe_path.clone();
-		let issue_path = self.issue_path.to_path_buf();
 		let edit_to = self.edit_to.clone();
 		let mut signaled = false;
 
@@ -221,9 +228,14 @@ impl<'a> OpenBuilder<'a> {
 						// Edit the file while "editor is open" if requested
 						// Use serialize_virtual since that's what the user sees/edits (full tree with children)
 						if let Some(issue) = &edit_to {
+							// Write to the virtual edit path computed from the issue
+							let vpath = tedi::local::Local::virtual_edit_path(issue);
+							if let Some(parent) = vpath.parent() {
+								std::fs::create_dir_all(parent).unwrap();
+							}
 							let content = issue.serialize_virtual();
-							eprintln!("[test:OpenBuilder] submitting user input // writing to {issue_path:?}:\n{content}");
-							std::fs::write(&issue_path, content).unwrap();
+							eprintln!("[test:OpenBuilder] submitting user input // writing to {vpath:?}:\n{content}");
+							std::fs::write(&vpath, content).unwrap();
 						}
 
 						// Try to signal the pipe (use nix O_NONBLOCK to avoid blocking)
@@ -303,17 +315,6 @@ impl<'a> OpenUrlBuilder<'a> {
 		self
 	}
 
-	/// Edit the file at the specified path while "editor is open".
-	/// Use this when you know the path the issue will be stored at.
-	/// NB: be very careful when using - the proper interface for submitting generic user-like edits
-	/// is [edit](Self::edit) or [edit_contents](Self::edit_contents). Operating on the filesystem
-	/// directly is ill-advised and should only be used in tests that specifically want to see
-	/// reaction to underlying filesystem changes.
-	pub fn unsafe_edit_source_file(mut self, path: &Path, issue: &tedi::Issue) -> Self {
-		self.edit_op = Some(EditOperation::SourceFile(path.to_path_buf(), issue.clone()));
-		self
-	}
-
 	/// Run the command and return RunOutput.
 	pub fn run(self) -> RunOutput {
 		let mut cmd = Command::new(get_binary_path());
@@ -372,10 +373,6 @@ impl<'a> OpenUrlBuilder<'a> {
 									std::fs::write(&vpath, new_content).unwrap();
 								}
 							}
-							Some(EditOperation::SourceFile(path, issue)) => {
-								// Write directly to the source file (unsafe mode)
-								std::fs::write(path, issue.serialize_virtual()).unwrap();
-							}
 							None => {}
 						}
 
@@ -416,7 +413,7 @@ mod snapshot;
 
 use std::{
 	io::Write,
-	path::{Path, PathBuf},
+	path::PathBuf,
 	process::{Command, ExitStatus},
 	sync::OnceLock,
 };
@@ -449,8 +446,6 @@ enum EditOperation {
 	FullIssue(Issue),
 	/// Edit just the contents/body (preserves header, replaces body)
 	ContentsOnly(String),
-	/// Edit the source file directly (unsafe, for testing filesystem behavior)
-	SourceFile(PathBuf, Issue),
 }
 
 /// The target for opening an issue (URL or touch pattern).
@@ -515,4 +510,74 @@ fn replace_issue_body(content: &str, new_body: &str) -> String {
 	}
 
 	result
+}
+
+/// Unsafe filesystem operations for tests that genuinely need path-based access.
+///
+/// **DO NOT USE** unless you are testing filesystem edge cases specifically.
+/// Normal tests should use `ctx.open(&issue)` with the proper `Issue` type.
+///
+/// To use: `use crate::common::are_you_sure::UnsafePathExt;`
+pub mod are_you_sure {
+	use std::path::{Path, PathBuf};
+
+	use tedi::local::{FsReader, Local, LocalPath};
+
+	use super::TestContext;
+
+	/// Extension trait for unsafe path-based operations.
+	///
+	/// These methods bypass the proper IssueIndex-based addressing and work
+	/// directly with filesystem paths. Only use for tests that specifically
+	/// need to verify filesystem behavior or edge cases.
+	pub trait UnsafePathExt {
+		/// Get the flat format path for an issue: `{number}_-_{title}.md`
+		///
+		/// **Unsafe**: bypasses proper issue addressing. Use only for filesystem tests.
+		fn flat_issue_path(&self, owner: &str, repo: &str, number: u64, title: &str) -> PathBuf;
+
+		/// Get the directory format path for an issue: `{number}_-_{title}/__main__.md`
+		///
+		/// **Unsafe**: bypasses proper issue addressing. Use only for filesystem tests.
+		fn dir_issue_path(&self, owner: &str, repo: &str, number: u64, title: &str) -> PathBuf;
+
+		/// Resolve an issue's actual filesystem path after it's been written.
+		///
+		/// **Unsafe**: uses filesystem search. Prefer working with Issue directly.
+		fn resolve_issue_path(&self, issue: &tedi::Issue) -> PathBuf;
+	}
+
+	impl UnsafePathExt for TestContext {
+		fn flat_issue_path(&self, owner: &str, repo: &str, number: u64, title: &str) -> PathBuf {
+			let sanitized = title.replace(' ', "_");
+			self.xdg.data_dir().join(format!("issues/{owner}/{repo}/{number}_-_{sanitized}.md"))
+		}
+
+		fn dir_issue_path(&self, owner: &str, repo: &str, number: u64, title: &str) -> PathBuf {
+			let sanitized = title.replace(' ', "_");
+			self.xdg.data_dir().join(format!("issues/{owner}/{repo}/{number}_-_{sanitized}/__main__.md"))
+		}
+
+		fn resolve_issue_path(&self, issue: &tedi::Issue) -> PathBuf {
+			self.set_xdg_env();
+			LocalPath::from(issue).resolve_parent(FsReader).unwrap().search().unwrap().path()
+		}
+	}
+
+	/// Read an issue file's contents directly from the filesystem.
+	///
+	/// **Unsafe**: bypasses proper issue loading. Use only for filesystem verification tests.
+	pub fn read_issue_file(path: &Path) -> String {
+		std::fs::read_to_string(path).expect("failed to read issue file")
+	}
+
+	/// Write content directly to a filesystem path.
+	///
+	/// **Unsafe**: bypasses virtual edit path. Use only for tests checking filesystem edge cases.
+	pub fn write_to_path(path: &Path, content: &str) {
+		if let Some(parent) = path.parent() {
+			std::fs::create_dir_all(parent).expect("failed to create parent dirs");
+		}
+		std::fs::write(path, content).expect("failed to write file");
+	}
 }

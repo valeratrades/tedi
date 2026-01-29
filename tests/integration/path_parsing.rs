@@ -3,6 +3,9 @@
 //! Tests that issue file paths are correctly parsed to extract issue identity.
 //! Files can use either the numbered format `{number}_-_{title}.md` or just
 //! `{title}.md` (title-only, for pending issues).
+//!
+//! These tests operate directly on raw file paths (not Issue objects) to test
+//! error handling and edge cases in path-based opening.
 
 use v_fixtures::FixtureRenderer;
 
@@ -24,8 +27,8 @@ fn test_open_file_without_issue_number_in_name_gives_clear_error() {
 
 	let issue_file_path = ctx.xdg.data_dir().join(malformed_path);
 
-	// Try to open this file directly
-	let out = ctx.open(&issue_file_path).run();
+	// Try to open this file directly by absolute path
+	let out = ctx.run(&["--mock", "--offline", "open", issue_file_path.to_str().unwrap()]);
 
 	// Should fail because the content isn't valid issue format,
 	// but the error should mention the actual file path (not just the parent directory)
@@ -48,8 +51,8 @@ fn test_open_file_in_repo_subdir_without_issue_number() {
 
 	let issue_file_path = ctx.xdg.data_dir().join(malformed_path);
 
-	// Try to open this file directly
-	let out = ctx.open(&issue_file_path).run();
+	// Try to open this file directly by absolute path
+	let out = ctx.run(&["--mock", "--offline", "open", issue_file_path.to_str().unwrap()]);
 
 	// Should fail because content isn't valid issue format, with clear error
 	assert!(!out.status.success(), "Should fail when file content isn't valid issue format");
@@ -95,8 +98,8 @@ fn test_nested_issue_under_unsynced_parent() {
 
 	let child_file_path = ctx.xdg.data_dir().join(child_path);
 
-	// Try to open the child issue - this should work even though parent has no git number
-	let out = ctx.open(&child_file_path).run();
+	// Try to open the child issue by absolute path
+	let out = ctx.run(&["--mock", "--offline", "open", child_file_path.to_str().unwrap()]);
 
 	// Should succeed
 	assert!(out.status.success(), "Should succeed opening child under unsynced parent. stderr: {}", out.stderr);
