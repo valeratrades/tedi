@@ -667,7 +667,7 @@ impl IssueIndex {
 	/// Get the parent's IssueIndex (all selectors except the last one).
 	/// For repo-only or single-selector indices, returns repo_only.
 	pub fn parent(&self) -> Option<Self> {
-		if self.index.len() <= 1 {
+		if self.index.is_empty() {
 			None
 		} else {
 			let mut index = self.index;
