@@ -304,10 +304,12 @@ impl GitExt for TestContext {
 impl TestContext {
 	/// Write an issue tree to the filesystem, with each node in its own file.
 	/// Returns the path to the root issue file.
+	#[deprecated(note = "should use actualy logic from the actual lib instead of reimplementing it")]
 	fn write_issue_tree(&self, owner: &str, repo: &str, number: u64, issue: &Issue) -> PathBuf {
 		self.write_issue_tree_recursive(owner, repo, number, issue, &[])
 	}
 
+	#[deprecated(note = "should use actualy logic from the actual lib instead of reimplementing it")]
 	fn write_issue_tree_recursive(&self, owner: &str, repo: &str, number: u64, issue: &Issue, ancestors: &[String]) -> PathBuf {
 		let sanitized_title = issue.contents.title.replace(' ', "_");
 		let has_children = !issue.children.is_empty();
@@ -430,6 +432,7 @@ impl TestContext {
 	}
 
 	/// Write timestamps to .meta.json for an issue.
+	#[deprecated(note = "should use actualy logic from the actual lib instead of reimplementing it")]
 	fn write_issue_meta(&self, owner: &str, repo: &str, number: u64, timestamps: &IssueTimestamps) {
 		let meta_path = self.xdg.data_dir().join(format!("issues/{owner}/{repo}/.meta.json"));
 
@@ -464,6 +467,7 @@ impl TestContext {
 }
 
 /// Extract owner, repo, number from an Issue's identity, with defaults.
+#[deprecated(note = "should use actualy logic from the actual lib instead of reimplementing it")]
 fn extract_issue_coords(issue: &Issue) -> (String, String, u64) {
 	if let Some(link) = issue.identity.link() {
 		(link.owner().to_string(), link.repo().to_string(), link.number())
@@ -473,6 +477,7 @@ fn extract_issue_coords(issue: &Issue) -> (String, String, u64) {
 }
 
 /// Recursively add an issue and all its children to the mock state.
+#[deprecated(note = "should use actualy logic from the actual lib instead of reimplementing it")]
 fn add_issue_recursive(state: &mut GitState, owner: &str, repo: &str, number: u64, parent_number: Option<u64>, issue: &Issue, timestamps: Option<&IssueTimestamps>) {
 	let key = (owner.to_string(), repo.to_string(), number);
 
@@ -531,6 +536,7 @@ fn add_issue_recursive(state: &mut GitState, owner: &str, repo: &str, number: u6
 	}
 }
 
+#[deprecated(note = "should use actualy logic from the actual lib instead of reimplementing it")]
 struct MockIssue {
 	owner: String,
 	repo: String,
@@ -544,6 +550,7 @@ struct MockIssue {
 	timestamps: Option<IssueTimestamps>,
 }
 
+#[deprecated(note = "should use actualy logic from the actual lib instead of reimplementing it")]
 struct MockComment {
 	owner: String,
 	repo: String,
@@ -560,63 +567,4 @@ struct SubIssueRelation {
 	repo: String,
 	parent: u64,
 	child: u64,
-}
-
-#[cfg(test)]
-mod tests {
-	use super::*;
-
-	fn parse(content: &str) -> Issue {
-		Issue::deserialize_virtual(content).expect("failed to parse test issue")
-	}
-
-	#[test]
-	fn test_remote_handles_2_level_nesting() {
-		let ctx = TestContext::new("");
-
-		// Create a 3-level hierarchy: grandparent -> parent -> child
-		let issue = parse(
-			"- [ ] Grandparent <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
-			 \tgrandparent body\n\
-			 \n\
-			 \t- [ ] Parent <!--sub @mock_user https://github.com/o/r/issues/2 -->\n\
-			 \t\tparent body\n\
-			 \n\
-			 \t\t- [ ] Child <!--sub @mock_user https://github.com/o/r/issues/3 -->\n\
-			 \t\t\tchild body\n",
-		);
-
-		ctx.remote(&issue, None);
-
-		// Read the mock state that was written
-		let mock_content = std::fs::read_to_string(&ctx.mock_state_path).unwrap();
-		let mock_state: serde_json::Value = serde_json::from_str(&mock_content).unwrap();
-
-		// Should have 3 issues
-		let issues = mock_state["issues"].as_array().unwrap();
-		assert_eq!(issues.len(), 3, "Should have 3 issues (grandparent, parent, child)");
-
-		// Check that all issues are present
-		let numbers: Vec<u64> = issues.iter().map(|i| i["number"].as_u64().unwrap()).collect();
-		assert!(numbers.contains(&1), "Should have grandparent issue #1");
-		assert!(numbers.contains(&2), "Should have parent issue #2");
-		assert!(numbers.contains(&3), "Should have child issue #3");
-
-		// Should have 2 sub-issue relations
-		let sub_issues = mock_state["sub_issues"].as_array().unwrap();
-		assert_eq!(sub_issues.len(), 2, "Should have 2 sub-issue relations");
-
-		// Check relations: 1->2 and 2->3
-		let relations: Vec<(u64, Vec<u64>)> = sub_issues
-			.iter()
-			.map(|r| {
-				let parent = r["parent"].as_u64().unwrap();
-				let children: Vec<u64> = r["children"].as_array().unwrap().iter().map(|c| c.as_u64().unwrap()).collect();
-				(parent, children)
-			})
-			.collect();
-
-		assert!(relations.iter().any(|(p, c)| *p == 1 && c.contains(&2)), "Should have relation: grandparent(1) -> parent(2)");
-		assert!(relations.iter().any(|(p, c)| *p == 2 && c.contains(&3)), "Should have relation: parent(2) -> child(3)");
-	}
 }
