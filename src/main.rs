@@ -70,36 +70,7 @@ async fn main() {
 	match success {
 		Ok(_) => std::process::exit(0),
 		Err(e) => {
-			// Try to downcast to miette-compatible error types for better diagnostics
-			// First print color_eyre format (for spantrace), then miette diagnostic (for help text)
-			use tedi::local::{LocalError, LocalPathError};
-
-			// Check if we have a diagnostic error type
-			let has_local_error = e.downcast_ref::<LocalError>().is_some();
-			let has_path_error = e.downcast_ref::<LocalPathError>().is_some();
-
-			if has_local_error || has_path_error {
-				// Print color_eyre format first (includes spantrace)
-				eprintln!("{e:?}");
-				eprintln!();
-
-				// Then print miette diagnostic (includes help text with file matches)
-				let e = match e.downcast::<LocalError>() {
-					Ok(local_err) => {
-						let report = miette::Report::new(local_err);
-						eprintln!("{report:?}");
-						std::process::exit(1);
-					}
-					Err(e) => e,
-				};
-				if let Ok(path_err) = e.downcast::<LocalPathError>() {
-					let report = miette::Report::new(path_err);
-					eprintln!("{report:?}");
-				}
-			} else {
-				// Fall back to just color_eyre's format
-				eprintln!("{e:?}");
-			}
+			eprintln!("{e:?}");
 			std::process::exit(1);
 		}
 	}
