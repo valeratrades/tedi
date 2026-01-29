@@ -25,9 +25,10 @@ fn test_open_file_without_issue_number_in_name_gives_clear_error() {
 	let malformed_path = "issues/owner/repo/uni.md";
 	ctx.write(malformed_path, "# Some content\nThis file has no issue number in its name.");
 
-	let issue_file_path = ctx.xdg.data_dir().join(malformed_path);
+	// Construct absolute path manually since we can't parse this as an Issue
+	let issue_file_path = ctx.data_dir().join(malformed_path);
 
-	// Try to open this file directly by absolute path
+	// Try to open this malformed file by absolute path
 	let out = ctx.run(&["--mock", "--offline", "open", issue_file_path.to_str().unwrap()]);
 
 	// Should fail because the content isn't valid issue format,
@@ -49,9 +50,10 @@ fn test_open_file_in_repo_subdir_without_issue_number() {
 	let malformed_path = "issues/valeratrades/math/uni.md";
 	ctx.write(malformed_path, "# University notes\nSome content.");
 
-	let issue_file_path = ctx.xdg.data_dir().join(malformed_path);
+	// Construct absolute path manually since we can't parse this as an Issue
+	let issue_file_path = ctx.data_dir().join(malformed_path);
 
-	// Try to open this file directly by absolute path
+	// Try to open this malformed file by absolute path
 	let out = ctx.run(&["--mock", "--offline", "open", issue_file_path.to_str().unwrap()]);
 
 	// Should fail because content isn't valid issue format, with clear error
@@ -91,14 +93,13 @@ fn test_nested_issue_under_unsynced_parent() {
 
 	// Create child issue under the unsynced parent
 	let child_path = "issues/owner/repo/my_project/task.md";
-	ctx.write(
-		child_path,
-		"- [ ] Task <!-- @user https://github.com/owner/repo/issues/new -->\n\tA task under the unsynced parent.\n",
-	);
+	let child_content = "- [ ] Task <!-- @user https://github.com/owner/repo/issues/new -->\n\tA task under the unsynced parent.\n";
+	ctx.write(child_path, child_content);
 
-	let child_file_path = ctx.xdg.data_dir().join(child_path);
+	// Construct absolute path to the child file
+	let child_file_path = ctx.data_dir().join(child_path);
 
-	// Try to open the child issue by absolute path
+	// Open the child issue by absolute path
 	let out = ctx.run(&["--mock", "--offline", "open", child_file_path.to_str().unwrap()]);
 
 	// Should succeed

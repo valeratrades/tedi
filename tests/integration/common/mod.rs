@@ -191,13 +191,19 @@ impl<'a> OpenBuilder<'a> {
 
 	/// Run the command and return RunOutput.
 	pub fn run(self) -> RunOutput {
-		// Use IssueIndex Display impl to generate the selector pattern
-		let selector = tedi::IssueIndex::from(self.issue).to_string();
+		// Construct absolute path from LocalPath - CLI accepts file paths directly
+		self.ctx.set_xdg_env();
+		let issue_path = tedi::local::LocalPath::from(self.issue)
+			.resolve_parent(tedi::local::FsReader)
+			.expect("failed to resolve issue parent path")
+			.search()
+			.expect("failed to find issue file")
+			.path();
 
 		let mut cmd = Command::new(get_binary_path());
 		cmd.arg("--mock").arg("open");
 		cmd.args(&self.extra_args);
-		cmd.arg(&selector);
+		cmd.arg(&issue_path);
 		cmd.env("__IS_INTEGRATION_TEST", "1");
 		cmd.env(ENV_GITHUB_TOKEN, "test_token");
 		for (key, value) in self.ctx.xdg.env_vars() {
@@ -409,11 +415,80 @@ pub struct RunOutput {
 	pub stdout: String,
 	pub stderr: String,
 }
+/// Unsafe filesystem operations for tests that genuinely need path-based access.
+///
+/// **DO NOT USE** unless you are testing filesystem edge cases specifically.
+/// Normal tests should use `ctx.open(&issue)` with the proper `Issue` type.
+///
+/// To use: `use crate::common::are_you_sure::UnsafePathExt;`
+pub mod are_you_sure {
+	use std::path::{Path, PathBuf};
+
+	use tedi::local::{FsReader, Local, LocalPath};
+
+	use super::TestContext;
+
+	/// Extension trait for unsafe path-based operations.
+	///
+	/// These methods bypass the proper IssueIndex-based addressing and work
+	/// directly with filesystem paths. Only use for tests that specifically
+	/// need to verify filesystem behavior or edge cases.
+	pub trait UnsafePathExt {
+		/// Get the flat format path for an issue: `{number}_-_{title}.md`
+		///
+		/// **Unsafe**: bypasses proper issue addressing. Use only for filesystem tests.
+		fn flat_issue_path(&self, owner: &str, repo: &str, number: u64, title: &str) -> PathBuf;
+
+		/// Get the directory format path for an issue: `{number}_-_{title}/__main__.md`
+		///
+		/// **Unsafe**: bypasses proper issue addressing. Use only for filesystem tests.
+		fn dir_issue_path(&self, owner: &str, repo: &str, number: u64, title: &str) -> PathBuf;
+
+		/// Resolve an issue's actual filesystem path after it's been written.
+		///
+		/// **Unsafe**: uses filesystem search. Prefer working with Issue directly.
+		fn resolve_issue_path(&self, issue: &tedi::Issue) -> PathBuf;
+	}
+
+	impl UnsafePathExt for TestContext {
+		fn flat_issue_path(&self, owner: &str, repo: &str, number: u64, title: &str) -> PathBuf {
+			let sanitized = title.replace(' ', "_");
+			self.xdg.data_dir().join(format!("issues/{owner}/{repo}/{number}_-_{sanitized}.md"))
+		}
+
+		fn dir_issue_path(&self, owner: &str, repo: &str, number: u64, title: &str) -> PathBuf {
+			let sanitized = title.replace(' ', "_");
+			self.xdg.data_dir().join(format!("issues/{owner}/{repo}/{number}_-_{sanitized}/__main__.md"))
+		}
+
+		fn resolve_issue_path(&self, issue: &tedi::Issue) -> PathBuf {
+			self.set_xdg_env();
+			LocalPath::from(issue).resolve_parent(FsReader).unwrap().search().unwrap().path()
+		}
+	}
+
+	/// Read an issue file's contents directly from the filesystem.
+	///
+	/// **Unsafe**: bypasses proper issue loading. Use only for filesystem verification tests.
+	pub fn read_issue_file(path: &Path) -> String {
+		std::fs::read_to_string(path).expect("failed to read issue file")
+	}
+
+	/// Write content directly to a filesystem path.
+	///
+	/// **Unsafe**: bypasses virtual edit path. Use only for tests checking filesystem edge cases.
+	pub fn write_to_path(path: &Path, content: &str) {
+		if let Some(parent) = path.parent() {
+			std::fs::create_dir_all(parent).expect("failed to create parent dirs");
+		}
+		std::fs::write(path, content).expect("failed to write file");
+	}
+}
 mod snapshot;
 
 use std::{
 	io::Write,
-	path::PathBuf,
+	path::{Path, PathBuf},
 	process::{Command, ExitStatus},
 	sync::OnceLock,
 };
@@ -510,74 +585,4 @@ fn replace_issue_body(content: &str, new_body: &str) -> String {
 	}
 
 	result
-}
-
-/// Unsafe filesystem operations for tests that genuinely need path-based access.
-///
-/// **DO NOT USE** unless you are testing filesystem edge cases specifically.
-/// Normal tests should use `ctx.open(&issue)` with the proper `Issue` type.
-///
-/// To use: `use crate::common::are_you_sure::UnsafePathExt;`
-pub mod are_you_sure {
-	use std::path::{Path, PathBuf};
-
-	use tedi::local::{FsReader, Local, LocalPath};
-
-	use super::TestContext;
-
-	/// Extension trait for unsafe path-based operations.
-	///
-	/// These methods bypass the proper IssueIndex-based addressing and work
-	/// directly with filesystem paths. Only use for tests that specifically
-	/// need to verify filesystem behavior or edge cases.
-	pub trait UnsafePathExt {
-		/// Get the flat format path for an issue: `{number}_-_{title}.md`
-		///
-		/// **Unsafe**: bypasses proper issue addressing. Use only for filesystem tests.
-		fn flat_issue_path(&self, owner: &str, repo: &str, number: u64, title: &str) -> PathBuf;
-
-		/// Get the directory format path for an issue: `{number}_-_{title}/__main__.md`
-		///
-		/// **Unsafe**: bypasses proper issue addressing. Use only for filesystem tests.
-		fn dir_issue_path(&self, owner: &str, repo: &str, number: u64, title: &str) -> PathBuf;
-
-		/// Resolve an issue's actual filesystem path after it's been written.
-		///
-		/// **Unsafe**: uses filesystem search. Prefer working with Issue directly.
-		fn resolve_issue_path(&self, issue: &tedi::Issue) -> PathBuf;
-	}
-
-	impl UnsafePathExt for TestContext {
-		fn flat_issue_path(&self, owner: &str, repo: &str, number: u64, title: &str) -> PathBuf {
-			let sanitized = title.replace(' ', "_");
-			self.xdg.data_dir().join(format!("issues/{owner}/{repo}/{number}_-_{sanitized}.md"))
-		}
-
-		fn dir_issue_path(&self, owner: &str, repo: &str, number: u64, title: &str) -> PathBuf {
-			let sanitized = title.replace(' ', "_");
-			self.xdg.data_dir().join(format!("issues/{owner}/{repo}/{number}_-_{sanitized}/__main__.md"))
-		}
-
-		fn resolve_issue_path(&self, issue: &tedi::Issue) -> PathBuf {
-			self.set_xdg_env();
-			LocalPath::from(issue).resolve_parent(FsReader).unwrap().search().unwrap().path()
-		}
-	}
-
-	/// Read an issue file's contents directly from the filesystem.
-	///
-	/// **Unsafe**: bypasses proper issue loading. Use only for filesystem verification tests.
-	pub fn read_issue_file(path: &Path) -> String {
-		std::fs::read_to_string(path).expect("failed to read issue file")
-	}
-
-	/// Write content directly to a filesystem path.
-	///
-	/// **Unsafe**: bypasses virtual edit path. Use only for tests checking filesystem edge cases.
-	pub fn write_to_path(path: &Path, content: &str) {
-		if let Some(parent) = path.parent() {
-			std::fs::create_dir_all(parent).expect("failed to create parent dirs");
-		}
-		std::fs::write(path, content).expect("failed to write file");
-	}
 }

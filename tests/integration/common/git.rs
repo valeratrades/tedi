@@ -273,7 +273,7 @@ impl GitExt for TestContext {
 impl TestContext {
 	/// Set XDG environment variables to point to our temp fixture.
 	/// Required before calling any library functions that use `Local::issues_dir()`.
-	fn set_xdg_env(&self) {
+	pub(crate) fn set_xdg_env(&self) {
 		// SAFETY: Tests use unique temp dirs, so env var "leakage" between parallel tests is harmless
 		unsafe {
 			for (key, value) in self.xdg.env_vars() {
