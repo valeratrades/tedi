@@ -1143,7 +1143,7 @@ mod local_path {
 			};
 
 			for selector in parent_selectors {
-				let all_matches = find_all_entries_by_selector(&reader, &path, selector).map_err(|source| LocalPathError::reader(selector.clone(), source))?;
+				let all_matches = find_all_entries_by_selector(&reader, &path, selector).map_err(|source| LocalPathError::reader(*selector, source))?;
 				let dir_name = match all_matches.len() {
 					0 => return Err(LocalPathError::missing_parent(selector.clone(), path.clone())),
 					//1 => match &all_matches[0] {
@@ -1455,7 +1455,7 @@ impl crate::LazyIssue<Local> for Issue {
 	type Source = LocalIssueSource<FsReader>;
 
 	#[tracing::instrument(skip_all)]
-	async fn parent_index(source: &Self::Source) -> Result<crate::IssueIndex, Self::Error> {
+	async fn parent_index(source: &Self::Source) -> Result<Option<crate::IssueIndex>, Self::Error> {
 		// The source's IssueIndex IS the issue's index; parent_index is derived from it
 		let index = source.index();
 		Ok(index.parent())
@@ -1479,7 +1479,7 @@ impl crate::LazyIssue<Local> for Issue {
 
 		if let Some(issue_number) = self.identity.number()
 			&& let Some(meta) = Local::load_issue_meta_from_reader(index.repo_info(), issue_number, &source.reader)
-			&& let Some(linked) = self.identity.remote.as_linked_mut()
+			&& let Some(linked) = self.identity.mut_linked_issue_meta()
 		{
 			linked.timestamps = meta.timestamps;
 		}
@@ -1546,7 +1546,7 @@ impl crate::LazyIssue<Local> for Issue {
 		// Check for unresolved conflicts (only for FsReader/Submitted, and only for root loads)
 		conflict::check_conflict(source.index().owner())?;
 
-		let parent_index = <Self as crate::LazyIssue<Local>>::parent_index(&source).await?;
+		let parent_index = <Self as crate::LazyIssue<Local>>::parent_index(&source).await?.unwrap();
 		let mut issue = Issue::empty_local(parent_index);
 		<Self as crate::LazyIssue<Local>>::identity(&mut issue, source.clone()).await?;
 		<Self as crate::LazyIssue<Local>>::contents(&mut issue, source.clone()).await?;
@@ -1563,7 +1563,7 @@ impl crate::LazyIssue<LocalConsensus> for Issue {
 	type Error = LocalError;
 	type Source = LocalIssueSource<GitReader>;
 
-	async fn parent_index(source: &Self::Source) -> Result<crate::IssueIndex, Self::Error> {
+	async fn parent_index(source: &Self::Source) -> Result<Option<crate::IssueIndex>, Self::Error> {
 		let index = source.index();
 		Ok(index.parent())
 	}
@@ -1589,7 +1589,7 @@ impl crate::LazyIssue<LocalConsensus> for Issue {
 
 		if let Some(issue_number) = self.identity.number()
 			&& let Some(meta) = Local::load_issue_meta_from_reader(index.repo_info(), issue_number, &source.reader)
-			&& let Some(linked) = self.identity.remote.as_linked_mut()
+			&& let Some(linked) = self.identity.mut_linked_issue_meta()
 		{
 			linked.timestamps = meta.timestamps;
 		}
@@ -1651,7 +1651,7 @@ impl crate::LazyIssue<LocalConsensus> for Issue {
 
 	async fn load(source: Self::Source) -> Result<Issue, Self::Error> {
 		// No conflict check for consensus loading (we're reading committed state)
-		let parent_index = <Self as crate::LazyIssue<LocalConsensus>>::parent_index(&source).await?;
+		let parent_index = <Self as crate::LazyIssue<LocalConsensus>>::parent_index(&source).await?.unwrap();
 		let mut issue = Issue::empty_local(parent_index);
 		<Self as crate::LazyIssue<LocalConsensus>>::identity(&mut issue, source.clone()).await?;
 		<Self as crate::LazyIssue<LocalConsensus>>::contents(&mut issue, source.clone()).await?;

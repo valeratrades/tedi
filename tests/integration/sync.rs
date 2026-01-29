@@ -34,8 +34,8 @@ fn parse(content: &str) -> Issue {
 	Issue::deserialize_virtual(content).expect("failed to parse test issue")
 }
 
-#[test]
-fn test_both_diverged_triggers_conflict() {
+#[tokio::test]
+async fn test_both_diverged_triggers_conflict() {
 	let ctx = TestContext::new("");
 
 	let consensus = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tconsensus body\n");
@@ -44,8 +44,8 @@ fn test_both_diverged_triggers_conflict() {
 
 	// Both local and remote changed since consensus - should conflict
 	// Seeds: consensus=-50, local=40, remote=45 (local and remote close but both newer than consensus)
-	let issue_path = ctx.consensus(&consensus, Some(Seed::new(-50)));
-	ctx.local(&local, Some(Seed::new(40)));
+	let issue_path = ctx.consensus(&consensus, Some(Seed::new(-50))).await;
+	ctx.local(&local, Some(Seed::new(40))).await;
 	ctx.remote(&remote, Some(Seed::new(45)));
 
 	let out = ctx.open(&issue_path).run();
@@ -74,8 +74,8 @@ fn test_both_diverged_triggers_conflict() {
 	"#);
 }
 
-#[test]
-fn test_both_diverged_with_git_initiates_merge() {
+#[tokio::test]
+async fn test_both_diverged_with_git_initiates_merge() {
 	let ctx = TestContext::new("");
 
 	let consensus = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tconsensus body\n");
@@ -84,8 +84,8 @@ fn test_both_diverged_with_git_initiates_merge() {
 
 	// Both local and remote changed since consensus - should merge/conflict
 	// Seeds: consensus=-70, local=60, remote=65 (far apart from consensus, close to each other)
-	let issue_path = ctx.consensus(&consensus, Some(Seed::new(-70)));
-	ctx.local(&local, Some(Seed::new(60)));
+	let issue_path = ctx.consensus(&consensus, Some(Seed::new(-70))).await;
+	ctx.local(&local, Some(Seed::new(60))).await;
 	ctx.remote(&remote, Some(Seed::new(65)));
 
 	let out = ctx.open(&issue_path).run();
@@ -116,8 +116,8 @@ fn test_both_diverged_with_git_initiates_merge() {
 
 /// When local matches consensus (no uncommitted changes) and remote has changed,
 /// we only pull remote changes if --pull is specified.
-#[test]
-fn test_only_remote_changed_takes_remote_with_pull() {
+#[tokio::test]
+async fn test_only_remote_changed_takes_remote_with_pull() {
 	let ctx = TestContext::new("");
 
 	let consensus = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tconsensus body\n");
@@ -125,7 +125,7 @@ fn test_only_remote_changed_takes_remote_with_pull() {
 
 	// Local matches consensus (no uncommitted changes), remote changed
 	// Seeds: consensus=-45, remote=90 (remote much newer, guarantees dominance)
-	let issue_path = ctx.consensus(&consensus, Some(Seed::new(-45)));
+	let issue_path = ctx.consensus(&consensus, Some(Seed::new(-45))).await;
 	ctx.remote(&remote, Some(Seed::new(90)));
 
 	// Must use --pull to fetch remote changes when local is unchanged
@@ -145,8 +145,8 @@ fn test_only_remote_changed_takes_remote_with_pull() {
 	);
 }
 
-#[test]
-fn test_only_local_changed_pushes_local() {
+#[tokio::test]
+async fn test_only_local_changed_pushes_local() {
 	let ctx = TestContext::new("");
 
 	let consensus = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tconsensus body\n");
@@ -154,8 +154,8 @@ fn test_only_local_changed_pushes_local() {
 
 	// Local changed, remote still matches consensus
 	// Seeds: consensus=-25, local=85, remote=-25 (local much newer than unchanged remote)
-	let issue_path = ctx.consensus(&consensus, Some(Seed::new(-100)));
-	ctx.local(&local, Some(Seed::new(100)));
+	let issue_path = ctx.consensus(&consensus, Some(Seed::new(-100))).await;
+	ctx.local(&local, Some(Seed::new(100))).await;
 	ctx.remote(&consensus, Some(Seed::new(-100)));
 
 	let out = ctx.open(&issue_path).run();
@@ -186,8 +186,8 @@ fn test_only_local_changed_pushes_local() {
 	"#);
 }
 
-#[test]
-fn test_reset_with_local_source_skips_sync() {
+#[tokio::test]
+async fn test_reset_with_local_source_skips_sync() {
 	let ctx = TestContext::new("");
 
 	let consensus = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tconsensus body\n");
@@ -196,8 +196,8 @@ fn test_reset_with_local_source_skips_sync() {
 
 	// --reset uses local as source, so timestamps don't affect result
 	// Seeds: consensus=-30, local=20, remote=25
-	let issue_path = ctx.consensus(&consensus, Some(Seed::new(-30)));
-	ctx.local(&local, Some(Seed::new(20)));
+	let issue_path = ctx.consensus(&consensus, Some(Seed::new(-30))).await;
+	ctx.local(&local, Some(Seed::new(20))).await;
 	ctx.remote(&remote, Some(Seed::new(25)));
 
 	// Run with --reset flag
@@ -216,8 +216,8 @@ fn test_reset_with_local_source_skips_sync() {
 }
 
 /// Opening via URL when no local file exists should create the file from remote.
-#[test]
-fn test_url_open_creates_local_file_from_remote() {
+#[tokio::test]
+async fn test_url_open_creates_local_file_from_remote() {
 	let ctx = TestContext::new("");
 	ctx.init_git(); // Need git initialized for commits
 
@@ -244,8 +244,8 @@ fn test_url_open_creates_local_file_from_remote() {
 
 /// When opening via URL with --reset, local state should be completely replaced with remote.
 /// No merge conflicts, no prompts - just nuke and replace.
-#[test]
-fn test_reset_with_remote_url_nukes_local_state() {
+#[tokio::test]
+async fn test_reset_with_remote_url_nukes_local_state() {
 	let ctx = TestContext::new("");
 
 	let local = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tlocal body that should be nuked\n");
@@ -253,7 +253,7 @@ fn test_reset_with_remote_url_nukes_local_state() {
 
 	// --reset overrides everything, but remote is the source when opening via URL
 	// Seeds: consensus=-40, remote=80 (remote much newer)
-	let issue_path = ctx.consensus(&local, Some(Seed::new(-40)));
+	let issue_path = ctx.consensus(&local, Some(Seed::new(-40))).await;
 	ctx.remote(&remote, Some(Seed::new(80)));
 
 	// Open via URL with --reset should nuke local and use remote
@@ -271,8 +271,8 @@ fn test_reset_with_remote_url_nukes_local_state() {
 }
 
 /// When opening via URL with --reset and there's divergence, should NOT trigger merge conflict.
-#[test]
-fn test_reset_with_remote_url_skips_merge_on_divergence() {
+#[tokio::test]
+async fn test_reset_with_remote_url_skips_merge_on_divergence() {
 	let ctx = TestContext::new("");
 
 	let consensus = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tconsensus body\n");
@@ -281,8 +281,8 @@ fn test_reset_with_remote_url_skips_merge_on_divergence() {
 
 	// Both diverged, but --reset via URL should skip merge and use remote
 	// Seeds: consensus=-60, local=30, remote=35
-	let issue_path = ctx.consensus(&consensus, Some(Seed::new(-60)));
-	ctx.local(&local, Some(Seed::new(30)));
+	let issue_path = ctx.consensus(&consensus, Some(Seed::new(-60))).await;
+	ctx.local(&local, Some(Seed::new(30))).await;
 	ctx.remote(&remote, Some(Seed::new(35)));
 
 	// Open via URL with --reset should NOT trigger merge conflict
@@ -303,8 +303,8 @@ fn test_reset_with_remote_url_skips_merge_on_divergence() {
 
 /// --pull flag should fetch and sync BEFORE opening editor.
 /// This test verifies the fetch actually happens by checking stdout for fetch message.
-#[test]
-fn test_pull_fetches_before_editor() {
+#[tokio::test]
+async fn test_pull_fetches_before_editor() {
 	let ctx = TestContext::new("");
 
 	let local = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tlocal body\n");
@@ -312,7 +312,7 @@ fn test_pull_fetches_before_editor() {
 
 	// Local unchanged from consensus, remote changed
 	// Seeds: consensus=-20, remote=70
-	let issue_path = ctx.consensus(&local, Some(Seed::new(-20)));
+	let issue_path = ctx.consensus(&local, Some(Seed::new(-20))).await;
 	ctx.remote(&remote, Some(Seed::new(70)));
 
 	// --pull should fetch from Github before opening editor
@@ -332,8 +332,8 @@ fn test_pull_fetches_before_editor() {
 }
 
 /// --pull with diverged state should trigger conflict resolution (or auto-resolve).
-#[test]
-fn test_pull_with_divergence_runs_sync_before_editor() {
+#[tokio::test]
+async fn test_pull_with_divergence_runs_sync_before_editor() {
 	let ctx = TestContext::new("");
 
 	let consensus = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tconsensus body\n");
@@ -342,8 +342,8 @@ fn test_pull_with_divergence_runs_sync_before_editor() {
 
 	// Both local and remote changed since consensus
 	// Seeds: consensus=-80, local=50, remote=55
-	let issue_path = ctx.consensus(&consensus, Some(Seed::new(-80)));
-	ctx.local(&local, Some(Seed::new(50)));
+	let issue_path = ctx.consensus(&consensus, Some(Seed::new(-80))).await;
+	ctx.local(&local, Some(Seed::new(50))).await;
 	ctx.remote(&remote, Some(Seed::new(55)));
 
 	// --pull should attempt to sync/merge BEFORE editor opens
@@ -362,14 +362,14 @@ fn test_pull_with_divergence_runs_sync_before_editor() {
 	);
 }
 
-#[test]
-fn test_closing_issue_syncs_state_change() {
+#[tokio::test]
+async fn test_closing_issue_syncs_state_change() {
 	let ctx = TestContext::new("");
 
 	let open_issue = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tbody\n");
 	// Local = consensus = remote initially
 	// Seeds: consensus=5, remote=5 (same seed = same base time)
-	let issue_path = ctx.consensus(&open_issue, Some(Seed::new(5)));
+	let issue_path = ctx.consensus(&open_issue, Some(Seed::new(5))).await;
 	ctx.remote(&open_issue, Some(Seed::new(5)));
 
 	// Edit to close the issue
@@ -406,8 +406,8 @@ fn test_closing_issue_syncs_state_change() {
 
 /// Sub-issues closed as duplicates should NOT appear in the pulled remote state.
 /// Github marks these with state_reason="duplicate" - they should be filtered out entirely.
-#[test]
-fn test_duplicate_sub_issues_filtered_from_remote() {
+#[tokio::test]
+async fn test_duplicate_sub_issues_filtered_from_remote() {
 	let ctx = TestContext::new("");
 	ctx.init_git();
 
@@ -457,8 +457,8 @@ fn test_duplicate_sub_issues_filtered_from_remote() {
 /// 2. Open again without making changes
 ///
 /// The second open should succeed, not fail with "Failed to commit remote state".
-#[test]
-fn test_open_unchanged_succeeds() {
+#[tokio::test]
+async fn test_open_unchanged_succeeds() {
 	let ctx = TestContext::new("");
 	ctx.init_git();
 
@@ -483,8 +483,8 @@ fn test_open_unchanged_succeeds() {
 /// 2. `todo open <number>` is called (by number, not path)
 /// 3. Remote state hasn't changed, but the merge machinery still runs
 /// 4. Git commit fails because there's nothing to commit
-#[test]
-fn test_open_by_number_unchanged_succeeds() {
+#[tokio::test]
+async fn test_open_by_number_unchanged_succeeds() {
 	let ctx = TestContext::new("");
 	ctx.init_git();
 
@@ -508,8 +508,8 @@ fn test_open_by_number_unchanged_succeeds() {
 /// --reset should only apply to the first sync (before editor).
 /// After the user makes changes, normal sync should happen.
 /// Reproduces the issue where changes made after --reset don't sync.
-#[test]
-fn test_reset_syncs_changes_after_editor() {
+#[tokio::test]
+async fn test_reset_syncs_changes_after_editor() {
 	let ctx = TestContext::new("");
 	ctx.init_git();
 
@@ -552,14 +552,14 @@ fn test_reset_syncs_changes_after_editor() {
 /// When the user types `!c` on its own line, it should:
 /// 1. Be expanded to `<!-- new comment -->` in the file
 /// 2. Result in a new comment being created on Github
-#[test]
-fn test_comment_shorthand_creates_comment() {
+#[tokio::test]
+async fn test_comment_shorthand_creates_comment() {
 	let ctx = TestContext::new("");
 	ctx.init_git();
 
 	// Start with an issue that has no comments
 	let issue = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tissue body\n");
-	let issue_path = ctx.consensus(&issue, None);
+	let issue_path = ctx.consensus(&issue, None).await;
 	ctx.remote(&issue, None);
 
 	// Simulate user adding `!c` followed by comment content
@@ -609,7 +609,8 @@ fn test_comment_shorthand_creates_comment() {
 #[rstest]
 #[case::prefer_local(&["--force"], true)]
 #[case::prefer_remote(&["--pull", "--force"], false)]
-fn test_force_merge_preserves_both_sub_issues(#[case] args: &[&str], #[case] expect_local_description: bool) {
+#[tokio::test]
+async fn test_force_merge_preserves_both_sub_issues(#[case] args: &[&str], #[case] expect_local_description: bool) {
 	let ctx = TestContext::new("");
 
 	// Local: parent with local-only sub-issue and modified description
@@ -637,8 +638,8 @@ fn test_force_merge_preserves_both_sub_issues(#[case] args: &[&str], #[case] exp
 		 \tparent body\n",
 	);
 
-	ctx.consensus(&consensus, None);
-	let issue_path = ctx.local(&local, None);
+	ctx.consensus(&consensus, None).await;
+	let issue_path = ctx.local(&local, None).await;
 	ctx.remote(&remote, None);
 
 	let out = ctx.open(&issue_path).args(args).run();
@@ -681,8 +682,8 @@ fn test_force_merge_preserves_both_sub_issues(#[case] args: &[&str], #[case] exp
 
 /// Verify that .meta.json is written with timestamps when sinking to Consensus.
 /// This is critical for the merge algorithm to work - timestamps determine which side wins.
-#[test]
-fn test_consensus_sink_writes_meta_json_with_timestamps() {
+#[tokio::test]
+async fn test_consensus_sink_writes_meta_json_with_timestamps() {
 	let ctx = TestContext::new("");
 	ctx.init_git(); // Need git initialized for URL fetch
 

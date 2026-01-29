@@ -387,19 +387,22 @@ impl IssueRemote {
 	}
 }
 
-/// Identity of an issue - always has parent_index (for location) with remote connection info.
+/// Identity of an issue - has optional parent_index (for location) with remote connection info.
 #[derive(Clone, Debug)]
 pub struct IssueIdentity {
-	/// Parent's IssueIndex, or repo-only index for root issues.
-	/// For root issues: `IssueIndex::repo_only(owner, repo)` (empty index)
-	/// For child issues: parent's full `IssueIndex` (includes parent's selector)
+	/// Parent's IssueIndex. None for root issues.
 	pub parent_index: IssueIndex,
 	/// Remote connection status (Github linked/pending, or Virtual)
-	pub remote: IssueRemote,
+	remote: IssueRemote,
 }
 impl IssueIdentity {
 	/// Create a new linked Github issue identity.
-	pub fn linked(parent_index: IssueIndex, user: String, link: IssueLink, timestamps: IssueTimestamps) -> Self {
+	/// If `parent_index` is None, derives repo_only from the link.
+	pub fn linked(parent_index: Option<IssueIndex>, user: String, link: IssueLink, timestamps: IssueTimestamps) -> Self {
+		let parent_index = parent_index.unwrap_or_else(|| {
+			let repo_info = link.repo_info();
+			IssueIndex::repo_only(repo_info.owner(), repo_info.repo())
+		});
 		Self {
 			parent_index,
 			remote: IssueRemote::Github(Box::new(Some(LinkedIssueMeta { user, link, timestamps }))),
@@ -422,13 +425,6 @@ impl IssueIdentity {
 		}
 	}
 
-	/// Create a new local-only issue identity.
-	/// DEPRECATED: use `pending()` for Github issues or `virtual_issue()` for local-only.
-	/// This currently maps to `pending()` for backwards compatibility.
-	pub fn local(parent_index: IssueIndex) -> Self {
-		Self::pending(parent_index)
-	}
-
 	/// Check if this issue is linked to Github.
 	pub fn is_linked(&self) -> bool {
 		self.remote.is_linked()
@@ -448,6 +444,11 @@ impl IssueIdentity {
 	/// Get the linked metadata if linked.
 	pub fn as_linked(&self) -> Option<&LinkedIssueMeta> {
 		self.remote.as_linked()
+	}
+
+	/// Get mutable access to the linked metadata.
+	pub fn mut_linked_issue_meta(&mut self) -> Option<&mut LinkedIssueMeta> {
+		self.remote.as_linked_mut()
 	}
 
 	/// Get the issue link if linked.
@@ -573,20 +574,20 @@ impl IssueIndex {
 		}
 	}
 
-	/// Create descriptor for repo only (no specific issue).
-	pub fn repo_only(owner: &str, repo: &str) -> Self {
-		Self {
-			repo_info: RepoInfo::new(owner, repo),
-			index: CopyArrayVec::new(),
-		}
-	}
-
 	/// Create descriptor with full index path.
 	/// Panics if index exceeds MAX_INDEX_DEPTH.
 	pub fn with_index(owner: &str, repo: &str, index: Vec<IssueSelector>) -> Self {
 		Self {
 			repo_info: RepoInfo::new(owner, repo),
 			index: index.into_iter().collect(),
+		}
+	}
+
+	/// Create descriptor for repo only (no specific issue).
+	pub fn repo_only(owner: &str, repo: &str) -> Self {
+		Self {
+			repo_info: RepoInfo::new(owner, repo),
+			index: CopyArrayVec::new(),
 		}
 	}
 
@@ -665,13 +666,13 @@ impl IssueIndex {
 
 	/// Get the parent's IssueIndex (all selectors except the last one).
 	/// For repo-only or single-selector indices, returns repo_only.
-	pub fn parent(&self) -> Self {
+	pub fn parent(&self) -> Option<Self> {
 		if self.index.len() <= 1 {
-			Self::repo_only(self.repo_info.owner(), self.repo_info.repo())
+			None
 		} else {
 			let mut index = self.index;
 			index.pop();
-			Self { repo_info: self.repo_info, index }
+			Some(Self { repo_info: self.repo_info, index })
 		}
 	}
 }
@@ -681,7 +682,7 @@ impl std::fmt::Display for IssueIndex {
 		write!(f, "{}/{}", self.repo_info.owner(), self.repo_info.repo())?;
 		for selector in self.index() {
 			match selector {
-				IssueSelector::GitId(n) => write!(f, "/#{n}")?,
+				IssueSelector::GitId(n) => write!(f, "/{n}")?,
 				IssueSelector::Title(t) => write!(f, "/{t}")?,
 			}
 		}
@@ -747,12 +748,9 @@ impl Issue /*{{{1*/ {
 	/// Create an empty local issue with the given parent_index.
 	/// Used for comparison when an issue doesn't exist yet.
 	///
-	/// `parent_index` should be:
-	/// - `IssueIndex::repo_only(owner, repo)` for root issues
-	/// - Parent's `IssueIndex` for child issues
 	pub fn empty_local(parent_index: IssueIndex) -> Self {
 		Self {
-			identity: IssueIdentity::local(parent_index),
+			identity: IssueIdentity::pending(parent_index),
 			contents: IssueContents::default(),
 			children: vec![],
 		}
@@ -762,10 +760,6 @@ impl Issue /*{{{1*/ {
 	///
 	/// If `virtual_project` is true, creates a virtual issue (local-only, no Github sync).
 	/// Otherwise creates a pending Github issue that will be created on first sync.
-	///
-	/// `parent_index` should be:
-	/// - `IssueIndex::repo_only(owner, repo)` for root issues
-	/// - Parent's `IssueIndex` for child issues
 	pub fn pending_with_parent(title: impl Into<String>, parent_index: IssueIndex, virtual_project: bool) -> Self {
 		let identity = if virtual_project {
 			IssueIdentity::virtual_issue(parent_index)
@@ -826,7 +820,7 @@ impl Issue /*{{{1*/ {
 	/// This should be called after local modifications to track when fields changed.
 	/// Recursively updates children's timestamps too.
 	pub fn update_timestamps_from_diff(&mut self, old: &Issue) {
-		if let Some(linked) = self.identity.remote.as_linked_mut() {
+		if let Some(linked) = self.identity.mut_linked_issue_meta() {
 			linked.timestamps.update_from_diff(&old.contents, &self.contents);
 		}
 
@@ -844,7 +838,7 @@ impl Issue /*{{{1*/ {
 		}
 	}
 
-	/// Get parent_index (always available).
+	/// Get parent_index.
 	pub fn parent_index(&self) -> IssueIndex {
 		self.identity.parent_index
 	}
@@ -884,7 +878,7 @@ impl Issue /*{{{1*/ {
 	pub fn parse_virtual(content: &str, index: IssueIndex) -> Result<Self, ParseError> {
 		let ctx = ParseContext::new(content.to_string(), index.to_string());
 		let mut lines = content.lines().peekable();
-		Self::parse_virtual_at_depth(&mut lines, 0, 1, &ctx, Some(index.parent()))
+		Self::parse_virtual_at_depth(&mut lines, 0, 1, &ctx, index.parent())
 	}
 
 	/// Parse virtual representation at given nesting depth.
@@ -1168,10 +1162,9 @@ impl Issue /*{{{1*/ {
 		// Build identity from identity_info
 		let identity = match parsed.identity_info {
 			ParsedIdentityInfo::Linked { user, link } => {
-				// Linked issues: use parent_index if provided, otherwise derive from link
-				let pi = parent_index.unwrap_or_else(|| IssueIndex::repo_only(link.owner(), link.repo()));
+				// Linked issues: use parent_index if provided, otherwise derive from link (via None)
 				// Timestamps will be loaded from .meta.json separately
-				IssueIdentity::linked(pi, user, link, IssueTimestamps::default())
+				IssueIdentity::linked(parent_index, user, link, IssueTimestamps::default())
 			}
 			ParsedIdentityInfo::Pending => {
 				// Pending issues require parent_index from caller
@@ -1739,7 +1732,8 @@ pub trait LazyIssue<S> {
 	type Error: std::error::Error;
 
 	/// Resolve parent_index from the source.
-	async fn parent_index(source: &Self::Source) -> Result<IssueIndex, Self::Error>;
+	/// Returns None for root-level issues (no parent).
+	async fn parent_index(source: &Self::Source) -> Result<Option<IssueIndex>, Self::Error>;
 	async fn identity(&mut self, source: Self::Source) -> Result<IssueIdentity, Self::Error>;
 	async fn contents(&mut self, source: Self::Source) -> Result<IssueContents, Self::Error>;
 	async fn children(&mut self, source: Self::Source) -> Result<Vec<Issue>, Self::Error>;

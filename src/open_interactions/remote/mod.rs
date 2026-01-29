@@ -114,7 +114,7 @@ impl RemoteSource {
 	}
 
 	/// Resolve parent_index, fetching lineage from GitHub if not provided.
-	pub async fn resolve_parent_index(&self) -> Result<IssueIndex, RemoteError> {
+	pub async fn resolve_parent_index(&self) -> Result<Option<IssueIndex>, RemoteError> {
 		let repo_info = self.link.repo_info();
 		let number = self.link.number();
 
@@ -143,8 +143,13 @@ impl RemoteSource {
 			}
 		};
 		// Build parent_index with all parent numbers as GitId selectors
-		let selectors: Vec<IssueSelector> = lineage.iter().map(|&n| IssueSelector::GitId(n)).collect();
-		Ok(IssueIndex::with_index(repo_info.owner(), repo_info.repo(), selectors))
+		// Return None for root-level issues (empty lineage)
+		if lineage.is_empty() {
+			Ok(None)
+		} else {
+			let selectors: Vec<IssueSelector> = lineage.iter().map(|&n| IssueSelector::GitId(n)).collect();
+			Ok(Some(IssueIndex::with_index(repo_info.owner(), repo_info.repo(), selectors)))
+		}
 	}
 
 	/// Create a child source for a sub-issue.
@@ -167,7 +172,7 @@ impl tedi::LazyIssue<Remote> for Issue {
 	type Error = RemoteError;
 	type Source = RemoteSource;
 
-	async fn parent_index(source: &Self::Source) -> Result<IssueIndex, Self::Error> {
+	async fn parent_index(source: &Self::Source) -> Result<Option<IssueIndex>, Self::Error> {
 		source.resolve_parent_index().await
 	}
 
@@ -291,7 +296,7 @@ impl tedi::LazyIssue<Remote> for Issue {
 	}
 
 	async fn load(source: Self::Source) -> Result<Issue, Self::Error> {
-		let parent_index = <Self as tedi::LazyIssue<Remote>>::parent_index(&source).await?;
+		let parent_index = <Self as tedi::LazyIssue<Remote>>::parent_index(&source).await?.unwrap();
 		let mut issue = Issue::empty_local(parent_index);
 		<Self as tedi::LazyIssue<Remote>>::identity(&mut issue, source.clone()).await?;
 		<Self as tedi::LazyIssue<Remote>>::contents(&mut issue, source.clone()).await?;
@@ -377,7 +382,7 @@ impl Sink<Remote> for Issue {
 			let url = format!("https://github.com/{}/{}/issues/{}", repo_info.owner(), repo_info.repo(), created.number);
 			let link = IssueLink::parse(&url).expect("just constructed valid URL");
 			let user = gh.fetch_authenticated_user().await?;
-			self.identity = IssueIdentity::linked(parent_index, user, link, tedi::IssueTimestamps::default());
+			self.identity = IssueIdentity::linked(Some(parent_index), user, link, tedi::IssueTimestamps::default());
 			changed = true;
 		}
 

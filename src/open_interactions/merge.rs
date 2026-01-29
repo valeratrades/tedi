@@ -44,7 +44,7 @@ pub trait Merge {
 impl Merge for Issue {
 	fn merge(&mut self, other: Issue, force: bool) -> Result<(), MergeError> {
 		// Virtual issues cannot participate in merge
-		if self.identity.remote.is_virtual() || other.identity.remote.is_virtual() {
+		if self.identity.is_virtual() || other.identity.is_virtual() {
 			return Err(MergeError::VirtualIssue);
 		}
 
@@ -113,7 +113,7 @@ impl Merge for Issue {
 		}
 
 		// Update timestamps on self to reflect the merge
-		if let Some(linked) = self.identity.remote.as_linked_mut() {
+		if let Some(linked) = self.identity.mut_linked_issue_meta() {
 			if dominated_by(self_ts.title, other_ts.title) {
 				linked.timestamps.title = other_ts.title;
 			}
@@ -180,7 +180,7 @@ fn merge_children(self_children: &mut Vec<Issue>, other_children: Vec<Issue>, fo
 	// Add pending children from other that couldn't be matched
 	for child in other_pending {
 		// Only add if not virtual
-		if !child.identity.remote.is_virtual() {
+		if !child.identity.is_virtual() {
 			self_children.push(child);
 		}
 	}
@@ -205,7 +205,7 @@ mod tests {
 		let url = format!("https://github.com/test/repo/issues/{number}");
 		let link = IssueLink::parse(&url).unwrap();
 		let parent_index = IssueIndex::repo_only("test", "repo");
-		let identity = IssueIdentity::linked(parent_index, "user".to_string(), link, timestamps);
+		let identity = IssueIdentity::linked(Some(parent_index), "user".to_string(), link, timestamps);
 		Issue {
 			identity,
 			contents: IssueContents {

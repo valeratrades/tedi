@@ -12,8 +12,8 @@ fn parse(content: &str) -> Issue {
 	Issue::deserialize_virtual(content).expect("failed to parse test issue")
 }
 
-#[test]
-fn test_comments_with_ids_sync_correctly() {
+#[tokio::test]
+async fn test_comments_with_ids_sync_correctly() {
 	let ctx = TestContext::new("");
 
 	// Issue with a comment that has an ID
@@ -25,7 +25,7 @@ fn test_comments_with_ids_sync_correctly() {
 		 \tThis is my comment\n",
 	);
 
-	ctx.consensus(&issue, None);
+	ctx.consensus(&issue, None).await;
 	ctx.remote(&issue, None);
 
 	let path = ctx.issue_path(&issue);
@@ -37,8 +37,8 @@ fn test_comments_with_ids_sync_correctly() {
 	assert!(out.status.success(), "sync failed: {}", out.stderr);
 }
 
-#[test]
-fn test_nested_issues_preserved_through_sync() {
+#[tokio::test]
+async fn test_nested_issues_preserved_through_sync() {
 	let ctx = TestContext::new("");
 
 	let issue = parse(
@@ -52,7 +52,7 @@ fn test_nested_issues_preserved_through_sync() {
 		 \t\tnested body c\n",
 	);
 
-	let path = ctx.consensus(&issue, None);
+	let path = ctx.consensus(&issue, None).await;
 	ctx.remote(&issue, None);
 
 	let out = ctx.open(&path).run();
@@ -73,8 +73,8 @@ fn test_nested_issues_preserved_through_sync() {
 	assert!(child_c_content.contains("nested body c"), "nested issue c body lost");
 }
 
-#[test]
-fn test_mixed_open_closed_nested_issues_preserved() {
+#[tokio::test]
+async fn test_mixed_open_closed_nested_issues_preserved() {
 	let ctx = TestContext::new("");
 
 	let issue = parse(
@@ -90,7 +90,7 @@ fn test_mixed_open_closed_nested_issues_preserved() {
 		 \t\t<!--,}}}-->\n",
 	);
 
-	let path = ctx.consensus(&issue, None);
+	let path = ctx.consensus(&issue, None).await;
 	ctx.remote(&issue, None);
 
 	let out = ctx.open(&path).run();
@@ -111,8 +111,8 @@ fn test_mixed_open_closed_nested_issues_preserved() {
 	assert!(child_c_content.contains("- [x] c"), "closed nested issue state lost");
 }
 
-#[test]
-fn test_blockers_preserved_through_sync() {
+#[tokio::test]
+async fn test_blockers_preserved_through_sync() {
 	let ctx = TestContext::new("");
 
 	let issue = parse(
@@ -124,7 +124,7 @@ fn test_blockers_preserved_through_sync() {
 		 \t- second blocker\n",
 	);
 
-	let path = ctx.consensus(&issue, None);
+	let path = ctx.consensus(&issue, None).await;
 	ctx.remote(&issue, None);
 
 	let out = ctx.open(&path).run();
@@ -139,14 +139,14 @@ fn test_blockers_preserved_through_sync() {
 	assert!(final_content.contains("second blocker"), "second blocker lost");
 }
 
-#[test]
-fn test_blockers_added_during_edit_preserved() {
+#[tokio::test]
+async fn test_blockers_added_during_edit_preserved() {
 	let ctx = TestContext::new("");
 
 	// Initial state: no blockers
 	let initial_issue = parse("- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tlorem ipsum\n");
 
-	let path = ctx.consensus(&initial_issue, None);
+	let path = ctx.consensus(&initial_issue, None).await;
 	ctx.remote(&initial_issue, None);
 
 	// User adds blockers during edit
@@ -169,8 +169,8 @@ fn test_blockers_added_during_edit_preserved() {
 	assert!(final_content.contains("new blocker added"), "added blocker lost");
 }
 
-#[test]
-fn test_blockers_with_headers_preserved() {
+#[tokio::test]
+async fn test_blockers_with_headers_preserved() {
 	let ctx = TestContext::new("");
 
 	let issue = parse(
@@ -186,7 +186,7 @@ fn test_blockers_with_headers_preserved() {
 		 \t- task gamma\n",
 	);
 
-	let path = ctx.consensus(&issue, None);
+	let path = ctx.consensus(&issue, None).await;
 	ctx.remote(&issue, None);
 
 	let out = ctx.open(&path).run();
@@ -202,8 +202,8 @@ fn test_blockers_with_headers_preserved() {
 	assert!(final_content.contains("task gamma"), "task gamma lost");
 }
 
-#[test]
-fn test_nested_issues_and_blockers_together() {
+#[tokio::test]
+async fn test_nested_issues_and_blockers_together() {
 	let ctx = TestContext::new("");
 
 	let issue = parse(
@@ -219,7 +219,7 @@ fn test_nested_issues_and_blockers_together() {
 	);
 
 	// Use the path returned by consensus (which is in directory format for issues with children)
-	let path = ctx.consensus(&issue, None);
+	let path = ctx.consensus(&issue, None).await;
 	ctx.remote(&issue, None);
 
 	let out = ctx.open(&path).run();
@@ -239,8 +239,8 @@ fn test_nested_issues_and_blockers_together() {
 	assert!(child_content.contains("nested body"), "nested issue body lost");
 }
 
-#[test]
-fn test_closing_nested_issue_creates_bak_file() {
+#[tokio::test]
+async fn test_closing_nested_issue_creates_bak_file() {
 	let ctx = TestContext::new("");
 
 	// Start with open nested issue
@@ -253,7 +253,7 @@ fn test_closing_nested_issue_creates_bak_file() {
 	);
 
 	// Use the path returned by consensus (which is in directory format for issues with children)
-	let path = ctx.consensus(&initial_issue, None);
+	let path = ctx.consensus(&initial_issue, None).await;
 	ctx.remote(&initial_issue, None);
 
 	// User closes nested issue during edit
