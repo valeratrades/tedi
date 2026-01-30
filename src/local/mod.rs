@@ -140,9 +140,12 @@ impl Local {
 	///
 	/// This path is used when opening an editor for the user to edit the issue.
 	pub fn virtual_edit_path(issue: &crate::Issue) -> PathBuf {
-		let path = PathBuf::from("/tmp").join(env!("CARGO_PKG_NAME"));
+		let base: PathBuf = match crate::mocks::MockIssuesDir::get() {
+			Some(override_issues_dir) => override_issues_dir.parent().unwrap().to_path_buf(),
+			_ => PathBuf::from("/tmp").join(env!("CARGO_PKG_NAME")),
+		};
 		let index_path = issue.full_index().to_string();
-		path.join(format!("{index_path}.md"))
+		base.join(format!("{index_path}.md"))
 	}
 
 	/// Returns the base directory for issue storage: XDG_DATA_HOME/todo/issues/
