@@ -67,14 +67,8 @@ impl TestContext {
 
 		// Set overrides so all library calls use our temp dir
 		tedi::mocks::set_issues_dir(xdg.data_dir().join("issues"));
-		tedi::mocks::set_virtual_edit_dir(xdg.inner.root.join("virtual_edit"));
 
 		Self { xdg, mock_state_path, pipe_path }
-	}
-
-	/// Get the virtual edit directory for this test.
-	fn virtual_edit_dir(&self) -> PathBuf {
-		self.xdg.inner.root.join("virtual_edit")
 	}
 
 	/// Run a command with proper XDG environment.
@@ -83,7 +77,6 @@ impl TestContext {
 		cmd.args(args);
 		cmd.env("__IS_INTEGRATION_TEST", "1");
 		cmd.env(ENV_GITHUB_TOKEN, "test_token");
-		cmd.env(tedi::local::Local::ENV_VIRTUAL_EDIT_DIR, self.virtual_edit_dir());
 		for (key, value) in self.xdg.env_vars() {
 			cmd.env(key, value);
 		}

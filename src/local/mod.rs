@@ -135,17 +135,28 @@ impl Local {
 
 	/// Get the virtual edit path for an issue.
 	///
-	/// Returns a path in `/tmp/{CARGO_PKG_NAME}/{index}.md` where index is the
-	/// Display representation of the issue's full index (e.g. `owner/repo/123/456`).
+	/// Returns a path in `{base}/{index}.md` where:
+	/// - In tests: base is derived from the mock issues_dir's parent (the XDG data dir)
+	/// - In production: base is `/tmp/{CARGO_PKG_NAME}`
 	///
+	/// The index is the Display representation of the issue's full index (e.g. `owner/repo/123/456`).
 	/// This path is used when opening an editor for the user to edit the issue.
 	pub fn virtual_edit_path(issue: &crate::Issue) -> PathBuf {
-		let base: PathBuf = match crate::mocks::MockIssuesDir::get() {
-			Some(override_issues_dir) => override_issues_dir.parent().unwrap().to_path_buf(),
-			_ => PathBuf::from("/tmp").join(env!("CARGO_PKG_NAME")),
+		// In tests, MockIssuesDir is set. Derive virtual edit path from the same temp dir.
+		// In subprocesses spawned by tests, MockIssuesDir won't be set but XDG env vars will be,
+		// so issues_dir() will return the test's temp dir, and we derive from its parent.
+		let base: PathBuf = if crate::mocks::MockIssuesDir::get().is_some() || std::env::var("__IS_INTEGRATION_TEST").is_ok() {
+			// Either thread_local is set (in-process test code) or we're a subprocess of a test
+			Self::issues_dir().parent().unwrap().parent().unwrap().parent().unwrap().to_path_buf()
+		} else {
+			PathBuf::from("/tmp").join(env!("CARGO_PKG_NAME"))
 		};
 		let index_path = issue.full_index().to_string();
-		base.join(format!("{index_path}.md"))
+		let vpath = base.join(format!("{index_path}.md"));
+		if let Some(parent) = vpath.parent() {
+			std::fs::create_dir_all(parent).unwrap();
+		}
+		vpath
 	}
 
 	/// Returns the base directory for issue storage: XDG_DATA_HOME/todo/issues/
@@ -229,46 +240,6 @@ impl Local {
 		}
 	}
 
-	/// Get the path for an issue file from an Issue.
-	/// Uses the issue's identity to resolve the path.
-	///
-	/// Checks if the issue exists in directory format on disk (has sub-issues) and returns
-	/// the appropriate path (`__main__.md` for directory format, flat file otherwise).
-	///
-	/// # Errors
-	/// Returns an error if ancestor directories can't be resolved.
-	pub fn issue_file_path(issue: &Issue) -> Result<PathBuf> {
-		let repo_info = issue.identity.repo_info();
-		let lineage = issue.identity.git_lineage()?;
-		let ancestor_dir_names = Self::build_ancestor_dir_names_from_lineage(repo_info, &lineage)?;
-		let closed = issue.contents.state.is_closed();
-
-		// Check if issue exists in directory format on disk
-		let issue_dir = Self::issue_dir_path_from_dir_names(repo_info.owner(), repo_info.repo(), issue.git_id(), &issue.contents.title, &ancestor_dir_names);
-		if issue_dir.is_dir() {
-			return Ok(Self::main_file_path(&issue_dir, closed));
-		}
-
-		// Flat file format
-		let mut path = Self::project_dir(repo_info.owner(), repo_info.repo());
-		for dir_name in &ancestor_dir_names {
-			path = path.join(dir_name);
-		}
-		let filename = Self::format_issue_filename(issue.git_id(), &issue.contents.title, closed);
-		Ok(path.join(filename))
-	}
-
-	/// Get the path to the issue directory using ancestor directory names directly.
-	pub fn issue_dir_path_from_dir_names(owner: &str, repo: &str, issue_number: Option<u64>, title: &str, ancestor_dir_names: &[String]) -> PathBuf {
-		let mut path = Self::project_dir(owner, repo);
-
-		for dir_name in ancestor_dir_names {
-			path = path.join(dir_name);
-		}
-
-		path.join(Self::issue_dir_name(issue_number, title))
-	}
-
 	/// Get the path for the main issue file when stored inside a directory.
 	/// Format: {dir}/__main__.md[.bak]
 	pub fn main_file_path(issue_dir: &Path, closed: bool) -> PathBuf {
@@ -293,43 +264,8 @@ impl Local {
 		None
 	}
 
-	/// Find the actual file path for an issue, checking both flat and directory formats.
-	pub fn find_issue_file(owner: &str, repo: &str, issue_number: Option<u64>, title: &str, ancestor_dir_names: &[String]) -> Option<PathBuf> {
-		// Build base path: project_dir / ancestor_dir_names...
-		let mut base_path = Self::project_dir(owner, repo);
-		for dir_name in ancestor_dir_names {
-			base_path = base_path.join(dir_name);
-		}
-
-		// Try flat format first (both open and closed)
-		let flat_path = base_path.join(Self::format_issue_filename(issue_number, title, false));
-		if flat_path.exists() {
-			return Some(flat_path);
-		}
-
-		let flat_closed_path = base_path.join(Self::format_issue_filename(issue_number, title, true));
-		if flat_closed_path.exists() {
-			return Some(flat_closed_path);
-		}
-
-		// Try directory format
-		let issue_dir = Self::issue_dir_path_from_dir_names(owner, repo, issue_number, title, ancestor_dir_names);
-		if issue_dir.is_dir() {
-			let main_path = Self::main_file_path(&issue_dir, false);
-			if main_path.exists() {
-				return Some(main_path);
-			}
-
-			let main_closed_path = Self::main_file_path(&issue_dir, true);
-			if main_closed_path.exists() {
-				return Some(main_closed_path);
-			}
-		}
-
-		None
-	}
-
 	/// Get the most recently modified issue file.
+	#[deprecated(note = "rewrite to use LocalPathResolved::matching_subpaths")]
 	pub fn most_recent_issue_file() -> Result<Option<PathBuf>> {
 		fn collect_issue_files(dir: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<()> {
 			for entry in std::fs::read_dir(dir)? {
@@ -389,6 +325,7 @@ impl Local {
 
 	/// Find the issue file by repo info and full number path.
 	/// The num_path includes all ancestors plus the target issue's own number.
+	#[deprecated(note = "just use LocalPath")]
 	pub fn find_issue_file_by_num_path(repo_info: RepoInfo, num_path: &[u64]) -> Option<PathBuf> {
 		let mut path = Self::project_dir(repo_info.owner(), repo_info.repo());
 
@@ -449,6 +386,7 @@ impl Local {
 	}
 
 	/// Find an issue directory by its number prefix.
+	#[deprecated(note = "duplication against LocalPath. This functionality should be only on LocalPath")]
 	fn find_issue_dir_by_number(parent: &Path, issue_number: u64) -> Option<PathBuf> {
 		let entries = std::fs::read_dir(parent).ok()?;
 
@@ -555,64 +493,6 @@ impl Local {
 		} else {
 			None
 		}
-	}
-
-	/// Extract full ancestry (owner/repo/lineage) from an issue file path.
-	///
-	/// Path structure: `issues/{owner}/{repo}/{number}_-_{title}/.../file.md`
-	/// The lineage contains PARENT issue numbers from the path components between repo and the target file.
-	///
-	/// For directory format (`__main__.md`), the immediately containing directory is the issue itself,
-	/// not a parent, so it's excluded from lineage.
-	/// Extract the parent's IssueIndex from an issue file path.
-	///
-	/// For root issues, returns `IssueIndex::repo_only(owner, repo)`.
-	/// For child issues, returns the parent's full IssueIndex.
-	pub fn extract_parent_index(path: &Path) -> Result<IssueIndex> {
-		let issues_base = Self::issues_dir();
-
-		let rel_path = path.strip_prefix(&issues_base).map_err(|_| eyre!("Issue file is not in issues directory: {path:?}"))?;
-
-		let components: Vec<_> = rel_path.components().collect();
-		if components.len() < 2 {
-			bail!("Path too short to extract owner/repo: {path:?}");
-		}
-
-		let owner = components[0].as_os_str().to_str().ok_or_else(|| eyre!("Could not extract owner from path: {path:?}"))?;
-		let repo = components[1].as_os_str().to_str().ok_or_else(|| eyre!("Could not extract repo from path: {path:?}"))?;
-
-		// Check if this is a directory format file (__main__.md or __main__.md.bak)
-		let filename = components
-			.last()
-			.expect("components verified to have at least 2 elements")
-			.as_os_str()
-			.to_str()
-			.ok_or_else(|| eyre!("Could not convert filename to str: {path:?}"))?;
-		let is_dir_format = filename.starts_with(Self::MAIN_ISSUE_FILENAME);
-
-		// Everything between repo and the final component is a potential parent issue directory
-		// Format: {number}_-_{title} or just {number}
-		// For directory format, exclude the last directory (that's the issue itself, not a parent)
-		let mut parent_selectors = Vec::new();
-		let end_offset = if is_dir_format { 2 } else { 1 }; // Skip filename + issue dir for dir format
-		for component in &components[2..components.len().saturating_sub(end_offset)] {
-			let name = component.as_os_str().to_str().ok_or_else(|| eyre!("Invalid path component: {component:?}"))?;
-
-			// Skip if this looks like a file (has .md extension)
-			if name.ends_with(".md") || name.ends_with(".md.bak") {
-				continue;
-			}
-
-			// Extract issue number from directory name
-			let issue_number = if let Some(sep_pos) = name.find("_-_") {
-				name[..sep_pos].parse::<u64>().map_err(|_| eyre!("Invalid issue directory format: {name}"))?
-			} else {
-				name.parse::<u64>().map_err(|_| eyre!("Invalid issue directory format: {name}"))?
-			};
-			parent_selectors.push(IssueSelector::GitId(issue_number));
-		}
-
-		Ok(IssueIndex::with_index(owner, repo, parent_selectors))
 	}
 
 	/// Extract the full IssueIndex from an issue file path (including the issue itself).

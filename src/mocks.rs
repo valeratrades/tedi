@@ -53,30 +53,3 @@ pub fn set_issues_dir(path: PathBuf) {
 pub fn clear_issues_dir() {
 	MOCK_ISSUES_DIR.with(|dir| *dir.borrow_mut() = None);
 }
-
-/// Override for `Local::virtual_edit_path()` base directory used in tests.
-///
-/// When set, `Local::virtual_edit_path()` uses this directory instead of `/tmp/{PKG_NAME}`.
-/// This allows tests to isolate their virtual edit state per-test.
-pub struct MockVirtualEditDir;
-
-impl MockVirtualEditDir {
-	/// Get the overridden virtual edit directory, if set.
-	pub fn get() -> Option<PathBuf> {
-		MOCK_VIRTUAL_EDIT_DIR.with(|dir| dir.borrow().clone())
-	}
-}
-
-/// Set the virtual edit directory override for the current thread.
-///
-/// Used by test infrastructure to isolate each test's virtual edit state.
-#[instrument]
-pub fn set_virtual_edit_dir(path: PathBuf) {
-	MOCK_VIRTUAL_EDIT_DIR.with(|dir| *dir.borrow_mut() = Some(path));
-}
-
-/// Clear the virtual edit directory override for the current thread.
-#[instrument]
-pub fn clear_virtual_edit_dir() {
-	MOCK_VIRTUAL_EDIT_DIR.with(|dir| *dir.borrow_mut() = None);
-}
