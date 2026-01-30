@@ -81,7 +81,7 @@ pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Mo
 					// New issue - just sink everywhere
 					<Issue as Sink<Remote>>::sink(&mut issue, None).await?;
 					<Issue as Sink<Submitted>>::sink(&mut issue, None).await?;
-					commit_issue_changes(&issue);
+					commit_issue_changes(&issue)?;
 				}
 			}
 
@@ -120,7 +120,7 @@ mod core {
 		}
 
 		// In Force mode, we pass force=true only to the merge where `other` is the preferred side.
-		// merge(other, true) means "take other's values on conflicts".
+		// merge(other, true) means	 "take other's values on conflicts".
 		// So: prefer Local → force on remote_merged.merge(local)
 		//     prefer Remote → force on local_merged.merge(remote)
 		let (force_local_wins, force_remote_wins) = match mode {
@@ -160,38 +160,44 @@ mod core {
 		remote_merged.merge(local, force_local_wins)?;
 
 		// Compare results
-		if local_merged == remote_merged {
-			// Auto-resolved - sink to both sides
-			let mut resolved = local_merged;
-			<Issue as Sink<Submitted>>::sink(&mut resolved, None).await?;
-			<Issue as Sink<Remote>>::sink(&mut resolved, None).await?;
-			Ok((resolved, true))
-		} else {
-			// Conflict - initiate git merge
-			match initiate_conflict_merge(owner, repo, issue_number, &local_merged, &remote_merged)? {
-				ConflictOutcome::AutoMerged => {
-					let resolved = read_resolved_conflict(owner)?;
-					complete_conflict_resolution(owner)?;
-					let mut resolved = resolved;
-					<Issue as Sink<Submitted>>::sink(&mut resolved, None).await?;
-					<Issue as Sink<Remote>>::sink(&mut resolved, None).await?;
-					Ok((resolved, true))
-				}
-				ConflictOutcome::NeedsResolution => {
-					bail!(
-						"Conflict detected for {owner}/{repo}#{issue_number}.\n\
-						Resolve using standard git tools, then re-run."
-					);
-				}
-				ConflictOutcome::NoChanges => {
-					// Git says no changes - take local
-					Ok((local_merged, false))
+		match local_merged == remote_merged {
+			true => {
+				// Auto-resolved - sink to both sides
+				let mut resolved = local_merged;
+				//todo!("we reach here");
+				<Issue as Sink<Submitted>>::sink(&mut resolved, None).await?;
+				todo!("but not here");
+				<Issue as Sink<Remote>>::sink(&mut resolved, None).await?;
+				Ok((resolved, true))
+			}
+			false => {
+				// Conflict - initiate git merge
+				match initiate_conflict_merge(owner, repo, issue_number, &local_merged, &remote_merged)? {
+					ConflictOutcome::AutoMerged => {
+						let resolved = read_resolved_conflict(owner)?;
+						complete_conflict_resolution(owner)?;
+						let mut resolved = resolved;
+						<Issue as Sink<Submitted>>::sink(&mut resolved, None).await?;
+						<Issue as Sink<Remote>>::sink(&mut resolved, None).await?;
+						Ok((resolved, true))
+					}
+					ConflictOutcome::NeedsResolution => {
+						bail!(
+							"Conflict detected for {owner}/{repo}#{issue_number}.\n\
+							Resolve using standard git tools, then re-run."
+						);
+					}
+					ConflictOutcome::NoChanges => {
+						// Git says no changes - take local
+						Ok((local_merged, false))
+					}
 				}
 			}
 		}
 	}
 
 	pub(super) async fn sync(current_issue: &mut Issue, consensus: Option<Issue>, mode: MergeMode) -> Result<()> {
+		eprintln!("DEBUG: core::sync entered");
 		println!("Syncing...");
 		let issue_number = current_issue.git_id().expect(
 			"can't be linked and not have number associated\nunless we die in a weird moment I guess. If this ever triggers, should fix it to set issue as pending (not linked) and sink",
@@ -201,17 +207,19 @@ mod core {
 		let url = format!("https://github.com/{}/{}/issues/{issue_number}", repo_info.owner(), repo_info.repo());
 		let link = IssueLink::parse(&url).expect("valid URL");
 		let remote_source = RemoteSource::with_lineage(link, &current_issue.identity.git_lineage()?);
+		eprintln!("DEBUG: about to load Remote");
 		let remote = <Issue as LazyIssue<Remote>>::load(remote_source).await?;
+		eprintln!("DEBUG: Remote loaded, calling resolve_merge");
 
 		let (resolved, changed) = core::resolve_merge(current_issue.clone(), consensus, remote, mode, repo_info.owner(), repo_info.repo(), issue_number).await?;
+		eprintln!("DEBUG: resolve_merge done");
 		*current_issue = resolved;
 
 		match changed {
 			true => {
 				// Re-sink local in case issue numbers changed
 				<Issue as Sink<Submitted>>::sink(current_issue, None).await?;
-				let actual_number = current_issue.git_id().expect("issue must have number after sync");
-				commit_issue_changes(repo_info.owner(), repo_info.repo(), actual_number)?;
+				commit_issue_changes(current_issue)?;
 			}
 			false => println!("No changes."),
 		}
