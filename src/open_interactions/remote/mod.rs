@@ -293,7 +293,7 @@ impl tedi::LazyIssue<Remote> for Issue {
 			children.push(child);
 		}
 
-		children.sort_by_key(|c| c.number().expect("remote child must have issue number"));
+		children.sort_by_key(|c| c.git_id().expect("remote child must have issue number"));
 		self.children = children.clone();
 		Ok(children)
 	}
@@ -391,7 +391,7 @@ impl Sink<Remote> for Issue {
 			changed = true;
 		}
 
-		let issue_number = self.number().expect("issue must have number after creation");
+		let issue_number = self.git_id().expect("issue must have number after creation");
 
 		// Sync content against old (if we have old state)
 		let diff = compute_node_diff(self, old);

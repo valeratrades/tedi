@@ -141,8 +141,8 @@ pub fn compute_node_diff(new: &Issue, old: Option<&Issue>) -> IssueDiff {
 	}
 
 	// Compare children
-	let old_children: HashMap<u64, &Issue> = old.children.iter().filter_map(|c| c.number().map(|n| (n, c))).collect();
-	let new_child_numbers: HashSet<u64> = new.children.iter().filter_map(|c| c.number()).collect();
+	let old_children: HashMap<u64, &Issue> = old.children.iter().filter_map(|c| c.git_id().map(|n| (n, c))).collect();
+	let new_child_numbers: HashSet<u64> = new.children.iter().filter_map(|c| c.git_id()).collect();
 
 	for child in &new.children {
 		if child.is_local() {

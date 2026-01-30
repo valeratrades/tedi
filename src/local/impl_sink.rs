@@ -88,7 +88,7 @@ impl Sink<Consensus> for Issue {
 		}
 
 		// Commit with a descriptive message
-		let issue_number = self.number().map(|n| format!("#{n}")).unwrap_or_else(|| "new".to_string());
+		let issue_number = self.git_id().map(|n| format!("#{n}")).unwrap_or_else(|| "new".to_string());
 		let commit_msg = format!("sync: {owner}/{repo}{issue_number}");
 		let commit_output = Command::new("git").args(["-C", data_dir_str, "commit", "-m", &commit_msg]).output()?;
 		if !commit_output.status.success() {
@@ -108,7 +108,7 @@ impl Sink<Consensus> for Issue {
 /// - Removing old file locations when format changes
 /// - Writing issue content
 #[instrument(skip(issue, old, reader), fields(
-	issue_number = ?issue.number(),
+	issue_number = ?issue.git_id(),
 	title = %issue.contents.title,
 	has_children = !issue.children.is_empty(),
 	old_has_children = old.map(|o| !o.children.is_empty()),
@@ -116,7 +116,7 @@ impl Sink<Consensus> for Issue {
 fn sink_issue_node<R: LocalReader>(issue: &Issue, old: Option<&Issue>, reader: &R) -> Result<bool> {
 	// Duplicate issues self-eliminate: remove local files instead of writing
 	if let crate::CloseState::Duplicate(dup_of) = issue.contents.state {
-		info!(issue = ?issue.number(), duplicate_of = dup_of, "Removing duplicate issue from local storage");
+		info!(issue = ?issue.git_id(), duplicate_of = dup_of, "Removing duplicate issue from local storage");
 		return remove_issue_files(issue, reader);
 	}
 
@@ -139,12 +139,12 @@ fn sink_issue_node<R: LocalReader>(issue: &Issue, old: Option<&Issue>, reader: &
 
 	// Clean up old file locations if format changed, state changed, or issue got a number
 	// (issue getting a number means a pending file may exist that needs removal)
-	let should_cleanup = format_changed || old.is_some() || issue.number().is_some();
+	let should_cleanup = format_changed || old.is_some() || issue.git_id().is_some();
 	debug!(
 		should_cleanup,
 		format_changed,
 		old_is_some = old.is_some(),
-		has_number = issue.number().is_some(),
+		has_number = issue.git_id().is_some(),
 		"cleanup decision"
 	);
 	if should_cleanup {
@@ -175,7 +175,7 @@ fn sink_issue_node<R: LocalReader>(issue: &Issue, old: Option<&Issue>, reader: &
 	}
 
 	// Save metadata
-	if let Some(issue_num) = issue.number()
+	if let Some(issue_num) = issue.git_id()
 		&& let Some(timestamps) = issue.identity.timestamps()
 	{
 		let meta = IssueMeta { timestamps: timestamps.clone() };
@@ -183,12 +183,12 @@ fn sink_issue_node<R: LocalReader>(issue: &Issue, old: Option<&Issue>, reader: &
 	}
 
 	// Recursively sink children
-	let old_children_map: HashMap<u64, &Issue> = old.map(|o| o.children.iter().filter_map(|c| c.number().map(|n| (n, c))).collect()).unwrap_or_default();
+	let old_children_map: HashMap<u64, &Issue> = old.map(|o| o.children.iter().filter_map(|c| c.git_id().map(|n| (n, c))).collect()).unwrap_or_default();
 
-	let new_child_numbers: HashSet<u64> = issue.children.iter().filter_map(|c| c.number()).collect();
+	let new_child_numbers: HashSet<u64> = issue.children.iter().filter_map(|c| c.git_id()).collect();
 
 	for child in &issue.children {
-		let old_child = child.number().and_then(|n| old_children_map.get(&n).copied());
+		let old_child = child.git_id().and_then(|n| old_children_map.get(&n).copied());
 		any_written |= sink_issue_node(child, old_child, reader)?;
 	}
 
@@ -199,7 +199,6 @@ fn sink_issue_node<R: LocalReader>(issue: &Issue, old: Option<&Issue>, reader: &
 			Local::remove_issue_meta(&owner, &repo, old_num)?;
 		}
 	}
-
 	Ok(any_written)
 }
 
@@ -208,7 +207,7 @@ fn sink_issue_node<R: LocalReader>(issue: &Issue, old: Option<&Issue>, reader: &
 /// Strategy: find all matching paths via `matching_subpaths`, compute the correct target path
 /// via `deterministic`, then remove any matching paths that aren't the target.
 #[instrument(skip(issue, _old, reader), fields(
-	issue_number = ?issue.number(),
+	issue_number = ?issue.git_id(),
 	title = %issue.contents.title,
 	has_children,
 	closed,
@@ -275,7 +274,7 @@ fn cleanup_old_locations<R: LocalReader>(issue: &Issue, _old: Option<&Issue>, ha
 }
 
 /// Remove all file variants for an issue.
-#[instrument(skip(issue, reader), fields(issue_number = ?issue.number(), title = %issue.contents.title))]
+#[instrument(skip(issue, reader), fields(issue_number = ?issue.git_id(), title = %issue.contents.title))]
 fn remove_issue_files<R: LocalReader>(issue: &Issue, reader: &R) -> Result<bool> {
 	let owner = issue.identity.owner().to_string();
 	let repo = issue.identity.repo().to_string();
@@ -297,11 +296,11 @@ fn remove_issue_files<R: LocalReader>(issue: &Issue, reader: &R) -> Result<bool>
 	};
 
 	// Remove metadata
-	if let Some(num) = issue.number() {
+	if let Some(num) = issue.git_id() {
 		trace!(num, "removing issue metadata");
 		Local::remove_issue_meta(&owner, &repo, num)?;
 	}
 
-	info!(issue_number = ?issue.number(), "removed issue");
+	info!(issue_number = ?issue.git_id(), "removed issue");
 	Ok(true)
 }

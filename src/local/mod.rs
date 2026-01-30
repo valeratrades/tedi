@@ -235,7 +235,7 @@ impl Local {
 		let closed = issue.contents.state.is_closed();
 
 		// Check if issue exists in directory format on disk
-		let issue_dir = Self::issue_dir_path_from_dir_names(repo_info.owner(), repo_info.repo(), issue.number(), &issue.contents.title, &ancestor_dir_names);
+		let issue_dir = Self::issue_dir_path_from_dir_names(repo_info.owner(), repo_info.repo(), issue.git_id(), &issue.contents.title, &ancestor_dir_names);
 		if issue_dir.is_dir() {
 			return Ok(Self::main_file_path(&issue_dir, closed));
 		}
@@ -245,7 +245,7 @@ impl Local {
 		for dir_name in &ancestor_dir_names {
 			path = path.join(dir_name);
 		}
-		let filename = Self::format_issue_filename(issue.number(), &issue.contents.title, closed);
+		let filename = Self::format_issue_filename(issue.git_id(), &issue.contents.title, closed);
 		Ok(path.join(filename))
 	}
 
@@ -1514,7 +1514,7 @@ impl crate::LazyIssue<Local> for Issue {
 			children.push(child);
 		}
 
-		children.sort_by_key(|issue| issue.number().unwrap_or(0)); //IGNORED_ERROR: pending issues (no number) sort first
+		children.sort_by_key(|issue| issue.git_id().unwrap_or(0)); //IGNORED_ERROR: pending issues (no number) sort first
 
 		self.children = children.clone();
 		Ok(children)
@@ -1625,7 +1625,7 @@ impl crate::LazyIssue<LocalConsensus> for Issue {
 			children.push(child);
 		}
 
-		children.sort_by_key(|issue| issue.number().unwrap_or(0)); //IGNORED_ERROR: pending issues (no number) sort first
+		children.sort_by_key(|issue| issue.git_id().unwrap_or(0)); //IGNORED_ERROR: pending issues (no number) sort first
 
 		self.children = children.clone();
 		Ok(children)

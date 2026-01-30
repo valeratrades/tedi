@@ -690,7 +690,7 @@ impl From<&Issue> for IssueIndex {
 		// Build this issue's IssueIndex by extending parent_index with this issue's selector
 		let parent_index = issue.identity.parent_index;
 
-		if let Some(n) = issue.number() {
+		if let Some(n) = issue.git_id() {
 			// Issue has a number - add it as the last selector
 			parent_index.child(IssueSelector::GitId(n))
 		} else {
@@ -797,7 +797,7 @@ impl Issue /*{{{1*/ {
 	}
 
 	/// Get the issue number if linked to Github.
-	pub fn number(&self) -> Option<u64> {
+	pub fn git_id(&self) -> Option<u64> {
 		self.identity.number()
 	}
 
@@ -824,7 +824,7 @@ impl Issue /*{{{1*/ {
 		for new_child in &mut self.children {
 			let old_child = old.children.iter().find(|c| match (new_child.url_str(), c.url_str()) {
 				(Some(a), Some(b)) => a == b,
-				_ => new_child.number() == c.number(),
+				_ => new_child.git_id() == c.git_id(),
 			});
 			if let Some(old_child) = old_child {
 				new_child.update_timestamps_from_diff(old_child);
@@ -841,7 +841,7 @@ impl Issue /*{{{1*/ {
 	/// Get full index pointing to this issue.
 	/// Combines parent_index with this issue's selector.
 	pub fn full_index(&self) -> IssueIndex {
-		let selector = match self.number() {
+		let selector = match self.git_id() {
 			Some(n) => IssueSelector::GitId(n),
 			None => IssueSelector::title(&self.contents.title),
 		};
@@ -1607,11 +1607,11 @@ impl Issue /*{{{1*/ {
 		self.contents = parsed.contents;
 
 		// For children: match by issue number to preserve identities
-		let old_children: std::collections::HashMap<u64, Issue> = self.children.drain(..).filter_map(|c| c.number().map(|n| (n, c))).collect();
+		let old_children: std::collections::HashMap<u64, Issue> = self.children.drain(..).filter_map(|c| c.git_id().map(|n| (n, c))).collect();
 
 		for mut new_child in parsed.children {
 			eprintln!("[update_from_virtual] new_child state before identity copy: {:?}", new_child.contents.state);
-			if let Some(number) = new_child.number()
+			if let Some(number) = new_child.git_id()
 				&& let Some(old_child) = old_children.get(&number)
 			{
 				// Preserve identity from existing child
@@ -1628,10 +1628,10 @@ impl Issue /*{{{1*/ {
 
 	/// Recursively preserve child identities from old issue tree.
 	fn preserve_child_identities(new_issue: &mut Issue, old_issue: &Issue) {
-		let old_children: std::collections::HashMap<u64, &Issue> = old_issue.children.iter().filter_map(|c| c.number().map(|n| (n, c))).collect();
+		let old_children: std::collections::HashMap<u64, &Issue> = old_issue.children.iter().filter_map(|c| c.git_id().map(|n| (n, c))).collect();
 
 		for new_child in &mut new_issue.children {
-			if let Some(number) = new_child.number()
+			if let Some(number) = new_child.git_id()
 				&& let Some(&old_child) = old_children.get(&number)
 			{
 				new_child.identity = old_child.identity.clone();
@@ -1701,7 +1701,7 @@ impl Issue /*{{{1*/ {
 	pub fn get(&self, lineage: &[u64]) -> Option<&Issue> {
 		let mut current = self;
 		for &num in lineage {
-			current = current.children.iter().find(|c| c.number() == Some(num))?;
+			current = current.children.iter().find(|c| c.git_id() == Some(num))?;
 		}
 		Some(current)
 	}
@@ -1711,7 +1711,7 @@ impl Issue /*{{{1*/ {
 	pub fn get_mut(&mut self, lineage: &[u64]) -> Option<&mut Issue> {
 		let mut current = self;
 		for &num in lineage {
-			current = current.children.iter_mut().find(|c| c.number() == Some(num))?;
+			current = current.children.iter_mut().find(|c| c.git_id() == Some(num))?;
 		}
 		Some(current)
 	}
@@ -1804,7 +1804,7 @@ impl std::ops::Index<u64> for Issue {
 	fn index(&self, issue_number: u64) -> &Self::Output {
 		self.children
 			.iter()
-			.find(|child| child.number() == Some(issue_number))
+			.find(|child| child.git_id() == Some(issue_number))
 			.unwrap_or_else(|| panic!("no child with issue number {issue_number}"))
 	}
 }
@@ -1815,7 +1815,7 @@ impl std::ops::IndexMut<u64> for Issue {
 	fn index_mut(&mut self, issue_number: u64) -> &mut Self::Output {
 		self.children
 			.iter_mut()
-			.find(|child| child.number() == Some(issue_number))
+			.find(|child| child.git_id() == Some(issue_number))
 			.unwrap_or_else(|| panic!("no child with issue number {issue_number}"))
 	}
 }

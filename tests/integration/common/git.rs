@@ -468,7 +468,7 @@ fn add_issue_recursive(state: &mut GitState, owner: &str, repo: &str, number: u6
 
 	// Recursively add children (they inherit the same timestamps)
 	for child in &issue.children {
-		let child_number = child.number().expect("child issue must have number for remote mock state");
+		let child_number = child.git_id().expect("child issue must have number for remote mock state");
 		add_issue_recursive(state, owner, repo, child_number, Some(number), child, timestamps);
 	}
 }

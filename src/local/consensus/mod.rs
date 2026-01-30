@@ -23,7 +23,6 @@ pub async fn load_consensus_issue(index: IssueIndex) -> Result<Option<Issue>, Lo
 	if search_result.is_err() {
 		return Ok(None);
 	}
-
 	<Issue as LazyIssue<LocalConsensus>>::load(source).await.map(Some)
 }
 mod git;

@@ -149,7 +149,7 @@ fn merge_children(self_children: &mut Vec<Issue>, other_children: Vec<Issue>, fo
 	for child in other_children {
 		if let Some(url) = child.url_str() {
 			other_by_url.insert(url.to_string(), child);
-		} else if let Some(num) = child.number() {
+		} else if let Some(num) = child.git_id() {
 			// Pending issues matched by number
 			other_by_url.insert(format!("pending:{num}"), child);
 		} else {
@@ -161,7 +161,7 @@ fn merge_children(self_children: &mut Vec<Issue>, other_children: Vec<Issue>, fo
 	for self_child in self_children.iter_mut() {
 		let key = if let Some(url) = self_child.url_str() {
 			url.to_string()
-		} else if let Some(num) = self_child.number() {
+		} else if let Some(num) = self_child.git_id() {
 			format!("pending:{num}")
 		} else {
 			continue; // Can't match without URL or number
@@ -187,8 +187,8 @@ fn merge_children(self_children: &mut Vec<Issue>, other_children: Vec<Issue>, fo
 
 	// Sort children by issue number for consistent ordering
 	self_children.sort_by(|a, b| {
-		let a_num = a.number().unwrap_or(u64::MAX);
-		let b_num = b.number().unwrap_or(u64::MAX);
+		let a_num = a.git_id().unwrap_or(u64::MAX);
+		let b_num = b.git_id().unwrap_or(u64::MAX);
 		a_num.cmp(&b_num)
 	});
 
