@@ -192,7 +192,7 @@ impl<'a> OpenBuilder<'a> {
 	/// Run the command and return RunOutput.
 	pub fn run(self) -> RunOutput {
 		// Construct absolute path from LocalPath - CLI accepts file paths directly
-		self.ctx.set_xdg_env();
+		self.ctx.set_issues_dir_override();
 		let issue_path = tedi::local::LocalPath::from(self.issue)
 			.resolve_parent(tedi::local::FsReader)
 			.expect("failed to resolve issue parent path")
@@ -494,7 +494,7 @@ pub mod are_you_sure {
 		}
 
 		fn resolve_issue_path(&self, issue: &tedi::Issue) -> PathBuf {
-			self.set_xdg_env();
+			self.set_issues_dir_override();
 			LocalPath::from(issue).resolve_parent(FsReader).unwrap().search().unwrap().path()
 		}
 	}

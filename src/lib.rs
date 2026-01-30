@@ -2,6 +2,7 @@
 
 pub mod issue;
 pub mod local;
+pub mod mocks;
 pub mod sink;
 
 pub mod current_user {

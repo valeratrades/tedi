@@ -212,8 +212,8 @@ impl GitExt for TestContext {
 			state.local_issues.insert(key);
 		});
 
-		// Set XDG env vars and sink using actual library implementation
-		self.set_xdg_env();
+		// Set issues dir override and sink using actual library implementation
+		self.set_issues_dir_override();
 		let mut issue_clone = issue.clone();
 		<Issue as Sink<Submitted>>::sink(&mut issue_clone, None).await.expect("local sink failed");
 
@@ -238,8 +238,8 @@ impl GitExt for TestContext {
 		// Ensure git is initialized (Sink<Consensus> needs it)
 		self.init_git();
 
-		// Set XDG env vars and sink using actual library implementation
-		self.set_xdg_env();
+		// Set issues dir override and sink using actual library implementation
+		self.set_issues_dir_override();
 		let mut issue_clone = issue.clone();
 		<Issue as Sink<Consensus>>::sink(&mut issue_clone, None).await.expect("consensus sink failed");
 
@@ -271,15 +271,12 @@ impl GitExt for TestContext {
 }
 
 impl TestContext {
-	/// Set XDG environment variables to point to our temp fixture.
-	/// Required before calling any library functions that use `Local::issues_dir()`.
-	pub(crate) fn set_xdg_env(&self) {
-		// SAFETY: Tests use unique temp dirs, so env var "leakage" between parallel tests is harmless
-		unsafe {
-			for (key, value) in self.xdg.env_vars() {
-				std::env::set_var(key, value);
-			}
-		}
+	/// Set the issues directory override for `Local::issues_dir()`.
+	///
+	/// Uses the thread_local mock mechanism to isolate test filesystem state.
+	/// This is preferred over `set_xdg_env` as it doesn't modify global process env vars.
+	pub(crate) fn set_issues_dir_override(&self) {
+		tedi::mocks::set_issues_dir(self.xdg.data_dir().join("issues"));
 	}
 
 	fn rebuild_mock_state(&self) {

@@ -146,7 +146,13 @@ impl Local {
 	}
 
 	/// Returns the base directory for issue storage: XDG_DATA_HOME/todo/issues/
+	///
+	/// If a mock override is set (via `mocks::set_issues_dir`), returns that instead.
+	/// This allows tests to isolate their filesystem state per-thread.
 	pub fn issues_dir() -> PathBuf {
+		if let Some(override_dir) = crate::mocks::MockIssuesDir::get() {
+			return override_dir;
+		}
 		v_utils::xdg_data_dir!("issues")
 	}
 

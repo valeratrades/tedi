@@ -418,11 +418,11 @@ async fn test_duplicate_sub_issues_filtered_from_remote() {
 	// Create issues with proper CloseState
 	let parent = parse("- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tparent body\n");
 
-	let mut normal_closed = parse("- [x] Normal Closed Sub <!-- @mock_user https://github.com/o/r/issues/2 -->\n\tsub body\n");
-	normal_closed.contents.state = tedi::CloseState::Closed;
+	let normal_closed = parse("- [x] Normal Closed Sub <!-- @mock_user https://github.com/o/r/issues/2 -->\n\tsub body\n");
+	//normal_closed.contents.state = tedi::CloseState::Closed;
 
-	let mut duplicate = parse("- [x] Duplicate Sub <!-- @mock_user https://github.com/o/r/issues/3 -->\n\tduplicate body\n");
-	duplicate.contents.state = tedi::CloseState::Duplicate(2); // duplicate of #2
+	let duplicate = parse("- [2] Duplicate Sub <!-- @mock_user https://github.com/o/r/issues/3 -->\n\tduplicate body\n");
+	//duplicate.contents.state = tedi::CloseState::Duplicate(2); // duplicate of #2
 
 	// Build parent with children for remote
 	let mut parent_with_children = parent.clone();
@@ -439,20 +439,14 @@ async fn test_duplicate_sub_issues_filtered_from_remote() {
 
 	assert!(out.status.success(), "Should succeed. stderr: {}", out.stderr);
 
-	// Check that the normal closed sub-issue file exists (with .bak suffix)
-	let issue_dir = ctx.dir_issue_path("o", "r", 1, "Parent Issue").parent().unwrap().to_path_buf();
-	let normal_closed_path = issue_dir.join("2_-_Normal_Closed_Sub.md.bak");
-	assert!(normal_closed_path.exists(), "Normal closed sub-issue file should exist");
-
-	let closed_content = read_issue_file(&normal_closed_path);
-	assert!(closed_content.contains("Normal Closed Sub"), "Normal closed sub-issue content missing");
-	assert!(closed_content.contains("[x]"), "Normal closed sub should show as [x]. Got: {closed_content}");
-
-	// Duplicate sub-issue should NOT have a file at all
-	let duplicate_path = issue_dir.join("3_-_Duplicate_Sub.md.bak");
-	let duplicate_path_open = issue_dir.join("3_-_Duplicate_Sub.md");
-	assert!(!duplicate_path.exists(), "Duplicate sub-issue should NOT have a file");
-	assert!(!duplicate_path_open.exists(), "Duplicate sub-issue should NOT have a file");
+	insta::assert_snapshot!(ctx.render_fixture(FixtureRenderer::try_new(&ctx).unwrap().skip_meta(), &out), @"
+	//- /o/r/1_-_Parent_Issue/2_-_Normal_Closed_Sub.md.bak
+	- [x] Normal Closed Sub <!-- @mock_user https://github.com/o/r/issues/2 -->
+			sub body
+	//- /o/r/1_-_Parent_Issue/__main__.md
+	- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+			parent body
+	");
 }
 
 /// Opening an issue twice when local matches remote should succeed (no-op).
