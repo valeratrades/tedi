@@ -1,6 +1,5 @@
 #![allow(clippy::len_zero)]
 pub mod config;
-pub mod mocks;
 pub mod utils;
 #[tokio::main]
 async fn main() {

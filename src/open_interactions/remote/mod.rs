@@ -114,7 +114,7 @@ impl RemoteSource {
 	}
 
 	/// Resolve parent_index, fetching lineage from GitHub if not provided.
-	pub async fn resolve_parent_index(&self) -> Result<IssueIndex, RemoteError> {
+	pub async fn resolve_parent_index(&self) -> Result<Option<IssueIndex>, RemoteError> {
 		let repo_info = self.link.repo_info();
 		let number = self.link.number();
 
@@ -143,8 +143,13 @@ impl RemoteSource {
 			}
 		};
 		// Build parent_index with all parent numbers as GitId selectors
-		let selectors: Vec<IssueSelector> = lineage.iter().map(|&n| IssueSelector::GitId(n)).collect();
-		Ok(IssueIndex::with_index(repo_info.owner(), repo_info.repo(), selectors))
+		// Return None for root-level issues (empty lineage)
+		if lineage.is_empty() {
+			Ok(Some(IssueIndex::repo_only(repo_info.owner(), repo_info.repo())))
+		} else {
+			let selectors: Vec<IssueSelector> = lineage.iter().map(|&n| IssueSelector::GitId(n)).collect();
+			Ok(Some(IssueIndex::with_index(repo_info.owner(), repo_info.repo(), selectors)))
+		}
 	}
 
 	/// Create a child source for a sub-issue.
@@ -167,10 +172,11 @@ impl tedi::LazyIssue<Remote> for Issue {
 	type Error = RemoteError;
 	type Source = RemoteSource;
 
-	async fn parent_index(source: &Self::Source) -> Result<IssueIndex, Self::Error> {
+	async fn parent_index(source: &Self::Source) -> Result<Option<IssueIndex>, Self::Error> {
 		source.resolve_parent_index().await
 	}
 
+	#[instrument]
 	async fn identity(&mut self, source: Self::Source) -> Result<IssueIdentity, Self::Error> {
 		if self.identity.is_linked() {
 			return Ok(self.identity.clone());
@@ -204,6 +210,7 @@ impl tedi::LazyIssue<Remote> for Issue {
 		Ok(self.identity.clone())
 	}
 
+	#[instrument]
 	async fn contents(&mut self, source: Self::Source) -> Result<IssueContents, Self::Error> {
 		if !self.contents.title.is_empty() {
 			return Ok(self.contents.clone());
@@ -248,6 +255,7 @@ impl tedi::LazyIssue<Remote> for Issue {
 		Ok(self.contents.clone())
 	}
 
+	#[instrument]
 	async fn children(&mut self, source: Self::Source) -> Result<Vec<Issue>, Self::Error> {
 		if !self.children.is_empty() {
 			return Ok(self.children.clone());
@@ -285,13 +293,14 @@ impl tedi::LazyIssue<Remote> for Issue {
 			children.push(child);
 		}
 
-		children.sort_by_key(|c| c.number().expect("remote child must have issue number"));
+		children.sort_by_key(|c| c.git_id().expect("remote child must have issue number"));
 		self.children = children.clone();
 		Ok(children)
 	}
 
+	#[instrument]
 	async fn load(source: Self::Source) -> Result<Issue, Self::Error> {
-		let parent_index = <Self as tedi::LazyIssue<Remote>>::parent_index(&source).await?;
+		let parent_index = <Self as tedi::LazyIssue<Remote>>::parent_index(&source).await?.unwrap();
 		let mut issue = Issue::empty_local(parent_index);
 		<Self as tedi::LazyIssue<Remote>>::identity(&mut issue, source.clone()).await?;
 		<Self as tedi::LazyIssue<Remote>>::contents(&mut issue, source.clone()).await?;
@@ -301,6 +310,7 @@ impl tedi::LazyIssue<Remote> for Issue {
 }
 
 /// Build IssueContents from GitHub API data.
+#[instrument]
 fn build_contents_from_github(issue: &GithubIssue, comments: &[GithubComment]) -> IssueContents {
 	let close_state = CloseState::from_github(&issue.state, issue.state_reason.as_deref());
 	let labels: Vec<String> = issue.labels.iter().map(|l| l.name.clone()).collect();
@@ -368,7 +378,7 @@ impl Sink<Remote> for Issue {
 			}
 
 			// Link to parent if this issue has one
-			let lineage = self.identity.lineage();
+			let lineage = self.identity.git_lineage()?;
 			if let Some(&parent_number) = lineage.last() {
 				gh.add_sub_issue(repo_info, parent_number, created.id).await?;
 			}
@@ -377,11 +387,11 @@ impl Sink<Remote> for Issue {
 			let url = format!("https://github.com/{}/{}/issues/{}", repo_info.owner(), repo_info.repo(), created.number);
 			let link = IssueLink::parse(&url).expect("just constructed valid URL");
 			let user = gh.fetch_authenticated_user().await?;
-			self.identity = IssueIdentity::linked(parent_index, user, link, tedi::IssueTimestamps::default());
+			self.identity = IssueIdentity::linked(Some(parent_index), user, link, tedi::IssueTimestamps::default());
 			changed = true;
 		}
 
-		let issue_number = self.number().expect("issue must have number after creation");
+		let issue_number = self.git_id().expect("issue must have number after creation");
 
 		// Sync content against old (if we have old state)
 		let diff = compute_node_diff(self, old);

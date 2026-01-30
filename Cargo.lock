@@ -3559,6 +3559,7 @@ dependencies = [
  "image",
  "insta",
  "jiff",
+ "libc",
  "libwayshot",
  "miette",
  "pandoc",

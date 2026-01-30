@@ -4,13 +4,13 @@ use color_eyre::eyre::{Report, Result, bail};
 #[cfg(not(test))]
 use jiff::Timestamp as TimestampImpl;
 use jiff::{SignedDuration, civil};
+#[cfg(test)]
+use tedi::mocks::MockTimestamp as TimestampImpl;
 pub use tokio::sync::oneshot;
 use tracing::{debug, instrument};
 pub use v_utils::io::file_open::{Client as OpenClient, OpenMode, Position};
 
 use crate::config::LiveSettings;
-#[cfg(test)]
-use crate::mocks::MockTimestamp as TimestampImpl;
 
 /// Open a file in editor.
 ///
@@ -149,7 +149,7 @@ mod tests {
 
 		if let Some(t) = t {
 			let mock_now = date(t.0, t.1, t.2).at(t.3, t.4, t.5, 0).to_zoned(jiff::tz::TimeZone::UTC).unwrap().timestamp();
-			crate::mocks::set_timestamp(mock_now);
+			tedi::mocks::set_timestamp(mock_now);
 		}
 
 		let flags = crate::config::SettingsFlags::default();

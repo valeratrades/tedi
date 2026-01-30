@@ -37,9 +37,13 @@
 //! Owner/repo/number are extracted from the Issue's identity (IssueLink).
 //! If no link exists, defaults are used: owner="owner", repo="repo", number=1.
 
-use std::{cell::RefCell, collections::HashSet, path::PathBuf};
+use std::{cell::RefCell, collections::HashSet};
 
-use tedi::{Issue, IssueTimestamps};
+use tedi::{
+	Issue, IssueTimestamps,
+	local::{Consensus, Submitted},
+	sink::Sink,
+};
 use v_fixtures::fs_standards::git::Git;
 
 use super::TestContext;
@@ -88,7 +92,7 @@ pub fn timestamps_from_seed(seed: Seed) -> IssueTimestamps {
 pub fn set_timestamps(issue: &mut Issue, seed: Seed) {
 	let timestamps = timestamps_from_seed(seed);
 	for node in issue.iter_mut() {
-		node.identity.remote.as_linked_mut().unwrap().timestamps = timestamps.clone();
+		node.identity.mut_linked_issue_meta().unwrap().timestamps = timestamps.clone();
 	}
 }
 /// State tracking for additive operations
@@ -106,23 +110,22 @@ pub struct GitState {
 	remote_issue_ids: HashSet<(String, String, u64)>,
 }
 /// Extension trait for git and issue setup operations.
+#[allow(async_fn_in_trait)]
 pub trait GitExt {
 	/// Initialize git in the issues directory.
 	fn init_git(&self) -> Git;
 
 	/// Write issue to local file (uncommitted). Additive - can call multiple times.
-	/// Returns the path to the issue file.
 	/// Panics if same (owner, repo, number) is submitted twice.
 	///
 	/// If `seed` is provided, timestamps are generated from it and written to `.meta.json`.
-	fn local(&self, issue: &Issue, seed: Option<Seed>) -> PathBuf;
+	async fn local(&self, issue: &Issue, seed: Option<Seed>);
 
 	/// Write issue and commit to git as consensus state. Additive - can call multiple times.
-	/// Returns the path to the issue file.
 	/// Panics if same (owner, repo, number) is submitted twice.
 	///
 	/// If `seed` is provided, timestamps are generated from it and written to `.meta.json`.
-	fn consensus(&self, issue: &Issue, seed: Option<Seed>) -> PathBuf;
+	async fn consensus(&self, issue: &Issue, seed: Option<Seed>);
 
 	/// Set up mock Github API to return this issue. Additive - can call multiple times.
 	/// Handles sub-issues automatically.
@@ -130,18 +133,6 @@ pub trait GitExt {
 	///
 	/// If `seed` is provided, timestamps are generated from it for the mock response.
 	fn remote(&self, issue: &Issue, seed: Option<Seed>);
-
-	/// Get the flat format path for an issue: `{number}_-_{title}.md`
-	fn flat_issue_path(&self, owner: &str, repo: &str, number: u64, title: &str) -> PathBuf;
-
-	/// Get the directory format path for an issue: `{number}_-_{title}/__main__.md`
-	fn dir_issue_path(&self, owner: &str, repo: &str, number: u64, title: &str) -> PathBuf;
-
-	/// Get the issue path after sync (flat if no children, directory if has children).
-	fn issue_path_after_sync(&self, owner: &str, repo: &str, number: u64, title: &str, has_children: bool) -> PathBuf;
-
-	/// Get the path where an issue would be stored (flat format), extracting coords from issue.
-	fn issue_path(&self, issue: &Issue) -> PathBuf;
 }
 /// Base timestamp: 2001-09-11 12:00:00 UTC (midday).
 const BASE_TIMESTAMP_SECS: i64 = 1000209600;
@@ -210,7 +201,7 @@ impl GitExt for TestContext {
 		Git::init(self.xdg.data_dir().join("issues"))
 	}
 
-	fn local(&self, issue: &Issue, seed: Option<Seed>) -> PathBuf {
+	async fn local(&self, issue: &Issue, seed: Option<Seed>) {
 		let (owner, repo, number) = extract_issue_coords(issue);
 		let key = (owner.clone(), repo.clone(), number);
 
@@ -221,18 +212,19 @@ impl GitExt for TestContext {
 			state.local_issues.insert(key);
 		});
 
-		let path = self.write_issue_tree(&owner, &repo, number, issue);
+		// Set issues dir override and sink using actual library implementation
+		self.set_issues_dir_override();
+		let mut issue_clone = issue.clone();
+		<Issue as Sink<Submitted>>::sink(&mut issue_clone, None).await.expect("local sink failed");
 
 		// Write timestamps to .meta.json if seed provided
 		if let Some(seed) = seed {
 			let timestamps = timestamps_from_seed(seed);
 			self.write_issue_meta(&owner, &repo, number, &timestamps);
 		}
-
-		path
 	}
 
-	fn consensus(&self, issue: &Issue, seed: Option<Seed>) -> PathBuf {
+	async fn consensus(&self, issue: &Issue, seed: Option<Seed>) {
 		let (owner, repo, number) = extract_issue_coords(issue);
 		let key = (owner.clone(), repo.clone(), number);
 
@@ -243,19 +235,19 @@ impl GitExt for TestContext {
 			state.consensus_issues.insert(key);
 		});
 
-		let path = self.write_issue_tree(&owner, &repo, number, issue);
+		// Ensure git is initialized (Sink<Consensus> needs it)
+		self.init_git();
+
+		// Set issues dir override and sink using actual library implementation
+		self.set_issues_dir_override();
+		let mut issue_clone = issue.clone();
+		<Issue as Sink<Consensus>>::sink(&mut issue_clone, None).await.expect("consensus sink failed");
 
 		// Write timestamps to .meta.json if seed provided
 		if let Some(seed) = seed {
 			let timestamps = timestamps_from_seed(seed);
 			self.write_issue_meta(&owner, &repo, number, &timestamps);
 		}
-
-		let git = self.init_git();
-		git.add_all();
-		git.commit(&format!("consensus {owner}/{repo}#{number}"));
-
-		path
 	}
 
 	fn remote(&self, issue: &Issue, seed: Option<Seed>) {
@@ -276,73 +268,15 @@ impl GitExt for TestContext {
 		// Rebuild and write mock state
 		self.rebuild_mock_state();
 	}
-
-	fn issue_path(&self, issue: &Issue) -> PathBuf {
-		let (owner, repo, number) = extract_issue_coords(issue);
-		self.flat_issue_path(&owner, &repo, number, &issue.contents.title)
-	}
-
-	fn flat_issue_path(&self, owner: &str, repo: &str, number: u64, title: &str) -> PathBuf {
-		let sanitized = title.replace(' ', "_");
-		self.xdg.data_dir().join(format!("issues/{owner}/{repo}/{number}_-_{sanitized}.md"))
-	}
-
-	fn dir_issue_path(&self, owner: &str, repo: &str, number: u64, title: &str) -> PathBuf {
-		let sanitized = title.replace(' ', "_");
-		self.xdg.data_dir().join(format!("issues/{owner}/{repo}/{number}_-_{sanitized}/__main__.md"))
-	}
-
-	fn issue_path_after_sync(&self, owner: &str, repo: &str, number: u64, title: &str, has_children: bool) -> PathBuf {
-		if has_children {
-			self.dir_issue_path(owner, repo, number, title)
-		} else {
-			self.flat_issue_path(owner, repo, number, title)
-		}
-	}
 }
 
 impl TestContext {
-	/// Write an issue tree to the filesystem, with each node in its own file.
-	/// Returns the path to the root issue file.
-	#[deprecated(note = "should use actualy logic from the actual lib instead of reimplementing it")]
-	fn write_issue_tree(&self, owner: &str, repo: &str, number: u64, issue: &Issue) -> PathBuf {
-		self.write_issue_tree_recursive(owner, repo, number, issue, &[])
-	}
-
-	#[deprecated(note = "should use actualy logic from the actual lib instead of reimplementing it")]
-	fn write_issue_tree_recursive(&self, owner: &str, repo: &str, number: u64, issue: &Issue, ancestors: &[String]) -> PathBuf {
-		let sanitized_title = issue.contents.title.replace(' ', "_");
-		let has_children = !issue.children.is_empty();
-
-		// Build base path: issues/{owner}/{repo}/{ancestors...}
-		let mut base_path = format!("issues/{owner}/{repo}");
-		for ancestor in ancestors {
-			base_path = format!("{base_path}/{ancestor}");
-		}
-
-		if has_children {
-			// Directory format: {base}/{number}_-_{title}/__main__.md
-			let dir_name = format!("{number}_-_{sanitized_title}");
-			let dir_path = format!("{base_path}/{dir_name}");
-			let file_path = format!("{dir_path}/__main__.md");
-			self.xdg.write_data(&file_path, &issue.serialize_filesystem());
-
-			// Write each child recursively
-			let mut child_ancestors = ancestors.to_vec();
-			child_ancestors.push(dir_name);
-			for child in &issue.children {
-				let child_number = child.number().unwrap_or(0);
-				self.write_issue_tree_recursive(owner, repo, child_number, child, &child_ancestors);
-			}
-
-			self.xdg.data_dir().join(&dir_path).join("__main__.md")
-		} else {
-			// Flat format: {base}/{number}_-_{title}.md
-			let filename = format!("{number}_-_{sanitized_title}.md");
-			let file_path = format!("{base_path}/{filename}");
-			self.xdg.write_data(&file_path, &issue.serialize_filesystem());
-			self.xdg.data_dir().join(&base_path).join(&filename)
-		}
+	/// Set the issues directory override for `Local::issues_dir()`.
+	///
+	/// Uses the thread_local mock mechanism to isolate test filesystem state.
+	/// This is preferred over `set_xdg_env` as it doesn't modify global process env vars.
+	pub(crate) fn set_issues_dir_override(&self) {
+		tedi::mocks::set_issues_dir(self.xdg.data_dir().join("issues"));
 	}
 
 	fn rebuild_mock_state(&self) {
@@ -531,7 +465,7 @@ fn add_issue_recursive(state: &mut GitState, owner: &str, repo: &str, number: u6
 
 	// Recursively add children (they inherit the same timestamps)
 	for child in &issue.children {
-		let child_number = child.number().expect("child issue must have number for remote mock state");
+		let child_number = child.git_id().expect("child issue must have number for remote mock state");
 		add_issue_recursive(state, owner, repo, child_number, Some(number), child, timestamps);
 	}
 }

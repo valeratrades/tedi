@@ -387,19 +387,22 @@ impl IssueRemote {
 	}
 }
 
-/// Identity of an issue - always has parent_index (for location) with remote connection info.
+/// Identity of an issue - has optional parent_index (for location) with remote connection info.
 #[derive(Clone, Debug)]
 pub struct IssueIdentity {
-	/// Parent's IssueIndex, or repo-only index for root issues.
-	/// For root issues: `IssueIndex::repo_only(owner, repo)` (empty index)
-	/// For child issues: parent's full `IssueIndex` (includes parent's selector)
+	/// Parent's IssueIndex. None for root issues.
 	pub parent_index: IssueIndex,
 	/// Remote connection status (Github linked/pending, or Virtual)
-	pub remote: IssueRemote,
+	remote: IssueRemote,
 }
 impl IssueIdentity {
 	/// Create a new linked Github issue identity.
-	pub fn linked(parent_index: IssueIndex, user: String, link: IssueLink, timestamps: IssueTimestamps) -> Self {
+	/// If `parent_index` is None, derives repo_only from the link.
+	pub fn linked(parent_index: Option<IssueIndex>, user: String, link: IssueLink, timestamps: IssueTimestamps) -> Self {
+		let parent_index = parent_index.unwrap_or_else(|| {
+			let repo_info = link.repo_info();
+			IssueIndex::repo_only(repo_info.owner(), repo_info.repo())
+		});
 		Self {
 			parent_index,
 			remote: IssueRemote::Github(Box::new(Some(LinkedIssueMeta { user, link, timestamps }))),
@@ -422,13 +425,6 @@ impl IssueIdentity {
 		}
 	}
 
-	/// Create a new local-only issue identity.
-	/// DEPRECATED: use `pending()` for Github issues or `virtual_issue()` for local-only.
-	/// This currently maps to `pending()` for backwards compatibility.
-	pub fn local(parent_index: IssueIndex) -> Self {
-		Self::pending(parent_index)
-	}
-
 	/// Check if this issue is linked to Github.
 	pub fn is_linked(&self) -> bool {
 		self.remote.is_linked()
@@ -448,6 +444,11 @@ impl IssueIdentity {
 	/// Get the linked metadata if linked.
 	pub fn as_linked(&self) -> Option<&LinkedIssueMeta> {
 		self.remote.as_linked()
+	}
+
+	/// Get mutable access to the linked metadata.
+	pub fn mut_linked_issue_meta(&mut self) -> Option<&mut LinkedIssueMeta> {
+		self.remote.as_linked_mut()
 	}
 
 	/// Get the issue link if linked.
@@ -493,8 +494,11 @@ impl IssueIdentity {
 	/// Get lineage (parent issue numbers).
 	/// For root issues: empty slice.
 	/// For child issues: all GitId numbers in parent_index.
-	pub fn lineage(&self) -> Vec<u64> {
-		self.parent_index.num_path()
+	///
+	/// # Errors
+	/// Returns `TitleInGitPathError` if any parent selector is a Title (pending issue).
+	pub fn git_lineage(&self) -> Result<Vec<u64>, super::error::TitleInGitPathError> {
+		self.parent_index.git_num_path()
 	}
 
 	/// Create a child's parent_index by appending this issue's number.
@@ -573,20 +577,20 @@ impl IssueIndex {
 		}
 	}
 
-	/// Create descriptor for repo only (no specific issue).
-	pub fn repo_only(owner: &str, repo: &str) -> Self {
-		Self {
-			repo_info: RepoInfo::new(owner, repo),
-			index: CopyArrayVec::new(),
-		}
-	}
-
 	/// Create descriptor with full index path.
 	/// Panics if index exceeds MAX_INDEX_DEPTH.
 	pub fn with_index(owner: &str, repo: &str, index: Vec<IssueSelector>) -> Self {
 		Self {
 			repo_info: RepoInfo::new(owner, repo),
 			index: index.into_iter().collect(),
+		}
+	}
+
+	/// Create descriptor for repo only (no specific issue).
+	pub fn repo_only(owner: &str, repo: &str) -> Self {
+		Self {
+			repo_info: RepoInfo::new(owner, repo),
+			index: CopyArrayVec::new(),
 		}
 	}
 
@@ -619,40 +623,32 @@ impl IssueIndex {
 	}
 
 	/// Extract numeric issue numbers from the index (GitId selectors only).
-	/// Returns all GitId values in order, skipping Title selectors.
-	#[deprecated(note = "a very problematic primitive, completely invalidating the whole point of having IssueSelector type in the first place")]
-	pub fn num_path(&self) -> Vec<u64> {
-		self.index()
-			.iter()
-			.filter_map(|s| match s {
-				IssueSelector::GitId(n) => Some(*n),
-				IssueSelector::Title(_) => None,
-			})
-			.collect()
-	}
+	///
+	/// # Errors
+	/// Returns `TitleInGitPathError` if any selector is a Title (pending issue).
+	pub fn git_num_path(&self) -> Result<Vec<u64>, super::error::TitleInGitPathError> {
+		use miette::{NamedSource, SourceSpan};
 
-	/// Get parent issue numbers.
-	/// If the issue has its own number (last selector is GitId), returns all preceding GitIds.
-	/// If the issue is pending (last selector is Title or empty), returns all GitIds.
-	#[deprecated(note = "very problematic as it will lead to logical issues when constructing paths over uninitiaziled issues")]
-	pub fn parent_nums(&self) -> Vec<u64> {
-		let index = self.index();
-		match index.last() {
-			Some(IssueSelector::GitId(_)) => {
-				// Issue has its own number, parents are all preceding GitIds
-				index[..index.len() - 1]
-					.iter()
-					.filter_map(|s| match s {
-						IssueSelector::GitId(n) => Some(*n),
-						IssueSelector::Title(_) => None,
-					})
-					.collect()
-			}
-			Some(IssueSelector::Title(_)) | None => {
-				// Pending issue or empty - all GitIds are parents
-				self.num_path()
+		let mut result = Vec::with_capacity(self.index().len());
+		let mut offset = format!("{}/{}", self.repo_info.owner(), self.repo_info.repo()).len();
+
+		for selector in self.index() {
+			match selector {
+				IssueSelector::GitId(n) => {
+					let s = format!("/{n}");
+					offset += s.len();
+					result.push(*n);
+				}
+				IssueSelector::Title(title) => {
+					let span: SourceSpan = (offset + 1, title.len()).into(); // +1 to skip the '/'
+					return Err(super::error::TitleInGitPathError {
+						index_display: NamedSource::new("IssueIndex", self.to_string()),
+						span,
+					});
+				}
 			}
 		}
+		Ok(result)
 	}
 
 	/// Get the issue's own number if the last selector is a GitId.
@@ -665,13 +661,13 @@ impl IssueIndex {
 
 	/// Get the parent's IssueIndex (all selectors except the last one).
 	/// For repo-only or single-selector indices, returns repo_only.
-	pub fn parent(&self) -> Self {
-		if self.index.len() <= 1 {
-			Self::repo_only(self.repo_info.owner(), self.repo_info.repo())
+	pub fn parent(&self) -> Option<Self> {
+		if self.index.is_empty() {
+			None
 		} else {
 			let mut index = self.index;
 			index.pop();
-			Self { repo_info: self.repo_info, index }
+			Some(Self { repo_info: self.repo_info, index })
 		}
 	}
 }
@@ -681,7 +677,7 @@ impl std::fmt::Display for IssueIndex {
 		write!(f, "{}/{}", self.repo_info.owner(), self.repo_info.repo())?;
 		for selector in self.index() {
 			match selector {
-				IssueSelector::GitId(n) => write!(f, "/#{n}")?,
+				IssueSelector::GitId(n) => write!(f, "/{n}")?,
 				IssueSelector::Title(t) => write!(f, "/{t}")?,
 			}
 		}
@@ -694,7 +690,7 @@ impl From<&Issue> for IssueIndex {
 		// Build this issue's IssueIndex by extending parent_index with this issue's selector
 		let parent_index = issue.identity.parent_index;
 
-		if let Some(n) = issue.number() {
+		if let Some(n) = issue.git_id() {
 			// Issue has a number - add it as the last selector
 			parent_index.child(IssueSelector::GitId(n))
 		} else {
@@ -747,12 +743,9 @@ impl Issue /*{{{1*/ {
 	/// Create an empty local issue with the given parent_index.
 	/// Used for comparison when an issue doesn't exist yet.
 	///
-	/// `parent_index` should be:
-	/// - `IssueIndex::repo_only(owner, repo)` for root issues
-	/// - Parent's `IssueIndex` for child issues
 	pub fn empty_local(parent_index: IssueIndex) -> Self {
 		Self {
-			identity: IssueIdentity::local(parent_index),
+			identity: IssueIdentity::pending(parent_index),
 			contents: IssueContents::default(),
 			children: vec![],
 		}
@@ -762,10 +755,6 @@ impl Issue /*{{{1*/ {
 	///
 	/// If `virtual_project` is true, creates a virtual issue (local-only, no Github sync).
 	/// Otherwise creates a pending Github issue that will be created on first sync.
-	///
-	/// `parent_index` should be:
-	/// - `IssueIndex::repo_only(owner, repo)` for root issues
-	/// - Parent's `IssueIndex` for child issues
 	pub fn pending_with_parent(title: impl Into<String>, parent_index: IssueIndex, virtual_project: bool) -> Self {
 		let identity = if virtual_project {
 			IssueIdentity::virtual_issue(parent_index)
@@ -808,7 +797,7 @@ impl Issue /*{{{1*/ {
 	}
 
 	/// Get the issue number if linked to Github.
-	pub fn number(&self) -> Option<u64> {
+	pub fn git_id(&self) -> Option<u64> {
 		self.identity.number()
 	}
 
@@ -826,7 +815,7 @@ impl Issue /*{{{1*/ {
 	/// This should be called after local modifications to track when fields changed.
 	/// Recursively updates children's timestamps too.
 	pub fn update_timestamps_from_diff(&mut self, old: &Issue) {
-		if let Some(linked) = self.identity.remote.as_linked_mut() {
+		if let Some(linked) = self.identity.mut_linked_issue_meta() {
 			linked.timestamps.update_from_diff(&old.contents, &self.contents);
 		}
 
@@ -835,7 +824,7 @@ impl Issue /*{{{1*/ {
 		for new_child in &mut self.children {
 			let old_child = old.children.iter().find(|c| match (new_child.url_str(), c.url_str()) {
 				(Some(a), Some(b)) => a == b,
-				_ => new_child.number() == c.number(),
+				_ => new_child.git_id() == c.git_id(),
 			});
 			if let Some(old_child) = old_child {
 				new_child.update_timestamps_from_diff(old_child);
@@ -844,7 +833,7 @@ impl Issue /*{{{1*/ {
 		}
 	}
 
-	/// Get parent_index (always available).
+	/// Get parent_index.
 	pub fn parent_index(&self) -> IssueIndex {
 		self.identity.parent_index
 	}
@@ -852,7 +841,7 @@ impl Issue /*{{{1*/ {
 	/// Get full index pointing to this issue.
 	/// Combines parent_index with this issue's selector.
 	pub fn full_index(&self) -> IssueIndex {
-		let selector = match self.number() {
+		let selector = match self.git_id() {
 			Some(n) => IssueSelector::GitId(n),
 			None => IssueSelector::title(&self.contents.title),
 		};
@@ -860,8 +849,11 @@ impl Issue /*{{{1*/ {
 	}
 
 	/// Get lineage (parent issue numbers).
-	pub fn lineage(&self) -> Vec<u64> {
-		self.identity.lineage()
+	///
+	/// # Errors
+	/// Returns `TitleInGitPathError` if any parent selector is a Title (pending issue).
+	pub fn lineage(&self) -> Result<Vec<u64>, super::error::TitleInGitPathError> {
+		self.identity.git_lineage()
 	}
 
 	/// Get repository info.
@@ -884,7 +876,7 @@ impl Issue /*{{{1*/ {
 	pub fn parse_virtual(content: &str, index: IssueIndex) -> Result<Self, ParseError> {
 		let ctx = ParseContext::new(content.to_string(), index.to_string());
 		let mut lines = content.lines().peekable();
-		Self::parse_virtual_at_depth(&mut lines, 0, 1, &ctx, Some(index.parent()))
+		Self::parse_virtual_at_depth(&mut lines, 0, 1, &ctx, index.parent())
 	}
 
 	/// Parse virtual representation at given nesting depth.
@@ -1168,10 +1160,9 @@ impl Issue /*{{{1*/ {
 		// Build identity from identity_info
 		let identity = match parsed.identity_info {
 			ParsedIdentityInfo::Linked { user, link } => {
-				// Linked issues: use parent_index if provided, otherwise derive from link
-				let pi = parent_index.unwrap_or_else(|| IssueIndex::repo_only(link.owner(), link.repo()));
+				// Linked issues: use parent_index if provided, otherwise derive from link (via None)
 				// Timestamps will be loaded from .meta.json separately
-				IssueIdentity::linked(pi, user, link, IssueTimestamps::default())
+				IssueIdentity::linked(parent_index, user, link, IssueTimestamps::default())
 			}
 			ParsedIdentityInfo::Pending => {
 				// Pending issues require parent_index from caller
@@ -1616,11 +1607,11 @@ impl Issue /*{{{1*/ {
 		self.contents = parsed.contents;
 
 		// For children: match by issue number to preserve identities
-		let old_children: std::collections::HashMap<u64, Issue> = self.children.drain(..).filter_map(|c| c.number().map(|n| (n, c))).collect();
+		let old_children: std::collections::HashMap<u64, Issue> = self.children.drain(..).filter_map(|c| c.git_id().map(|n| (n, c))).collect();
 
 		for mut new_child in parsed.children {
 			eprintln!("[update_from_virtual] new_child state before identity copy: {:?}", new_child.contents.state);
-			if let Some(number) = new_child.number()
+			if let Some(number) = new_child.git_id()
 				&& let Some(old_child) = old_children.get(&number)
 			{
 				// Preserve identity from existing child
@@ -1637,10 +1628,10 @@ impl Issue /*{{{1*/ {
 
 	/// Recursively preserve child identities from old issue tree.
 	fn preserve_child_identities(new_issue: &mut Issue, old_issue: &Issue) {
-		let old_children: std::collections::HashMap<u64, &Issue> = old_issue.children.iter().filter_map(|c| c.number().map(|n| (n, c))).collect();
+		let old_children: std::collections::HashMap<u64, &Issue> = old_issue.children.iter().filter_map(|c| c.git_id().map(|n| (n, c))).collect();
 
 		for new_child in &mut new_issue.children {
-			if let Some(number) = new_child.number()
+			if let Some(number) = new_child.git_id()
 				&& let Some(&old_child) = old_children.get(&number)
 			{
 				new_child.identity = old_child.identity.clone();
@@ -1710,7 +1701,7 @@ impl Issue /*{{{1*/ {
 	pub fn get(&self, lineage: &[u64]) -> Option<&Issue> {
 		let mut current = self;
 		for &num in lineage {
-			current = current.children.iter().find(|c| c.number() == Some(num))?;
+			current = current.children.iter().find(|c| c.git_id() == Some(num))?;
 		}
 		Some(current)
 	}
@@ -1720,7 +1711,7 @@ impl Issue /*{{{1*/ {
 	pub fn get_mut(&mut self, lineage: &[u64]) -> Option<&mut Issue> {
 		let mut current = self;
 		for &num in lineage {
-			current = current.children.iter_mut().find(|c| c.number() == Some(num))?;
+			current = current.children.iter_mut().find(|c| c.git_id() == Some(num))?;
 		}
 		Some(current)
 	}
@@ -1739,7 +1730,8 @@ pub trait LazyIssue<S> {
 	type Error: std::error::Error;
 
 	/// Resolve parent_index from the source.
-	async fn parent_index(source: &Self::Source) -> Result<IssueIndex, Self::Error>;
+	/// Returns None for root-level issues (no parent).
+	async fn parent_index(source: &Self::Source) -> Result<Option<IssueIndex>, Self::Error>;
 	async fn identity(&mut self, source: Self::Source) -> Result<IssueIdentity, Self::Error>;
 	async fn contents(&mut self, source: Self::Source) -> Result<IssueContents, Self::Error>;
 	async fn children(&mut self, source: Self::Source) -> Result<Vec<Issue>, Self::Error>;
@@ -1812,7 +1804,7 @@ impl std::ops::Index<u64> for Issue {
 	fn index(&self, issue_number: u64) -> &Self::Output {
 		self.children
 			.iter()
-			.find(|child| child.number() == Some(issue_number))
+			.find(|child| child.git_id() == Some(issue_number))
 			.unwrap_or_else(|| panic!("no child with issue number {issue_number}"))
 	}
 }
@@ -1823,7 +1815,7 @@ impl std::ops::IndexMut<u64> for Issue {
 	fn index_mut(&mut self, issue_number: u64) -> &mut Self::Output {
 		self.children
 			.iter_mut()
-			.find(|child| child.number() == Some(issue_number))
+			.find(|child| child.git_id() == Some(issue_number))
 			.unwrap_or_else(|| panic!("no child with issue number {issue_number}"))
 	}
 }

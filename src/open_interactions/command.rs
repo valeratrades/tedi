@@ -4,8 +4,8 @@ use std::path::Path;
 
 use clap::Args;
 use tedi::{
-	Issue, IssueLink, LazyIssue,
-	local::{ExactMatchLevel, FsReader, Local, LocalIssueSource, Submitted},
+	Issue, IssueIndex, IssueLink, IssueSelector, LazyIssue, RepoInfo,
+	local::{ExactMatchLevel, FsReader, Local, LocalIssueSource, LocalPath, Submitted},
 	sink::Sink,
 };
 use v_utils::prelude::*;
@@ -137,7 +137,7 @@ pub async fn open_command(settings: &LiveSettings, args: OpenArgs, offline: bool
 		let project_is_virtual = issue.identity.is_virtual();
 
 		if is_create {
-			if !issue.identity.lineage().is_empty() {
+			if !issue.identity.git_lineage().unwrap().is_empty() {
 				println!("Creating pending sub-issue: {}", issue.contents.title);
 			} else {
 				println!("Creating pending issue: {}", issue.contents.title);
@@ -170,7 +170,12 @@ pub async fn open_command(settings: &LiveSettings, args: OpenArgs, offline: bool
 		let (owner, repo, issue_number) = github::parse_github_issue_url(input)?;
 
 		// Check if we already have this issue locally
-		let existing_path = Local::find_issue_file(&owner, &repo, Some(issue_number), "", &[]);
+		let index = IssueIndex::root(&owner, &repo, IssueSelector::GitId(issue_number));
+		let existing_path = LocalPath::from(index)
+			.resolve_parent(FsReader)
+			.ok()
+			.and_then(|resolved| resolved.search().ok())
+			.map(|resolved| resolved.path());
 
 		let issue = if let Some(path) = existing_path {
 			// File exists locally - proceed with unified sync (like --pull)
@@ -194,7 +199,7 @@ pub async fn open_command(settings: &LiveSettings, args: OpenArgs, offline: bool
 
 			// Commit the fetched state as the consensus baseline
 			use super::consensus::commit_issue_changes;
-			commit_issue_changes(&owner, &repo, issue_number)?;
+			commit_issue_changes(&issue)?;
 
 			issue
 		};

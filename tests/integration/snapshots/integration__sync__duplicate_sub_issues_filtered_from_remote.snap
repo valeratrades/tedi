@@ -1,0 +1,6 @@
+---
+source: tests/integration/sync.rs
+expression: closed_content
+---
+- [x] Normal Closed Sub <!-- @mock_user https://github.com/o/r/issues/2 -->
+		sub body

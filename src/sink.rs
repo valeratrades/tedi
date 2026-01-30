@@ -141,8 +141,8 @@ pub fn compute_node_diff(new: &Issue, old: Option<&Issue>) -> IssueDiff {
 	}
 
 	// Compare children
-	let old_children: HashMap<u64, &Issue> = old.children.iter().filter_map(|c| c.number().map(|n| (n, c))).collect();
-	let new_child_numbers: HashSet<u64> = new.children.iter().filter_map(|c| c.number()).collect();
+	let old_children: HashMap<u64, &Issue> = old.children.iter().filter_map(|c| c.git_id().map(|n| (n, c))).collect();
+	let new_child_numbers: HashSet<u64> = new.children.iter().filter_map(|c| c.git_id()).collect();
 
 	for child in &new.children {
 		if child.is_local() {
@@ -195,9 +195,9 @@ mod tests {
 		let identity = match number {
 			Some(n) => {
 				let link = IssueLink::parse(&format!("https://github.com/o/r/issues/{n}")).unwrap();
-				IssueIdentity::linked(parent_index, "testuser".to_string(), link, IssueTimestamps::default())
+				IssueIdentity::linked(Some(parent_index), "testuser".to_string(), link, IssueTimestamps::default())
 			}
-			None => IssueIdentity::local(parent_index),
+			None => IssueIdentity::pending(parent_index),
 		};
 
 		Issue {

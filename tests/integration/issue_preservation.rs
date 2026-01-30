@@ -6,14 +6,18 @@
 use tedi::Issue;
 use v_fixtures::FixtureRenderer;
 
-use crate::common::{FixtureIssuesExt, TestContext, git::GitExt};
+use crate::common::{
+	FixtureIssuesExt, TestContext,
+	are_you_sure::{UnsafePathExt, read_issue_file},
+	git::GitExt,
+};
 
 fn parse(content: &str) -> Issue {
 	Issue::deserialize_virtual(content).expect("failed to parse test issue")
 }
 
-#[test]
-fn test_comments_with_ids_sync_correctly() {
+#[tokio::test]
+async fn test_comments_with_ids_sync_correctly() {
 	let ctx = TestContext::new("");
 
 	// Issue with a comment that has an ID
@@ -25,11 +29,10 @@ fn test_comments_with_ids_sync_correctly() {
 		 \tThis is my comment\n",
 	);
 
-	ctx.consensus(&issue, None);
+	ctx.consensus(&issue, None).await;
 	ctx.remote(&issue, None);
 
-	let path = ctx.issue_path(&issue);
-	let out = ctx.open(&path).args(&["--force"]).run();
+	let out = ctx.open(&issue).args(&["--force"]).run();
 	eprintln!("stdout: {}", out.stdout);
 	eprintln!("stderr: {}", out.stderr);
 
@@ -37,8 +40,8 @@ fn test_comments_with_ids_sync_correctly() {
 	assert!(out.status.success(), "sync failed: {}", out.stderr);
 }
 
-#[test]
-fn test_nested_issues_preserved_through_sync() {
+#[tokio::test]
+async fn test_nested_issues_preserved_through_sync() {
 	let ctx = TestContext::new("");
 
 	let issue = parse(
@@ -52,29 +55,30 @@ fn test_nested_issues_preserved_through_sync() {
 		 \t\tnested body c\n",
 	);
 
-	let path = ctx.consensus(&issue, None);
+	ctx.consensus(&issue, None).await;
 	ctx.remote(&issue, None);
 
-	let out = ctx.open(&path).run();
+	let out = ctx.open(&issue).run();
 	eprintln!("stdout: {}", out.stdout);
 	eprintln!("stderr: {}", out.stderr);
 
 	assert!(out.status.success(), "stderr: {}", out.stderr);
 
 	// With the new model, children are stored in separate files in the parent's directory
+	let path = ctx.resolve_issue_path(&issue);
 	let parent_dir = path.parent().unwrap();
 	let child_b_path = parent_dir.join("2_-_b.md");
 	let child_c_path = parent_dir.join("3_-_c.md");
 
-	let child_b_content = std::fs::read_to_string(&child_b_path).expect("child b file should exist");
-	let child_c_content = std::fs::read_to_string(&child_c_path).expect("child c file should exist");
+	let child_b_content = read_issue_file(&child_b_path);
+	let child_c_content = read_issue_file(&child_c_path);
 
 	assert!(child_b_content.contains("nested body b"), "nested issue b body lost");
 	assert!(child_c_content.contains("nested body c"), "nested issue c body lost");
 }
 
-#[test]
-fn test_mixed_open_closed_nested_issues_preserved() {
+#[tokio::test]
+async fn test_mixed_open_closed_nested_issues_preserved() {
 	let ctx = TestContext::new("");
 
 	let issue = parse(
@@ -90,29 +94,30 @@ fn test_mixed_open_closed_nested_issues_preserved() {
 		 \t\t<!--,}}}-->\n",
 	);
 
-	let path = ctx.consensus(&issue, None);
+	ctx.consensus(&issue, None).await;
 	ctx.remote(&issue, None);
 
-	let out = ctx.open(&path).run();
+	let out = ctx.open(&issue).run();
 	eprintln!("stdout: {}", out.stdout);
 	eprintln!("stderr: {}", out.stderr);
 
 	assert!(out.status.success(), "stderr: {}", out.stderr);
 
 	// With the new model, children are stored in separate files
+	let path = ctx.resolve_issue_path(&issue);
 	let parent_dir = path.parent().unwrap();
 	let child_b_path = parent_dir.join("2_-_b.md");
 	let child_c_path = parent_dir.join("3_-_c.md.bak"); // closed issue has .bak suffix
 
-	let child_b_content = std::fs::read_to_string(&child_b_path).expect("child b file should exist");
+	let child_b_content = read_issue_file(&child_b_path);
 	assert!(child_b_content.contains("open nested body"), "open nested issue body lost");
 
-	let child_c_content = std::fs::read_to_string(&child_c_path).expect("child c file should exist");
+	let child_c_content = read_issue_file(&child_c_path);
 	assert!(child_c_content.contains("- [x] c"), "closed nested issue state lost");
 }
 
-#[test]
-fn test_blockers_preserved_through_sync() {
+#[tokio::test]
+async fn test_blockers_preserved_through_sync() {
 	let ctx = TestContext::new("");
 
 	let issue = parse(
@@ -124,29 +129,30 @@ fn test_blockers_preserved_through_sync() {
 		 \t- second blocker\n",
 	);
 
-	let path = ctx.consensus(&issue, None);
+	ctx.consensus(&issue, None).await;
 	ctx.remote(&issue, None);
 
-	let out = ctx.open(&path).run();
+	let out = ctx.open(&issue).run();
 	eprintln!("stdout: {}", out.stdout);
 	eprintln!("stderr: {}", out.stderr);
 
 	assert!(out.status.success(), "stderr: {}", out.stderr);
 
-	let final_content = std::fs::read_to_string(&path).unwrap();
+	let path = ctx.resolve_issue_path(&issue);
+	let final_content = read_issue_file(&path);
 	assert!(final_content.contains("# Blockers"), "blockers section lost");
 	assert!(final_content.contains("first blocker"), "first blocker lost");
 	assert!(final_content.contains("second blocker"), "second blocker lost");
 }
 
-#[test]
-fn test_blockers_added_during_edit_preserved() {
+#[tokio::test]
+async fn test_blockers_added_during_edit_preserved() {
 	let ctx = TestContext::new("");
 
 	// Initial state: no blockers
 	let initial_issue = parse("- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tlorem ipsum\n");
 
-	let path = ctx.consensus(&initial_issue, None);
+	ctx.consensus(&initial_issue, None).await;
 	ctx.remote(&initial_issue, None);
 
 	// User adds blockers during edit
@@ -158,19 +164,20 @@ fn test_blockers_added_during_edit_preserved() {
 		 \t- new blocker added\n",
 	);
 
-	let out = ctx.open(&path).edit(&edited_issue).run();
+	let out = ctx.open(&initial_issue).edit(&edited_issue).run();
 	eprintln!("stdout: {}", out.stdout);
 	eprintln!("stderr: {}", out.stderr);
 
 	assert!(out.status.success(), "stderr: {}", out.stderr);
 
-	let final_content = std::fs::read_to_string(&path).unwrap();
+	let path = ctx.resolve_issue_path(&initial_issue);
+	let final_content = read_issue_file(&path);
 	assert!(final_content.contains("# Blockers"), "blockers section not preserved");
 	assert!(final_content.contains("new blocker added"), "added blocker lost");
 }
 
-#[test]
-fn test_blockers_with_headers_preserved() {
+#[tokio::test]
+async fn test_blockers_with_headers_preserved() {
 	let ctx = TestContext::new("");
 
 	let issue = parse(
@@ -186,24 +193,25 @@ fn test_blockers_with_headers_preserved() {
 		 \t- task gamma\n",
 	);
 
-	let path = ctx.consensus(&issue, None);
+	ctx.consensus(&issue, None).await;
 	ctx.remote(&issue, None);
 
-	let out = ctx.open(&path).run();
+	let out = ctx.open(&issue).run();
 	eprintln!("stdout: {}", out.stdout);
 	eprintln!("stderr: {}", out.stderr);
 
 	assert!(out.status.success(), "stderr: {}", out.stderr);
 
-	let final_content = std::fs::read_to_string(&path).unwrap();
+	let path = ctx.resolve_issue_path(&issue);
+	let final_content = read_issue_file(&path);
 	assert!(final_content.contains("# phase 1"), "phase 1 header lost");
 	assert!(final_content.contains("# phase 2"), "phase 2 header lost");
 	assert!(final_content.contains("task alpha"), "task alpha lost");
 	assert!(final_content.contains("task gamma"), "task gamma lost");
 }
 
-#[test]
-fn test_nested_issues_and_blockers_together() {
+#[tokio::test]
+async fn test_nested_issues_and_blockers_together() {
 	let ctx = TestContext::new("");
 
 	let issue = parse(
@@ -218,29 +226,29 @@ fn test_nested_issues_and_blockers_together() {
 		 \t\tnested body\n",
 	);
 
-	// Use the path returned by consensus (which is in directory format for issues with children)
-	let path = ctx.consensus(&issue, None);
+	ctx.consensus(&issue, None).await;
 	ctx.remote(&issue, None);
 
-	let out = ctx.open(&path).run();
+	let out = ctx.open(&issue).run();
 	eprintln!("stdout: {}", out.stdout);
 	eprintln!("stderr: {}", out.stderr);
 
 	assert!(out.status.success(), "stderr: {}", out.stderr);
 
 	// File is in directory format (path points to __main__.md)
-	let final_content = std::fs::read_to_string(&path).unwrap();
+	let path = ctx.resolve_issue_path(&issue);
+	let final_content = read_issue_file(&path);
 	assert!(final_content.contains("# Blockers"), "blockers section lost");
 	assert!(final_content.contains("blocker one"), "blocker one lost");
 
 	// With the new model, nested issue is in a separate file
 	let child_path = path.parent().unwrap().join("2_-_b.md");
-	let child_content = std::fs::read_to_string(&child_path).expect("child file should exist");
+	let child_content = read_issue_file(&child_path);
 	assert!(child_content.contains("nested body"), "nested issue body lost");
 }
 
-#[test]
-fn test_closing_nested_issue_creates_bak_file() {
+#[tokio::test]
+async fn test_closing_nested_issue_creates_bak_file() {
 	let ctx = TestContext::new("");
 
 	// Start with open nested issue
@@ -252,8 +260,7 @@ fn test_closing_nested_issue_creates_bak_file() {
 		 \t\tnested body content\n",
 	);
 
-	// Use the path returned by consensus (which is in directory format for issues with children)
-	let path = ctx.consensus(&initial_issue, None);
+	ctx.consensus(&initial_issue, None).await;
 	ctx.remote(&initial_issue, None);
 
 	// User closes nested issue during edit
@@ -265,7 +272,7 @@ fn test_closing_nested_issue_creates_bak_file() {
 		 \t\tnested body content\n",
 	);
 
-	let out = ctx.open(&path).edit(&edited_issue).run();
+	let out = ctx.open(&initial_issue).edit(&edited_issue).run();
 	eprintln!("stdout: {}", out.stdout);
 	eprintln!("stderr: {}", out.stderr);
 
@@ -313,10 +320,11 @@ fn test_closing_nested_issue_creates_bak_file() {
 	"#);
 
 	// With the new model, closed child is in a separate .bak file
+	let path = ctx.resolve_issue_path(&initial_issue);
 	let closed_child_path = path.parent().unwrap().join("2_-_b.md.bak");
 	assert!(closed_child_path.exists(), "closed nested issue should have .bak file");
 
-	let child_content = std::fs::read_to_string(&closed_child_path).unwrap();
+	let child_content = read_issue_file(&closed_child_path);
 	assert!(child_content.contains("- [x] b"), "nested issue not marked closed");
 	assert!(child_content.contains("nested body content"), "child body should be preserved");
 }

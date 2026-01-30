@@ -76,6 +76,21 @@ pub enum ParseError {
 	},
 }
 
+/// Error when converting IssueIndex to a git number path.
+/// Occurs when a Title selector is encountered but only GitId selectors are valid.
+#[derive(Debug, Diagnostic, thiserror::Error)]
+#[error("cannot convert IssueIndex to git number path: contains Title selector")]
+#[diagnostic(
+	code(tedi::index::title_in_git_path),
+	help("git_num_path requires all selectors to be GitId (issue numbers). Title selectors indicate pending issues that haven't been synced to GitHub yet.")
+)]
+pub struct TitleInGitPathError {
+	#[source_code]
+	pub index_display: NamedSource<String>,
+	#[label("expected GitId, found Title selector")]
+	pub span: SourceSpan,
+}
+
 /// Holds source content and filename for error reporting.
 #[derive(Clone, Debug)]
 pub struct ParseContext {

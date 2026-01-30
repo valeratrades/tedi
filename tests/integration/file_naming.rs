@@ -9,21 +9,21 @@
 
 use tedi::Issue;
 
-use crate::common::{TestContext, git::GitExt};
+use crate::common::{TestContext, are_you_sure::UnsafePathExt, git::GitExt};
 
 fn parse(content: &str) -> Issue {
 	Issue::deserialize_virtual(content).expect("failed to parse test issue")
 }
 
-#[test]
-fn test_flat_format_preserved_when_no_sub_issues() {
+#[tokio::test]
+async fn test_flat_format_preserved_when_no_sub_issues() {
 	let ctx = TestContext::new("");
 
 	let parent = parse("- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tparent body\n");
-	let issue_path = ctx.consensus(&parent, None);
+	ctx.consensus(&parent, None).await;
 	ctx.remote(&parent, None);
 
-	let out = ctx.open(&issue_path).run();
+	let out = ctx.open(&parent).run();
 
 	eprintln!("stdout: {}", out.stdout);
 	eprintln!("stderr: {}", out.stderr);
@@ -37,13 +37,13 @@ fn test_flat_format_preserved_when_no_sub_issues() {
 	assert!(!ctx.dir_issue_path("o", "r", 1, "Parent Issue").exists(), "Directory format should not be created");
 }
 
-#[test]
-fn test_old_flat_file_removed_when_sub_issues_appear() {
+#[tokio::test]
+async fn test_old_flat_file_removed_when_sub_issues_appear() {
 	let ctx = TestContext::new("");
 
 	// Start with a flat issue locally
 	let parent = parse("- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tparent body\n");
-	let issue_path = ctx.consensus(&parent, None);
+	ctx.consensus(&parent, None).await;
 
 	// Remote now has sub-issues - create a version with children for mock
 	let with_children = parse(
@@ -57,7 +57,7 @@ fn test_old_flat_file_removed_when_sub_issues_appear() {
 	ctx.remote(&with_children, None);
 
 	// Need --pull since local == consensus (no uncommitted changes)
-	let out = ctx.open(&issue_path).args(&["--pull"]).run();
+	let out = ctx.open(&parent).args(&["--pull"]).run();
 
 	eprintln!("stdout: {}", out.stdout);
 	eprintln!("stderr: {}", out.stderr);
@@ -71,8 +71,8 @@ fn test_old_flat_file_removed_when_sub_issues_appear() {
 	assert!(ctx.dir_issue_path("o", "r", 1, "Parent Issue").exists(), "Directory format file should be created");
 }
 
-#[test]
-fn test_old_placement_discarded_with_pull() {
+#[tokio::test]
+async fn test_old_placement_discarded_with_pull() {
 	// This test verifies that when remote gains sub-issues and we use --pull,
 	// the old flat file is cleaned up and replaced with the directory format.
 
@@ -80,7 +80,7 @@ fn test_old_placement_discarded_with_pull() {
 
 	// Set up a flat issue locally, committed to git
 	let parent = parse("- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tparent body\n");
-	let issue_path = ctx.consensus(&parent, None);
+	ctx.consensus(&parent, None).await;
 
 	// Remote has sub-issues now (simulating someone else adding them)
 	let with_children = parse(
@@ -93,7 +93,7 @@ fn test_old_placement_discarded_with_pull() {
 	ctx.remote(&with_children, None);
 
 	// Need --pull since local == consensus (no uncommitted local changes)
-	let out = ctx.open(&issue_path).args(&["--pull"]).run();
+	let out = ctx.open(&parent).args(&["--pull"]).run();
 
 	eprintln!("stdout: {}", out.stdout);
 	eprintln!("stderr: {}", out.stderr);
@@ -113,13 +113,13 @@ fn test_old_placement_discarded_with_pull() {
 	assert!(sub_issue_dir.is_dir(), "Sub-issue directory should exist");
 }
 
-#[test]
-fn test_duplicate_removes_local_file() {
+#[tokio::test]
+async fn test_duplicate_removes_local_file() {
 	let ctx = TestContext::new("");
 
 	// Set up a local issue
 	let original = parse("- [ ] Some Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tbody\n");
-	let issue_path = ctx.consensus(&original, None);
+	ctx.consensus(&original, None).await;
 	ctx.remote(&original, None);
 
 	// Modify the issue to mark it as duplicate
@@ -127,7 +127,7 @@ fn test_duplicate_removes_local_file() {
 	duplicate.contents.state = tedi::CloseState::Duplicate(999);
 
 	// Sync the duplicate state
-	let out = ctx.open(&issue_path).edit(&duplicate).run();
+	let out = ctx.open(&original).edit(&duplicate).run();
 
 	eprintln!("stdout: {}", out.stdout);
 	eprintln!("stderr: {}", out.stderr);
@@ -141,14 +141,14 @@ fn test_duplicate_removes_local_file() {
 	);
 }
 
-#[test]
-fn test_duplicate_reference_to_existing_issue_succeeds() {
+#[tokio::test]
+async fn test_duplicate_reference_to_existing_issue_succeeds() {
 	let ctx = TestContext::new("");
 
 	// Set up a local issue and a target duplicate issue
 	let original = parse("- [ ] Some Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tbody\n");
 	let dup_target = parse("- [ ] Target Issue <!-- @mock_user https://github.com/o/r/issues/2 -->\n\ttarget body\n");
-	let issue_path = ctx.consensus(&original, None);
+	ctx.consensus(&original, None).await;
 
 	// Set up mock Github with both issues
 	ctx.remote(&original, None);
@@ -159,7 +159,7 @@ fn test_duplicate_reference_to_existing_issue_succeeds() {
 	duplicate.contents.state = tedi::CloseState::Duplicate(2);
 
 	// Sync the duplicate state
-	let out = ctx.open(&issue_path).edit(&duplicate).run();
+	let out = ctx.open(&original).edit(&duplicate).run();
 
 	eprintln!("stdout: {}", out.stdout);
 	eprintln!("stderr: {}", out.stderr);
