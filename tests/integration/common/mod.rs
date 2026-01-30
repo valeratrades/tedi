@@ -216,12 +216,24 @@ impl<'a> OpenBuilder<'a> {
 
 		let mut child = cmd.spawn().unwrap();
 
+		// Take ownership of stdout/stderr to drain them and prevent pipe buffer deadlock
+		let mut stdout = child.stdout.take().unwrap();
+		let mut stderr = child.stderr.take().unwrap();
+		set_nonblocking(&stdout);
+		set_nonblocking(&stderr);
+		let mut stdout_buf = Vec::new();
+		let mut stderr_buf = Vec::new();
+
 		// Poll for process completion, signaling pipe when it's waiting
 		let pipe_path = self.ctx.pipe_path.clone();
 		let edit_to = self.edit_to.clone();
 		let mut signaled = false;
 
 		loop {
+			// Drain pipes to prevent deadlock from full pipe buffers
+			drain_pipe(&mut stdout, &mut stdout_buf);
+			drain_pipe(&mut stderr, &mut stderr_buf);
+
 			// Check if process has exited
 			match child.try_wait().unwrap() {
 				Some(_status) => break,
@@ -262,11 +274,15 @@ impl<'a> OpenBuilder<'a> {
 			}
 		}
 
-		let output = child.wait_with_output().unwrap();
+		// Final drain after process exits
+		drain_pipe(&mut stdout, &mut stdout_buf);
+		drain_pipe(&mut stderr, &mut stderr_buf);
+
+		child.wait().unwrap();
 		RunOutput {
-			status: output.status,
-			stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-			stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+			status: child.try_wait().unwrap().unwrap(),
+			stdout: String::from_utf8_lossy(&stdout_buf).into_owned(),
+			stderr: String::from_utf8_lossy(&stderr_buf).into_owned(),
 		}
 	}
 }
@@ -348,12 +364,24 @@ impl<'a> OpenUrlBuilder<'a> {
 
 		let mut child = cmd.spawn().unwrap();
 
+		// Take ownership of stdout/stderr to drain them and prevent pipe buffer deadlock
+		let mut stdout = child.stdout.take().unwrap();
+		let mut stderr = child.stderr.take().unwrap();
+		set_nonblocking(&stdout);
+		set_nonblocking(&stderr);
+		let mut stdout_buf = Vec::new();
+		let mut stderr_buf = Vec::new();
+
 		// Poll for process completion, signaling pipe when it's waiting
 		let pipe_path = self.ctx.pipe_path.clone();
 		let edit_op = self.edit_op.clone();
 		let mut signaled = false;
 
 		loop {
+			// Drain pipes to prevent deadlock from full pipe buffers
+			drain_pipe(&mut stdout, &mut stdout_buf);
+			drain_pipe(&mut stderr, &mut stderr_buf);
+
 			match child.try_wait().unwrap() {
 				Some(_status) => break,
 				None => {
@@ -400,11 +428,15 @@ impl<'a> OpenUrlBuilder<'a> {
 			}
 		}
 
-		let output = child.wait_with_output().unwrap();
+		// Final drain after process exits
+		drain_pipe(&mut stdout, &mut stdout_buf);
+		drain_pipe(&mut stderr, &mut stderr_buf);
+
+		child.wait().unwrap();
 		RunOutput {
-			status: output.status,
-			stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-			stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+			status: child.try_wait().unwrap().unwrap(),
+			stdout: String::from_utf8_lossy(&stdout_buf).into_owned(),
+			stderr: String::from_utf8_lossy(&stderr_buf).into_owned(),
 		}
 	}
 }
@@ -487,11 +519,34 @@ pub mod are_you_sure {
 mod snapshot;
 
 use std::{
-	io::Write,
+	io::{Read, Write},
+	os::fd::AsRawFd,
 	path::{Path, PathBuf},
-	process::{Command, ExitStatus},
+	process::{ChildStderr, ChildStdout, Command, ExitStatus},
 	sync::OnceLock,
 };
+
+/// Set a file descriptor to non-blocking mode.
+fn set_nonblocking<F: AsRawFd>(f: &F) {
+	unsafe {
+		let fd = f.as_raw_fd();
+		let flags = libc::fcntl(fd, libc::F_GETFL);
+		libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
+	}
+}
+
+/// Drain available data from a non-blocking pipe into a buffer.
+fn drain_pipe<R: Read>(pipe: &mut R, buf: &mut Vec<u8>) {
+	let mut tmp = [0u8; 4096];
+	loop {
+		match pipe.read(&mut tmp) {
+			Ok(0) => break,
+			Ok(n) => buf.extend_from_slice(&tmp[..n]),
+			Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+			Err(e) => panic!("pipe read error: {e}"),
+		}
+	}
+}
 
 pub use snapshot::FixtureIssuesExt;
 use tedi::Issue;

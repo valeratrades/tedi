@@ -164,9 +164,7 @@ mod core {
 			true => {
 				// Auto-resolved - sink to both sides
 				let mut resolved = local_merged;
-				//todo!("we reach here");
 				<Issue as Sink<Submitted>>::sink(&mut resolved, None).await?;
-				todo!("but not here");
 				<Issue as Sink<Remote>>::sink(&mut resolved, None).await?;
 				Ok((resolved, true))
 			}
