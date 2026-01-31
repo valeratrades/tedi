@@ -152,9 +152,6 @@ fn test_touch_new_subissue_no_edits_does_not_create() {
 	// Touch a new sub-issue path but don't make any edits (just close editor)
 	let out = ctx.open_touch("testowner/testrepo/parent/new_child").run();
 
-	// Should succeed (editor opened and closed)
-	assert!(out.status.success(), "Expected success, got stderr: {}", out.stderr);
-
 	// Verify: no changes - parent still flat file, no sub-issue created
 	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap(), &out), @r#"
 	//- /testowner/testrepo/.meta.json
@@ -170,24 +167,15 @@ fn test_touch_new_subissue_no_edits_does_not_create() {
 	        "state": null,
 	        "comments": []
 	      }
-	    },
-	    "100": {
-	      "timestamps": {
-	        "title": null,
-	        "description": null,
-	        "labels": null,
-	        "state": null,
-	        "comments": []
-	      }
 	    }
 	  }
 	}
-	//- /testowner/testrepo/99_-_parent_issue/100_-_new_child.md
-	- [ ] new_child <!-- @mock_user https://github.com/testowner/testrepo/issues/100 -->
-	//- /testowner/testrepo/99_-_parent_issue/__main__.md
+	//- /testowner/testrepo/99_-_parent_issue.md
 	- [ ] parent issue <!--https://github.com/testowner/testrepo/issues/99-->
 		parent body
 	"#);
+
+	assert!(out.status.success(), "Expected success, got stderr: {}", out.stderr);
 }
 
 /// Test that nested issues work when the parent directory uses title-only naming (not synced to git).

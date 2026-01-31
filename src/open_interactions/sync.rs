@@ -297,15 +297,11 @@ mod types {
 					let mtime_after = std::fs::metadata(&vpath)?.modified()?;
 					let file_modified = mtime_after != mtime_before;
 
+					//TODO: switch eprintlns here to instead add to Span of derived tracing instrument
 					eprintln!("[Modifier::Editor] reading from: {vpath:?}");
 					let content = std::fs::read_to_string(&vpath)?;
 					eprintln!("[Modifier::Editor] content read:\n{content}");
 					issue.update_from_virtual(&content)?;
-
-					eprintln!("[after update_from_virtual] issue state: {:?}", issue.contents.state);
-					for (i, c) in issue.children.iter().enumerate() {
-						eprintln!("[after update_from_virtual] child[{i}] state: {:?}", c.contents.state);
-					}
 
 					ModifyResult { output: None, file_modified }
 				}
