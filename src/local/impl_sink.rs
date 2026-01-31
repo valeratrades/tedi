@@ -11,7 +11,11 @@ use tracing::{debug, info, instrument, trace, warn};
 use v_utils::prelude::*;
 
 use super::{ConsensusSinkError, FsReader, IssueMeta, Local, LocalPath, LocalReader};
-use crate::{Issue, IssueIndex, IssueSelector, local::LocalPathErrorKind, sink::Sink};
+use crate::{
+	Issue, IssueIndex, IssueSelector,
+	local::{LocalPathErrorKind, LocalPathResolved},
+	sink::Sink,
+};
 
 /// Marker type for sinking to filesystem (submitted state).
 pub struct Submitted;
@@ -220,21 +224,12 @@ fn cleanup_old_locations(issue: &Issue, has_children: bool, closed: bool) -> Res
 
 	let resolved_parent_dir = match resolved_parent_pwd.matching_subpaths() {
 		Ok(matches_for_parent) => {
-			dbg!(&matches_for_parent);
 			for path in matches_for_parent {
 				if !path.is_dir() {
 					try_remove_file(&path)?;
 				}
 			}
-			match resolved_parent_pwd.search() {
-				Ok(m) => m,
-
-				Err(e) if e.kind == LocalPathErrorKind::NotFound => {
-					debug!("issue's parent dir doesn't exist. We've just cleaned up at this level, so nothing else left.");
-					return Ok(());
-				}
-				Err(e) => return Err(e.into()),
-			}
+			resolved_parent_pwd.deterministic(&issue.contents.title, closed, has_children)
 		}
 		Err(e) if e.kind == LocalPathErrorKind::NotFound => {
 			debug!("no trace of parent's dir or old issue files, - safe to assume issue doesn't exist either; nothing to clean");
