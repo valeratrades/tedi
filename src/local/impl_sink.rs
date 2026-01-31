@@ -107,87 +107,79 @@ impl Sink<Consensus> for Issue {
 /// - Creating directories as needed
 /// - Removing old file locations when format changes
 /// - Writing issue content
-#[instrument(skip(issue, old, reader), fields(
-	issue_number = ?issue.git_id(),
-	title = %issue.contents.title,
-	has_children = !issue.children.is_empty(),
-	old_has_children = old.map(|o| !o.children.is_empty()),
-))]
-fn sink_issue_node<R: LocalReader>(issue: &Issue, old: Option<&Issue>, reader: &R) -> Result<bool> {
+#[instrument(skip(reader))]
+fn sink_issue_node<R: LocalReader>(new: &Issue, maybe_old: Option<&Issue>, reader: &R) -> Result<bool> {
 	// Duplicate issues self-eliminate: remove local files instead of writing
-	if let crate::CloseState::Duplicate(dup_of) = issue.contents.state {
-		info!(issue = ?issue.git_id(), duplicate_of = dup_of, "Removing duplicate issue from local storage");
-		return remove_issue_files(issue, reader);
+	if let crate::CloseState::Duplicate(dup_of) = new.contents.state {
+		info!(issue = ?new.git_id(), duplicate_of = dup_of, "Removing duplicate issue from local storage");
+		return remove_issue_files(new, reader);
 	}
 
-	let title = &issue.contents.title;
-	let closed = issue.contents.state.is_closed();
-	let has_children = !issue.children.is_empty();
-	let old_has_children = old.map(|o| !o.children.is_empty()).unwrap_or(false);
+	let title = &new.contents.title;
+	let closed = new.contents.state.is_closed();
+
+	//let state_changed = maybe_old.map(|o| o.contents.state != closed).unwrap_or(true);
+
+	let has_children = !new.children.is_empty();
+	let old_has_children = maybe_old.map(|o| !o.children.is_empty()).unwrap_or(false); //IGNORED_ERROR: if doesn't exist, then it doesn't have children
 	let format_changed = has_children != old_has_children;
 
-	debug!(closed, has_children, old_has_children, format_changed, old_is_some = old.is_some(), "sink_issue_node state");
-
 	// Extract owner/repo directly from issue
-	let owner = issue.identity.owner().to_string();
-	let repo = issue.identity.repo().to_string();
+	let owner = new.identity.owner().to_string();
+	let repo = new.identity.repo().to_string();
 
-	let index = IssueIndex::from(issue);
+	let index = IssueIndex::from(new);
 
 	let issue_file_path = LocalPath::from(index).resolve_parent(*reader)?.deterministic(title, closed, has_children).path();
 	debug!(issue_file_path = %issue_file_path.display(), "computed target path");
 
 	// Clean up old file locations if format changed, state changed, or issue got a number
 	// (issue getting a number means a pending file may exist that needs removal)
-	let should_cleanup = format_changed || old.is_some() || issue.git_id().is_some();
-	debug!(
-		should_cleanup,
-		format_changed,
-		old_is_some = old.is_some(),
-		has_number = issue.git_id().is_some(),
-		"cleanup decision"
-	);
+	let should_cleanup: bool = {
+		let title_or_state_or_id_changed: bool = {
+			match maybe_old {
+				Some(old) => {
+					let title_changed = title != &old.contents.title;
+					let state_changed = new.contents.state != old.contents.state;
+					let id_changed = new.git_id() != old.git_id();
+					title_changed || state_changed || id_changed
+				}
+				None => true,
+			}
+		};
+		format_changed | title_or_state_or_id_changed
+	};
 	if should_cleanup {
-		cleanup_old_locations(issue, old, has_children, closed, reader)?;
-	}
-
-	// Ensure parent directory exists
-	if let Some(parent) = issue_file_path.parent() {
-		trace!(parent = %parent.display(), "ensuring parent directory exists");
-		std::fs::create_dir_all(parent)?;
+		cleanup_old_locations(new, maybe_old, has_children, closed, reader)?;
 	}
 
 	// Write content if changed
-	let content = issue.serialize_filesystem();
-	let node_changed = if format_changed {
-		true
-	} else if let Some(old_issue) = old {
-		content != old_issue.serialize_filesystem()
-	} else {
-		true
+	let content = new.serialize_filesystem(); //DEPENDS: relies on `serialize_filesystem` including `title`, `close_state`, `git_id`
+	let node_changed = match maybe_old {
+		Some(old_issue) => content != old_issue.serialize_filesystem() || format_changed, // we check for `format_changed` instead of checking for exact match of children, because we start individual sinks for each of the mismatched children later
+		None => true,
 	};
-
 	let mut any_written = false;
-
 	if node_changed {
+		std::fs::create_dir_all(issue_file_path.parent().unwrap())?;
 		std::fs::write(&issue_file_path, &content)?;
 		any_written = true;
 	}
 
 	// Save metadata
-	if let Some(issue_num) = issue.git_id()
-		&& let Some(timestamps) = issue.identity.timestamps()
+	if let Some(issue_num) = new.git_id()
+		&& let Some(timestamps) = new.identity.timestamps()
 	{
 		let meta = IssueMeta { timestamps: timestamps.clone() };
 		Local::save_issue_meta(&owner, &repo, issue_num, &meta)?;
 	}
 
 	// Recursively sink children
-	let old_children_map: HashMap<u64, &Issue> = old.map(|o| o.children.iter().filter_map(|c| c.git_id().map(|n| (n, c))).collect()).unwrap_or_default();
+	let old_children_map: HashMap<u64, &Issue> = maybe_old.map(|o| o.children.iter().filter_map(|c| c.git_id().map(|n| (n, c))).collect()).unwrap_or_default();
 
-	let new_child_numbers: HashSet<u64> = issue.children.iter().filter_map(|c| c.git_id()).collect();
+	let new_child_numbers: HashSet<u64> = new.children.iter().filter_map(|c| c.git_id()).collect();
 
-	for child in &issue.children {
+	for child in &new.children {
 		let old_child = child.git_id().and_then(|n| old_children_map.get(&n).copied());
 		any_written |= sink_issue_node(child, old_child, reader)?;
 	}
@@ -249,24 +241,27 @@ fn cleanup_old_locations<R: LocalReader>(issue: &Issue, _old: Option<&Issue>, ha
 
 	// Remove any matching paths that aren't the target
 	for path in matching {
-		if path != target {
-			debug!(path = %path.display(), "path differs from target, will remove");
-			// If it's a __main__.md file, we need to check if the parent dir should be removed
-			// (only if we're moving from directory to flat format)
-			if path.file_name().map(|n| n.to_string_lossy().starts_with(Local::MAIN_ISSUE_FILENAME)).unwrap_or(false) {
-				if let Some(parent_dir) = path.parent() {
-					// Remove the whole directory if we're converting to flat format
-					if !has_children {
+		match path == target {
+			true => {
+				trace!(path = %path.display(), "path matches target, keeping");
+			}
+			false => {
+				debug!(path = %path.display(), "path differs from target, will remove");
+				// If it's a __main__.md file, we need to check if the parent dir should be removed
+				// (only if we're moving from directory to flat format)
+				match path.file_name().map(|n| n.to_string_lossy().starts_with(Local::MAIN_ISSUE_FILENAME)).unwrap() {
+					true => {
+						// Remove the whole directory if we're converting to flat format
+						let parent_dir = path.parent().unwrap();
 						info!(parent_dir = %parent_dir.display(), "removing directory (converting to flat format)");
 						std::fs::remove_dir_all(parent_dir)?;
-						continue;
+					}
+					false => {
+						info!(path = %path.display(), "removing old file location");
+						try_remove_file(&path)?;
 					}
 				}
 			}
-			info!(path = %path.display(), "removing old file location");
-			try_remove_file(&path)?;
-		} else {
-			trace!(path = %path.display(), "path matches target, keeping");
 		}
 	}
 
