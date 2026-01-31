@@ -11,7 +11,7 @@ use tracing::{debug, info, instrument, trace, warn};
 use v_utils::prelude::*;
 
 use super::{ConsensusSinkError, FsReader, IssueMeta, Local, LocalPath, LocalReader};
-use crate::{Issue, IssueIndex, local::LocalPathErrorKind, sink::Sink};
+use crate::{Issue, IssueIndex, IssueSelector, local::LocalPathErrorKind, sink::Sink};
 
 /// Marker type for sinking to filesystem (submitted state).
 pub struct Submitted;
@@ -130,9 +130,6 @@ fn sink_issue_node<R: LocalReader>(new: &Issue, maybe_old: Option<&Issue>, reade
 
 	let index = IssueIndex::from(new);
 
-	let issue_file_path = LocalPath::from(index).resolve_parent(*reader)?.deterministic(title, closed, has_children).path();
-	debug!(issue_file_path = %issue_file_path.display(), "computed target path");
-
 	// Clean up old file locations if format changed, state changed, or issue got a number
 	// (issue getting a number means a pending file may exist that needs removal)
 	let should_cleanup: bool = {
@@ -149,8 +146,8 @@ fn sink_issue_node<R: LocalReader>(new: &Issue, maybe_old: Option<&Issue>, reade
 		};
 		format_changed | title_or_state_or_id_changed
 	};
-	if should_cleanup {
-		cleanup_old_locations(new, has_children, closed, reader)?;
+	if should_cleanup && reader == FsReader {
+		cleanup_old_locations(new, has_children, closed)?;
 	}
 
 	// Write content if changed
@@ -161,6 +158,8 @@ fn sink_issue_node<R: LocalReader>(new: &Issue, maybe_old: Option<&Issue>, reade
 	};
 	let mut any_written = false;
 	if node_changed {
+		let issue_file_path = LocalPath::from(index).resolve_parent(*reader)?.deterministic(title, closed, has_children).path();
+		debug!(issue_file_path = %issue_file_path.display(), "computed target path");
 		std::fs::create_dir_all(issue_file_path.parent().unwrap())?;
 		std::fs::write(&issue_file_path, &content)?;
 		any_written = true;
@@ -204,15 +203,40 @@ fn sink_issue_node<R: LocalReader>(new: &Issue, maybe_old: Option<&Issue>, reade
 	has_children,
 	closed,
 ))]
-fn cleanup_old_locations<R: LocalReader>(issue: &Issue, has_children: bool, closed: bool, reader: &R) -> Result<()> {
-	let local_path = LocalPath::from(issue);
-	let title = &issue.contents.title;
+fn cleanup_old_locations<R: LocalReader>(issue: &Issue, has_children: bool, closed: bool) -> Result<()> {
+	let parent_issue_idx = issue.parent_index();
+	let parent_path = LocalPath::from(parent_issue_idx);
+	let reader = FsReader;
+	dbg!(&parent_path);
 
-	// Resolve parent - if this fails, there's nothing to clean up (new issue in new location)
-	let resolved = match local_path.resolve_parent(*reader) {
+	let resolved_parent_pwd = match parent_path.resolve_parent(reader) {
 		Ok(r) => r,
 		Err(e) if matches!(e.kind, LocalPathErrorKind::MissingParent | LocalPathErrorKind::NotFound) => {
-			debug!("parent missing or not found, nothing to clean up");
+			debug!("parent missing or not found, - nothing to clean");
+			return Ok(());
+		}
+		Err(e) => return Err(e.into()),
+	};
+
+	let resolved_parent_dir = match resolved_parent_pwd.matching_subpaths() {
+		Ok(matches_for_parent) => {
+			for path in matches_for_parent {
+				if !path.is_dir() {
+					try_remove_file(&path);
+				}
+			}
+			match resolved_parent_pwd.search() {
+				Ok(m) => m,
+
+				Err(e) if e.kind == LocalPathErrorKind::Reader => {
+					debug!("issue's parent dir doesn't exist. We've just cleaned up at this level, so nothing else left.");
+					return Ok(());
+				}
+				Err(e) => return Err(e.into()),
+			}
+		}
+		Err(e) if e.kind == LocalPathErrorKind::Reader => {
+			debug!("no trace of parent's dir or old issue files, - safe to assume issue doesn't exist either; nothing to clean");
 			return Ok(());
 		}
 		Err(e) => return Err(e.into()),
@@ -220,26 +244,14 @@ fn cleanup_old_locations<R: LocalReader>(issue: &Issue, has_children: bool, clos
 
 	// Get all existing paths that match our selector
 	// If the directory doesn't exist yet, there's nothing to clean up
-	let matching = match resolved.matching_subpaths() {
+	let matching = match resolved_parent_dir.matching_subpaths() {
 		Ok(m) => m,
-		Err(e) if e.kind == LocalPathErrorKind::Reader => {
-			debug!("directory doesn't exist yet, nothing to clean up");
-			return Ok(()); // Directory doesn't exist yet
-		}
-		Err(e) => return Err(e.into()),
+		Err(e) => return Err(e.into()), // Reader error is unreachable, - we've already checked for it
 	};
-	if matching.is_empty() {
-		debug!("no matching paths found, nothing to clean up");
-		return Ok(()); // Nothing exists yet, nothing to clean up
-	}
-
-	debug!(matching_count = matching.len(), ?matching, "found matching paths");
-
-	// Compute the correct target path
-	let target = LocalPath::from(issue).resolve_parent(*reader)?.deterministic(title, closed, has_children).path();
-	debug!(target = %target.display(), "computed target path for cleanup comparison");
 
 	// Remove any matching paths that aren't the target
+	let title = &issue.contents.title;
+	let target = resolved_parent_pwd.clone().deterministic(title, closed, has_children).path();
 	for path in matching {
 		match path == target {
 			true => {
@@ -249,7 +261,7 @@ fn cleanup_old_locations<R: LocalReader>(issue: &Issue, has_children: bool, clos
 				debug!(path = %path.display(), "path differs from target, will remove");
 				// If it's a __main__.md file, we need to check if the parent dir should be removed
 				// (only if we're moving from directory to flat format)
-				match path.file_name().map(|n| n.to_string_lossy().starts_with(Local::MAIN_ISSUE_FILENAME)).unwrap() {
+				match path.file_name().unwrap().to_string_lossy().starts_with(Local::MAIN_ISSUE_FILENAME) {
 					true => {
 						// Remove the whole directory if we're converting to flat format
 						let parent_dir = path.parent().unwrap();
