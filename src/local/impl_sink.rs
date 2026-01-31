@@ -107,7 +107,7 @@ impl Sink<Consensus> for Issue {
 /// - Creating directories as needed
 /// - Removing old file locations when format changes
 /// - Writing issue content
-#[instrument(skip(reader))]
+#[instrument]
 fn sink_issue_node<R: LocalReader>(new: &Issue, maybe_old: Option<&Issue>, reader: &R) -> Result<bool> {
 	// Duplicate issues self-eliminate: remove local files instead of writing
 	if let crate::CloseState::Duplicate(dup_of) = new.contents.state {
@@ -128,7 +128,22 @@ fn sink_issue_node<R: LocalReader>(new: &Issue, maybe_old: Option<&Issue>, reade
 	let owner = new.identity.owner().to_string();
 	let repo = new.identity.repo().to_string();
 
-	let index = IssueIndex::from(new);
+	let issue_file_path = LocalPath::from(new).resolve_parent(*reader)?.deterministic(title, closed, has_children).path();
+	debug!(issue_file_path = %issue_file_path.display(), "computed target path");
+
+	// Write content if changed
+	let content = new.serialize_filesystem(); //DEPENDS: relies on `serialize_filesystem` including `title`, `close_state`, `git_id`
+	let node_changed = match maybe_old {
+		Some(old_issue) => content != old_issue.serialize_filesystem() || format_changed, // we check for `format_changed` instead of checking for exact match of children, because we start individual sinks for each of the mismatched children later
+		None => true,
+	};
+	let mut any_written = false;
+	if node_changed {
+		//DEPENDS: with current logic, `issue_file_path` must be computed before cleanup happens. Otherwise it can't guarantee to be able to resolve parent from fs state.
+		std::fs::create_dir_all(issue_file_path.parent().unwrap())?;
+		std::fs::write(&issue_file_path, &content)?;
+		any_written = true;
+	}
 
 	// Clean up old file locations if format changed, state changed, or issue got a number
 	// (issue getting a number means a pending file may exist that needs removal)
@@ -146,23 +161,8 @@ fn sink_issue_node<R: LocalReader>(new: &Issue, maybe_old: Option<&Issue>, reade
 		};
 		format_changed | title_or_state_or_id_changed
 	};
-	if should_cleanup && reader == FsReader {
+	if should_cleanup && reader.is_mutable() {
 		cleanup_old_locations(new, has_children, closed)?;
-	}
-
-	// Write content if changed
-	let content = new.serialize_filesystem(); //DEPENDS: relies on `serialize_filesystem` including `title`, `close_state`, `git_id`
-	let node_changed = match maybe_old {
-		Some(old_issue) => content != old_issue.serialize_filesystem() || format_changed, // we check for `format_changed` instead of checking for exact match of children, because we start individual sinks for each of the mismatched children later
-		None => true,
-	};
-	let mut any_written = false;
-	if node_changed {
-		let issue_file_path = LocalPath::from(index).resolve_parent(*reader)?.deterministic(title, closed, has_children).path();
-		debug!(issue_file_path = %issue_file_path.display(), "computed target path");
-		std::fs::create_dir_all(issue_file_path.parent().unwrap())?;
-		std::fs::write(&issue_file_path, &content)?;
-		any_written = true;
 	}
 
 	// Save metadata
@@ -197,13 +197,13 @@ fn sink_issue_node<R: LocalReader>(new: &Issue, maybe_old: Option<&Issue>, reade
 ///
 /// Strategy: find all matching paths via `matching_subpaths`, compute the correct target path
 /// via `deterministic`, then remove any matching paths that aren't the target.
-#[instrument(skip(issue, reader), fields(
+#[instrument(skip(issue), fields(
 	issue_number = ?issue.git_id(),
 	title = %issue.contents.title,
 	has_children,
 	closed,
 ))]
-fn cleanup_old_locations<R: LocalReader>(issue: &Issue, has_children: bool, closed: bool) -> Result<()> {
+fn cleanup_old_locations(issue: &Issue, has_children: bool, closed: bool) -> Result<()> {
 	let parent_issue_idx = issue.parent_index();
 	let parent_path = LocalPath::from(parent_issue_idx);
 	let reader = FsReader;
@@ -220,22 +220,23 @@ fn cleanup_old_locations<R: LocalReader>(issue: &Issue, has_children: bool, clos
 
 	let resolved_parent_dir = match resolved_parent_pwd.matching_subpaths() {
 		Ok(matches_for_parent) => {
+			dbg!(&matches_for_parent);
 			for path in matches_for_parent {
 				if !path.is_dir() {
-					try_remove_file(&path);
+					try_remove_file(&path)?;
 				}
 			}
 			match resolved_parent_pwd.search() {
 				Ok(m) => m,
 
-				Err(e) if e.kind == LocalPathErrorKind::Reader => {
+				Err(e) if e.kind == LocalPathErrorKind::NotFound => {
 					debug!("issue's parent dir doesn't exist. We've just cleaned up at this level, so nothing else left.");
 					return Ok(());
 				}
 				Err(e) => return Err(e.into()),
 			}
 		}
-		Err(e) if e.kind == LocalPathErrorKind::Reader => {
+		Err(e) if e.kind == LocalPathErrorKind::NotFound => {
 			debug!("no trace of parent's dir or old issue files, - safe to assume issue doesn't exist either; nothing to clean");
 			return Ok(());
 		}
@@ -244,14 +245,11 @@ fn cleanup_old_locations<R: LocalReader>(issue: &Issue, has_children: bool, clos
 
 	// Get all existing paths that match our selector
 	// If the directory doesn't exist yet, there's nothing to clean up
-	let matching = match resolved_parent_dir.matching_subpaths() {
-		Ok(m) => m,
-		Err(e) => return Err(e.into()), // Reader error is unreachable, - we've already checked for it
-	};
+	let matching = resolved_parent_dir.matching_subpaths()?; // Reader error is unreachable, - we've already checked for it
 
 	// Remove any matching paths that aren't the target
 	let title = &issue.contents.title;
-	let target = resolved_parent_pwd.clone().deterministic(title, closed, has_children).path();
+	let target = resolved_parent_dir.deterministic(title, closed, has_children).path();
 	for path in matching {
 		match path == target {
 			true => {

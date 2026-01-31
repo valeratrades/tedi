@@ -91,7 +91,7 @@ pub enum ReaderErrorKind {
 /// Trait for reading content from different sources (filesystem or git).
 ///
 /// Separates the read abstraction from path computation.
-pub trait LocalReader: Copy {
+pub trait LocalReader: Copy + std::fmt::Debug {
 	/// Read file content at the given path.
 	fn read_content(&self, path: &Path) -> Result<String, ReaderError>;
 	/// List directory entries at the given path.
@@ -100,9 +100,13 @@ pub trait LocalReader: Copy {
 	fn is_dir(&self, path: &Path) -> Result<bool, ReaderError>;
 	/// Check if the path exists.
 	fn exists(&self, path: &Path) -> Result<bool, ReaderError>;
+	/// Whether this reader supports filesystem mutations (cleanup operations).
+	fn is_mutable(&self) -> bool {
+		false
+	}
 }
 /// Reader that reads from the filesystem (submitted/current state).
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct FsReader;
 impl FsReader {
 	/// Convert std::io::Error to ReaderError with path context.
@@ -212,6 +216,10 @@ impl LocalReader for FsReader {
 			Ok(exists) => Ok(exists),
 			Err(e) => Err(Self::io_err(e, path)),
 		}
+	}
+
+	fn is_mutable(&self) -> bool {
+		true
 	}
 }
 

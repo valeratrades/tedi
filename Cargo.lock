@@ -2529,15 +2529,15 @@ dependencies = [
 
 [[package]]
 name = "portable-atomic"
-version = "1.13.0"
+version = "1.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f89776e4d69bb58bc6993e99ffa1d11f228b839984854c7daeb5d37f87cbe950"
+checksum = "c33a9471896f1c69cecef8d20cbe2f7accd12527ce60845ff44c153bb2a21b49"
 
 [[package]]
 name = "portable-atomic-util"
-version = "0.2.4"
+version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d8a2f0d8d040d7848a709caf78912debcc3f33ee4b3cac47d73d1e1069e83507"
+checksum = "7a9db96d7fa8782dd8c15ce32ffe8680bbd1e978a43bf51a34d39483540495f5"
 dependencies = [
  "portable-atomic",
 ]
@@ -4096,9 +4096,9 @@ dependencies = [
 
 [[package]]
 name = "v_utils"
-version = "2.15.23"
+version = "2.15.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "05ff84666473ac5fa964ee818481bc1e6a94e1f96099cfdccebb55763f356764"
+checksum = "d75aa3f05b0bbb95c54abe3e57608fd1e8e507075518daf37cf231af6cd55613"
 dependencies = [
  "config",
  "const_format",
@@ -4129,9 +4129,9 @@ dependencies = [
 
 [[package]]
 name = "v_utils_macros"
-version = "2.11.23"
+version = "2.11.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "62b3ecd7d74383797e40688abeadbc0774c272c59d80a4f8e414d21201d285b9"
+checksum = "f721f35db5558642020503d7fae478608708adc938c05035530607d71dc2fcce"
 dependencies = [
  "eyre",
  "heck",
