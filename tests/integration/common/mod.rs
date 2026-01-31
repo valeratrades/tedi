@@ -79,8 +79,8 @@ impl TestContext {
 	}
 
 	/// Run a command with proper XDG environment.
-	//pub fn run(&self, mut args: [&str]) -> RunOutput {
-	#[deprecated(note = "rewrite to builder over main `open`")]
+	///
+	/// Used in cases where we don't have to simulate additional user input. If you're testing `open` command, you probably want to run it through [open builder](Self::open)
 	pub fn run(&self, args: &[&str]) -> RunOutput {
 		//if !args.contains("--mock") {
 		//	args = ["--mock"].join(args);
