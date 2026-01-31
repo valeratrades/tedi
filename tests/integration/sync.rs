@@ -519,15 +519,11 @@ async fn test_reset_syncs_changes_after_editor() {
 	let remote_issue = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tremote body\n");
 	ctx.remote(&remote_issue, None);
 
-	// Create modified version (what user will change to)
+	// emulate user closing the issue after
 	let mut modified_issue = remote_issue.clone();
 	modified_issue.contents.state = tedi::CloseState::Closed;
-
-	// Open with --reset and make changes while editor is open
 	let out = ctx.open_url("o", "r", 1).args(&["--reset"]).edit(&modified_issue).run();
 
-	// Capture the resulting directory state
-	// Line 11 contains `state` timestamp set via Timestamp::now() when detecting state change
 	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().redact_timestamps(&[11]), &out), @r#"
 	//- /o/r/.meta.json
 	{
@@ -545,8 +541,8 @@ async fn test_reset_syncs_changes_after_editor() {
 	    }
 	  }
 	}
-	//- /o/r/1_-_Test_Issue.md
-	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+	//- /o/r/1_-_Test_Issue.md.bak
+	- [x] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
 			remote body
 	"#);
 }
