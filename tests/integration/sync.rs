@@ -336,6 +336,7 @@ async fn test_pull_fetches_before_editor() {
 #[tokio::test]
 async fn test_pull_with_divergence_runs_sync_before_editor() {
 	let ctx = TestContext::new("");
+	ctx.init_git();
 
 	let consensus = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tconsensus body\n");
 	let local = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tlocal diverged body\n");
@@ -358,7 +359,27 @@ async fn test_pull_with_divergence_runs_sync_before_editor() {
 		out.stderr
 	);
 
-	assert_snapshot!(ctx.render_fixture(FixtureRenderer::try_new(&ctx).unwrap(), &out), r"")
+	assert_snapshot!(ctx.render_fixture(FixtureRenderer::try_new(&ctx).unwrap(), &out), r"", @r#"
+	//- /o/r/.meta.json
+	{
+	  "virtual_project": false,
+	  "next_virtual_issue_number": 0,
+	  "issues": {
+	    "1": {
+	      "timestamps": {
+	        "title": "2001-09-12T05:40:40Z",
+	        "description": "2001-09-12T05:40:20Z",
+	        "labels": "2001-09-11T12:57:56Z",
+	        "state": "2001-09-11T11:41:29Z",
+	        "comments": []
+	      }
+	    }
+	  }
+	}
+	//- /o/r/1_-_Test_Issue.md
+	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+			local diverged body
+	"#)
 }
 
 #[tokio::test]
