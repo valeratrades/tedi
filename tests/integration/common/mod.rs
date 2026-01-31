@@ -150,20 +150,6 @@ pub struct OpenBuilder<'a> {
 	extra_args: Vec<&'a str>,
 	edit_op: Option<EditOperation>,
 }
-
-/// What target the OpenBuilder opens.
-enum BuilderTarget<'a> {
-	/// Open by issue reference (derives path from issue)
-	Issue(&'a Issue),
-	/// Open by Github URL
-	Url(String),
-	/// Open by touch pattern (--touch flag)
-	Touch(String),
-}
-
-/// Global CLI flags that must appear before the subcommand.
-const GLOBAL_FLAGS: &[&str] = &["--offline", "--mock", "-v", "--verbose", "-q", "--quiet"];
-
 impl<'a> OpenBuilder<'a> {
 	/// Add extra CLI arguments.
 	pub fn args(mut self, args: &[&'a str]) -> Self {
@@ -320,7 +306,6 @@ impl<'a> OpenBuilder<'a> {
 pub fn parse(content: &str) -> Issue {
 	Issue::deserialize_virtual(content).expect("failed to parse test issue")
 }
-
 /// Render a fixture with optional error output if the command failed.
 pub fn render_fixture(renderer: FixtureRenderer<'_>, output: &RunOutput) -> String {
 	let result = renderer.render();
@@ -331,7 +316,6 @@ pub fn render_fixture(renderer: FixtureRenderer<'_>, output: &RunOutput) -> Stri
 	}
 	result
 }
-
 /// Output from running a command.
 pub struct RunOutput {
 	pub status: ExitStatus,
@@ -407,6 +391,19 @@ pub mod are_you_sure {
 		std::fs::write(path, content).expect("failed to write file");
 	}
 }
+/// What target the OpenBuilder opens.
+enum BuilderTarget<'a> {
+	/// Open by issue reference (derives path from issue)
+	Issue(&'a Issue),
+	/// Open by Github URL
+	Url(String),
+	/// Open by touch pattern (--touch flag)
+	Touch(String),
+}
+
+/// Global CLI flags that must appear before the subcommand.
+const GLOBAL_FLAGS: &[&str] = &["--offline", "--mock", "-v", "--verbose", "-q", "--quiet"];
+
 mod snapshot;
 
 use std::{
