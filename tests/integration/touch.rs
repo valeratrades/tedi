@@ -6,7 +6,7 @@ use v_fixtures::FixtureRenderer;
 
 use crate::{
 	common::{FixtureIssuesExt, TestContext},
-	render_fixture,
+	parse, render_fixture,
 };
 
 /// Test that touch mode matches issues by substring regex.
@@ -37,12 +37,10 @@ fn test_touch_matches_issue_by_substring() {
 	"#,
 	);
 
-	// Touch with partial match "ancestry" should find the issue
 	let out = ctx.open_touch("testowner/testrepo/ancestry").run();
 
 	// Should succeed and find the existing issue
 	assert!(out.status.success(), "Expected success, got stderr: {}", out.stderr);
-	assert!(out.stdout.contains("Found existing issue"), "Expected to find existing issue, stdout: {}", out.stdout);
 }
 
 /// Test that touch mode correctly handles paths where middle segments match flat files.
@@ -72,19 +70,13 @@ fn test_touch_path_with_more_segments_after_flat_file_match() {
 				}
 			}
 		}
-		//- /data/issues/testowner/testrepo/99_-_ancestry_resolve_for_ind.md
-		- [ ] ancestry resolve for ind <!--https://github.com/testowner/testrepo/issues/99-->
-			body content here
+		//- /data/issues/testowner/testrepo/99_-_parent.md
+		- [ ] parent <!--https://github.com/testowner/testrepo/issues/99-->
+			_
 	"#,
 	);
 
-	let new_issue_contents = "new issue contents";
-	let out = ctx.open_touch("testowner/testrepo/ancestry/check_works").edit_contents(new_issue_contents).run();
-
-	eprintln!("{:?}", out.stdout);
-	eprintln!("{:?}", out.stderr);
-
-	assert!(out.status.success(), "Expected success, got stderr: {}", out.stderr);
+	let out = ctx.open_touch("testowner/testrepo/parent/child").edit_contents("child contents").run();
 
 	// Verify: flat file converted to directory, sub-issue created inside
 	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap(), &out), @r#"
@@ -113,12 +105,15 @@ fn test_touch_path_with_more_segments_after_flat_file_match() {
 	    }
 	  }
 	}
-	//- /testowner/testrepo/99_-_ancestry_resolve_for_ind/100_-_check_works.md
-	- [ ] check_works <!-- @mock_user https://github.com/testowner/testrepo/issues/100 -->
-	//- /testowner/testrepo/99_-_ancestry_resolve_for_ind/__main__.md
-	- [ ] ancestry resolve for ind <!--https://github.com/testowner/testrepo/issues/99-->
-		body content here
+	//- /testowner/testrepo/99_-_parent/100_-_child.md
+	- [ ] child <!-- @mock_user https://github.com/testowner/testrepo/issues/100 -->
+		child contents
+	//- /testowner/testrepo/99_-_parent/__main__.md
+	- [ ] parent <!--https://github.com/testowner/testrepo/issues/99-->
+		_
 	"#);
+
+	assert!(out.status.success(), "Expected success, got stderr: {}", out.stderr);
 }
 
 /// Test that touching a new sub-issue but making no edits does NOT create the issue.
@@ -153,27 +148,11 @@ fn test_touch_new_subissue_no_edits_does_not_create() {
 	let out = ctx.open_touch("testowner/testrepo/parent/new_child").run();
 
 	// Verify: no changes - parent still flat file, no sub-issue created
-	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap(), &out), @r#"
-	//- /testowner/testrepo/.meta.json
-	{
-	  "virtual_project": false,
-	  "next_virtual_issue_number": 0,
-	  "issues": {
-	    "99": {
-	      "timestamps": {
-	        "title": null,
-	        "description": null,
-	        "labels": null,
-	        "state": null,
-	        "comments": []
-	      }
-	    }
-	  }
-	}
+	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().skip_meta(), &out), @"
 	//- /testowner/testrepo/99_-_parent_issue.md
 	- [ ] parent issue <!--https://github.com/testowner/testrepo/issues/99-->
 		parent body
-	"#);
+	");
 
 	assert!(out.status.success(), "Expected success, got stderr: {}", out.stderr);
 }

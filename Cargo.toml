@@ -62,7 +62,7 @@ derive_builder = "0.20"
 insta = "1.46"
 libc = "0.2"
 rstest = "0.26"
-v_fixtures = { version = "^0.3.3" }
+v_fixtures = { version = "^0.3.4" }
 walkdir = "2"
 
 #[patch.crates-io]

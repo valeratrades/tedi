@@ -616,7 +616,7 @@ async fn test_force_merge_preserves_both_sub_issues(#[case] args: &[&str], #[cas
 	let local = parse(
 		"- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
 		 \tparent body\n\
-		 \textra local line\n\
+		 \textra line from local\n\
 		 \n\
 		 \t- [ ] Local Sub <!--sub @mock_user https://github.com/o/r/issues/2 -->\n\
 		 \t\tlocal sub body\n",
@@ -643,15 +643,10 @@ async fn test_force_merge_preserves_both_sub_issues(#[case] args: &[&str], #[cas
 
 	let out = ctx.open_issue(&local).args(args).run();
 
-	//eprintln!("stdout: {}", out.stdout);
-	//eprintln!("stderr: {}", out.stderr);
-
-	//assert!(out.status.success(), "Should succeed with {args:?}. stderr: {}", out.stderr);
-
 	// Snapshot the result - different expectations based on which side wins conflicts
 	if expect_local_description {
 		// --force: local wins conflicts, so "extra local line" should be present
-		insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().skip_meta(), &out), @r#"
+		insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().skip_meta(), &out), @"
 		//- /o/r/1_-_Parent_Issue/2_-_Local_Sub.md
 		- [ ] Local Sub <!-- @mock_user https://github.com/o/r/issues/2 -->
 				local sub body
@@ -661,8 +656,8 @@ async fn test_force_merge_preserves_both_sub_issues(#[case] args: &[&str], #[cas
 		//- /o/r/1_-_Parent_Issue/__main__.md
 		- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
 				parent body
-				extra local line
-		"#);
+				extra line from local
+		");
 	} else {
 		// --pull --force: remote wins conflicts, so "extra local line" should NOT be present
 		insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().skip_meta(), &out), @r#"

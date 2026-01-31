@@ -31,7 +31,7 @@ async fn main() {
 	// Commands that require GitHub client (when not offline)
 	let needs_github = matches!(cli.command, Commands::Open(_) | Commands::Blocker(_)) && !cli.offline;
 
-	let github_client: Option<github::BoxedGithubClient> = if cli.mock {
+	let github_client: Option<github::BoxedGithubClient> = if cli.mock.is_some() {
 		Some(std::sync::Arc::new(mock_github::MockGithubClient::new("mock_user")))
 	} else if needs_github {
 		match github::RealGithubClient::new(&settings) {
@@ -63,7 +63,7 @@ async fn main() {
 		Commands::Clockify(args) => blocker_interactions::clockify::clockify_main(&settings, args).await,
 		Commands::PerfEval(args) => perf_eval::main(&settings, args).await,
 		Commands::WatchMonitors(args) => watch_monitors::main(&settings, args),
-		Commands::Open(args) => open_interactions::open_command(&settings, args, cli.offline).await,
+		Commands::Open(args) => open_interactions::open_command(&settings, args, cli.offline, cli.mock).await,
 	};
 
 	match success {
@@ -85,9 +85,20 @@ mod shell_init;
 mod watch_monitors;
 use std::time::Duration;
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 
 const MANUAL_PATH_APPENDIX: &str = "manual_stats/";
+
+/// Mock behavior type for testing.
+#[derive(Clone, Copy, Debug, Default, ValueEnum)]
+pub enum MockType {
+	/// Standard mock - uses mock Github client but normal editor flow.
+	#[default]
+	#[value(name = "")]
+	Standard,
+	/// Ghost edit - skip editor and pretend edit was made.
+	GhostEdit,
+}
 
 #[derive(Parser)]
 #[command(author, version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("GIT_HASH"), ")"), about, long_about = None)]
@@ -96,8 +107,9 @@ struct Cli {
 	command: Commands,
 	#[clap(flatten)]
 	settings_flags: config::SettingsFlags,
-	#[arg(long, global = true, hide = true)]
-	mock: bool,
+	/// Use mock Github client. Optionally specify mock behavior.
+	#[arg(long, global = true, hide = true, num_args = 0..=1, require_equals = true, default_missing_value = "")]
+	mock: Option<MockType>,
 	/// Skip all network operations - edit locally only, don't sync to Github.
 	/// Automatically enabled for virtual projects (projects without Github remote).
 	#[arg(long, global = true)]

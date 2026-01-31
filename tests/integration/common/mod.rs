@@ -111,6 +111,7 @@ impl TestContext {
 			target: BuilderTarget::Issue(issue),
 			extra_args: Vec::new(),
 			edit_op: None,
+			ghost_edit: false,
 		}
 	}
 
@@ -122,6 +123,7 @@ impl TestContext {
 			target: BuilderTarget::Url(url),
 			extra_args: Vec::new(),
 			edit_op: None,
+			ghost_edit: false,
 		}
 	}
 
@@ -132,6 +134,7 @@ impl TestContext {
 			target: BuilderTarget::Touch(pattern.to_string()),
 			extra_args: Vec::new(),
 			edit_op: None,
+			ghost_edit: false,
 		}
 	}
 
@@ -149,6 +152,7 @@ pub struct OpenBuilder<'a> {
 	target: BuilderTarget<'a>,
 	extra_args: Vec<&'a str>,
 	edit_op: Option<EditOperation>,
+	ghost_edit: bool,
 }
 impl<'a> OpenBuilder<'a> {
 	/// Add extra CLI arguments.
@@ -171,6 +175,12 @@ impl<'a> OpenBuilder<'a> {
 		self
 	}
 
+	/// Skip editor and pretend edit was made. Syncs the issue without user interaction.
+	pub fn ghost_edit(mut self) -> Self {
+		self.ghost_edit = true;
+		self
+	}
+
 	/// Run the command and return RunOutput.
 	pub fn run(self) -> RunOutput {
 		self.ctx.set_issues_dir_override();
@@ -181,7 +191,11 @@ impl<'a> OpenBuilder<'a> {
 		let mut cmd = Command::new(get_binary_path());
 
 		// Global flags come first (before subcommand)
-		cmd.arg("--mock");
+		if self.ghost_edit {
+			cmd.arg("--mock=ghost-edit");
+		} else {
+			cmd.arg("--mock");
+		}
 		cmd.args(&global_args);
 
 		// Then the subcommand
@@ -249,9 +263,6 @@ impl<'a> OpenBuilder<'a> {
 					Some(EditOperation::FullIssue(issue)) => {
 						// Write to the virtual edit path computed from the issue
 						let vpath = tedi::local::Local::virtual_edit_path(issue);
-						if let Some(parent) = vpath.parent() {
-							std::fs::create_dir_all(parent).unwrap();
-						}
 						let content = issue.serialize_virtual();
 						eprintln!("[test:OpenBuilder] submitting user input // writing to {vpath:?}:\n{content}");
 						std::fs::write(&vpath, content).unwrap();
@@ -302,7 +313,7 @@ pub fn parse(content: &str) -> Issue {
 }
 /// Render a fixture with optional error output if the command failed.
 pub fn render_fixture(renderer: FixtureRenderer<'_>, output: &RunOutput) -> String {
-	let result = renderer.render();
+	let result = renderer.always_show_filepath().render();
 	if !output.status.success() {
 		let s = format!("\n\nBINARY FAILED\nstdout:\n{}\nstderr:\n{}", output.stdout, output.stderr);
 		//result.push_str(s); //Q: embedding it into a snapshot feels a bit bizzare. And I don't get color-coding
@@ -404,12 +415,13 @@ use std::{
 	io::{Read, Write},
 	os::fd::AsRawFd,
 	path::{Path, PathBuf},
-	process::{ChildStderr, ChildStdout, Command, ExitStatus},
+	process::{Command, ExitStatus},
 	sync::OnceLock,
 };
 
 /// Set a file descriptor to non-blocking mode.
 fn set_nonblocking<F: AsRawFd>(f: &F) {
+	//SAFETY: don't care if log is overwritten
 	unsafe {
 		let fd = f.as_raw_fd();
 		let flags = libc::fcntl(fd, libc::F_GETFL);

@@ -15,7 +15,7 @@ use super::{
 	sync::{MergeMode, Modifier, Side, SyncOptions, modify_and_sync_issue},
 	touch::{TouchPathResult, parse_touch_path, resolve_touch_path},
 };
-use crate::{config::LiveSettings, github};
+use crate::{MockType, config::LiveSettings, github};
 
 /// Open a Github issue in $EDITOR.
 ///
@@ -79,8 +79,16 @@ pub struct OpenArgs {
 }
 
 #[tracing::instrument(level = "debug", skip(settings))]
-pub async fn open_command(settings: &LiveSettings, args: OpenArgs, offline: bool) -> Result<()> {
+pub async fn open_command(settings: &LiveSettings, args: OpenArgs, offline: bool, mock: Option<MockType>) -> Result<()> {
 	tracing::debug!("open_command entered, blocker={}", args.blocker);
+
+	// Helper to create the appropriate modifier based on mock type
+	let make_modifier = |open_at_blocker: bool| -> Modifier {
+		match mock {
+			Some(MockType::GhostEdit) => Modifier::MockGhostEdit,
+			_ => Modifier::Editor { open_at_blocker },
+		}
+	};
 	let _ = settings; // settings still available if needed in future
 
 	// Validate and convert exact match level
@@ -149,7 +157,7 @@ pub async fn open_command(settings: &LiveSettings, args: OpenArgs, offline: bool
 			println!("Found existing issue: {}", issue.contents.title);
 		}
 
-		modify_and_sync_issue(issue, project_is_virtual, Modifier::Editor { open_at_blocker }, local_sync_opts()).await?;
+		modify_and_sync_issue(issue, project_is_virtual, make_modifier(open_at_blocker), local_sync_opts()).await?;
 		return Ok(());
 	}
 
@@ -223,7 +231,7 @@ pub async fn open_command(settings: &LiveSettings, args: OpenArgs, offline: bool
 	};
 
 	// Open the issue for editing
-	modify_and_sync_issue(issue, effective_offline, Modifier::Editor { open_at_blocker }, sync_opts).await?;
+	modify_and_sync_issue(issue, effective_offline, make_modifier(open_at_blocker), sync_opts).await?;
 
 	// TODO: --blocker-set needs issue file path, but we no longer track it here
 	// if args.blocker_set {

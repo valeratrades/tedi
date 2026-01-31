@@ -59,7 +59,7 @@ pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Mo
 	// expose for modification (by user or procedural)
 	let new_modified = {
 		let result = modifier.apply(&mut issue).await?;
-		if !result.file_modified && std::env::var("__IS_INTEGRATION_TEST").is_err() {
+		if !result.file_modified {
 			v_utils::log!("Aborted (no changes made)");
 			return Ok(result);
 		}
@@ -268,9 +268,15 @@ mod types {
 	/// A modifier that can be applied to an issue file.
 	#[derive(Debug)]
 	pub enum Modifier {
-		Editor { open_at_blocker: bool },
+		Editor {
+			open_at_blocker: bool,
+		},
 		BlockerPop,
-		BlockerAdd { text: String },
+		BlockerAdd {
+			text: String,
+		},
+		/// Mock modifier that does nothing but reports file as modified. For testing.
+		MockGhostEdit,
 	}
 
 	impl Modifier {
@@ -297,10 +303,9 @@ mod types {
 					let mtime_after = std::fs::metadata(&vpath)?.modified()?;
 					let file_modified = mtime_after != mtime_before;
 
-					//TODO: switch eprintlns here to instead add to Span of derived tracing instrument
-					eprintln!("[Modifier::Editor] reading from: {vpath:?}");
 					let content = std::fs::read_to_string(&vpath)?;
-					eprintln!("[Modifier::Editor] content read:\n{content}");
+					tracing::Span::current().record("vpath", tracing::field::debug(&vpath));
+					tracing::Span::current().record("content", content.as_str());
 					issue.update_from_virtual(&content)?;
 
 					ModifyResult { output: None, file_modified }
@@ -318,6 +323,7 @@ mod types {
 					issue.contents.blockers.add(text);
 					ModifyResult { output: None, file_modified: true }
 				}
+				Modifier::MockGhostEdit => ModifyResult { output: None, file_modified: true },
 			};
 
 			if result.file_modified {
