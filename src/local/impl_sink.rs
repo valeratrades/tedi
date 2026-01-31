@@ -150,7 +150,7 @@ fn sink_issue_node<R: LocalReader>(new: &Issue, maybe_old: Option<&Issue>, reade
 		format_changed | title_or_state_or_id_changed
 	};
 	if should_cleanup {
-		cleanup_old_locations(new, maybe_old, has_children, closed, reader)?;
+		cleanup_old_locations(new, has_children, closed, reader)?;
 	}
 
 	// Write content if changed
@@ -198,13 +198,13 @@ fn sink_issue_node<R: LocalReader>(new: &Issue, maybe_old: Option<&Issue>, reade
 ///
 /// Strategy: find all matching paths via `matching_subpaths`, compute the correct target path
 /// via `deterministic`, then remove any matching paths that aren't the target.
-#[instrument(skip(issue, _old, reader), fields(
+#[instrument(skip(issue, reader), fields(
 	issue_number = ?issue.git_id(),
 	title = %issue.contents.title,
 	has_children,
 	closed,
 ))]
-fn cleanup_old_locations<R: LocalReader>(issue: &Issue, _old: Option<&Issue>, has_children: bool, closed: bool, reader: &R) -> Result<()> {
+fn cleanup_old_locations<R: LocalReader>(issue: &Issue, has_children: bool, closed: bool, reader: &R) -> Result<()> {
 	let local_path = LocalPath::from(issue);
 	let title = &issue.contents.title;
 
