@@ -21,6 +21,7 @@
 //! The `.meta.json` file contains actual timestamps from seed-based generation,
 //! so snapshots verify both file content and timestamp values.
 
+use insta::assert_snapshot;
 use rstest::rstest;
 use tedi::Issue;
 use v_fixtures::FixtureRenderer;
@@ -349,17 +350,15 @@ async fn test_pull_with_divergence_runs_sync_before_editor() {
 	// --pull should attempt to sync/merge BEFORE editor opens
 	let out = ctx.open(&local).args(&["--pull"]).run();
 
-	eprintln!("stdout: {}", out.stdout);
-	eprintln!("stderr: {}", out.stderr);
-
 	// Should either succeed (auto-resolved) or fail with conflict
 	// But importantly, it should attempt sync BEFORE editor
 	assert!(
-		out.stdout.contains("Merging") || out.stdout.contains("Conflict") || out.stderr.contains("Conflict") || out.stdout.contains("Pulling"),
-		"Should attempt sync/merge with --pull before editor. stdout: {}, stderr: {}",
-		out.stdout,
+		out.stderr.contains("pre-open sync"), //Q: don't like reliance on impl-specific details
+		"Should attempt sync/merge with --pull before editor; stderr:\n{}",
 		out.stderr
 	);
+
+	assert_snapshot!(ctx.render_fixture(FixtureRenderer::try_new(&ctx).unwrap(), &out), r"")
 }
 
 #[tokio::test]
