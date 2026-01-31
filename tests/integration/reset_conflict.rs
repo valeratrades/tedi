@@ -113,7 +113,7 @@ async fn test_reset_discards_local_subissue_modifications() {
 	);
 
 	// Open and edit the parent sub-issue
-	let out = ctx.open(parent_issue).edit(&modified_parent).run();
+	let out = ctx.open_issue(parent_issue).edit(&modified_parent).run();
 	assert!(out.status.success(), "Parent edit failed. stderr: {}", out.stderr);
 
 	// Step 3: --reset on grandparent should discard local modifications

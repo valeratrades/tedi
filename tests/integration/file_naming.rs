@@ -23,7 +23,7 @@ async fn test_flat_format_preserved_when_no_sub_issues() {
 	ctx.consensus(&parent, None).await;
 	ctx.remote(&parent, None);
 
-	let out = ctx.open(&parent).run();
+	let out = ctx.open_issue(&parent).run();
 
 	eprintln!("stdout: {}", out.stdout);
 	eprintln!("stderr: {}", out.stderr);
@@ -57,7 +57,7 @@ async fn test_old_flat_file_removed_when_sub_issues_appear() {
 	ctx.remote(&with_children, None);
 
 	// Need --pull since local == consensus (no uncommitted changes)
-	let out = ctx.open(&parent).args(&["--pull"]).run();
+	let out = ctx.open_issue(&parent).args(&["--pull"]).run();
 
 	eprintln!("stdout: {}", out.stdout);
 	eprintln!("stderr: {}", out.stderr);
@@ -93,7 +93,7 @@ async fn test_old_placement_discarded_with_pull() {
 	ctx.remote(&with_children, None);
 
 	// Need --pull since local == consensus (no uncommitted local changes)
-	let out = ctx.open(&parent).args(&["--pull"]).run();
+	let out = ctx.open_issue(&parent).args(&["--pull"]).run();
 
 	eprintln!("stdout: {}", out.stdout);
 	eprintln!("stderr: {}", out.stderr);
@@ -127,7 +127,7 @@ async fn test_duplicate_removes_local_file() {
 	duplicate.contents.state = tedi::CloseState::Duplicate(999);
 
 	// Sync the duplicate state
-	let out = ctx.open(&original).edit(&duplicate).run();
+	let out = ctx.open_issue(&original).edit(&duplicate).run();
 
 	eprintln!("stdout: {}", out.stdout);
 	eprintln!("stderr: {}", out.stderr);
@@ -159,7 +159,7 @@ async fn test_duplicate_reference_to_existing_issue_succeeds() {
 	duplicate.contents.state = tedi::CloseState::Duplicate(2);
 
 	// Sync the duplicate state
-	let out = ctx.open(&original).edit(&duplicate).run();
+	let out = ctx.open_issue(&original).edit(&duplicate).run();
 
 	eprintln!("stdout: {}", out.stdout);
 	eprintln!("stderr: {}", out.stderr);

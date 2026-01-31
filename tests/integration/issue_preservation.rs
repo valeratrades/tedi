@@ -35,7 +35,7 @@ async fn test_comments_with_ids_sync_correctly() {
 	ctx.consensus(&issue, None).await;
 	ctx.remote(&issue, None);
 
-	let out = ctx.open(&issue).args(&["--force"]).run();
+	let out = ctx.open_issue(&issue).args(&["--force"]).run();
 	eprintln!("stdout: {}", out.stdout);
 	eprintln!("stderr: {}", out.stderr);
 
@@ -61,7 +61,7 @@ async fn test_nested_issues_preserved_through_sync() {
 	ctx.consensus(&issue, None).await;
 	ctx.remote(&issue, None);
 
-	let out = ctx.open(&issue).run();
+	let out = ctx.open_issue(&issue).run();
 	eprintln!("stdout: {}", out.stdout);
 	eprintln!("stderr: {}", out.stderr);
 
@@ -100,7 +100,7 @@ async fn test_mixed_open_closed_nested_issues_preserved() {
 	ctx.consensus(&issue, None).await;
 	ctx.remote(&issue, None);
 
-	let out = ctx.open(&issue).run();
+	let out = ctx.open_issue(&issue).run();
 	eprintln!("stdout: {}", out.stdout);
 	eprintln!("stderr: {}", out.stderr);
 
@@ -135,7 +135,7 @@ async fn test_blockers_preserved_through_sync() {
 	ctx.consensus(&issue, None).await;
 	ctx.remote(&issue, None);
 
-	let out = ctx.open(&issue).run();
+	let out = ctx.open_issue(&issue).run();
 	eprintln!("stdout: {}", out.stdout);
 	eprintln!("stderr: {}", out.stderr);
 
@@ -167,7 +167,7 @@ async fn test_blockers_added_during_edit_preserved() {
 		 \t- new blocker added\n",
 	);
 
-	let out = ctx.open(&initial_issue).edit(&edited_issue).run();
+	let out = ctx.open_issue(&initial_issue).edit(&edited_issue).run();
 	eprintln!("stdout: {}", out.stdout);
 	eprintln!("stderr: {}", out.stderr);
 
@@ -199,7 +199,7 @@ async fn test_blockers_with_headers_preserved() {
 	ctx.consensus(&issue, None).await;
 	ctx.remote(&issue, None);
 
-	let out = ctx.open(&issue).run();
+	let out = ctx.open_issue(&issue).run();
 	eprintln!("stdout: {}", out.stdout);
 	eprintln!("stderr: {}", out.stderr);
 
@@ -232,7 +232,7 @@ async fn test_nested_issues_and_blockers_together() {
 	ctx.consensus(&issue, None).await;
 	ctx.remote(&issue, None);
 
-	let out = ctx.open(&issue).run();
+	let out = ctx.open_issue(&issue).run();
 	eprintln!("stdout: {}", out.stdout);
 	eprintln!("stderr: {}", out.stderr);
 
@@ -275,7 +275,7 @@ async fn test_closing_nested_issue_creates_bak_file() {
 		 \t\tnested body content\n",
 	);
 
-	let out = ctx.open(&initial_issue).edit(&edited_issue).run();
+	let out = ctx.open_issue(&initial_issue).edit(&edited_issue).run();
 	eprintln!("stdout: {}", out.stdout);
 	eprintln!("stderr: {}", out.stderr);
 

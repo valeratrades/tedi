@@ -100,17 +100,38 @@ impl TestContext {
 		}
 	}
 
-	/// Create an OpenBuilder for running the `open` command with various options.
+	/// Create an OpenBuilder for running the `open` command with an Issue reference.
 	///
 	/// Takes an `&Issue` and uses `IssueIndex::from(issue).to_string()` as the selector
 	/// pattern passed to the CLI. This is the correct way to identify issues without
 	/// relying on absolute paths.
-	pub fn open<'a>(&'a self, issue: &'a Issue) -> OpenBuilder<'a> {
+	pub fn open_issue<'a>(&'a self, issue: &'a Issue) -> OpenBuilder<'a> {
 		OpenBuilder {
 			ctx: self,
-			issue,
+			target: BuilderTarget::Issue(issue),
 			extra_args: Vec::new(),
-			edit_to: None,
+			edit_op: None,
+		}
+	}
+
+	/// Create an OpenBuilder for running the `open` command with a Github URL.
+	pub fn open_url(&self, owner: &str, repo: &str, number: u64) -> OpenBuilder<'_> {
+		let url = format!("https://github.com/{owner}/{repo}/issues/{number}");
+		OpenBuilder {
+			ctx: self,
+			target: BuilderTarget::Url(url),
+			extra_args: Vec::new(),
+			edit_op: None,
+		}
+	}
+
+	/// Create an OpenBuilder for running the `open --touch` command.
+	pub fn open_touch(&self, pattern: &str) -> OpenBuilder<'_> {
+		OpenBuilder {
+			ctx: self,
+			target: BuilderTarget::Touch(pattern.to_string()),
+			extra_args: Vec::new(),
+			edit_op: None,
 		}
 	}
 
@@ -120,29 +141,29 @@ impl TestContext {
 	fn setup_mock_state(&self, state: &serde_json::Value) {
 		std::fs::write(&self.mock_state_path, serde_json::to_string_pretty(state).unwrap()).unwrap();
 	}
-
-	/// Create an OpenUrlBuilder for running the `open` command with a Github URL.
-	#[deprecated(note = "rewrite to builder over main `open`")]
-	pub fn open_url(&self, owner: &str, repo: &str, number: u64) -> OpenUrlBuilder<'_> {
-		let url = format!("https://github.com/{owner}/{repo}/issues/{number}");
-		OpenUrlBuilder::with_url(self, url)
-	}
-
-	/// Create an OpenUrlBuilder for running the `open --touch` command.
-	#[deprecated(note = "rewrite to builder over main `open`")]
-	pub fn touch(&self, pattern: &str) -> OpenUrlBuilder<'_> {
-		OpenUrlBuilder::with_touch(self, pattern.to_string())
-	}
 }
 
 /// Builder for running the `open` command with various options.
 pub struct OpenBuilder<'a> {
 	ctx: &'a TestContext,
-	/// The issue to open (used to derive selector pattern and virtual edit path)
-	issue: &'a Issue,
+	target: BuilderTarget<'a>,
 	extra_args: Vec<&'a str>,
-	edit_to: Option<Issue>,
+	edit_op: Option<EditOperation>,
 }
+
+/// What target the OpenBuilder opens.
+enum BuilderTarget<'a> {
+	/// Open by issue reference (derives path from issue)
+	Issue(&'a Issue),
+	/// Open by Github URL
+	Url(String),
+	/// Open by touch pattern (--touch flag)
+	Touch(String),
+}
+
+/// Global CLI flags that must appear before the subcommand.
+const GLOBAL_FLAGS: &[&str] = &["--offline", "--mock", "-v", "--verbose", "-q", "--quiet"];
+
 impl<'a> OpenBuilder<'a> {
 	/// Add extra CLI arguments.
 	pub fn args(mut self, args: &[&'a str]) -> Self {
@@ -151,146 +172,6 @@ impl<'a> OpenBuilder<'a> {
 	}
 
 	/// Edit the file to this issue while "editor is open".
-	pub fn edit(mut self, issue: &Issue) -> Self {
-		self.edit_to = Some(issue.clone());
-		self
-	}
-
-	/// Run the command and return RunOutput.
-	pub fn run(self) -> RunOutput {
-		// Construct absolute path from LocalPath - CLI accepts file paths directly
-		self.ctx.set_issues_dir_override();
-		let issue_path = tedi::local::LocalPath::from(self.issue)
-			.resolve_parent(tedi::local::FsReader)
-			.expect("failed to resolve issue parent path")
-			.search()
-			.expect("failed to find issue file")
-			.path();
-
-		let mut cmd = Command::new(get_binary_path());
-		cmd.arg("--mock").arg("open");
-		cmd.args(&self.extra_args);
-		cmd.arg(&issue_path);
-		cmd.env("__IS_INTEGRATION_TEST", "1");
-		cmd.env(ENV_GITHUB_TOKEN, "test_token");
-		for (key, value) in self.ctx.xdg.env_vars() {
-			cmd.env(key, value);
-		}
-		cmd.env(ENV_MOCK_STATE, &self.ctx.mock_state_path);
-		cmd.env(ENV_MOCK_PIPE, &self.ctx.pipe_path);
-		cmd.stdout(std::process::Stdio::piped());
-		cmd.stderr(std::process::Stdio::piped());
-
-		let mut child = cmd.spawn().unwrap();
-
-		// Take ownership of stdout/stderr to drain them and prevent pipe buffer deadlock
-		let mut stdout = child.stdout.take().unwrap();
-		let mut stderr = child.stderr.take().unwrap();
-		set_nonblocking(&stdout);
-		set_nonblocking(&stderr);
-		let mut stdout_buf = Vec::new();
-		let mut stderr_buf = Vec::new();
-
-		// Poll for process completion, signaling pipe when it's waiting
-		let pipe_path = self.ctx.pipe_path.clone();
-		let edit_to = self.edit_to.clone();
-		let mut signaled = false;
-
-		loop {
-			// Drain pipes to prevent deadlock from full pipe buffers
-			drain_pipe(&mut stdout, &mut stdout_buf);
-			drain_pipe(&mut stderr, &mut stderr_buf);
-
-			// Check if process has exited
-			match child.try_wait().unwrap() {
-				Some(_status) => break,
-				None => {
-					// Process still running
-					if !signaled {
-						// Give process time to reach pipe wait
-						std::thread::sleep(std::time::Duration::from_millis(100));
-
-						// Edit the file while "editor is open" if requested
-						// Use serialize_virtual since that's what the user sees/edits (full tree with children)
-						if let Some(issue) = &edit_to {
-							// Write to the virtual edit path computed from the issue
-							let vpath = tedi::local::Local::virtual_edit_path(issue);
-							if let Some(parent) = vpath.parent() {
-								std::fs::create_dir_all(parent).unwrap();
-							}
-							let content = issue.serialize_virtual();
-							eprintln!("[test:OpenBuilder] submitting user input // writing to {vpath:?}:\n{content}");
-							std::fs::write(&vpath, content).unwrap();
-						}
-
-						// Try to signal the pipe (use nix O_NONBLOCK to avoid blocking)
-						// Only mark as signaled if we successfully wrote to the pipe.
-						// The pipe open will fail if no reader is waiting yet.
-						#[cfg(unix)]
-						{
-							use std::os::unix::fs::OpenOptionsExt;
-							if let Ok(mut pipe) = std::fs::OpenOptions::new().write(true).custom_flags(0x800).open(&pipe_path)
-								&& pipe.write_all(b"x").is_ok()
-							{
-								signaled = true;
-							}
-						}
-					}
-					std::thread::sleep(std::time::Duration::from_millis(10));
-				}
-			}
-		}
-
-		// Final drain after process exits
-		drain_pipe(&mut stdout, &mut stdout_buf);
-		drain_pipe(&mut stderr, &mut stderr_buf);
-
-		child.wait().unwrap();
-		RunOutput {
-			status: child.try_wait().unwrap().unwrap(),
-			stdout: String::from_utf8_lossy(&stdout_buf).into_owned(),
-			stderr: String::from_utf8_lossy(&stderr_buf).into_owned(),
-		}
-	}
-}
-
-/// Builder for running the `open` command with a URL or touch pattern.
-pub struct OpenUrlBuilder<'a> {
-	ctx: &'a TestContext,
-	target: OpenTarget,
-	extra_args: Vec<&'a str>,
-	edit_op: Option<EditOperation>,
-}
-impl<'a> OpenUrlBuilder<'a> {
-	/// Create a builder for opening by URL.
-	fn with_url(ctx: &'a TestContext, url: String) -> Self {
-		Self {
-			ctx,
-			target: OpenTarget::Url(url),
-			extra_args: Vec::new(),
-			edit_op: None,
-		}
-	}
-
-	/// Create a builder for opening by touch pattern.
-	fn with_touch(ctx: &'a TestContext, pattern: String) -> Self {
-		Self {
-			ctx,
-			target: OpenTarget::Touch(pattern),
-			extra_args: Vec::new(),
-			edit_op: None,
-		}
-	}
-
-	/// Add extra CLI arguments.
-	pub fn args(mut self, args: &[&'a str]) -> Self {
-		self.extra_args.extend(args);
-		self
-	}
-
-	/// Operates on the issue that is opened for the user in virtual format.
-	/// Sets the virtual serialization of the provided issue over the temp file.
-	/// The issue's identity determines the virtual edit path.
 	pub fn edit(mut self, issue: &Issue) -> Self {
 		self.edit_op = Some(EditOperation::FullIssue(issue.clone()));
 		self
@@ -306,15 +187,38 @@ impl<'a> OpenUrlBuilder<'a> {
 
 	/// Run the command and return RunOutput.
 	pub fn run(self) -> RunOutput {
-		let mut cmd = Command::new(get_binary_path());
-		cmd.arg("--mock").arg("open");
-		cmd.args(&self.extra_args);
+		self.ctx.set_issues_dir_override();
 
+		// Separate global flags from subcommand flags
+		let (global_args, subcommand_args): (Vec<&str>, Vec<&str>) = self.extra_args.into_iter().partition(|arg| GLOBAL_FLAGS.iter().any(|f| arg.starts_with(f)));
+
+		let mut cmd = Command::new(get_binary_path());
+
+		// Global flags come first (before subcommand)
+		cmd.arg("--mock");
+		cmd.args(&global_args);
+
+		// Then the subcommand
+		cmd.arg("open");
+
+		// Then subcommand-specific flags
+		cmd.args(&subcommand_args);
+
+		// Then the target
 		match &self.target {
-			OpenTarget::Url(url) => {
+			BuilderTarget::Issue(issue) => {
+				let issue_path = tedi::local::LocalPath::from(*issue)
+					.resolve_parent(tedi::local::FsReader)
+					.expect("failed to resolve issue parent path")
+					.search()
+					.expect("failed to find issue file")
+					.path();
+				cmd.arg(&issue_path);
+			}
+			BuilderTarget::Url(url) => {
 				cmd.arg(url);
 			}
-			OpenTarget::Touch(pattern) => {
+			BuilderTarget::Touch(pattern) => {
 				cmd.arg("--touch").arg(pattern);
 			}
 		}
@@ -349,10 +253,13 @@ impl<'a> OpenUrlBuilder<'a> {
 			drain_pipe(&mut stdout, &mut stdout_buf);
 			drain_pipe(&mut stderr, &mut stderr_buf);
 
+			// Check if process has exited
 			match child.try_wait().unwrap() {
 				Some(_status) => break,
 				None => {
+					// Process still running
 					if !signaled {
+						// Give process time to reach pipe wait
 						std::thread::sleep(std::time::Duration::from_millis(100));
 
 						// Edit the file while "editor is open" if requested
@@ -363,7 +270,9 @@ impl<'a> OpenUrlBuilder<'a> {
 								if let Some(parent) = vpath.parent() {
 									std::fs::create_dir_all(parent).unwrap();
 								}
-								std::fs::write(&vpath, issue.serialize_virtual()).unwrap();
+								let content = issue.serialize_virtual();
+								eprintln!("[test:OpenBuilder] submitting user input // writing to {vpath:?}:\n{content}");
+								std::fs::write(&vpath, content).unwrap();
 							}
 							Some(EditOperation::ContentsOnly(new_body)) => {
 								// Find the virtual edit file, read it, replace body, write back
@@ -377,7 +286,7 @@ impl<'a> OpenUrlBuilder<'a> {
 							None => {}
 						}
 
-						// Try to signal the pipe (use O_NONBLOCK to avoid blocking)
+						// Try to signal the pipe (use nix O_NONBLOCK to avoid blocking)
 						// Only mark as signaled if we successfully wrote to the pipe.
 						// The pipe open will fail if no reader is waiting yet.
 						#[cfg(unix)]
@@ -432,7 +341,7 @@ pub struct RunOutput {
 /// Unsafe filesystem operations for tests that genuinely need path-based access.
 ///
 /// **DO NOT USE** unless you are testing filesystem edge cases specifically.
-/// Normal tests should use `ctx.open(&issue)` with the proper `Issue` type.
+/// Normal tests should use `ctx.open_issue(&issue)` with the proper `Issue` type.
 ///
 /// To use: `use crate::common::are_you_sure::UnsafePathExt;`
 pub mod are_you_sure {
@@ -558,15 +467,6 @@ enum EditOperation {
 	FullIssue(Issue),
 	/// Edit just the contents/body (preserves header, replaces body)
 	ContentsOnly(String),
-}
-
-/// The target for opening an issue (URL or touch pattern).
-#[derive(Clone)]
-enum OpenTarget {
-	/// Open by Github URL
-	Url(String),
-	/// Open by touch pattern (--touch flag)
-	Touch(String),
 }
 
 /// Find the most recently modified .md file under the virtual edit base path.

@@ -46,7 +46,7 @@ async fn test_both_diverged_triggers_conflict() {
 	ctx.local(&local, Some(Seed::new(40))).await;
 	ctx.remote(&remote, Some(Seed::new(45)));
 
-	let out = ctx.open(&local).run();
+	let out = ctx.open_issue(&local).run();
 
 	// Capture the resulting directory state - this shows actual timestamps and merge result
 	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap(), &out), @r#"
@@ -86,7 +86,7 @@ async fn test_both_diverged_with_git_initiates_merge() {
 	ctx.local(&local, Some(Seed::new(60))).await;
 	ctx.remote(&remote, Some(Seed::new(65)));
 
-	let out = ctx.open(&local).run();
+	let out = ctx.open_issue(&local).run();
 
 	// Capture the resulting directory state - this shows actual timestamps and merge result
 	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap(), &out), @r#"
@@ -127,7 +127,7 @@ async fn test_only_remote_changed_takes_remote_with_pull() {
 	ctx.remote(&remote, Some(Seed::new(90)));
 
 	// Must use --pull to fetch remote changes when local is unchanged
-	let out = ctx.open(&consensus).args(&["--pull"]).run();
+	let out = ctx.open_issue(&consensus).args(&["--pull"]).run();
 
 	eprintln!("stdout: {}", out.stdout);
 	eprintln!("stderr: {}", out.stderr);
@@ -156,7 +156,7 @@ async fn test_only_local_changed_pushes_local() {
 	ctx.local(&local, Some(Seed::new(100))).await;
 	ctx.remote(&consensus, Some(Seed::new(-100)));
 
-	let out = ctx.open(&local).run();
+	let out = ctx.open_issue(&local).run();
 
 	assert!(out.status.success(), "Should succeed when only local changed. stderr: {}", out.stderr);
 
@@ -199,7 +199,7 @@ async fn test_reset_with_local_source_skips_sync() {
 	ctx.remote(&remote, Some(Seed::new(25)));
 
 	// Run with --reset flag
-	let out = ctx.open(&local).args(&["--reset"]).run();
+	let out = ctx.open_issue(&local).args(&["--reset"]).run();
 
 	eprintln!("stdout: {}", out.stdout);
 	eprintln!("stderr: {}", out.stderr);
@@ -316,7 +316,7 @@ async fn test_pull_fetches_before_editor() {
 	ctx.remote(&remote, Some(Seed::new(70)));
 
 	// --pull should fetch from Github before opening editor
-	let out = ctx.open(&local).args(&["--pull"]).run();
+	let out = ctx.open_issue(&local).args(&["--pull"]).run();
 
 	eprintln!("stdout: {}", out.stdout);
 	eprintln!("stderr: {}", out.stderr);
@@ -343,7 +343,7 @@ async fn test_pull_with_divergence_runs_sync_before_editor() {
 	ctx.remote(&remote, Some(Seed::new(55)));
 
 	// --pull should attempt to sync/merge BEFORE editor opens
-	let out = ctx.open(&local).args(&["--pull"]).run();
+	let out = ctx.open_issue(&local).args(&["--pull"]).run();
 
 	// Should either succeed (auto-resolved) or fail with conflict
 	// But importantly, it should attempt sync BEFORE editor
@@ -390,7 +390,7 @@ async fn test_closing_issue_syncs_state_change() {
 	let mut closed_issue = open_issue.clone();
 	closed_issue.contents.state = tedi::CloseState::Closed;
 
-	let out = ctx.open(&open_issue).edit(&closed_issue).run();
+	let out = ctx.open_issue(&open_issue).edit(&closed_issue).run();
 
 	// Line 11 contains `state` timestamp set via Timestamp::now() when detecting state change
 	let result_str = render_fixture(FixtureRenderer::try_new(&ctx).unwrap().redact_timestamps(&[11]), &out);
@@ -477,7 +477,7 @@ async fn test_open_unchanged_succeeds() {
 	assert!(out.status.success(), "First open should succeed. stderr: {}", out.stderr);
 
 	// Second open - should also succeed (no-op since nothing changed)
-	let out = ctx.open(&issue).run();
+	let out = ctx.open_issue(&issue).run();
 	assert!(out.status.success(), "Second open (unchanged) should succeed. stderr: {}", out.stderr);
 }
 
@@ -573,7 +573,7 @@ async fn test_comment_shorthand_creates_comment() {
 	write_to_path(&issue_path, edited_content);
 
 	// Run open to trigger sync (which should expand !c and create the comment)
-	let out = ctx.open(&issue).run();
+	let out = ctx.open_issue(&issue).run();
 
 	//eprintln!("stdout: {}", out.stdout);
 	//eprintln!("stderr: {}", out.stderr);
@@ -645,7 +645,7 @@ async fn test_force_merge_preserves_both_sub_issues(#[case] args: &[&str], #[cas
 	ctx.local(&local, Some(Seed::new(100))).await;
 	ctx.remote(&remote, Some(Seed::new(100)));
 
-	let out = ctx.open(&local).args(args).run();
+	let out = ctx.open_issue(&local).args(args).run();
 
 	//eprintln!("stdout: {}", out.stdout);
 	//eprintln!("stderr: {}", out.stderr);

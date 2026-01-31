@@ -38,7 +38,7 @@ fn test_touch_matches_issue_by_substring() {
 	);
 
 	// Touch with partial match "ancestry" should find the issue
-	let out = ctx.touch("testowner/testrepo/ancestry").run();
+	let out = ctx.open_touch("testowner/testrepo/ancestry").run();
 
 	// Should succeed and find the existing issue
 	assert!(out.status.success(), "Expected success, got stderr: {}", out.stderr);
@@ -79,7 +79,7 @@ fn test_touch_path_with_more_segments_after_flat_file_match() {
 	);
 
 	let new_issue_contents = "new issue contents";
-	let out = ctx.touch("testowner/testrepo/ancestry/check_works").edit_contents(new_issue_contents).run();
+	let out = ctx.open_touch("testowner/testrepo/ancestry/check_works").edit_contents(new_issue_contents).run();
 
 	eprintln!("{:?}", out.stdout);
 	eprintln!("{:?}", out.stderr);
@@ -150,7 +150,7 @@ fn test_touch_new_subissue_no_edits_does_not_create() {
 	);
 
 	// Touch a new sub-issue path but don't make any edits (just close editor)
-	let out = ctx.touch("testowner/testrepo/parent/new_child").run();
+	let out = ctx.open_touch("testowner/testrepo/parent/new_child").run();
 
 	// Should succeed (editor opened and closed)
 	assert!(out.status.success(), "Expected success, got stderr: {}", out.stderr);
