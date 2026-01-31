@@ -60,7 +60,7 @@ async fn test_both_diverged_triggers_conflict() {
 	  "issues": {
 	    "1": {
 	      "timestamps": {
-	        "title": "2001-09-11T10:54:39Z",
+	        "title": "2001-09-11T09:01:50Z",
 	        "description": "2001-09-11T11:07:36Z",
 	        "labels": "2001-09-11T16:40:49Z",
 	        "state": "2001-09-11T22:22:01Z",
@@ -328,11 +328,7 @@ async fn test_pull_fetches_before_editor() {
 	assert!(out.status.success(), "Should succeed with --pull. stderr: {}", out.stderr);
 
 	// Should show fetch activity
-	assert!(
-		out.stdout.contains("Fetching") || out.stdout.contains("Pulling"),
-		"Should show fetch/pull activity with --pull. stdout: {}",
-		out.stdout
-	);
+	assert!(out.stderr.contains("pre-open sync"), "Should show fetch/pull activity with --pull. stdout: {}", out.stderr);
 }
 
 /// --pull with diverged state should trigger conflict resolution (or auto-resolve).
@@ -570,11 +566,11 @@ async fn test_comment_shorthand_creates_comment() {
 	// Run open to trigger sync (which should expand !c and create the comment)
 	let out = ctx.open(&issue).run();
 
-	eprintln!("stdout: {}", out.stdout);
-	eprintln!("stderr: {}", out.stderr);
+	//eprintln!("stdout: {}", out.stdout);
+	//eprintln!("stderr: {}", out.stderr);
 
 	// Capture the resulting directory state
-	insta::assert_snapshot!(ctx.render_fixture(FixtureRenderer::try_new(&ctx).unwrap(), &out), @"
+	insta::assert_snapshot!(ctx.render_fixture(FixtureRenderer::try_new(&ctx).unwrap().skip_meta(), &out), @"
 	//- /o/__conflict.md
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
 			issue body

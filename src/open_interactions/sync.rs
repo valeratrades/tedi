@@ -27,6 +27,8 @@ use tedi::{
 	local::{Local, Submitted},
 	sink::Sink,
 };
+use tracing::instrument;
+use v_utils::elog;
 
 use super::{
 	conflict::{ConflictOutcome, complete_conflict_resolution, initiate_conflict_merge, read_resolved_conflict},
@@ -38,7 +40,7 @@ use super::{
 /// Modify a local issue, then sync changes back to Github.
 ///
 /// Caller is responsible for loading the issue (via `LazyIssue<Local>::load`).
-#[tracing::instrument]
+#[instrument]
 pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Modifier, sync_opts: SyncOptions) -> Result<ModifyResult> {
 	let repo_info = issue.identity.repo_info();
 	let issue_index = IssueIndex::from(&issue);
@@ -49,6 +51,7 @@ pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Mo
 		let local_differs = consensus.as_ref().map(|c| *c != issue).unwrap_or(false); //IGNORED_ERROR: if consensus doesn't exist, then local doesn't need to think about it
 
 		if sync_opts.pull || local_differs {
+			elog!("triggered pre-open sync");
 			core::sync(&mut issue, consensus, sync_opts.take_merge_mode()).await?;
 		}
 	}
@@ -102,6 +105,7 @@ mod core {
 	/// ```
 	///
 	/// Returns `(resolved_issue, changed)` where `changed` indicates if any updates were made.
+	#[instrument]
 	pub(super) async fn resolve_merge(local: Issue, consensus: Option<Issue>, remote: Issue, mode: MergeMode, owner: &str, repo: &str, issue_number: u64) -> Result<(Issue, bool)> {
 		// Handle Reset mode - take one side entirely
 		if let MergeMode::Reset { prefer } = mode {
@@ -133,26 +137,10 @@ mod core {
 		let mut local_merged = local.clone();
 		let mut remote_merged = remote.clone();
 
-		eprintln!("[sync_issue] Before merge:");
-		eprintln!("  local lineage: {:?}", local.identity.git_lineage());
-		eprintln!("  remote lineage: {:?}", remote.identity.git_lineage());
-		for (i, c) in local.children.iter().enumerate() {
-			eprintln!("  local child[{i}] lineage: {:?}", c.identity.git_lineage());
-		}
-		for (i, c) in remote.children.iter().enumerate() {
-			eprintln!("  remote child[{i}] lineage: {:?}", c.identity.git_lineage());
-		}
-
 		if let Some(ref consensus) = consensus {
 			local_merged.merge(consensus.clone(), false)?;
 		}
 		local_merged.merge(remote.clone(), force_remote_wins)?;
-
-		eprintln!("[sync_issue] After merge:");
-		eprintln!("  local_merged lineage: {:?}", local_merged.identity.git_lineage());
-		for (i, c) in local_merged.children.iter().enumerate() {
-			eprintln!("  local_merged child[{i}] lineage: {:?}", c.identity.git_lineage());
-		}
 
 		if let Some(consensus) = consensus {
 			remote_merged.merge(consensus, false)?;
