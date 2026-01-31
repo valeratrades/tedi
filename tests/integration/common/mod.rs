@@ -234,60 +234,54 @@ impl<'a> OpenBuilder<'a> {
 		let edit_op = self.edit_op.clone();
 		let mut signaled = false;
 
-		loop {
+		while child.try_wait().unwrap().is_none() {
 			// Drain pipes to prevent deadlock from full pipe buffers
 			drain_pipe(&mut stdout, &mut stdout_buf);
 			drain_pipe(&mut stderr, &mut stderr_buf);
 
-			// Check if process has exited
-			match child.try_wait().unwrap() {
-				Some(_status) => break,
-				None => {
-					// Process still running
-					if !signaled {
-						// Give process time to reach pipe wait
-						std::thread::sleep(std::time::Duration::from_millis(100));
+			// Process still running
+			if !signaled {
+				// Give process time to reach pipe wait
+				std::thread::sleep(std::time::Duration::from_millis(100));
 
-						// Edit the file while "editor is open" if requested
-						match &edit_op {
-							Some(EditOperation::FullIssue(issue)) => {
-								// Write to the virtual edit path computed from the issue
-								let vpath = tedi::local::Local::virtual_edit_path(issue);
-								if let Some(parent) = vpath.parent() {
-									std::fs::create_dir_all(parent).unwrap();
-								}
-								let content = issue.serialize_virtual();
-								eprintln!("[test:OpenBuilder] submitting user input // writing to {vpath:?}:\n{content}");
-								std::fs::write(&vpath, content).unwrap();
-							}
-							Some(EditOperation::ContentsOnly(new_body)) => {
-								// Find the virtual edit file, read it, replace body, write back
-								let virtual_edit_base = PathBuf::from("/tmp").join(env!("CARGO_PKG_NAME"));
-								if let Some(vpath) = find_virtual_edit_file(&virtual_edit_base) {
-									let content = std::fs::read_to_string(&vpath).unwrap();
-									let new_content = replace_issue_body(&content, new_body);
-									std::fs::write(&vpath, new_content).unwrap();
-								}
-							}
-							None => {}
+				// Edit the file while "editor is open" if requested
+				match &edit_op {
+					Some(EditOperation::FullIssue(issue)) => {
+						// Write to the virtual edit path computed from the issue
+						let vpath = tedi::local::Local::virtual_edit_path(issue);
+						if let Some(parent) = vpath.parent() {
+							std::fs::create_dir_all(parent).unwrap();
 						}
-
-						// Try to signal the pipe (use nix O_NONBLOCK to avoid blocking)
-						// Only mark as signaled if we successfully wrote to the pipe.
-						// The pipe open will fail if no reader is waiting yet.
-						#[cfg(unix)]
-						{
-							use std::os::unix::fs::OpenOptionsExt;
-							if let Ok(mut pipe) = std::fs::OpenOptions::new().write(true).custom_flags(0x800).open(&pipe_path)
-								&& pipe.write_all(b"x").is_ok()
-							{
-								signaled = true;
-							}
+						let content = issue.serialize_virtual();
+						eprintln!("[test:OpenBuilder] submitting user input // writing to {vpath:?}:\n{content}");
+						std::fs::write(&vpath, content).unwrap();
+					}
+					Some(EditOperation::ContentsOnly(new_body)) => {
+						// Find the virtual edit file, read it, replace body, write back
+						let virtual_edit_base = PathBuf::from("/tmp").join(env!("CARGO_PKG_NAME"));
+						if let Some(vpath) = find_virtual_edit_file(&virtual_edit_base) {
+							let content = std::fs::read_to_string(&vpath).unwrap();
+							let new_content = replace_issue_body(&content, new_body);
+							std::fs::write(&vpath, new_content).unwrap();
 						}
 					}
-					std::thread::sleep(std::time::Duration::from_millis(10));
+					None => {}
+				}
+
+				// Try to signal the pipe (use nix O_NONBLOCK to avoid blocking)
+				// Only mark as signaled if we successfully wrote to the pipe.
+				// The pipe open will fail if no reader is waiting yet.
+				#[cfg(unix)]
+				{
+					use std::os::unix::fs::OpenOptionsExt;
+					if let Ok(mut pipe) = std::fs::OpenOptions::new().write(true).custom_flags(0x800).open(&pipe_path)
+						&& pipe.write_all(b"x").is_ok()
+					{
+						signaled = true;
+					}
 				}
 			}
+			std::thread::sleep(std::time::Duration::from_millis(10));
 		}
 
 		// Final drain after process exits
