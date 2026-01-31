@@ -71,12 +71,12 @@ fn test_touch_path_with_more_segments_after_flat_file_match() {
 			}
 		}
 		//- /data/issues/testowner/testrepo/99_-_parent.md
-		- [ ] parent <!--https://github.com/testowner/testrepo/issues/99-->
+		- [ ] parent <!-- @mock_user https://github.com/testowner/testrepo/issues/99-->
 			_
 	"#,
 	);
 
-	let out = ctx.open_touch("testowner/testrepo/parent/child").edit_contents("child contents").run();
+	let out = ctx.open_touch("testowner/testrepo/parent/child").ghost_edit().run();
 
 	// Verify: flat file converted to directory, sub-issue created inside
 	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap(), &out), @r#"

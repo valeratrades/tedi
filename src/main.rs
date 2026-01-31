@@ -1,6 +1,16 @@
 #![allow(clippy::len_zero)]
 pub mod config;
 pub mod utils;
+/// Mock behavior type for testing.
+#[derive(Clone, Copy, Debug, Default, ValueEnum)]
+pub enum MockType {
+	/// Standard mock - uses mock Github client but normal editor flow.
+	#[default]
+	#[value(name = "")]
+	Standard,
+	/// Ghost edit - skip editor and pretend edit was made.
+	GhostEdit,
+}
 #[tokio::main]
 async fn main() {
 	{
@@ -88,17 +98,6 @@ use std::time::Duration;
 use clap::{Parser, Subcommand, ValueEnum};
 
 const MANUAL_PATH_APPENDIX: &str = "manual_stats/";
-
-/// Mock behavior type for testing.
-#[derive(Clone, Copy, Debug, Default, ValueEnum)]
-pub enum MockType {
-	/// Standard mock - uses mock Github client but normal editor flow.
-	#[default]
-	#[value(name = "")]
-	Standard,
-	/// Ghost edit - skip editor and pretend edit was made.
-	GhostEdit,
-}
 
 #[derive(Parser)]
 #[command(author, version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("GIT_HASH"), ")"), about, long_about = None)]
