@@ -18,7 +18,7 @@ fn parse(content: &str) -> Issue {
 
 #[tokio::test]
 async fn test_comments_with_ids_sync_correctly() {
-	let ctx = TestContext::new("");
+	let ctx = TestContext::build("");
 
 	// Issue with a comment that has an ID
 	let issue = parse(
@@ -42,7 +42,7 @@ async fn test_comments_with_ids_sync_correctly() {
 
 #[tokio::test]
 async fn test_nested_issues_preserved_through_sync() {
-	let ctx = TestContext::new("");
+	let ctx = TestContext::build("");
 
 	let issue = parse(
 		"- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
@@ -79,7 +79,7 @@ async fn test_nested_issues_preserved_through_sync() {
 
 #[tokio::test]
 async fn test_mixed_open_closed_nested_issues_preserved() {
-	let ctx = TestContext::new("");
+	let ctx = TestContext::build("");
 
 	let issue = parse(
 		"- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
@@ -118,7 +118,7 @@ async fn test_mixed_open_closed_nested_issues_preserved() {
 
 #[tokio::test]
 async fn test_blockers_preserved_through_sync() {
-	let ctx = TestContext::new("");
+	let ctx = TestContext::build("");
 
 	let issue = parse(
 		"- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
@@ -147,7 +147,7 @@ async fn test_blockers_preserved_through_sync() {
 
 #[tokio::test]
 async fn test_blockers_added_during_edit_preserved() {
-	let ctx = TestContext::new("");
+	let ctx = TestContext::build("");
 
 	// Initial state: no blockers
 	let initial_issue = parse("- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tlorem ipsum\n");
@@ -178,7 +178,7 @@ async fn test_blockers_added_during_edit_preserved() {
 
 #[tokio::test]
 async fn test_blockers_with_headers_preserved() {
-	let ctx = TestContext::new("");
+	let ctx = TestContext::build("");
 
 	let issue = parse(
 		"- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
@@ -212,7 +212,7 @@ async fn test_blockers_with_headers_preserved() {
 
 #[tokio::test]
 async fn test_nested_issues_and_blockers_together() {
-	let ctx = TestContext::new("");
+	let ctx = TestContext::build("");
 
 	let issue = parse(
 		"- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
@@ -249,7 +249,7 @@ async fn test_nested_issues_and_blockers_together() {
 
 #[tokio::test]
 async fn test_closing_nested_issue_creates_bak_file() {
-	let ctx = TestContext::new("");
+	let ctx = TestContext::build("");
 
 	// Start with open nested issue
 	let initial_issue = parse(

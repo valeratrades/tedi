@@ -19,7 +19,7 @@ use crate::{FixtureIssuesExt, common::TestContext};
 /// error pointing to the parent directory.
 #[test]
 fn test_open_file_without_issue_number_in_name_gives_clear_error() {
-	let ctx = TestContext::new("");
+	let ctx = TestContext::build("");
 
 	// Create a file that uses title-only naming but has invalid content
 	let malformed_path = "issues/owner/repo/uni.md";
@@ -44,7 +44,7 @@ fn test_open_file_without_issue_number_in_name_gives_clear_error() {
 /// Same test but for a file in a subdirectory (like valeratrades/math/uni.md)
 #[test]
 fn test_open_file_in_repo_subdir_without_issue_number() {
-	let ctx = TestContext::new("");
+	let ctx = TestContext::build("");
 
 	// Create a file in a repo subdirectory without issue number
 	let malformed_path = "issues/valeratrades/math/uni.md";
@@ -82,7 +82,7 @@ fn test_open_file_in_repo_subdir_without_issue_number() {
 /// This should work without requiring git sync first.
 #[test]
 fn test_nested_issue_under_unsynced_parent() {
-	let ctx = TestContext::new("");
+	let ctx = TestContext::build("");
 
 	// Create parent issue directory with title-only name (not synced to git)
 	let parent_main = "issues/owner/repo/my_project/__main__.md";

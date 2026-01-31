@@ -17,7 +17,7 @@ fn parse(content: &str) -> Issue {
 
 #[tokio::test]
 async fn test_flat_format_preserved_when_no_sub_issues() {
-	let ctx = TestContext::new("");
+	let ctx = TestContext::build("");
 
 	let parent = parse("- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tparent body\n");
 	ctx.consensus(&parent, None).await;
@@ -39,7 +39,7 @@ async fn test_flat_format_preserved_when_no_sub_issues() {
 
 #[tokio::test]
 async fn test_old_flat_file_removed_when_sub_issues_appear() {
-	let ctx = TestContext::new("");
+	let ctx = TestContext::build("");
 
 	// Start with a flat issue locally
 	let parent = parse("- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tparent body\n");
@@ -76,7 +76,7 @@ async fn test_old_placement_discarded_with_pull() {
 	// This test verifies that when remote gains sub-issues and we use --pull,
 	// the old flat file is cleaned up and replaced with the directory format.
 
-	let ctx = TestContext::new("");
+	let ctx = TestContext::build("");
 
 	// Set up a flat issue locally, committed to git
 	let parent = parse("- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tparent body\n");
@@ -115,7 +115,7 @@ async fn test_old_placement_discarded_with_pull() {
 
 #[tokio::test]
 async fn test_duplicate_removes_local_file() {
-	let ctx = TestContext::new("");
+	let ctx = TestContext::build("");
 
 	// Set up a local issue
 	let original = parse("- [ ] Some Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tbody\n");
@@ -143,7 +143,7 @@ async fn test_duplicate_removes_local_file() {
 
 #[tokio::test]
 async fn test_duplicate_reference_to_existing_issue_succeeds() {
-	let ctx = TestContext::new("");
+	let ctx = TestContext::build("");
 
 	// Set up a local issue and a target duplicate issue
 	let original = parse("- [ ] Some Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tbody\n");

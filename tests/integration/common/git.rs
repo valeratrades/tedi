@@ -3,8 +3,7 @@
 //! Provides simple methods for setting up test scenarios:
 //!
 //! ```ignore
-//! let ctx = TestContext::new("");
-//! ctx.init_git();
+//! let ctx = TestContext::build("");
 //!
 //! // Set up local file (uncommitted) with timestamps from seed 50
 //! ctx.local(&issue, Some(50));

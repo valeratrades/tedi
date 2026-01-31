@@ -16,8 +16,7 @@ fn parse(content: &str) -> Issue {
 /// No conflict should occur because consensus == remote after reset.
 #[test]
 fn test_reset_with_subissue_edit() {
-	let ctx = TestContext::new("");
-	ctx.init_git();
+	let ctx = TestContext::build("");
 
 	// Remote has parent with one open sub-issue
 	let remote_state = parse(
@@ -49,8 +48,7 @@ fn test_reset_with_subissue_edit() {
 /// After --reset on a simple issue, editing the body should succeed without conflict.
 #[test]
 fn test_reset_with_body_edit() {
-	let ctx = TestContext::new("");
-	ctx.init_git();
+	let ctx = TestContext::build("");
 
 	let remote_state = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\toriginal body\n");
 	ctx.remote(&remote_state, None);
@@ -78,8 +76,7 @@ fn test_reset_with_body_edit() {
 /// instead of the remote API content, causing consensus != remote.
 #[tokio::test]
 async fn test_reset_discards_local_subissue_modifications() {
-	let ctx = TestContext::new("");
-	ctx.init_git();
+	let ctx = TestContext::build("");
 
 	// 3-level hierarchy: grandparent -> parent -> child
 	// Parent gets its own directory because it has children

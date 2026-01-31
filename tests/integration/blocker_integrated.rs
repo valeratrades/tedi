@@ -17,8 +17,7 @@ fn parse(content: &str) -> Issue {
 
 #[tokio::test]
 async fn test_blocker_add_in_integrated_mode() {
-	let ctx = TestContext::new("");
-	ctx.init_git();
+	let ctx = TestContext::build("");
 
 	// Create issue with existing blockers section
 	let issue = parse(
@@ -53,8 +52,7 @@ async fn test_blocker_add_in_integrated_mode() {
 
 #[tokio::test]
 async fn test_blocker_pop_in_integrated_mode() {
-	let ctx = TestContext::new("");
-	ctx.init_git();
+	let ctx = TestContext::build("");
 
 	// Create issue with multiple blockers
 	let issue = parse(
@@ -99,8 +97,7 @@ async fn test_blocker_pop_in_integrated_mode() {
 
 #[tokio::test]
 async fn test_blocker_add_creates_blockers_section_if_missing() {
-	let ctx = TestContext::new("");
-	ctx.init_git();
+	let ctx = TestContext::build("");
 
 	// Create issue WITHOUT blockers section
 	let issue = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tBody text without blockers section.\n");
@@ -130,8 +127,7 @@ async fn test_blocker_add_creates_blockers_section_if_missing() {
 #[tokio::test]
 async fn test_blocker_add_without_blocker_file_set_errors() {
 	// Non-urgent `blocker add` should fail when no blocker file is set.
-	let ctx = TestContext::new("");
-	ctx.init_git();
+	let ctx = TestContext::build("");
 
 	// NO blocker file set
 
@@ -151,8 +147,7 @@ async fn test_blocker_add_urgent_without_blocker_file_set() {
 	// Regression test: `blocker add --urgent` should work even without a blocker file set.
 	// The urgent file is owner-independent and doesn't need blocker file context.
 	// Previously this errored with "No blocker file set. Use `todo blocker set <pattern>` first."
-	let ctx = TestContext::new("");
-	ctx.init_git();
+	let ctx = TestContext::build("");
 
 	// NO blocker file set - this is the key part of the test
 
@@ -175,8 +170,7 @@ async fn test_blocker_add_urgent_without_blocker_file_set() {
 
 #[tokio::test]
 async fn test_blocker_add_with_header_context() {
-	let ctx = TestContext::new("");
-	ctx.init_git();
+	let ctx = TestContext::build("");
 
 	// Create issue with blockers section containing headers
 	let issue = parse(

@@ -38,7 +38,7 @@ fn parse(content: &str) -> Issue {
 
 #[tokio::test]
 async fn test_both_diverged_triggers_conflict() {
-	let ctx = TestContext::new("");
+	let ctx = TestContext::build("");
 
 	let consensus = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tconsensus body\n");
 	let local = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tlocal body\n");
@@ -78,7 +78,7 @@ async fn test_both_diverged_triggers_conflict() {
 
 #[tokio::test]
 async fn test_both_diverged_with_git_initiates_merge() {
-	let ctx = TestContext::new("");
+	let ctx = TestContext::build("");
 
 	let consensus = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tconsensus body\n");
 	let local = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tlocal body\n");
@@ -120,7 +120,7 @@ async fn test_both_diverged_with_git_initiates_merge() {
 /// we only pull remote changes if --pull is specified.
 #[tokio::test]
 async fn test_only_remote_changed_takes_remote_with_pull() {
-	let ctx = TestContext::new("");
+	let ctx = TestContext::build("");
 
 	let consensus = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tconsensus body\n");
 	let remote = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tremote changed body\n");
@@ -149,7 +149,7 @@ async fn test_only_remote_changed_takes_remote_with_pull() {
 
 #[tokio::test]
 async fn test_only_local_changed_pushes_local() {
-	let ctx = TestContext::new("");
+	let ctx = TestContext::build("");
 
 	let consensus = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tconsensus body\n");
 	let local = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tlocal changed body\n");
@@ -190,7 +190,7 @@ async fn test_only_local_changed_pushes_local() {
 
 #[tokio::test]
 async fn test_reset_with_local_source_skips_sync() {
-	let ctx = TestContext::new("");
+	let ctx = TestContext::build("");
 
 	let consensus = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tconsensus body\n");
 	let local = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tlocal body\n");
@@ -221,8 +221,7 @@ async fn test_reset_with_local_source_skips_sync() {
 /// Opening via URL when no local file exists should create the file from remote.
 #[tokio::test]
 async fn test_url_open_creates_local_file_from_remote() {
-	let ctx = TestContext::new("");
-	ctx.init_git(); // Need git initialized for commits
+	let ctx = TestContext::build("");
 
 	let remote = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tremote body content\n");
 	// Seed: 15 (arbitrary, no comparison needed)
@@ -249,7 +248,7 @@ async fn test_url_open_creates_local_file_from_remote() {
 /// No merge conflicts, no prompts - just nuke and replace.
 #[tokio::test]
 async fn test_reset_with_remote_url_nukes_local_state() {
-	let ctx = TestContext::new("");
+	let ctx = TestContext::build("");
 
 	let local = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tlocal body that should be nuked\n");
 	let remote = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tremote body wins\n");
@@ -277,7 +276,7 @@ async fn test_reset_with_remote_url_nukes_local_state() {
 /// When opening via URL with --reset and there's divergence, should NOT trigger merge conflict.
 #[tokio::test]
 async fn test_reset_with_remote_url_skips_merge_on_divergence() {
-	let ctx = TestContext::new("");
+	let ctx = TestContext::build("");
 
 	let consensus = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tconsensus body\n");
 	let local = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tlocal diverged body\n");
@@ -310,7 +309,7 @@ async fn test_reset_with_remote_url_skips_merge_on_divergence() {
 /// This test verifies the fetch actually happens by checking stdout for fetch message.
 #[tokio::test]
 async fn test_pull_fetches_before_editor() {
-	let ctx = TestContext::new("");
+	let ctx = TestContext::build("");
 
 	let local = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tlocal body\n");
 	let remote = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tremote body from github\n");
@@ -335,8 +334,7 @@ async fn test_pull_fetches_before_editor() {
 /// --pull with diverged state should trigger conflict resolution (or auto-resolve).
 #[tokio::test]
 async fn test_pull_with_divergence_runs_sync_before_editor() {
-	let ctx = TestContext::new("");
-	ctx.init_git();
+	let ctx = TestContext::build("");
 
 	let consensus = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tconsensus body\n");
 	let local = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tlocal diverged body\n");
@@ -384,7 +382,7 @@ async fn test_pull_with_divergence_runs_sync_before_editor() {
 
 #[tokio::test]
 async fn test_closing_issue_syncs_state_change() {
-	let ctx = TestContext::new("");
+	let ctx = TestContext::build("");
 
 	let open_issue = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tbody\n");
 	// Local = consensus = remote initially
@@ -428,8 +426,7 @@ async fn test_closing_issue_syncs_state_change() {
 /// Github marks these with state_reason="duplicate" - they should be filtered out entirely.
 #[tokio::test]
 async fn test_duplicate_sub_issues_filtered_from_remote() {
-	let ctx = TestContext::new("");
-	ctx.init_git();
+	let ctx = TestContext::build("");
 
 	// Create issues with proper CloseState
 	let parent = parse("- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tparent body\n");
@@ -473,8 +470,7 @@ async fn test_duplicate_sub_issues_filtered_from_remote() {
 /// The second open should succeed, not fail with "Failed to commit remote state".
 #[tokio::test]
 async fn test_open_unchanged_succeeds() {
-	let ctx = TestContext::new("");
-	ctx.init_git();
+	let ctx = TestContext::build("");
 
 	let issue = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tissue body\n");
 	// Seed: 10 (arbitrary)
@@ -498,8 +494,7 @@ async fn test_open_unchanged_succeeds() {
 /// 4. Git commit fails because there's nothing to commit
 #[tokio::test]
 async fn test_open_by_number_unchanged_succeeds() {
-	let ctx = TestContext::new("");
-	ctx.init_git();
+	let ctx = TestContext::build("");
 
 	let issue = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tissue body\n");
 	ctx.remote(&issue, None);
@@ -523,8 +518,7 @@ async fn test_open_by_number_unchanged_succeeds() {
 /// Reproduces the issue where changes made after --reset don't sync.
 #[tokio::test]
 async fn test_reset_syncs_changes_after_editor() {
-	let ctx = TestContext::new("");
-	ctx.init_git();
+	let ctx = TestContext::build("");
 
 	let remote_issue = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tremote body\n");
 	ctx.remote(&remote_issue, None);
@@ -567,8 +561,7 @@ async fn test_reset_syncs_changes_after_editor() {
 /// 2. Result in a new comment being created on Github
 #[tokio::test]
 async fn test_comment_shorthand_creates_comment() {
-	let ctx = TestContext::new("");
-	ctx.init_git();
+	let ctx = TestContext::build("");
 
 	// Start with an issue that has no comments
 	let issue = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tissue body\n");
@@ -625,7 +618,7 @@ async fn test_comment_shorthand_creates_comment() {
 #[case::prefer_remote(&["--pull", "--force"], false)]
 #[tokio::test]
 async fn test_force_merge_preserves_both_sub_issues(#[case] args: &[&str], #[case] expect_local_description: bool) {
-	let ctx = TestContext::new("");
+	let ctx = TestContext::build("");
 
 	// Local: parent with local-only sub-issue and modified description
 	let local = parse(
@@ -698,8 +691,7 @@ async fn test_force_merge_preserves_both_sub_issues(#[case] args: &[&str], #[cas
 /// This is critical for the merge algorithm to work - timestamps determine which side wins.
 #[tokio::test]
 async fn test_consensus_sink_writes_meta_json_with_timestamps() {
-	let ctx = TestContext::new("");
-	ctx.init_git(); // Need git initialized for URL fetch
+	let ctx = TestContext::build("");
 
 	// Set up a remote issue with a comment (will have timestamps from mock)
 	let remote = parse(

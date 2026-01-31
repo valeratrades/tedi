@@ -9,7 +9,10 @@
 //! # Example
 //!
 //! ```ignore
-//! let ctx = TestContext::new(r#"
+//! let ctx = TestContext::build("");
+//!
+//! // Or with fixtures:
+//! let ctx = TestContext::build(r#"
 //!     //- /data/blockers/test.md
 //!     - task 1
 //! "#);
@@ -42,7 +45,7 @@ pub struct TestContext {
 	pub pipe_path: PathBuf,
 }
 impl TestContext {
-	/// Create a new test context from a fixture string.
+	/// Create a new test context from a fixture string with git initialized.
 	///
 	/// Files in the fixture should use XDG category prefixes:
 	/// - `/data/blockers/test.md` → `XDG_DATA_HOME/todo/blockers/test.md`
@@ -52,13 +55,15 @@ impl TestContext {
 	/// # Example
 	///
 	/// ```ignore
-	/// let ctx = TestContext::new(r#"
+	/// let ctx = TestContext::build(r#"
 	///     //- /data/blockers/test.md
 	///     # Project
 	///     - task 1
 	/// "#);
 	/// ```
-	pub fn new(fixture_str: &str) -> Self {
+	pub fn build(fixture_str: &str) -> Self {
+		use git::GitExt;
+
 		let fixture = Fixture::parse(fixture_str);
 		let xdg = Xdg::new(fixture.write_to_tempdir(), env!("CARGO_PKG_NAME"));
 
@@ -68,7 +73,9 @@ impl TestContext {
 		// Set overrides so all library calls use our temp dir
 		tedi::mocks::set_issues_dir(xdg.data_dir().join("issues"));
 
-		Self { xdg, mock_state_path, pipe_path }
+		let ctx = Self { xdg, mock_state_path, pipe_path };
+		ctx.init_git();
+		ctx
 	}
 
 	/// Run a command with proper XDG environment.

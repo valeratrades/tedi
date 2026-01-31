@@ -1,5 +1,0 @@
----
-source: tests/integration/sync.rs
-expression: "r\"\""
----
-
