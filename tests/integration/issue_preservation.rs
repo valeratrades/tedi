@@ -6,10 +6,13 @@
 use tedi::Issue;
 use v_fixtures::FixtureRenderer;
 
-use crate::common::{
-	FixtureIssuesExt, TestContext,
-	are_you_sure::{UnsafePathExt, read_issue_file},
-	git::GitExt,
+use crate::{
+	common::{
+		FixtureIssuesExt, TestContext,
+		are_you_sure::{UnsafePathExt, read_issue_file},
+		git::GitExt,
+	},
+	render_fixture,
 };
 
 fn parse(content: &str) -> Issue {
@@ -276,16 +279,9 @@ async fn test_closing_nested_issue_creates_bak_file() {
 	eprintln!("stdout: {}", out.stdout);
 	eprintln!("stderr: {}", out.stderr);
 
-	// Debug: list files in the issues directory
-	let issues_dir = ctx.data_dir().join("issues/o/r");
-	eprintln!("Files in {issues_dir:?}:");
-	for entry in walkdir::WalkDir::new(&issues_dir).into_iter().filter_map(|e| e.ok()) {
-		eprintln!("  {}", entry.path().display());
-	}
-
 	assert!(out.status.success(), "stderr: {}", out.stderr);
 
-	insta::assert_snapshot!(ctx.render_fixture(FixtureRenderer::try_new(&ctx).unwrap().redact_timestamps(&[20]), &out), @r#"
+	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().redact_timestamps(&[20]), &out), @r#"
 	//- /o/r/.meta.json
 	{
 	  "virtual_project": false,

@@ -4,7 +4,10 @@
 
 use v_fixtures::FixtureRenderer;
 
-use crate::common::{FixtureIssuesExt, TestContext};
+use crate::{
+	common::{FixtureIssuesExt, TestContext},
+	render_fixture,
+};
 
 /// Test that touch mode matches issues by substring regex.
 /// Path: owner/repo/partial_title should match 99_-_full_title.md
@@ -84,7 +87,7 @@ fn test_touch_path_with_more_segments_after_flat_file_match() {
 	assert!(out.status.success(), "Expected success, got stderr: {}", out.stderr);
 
 	// Verify: flat file converted to directory, sub-issue created inside
-	insta::assert_snapshot!(ctx.render_fixture(FixtureRenderer::try_new(&ctx).unwrap(), &out), @r#"
+	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap(), &out), @r#"
 	//- /testowner/testrepo/.meta.json
 	{
 	  "virtual_project": false,
@@ -153,7 +156,7 @@ fn test_touch_new_subissue_no_edits_does_not_create() {
 	assert!(out.status.success(), "Expected success, got stderr: {}", out.stderr);
 
 	// Verify: no changes - parent still flat file, no sub-issue created
-	insta::assert_snapshot!(ctx.render_fixture(FixtureRenderer::try_new(&ctx).unwrap(), &out), @r#"
+	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap(), &out), @r#"
 	//- /testowner/testrepo/.meta.json
 	{
 	  "virtual_project": false,
@@ -185,4 +188,43 @@ fn test_touch_new_subissue_no_edits_does_not_create() {
 	- [ ] parent issue <!--https://github.com/testowner/testrepo/issues/99-->
 		parent body
 	"#);
+}
+
+/// Test that nested issues work when the parent directory uses title-only naming (not synced to git).
+///
+/// This should work without requiring git sync first.
+#[cfg(not(true))] //TODO!!!!!: \
+#[tokio::test]
+async fn test_nested_issue_under_unsynced_parent() {
+	let ctx = TestContext::build("");
+
+	//DO: --touch the parent with --offline
+
+	// Create parent issue directory with title-only name (not synced to git)
+	let pending_parent = parse(
+		r"
+- [ ] Parent Issue
+	pending parent
+	",
+	);
+	ctx.local(&pending_parent, None).await;
+
+	ctx.run(&["--offline", "TODO"]);
+
+	//// Create child issue under the unsynced parent
+	//let child_path = "issues/owner/repo/my_project/task.md";
+	//let child_content = "- [ ] Task <!-- @user https://github.com/owner/repo/issues/new -->\n\tA task under the unsynced parent.\n";
+	//ctx.write(child_path, child_content);
+
+	// Construct absolute path to the child file
+	let child_file_path = ctx.data_dir().join(child_path);
+
+	// Open the child issue by absolute path
+	let out = ctx.run(["--mock", "--offline", "open", "--touch", child_file_path.to_str().unwrap()]);
+
+	// Should succeed
+	assert!(out.status.success(), "Should succeed opening child under unsynced parent. stderr: {}", out.stderr);
+
+	// Verify the file structure is preserved
+	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().skip_meta(), &out), @"");
 }

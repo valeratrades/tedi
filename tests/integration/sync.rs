@@ -23,18 +23,14 @@
 
 use insta::assert_snapshot;
 use rstest::rstest;
-use tedi::Issue;
 use v_fixtures::FixtureRenderer;
 
 use crate::common::{
 	FixtureIssuesExt, TestContext,
 	are_you_sure::{UnsafePathExt, read_issue_file, write_to_path},
-	git::{GitExt, Seed},
+	git::{GitExt as _, Seed},
+	parse, render_fixture,
 };
-
-fn parse(content: &str) -> Issue {
-	Issue::deserialize_virtual(content).expect("failed to parse test issue")
-}
 
 #[tokio::test]
 async fn test_both_diverged_triggers_conflict() {
@@ -53,7 +49,7 @@ async fn test_both_diverged_triggers_conflict() {
 	let out = ctx.open(&local).run();
 
 	// Capture the resulting directory state - this shows actual timestamps and merge result
-	insta::assert_snapshot!(ctx.render_fixture(FixtureRenderer::try_new(&ctx).unwrap(), &out), @r#"
+	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap(), &out), @r#"
 	//- /o/r/.meta.json
 	{
 	  "virtual_project": false,
@@ -93,7 +89,7 @@ async fn test_both_diverged_with_git_initiates_merge() {
 	let out = ctx.open(&local).run();
 
 	// Capture the resulting directory state - this shows actual timestamps and merge result
-	insta::assert_snapshot!(ctx.render_fixture(FixtureRenderer::try_new(&ctx).unwrap(), &out), @r#"
+	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap(), &out), @r#"
 	//- /o/r/.meta.json
 	{
 	  "virtual_project": false,
@@ -165,7 +161,7 @@ async fn test_only_local_changed_pushes_local() {
 	assert!(out.status.success(), "Should succeed when only local changed. stderr: {}", out.stderr);
 
 	// Capture the resulting directory state
-	insta::assert_snapshot!(ctx.render_fixture(FixtureRenderer::try_new(&ctx).unwrap(), &out), @r#"
+	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap(), &out), @r#"
 	//- /o/r/.meta.json
 	{
 	  "virtual_project": false,
@@ -357,7 +353,7 @@ async fn test_pull_with_divergence_runs_sync_before_editor() {
 		out.stderr
 	);
 
-	assert_snapshot!(ctx.render_fixture(FixtureRenderer::try_new(&ctx).unwrap(), &out), r"", @r#"
+	assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap(), &out), r"", @r#"
 	//- /o/r/.meta.json
 	{
 	  "virtual_project": false,
@@ -397,7 +393,7 @@ async fn test_closing_issue_syncs_state_change() {
 	let out = ctx.open(&open_issue).edit(&closed_issue).run();
 
 	// Line 11 contains `state` timestamp set via Timestamp::now() when detecting state change
-	let result_str = ctx.render_fixture(FixtureRenderer::try_new(&ctx).unwrap().redact_timestamps(&[11]), &out);
+	let result_str = render_fixture(FixtureRenderer::try_new(&ctx).unwrap().redact_timestamps(&[11]), &out);
 
 	insta::assert_snapshot!(result_str, @r#"
 	//- /o/r/.meta.json
@@ -452,7 +448,7 @@ async fn test_duplicate_sub_issues_filtered_from_remote() {
 
 	assert!(out.status.success(), "Should succeed. stderr: {}", out.stderr);
 
-	insta::assert_snapshot!(ctx.render_fixture(FixtureRenderer::try_new(&ctx).unwrap().skip_meta(), &out), @"
+	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().skip_meta(), &out), @"
 	//- /o/r/1_-_Parent_Issue/2_-_Normal_Closed_Sub.md.bak
 	- [x] Normal Closed Sub <!-- @mock_user https://github.com/o/r/issues/2 -->
 			sub body
@@ -532,7 +528,7 @@ async fn test_reset_syncs_changes_after_editor() {
 
 	// Capture the resulting directory state
 	// Line 11 contains `state` timestamp set via Timestamp::now() when detecting state change
-	insta::assert_snapshot!(ctx.render_fixture(FixtureRenderer::try_new(&ctx).unwrap().redact_timestamps(&[11]), &out), @r#"
+	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().redact_timestamps(&[11]), &out), @r#"
 	//- /o/r/.meta.json
 	{
 	  "virtual_project": false,
@@ -583,7 +579,7 @@ async fn test_comment_shorthand_creates_comment() {
 	//eprintln!("stderr: {}", out.stderr);
 
 	// Capture the resulting directory state
-	insta::assert_snapshot!(ctx.render_fixture(FixtureRenderer::try_new(&ctx).unwrap().skip_meta(), &out), @"
+	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().skip_meta(), &out), @"
 	//- /o/__conflict.md
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
 			issue body
@@ -659,7 +655,7 @@ async fn test_force_merge_preserves_both_sub_issues(#[case] args: &[&str], #[cas
 	// Snapshot the result - different expectations based on which side wins conflicts
 	if expect_local_description {
 		// --force: local wins conflicts, so "extra local line" should be present
-		insta::assert_snapshot!(ctx.render_fixture(FixtureRenderer::try_new(&ctx).unwrap().skip_meta(), &out), @r#"
+		insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().skip_meta(), &out), @r#"
 		//- /o/r/1_-_Parent_Issue/2_-_Local_Sub.md
 		- [ ] Local Sub <!-- @mock_user https://github.com/o/r/issues/2 -->
 				local sub body
@@ -673,7 +669,7 @@ async fn test_force_merge_preserves_both_sub_issues(#[case] args: &[&str], #[cas
 		"#);
 	} else {
 		// --pull --force: remote wins conflicts, so "extra local line" should NOT be present
-		insta::assert_snapshot!(ctx.render_fixture(FixtureRenderer::try_new(&ctx).unwrap().skip_meta(), &out), @r#"
+		insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().skip_meta(), &out), @r#"
 		//- /o/r/1_-_Parent_Issue/2_-_Local_Sub.md
 		- [ ] Local Sub <!-- @mock_user https://github.com/o/r/issues/2 -->
 				local sub body
@@ -713,7 +709,7 @@ async fn test_consensus_sink_writes_meta_json_with_timestamps() {
 	assert!(out.status.success(), "Fetch should succeed. stderr: {}", out.stderr);
 
 	// Capture the resulting directory state (includes .meta.json with timestamps)
-	insta::assert_snapshot!(ctx.render_fixture(FixtureRenderer::try_new(&ctx).unwrap(), &out), @r#"
+	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap(), &out), @r#"
 	//- /o/r/.meta.json
 	{
 	  "virtual_project": false,

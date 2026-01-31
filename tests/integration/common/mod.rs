@@ -79,7 +79,12 @@ impl TestContext {
 	}
 
 	/// Run a command with proper XDG environment.
+	//pub fn run(&self, mut args: [&str]) -> RunOutput {
+	#[deprecated(note = "rewrite to builder over main `open`")]
 	pub fn run(&self, args: &[&str]) -> RunOutput {
+		//if !args.contains("--mock") {
+		//	args = ["--mock"].join(args);
+		//}
 		let mut cmd = Command::new(get_binary_path());
 		cmd.args(args);
 		cmd.env("__IS_INTEGRATION_TEST", "1");
@@ -109,72 +114,24 @@ impl TestContext {
 		}
 	}
 
-	/// Read a file from the data directory.
-	pub fn read(&self, relative_path: &str) -> String {
-		self.xdg.read_data(relative_path.trim_start_matches('/'))
-	}
-
-	/// Write a file to the data directory.
-	pub fn write(&self, relative_path: &str, content: &str) {
-		self.xdg.write_data(relative_path.trim_start_matches('/'), content);
-	}
-
-	/// Check if a file exists in the data directory.
-	pub fn data_exists(&self, relative_path: &str) -> bool {
-		self.xdg.data_exists(relative_path.trim_start_matches('/'))
-	}
-
-	/// Read the current project from cache.
-	pub fn read_current_project(&self) -> Option<String> {
-		if self.xdg.cache_exists("current_project.txt") {
-			Some(self.xdg.read_cache("current_project.txt"))
-		} else {
-			None
-		}
-	}
-
-	/// Read a blocker file (path relative to blockers directory).
-	pub fn read_blocker(&self, blocker_relative_path: &str) -> String {
-		self.xdg.read_data(&format!("blockers/{blocker_relative_path}"))
-	}
-
-	/// Check if a blocker file exists.
-	pub fn blocker_exists(&self, blocker_relative_path: &str) -> bool {
-		self.xdg.data_exists(&format!("blockers/{blocker_relative_path}"))
-	}
-
-	/// Get the data directory path.
-	pub fn data_dir(&self) -> PathBuf {
-		self.xdg.data_dir()
-	}
-
 	/// Set up mock Github to return an issue.
 	///
 	/// The issue parameter should be a serde_json::Value representing the mock state.
-	pub fn setup_mock_state(&self, state: &serde_json::Value) {
+	fn setup_mock_state(&self, state: &serde_json::Value) {
 		std::fs::write(&self.mock_state_path, serde_json::to_string_pretty(state).unwrap()).unwrap();
 	}
 
 	/// Create an OpenUrlBuilder for running the `open` command with a Github URL.
+	#[deprecated(note = "rewrite to builder over main `open`")]
 	pub fn open_url(&self, owner: &str, repo: &str, number: u64) -> OpenUrlBuilder<'_> {
 		let url = format!("https://github.com/{owner}/{repo}/issues/{number}");
 		OpenUrlBuilder::with_url(self, url)
 	}
 
 	/// Create an OpenUrlBuilder for running the `open --touch` command.
+	#[deprecated(note = "rewrite to builder over main `open`")]
 	pub fn touch(&self, pattern: &str) -> OpenUrlBuilder<'_> {
 		OpenUrlBuilder::with_touch(self, pattern.to_string())
-	}
-
-	/// Render a fixture with optional error output if the command failed.
-	pub fn render_fixture(&self, renderer: FixtureRenderer<'_>, output: &RunOutput) -> String {
-		let result = renderer.render();
-		if !output.status.success() {
-			let s = format!("\n\nBINARY FAILED\nstdout:\n{}\nstderr:\n{}", output.stdout, output.stderr);
-			//result.push_str(s); //Q: embedding it into a snapshot feels a bit bizzare. And I don't get color-coding
-			eprintln!("{s}");
-		}
-		result
 	}
 }
 
@@ -451,6 +408,21 @@ impl<'a> OpenUrlBuilder<'a> {
 	}
 }
 
+pub fn parse(content: &str) -> Issue {
+	Issue::deserialize_virtual(content).expect("failed to parse test issue")
+}
+
+/// Render a fixture with optional error output if the command failed.
+pub fn render_fixture(renderer: FixtureRenderer<'_>, output: &RunOutput) -> String {
+	let result = renderer.render();
+	if !output.status.success() {
+		let s = format!("\n\nBINARY FAILED\nstdout:\n{}\nstderr:\n{}", output.stdout, output.stderr);
+		//result.push_str(s); //Q: embedding it into a snapshot feels a bit bizzare. And I don't get color-coding
+		eprintln!("{s}");
+	}
+	result
+}
+
 /// Output from running a command.
 pub struct RunOutput {
 	pub status: ExitStatus,
@@ -466,7 +438,7 @@ pub struct RunOutput {
 pub mod are_you_sure {
 	use std::path::{Path, PathBuf};
 
-	use tedi::local::{FsReader, Local, LocalPath};
+	use tedi::local::{FsReader, LocalPath};
 
 	use super::TestContext;
 
