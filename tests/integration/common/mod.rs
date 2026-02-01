@@ -116,8 +116,8 @@ impl TestContext {
 	}
 
 	/// Create an OpenBuilder for running the `open` command with a Github URL.
-	pub fn open_url(&self, owner: &str, repo: &str, number: u64) -> OpenBuilder<'_> {
-		let url = format!("https://github.com/{owner}/{repo}/issues/{number}");
+	pub fn open_url(&self, repo_info: tedi::RepoInfo, number: u64) -> OpenBuilder<'_> {
+		let url = format!("https://github.com/{}/{}/issues/{number}", repo_info.owner(), repo_info.repo());
 		OpenBuilder {
 			ctx: self,
 			target: BuilderTarget::Url(url),
@@ -349,12 +349,12 @@ pub mod are_you_sure {
 		/// Get the flat format path for an issue: `{number}_-_{title}.md`
 		///
 		/// **Unsafe**: bypasses proper issue addressing. Use only for filesystem tests.
-		fn flat_issue_path(&self, owner: &str, repo: &str, number: u64, title: &str) -> PathBuf;
+		fn flat_issue_path(&self, repo_info: tedi::RepoInfo, number: u64, title: &str) -> PathBuf;
 
 		/// Get the directory format path for an issue: `{number}_-_{title}/__main__.md`
 		///
 		/// **Unsafe**: bypasses proper issue addressing. Use only for filesystem tests.
-		fn dir_issue_path(&self, owner: &str, repo: &str, number: u64, title: &str) -> PathBuf;
+		fn dir_issue_path(&self, repo_info: tedi::RepoInfo, number: u64, title: &str) -> PathBuf;
 
 		/// Resolve an issue's actual filesystem path after it's been written.
 		///
@@ -363,14 +363,14 @@ pub mod are_you_sure {
 	}
 
 	impl UnsafePathExt for TestContext {
-		fn flat_issue_path(&self, owner: &str, repo: &str, number: u64, title: &str) -> PathBuf {
+		fn flat_issue_path(&self, repo_info: tedi::RepoInfo, number: u64, title: &str) -> PathBuf {
 			let sanitized = title.replace(' ', "_");
-			self.xdg.data_dir().join(format!("issues/{owner}/{repo}/{number}_-_{sanitized}.md"))
+			self.xdg.data_dir().join(format!("issues/{}/{}/{number}_-_{sanitized}.md", repo_info.owner(), repo_info.repo()))
 		}
 
-		fn dir_issue_path(&self, owner: &str, repo: &str, number: u64, title: &str) -> PathBuf {
+		fn dir_issue_path(&self, repo_info: tedi::RepoInfo, number: u64, title: &str) -> PathBuf {
 			let sanitized = title.replace(' ', "_");
-			self.xdg.data_dir().join(format!("issues/{owner}/{repo}/{number}_-_{sanitized}/__main__.md"))
+			self.xdg.data_dir().join(format!("issues/{}/{}/{number}_-_{sanitized}/__main__.md", repo_info.owner(), repo_info.repo()))
 		}
 
 		fn resolve_issue_path(&self, issue: &tedi::Issue) -> PathBuf {

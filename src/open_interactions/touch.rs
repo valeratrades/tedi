@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use regex::Regex;
 use tedi::{
-	Issue, IssueIndex, IssueSelector, LazyIssue,
+	Issue, IssueIndex, IssueSelector, LazyIssue, RepoInfo,
 	local::{FsReader, Local, LocalIssueSource},
 };
 use v_utils::prelude::*;
@@ -106,7 +106,7 @@ pub fn parse_touch_path(user_input: &str) -> Result<TouchPathResult> {
 					index.push(parent_selector);
 					let child_title = strip_md_extension(lineage_rgxs[i + 1]);
 					index.push(IssueSelector::title(child_title));
-					return Ok(TouchPathResult::Create(Box::new(IssueIndex::with_index(&owner, &repo, index))));
+					return Ok(TouchPathResult::Create(Box::new(IssueIndex::with_index(RepoInfo::new(&owner, &repo), index))));
 				}
 
 				matched_lineage.push(matched);
@@ -116,7 +116,7 @@ pub fn parse_touch_path(user_input: &str) -> Result<TouchPathResult> {
 				// No match - this is a create request
 				let mut index: Vec<IssueSelector> = matched_lineage.iter().filter_map(|s| Local::parse_issue_selector_from_name(s)).collect();
 				index.push(IssueSelector::title(pattern));
-				return Ok(TouchPathResult::Create(Box::new(IssueIndex::with_index(&owner, &repo, index))));
+				return Ok(TouchPathResult::Create(Box::new(IssueIndex::with_index(RepoInfo::new(&owner, &repo), index))));
 			}
 			MatchOrNone::Ambiguous(matches) => {
 				let desc = if is_last { "issue" } else { "parent issue" };

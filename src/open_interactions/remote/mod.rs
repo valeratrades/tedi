@@ -145,10 +145,10 @@ impl RemoteSource {
 		// Build parent_index with all parent numbers as GitId selectors
 		// Return None for root-level issues (empty lineage)
 		if lineage.is_empty() {
-			Ok(Some(IssueIndex::repo_only(repo_info.owner(), repo_info.repo())))
+			Ok(Some(IssueIndex::repo_only(repo_info)))
 		} else {
 			let selectors: Vec<IssueSelector> = lineage.iter().map(|&n| IssueSelector::GitId(n)).collect();
-			Ok(Some(IssueIndex::with_index(repo_info.owner(), repo_info.repo(), selectors)))
+			Ok(Some(IssueIndex::with_index(repo_info, selectors)))
 		}
 	}
 

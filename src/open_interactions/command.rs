@@ -4,7 +4,7 @@ use std::path::Path;
 
 use clap::Args;
 use tedi::{
-	Issue, IssueIndex, IssueLink, IssueSelector, LazyIssue,
+	Issue, IssueIndex, IssueLink, IssueSelector, LazyIssue, RepoInfo,
 	local::{ExactMatchLevel, FsReader, Local, LocalIssueSource, LocalPath, Submitted},
 	sink::Sink,
 };
@@ -178,7 +178,7 @@ pub async fn open_command(settings: &LiveSettings, args: OpenArgs, offline: bool
 		let (owner, repo, issue_number) = github::parse_github_issue_url(input)?;
 
 		// Check if we already have this issue locally
-		let index = IssueIndex::root(&owner, &repo, IssueSelector::GitId(issue_number));
+		let index = IssueIndex::root(RepoInfo::new(&owner, &repo), IssueSelector::GitId(issue_number));
 		let existing_path = LocalPath::from(index)
 			.resolve_parent(FsReader)
 			.ok()

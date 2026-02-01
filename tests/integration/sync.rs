@@ -224,10 +224,10 @@ async fn test_url_open_creates_local_file_from_remote() {
 	ctx.remote(&remote, Some(Seed::new(15)));
 
 	// No local file exists - URL open should create it
-	let expected_path = ctx.flat_issue_path("o", "r", 1, "Test Issue");
+	let expected_path = ctx.flat_issue_path(("o", "r").into(), 1, "Test Issue");
 	assert!(!expected_path.exists(), "Local file should not exist before open");
 
-	let out = ctx.open_url("o", "r", 1).run();
+	let out = ctx.open_url(("o", "r").into(), 1).run();
 
 	eprintln!("stdout: {}", out.stdout);
 	eprintln!("stderr: {}", out.stderr);
@@ -255,7 +255,7 @@ async fn test_reset_with_remote_url_nukes_local_state() {
 	ctx.remote(&remote, Some(Seed::new(80)));
 
 	// Open via URL with --reset should nuke local and use remote
-	let out = ctx.open_url("o", "r", 1).args(&["--reset"]).run();
+	let out = ctx.open_url(("o", "r").into(), 1).args(&["--reset"]).run();
 
 	eprintln!("stdout: {}", out.stdout);
 	eprintln!("stderr: {}", out.stderr);
@@ -285,7 +285,7 @@ async fn test_reset_with_remote_url_skips_merge_on_divergence() {
 	ctx.remote(&remote, Some(Seed::new(35)));
 
 	// Open via URL with --reset should NOT trigger merge conflict
-	let out = ctx.open_url("o", "r", 1).args(&["--reset"]).run();
+	let out = ctx.open_url(("o", "r").into(), 1).args(&["--reset"]).run();
 
 	eprintln!("stdout: {}", out.stdout);
 	eprintln!("stderr: {}", out.stderr);
@@ -442,7 +442,7 @@ async fn test_duplicate_sub_issues_filtered_from_remote() {
 	ctx.remote(&parent_with_children, Some(Seed::new(-10)));
 
 	// Open via URL to fetch from remote
-	let out = ctx.open_url("o", "r", 1).run();
+	let out = ctx.open_url(("o", "r").into(), 1).run();
 
 	eprintln!("stdout: {}", out.stdout);
 	eprintln!("stderr: {}", out.stderr);
@@ -474,7 +474,7 @@ async fn test_open_unchanged_succeeds() {
 	ctx.remote(&issue, Some(Seed::new(10)));
 
 	// First open via URL
-	let out = ctx.open_url("o", "r", 1).run();
+	let out = ctx.open_url(("o", "r").into(), 1).run();
 	assert!(out.status.success(), "First open should succeed. stderr: {}", out.stderr);
 
 	// Second open - should also succeed (no-op since nothing changed)
@@ -497,14 +497,14 @@ async fn test_open_by_number_unchanged_succeeds() {
 	ctx.remote(&issue, None);
 
 	// First open via URL with --reset
-	let out = ctx.open_url("o", "r", 1).args(&["--reset"]).run();
+	let out = ctx.open_url(("o", "r").into(), 1).args(&["--reset"]).run();
 	eprintln!("First open stdout: {}", out.stdout);
 	eprintln!("First open stderr: {}", out.stderr);
 	assert!(out.status.success(), "First open should succeed. stderr: {}", out.stderr);
 
 	// Second open by number (simulating the failing case)
 	// This uses the mock, so remote state is the same
-	let out = ctx.open_url("o", "r", 1).run();
+	let out = ctx.open_url(("o", "r").into(), 1).run();
 	eprintln!("Second open stdout: {}", out.stdout);
 	eprintln!("Second open stderr: {}", out.stderr);
 	assert!(out.status.success(), "Second open (unchanged) should succeed. stderr: {}", out.stderr);
@@ -523,7 +523,7 @@ async fn test_reset_syncs_changes_after_editor() {
 	// emulate user closing the issue after
 	let mut modified_issue = remote_issue.clone();
 	modified_issue.contents.state = tedi::CloseState::Closed;
-	let out = ctx.open_url("o", "r", 1).args(&["--reset"]).edit(&modified_issue).run();
+	let out = ctx.open_url(("o", "r").into(), 1).args(&["--reset"]).edit(&modified_issue).run();
 
 	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().redact_timestamps(&[11]), &out), @r#"
 	//- /o/r/.meta.json
@@ -694,7 +694,7 @@ async fn test_consensus_sink_writes_meta_json_with_timestamps() {
 	ctx.remote(&remote, None);
 
 	// Fetch the issue via URL - this should sink to Consensus and write .meta.json
-	let out = ctx.open_url("o", "r", 1).run();
+	let out = ctx.open_url(("o", "r").into(), 1).run();
 
 	eprintln!("stdout: {}", out.stdout);
 	eprintln!("stderr: {}", out.stderr);

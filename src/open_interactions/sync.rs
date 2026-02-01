@@ -23,7 +23,7 @@
 
 use color_eyre::eyre::{Result, bail};
 use tedi::{
-	Issue, IssueIndex, IssueLink, IssueSelector, LazyIssue,
+	Issue, IssueIndex, IssueLink, IssueSelector, LazyIssue, RepoInfo,
 	local::{FsReader, Local, LocalIssueSource, Submitted},
 	sink::Sink,
 };
@@ -88,7 +88,7 @@ pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Mo
 						<Issue as Sink<Submitted>>::sink(&mut issue, None).await?;
 
 						// 2. Load ancestor up to first Title selector
-						let ancestor_index = IssueIndex::with_index(repo_info.owner(), repo_info.repo(), parent_index.index()[..=i].to_vec());
+						let ancestor_index = IssueIndex::with_index(repo_info, parent_index.index()[..=i].to_vec());
 						let mut ancestor = <Issue as LazyIssue<Local>>::load(LocalIssueSource::<FsReader>::from(ancestor_index)).await?;
 						let old_ancestor = ancestor.clone();
 
@@ -124,7 +124,7 @@ mod core {
 	///
 	/// Returns `(resolved_issue, changed)` where `changed` indicates if any updates were made.
 	#[instrument]
-	pub(super) async fn resolve_merge(local: Issue, consensus: Option<Issue>, remote: Issue, mode: MergeMode, owner: &str, repo: &str, issue_number: u64) -> Result<(Issue, bool)> {
+	pub(super) async fn resolve_merge(local: Issue, consensus: Option<Issue>, remote: Issue, mode: MergeMode, repo_info: RepoInfo, issue_number: u64) -> Result<(Issue, bool)> {
 		// Handle Reset mode - take one side entirely
 		if let MergeMode::Reset { prefer } = mode {
 			return match prefer {
@@ -176,10 +176,10 @@ mod core {
 			}
 			false => {
 				// Conflict - initiate git merge
-				match initiate_conflict_merge(owner, repo, issue_number, &local_merged, &remote_merged)? {
+				match initiate_conflict_merge(repo_info, issue_number, &local_merged, &remote_merged)? {
 					ConflictOutcome::AutoMerged => {
-						let resolved = read_resolved_conflict(owner)?;
-						complete_conflict_resolution(owner)?;
+						let resolved = read_resolved_conflict(repo_info.owner())?;
+						complete_conflict_resolution(repo_info.owner())?;
 						let mut resolved = resolved;
 						<Issue as Sink<Submitted>>::sink(&mut resolved, None).await?;
 						<Issue as Sink<Remote>>::sink(&mut resolved, None).await?;
@@ -187,8 +187,9 @@ mod core {
 					}
 					ConflictOutcome::NeedsResolution => {
 						bail!(
-							"Conflict detected for {owner}/{repo}#{issue_number}.\n\
-							Resolve using standard git tools, then re-run."
+							"Conflict detected for {}/{}#{issue_number}.\n\
+							Resolve using standard git tools, then re-run.",
+							repo_info.owner(), repo_info.repo()
 						);
 					}
 					ConflictOutcome::NoChanges => {
@@ -215,7 +216,7 @@ mod core {
 		let remote = <Issue as LazyIssue<Remote>>::load(remote_source).await?;
 		eprintln!("DEBUG: Remote loaded, calling resolve_merge");
 
-		let (resolved, changed) = core::resolve_merge(current_issue.clone(), consensus, remote, mode, repo_info.owner(), repo_info.repo(), issue_number).await?;
+		let (resolved, changed) = core::resolve_merge(current_issue.clone(), consensus, remote, mode, repo_info, issue_number).await?;
 		eprintln!("DEBUG: resolve_merge done");
 		*current_issue = resolved;
 

@@ -8,7 +8,7 @@ use tracing::{debug, info, instrument, trace, warn};
 use v_utils::prelude::*;
 
 use super::{ConsensusSinkError, FsReader, IssueMeta, Local, LocalPath, LocalReader};
-use crate::{Issue, local::LocalPathErrorKind, sink::Sink};
+use crate::{Issue, RepoInfo, local::LocalPathErrorKind, sink::Sink};
 
 /// Marker type for sinking to filesystem (submitted state).
 pub struct Submitted;
@@ -68,7 +68,7 @@ impl Sink<Consensus> for Issue {
 		}
 
 		// Check for ignored files that we tried to add
-		let project_dir = Local::project_dir(owner, repo);
+		let project_dir = Local::project_dir(RepoInfo::new(owner, repo));
 		if let Ok(rel) = project_dir.strip_prefix(&data_dir) {
 			let check_ignored = Command::new("git").args(["-C", data_dir_str, "check-ignore", "--no-index", "-v"]).arg(rel.join("**")).output()?;
 			// check-ignore returns 0 if files ARE ignored, 1 if none are ignored
@@ -181,7 +181,7 @@ fn sink_issue_node<R: LocalReader>(new: &Issue, maybe_old: Option<&Issue>, reade
 		&& let Some(timestamps) = new.identity.timestamps()
 	{
 		let meta = IssueMeta { timestamps: timestamps.clone() };
-		Local::save_issue_meta(&owner, &repo, issue_num, &meta)?;
+		Local::save_issue_meta(RepoInfo::new(&owner, &repo), issue_num, &meta)?;
 	}
 
 	// Recursively sink children - match by title (full_index changes when parent syncs)
@@ -197,7 +197,7 @@ fn sink_issue_node<R: LocalReader>(new: &Issue, maybe_old: Option<&Issue>, reade
 		if !new.children.iter().any(|c| c.contents.title == old_child.contents.title) {
 			remove_issue_files(old_child, reader)?;
 			if let Some(old_num) = old_child.git_id() {
-				Local::remove_issue_meta(&owner, &repo, old_num)?;
+				Local::remove_issue_meta(RepoInfo::new(&owner, &repo), old_num)?;
 			}
 		}
 	}
@@ -342,7 +342,7 @@ fn remove_issue_files<R: LocalReader>(issue: &Issue, reader: &R) -> Result<bool>
 	// Remove metadata
 	if let Some(num) = issue.git_id() {
 		trace!(num, "removing issue metadata");
-		Local::remove_issue_meta(&owner, &repo, num)?;
+		Local::remove_issue_meta(RepoInfo::new(&owner, &repo), num)?;
 	}
 
 	info!(issue_number = ?issue.git_id(), "removed issue");
