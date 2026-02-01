@@ -643,7 +643,7 @@ pub struct IssueMeta {
 pub enum LocalConsensus {}
 mod reader;
 
-pub use reader::{FsReader, GitReader, LocalReader, ReaderError};
+pub use reader::{FsReader, GitReader, LocalReader, ReaderError, ReaderErrorKind};
 
 mod local_path {
 	use std::collections::VecDeque;
@@ -663,24 +663,26 @@ mod local_path {
 		pub kind: LocalPathErrorKind,
 		rendered: String,
 		spantrace: SpanTrace,
+		reader_error_kind: Option<ReaderErrorKind>,
 	}
 
 	impl LocalPathError {
-		fn from_diagnostic(kind: LocalPathErrorKind, diag: LocalPathDiagnostic) -> Self {
+		fn from_diagnostic(kind: LocalPathErrorKind, reader_error_kind: Option<ReaderErrorKind>, diag: LocalPathDiagnostic) -> Self {
 			let rendered = format!("{:?}", miette::Report::new(diag));
 			Self {
 				kind,
 				rendered,
 				spantrace: SpanTrace::capture(),
+				reader_error_kind,
 			}
 		}
 
 		pub fn missing_parent(selector: IssueSelector, searched_path: PathBuf) -> Self {
-			Self::from_diagnostic(LocalPathErrorKind::MissingParent, LocalPathDiagnostic::MissingParent { selector, searched_path })
+			Self::from_diagnostic(LocalPathErrorKind::MissingParent, None, LocalPathDiagnostic::MissingParent { selector, searched_path })
 		}
 
 		pub fn not_found(selector: IssueSelector, searched_path: PathBuf) -> Self {
-			Self::from_diagnostic(LocalPathErrorKind::NotFound, LocalPathDiagnostic::NotFound { selector, searched_path })
+			Self::from_diagnostic(LocalPathErrorKind::NotFound, None, LocalPathDiagnostic::NotFound { selector, searched_path })
 		}
 
 		pub fn not_unique(selector: IssueSelector, searched_path: PathBuf, matching_paths: Vec<PathBuf>) -> Self {
@@ -690,6 +692,7 @@ mod local_path {
 
 			Self::from_diagnostic(
 				LocalPathErrorKind::NotUnique,
+				None,
 				LocalPathDiagnostic::NotUnique {
 					selector,
 					searched_path,
@@ -701,7 +704,15 @@ mod local_path {
 		}
 
 		pub fn reader(selector: IssueSelector, source: ReaderError) -> Self {
-			Self::from_diagnostic(LocalPathErrorKind::Reader, LocalPathDiagnostic::Reader { selector, source })
+			let reader_kind = source.kind;
+			Self::from_diagnostic(LocalPathErrorKind::Reader, Some(reader_kind), LocalPathDiagnostic::Reader { selector, source })
+		}
+
+		/// Returns true if this error indicates the file/path doesn't exist.
+		/// Covers both direct NotFound/MissingParent and Reader errors wrapping NotFound.
+		pub fn is_not_found(&self) -> bool {
+			matches!(self.kind, LocalPathErrorKind::NotFound | LocalPathErrorKind::MissingParent)
+				|| self.reader_error_kind == Some(ReaderErrorKind::NotFound)
 		}
 	}
 

@@ -157,7 +157,13 @@ pub async fn open_command(settings: &LiveSettings, args: OpenArgs, offline: bool
 			println!("Found existing issue: {}", issue.contents.title);
 		}
 
-		modify_and_sync_issue(issue, offline || project_is_virtual, make_modifier(open_at_blocker), local_sync_opts()).await?;
+		let result = modify_and_sync_issue(issue, offline || project_is_virtual, make_modifier(open_at_blocker), local_sync_opts()).await?;
+		if args.blocker_set {
+			if let Some(path) = &result.issue_file_path {
+				crate::blocker_interactions::integration::set_current_blocker_issue(path)?;
+				println!("Set current blocker issue to: {}", path.display());
+			}
+		}
 		return Ok(());
 	}
 
@@ -231,13 +237,14 @@ pub async fn open_command(settings: &LiveSettings, args: OpenArgs, offline: bool
 	};
 
 	// Open the issue for editing
-	modify_and_sync_issue(issue, effective_offline, make_modifier(open_at_blocker), sync_opts).await?;
+	let result = modify_and_sync_issue(issue, effective_offline, make_modifier(open_at_blocker), sync_opts).await?;
 
-	// TODO: --blocker-set needs issue file path, but we no longer track it here
-	// if args.blocker_set {
-	// 	crate::blocker_interactions::integration::set_current_blocker_issue(&issue_file_path)?;
-	// 	println!("Set current blocker issue to: {}", issue_file_path.display());
-	// }
+	if args.blocker_set {
+		if let Some(path) = &result.issue_file_path {
+			crate::blocker_interactions::integration::set_current_blocker_issue(path)?;
+			println!("Set current blocker issue to: {}", path.display());
+		}
+	}
 
 	Ok(())
 }
