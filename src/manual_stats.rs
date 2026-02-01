@@ -46,7 +46,8 @@ pub async fn update_or_open(settings: &crate::config::LiveSettings, args: Manual
 			}
 			true => {
 				let pbs_path = target_file_path.parent().unwrap().join(PBS_FILENAME);
-				return v_utils::io::file_open::Client::default().mode(OpenMode::Pager).open(&pbs_path).await;
+				v_utils::io::file_open::Client::default().mode(OpenMode::Pager).open(&pbs_path).await?;
+				return Ok(());
 			}
 		},
 		ManualSubcommands::Ev(_) | ManualSubcommands::CounterStep(_) => {}

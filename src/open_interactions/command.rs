@@ -4,7 +4,7 @@ use std::path::Path;
 
 use clap::Args;
 use tedi::{
-	Issue, IssueIndex, IssueLink, IssueSelector, LazyIssue, RepoInfo,
+	Issue, IssueIndex, IssueLink, IssueSelector, LazyIssue,
 	local::{ExactMatchLevel, FsReader, Local, LocalIssueSource, LocalPath, Submitted},
 	sink::Sink,
 };
@@ -145,7 +145,7 @@ pub async fn open_command(settings: &LiveSettings, args: OpenArgs, offline: bool
 		let project_is_virtual = issue.identity.is_virtual();
 
 		if is_create {
-			if !issue.identity.git_lineage().unwrap().is_empty() {
+			if !issue.identity.parent_index.index().is_empty() {
 				println!("Creating pending sub-issue: {}", issue.contents.title);
 			} else {
 				println!("Creating pending issue: {}", issue.contents.title);
@@ -157,7 +157,7 @@ pub async fn open_command(settings: &LiveSettings, args: OpenArgs, offline: bool
 			println!("Found existing issue: {}", issue.contents.title);
 		}
 
-		modify_and_sync_issue(issue, project_is_virtual, make_modifier(open_at_blocker), local_sync_opts()).await?;
+		modify_and_sync_issue(issue, offline || project_is_virtual, make_modifier(open_at_blocker), local_sync_opts()).await?;
 		return Ok(());
 	}
 

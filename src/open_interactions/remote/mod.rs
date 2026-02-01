@@ -440,7 +440,12 @@ impl Sink<Remote> for Issue {
 			changed = true;
 		}
 
-		// Recursively sink children
+		// Update children's parent_index to use our git number, then sink
+		if let Some(child_parent_index) = self.identity.child_parent_index() {
+			for child in &mut self.children {
+				child.identity.parent_index = child_parent_index;
+			}
+		}
 		for (i, child) in self.children.iter_mut().enumerate() {
 			let old_child = old.and_then(|o| o.children.get(i));
 			changed |= Box::pin(<Issue as Sink<Remote>>::sink(child, old_child)).await?;

@@ -91,7 +91,7 @@ pub enum ReaderErrorKind {
 /// Trait for reading content from different sources (filesystem or git).
 ///
 /// Separates the read abstraction from path computation.
-pub trait LocalReader: Copy {
+pub trait LocalReader: Copy + std::fmt::Debug {
 	/// Read file content at the given path.
 	fn read_content(&self, path: &Path) -> Result<String, ReaderError>;
 	/// List directory entries at the given path.
@@ -100,9 +100,13 @@ pub trait LocalReader: Copy {
 	fn is_dir(&self, path: &Path) -> Result<bool, ReaderError>;
 	/// Check if the path exists.
 	fn exists(&self, path: &Path) -> Result<bool, ReaderError>;
+	/// Whether this reader supports filesystem mutations (cleanup operations).
+	fn is_mutable(&self) -> bool {
+		false
+	}
 }
 /// Reader that reads from the filesystem (submitted/current state).
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct FsReader;
 impl FsReader {
 	/// Convert std::io::Error to ReaderError with path context.
@@ -130,7 +134,7 @@ impl GitReader {
 	/// Check if git is initialized in the issues directory.
 	fn check_git_initialized(data_dir: &Path) -> Result<(), ReaderError> {
 		use std::process::Command;
-		let data_dir_str = data_dir.to_str().ok_or_else(|| ReaderError::other(format!("issues dir path not valid UTF-8")))?;
+		let data_dir_str = data_dir.to_str().ok_or_else(|| ReaderError::other("issues dir path not valid UTF-8".to_string()))?;
 		let git_check = Command::new("git")
 			.args(["-C", data_dir_str, "rev-parse", "--git-dir"])
 			.output()
@@ -213,6 +217,10 @@ impl LocalReader for FsReader {
 			Err(e) => Err(Self::io_err(e, path)),
 		}
 	}
+
+	fn is_mutable(&self) -> bool {
+		true
+	}
 }
 
 impl LocalReader for GitReader {
@@ -221,7 +229,7 @@ impl LocalReader for GitReader {
 		use std::process::Command;
 
 		let (rel_path, data_dir) = Self::rel_path(path)?;
-		let data_dir_str = data_dir.to_str().ok_or_else(|| ReaderError::other(format!("issues dir path not valid UTF-8")))?;
+		let data_dir_str = data_dir.to_str().ok_or_else(|| ReaderError::other("issues dir path not valid UTF-8".to_string()))?;
 		let rel_path_str = rel_path.to_str().ok_or_else(|| ReaderError::other(format!("path not valid UTF-8: {}", path.display())))?;
 
 		Self::check_git_initialized(&data_dir)?;
@@ -253,7 +261,7 @@ impl LocalReader for GitReader {
 		use std::process::Command;
 
 		let (rel_dir, data_dir) = Self::rel_path(path)?;
-		let data_dir_str = data_dir.to_str().ok_or_else(|| ReaderError::other(format!("issues dir path not valid UTF-8")))?;
+		let data_dir_str = data_dir.to_str().ok_or_else(|| ReaderError::other("issues dir path not valid UTF-8".to_string()))?;
 		let rel_dir_str = rel_dir.to_str().ok_or_else(|| ReaderError::other(format!("path not valid UTF-8: {}", path.display())))?;
 
 		Self::check_git_initialized(&data_dir)?;
@@ -272,7 +280,7 @@ impl LocalReader for GitReader {
 
 		let prefix = format!("{rel_dir_str}/");
 		let entries = std::str::from_utf8(&output.stdout)
-			.map_err(|_| ReaderError::other(format!("git output not valid UTF-8")))?
+			.map_err(|_| ReaderError::other("git output not valid UTF-8".to_string()))?
 			.lines()
 			.filter_map(|line| line.strip_prefix(&prefix))
 			.map(|s| s.to_string())
@@ -284,7 +292,7 @@ impl LocalReader for GitReader {
 		use std::process::Command;
 
 		let (rel_dir, data_dir) = Self::rel_path(path)?;
-		let data_dir_str = data_dir.to_str().ok_or_else(|| ReaderError::other(format!("issues dir path not valid UTF-8")))?;
+		let data_dir_str = data_dir.to_str().ok_or_else(|| ReaderError::other("issues dir path not valid UTF-8".to_string()))?;
 		let rel_dir_str = rel_dir.to_str().ok_or_else(|| ReaderError::other(format!("path not valid UTF-8: {}", path.display())))?;
 
 		Self::check_git_initialized(&data_dir)?;

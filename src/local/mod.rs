@@ -213,31 +213,30 @@ impl Local {
 			.to_string()
 	}
 
-	/// Format an issue filename from number and title.
-	/// Format: {number}_-_{sanitized_title}.md or just {sanitized_title}.md if no number
-	/// Adds .bak suffix for closed issues.
-	fn format_issue_filename(issue_number: Option<u64>, title: &str, closed: bool) -> String {
-		let sanitized = Self::sanitize_title(title);
-		let base = match issue_number {
-			Some(num) if sanitized.is_empty() => format!("{num}.md"),
-			Some(num) => format!("{num}_-_{sanitized}.md"),
-			None if sanitized.is_empty() => "untitled.md".to_string(),
-			None => format!("{sanitized}.md"),
-		};
-		if closed { format!("{base}.bak") } else { base }
-	}
-
-	/// Get the directory name for an issue (used when it has sub-issues).
-	/// Format: {number}_-_{sanitized_title}
-	//TODO: start adding `.bak` for closed
-	pub fn issue_dir_name(issue_number: Option<u64>, title: &str) -> String {
-		let sanitized = Self::sanitize_title(title);
+	/// Format: {number}_-_{sanitized_title} or just {sanitized_title} if no number
+	fn __issue_base_name(issue_number: Option<u64>, sanitized: &str) -> String {
 		match issue_number {
 			Some(num) if sanitized.is_empty() => format!("{num}"),
 			Some(num) => format!("{num}_-_{sanitized}"),
 			None if sanitized.is_empty() => "untitled".to_string(),
-			None => sanitized,
+			None => sanitized.to_string(),
 		}
+	}
+
+	/// Format an issue filename from number and title.
+	/// Format: {number}_-_{sanitized_title}.md[.bak]
+	fn format_issue_filename(issue_number: Option<u64>, title: &str, closed: bool) -> String {
+		let sanitized = Self::sanitize_title(title);
+		let base = format!("{}.md", Self::__issue_base_name(issue_number, &sanitized));
+		if closed { format!("{base}.bak") } else { base }
+	}
+
+	/// Get the directory name for an issue (used when it has sub-issues).
+	/// Format: {number}_-_{sanitized_title}[.bak]
+	pub fn issue_dir_name(issue_number: Option<u64>, title: &str, closed: bool) -> String {
+		let sanitized = Self::sanitize_title(title);
+		let base = Self::__issue_base_name(issue_number, &sanitized);
+		if closed { format!("{base}.bak") } else { base }
 	}
 
 	/// Get the path for the main issue file when stored inside a directory.
@@ -265,7 +264,6 @@ impl Local {
 	}
 
 	/// Get the most recently modified issue file.
-	#[deprecated(note = "rewrite to use LocalPathResolved::matching_subpaths")]
 	pub fn most_recent_issue_file() -> Result<Option<PathBuf>> {
 		fn collect_issue_files(dir: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<()> {
 			for entry in std::fs::read_dir(dir)? {
@@ -301,180 +299,12 @@ impl Local {
 		Ok(files.into_iter().next())
 	}
 
-	/// Build ancestor directory names by traversing the filesystem for a lineage.
-	/// Finds issues by number (either flat file or directory) and returns the directory names.
-	pub fn build_ancestor_dir_names_from_lineage(repo_info: RepoInfo, lineage: &[u64]) -> Result<Vec<String>> {
-		let mut path = Self::project_dir(repo_info.owner(), repo_info.repo());
-
-		if !path.exists() {
-			bail!("Project directory does not exist: {}", path.display());
-		}
-
-		let mut result = Vec::with_capacity(lineage.len());
-
-		for &issue_number in lineage {
-			let dir_name = Self::find_issue_dir_name_by_number(&path, issue_number)
-				.ok_or_else(|| eyre!("Parent issue #{issue_number} not found locally in {}. Fetch the parent issue first.", path.display()))?;
-
-			path = path.join(&dir_name);
-			result.push(dir_name);
-		}
-
-		Ok(result)
-	}
-
-	/// Find the issue file by repo info and full number path.
-	/// The num_path includes all ancestors plus the target issue's own number.
-	#[deprecated(note = "just use LocalPath")]
-	pub fn find_issue_file_by_num_path(repo_info: RepoInfo, num_path: &[u64]) -> Option<PathBuf> {
-		let mut path = Self::project_dir(repo_info.owner(), repo_info.repo());
-
-		if !path.exists() {
-			return None;
-		}
-
-		if num_path.is_empty() {
-			return None;
-		}
-
-		// Navigate to parent directories
-		for &issue_number in &num_path[..num_path.len() - 1] {
-			let dir = Self::find_issue_dir_by_number(&path, issue_number)?;
-			path = dir;
-		}
-
-		// Find the target issue (last in num_path)
-		let target_number = *num_path.last().unwrap();
-
-		// Check for directory format first (issue with children)
-		if let Some(dir) = Self::find_issue_dir_by_number(&path, target_number) {
-			let main_file = Self::main_file_path(&dir, false);
-			if main_file.exists() {
-				return Some(main_file);
-			}
-			let main_bak = Self::main_file_path(&dir, true);
-			if main_bak.exists() {
-				return Some(main_bak);
-			}
-		}
-
-		// Check for flat file format
-		let entries = std::fs::read_dir(&path).ok()?;
-		let prefix_with_sep = format!("{target_number}_-_");
-		let exact_match = format!("{target_number}.md");
-		let exact_match_bak = format!("{target_number}.md.bak");
-
-		for entry in entries.flatten() {
-			let entry_path = entry.path();
-			if !entry_path.is_file() {
-				continue;
-			}
-
-			let Some(name) = entry_path.file_name().and_then(|n| n.to_str()) else {
-				continue;
-			};
-
-			if name.starts_with(&prefix_with_sep) && (name.ends_with(".md") || name.ends_with(".md.bak")) {
-				return Some(entry_path);
-			}
-			if name == exact_match || name == exact_match_bak {
-				return Some(entry_path);
-			}
-		}
-
-		None
-	}
-
-	/// Find an issue directory by its number prefix.
-	#[deprecated(note = "duplication against LocalPath. This functionality should be only on LocalPath")]
-	fn find_issue_dir_by_number(parent: &Path, issue_number: u64) -> Option<PathBuf> {
-		let entries = std::fs::read_dir(parent).ok()?;
-
-		let prefix_with_sep = format!("{issue_number}_-_");
-		let exact_match = format!("{issue_number}");
-
-		for entry in entries.flatten() {
-			let path = entry.path();
-			if !path.is_dir() {
-				continue;
-			}
-
-			let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-				continue;
-			};
-
-			if name.starts_with(&prefix_with_sep) || name == exact_match {
-				return Some(path);
-			}
-		}
-
-		None
-	}
-
-	/// Find a directory name matching a selector (GitId or Title).
-	/// For GitId: looks for `{number}_-_*` directories or flat files.
-	/// For Title: looks for directories matching the sanitized title.
-	#[deprecated(note = "use LocalPath instead")]
-	fn find_dir_name_by_selector(parent: &Path, selector: &IssueSelector) -> Option<String> {
-		let entries = std::fs::read_dir(parent).ok()?;
-
-		match selector {
-			IssueSelector::GitId(issue_number) => {
-				let prefix_with_sep = format!("{issue_number}_-_");
-				let exact_match_dir = format!("{issue_number}");
-
-				for entry in entries.flatten() {
-					let path = entry.path();
-					let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-						continue;
-					};
-
-					if path.is_dir() {
-						if name.starts_with(&prefix_with_sep) || name == exact_match_dir {
-							return Some(name.to_string());
-						}
-					} else if path.is_file()
-						&& let Some(base) = name.strip_suffix(".md.bak").or_else(|| name.strip_suffix(".md"))
-						&& (base.starts_with(&prefix_with_sep) || base == exact_match_dir)
-					{
-						return Some(base.to_string());
-					}
-				}
-				None
-			}
-			IssueSelector::Title(title) => {
-				let sanitized = Self::sanitize_title(title.as_str());
-
-				for entry in entries.flatten() {
-					let path = entry.path();
-					let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-						continue;
-					};
-
-					// For Title selectors, look for directory with matching name
-					if path.is_dir() && name == sanitized {
-						return Some(name.to_string());
-					}
-				}
-				None
-			}
-		}
-	}
-
-	/// Find an issue by number (flat file or directory) and return the directory name it would use.
-	/// For flat file `99_-_title.md` returns `99_-_title`.
-	/// For directory `99_-_title/` returns `99_-_title`.
-	#[deprecated(note = "use LocalPath instead")]
-	fn find_issue_dir_name_by_number(parent: &Path, issue_number: u64) -> Option<String> {
-		Self::find_dir_name_by_selector(parent, &IssueSelector::GitId(issue_number))
-	}
-
 	/// Parse an IssueSelector from a filename or directory name.
 	/// Format: `{number}_-_{title}[.md[.bak]]` or just `{title}[.md[.bak]]` for pending issues.
 	///
 	/// Returns `GitId` if an issue number is found, `Title` for title-only .md files.
 	/// Returns `None` for non-issue files (directories without numbers, non-.md files).
-	pub(crate) fn parse_issue_selector_from_name(name: &str) -> Option<IssueSelector> {
+	pub fn parse_issue_selector_from_name(name: &str) -> Option<IssueSelector> {
 		// Strip file extensions if present
 		let base = name.strip_suffix(".md.bak").or_else(|| name.strip_suffix(".md")).unwrap_or(name);
 
@@ -487,12 +317,8 @@ impl Local {
 			return Some(IssueSelector::GitId(num));
 		}
 
-		// No number - only return Title for .md files (pending issues), not directories
-		if name.ends_with(".md") || name.ends_with(".md.bak") {
-			IssueSelector::try_title(base)
-		} else {
-			None
-		}
+		// No number - return Title for both .md files and directories (pending/unsynced issues)
+		IssueSelector::try_title(base)
 	}
 
 	/// Extract the full IssueIndex from an issue file path (including the issue itself).
@@ -1022,30 +848,25 @@ mod local_path {
 
 			for selector in parent_selectors {
 				let all_matches = find_all_entries_by_selector(&reader, &path, selector).map_err(|source| LocalPathError::reader(*selector, source))?;
-				let dir_name = match all_matches.len() {
-					0 => return Err(LocalPathError::missing_parent(selector.clone(), path.clone())),
-					//1 => match &all_matches[0] {
-					//	FoundEntry::Dir(name) => name.clone(),
-					//	FoundEntry::File(name) => name.strip_suffix(".md.bak").or_else(|| name.strip_suffix(".md")).unwrap().to_string(), //XXX: this loses information. horrible, horrendous bug
-					//},
-					1 => match &all_matches[0] {
-						FoundEntry::Dir(name) => name.clone(),
-						FoundEntry::File(name) => name.clone(),
-					},
-					_ => {
-						let matching_paths = all_matches
+				path = match all_matches.len() {
+					0 => return Err(LocalPathError::missing_parent(*selector, path.clone())),
+					n => {
+						let matching_paths: Vec<PathBuf> = all_matches
 							.iter()
 							.map(|entry| {
 								path.join(match entry {
-									FoundEntry::Dir(name) => name,
-									FoundEntry::File(name) => name,
+									FoundEntry::Dir(name) => format!("{name}/"),
+									//Q: don't like that this loses informatio; am I sure this is fine?
+									FoundEntry::File(name) => format!("{}/", name.strip_suffix(".md.bak").or_else(|| name.strip_suffix(".md")).unwrap()), //HACK: don't like that we're assuming to know how to work with extensions at this level
 								})
 							})
 							.collect();
-						return Err(LocalPathError::not_unique(selector.clone(), path.clone(), matching_paths));
+						match n {
+							1 => matching_paths.into_iter().take(1).collect(),
+							_ => return Err(LocalPathError::not_unique(*selector, path.clone(), matching_paths)),
+						}
 					}
 				};
-				path = path.join(dir_name);
 			}
 
 			Ok(LocalPathResolved {
@@ -1072,8 +893,8 @@ mod local_path {
 	///
 	/// Created by `LocalPath::resolve_parent()`. Use:
 	/// - `search()` to find an existing file
-	/// - `deterministic(...)` to construct a target path for writes
-	/// Then call `path()` or `issue_dir()` to get the final `PathBuf`.
+	///	- `deterministic(...)` to construct a target path for writes
+	///	Then call `path()` or `issue_dir()` to get the final `PathBuf`.
 	#[derive(Clone, Debug)]
 	pub struct LocalPathResolved<R: LocalReader> {
 		resolved_path: PathBuf,
@@ -1156,7 +977,7 @@ mod local_path {
 				_ => None,
 			};
 			if has_children {
-				let dir_name = Local::issue_dir_name(git_id, title);
+				let dir_name = Local::issue_dir_name(git_id, title, closed);
 				let issue_dir = self.resolved_path.join(&dir_name);
 				self.resolved_path = Local::main_file_path(&issue_dir, closed);
 			} else {
@@ -1218,7 +1039,7 @@ mod local_path {
 				return Ok(Vec::new());
 			};
 
-			let map_err = |source| LocalPathError::reader(selector.clone(), source);
+			let map_err = |source| LocalPathError::reader(*selector, source);
 
 			let all_matches = find_all_entries_by_selector(&self.reader, &self.resolved_path, selector).map_err(map_err)?;
 			tracing::debug!(?all_matches, "find_all_entries_by_selector returned");
@@ -1447,7 +1268,7 @@ impl crate::LazyIssue<LocalConsensus> for Issue {
 		tracing::debug!(?index, title_empty = self.contents.title.is_empty(), "LazyIssue<LocalConsensus>::identity check title");
 
 		if self.contents.title.is_empty() {
-			let search_result = source.local_path.clone().resolve_parent(source.reader.clone()).and_then(|r| r.search());
+			let search_result = source.local_path.clone().resolve_parent(source.reader).and_then(|r| r.search());
 			tracing::debug!(?search_result, "LazyIssue<LocalConsensus>::identity search");
 			let file_path = search_result?.path();
 			let content = source.reader.read_content(&file_path)?;
@@ -1473,7 +1294,7 @@ impl crate::LazyIssue<LocalConsensus> for Issue {
 		}
 
 		let index = *source.index();
-		let file_path = source.local_path.clone().resolve_parent(source.reader.clone())?.search()?.path();
+		let file_path = source.local_path.clone().resolve_parent(source.reader)?.search()?.path();
 		let content = source.reader.read_content(&file_path)?;
 		let parsed = Local::parse_single_node(&content, index, &file_path)?;
 		self.identity = parsed.identity;

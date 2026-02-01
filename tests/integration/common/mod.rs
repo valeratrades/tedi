@@ -314,11 +314,11 @@ pub fn parse(content: &str) -> Issue {
 /// Render a fixture with optional error output if the command failed.
 pub fn render_fixture(renderer: FixtureRenderer<'_>, output: &RunOutput) -> String {
 	let result = renderer.always_show_filepath().render();
-	if !output.status.success() {
-		let s = format!("\n\nBINARY FAILED\nstdout:\n{}\nstderr:\n{}", output.stdout, output.stderr);
-		//result.push_str(s); //Q: embedding it into a snapshot feels a bit bizzare. And I don't get color-coding
-		eprintln!("{s}");
-	}
+
+	// will only see it if snapshot failed. //Q: how much overhead this has though?
+	let s = format!("\n\nBINARY FAILED\nstdout:\n{}\nstderr:\n{}", output.stdout, output.stderr);
+	eprintln!("{s}");
+
 	result
 }
 /// Output from running a command.
@@ -432,6 +432,7 @@ fn set_nonblocking<F: AsRawFd>(f: &F) {
 /// Drain available data from a non-blocking pipe into a buffer.
 fn drain_pipe<R: Read>(pipe: &mut R, buf: &mut Vec<u8>) {
 	let mut tmp = [0u8; 4096];
+	//LOOP: we're just draining, so if fs is functioning, we will see the `Ok(0)`
 	loop {
 		match pipe.read(&mut tmp) {
 			Ok(0) => break,

@@ -1,4 +1,5 @@
 #![allow(clippy::len_zero)]
+#![allow(clippy::doc_lazy_continuation)]
 pub mod config;
 pub mod utils;
 /// Mock behavior type for testing.

@@ -23,8 +23,8 @@
 
 use color_eyre::eyre::{Result, bail};
 use tedi::{
-	Issue, IssueIndex, IssueLink, LazyIssue,
-	local::{Local, Submitted},
+	Issue, IssueIndex, IssueLink, IssueSelector, LazyIssue,
+	local::{FsReader, Local, LocalIssueSource, Submitted},
 	sink::Sink,
 };
 use tracing::instrument;
@@ -81,10 +81,28 @@ pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Mo
 					core::sync(&mut issue, consensus, mode).await?;
 				}
 				false => {
-					// New issue - just sink everywhere
-					<Issue as Sink<Remote>>::sink(&mut issue, None).await?;
-					<Issue as Sink<Submitted>>::sink(&mut issue, None).await?;
-					commit_issue_changes(&issue)?;
+					// New issue - check if parent needs syncing first
+					let parent_index = issue.identity.parent_index;
+					if let Some((i, _)) = parent_index.index().iter().enumerate().find(|(_, s)| matches!(s, IssueSelector::Title(_))) {
+						// 1. Sink current issue to local so ancestor can find it
+						<Issue as Sink<Submitted>>::sink(&mut issue, None).await?;
+
+						// 2. Load ancestor up to first Title selector
+						let ancestor_index = IssueIndex::with_index(repo_info.owner(), repo_info.repo(), parent_index.index()[..=i].to_vec());
+						let mut ancestor = <Issue as LazyIssue<Local>>::load(LocalIssueSource::<FsReader>::from(ancestor_index)).await?;
+						let old_ancestor = ancestor.clone();
+
+						// 3. Sink ancestor to Remote, then Local (with old state for cleanup)
+						<Issue as Sink<Remote>>::sink(&mut ancestor, None).await?;
+						<Issue as Sink<Submitted>>::sink(&mut ancestor, Some(&old_ancestor)).await?;
+
+						// 4. Commit
+						commit_issue_changes(&ancestor)?;
+					} else {
+						<Issue as Sink<Remote>>::sink(&mut issue, None).await?;
+						<Issue as Sink<Submitted>>::sink(&mut issue, None).await?;
+						commit_issue_changes(&issue)?;
+					}
 				}
 			}
 
