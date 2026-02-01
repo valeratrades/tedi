@@ -213,31 +213,30 @@ impl Local {
 			.to_string()
 	}
 
-	/// Format an issue filename from number and title.
-	/// Format: {number}_-_{sanitized_title}.md or just {sanitized_title}.md if no number
-	/// Adds .bak suffix for closed issues.
-	fn format_issue_filename(issue_number: Option<u64>, title: &str, closed: bool) -> String {
-		let sanitized = Self::sanitize_title(title);
-		let base = match issue_number {
-			Some(num) if sanitized.is_empty() => format!("{num}.md"),
-			Some(num) => format!("{num}_-_{sanitized}.md"),
-			None if sanitized.is_empty() => "untitled.md".to_string(),
-			None => format!("{sanitized}.md"),
-		};
-		if closed { format!("{base}.bak") } else { base }
-	}
-
-	/// Get the directory name for an issue (used when it has sub-issues).
-	/// Format: {number}_-_{sanitized_title}
-	//TODO: start adding `.bak` for closed
-	pub fn issue_dir_name(issue_number: Option<u64>, title: &str) -> String {
-		let sanitized = Self::sanitize_title(title);
+	/// Format: {number}_-_{sanitized_title} or just {sanitized_title} if no number
+	fn __issue_base_name(issue_number: Option<u64>, sanitized: &str) -> String {
 		match issue_number {
 			Some(num) if sanitized.is_empty() => format!("{num}"),
 			Some(num) => format!("{num}_-_{sanitized}"),
 			None if sanitized.is_empty() => "untitled".to_string(),
-			None => sanitized,
+			None => sanitized.to_string(),
 		}
+	}
+
+	/// Format an issue filename from number and title.
+	/// Format: {number}_-_{sanitized_title}.md[.bak]
+	fn format_issue_filename(issue_number: Option<u64>, title: &str, closed: bool) -> String {
+		let sanitized = Self::sanitize_title(title);
+		let base = format!("{}.md", Self::__issue_base_name(issue_number, &sanitized));
+		if closed { format!("{base}.bak") } else { base }
+	}
+
+	/// Get the directory name for an issue (used when it has sub-issues).
+	/// Format: {number}_-_{sanitized_title}[.bak]
+	pub fn issue_dir_name(issue_number: Option<u64>, title: &str, closed: bool) -> String {
+		let sanitized = Self::sanitize_title(title);
+		let base = Self::__issue_base_name(issue_number, &sanitized);
+		if closed { format!("{base}.bak") } else { base }
 	}
 
 	/// Get the path for the main issue file when stored inside a directory.
@@ -979,7 +978,7 @@ mod local_path {
 				_ => None,
 			};
 			if has_children {
-				let dir_name = Local::issue_dir_name(git_id, title);
+				let dir_name = Local::issue_dir_name(git_id, title, closed);
 				let issue_dir = self.resolved_path.join(&dir_name);
 				self.resolved_path = Local::main_file_path(&issue_dir, closed);
 			} else {
