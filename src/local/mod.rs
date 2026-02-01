@@ -306,7 +306,7 @@ impl Local {
 	///
 	/// Returns `GitId` if an issue number is found, `Title` for title-only .md files.
 	/// Returns `None` for non-issue files (directories without numbers, non-.md files).
-	pub(crate) fn parse_issue_selector_from_name(name: &str) -> Option<IssueSelector> {
+	pub fn parse_issue_selector_from_name(name: &str) -> Option<IssueSelector> {
 		// Strip file extensions if present
 		let base = name.strip_suffix(".md.bak").or_else(|| name.strip_suffix(".md")).unwrap_or(name);
 

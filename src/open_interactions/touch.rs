@@ -101,9 +101,9 @@ pub fn parse_touch_path(user_input: &str) -> Result<TouchPathResult> {
 
 				// If matched a flat file but not the last segment, user wants to create a child.
 				if !is_last && matched_path.is_file() {
-					let parent_num = extract_issue_number(&matched).ok_or_else(|| eyre!("Cannot extract issue number from '{matched}'"))?;
-					let mut index: Vec<IssueSelector> = matched_lineage.iter().filter_map(|s| extract_issue_number(s).map(IssueSelector::GitId)).collect();
-					index.push(IssueSelector::GitId(parent_num));
+					let parent_selector = Local::parse_issue_selector_from_name(&matched).ok_or_else(|| eyre!("Cannot parse selector from '{matched}'"))?;
+					let mut index: Vec<IssueSelector> = matched_lineage.iter().filter_map(|s| Local::parse_issue_selector_from_name(s)).collect();
+					index.push(parent_selector);
 					let child_title = strip_md_extension(lineage_rgxs[i + 1]);
 					index.push(IssueSelector::title(child_title));
 					return Ok(TouchPathResult::Create(Box::new(IssueIndex::with_index(&owner, &repo, index))));
@@ -114,7 +114,7 @@ pub fn parse_touch_path(user_input: &str) -> Result<TouchPathResult> {
 			}
 			MatchOrNone::NoMatch => {
 				// No match - this is a create request
-				let mut index: Vec<IssueSelector> = matched_lineage.iter().filter_map(|s| extract_issue_number(s).map(IssueSelector::GitId)).collect();
+				let mut index: Vec<IssueSelector> = matched_lineage.iter().filter_map(|s| Local::parse_issue_selector_from_name(s)).collect();
 				index.push(IssueSelector::title(pattern));
 				return Ok(TouchPathResult::Create(Box::new(IssueIndex::with_index(&owner, &repo, index))));
 			}

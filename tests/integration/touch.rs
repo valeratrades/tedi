@@ -6,6 +6,7 @@ use v_fixtures::FixtureRenderer;
 
 use crate::{
 	common::{FixtureIssuesExt, TestContext},
+	git::GitExt as _,
 	parse, render_fixture,
 };
 
@@ -159,38 +160,33 @@ fn test_touch_new_subissue_no_edits_does_not_create() {
 /// Test that nested issues work when the parent directory uses title-only naming (not synced to git).
 ///
 /// This should work without requiring git sync first.
-#[cfg(not(true))] //TODO!!!!!: \
-#[tokio::test]
-async fn test_nested_issue_under_unsynced_parent() {
-	let ctx = TestContext::build("");
-
-	//DO: --touch the parent with --offline
-
-	// Create parent issue directory with title-only name (not synced to git)
-	let pending_parent = parse(
-		r"
-- [ ] Parent Issue
-	pending parent
-	",
+#[test]
+fn test_nested_issue_under_unsynced_parent() {
+	// Set up a parent issue with title-only naming (no git number - just "Parent_Issue.md")
+	let ctx = TestContext::build(
+		r#"
+		//- /data/issues/o/r/.meta.json
+		{
+			"virtual_project": false,
+			"next_virtual_issue_number": 0,
+			"issues": {}
+		}
+		//- /data/issues/o/r/Parent_Issue.md
+		- [ ] Parent Issue <!-- @mock_user -->
+			parent body
+	"#,
 	);
-	ctx.local(&pending_parent, None).await;
 
-	ctx.run(&["--offline", "TODO"]);
+	// Now create a child under the unsynced parent (title-only naming)
+	let out = ctx.open_touch("o/r/Parent/child_while_offline").args(&["--offline"]).ghost_edit().run();
+	eprintln!("{}", out.stderr);
+	eprintln!("{}", out.stdout);
 
-	//// Create child issue under the unsynced parent
-	//let child_path = "issues/owner/repo/my_project/task.md";
-	//let child_content = "- [ ] Task <!-- @user https://github.com/owner/repo/issues/new -->\n\tA task under the unsynced parent.\n";
-	//ctx.write(child_path, child_content);
+	// ensure we're able to sync the parent to git once we're online
+	let out = ctx.open_touch("o/r/Parent/child_while_online").ghost_edit().run();
 
-	// Construct absolute path to the child file
-	let child_file_path = ctx.data_dir().join(child_path);
+	// Verify issue file gets created
+	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap(), &out), @"");
 
-	// Open the child issue by absolute path
-	let out = ctx.run(["--mock", "--offline", "open", "--touch", child_file_path.to_str().unwrap()]);
-
-	// Should succeed
 	assert!(out.status.success(), "Should succeed opening child under unsynced parent. stderr: {}", out.stderr);
-
-	// Verify the file structure is preserved
-	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().skip_meta(), &out), @"");
 }
