@@ -314,11 +314,11 @@ pub fn parse(content: &str) -> Issue {
 /// Render a fixture with optional error output if the command failed.
 pub fn render_fixture(renderer: FixtureRenderer<'_>, output: &RunOutput) -> String {
 	let result = renderer.always_show_filepath().render();
-	if !output.status.success() {
-		let s = format!("\n\nBINARY FAILED\nstdout:\n{}\nstderr:\n{}", output.stdout, output.stderr);
-		//result.push_str(s); //Q: embedding it into a snapshot feels a bit bizzare. And I don't get color-coding
-		eprintln!("{s}");
-	}
+
+	// will only see it if snapshot failed. //Q: how much overhead this has though?
+	let s = format!("\n\nBINARY FAILED\nstdout:\n{}\nstderr:\n{}", output.stdout, output.stderr);
+	eprintln!("{s}");
+
 	result
 }
 /// Output from running a command.

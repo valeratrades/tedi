@@ -4,7 +4,7 @@
 
 use std::{
 	collections::{HashMap, HashSet},
-	path::Path,
+	path::{Path, PathBuf},
 };
 
 use tracing::{debug, info, instrument, trace, warn};
@@ -211,7 +211,6 @@ fn cleanup_old_locations(issue: &Issue, has_children: bool, closed: bool) -> Res
 	let parent_issue_idx = issue.parent_index();
 	let parent_path = LocalPath::from(parent_issue_idx);
 	let reader = FsReader;
-	dbg!(&parent_path);
 
 	let resolved_parent_pwd = match parent_path.resolve_parent(reader) {
 		Ok(r) => r,
@@ -222,29 +221,51 @@ fn cleanup_old_locations(issue: &Issue, has_children: bool, closed: bool) -> Res
 		Err(e) => return Err(e.into()),
 	};
 
-	let resolved_parent_dir = match resolved_parent_pwd.matching_subpaths() {
+	fn is_main_file(path: &Path) -> bool {
+		path.file_name().unwrap().to_string_lossy().starts_with(Local::MAIN_ISSUE_FILENAME) // use `starts_with`, as it could be `.bak`
+	}
+
+	match resolved_parent_pwd.matching_subpaths() {
 		Ok(matches_for_parent) => {
-			for path in matches_for_parent {
-				if !path.is_dir() {
-					try_remove_file(&path)?;
+			let misplaced_standalone_files: Vec<PathBuf> = matches_for_parent.into_iter().filter(|p| !p.is_dir() && !is_main_file(p)).collect();
+			match misplaced_standalone_files.len() {
+				0 => debug!("no files to cleanup for parent"),
+				1 => {
+					let standalone = misplaced_standalone_files.into_iter().next().unwrap();
+					let name = standalone.file_name().unwrap().to_string_lossy();
+					let is_closed = name.ends_with(".bak");
+					let dirname = format!("{}/", name.strip_suffix(".md.bak").or_else(|| name.strip_suffix(".md")).unwrap());
+					let main_file_path = Local::main_file_path(&standalone.parent().unwrap().join(dirname), is_closed);
+					std::fs::create_dir_all(main_file_path.parent().unwrap())?;
+					std::fs::rename(standalone, main_file_path)?;
 				}
+				_ => todo!("should have a good error here"),
 			}
-			resolved_parent_pwd.deterministic(&issue.contents.title, closed, has_children)
 		}
 		Err(e) if e.kind == LocalPathErrorKind::NotFound => {
 			debug!("no trace of parent's dir or old issue files, - safe to assume issue doesn't exist either; nothing to clean");
 			return Ok(());
 		}
 		Err(e) => return Err(e.into()),
-	};
+	}
 
 	// Get all existing paths that match our selector
 	// If the directory doesn't exist yet, there's nothing to clean up
+	let resolved_parent_dir = LocalPath::from(issue).resolve_parent(reader)?; //HACK: this is horrible. We recompute already resolved part of the path, just because we can't deterministically `select` as we do in `resolve_parent` //TODO: just update `select` to be aware of whether it's operating on last selector
 	let matching = resolved_parent_dir.matching_subpaths()?; // Reader error is unreachable, - we've already checked for it
+	dbg!(&resolved_parent_dir, &matching);
 
 	// Remove any matching paths that aren't the target
 	let title = &issue.contents.title;
 	let target = resolved_parent_dir.deterministic(title, closed, has_children).path();
+	//dbg {{{1
+	{
+		let parent_issue_dir = target.parent().unwrap();
+		for d in std::fs::read_dir(parent_issue_dir).unwrap() {
+			dbg!(&d);
+		}
+	}
+	//,}}}1
 	for path in matching {
 		match path == target {
 			true => {
@@ -254,7 +275,7 @@ fn cleanup_old_locations(issue: &Issue, has_children: bool, closed: bool) -> Res
 				debug!(path = %path.display(), "path differs from target, will remove");
 				// If it's a __main__.md file, we need to check if the parent dir should be removed
 				// (only if we're moving from directory to flat format)
-				match path.file_name().unwrap().to_string_lossy().starts_with(Local::MAIN_ISSUE_FILENAME) {
+				match is_main_file(&path) {
 					true => {
 						// Remove the whole directory if we're converting to flat format
 						let parent_dir = path.parent().unwrap();

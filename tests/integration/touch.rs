@@ -107,9 +107,8 @@ fn test_touch_path_with_more_segments_after_flat_file_match() {
 	}
 	//- /testowner/testrepo/99_-_parent/100_-_child.md
 	- [ ] child <!-- @mock_user https://github.com/testowner/testrepo/issues/100 -->
-		child contents
 	//- /testowner/testrepo/99_-_parent/__main__.md
-	- [ ] parent <!--https://github.com/testowner/testrepo/issues/99-->
+	- [ ] parent <!-- @mock_user https://github.com/testowner/testrepo/issues/99-->
 		_
 	"#);
 
