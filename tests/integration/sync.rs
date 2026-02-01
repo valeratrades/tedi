@@ -353,6 +353,7 @@ async fn test_pull_with_divergence_runs_sync_before_editor() {
 		out.stderr
 	);
 
+	// ensure we actualaly manage to auto-merge
 	assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap(), &out), r"", @r#"
 	//- /o/r/.meta.json
 	{
@@ -644,6 +645,7 @@ async fn test_force_merge_preserves_both_sub_issues(#[case] args: &[&str], #[cas
 	let out = ctx.open_issue(&local).args(args).run();
 
 	// Snapshot the result - different expectations based on which side wins conflicts
+	//#[codestyle::skip]
 	if expect_local_description {
 		// --force: local wins conflicts, so "extra local line" should be present
 		insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().skip_meta(), &out), @"

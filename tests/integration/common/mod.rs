@@ -432,6 +432,7 @@ fn set_nonblocking<F: AsRawFd>(f: &F) {
 /// Drain available data from a non-blocking pipe into a buffer.
 fn drain_pipe<R: Read>(pipe: &mut R, buf: &mut Vec<u8>) {
 	let mut tmp = [0u8; 4096];
+	//LOOP: we're just draining, so if fs is functioning, we will see the `Ok(0)`
 	loop {
 		match pipe.read(&mut tmp) {
 			Ok(0) => break,
