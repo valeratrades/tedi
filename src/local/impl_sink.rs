@@ -2,20 +2,13 @@
 //!
 //! r[local.sink-only-mutation]
 
-use std::{
-	collections::{HashMap, HashSet},
-	path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 use tracing::{debug, info, instrument, trace, warn};
 use v_utils::prelude::*;
 
 use super::{ConsensusSinkError, FsReader, IssueMeta, Local, LocalPath, LocalReader};
-use crate::{
-	Issue, IssueIndex, IssueSelector,
-	local::{LocalPathErrorKind, LocalPathResolved},
-	sink::Sink,
-};
+use crate::{Issue, local::LocalPathErrorKind, sink::Sink};
 
 /// Marker type for sinking to filesystem (submitted state).
 pub struct Submitted;
@@ -169,6 +162,21 @@ fn sink_issue_node<R: LocalReader>(new: &Issue, maybe_old: Option<&Issue>, reade
 		cleanup_old_locations(new, has_children, closed)?;
 	}
 
+	// If old identity had different parent_index, remove old file/directory
+	if let Some(old) = maybe_old
+		&& old.identity.parent_index != new.identity.parent_index
+		&& reader.is_mutable()
+	{
+		if let Ok(old_path) = LocalPath::from(old).resolve_parent(*reader) {
+			let old_location = old_path.deterministic(&old.contents.title, old.contents.state.is_closed(), !old.children.is_empty()).path();
+			if old_location.is_dir() {
+				let _ = std::fs::remove_dir_all(&old_location);
+			} else if old_location.is_file() {
+				let _ = std::fs::remove_file(&old_location);
+			}
+		}
+	}
+
 	// Save metadata
 	if let Some(issue_num) = new.git_id()
 		&& let Some(timestamps) = new.identity.timestamps()
@@ -177,21 +185,21 @@ fn sink_issue_node<R: LocalReader>(new: &Issue, maybe_old: Option<&Issue>, reade
 		Local::save_issue_meta(&owner, &repo, issue_num, &meta)?;
 	}
 
-	// Recursively sink children
-	let old_children_map: HashMap<u64, &Issue> = maybe_old.map(|o| o.children.iter().filter_map(|c| c.git_id().map(|n| (n, c))).collect()).unwrap_or_default();
-
-	let new_child_numbers: HashSet<u64> = new.children.iter().filter_map(|c| c.git_id()).collect();
+	// Recursively sink children - match by title (full_index changes when parent syncs)
+	let old_children: Vec<&Issue> = maybe_old.map(|o| o.children.iter().collect()).unwrap_or_default();
 
 	for child in &new.children {
-		let old_child = child.git_id().and_then(|n| old_children_map.get(&n).copied());
+		let old_child = old_children.iter().find(|c| c.contents.title == child.contents.title).copied();
 		any_written |= sink_issue_node(child, old_child, reader)?;
 	}
 
-	// Remove deleted children
-	for (&old_num, &old_child) in &old_children_map {
-		if !new_child_numbers.contains(&old_num) {
+	// Remove deleted children (by title, since parent_index may have changed)
+	for old_child in &old_children {
+		if !new.children.iter().any(|c| c.contents.title == old_child.contents.title) {
 			remove_issue_files(old_child, reader)?;
-			Local::remove_issue_meta(&owner, &repo, old_num)?;
+			if let Some(old_num) = old_child.git_id() {
+				Local::remove_issue_meta(&owner, &repo, old_num)?;
+			}
 		}
 	}
 	Ok(any_written)
@@ -285,6 +293,31 @@ fn cleanup_old_locations(issue: &Issue, has_children: bool, closed: bool) -> Res
 					false => {
 						info!(path = %path.display(), "removing old file location");
 						try_remove_file(&path)?;
+					}
+				}
+			}
+		}
+	}
+
+	// If issue has git_id, also cleanup old title-based paths
+	if issue.git_id().is_some() {
+		use crate::{IssueIndex, IssueSelector};
+		// Build index with Title selector instead of GitId
+		let mut title_index = issue.identity.parent_index;
+		title_index.push(IssueSelector::title(title));
+		let title_path = LocalPath::new(title_index);
+		if let Ok(title_resolved) = title_path.resolve_parent(reader) {
+			if let Ok(title_matching) = title_resolved.matching_subpaths() {
+				for path in title_matching {
+					if path != target {
+						debug!(path = %path.display(), "removing old title-based path");
+						if is_main_file(&path) {
+							if let Some(parent_dir) = path.parent() {
+								let _ = std::fs::remove_dir_all(parent_dir);
+							}
+						} else {
+							let _ = try_remove_file(&path);
+						}
 					}
 				}
 			}

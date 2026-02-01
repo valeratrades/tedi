@@ -539,12 +539,13 @@ impl GithubClient for MockGithubClient {
 		let key = RepoKey::new(owner, repo_name);
 		let id = self.next_issue_id.fetch_add(1, Ordering::SeqCst);
 
-		// Get next issue number: scan filesystem for max existing issue number + 1
+		// Get next issue number: check in-memory store, filesystem, and meta
 		let number = {
+			let max_from_memory = self.issues.lock().unwrap().get(&key).map(|m| m.keys().max().copied().unwrap_or(0)).unwrap_or(0);
 			let max_from_files = scan_max_issue_number(owner, repo_name);
 			let project_meta = Local::load_project_meta(owner, repo_name);
 			let max_from_meta = project_meta.issues.keys().max().copied().unwrap_or(0);
-			max_from_files.max(max_from_meta) + 1
+			max_from_files.max(max_from_meta).max(max_from_memory) + 1
 		};
 
 		let now = Some(jiff::Timestamp::now());

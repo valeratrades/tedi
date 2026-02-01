@@ -211,7 +211,7 @@ fn test_nested_issue_under_unsynced_parent_online() {
 			"next_virtual_issue_number": 0,
 			"issues": {}
 		}
-		//- /data/issues/o/r/Parent_Issue/__main__.md
+		//- /data/issues/o/r/Parent_Issue.md
 		- [ ] Parent Issue <!-- @mock_user -->
 			parent body
 	"#,
@@ -224,13 +224,34 @@ fn test_nested_issue_under_unsynced_parent_online() {
 	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap(), &out), @r#"
 	//- /o/r/.meta.json
 	{
-		"virtual_project": false,
-		"next_virtual_issue_number": 0,
-		"issues": {}
+	  "virtual_project": false,
+	  "next_virtual_issue_number": 0,
+	  "issues": {
+	    "1": {
+	      "timestamps": {
+	        "title": null,
+	        "description": null,
+	        "labels": null,
+	        "state": null,
+	        "comments": []
+	      }
+	    },
+	    "2": {
+	      "timestamps": {
+	        "title": null,
+	        "description": null,
+	        "labels": null,
+	        "state": null,
+	        "comments": []
+	      }
+	    }
+	  }
 	}
-	//- /o/r/Parent_Issue/__main__.md
-	- [ ] Parent Issue <!-- @mock_user -->
-		parent body
+	//- /o/r/1_-_Parent_Issue/2_-_child.md
+	- [ ] child <!-- @mock_user https://github.com/o/r/issues/2 -->
+	//- /o/r/1_-_Parent_Issue/__main__.md
+	- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+			parent body
 	"#);
 
 	assert!(out.status.success(), "Should succeed syncing child under unsynced parent. stderr: {}", out.stderr);
