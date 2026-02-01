@@ -219,7 +219,7 @@ impl GitExt for TestContext {
 		// Write timestamps to .meta.json if seed provided
 		if let Some(seed) = seed {
 			let timestamps = timestamps_from_seed(seed);
-			self.write_issue_meta(&owner, &repo, number, &timestamps);
+			self.write_issue_meta(tedi::RepoInfo::new(&owner, &repo), number, &timestamps);
 		}
 	}
 
@@ -245,7 +245,7 @@ impl GitExt for TestContext {
 		// Write timestamps to .meta.json if seed provided
 		if let Some(seed) = seed {
 			let timestamps = timestamps_from_seed(seed);
-			self.write_issue_meta(&owner, &repo, number, &timestamps);
+			self.write_issue_meta(tedi::RepoInfo::new(&owner, &repo), number, &timestamps);
 		}
 	}
 
@@ -261,7 +261,7 @@ impl GitExt for TestContext {
 			}
 
 			// Recursively add issue and all its children
-			add_issue_recursive(state, &owner, &repo, number, None, issue, timestamps.as_ref());
+			add_issue_recursive(state, tedi::RepoInfo::new(&owner, &repo), number, None, issue, timestamps.as_ref());
 		});
 
 		// Rebuild and write mock state
@@ -366,8 +366,8 @@ impl TestContext {
 
 	/// Write timestamps to .meta.json for an issue.
 	#[deprecated(note = "should use actualy logic from the actual lib instead of reimplementing it")]
-	fn write_issue_meta(&self, owner: &str, repo: &str, number: u64, timestamps: &IssueTimestamps) {
-		let meta_path = self.xdg.data_dir().join(format!("issues/{owner}/{repo}/.meta.json"));
+	fn write_issue_meta(&self, repo_info: tedi::RepoInfo, number: u64, timestamps: &IssueTimestamps) {
+		let meta_path = self.xdg.data_dir().join(format!("issues/{}/{}/.meta.json", repo_info.owner(), repo_info.repo()));
 
 		// Load existing meta or create new
 		let mut project_meta: serde_json::Value = if meta_path.exists() {
@@ -411,7 +411,9 @@ fn extract_issue_coords(issue: &Issue) -> (String, String, u64) {
 
 /// Recursively add an issue and all its children to the mock state.
 #[deprecated(note = "should use actualy logic from the actual lib instead of reimplementing it")]
-fn add_issue_recursive(state: &mut GitState, owner: &str, repo: &str, number: u64, parent_number: Option<u64>, issue: &Issue, timestamps: Option<&IssueTimestamps>) {
+fn add_issue_recursive(state: &mut GitState, repo_info: tedi::RepoInfo, number: u64, parent_number: Option<u64>, issue: &Issue, timestamps: Option<&IssueTimestamps>) {
+	let owner = repo_info.owner();
+	let repo = repo_info.repo();
 	let key = (owner.to_string(), repo.to_string(), number);
 
 	if state.remote_issue_ids.contains(&key) {
@@ -465,7 +467,7 @@ fn add_issue_recursive(state: &mut GitState, owner: &str, repo: &str, number: u6
 	// Recursively add children (they inherit the same timestamps)
 	for child in &issue.children {
 		let child_number = child.git_id().expect("child issue must have number for remote mock state");
-		add_issue_recursive(state, owner, repo, child_number, Some(number), child, timestamps);
+		add_issue_recursive(state, repo_info, child_number, Some(number), child, timestamps);
 	}
 }
 

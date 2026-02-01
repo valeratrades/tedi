@@ -189,8 +189,8 @@ impl Local {
 
 	/// Get the project directory path (where .meta.json lives).
 	/// Structure: issues/{owner}/{repo}/
-	pub fn project_dir(owner: &str, repo: &str) -> PathBuf {
-		Self::issues_dir().join(owner).join(repo)
+	pub fn project_dir(repo_info: RepoInfo) -> PathBuf {
+		Self::issues_dir().join(repo_info.owner()).join(repo_info.repo())
 	}
 
 	/// Sanitize a title for use in filenames.
@@ -390,7 +390,7 @@ impl Local {
 			}
 		}
 
-		Ok(IssueIndex::with_index(owner, repo, selectors))
+		Ok(IssueIndex::with_index(RepoInfo::new(owner, repo), selectors))
 	}
 
 	/// Interactive issue file selection using fzf.
@@ -509,17 +509,17 @@ impl Local {
 	}
 
 	/// Check if a project is virtual (has no Github remote)
-	pub fn is_virtual_project(repo_info: crate::RepoInfo) -> bool {
-		Self::load_project_meta(repo_info.owner(), repo_info.repo()).virtual_project //TODO: update all occurences of `owner, repo` to just `repo_info` everywhere
+	pub fn is_virtual_project(repo_info: RepoInfo) -> bool {
+		Self::load_project_meta(repo_info).virtual_project
 	}
 
 	/// Ensure a virtual project exists (creates if needed).
-	pub fn ensure_virtual_project(owner: &str, repo: &str) -> Result<ProjectMeta> {
-		let meta_path = Self::project_meta_path(owner, repo);
+	pub fn ensure_virtual_project(repo_info: RepoInfo) -> Result<ProjectMeta> {
+		let meta_path = Self::project_meta_path(repo_info);
 		if meta_path.exists() {
-			let project_meta = Self::load_project_meta(owner, repo);
+			let project_meta = Self::load_project_meta(repo_info);
 			if !project_meta.virtual_project {
-				bail!("Project {owner}/{repo} exists but is not a virtual project");
+				bail!("Project {}/{} exists but is not a virtual project", repo_info.owner(), repo_info.repo());
 			}
 			Ok(project_meta)
 		} else {
@@ -528,16 +528,16 @@ impl Local {
 				next_virtual_issue_number: 1,
 				issues: std::collections::BTreeMap::new(),
 			};
-			Self::save_project_meta(owner, repo, &project_meta)?;
+			Self::save_project_meta(repo_info, &project_meta)?;
 			Ok(project_meta)
 		}
 	}
 
 	/// Allocate the next issue number for a virtual project.
-	pub fn allocate_virtual_issue_number(owner: &str, repo: &str) -> Result<u64> {
-		let mut project_meta = Self::load_project_meta(owner, repo);
+	pub fn allocate_virtual_issue_number(repo_info: RepoInfo) -> Result<u64> {
+		let mut project_meta = Self::load_project_meta(repo_info);
 		if !project_meta.virtual_project {
-			bail!("Cannot allocate virtual issue number for non-virtual project {owner}/{repo}");
+			bail!("Cannot allocate virtual issue number for non-virtual project {}/{}", repo_info.owner(), repo_info.repo());
 		}
 
 		if project_meta.next_virtual_issue_number == 0 {
@@ -546,27 +546,24 @@ impl Local {
 
 		let issue_number = project_meta.next_virtual_issue_number;
 		project_meta.next_virtual_issue_number += 1;
-		Self::save_project_meta(owner, repo, &project_meta)?;
+		Self::save_project_meta(repo_info, &project_meta)?;
 
 		Ok(issue_number)
 	}
 
 	/// Get the metadata file path for a project
-	fn project_meta_path(owner: &str, repo: &str) -> PathBuf {
-		Self::project_dir(owner, repo).join(".meta.json")
+	fn project_meta_path(repo_info: RepoInfo) -> PathBuf {
+		Self::project_dir(repo_info).join(".meta.json")
 	}
 
 	/// Load project metadata, creating empty if not exists
-	#[deprecated(
-		note = "move `load_project_meta_from_reader` logic in here, force callers to use RepoInfo and pass FsReader themselves // 'deprecated' as in this interface, not function itself"
-	)]
-	pub fn load_project_meta(owner: &str, repo: &str) -> ProjectMeta {
-		Self::load_project_meta_from_reader(RepoInfo::new(owner, repo), &FsReader)
+	pub fn load_project_meta(repo_info: RepoInfo) -> ProjectMeta {
+		Self::load_project_meta_from_reader(repo_info, &FsReader)
 	}
 
 	/// Save project metadata
-	fn save_project_meta(owner: &str, repo: &str, meta: &ProjectMeta) -> Result<()> {
-		let meta_path = Self::project_meta_path(owner, repo);
+	fn save_project_meta(repo_info: RepoInfo, meta: &ProjectMeta) -> Result<()> {
+		let meta_path = Self::project_meta_path(repo_info);
 		if let Some(parent) = meta_path.parent() {
 			std::fs::create_dir_all(parent)?;
 		}
@@ -578,7 +575,7 @@ impl Local {
 	/// Load project metadata using the provided reader.
 	#[instrument(skip(reader))]
 	pub(crate) fn load_project_meta_from_reader<R: LocalReader>(repo_info: RepoInfo, reader: &R) -> ProjectMeta {
-		let meta_path = Self::project_meta_path(repo_info.owner(), repo_info.repo());
+		let meta_path = Self::project_meta_path(repo_info);
 
 		match reader.read_content(&meta_path) {
 			Ok(c) => match serde_json::from_str(&c) {
@@ -598,18 +595,18 @@ impl Local {
 
 	/// Save metadata for a specific issue to the project's .meta.json.
 	#[instrument]
-	fn save_issue_meta(owner: &str, repo: &str, issue_number: u64, meta: &IssueMeta) -> Result<()> {
-		let mut project_meta = Self::load_project_meta(owner, repo);
+	fn save_issue_meta(repo_info: RepoInfo, issue_number: u64, meta: &IssueMeta) -> Result<()> {
+		let mut project_meta = Self::load_project_meta(repo_info);
 		project_meta.issues.insert(issue_number, meta.clone());
-		Self::save_project_meta(owner, repo, &project_meta)
+		Self::save_project_meta(repo_info, &project_meta)
 	}
 
 	/// Remove metadata for a specific issue from the project's .meta.json.
 	#[instrument]
-	fn remove_issue_meta(owner: &str, repo: &str, issue_number: u64) -> Result<()> {
-		let mut project_meta = Self::load_project_meta(owner, repo);
+	fn remove_issue_meta(repo_info: RepoInfo, issue_number: u64) -> Result<()> {
+		let mut project_meta = Self::load_project_meta(repo_info);
 		if project_meta.issues.remove(&issue_number).is_some() {
-			Self::save_project_meta(owner, repo, &project_meta)?;
+			Self::save_project_meta(repo_info, &project_meta)?;
 		}
 		Ok(())
 	}
@@ -837,7 +834,7 @@ mod local_path {
 		/// - `deterministic(title, closed, has_children)`: construct target path for writes
 		#[tracing::instrument(skip(reader))]
 		pub fn resolve_parent<R: LocalReader>(self, reader: R) -> Result<LocalPathResolved<R>, LocalPathError> {
-			let mut path = Local::project_dir(self.index.owner(), self.index.repo());
+			let mut path = Local::project_dir(self.index.repo_info());
 
 			let selectors = self.index.index();
 			let (parent_selectors, remaining) = if selectors.is_empty() {

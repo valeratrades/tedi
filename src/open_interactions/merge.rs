@@ -197,14 +197,18 @@ fn merge_children(self_children: &mut Vec<Issue>, other_children: Vec<Issue>, fo
 
 #[cfg(test)]
 mod tests {
-	use tedi::{IssueContents, IssueIdentity, IssueIndex, IssueLink, IssueTimestamps};
+	use tedi::{IssueContents, IssueIdentity, IssueIndex, IssueLink, IssueTimestamps, RepoInfo};
 
 	use super::*;
+
+	fn test_repo() -> RepoInfo {
+		RepoInfo::new("test", "repo")
+	}
 
 	fn make_linked_issue(title: &str, number: u64, timestamps: IssueTimestamps) -> Issue {
 		let url = format!("https://github.com/test/repo/issues/{number}");
 		let link = IssueLink::parse(&url).unwrap();
-		let parent_index = IssueIndex::repo_only("test", "repo");
+		let parent_index = IssueIndex::repo_only(test_repo());
 		let identity = IssueIdentity::linked(Some(parent_index), "user".to_string(), link, timestamps);
 		Issue {
 			identity,
@@ -220,7 +224,7 @@ mod tests {
 	}
 
 	fn make_pending_issue(title: &str) -> Issue {
-		let parent_index = IssueIndex::repo_only("test", "repo");
+		let parent_index = IssueIndex::repo_only(test_repo());
 		let identity = IssueIdentity::pending(parent_index);
 		Issue {
 			identity,
@@ -237,7 +241,7 @@ mod tests {
 
 	#[test]
 	fn test_merge_virtual_error() {
-		let parent_index = IssueIndex::repo_only("test", "repo");
+		let parent_index = IssueIndex::repo_only(test_repo());
 		// Create a virtual issue (local-only, never synced to Github)
 		let mut virtual_issue = Issue {
 			identity: IssueIdentity::virtual_issue(parent_index),

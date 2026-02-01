@@ -40,6 +40,12 @@ impl RepoInfo {
 	}
 }
 
+impl From<(&str, &str)> for RepoInfo {
+	fn from((owner, repo): (&str, &str)) -> Self {
+		Self::new(owner, repo)
+	}
+}
+
 /// A Github issue identifier. Wraps a URL and derives all properties on demand.
 /// Format: `https://github.com/{owner}/{repo}/issues/{number}`
 #[derive(Clone, Debug, derive_more::Deref, derive_more::DerefMut, Eq, Hash, PartialEq)]
@@ -401,7 +407,7 @@ impl IssueIdentity {
 	pub fn linked(parent_index: Option<IssueIndex>, user: String, link: IssueLink, timestamps: IssueTimestamps) -> Self {
 		let parent_index = parent_index.unwrap_or_else(|| {
 			let repo_info = link.repo_info();
-			IssueIndex::repo_only(repo_info.owner(), repo_info.repo())
+			IssueIndex::repo_only(repo_info)
 		});
 		Self {
 			parent_index,
@@ -569,28 +575,25 @@ pub struct IssueIndex {
 
 impl IssueIndex {
 	/// Create descriptor for a root-level issue.
-	pub fn root(owner: &str, repo: &str, selector: IssueSelector) -> Self {
+	pub fn root(repo_info: RepoInfo, selector: IssueSelector) -> Self {
 		let mut index = CopyArrayVec::new();
 		index.push(selector);
-		Self {
-			repo_info: RepoInfo::new(owner, repo),
-			index,
-		}
+		Self { repo_info, index }
 	}
 
 	/// Create descriptor with full index path.
 	/// Panics if index exceeds MAX_INDEX_DEPTH.
-	pub fn with_index(owner: &str, repo: &str, index: Vec<IssueSelector>) -> Self {
+	pub fn with_index(repo_info: RepoInfo, index: Vec<IssueSelector>) -> Self {
 		Self {
-			repo_info: RepoInfo::new(owner, repo),
+			repo_info,
 			index: index.into_iter().collect(),
 		}
 	}
 
 	/// Create descriptor for repo only (no specific issue).
-	pub fn repo_only(owner: &str, repo: &str) -> Self {
+	pub fn repo_only(repo_info: RepoInfo) -> Self {
 		Self {
-			repo_info: RepoInfo::new(owner, repo),
+			repo_info,
 			index: CopyArrayVec::new(),
 		}
 	}
@@ -788,7 +791,7 @@ impl Issue /*{{{1*/ {
 			Some(IssueSelector::GitId(_)) => panic!("pending_from_descriptor requires last selector to be Title"),
 			None => panic!("pending_from_descriptor requires non-empty index"),
 		};
-		let parent_index = IssueIndex::with_index(descriptor.owner(), descriptor.repo(), parent_selectors);
+		let parent_index = IssueIndex::with_index(descriptor.repo_info(), parent_selectors);
 		Self::pending_with_parent(title, parent_index, virtual_project)
 	}
 
@@ -1119,7 +1122,7 @@ impl Issue /*{{{1*/ {
 				let child_parent_idx = match &parsed.identity_info {
 					ParsedIdentityInfo::Linked { link, .. } => {
 						// Parent is linked - child's parent_index is this issue's full index
-						let base = parent_index.unwrap_or_else(|| IssueIndex::repo_only(link.owner(), link.repo()));
+						let base = parent_index.unwrap_or_else(|| IssueIndex::repo_only(link.repo_info()));
 						Some(base.child(IssueSelector::GitId(link.number())))
 					}
 					ParsedIdentityInfo::Pending | ParsedIdentityInfo::Virtual => {

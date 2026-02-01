@@ -38,7 +38,7 @@ fn test_reset_with_subissue_edit() {
 	);
 
 	// --reset fetches remote and establishes consensus, then user edits
-	let out = ctx.open_url("o", "r", 1).args(&["--reset"]).edit(&edited).run();
+	let out = ctx.open_url(("o", "r").into(), 1).args(&["--reset"]).edit(&edited).run();
 
 	assert!(out.status.success(), "Should succeed. stderr: {}", out.stderr);
 	assert!(!out.stderr.contains("Conflict"), "No conflict expected. stderr: {}", out.stderr);
@@ -55,7 +55,7 @@ fn test_reset_with_body_edit() {
 
 	let edited = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tmodified body\n");
 
-	let out = ctx.open_url("o", "r", 1).args(&["--reset"]).edit(&edited).run();
+	let out = ctx.open_url(("o", "r").into(), 1).args(&["--reset"]).edit(&edited).run();
 
 	assert!(out.status.success(), "Should succeed. stderr: {}", out.stderr);
 	assert!(!out.stderr.contains("Conflict"), "No conflict expected. stderr: {}", out.stderr);
@@ -93,7 +93,7 @@ async fn test_reset_discards_local_subissue_modifications() {
 	ctx.remote(&remote_state, None);
 
 	// Step 1: Initial fetch to create local files
-	let out = ctx.open_url("o", "r", 1).run();
+	let out = ctx.open_url(("o", "r").into(), 1).run();
 	assert!(out.status.success(), "Initial fetch failed. stderr: {}", out.stderr);
 
 	// Step 2: User modifies the parent sub-issue (adds blockers)
@@ -131,7 +131,7 @@ async fn test_reset_discards_local_subissue_modifications() {
 		 \t\t\tchild body\n",
 	);
 
-	let out = ctx.open_url("o", "r", 1).args(&["--reset"]).edit(&edited_after_reset).run();
+	let out = ctx.open_url(("o", "r").into(), 1).args(&["--reset"]).edit(&edited_after_reset).run();
 
 	assert!(out.status.success(), "Edit after reset failed. stderr: {}", out.stderr);
 	assert!(!out.stderr.contains("Conflict"), "No conflict expected. stderr: {}", out.stderr);

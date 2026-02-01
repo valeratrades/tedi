@@ -18,7 +18,7 @@ use thiserror::Error;
 use v_utils::prelude::*;
 
 use super::{Local, consensus::is_git_initialized};
-use crate::Issue;
+use crate::{Issue, RepoInfo};
 
 //==============================================================================
 // Error Types
@@ -134,10 +134,13 @@ pub enum ConflictOutcome {
 /// 3. Merging that branch (which may produce conflicts)
 ///
 /// Both local and remote are written to `{owner}/__conflict.md` in virtual format.
-pub fn initiate_conflict_merge(owner: &str, repo: &str, issue_number: u64, local_issue: &Issue, remote_issue: &Issue) -> Result<ConflictOutcome, ConflictError> {
+pub fn initiate_conflict_merge(repo_info: RepoInfo, issue_number: u64, local_issue: &Issue, remote_issue: &Issue) -> Result<ConflictOutcome, ConflictError> {
 	if !is_git_initialized() {
 		return Err(ConflictError::GitNotInitialized);
 	}
+
+	let owner = repo_info.owner();
+	let repo = repo_info.repo();
 
 	let data_dir = Local::issues_dir();
 	let data_dir_str = data_dir.to_str().ok_or_else(|| ConflictError::GitError {
