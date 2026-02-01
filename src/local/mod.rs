@@ -264,7 +264,6 @@ impl Local {
 	}
 
 	/// Get the most recently modified issue file.
-	#[deprecated(note = "rewrite to use LocalPathResolved::matching_subpaths")]
 	pub fn most_recent_issue_file() -> Result<Option<PathBuf>> {
 		fn collect_issue_files(dir: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<()> {
 			for entry in std::fs::read_dir(dir)? {
