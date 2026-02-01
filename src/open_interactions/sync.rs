@@ -22,9 +22,11 @@
 //! sync always uses `Normal`. This prevents accidental data loss.
 
 use color_eyre::eyre::{Result, bail};
+use std::path::PathBuf;
+
 use tedi::{
 	Issue, IssueIndex, IssueLink, IssueSelector, LazyIssue, RepoInfo,
-	local::{FsReader, Local, LocalIssueSource, Submitted},
+	local::{FsReader, Local, LocalIssueSource, LocalPath, Submitted},
 	sink::Sink,
 };
 use tracing::instrument;
@@ -57,20 +59,17 @@ pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Mo
 	}
 
 	// expose for modification (by user or procedural)
-	let new_modified = {
-		let result = modifier.apply(&mut issue).await?;
-		if !result.file_modified {
-			v_utils::log!("Aborted (no changes made)");
-			return Ok(result);
-		}
-		result
-	};
+	let (output, file_modified) = modifier.apply(&mut issue).await?;
+	if !file_modified {
+		v_utils::log!("Aborted (no changes made)");
+		let issue_file_path = search_issue_path(&issue)?;
+		return Ok(ModifyResult { output, file_modified, issue_file_path });
+	}
 
 	match offline || Local::is_virtual_project(repo_info) {
 		true => {
 			<Issue as Sink<Submitted>>::sink(&mut issue, None).await?;
 			println!("Offline: saved locally and exiting.");
-			return Ok(new_modified);
 		}
 		false => {
 			// Post-editor sync
@@ -105,9 +104,23 @@ pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Mo
 					}
 				}
 			}
-
-			Ok(new_modified)
 		}
+	}
+
+	let issue_file_path = search_issue_path(&issue)?;
+	Ok(ModifyResult { output, file_modified, issue_file_path })
+}
+
+/// Search for issue file path, returning None if file doesn't exist.
+fn search_issue_path(issue: &Issue) -> Result<Option<PathBuf>> {
+	match LocalPath::from(issue).resolve_parent(FsReader) {
+		Ok(resolved) => match resolved.search() {
+			Ok(found) => Ok(Some(found.path())),
+			Err(e) if e.is_not_found() => Ok(None),
+			Err(e) => Err(e.into()),
+		},
+		Err(e) if e.is_not_found() => Ok(None),
+		Err(e) => Err(e.into()),
 	}
 }
 
@@ -282,6 +295,8 @@ mod types {
 	pub struct ModifyResult {
 		pub output: Option<String>,
 		pub file_modified: bool,
+		/// Path to the issue file after sync completed. None if file was deleted (e.g., duplicate).
+		pub issue_file_path: Option<PathBuf>,
 	}
 
 	/// A modifier that can be applied to an issue file.
@@ -300,11 +315,11 @@ mod types {
 
 	impl Modifier {
 		#[tracing::instrument]
-		pub(super) async fn apply(&self, issue: &mut Issue) -> Result<ModifyResult> {
+		pub(super) async fn apply(&self, issue: &mut Issue) -> Result<(Option<String>, bool)> {
 			let old_issue = issue.clone();
 			let vpath = Local::virtual_edit_path(issue);
 
-			let result = match self {
+			let (output, file_modified) = match self {
 				Modifier::Editor { open_at_blocker } => {
 					let content = issue.serialize_virtual();
 					std::fs::write(&vpath, &content)?;
@@ -327,29 +342,26 @@ mod types {
 					tracing::Span::current().record("content", content.as_str());
 					issue.update_from_virtual(&content)?;
 
-					ModifyResult { output: None, file_modified }
+					(None, file_modified)
 				}
 				Modifier::BlockerPop => {
 					use crate::blocker_interactions::BlockerSequenceExt;
 					let popped = issue.contents.blockers.pop();
-					ModifyResult {
-						output: popped.map(|text| format!("Popped: {text}")),
-						file_modified: true,
-					}
+					(popped.map(|text| format!("Popped: {text}")), true)
 				}
 				Modifier::BlockerAdd { text } => {
 					use crate::blocker_interactions::BlockerSequenceExt;
 					issue.contents.blockers.add(text);
-					ModifyResult { output: None, file_modified: true }
+					(None, true)
 				}
-				Modifier::MockGhostEdit => ModifyResult { output: None, file_modified: true },
+				Modifier::MockGhostEdit => (None, true),
 			};
 
-			if result.file_modified {
+			if file_modified {
 				issue.update_timestamps_from_diff(&old_issue);
 			}
 
-			Ok(result)
+			Ok((output, file_modified))
 		}
 	}
 }
