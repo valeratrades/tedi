@@ -157,7 +157,7 @@ pub async fn open_command(settings: &LiveSettings, args: OpenArgs, offline: bool
 			println!("Found existing issue: {}", issue.contents.title);
 		}
 
-		modify_and_sync_issue(issue, project_is_virtual, make_modifier(open_at_blocker), local_sync_opts()).await?;
+		modify_and_sync_issue(issue, offline || project_is_virtual, make_modifier(open_at_blocker), local_sync_opts()).await?;
 		return Ok(());
 	}
 

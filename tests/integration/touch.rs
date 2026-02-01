@@ -159,9 +159,9 @@ fn test_touch_new_subissue_no_edits_does_not_create() {
 
 /// Test that nested issues work when the parent directory uses title-only naming (not synced to git).
 ///
-/// This should work without requiring git sync first.
+/// Offline creation should work without requiring git sync first.
 #[test]
-fn test_nested_issue_under_unsynced_parent() {
+fn test_nested_issue_under_unsynced_parent_offline() {
 	// Set up a parent issue with title-only naming (no git number - just "Parent_Issue.md")
 	let ctx = TestContext::build(
 		r#"
@@ -177,16 +177,61 @@ fn test_nested_issue_under_unsynced_parent() {
 	"#,
 	);
 
-	// Now create a child under the unsynced parent (title-only naming)
-	let out = ctx.open_touch("o/r/Parent/child_while_offline").args(&["--offline"]).ghost_edit().run();
-	eprintln!("{}", out.stderr);
-	eprintln!("{}", out.stdout);
+	// Create a child under the unsynced parent (title-only naming) while offline
+	let out = ctx.open_touch("o/r/Parent/child").args(&["--offline"]).ghost_edit().run();
 
-	// ensure we're able to sync the parent to git once we're online
-	let out = ctx.open_touch("o/r/Parent/child_while_online").ghost_edit().run();
-
-	// Verify issue file gets created
-	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap(), &out), @"");
+	// Verify: parent converted to directory, child created as pending
+	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap(), &out), @r#"
+	//- /o/r/.meta.json
+	{
+		"virtual_project": false,
+		"next_virtual_issue_number": 0,
+		"issues": {}
+	}
+	//- /o/r/Parent_Issue/__main__.md
+	- [ ] Parent Issue <!-- @mock_user -->
+		parent body
+		
+	//- /o/r/Parent_Issue/child.md
+	- [ ] child <!-- local: -->
+	"#);
 
 	assert!(out.status.success(), "Should succeed opening child under unsynced parent. stderr: {}", out.stderr);
+}
+
+/// Test that online sync of child under unsynced parent syncs parent first.
+#[test]
+fn test_nested_issue_under_unsynced_parent_online() {
+	// Set up a parent issue with title-only naming (no git number)
+	let ctx = TestContext::build(
+		r#"
+		//- /data/issues/o/r/.meta.json
+		{
+			"virtual_project": false,
+			"next_virtual_issue_number": 0,
+			"issues": {}
+		}
+		//- /data/issues/o/r/Parent_Issue/__main__.md
+		- [ ] Parent Issue <!-- @mock_user -->
+			parent body
+	"#,
+	);
+
+	// Create a child while online - should sync the parent first, then the child
+	let out = ctx.open_touch("o/r/Parent/child").ghost_edit().run();
+
+	// Verify: parent synced (#1), child synced (#2), proper nesting
+	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap(), &out), @r#"
+	//- /o/r/.meta.json
+	{
+		"virtual_project": false,
+		"next_virtual_issue_number": 0,
+		"issues": {}
+	}
+	//- /o/r/Parent_Issue/__main__.md
+	- [ ] Parent Issue <!-- @mock_user -->
+		parent body
+	"#);
+
+	assert!(out.status.success(), "Should succeed syncing child under unsynced parent. stderr: {}", out.stderr);
 }

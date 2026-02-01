@@ -319,12 +319,8 @@ impl Local {
 			return Some(IssueSelector::GitId(num));
 		}
 
-		// No number - only return Title for .md files (pending issues), not directories
-		if name.ends_with(".md") || name.ends_with(".md.bak") {
-			IssueSelector::try_title(base)
-		} else {
-			None
-		}
+		// No number - return Title for both .md files and directories (pending/unsynced issues)
+		IssueSelector::try_title(base)
 	}
 
 	/// Extract the full IssueIndex from an issue file path (including the issue itself).

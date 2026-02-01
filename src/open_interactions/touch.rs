@@ -140,16 +140,6 @@ fn strip_md_extension(s: &str) -> &str {
 	s.strip_suffix(".md").unwrap_or(s)
 }
 
-/// Extract issue number from a filename like "123_-_title" or "123"
-fn extract_issue_number(name: &str) -> Option<u64> {
-	if let Some(sep_pos) = name.find("_-_") {
-		name[..sep_pos].parse().ok()
-	} else {
-		// Try parsing the whole thing as a number (for numberonly dirs)
-		name.split('.').next()?.parse().ok()
-	}
-}
-
 /// List children of a directory (names only, not full paths)
 fn list_children(dir: &PathBuf) -> Result<Vec<String>> {
 	if !dir.exists() {
@@ -212,15 +202,6 @@ mod tests {
 		// When owner doesn't exist, parse_touch_path fails
 		let result = parse_touch_path("nonexistent-owner/nonexistent-repo/my-issue.md");
 		assert!(result.is_err());
-	}
-
-	#[test]
-	fn test_extract_issue_number() {
-		assert_eq!(extract_issue_number("123_-_my_title"), Some(123));
-		assert_eq!(extract_issue_number("456"), Some(456));
-		assert_eq!(extract_issue_number("123.md"), Some(123));
-		assert_eq!(extract_issue_number("no_number"), None);
-		assert_eq!(extract_issue_number("_-_title_only"), None);
 	}
 
 	#[test]
