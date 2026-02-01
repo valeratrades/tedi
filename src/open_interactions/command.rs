@@ -4,7 +4,7 @@ use std::path::Path;
 
 use clap::Args;
 use tedi::{
-	Issue, IssueIndex, IssueLink, IssueSelector, LazyIssue, RepoInfo,
+	Issue, IssueIndex, IssueLink, IssueSelector, LazyIssue,
 	local::{ExactMatchLevel, FsReader, Local, LocalIssueSource, LocalPath, Submitted},
 	sink::Sink,
 };

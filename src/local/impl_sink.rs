@@ -166,14 +166,13 @@ fn sink_issue_node<R: LocalReader>(new: &Issue, maybe_old: Option<&Issue>, reade
 	if let Some(old) = maybe_old
 		&& old.identity.parent_index != new.identity.parent_index
 		&& reader.is_mutable()
+		&& let Ok(old_path) = LocalPath::from(old).resolve_parent(*reader)
 	{
-		if let Ok(old_path) = LocalPath::from(old).resolve_parent(*reader) {
-			let old_location = old_path.deterministic(&old.contents.title, old.contents.state.is_closed(), !old.children.is_empty()).path();
-			if old_location.is_dir() {
-				let _ = std::fs::remove_dir_all(&old_location);
-			} else if old_location.is_file() {
-				let _ = std::fs::remove_file(&old_location);
-			}
+		let old_location = old_path.deterministic(&old.contents.title, old.contents.state.is_closed(), !old.children.is_empty()).path();
+		if old_location.is_dir() {
+			let _ = std::fs::remove_dir_all(&old_location);
+		} else if old_location.is_file() {
+			let _ = std::fs::remove_file(&old_location);
 		}
 	}
 
@@ -261,19 +260,10 @@ fn cleanup_old_locations(issue: &Issue, has_children: bool, closed: bool) -> Res
 	// If the directory doesn't exist yet, there's nothing to clean up
 	let resolved_parent_dir = LocalPath::from(issue).resolve_parent(reader)?; //HACK: this is horrible. We recompute already resolved part of the path, just because we can't deterministically `select` as we do in `resolve_parent` //TODO: just update `select` to be aware of whether it's operating on last selector
 	let matching = resolved_parent_dir.matching_subpaths()?; // Reader error is unreachable, - we've already checked for it
-	dbg!(&resolved_parent_dir, &matching);
 
 	// Remove any matching paths that aren't the target
 	let title = &issue.contents.title;
 	let target = resolved_parent_dir.deterministic(title, closed, has_children).path();
-	//dbg {{{1
-	{
-		let parent_issue_dir = target.parent().unwrap();
-		for d in std::fs::read_dir(parent_issue_dir).unwrap() {
-			dbg!(&d);
-		}
-	}
-	//,}}}1
 	for path in matching {
 		match path == target {
 			true => {
@@ -301,23 +291,23 @@ fn cleanup_old_locations(issue: &Issue, has_children: bool, closed: bool) -> Res
 
 	// If issue has git_id, also cleanup old title-based paths
 	if issue.git_id().is_some() {
-		use crate::{IssueIndex, IssueSelector};
+		use crate::IssueSelector;
 		// Build index with Title selector instead of GitId
 		let mut title_index = issue.identity.parent_index;
 		title_index.push(IssueSelector::title(title));
 		let title_path = LocalPath::new(title_index);
-		if let Ok(title_resolved) = title_path.resolve_parent(reader) {
-			if let Ok(title_matching) = title_resolved.matching_subpaths() {
-				for path in title_matching {
-					if path != target {
-						debug!(path = %path.display(), "removing old title-based path");
-						if is_main_file(&path) {
-							if let Some(parent_dir) = path.parent() {
-								let _ = std::fs::remove_dir_all(parent_dir);
-							}
-						} else {
-							let _ = try_remove_file(&path);
+		if let Ok(title_resolved) = title_path.resolve_parent(reader)
+			&& let Ok(title_matching) = title_resolved.matching_subpaths()
+		{
+			for path in title_matching {
+				if path != target {
+					debug!(path = %path.display(), "removing old title-based path");
+					if is_main_file(&path) {
+						if let Some(parent_dir) = path.parent() {
+							let _ = std::fs::remove_dir_all(parent_dir);
 						}
+					} else {
+						let _ = try_remove_file(&path);
 					}
 				}
 			}

@@ -6,8 +6,7 @@ use v_fixtures::FixtureRenderer;
 
 use crate::{
 	common::{FixtureIssuesExt, TestContext},
-	git::GitExt as _,
-	parse, render_fixture,
+	render_fixture,
 };
 
 /// Test that touch mode matches issues by substring regex.

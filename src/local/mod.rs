@@ -1270,7 +1270,7 @@ impl crate::LazyIssue<LocalConsensus> for Issue {
 		tracing::debug!(?index, title_empty = self.contents.title.is_empty(), "LazyIssue<LocalConsensus>::identity check title");
 
 		if self.contents.title.is_empty() {
-			let search_result = source.local_path.clone().resolve_parent(source.reader.clone()).and_then(|r| r.search());
+			let search_result = source.local_path.clone().resolve_parent(source.reader).and_then(|r| r.search());
 			tracing::debug!(?search_result, "LazyIssue<LocalConsensus>::identity search");
 			let file_path = search_result?.path();
 			let content = source.reader.read_content(&file_path)?;
@@ -1296,7 +1296,7 @@ impl crate::LazyIssue<LocalConsensus> for Issue {
 		}
 
 		let index = *source.index();
-		let file_path = source.local_path.clone().resolve_parent(source.reader.clone())?.search()?.path();
+		let file_path = source.local_path.clone().resolve_parent(source.reader)?.search()?.path();
 		let content = source.reader.read_content(&file_path)?;
 		let parsed = Local::parse_single_node(&content, index, &file_path)?;
 		self.identity = parsed.identity;

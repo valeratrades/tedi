@@ -18,7 +18,6 @@ pub async fn load_consensus_issue(index: IssueIndex) -> Result<Option<Issue>, Lo
 
 	// Check if the file exists in git
 	let search_result = source.local_path.clone().resolve_parent(source.reader).and_then(|r| r.search());
-	dbg!(&source, &search_result);
 	tracing::debug!(?search_result, "load_consensus_issue search");
 	if search_result.is_err() {
 		return Ok(None);
