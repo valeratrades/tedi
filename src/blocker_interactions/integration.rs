@@ -447,12 +447,12 @@ fn resolve_issue_file(pattern: &str) -> Result<PathBuf> {
 /// Get the current blocker description, checking urgent first then falling back to issue.
 fn get_current_blocker_description(fully_qualified: bool) -> Option<String> {
 	// Check urgent file first
-	if let Some(urgent) = StandaloneSource::urgent() {
-		if let Ok(blockers) = urgent.load() {
-			let hierarchy = if fully_qualified { urgent.hierarchy() } else { vec![] };
-			if let Some(current) = blockers.current_with_context(&hierarchy) {
-				return Some(current);
-			}
+	if let Some(urgent) = StandaloneSource::urgent()
+		&& let Ok(blockers) = urgent.load()
+	{
+		let hierarchy = if fully_qualified { urgent.hierarchy() } else { vec![] };
+		if let Some(current) = blockers.current_with_context(&hierarchy) {
+			return Some(current);
 		}
 	}
 
