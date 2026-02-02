@@ -192,7 +192,7 @@ fn test_nested_issue_under_unsynced_parent_offline() {
 		parent body
 		
 	//- /o/r/Parent_Issue/child.md
-	- [ ] child <!-- local: -->
+	- [ ] child <!-- pending -->
 	"#);
 
 	assert!(out.status.success(), "Should succeed opening child under unsynced parent. stderr: {}", out.stderr);

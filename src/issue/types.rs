@@ -151,7 +151,7 @@ impl CommentIdentity /*{{{1*/ {
 //,}}}1
 
 use super::{
-	Marker,
+	IssueMarker, Marker,
 	blocker::{BlockerSequence, classify_line, join_with_blockers},
 	error::{ParseContext, ParseError},
 };
@@ -511,20 +511,6 @@ impl IssueIdentity {
 	/// Returns None if this issue is not linked (has no number to append).
 	pub fn child_parent_index(&self) -> Option<IssueIndex> {
 		self.number().map(|n| self.parent_index.child(IssueSelector::GitId(n)))
-	}
-
-	/// Encode for serialization.
-	/// - Linked: `@user url`
-	/// - Pending: `local:` (will be created on Github)
-	/// - Virtual: `virtual:owner/repo#N` where N is a local tracking number
-	pub fn encode(&self) -> String {
-		match &self.remote {
-			IssueRemote::Github(inner) => match inner.as_ref() {
-				Some(meta) => format!("@{} {}", meta.user, meta.link.as_str()),
-				None => "local:".to_string(),
-			},
-			IssueRemote::Virtual => "virtual:".to_string(),
-		}
 	}
 }
 
@@ -1110,12 +1096,12 @@ impl Issue /*{{{1*/ {
 				// Recursively parse the child
 				// Build child's parent_index from this issue's identity info
 				let child_parent_idx = match &parsed.identity_info {
-					ParsedIdentityInfo::Linked { link, .. } => {
+					IssueMarker::Linked { link, .. } => {
 						// Parent is linked - child's parent_index is this issue's full index
 						let base = parent_index.unwrap_or_else(|| IssueIndex::repo_only(link.repo_info()));
 						Some(base.child(IssueSelector::GitId(link.number())))
 					}
-					ParsedIdentityInfo::Pending | ParsedIdentityInfo::Virtual => {
+					IssueMarker::Pending | IssueMarker::Virtual => {
 						// Local/virtual parent - pass through parent_index
 						parent_index
 					}
@@ -1153,17 +1139,17 @@ impl Issue /*{{{1*/ {
 
 		// Build identity from identity_info
 		let identity = match parsed.identity_info {
-			ParsedIdentityInfo::Linked { user, link } => {
+			IssueMarker::Linked { user, link } => {
 				// Linked issues: use parent_index if provided, otherwise derive from link (via None)
 				// Timestamps will be loaded from .meta.json separately
 				IssueIdentity::linked(parent_index, user, link, IssueTimestamps::default())
 			}
-			ParsedIdentityInfo::Pending => {
+			IssueMarker::Pending => {
 				// Pending issues require parent_index from caller
 				let pi = parent_index.expect("BUG: pending issue without parent_index - use parse_virtual with the issue's full IssueIndex");
 				IssueIdentity::pending(pi)
 			}
-			ParsedIdentityInfo::Virtual => {
+			IssueMarker::Virtual => {
 				// Virtual issues require parent_index from caller
 				let pi = parent_index.expect("BUG: virtual issue without parent_index - use parse_virtual with the issue's full IssueIndex");
 				IssueIdentity::virtual_issue(pi)
@@ -1234,42 +1220,8 @@ impl Issue /*{{{1*/ {
 	}
 
 	/// Parse identity info from the HTML comment content.
-	/// Formats:
-	/// - `@user url` for linked Github issues (full format with author)
-	/// - `url` for linked Github issues (bare URL, author unknown)
-	/// - `local:` or empty for pending Github issues
-	/// - `virtual:` for virtual (local-only) issues
-	fn parse_identity_info(s: &str) -> ParsedIdentityInfo {
-		let s = s.trim();
-
-		// Empty marker means pending
-		if s.is_empty() {
-			return ParsedIdentityInfo::Pending;
-		}
-
-		// Virtual format: `virtual:` - local only, never sync
-		if s.starts_with("virtual:") {
-			return ParsedIdentityInfo::Virtual;
-		}
-
-		// Local format: `local:` - pending creation on Github
-		if s.starts_with("local:") {
-			return ParsedIdentityInfo::Pending;
-		}
-
-		// Linked format with user: `@username https://github.com/...`
-		if let Some(rest) = s.strip_prefix('@')
-			&& let Some(space_idx) = rest.find(' ')
-		{
-			let user = rest[..space_idx].to_string();
-			let url = rest[space_idx + 1..].trim();
-			if let Some(link) = IssueLink::parse(url) {
-				return ParsedIdentityInfo::Linked { user, link };
-			}
-		}
-
-		// Default to pending for unrecognized formats
-		ParsedIdentityInfo::Pending
+	fn parse_identity_info(s: &str) -> IssueMarker {
+		IssueMarker::decode(s)
 	}
 
 	/// Parse `@user url#issuecomment-id` format into CommentIdentity.
@@ -1320,22 +1272,35 @@ impl Issue /*{{{1*/ {
 			CheckboxParseResult::InvalidContent(content) => return ChildTitleParseResult::InvalidCheckbox(content),
 		};
 
-		// Check for sub marker
-		if let Some(marker_start) = rest.find("<!--sub ") {
-			if rest.find("-->").is_none() {
+		// Check for marker: `<!-- ... -->`
+		if let Some(marker_start) = rest.find("<!--") {
+			let Some(marker_end) = rest.find("-->") else {
 				return ChildTitleParseResult::NotChildTitle;
 			};
+			if marker_end <= marker_start {
+				return ChildTitleParseResult::NotChildTitle;
+			}
 			let title = rest[..marker_start].trim();
-			if title.is_empty() { ChildTitleParseResult::NotChildTitle } else { ChildTitleParseResult::Ok }
-		} else if !rest.contains("<!--") {
+			if title.is_empty() {
+				return ChildTitleParseResult::NotChildTitle;
+			}
+			// Extract marker content and validate it's an issue marker
+			let inner = rest[marker_start + 4..marker_end].trim();
+			// Strip legacy `sub ` prefix if present
+			let inner = inner.strip_prefix("sub ").unwrap_or(inner);
+			// Check if it's a valid issue marker (linked, pending, or virtual)
+			// IssueMarker::decode returns Pending for unrecognized content, so we accept everything
+			// The actual validation is that we have a non-empty title and a marker
+			let _ = IssueMarker::decode(inner);
+			ChildTitleParseResult::Ok
+		} else {
+			// No marker - could be a new pending child being added
 			let title = rest.trim();
 			if !title.is_empty() {
 				ChildTitleParseResult::Ok
 			} else {
 				ChildTitleParseResult::NotChildTitle
 			}
-		} else {
-			ChildTitleParseResult::NotChildTitle
 		}
 	}
 
@@ -1356,17 +1321,16 @@ impl Issue /*{{{1*/ {
 		let content_indent = "\t".repeat(depth + 1);
 		let mut out = String::new();
 
-		// Title line - root uses `<!-- @user url -->`, children use `<!--sub @user url -->`
+		// Title line with issue marker
 		let checked = self.contents.state.to_checkbox();
-		let identity_part = self.identity.encode();
+		let issue_marker = IssueMarker::from(&self.identity);
 		let labels_part = if self.contents.labels.is_empty() {
 			String::new()
 		} else {
 			format!("[{}] ", self.contents.labels.join(", "))
 		};
-		let marker = if depth == 0 { " " } else { "sub " };
 		let is_owned = self.user().is_some_and(crate::current_user::is);
-		out.push_str(&format!("{indent}- [{checked}] {labels_part}{} <!--{marker}{identity_part} -->\n", self.contents.title));
+		out.push_str(&format!("{indent}- [{checked}] {labels_part}{} {issue_marker}\n", self.contents.title));
 
 		// Body (first comment) - add extra indent if not owned
 		if let Some(body_comment) = self.contents.comments.first() {
@@ -1432,16 +1396,13 @@ impl Issue /*{{{1*/ {
 			if child.contents.state.is_closed() {
 				// Output child title line
 				let child_checked = child.contents.state.to_checkbox();
-				let child_identity_part = child.identity.encode();
+				let child_issue_marker = IssueMarker::from(&child.identity);
 				let child_labels_part = if child.contents.labels.is_empty() {
 					String::new()
 				} else {
 					format!("[{}] ", child.contents.labels.join(", "))
 				};
-				out.push_str(&format!(
-					"{content_indent}- [{child_checked}] {child_labels_part}{} <!--sub {child_identity_part} -->\n",
-					child.contents.title
-				));
+				out.push_str(&format!("{content_indent}- [{child_checked}] {child_labels_part}{} {child_issue_marker}\n", child.contents.title));
 
 				// Vim fold start
 				let child_content_indent = "\t".repeat(depth + 2);
@@ -1473,14 +1434,14 @@ impl Issue /*{{{1*/ {
 
 		// Title line (always at root level for filesystem representation)
 		let checked = self.contents.state.to_checkbox();
-		let identity_part = self.identity.encode();
+		let issue_marker = IssueMarker::from(&self.identity);
 		let labels_part = if self.contents.labels.is_empty() {
 			String::new()
 		} else {
 			format!("[{}] ", self.contents.labels.join(", "))
 		};
 		let is_owned = self.user().is_some_and(crate::current_user::is);
-		out.push_str(&format!("- [{checked}] {labels_part}{} <!-- {identity_part} -->\n", self.contents.title));
+		out.push_str(&format!("- [{checked}] {labels_part}{} {issue_marker}\n", self.contents.title));
 
 		// Body (first comment) - add extra indent if not owned
 		if let Some(body_comment) = self.contents.comments.first() {
@@ -1750,22 +1711,11 @@ impl PartialEq for IssueIdentity {
 	}
 }
 
-/// Parsed identity info from title line (internal helper).
-/// Represents what we can extract from the HTML comment marker.
-enum ParsedIdentityInfo {
-	/// Linked to Github: `@user url`
-	Linked { user: String, link: IssueLink },
-	/// Pending creation on Github: `local:` or empty
-	Pending,
-	/// Virtual (local-only, never sync): `virtual:`
-	Virtual,
-}
-
 /// Parsed title line components (internal helper)
 struct ParsedTitleLine {
 	title: String,
 	/// Identity info parsed from the title line
-	identity_info: ParsedIdentityInfo,
+	identity_info: IssueMarker,
 	close_state: CloseState,
 	labels: Vec<String>,
 }
@@ -1964,17 +1914,17 @@ mod tests {
 		- [ ] Parent issue <!-- @owner https://github.com/owner/repo/issues/1 -->
 			Body
 			
-			- [x] Closed sub <!--sub @owner https://github.com/owner/repo/issues/2 -->
+			- [x] Closed sub <!-- @owner https://github.com/owner/repo/issues/2 -->
 				<!--omitted {{{always-->
 				closed body
 				<!--,}}}-->
 			
-			- [-] Not planned sub <!--sub @owner https://github.com/owner/repo/issues/3 -->
+			- [-] Not planned sub <!-- @owner https://github.com/owner/repo/issues/3 -->
 				<!--omitted {{{always-->
 				not planned body
 				<!--,}}}-->
 			
-			- [42] Duplicate sub <!--sub @owner https://github.com/owner/repo/issues/4 -->
+			- [42] Duplicate sub <!-- @owner https://github.com/owner/repo/issues/4 -->
 				<!--omitted {{{always-->
 				duplicate body
 				<!--,}}}-->

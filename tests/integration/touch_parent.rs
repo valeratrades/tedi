@@ -27,7 +27,7 @@ fn test_parent_virtual_creates_virtual_project() {
 	  "next_virtual_issue_number": 1
 	}
 	//- /newowner/newrepo/my-issue.md
-	- [ ] my-issue <!-- virtual: -->
+	- [ ] my-issue <!-- virtual -->
 	"#);
 
 	assert!(out.status.success(), "Expected success, got stderr: {}", out.stderr);

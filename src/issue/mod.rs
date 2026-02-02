@@ -15,7 +15,7 @@ pub use events::{Events, OwnedCodeBlockKind, OwnedEvent, OwnedTag, OwnedTagEnd};
 mod error;
 pub use error::{ParseError, TitleInGitPathError};
 mod marker;
-pub use marker::Marker;
+pub use marker::{IssueMarker, Marker};
 
 mod types;
 pub use types::{
