@@ -13,7 +13,7 @@ use v_utils::prelude::*;
 use super::{
 	remote::RemoteSource,
 	sync::{MergeMode, Modifier, Side, SyncOptions, modify_and_sync_issue},
-	touch::{TouchPathResult, parse_touch_path, resolve_touch_path},
+	touch::parse_touch_path,
 };
 use crate::{MockType, config::LiveSettings, github};
 
@@ -156,9 +156,9 @@ pub async fn open_command(settings: &LiveSettings, args: OpenArgs, offline: bool
 
 	// Handle --touch mode first and separately
 	if args.touch {
-		let touch_result = parse_touch_path(input, args.parent, offline).await?;
-		let is_create = matches!(touch_result, TouchPathResult::Create(_));
-		let issue = resolve_touch_path(touch_result).await?;
+		let source = parse_touch_path(input, args.parent, offline).await?;
+		let is_create = !source.local_path.clone().resolve_parent(FsReader)?.search().is_ok();
+		let issue = Issue::load(source).await?;
 		let project_is_virtual = issue.identity.is_virtual();
 
 		if is_create {

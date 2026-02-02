@@ -528,6 +528,8 @@ pub enum IssueSelector {
 	GitId(u64),
 	/// Issue title (for pending issues not yet synced to Github)
 	Title(ArrayString<MAX_TITLE_LENGTH>),
+	/// Regex pattern for fuzzy matching (touch mode only, lower priority than Title)
+	Regex(ArrayString<MAX_TITLE_LENGTH>),
 }
 
 impl IssueSelector {
@@ -541,6 +543,11 @@ impl IssueSelector {
 	/// Returns None if title exceeds MAX_TITLE_LENGTH.
 	pub fn try_title(title: &str) -> Option<Self> {
 		ArrayString::from(title).ok().map(Self::Title)
+	}
+
+	/// Create a Regex selector from a pattern string.
+	pub fn regex(pattern: &str) -> Self {
+		Self::Regex(ArrayString::from(pattern).unwrap_or_else(|_| panic!("pattern too long (max {MAX_TITLE_LENGTH} chars): {}", pattern.len())))
 	}
 }
 
@@ -629,7 +636,7 @@ impl IssueIndex {
 					offset += s.len();
 					result.push(*n);
 				}
-				IssueSelector::Title(title) => {
+				IssueSelector::Title(title) | IssueSelector::Regex(title) => {
 					let span: SourceSpan = (offset + 1, title.len()).into(); // +1 to skip the '/'
 					return Err(super::error::TitleInGitPathError {
 						index_display: NamedSource::new("IssueIndex", self.to_string()),
@@ -668,7 +675,7 @@ impl std::fmt::Display for IssueIndex {
 		for selector in self.index() {
 			match selector {
 				IssueSelector::GitId(n) => write!(f, "/{n}")?,
-				IssueSelector::Title(t) => write!(f, "/{t}")?,
+				IssueSelector::Title(t) | IssueSelector::Regex(t) => write!(f, "/{t}")?,
 			}
 		}
 		Ok(())
@@ -775,6 +782,7 @@ impl Issue /*{{{1*/ {
 				(t.to_string(), selectors)
 			}
 			Some(IssueSelector::GitId(_)) => panic!("pending_from_descriptor requires last selector to be Title"),
+			Some(IssueSelector::Regex(_)) => panic!("pending_from_descriptor requires last selector to be Title, not Regex"),
 			None => panic!("pending_from_descriptor requires non-empty index"),
 		};
 		let parent_index = IssueIndex::with_index(descriptor.repo_info(), parent_selectors);

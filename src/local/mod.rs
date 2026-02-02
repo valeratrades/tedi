@@ -817,30 +817,27 @@ mod local_path {
 				let entry_path = parent.join(name);
 				let is_dir = reader.is_dir(&entry_path)?;
 
-				match selector {
+				let matches = match selector {
 					IssueSelector::GitId(issue_number) => {
 						let prefix = format!("{issue_number}_-_");
-
-						if name.starts_with(&prefix) {
-							match is_dir {
-								true => return Ok(Some(FoundEntry::Dir(name.to_string()))),
-								false => return Ok(Some(FoundEntry::File(name.to_string()))),
-							}
-						}
-						Ok(None)
+						name.starts_with(&prefix)
 					}
 					IssueSelector::Title(title) => {
 						let sanitized = Local::sanitize_title(title.as_str());
-
-						if name.contains(&sanitized) {
-							match is_dir {
-								true => return Ok(Some(FoundEntry::Dir(name.to_string()))),
-								false => return Ok(Some(FoundEntry::File(name.to_string()))),
-							}
-						}
-						Ok(None)
+						name.contains(&sanitized)
 					}
+					IssueSelector::Regex(pattern) => {
+						let base = name.strip_suffix(".md.bak").or_else(|| name.strip_suffix(".md")).unwrap_or(name);
+						regex::Regex::new(pattern.as_str())
+							.map(|re| re.is_match(base))
+							.unwrap_or_else(|_| base.contains(pattern.as_str()))
+					}
+				};
+
+				if matches {
+					return Ok(Some(if is_dir { FoundEntry::Dir(name.to_string()) } else { FoundEntry::File(name.to_string()) }));
 				}
+				Ok(None)
 			}
 			if let Some(entry) = entry_matches_selector(reader, parent, name, selector)? {
 				results.push(entry);
