@@ -24,8 +24,8 @@ pub enum TouchPathResult {
 pub async fn resolve_touch_path(result: TouchPathResult) -> Result<Issue> {
 	match result {
 		TouchPathResult::Exists(path) => {
-			let source = LocalIssueSource::<FsReader>::from_path(&path)?;
-			let issue = <Issue as LazyIssue<Local>>::load(source).await?;
+			let source = LocalIssueSource::<FsReader>::build_from_path(&path)?;
+			let issue = Issue::load(source).await?;
 			Ok(issue)
 		}
 		TouchPathResult::Create(descriptor) => {

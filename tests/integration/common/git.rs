@@ -40,7 +40,7 @@ use std::{cell::RefCell, collections::HashSet};
 
 use tedi::{
 	Issue, IssueTimestamps,
-	local::{Consensus, IssueMeta, Local, Submitted},
+	local::{Consensus, IssueMeta, Local, LocalFs},
 	sink::Sink,
 };
 use v_fixtures::fs_standards::git::Git;
@@ -217,7 +217,7 @@ impl GitExt for TestContext {
 		// Set issues dir override and sink using actual library implementation
 		self.set_issues_dir_override();
 		let mut issue_clone = issue.clone();
-		<Issue as Sink<Submitted>>::sink(&mut issue_clone, None).await.expect("local sink failed");
+		<Issue as Sink<LocalFs>>::sink(&mut issue_clone, None).await.expect("local sink failed");
 
 		// Write timestamps to .meta.json if seed provided
 		if let Some(seed) = seed {
@@ -244,6 +244,7 @@ impl GitExt for TestContext {
 		// Set issues dir override and sink using actual library implementation
 		self.set_issues_dir_override();
 		let mut issue_clone = issue.clone();
+		<Issue as Sink<LocalFs>>::sink(&mut issue_clone, None).await.expect("local sink failed");
 		<Issue as Sink<Consensus>>::sink(&mut issue_clone, None).await.expect("consensus sink failed");
 
 		// Write timestamps to .meta.json if seed provided

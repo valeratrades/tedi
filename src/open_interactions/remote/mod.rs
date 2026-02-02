@@ -1,12 +1,12 @@
 //! Remote GitHub operations for issues.
 //!
 //! This module handles all remote GitHub concerns:
-//! - Fetching issues via `LazyIssue<Remote>`
-//! - Pushing changes via `Sink<Remote>` (defined in sink.rs, uses helpers from here)
+//! - Fetching issues via `LazyIssue<RemoteSource>`
+//! - Pushing changes via `Sink<Remote>`
 //!
-//! The key insight is that `LazyIssue<Remote>` mirrors `LazyIssue<Local>`:
-//! - Local loads from PathBuf (filesystem)
-//! - Remote loads from IssueLink + optional lineage
+//! The key insight is that loading mirrors local operations:
+//! - Local: `Issue::load(LocalIssueSource<FsReader>)` - loads from filesystem
+//! - Remote: `Issue::load(RemoteSource)` - loads from GitHub via IssueLink
 
 //==============================================================================
 // Error Types
@@ -63,6 +63,10 @@ pub enum RemoteError {
 	/// Issue not found on GitHub (404).
 	#[error("issue #{number} not found in {}/{}", repo.owner(), repo.repo())]
 	NotFound { repo: RepoInfo, number: u64 },
+
+	/// Required executable not found.
+	#[error("`{executable}` not found in PATH (required for {operation})")]
+	MissingExecutable { executable: &'static str, operation: &'static str },
 }
 use tedi::{
 	CloseState, Comment, CommentIdentity, Issue, IssueContents, IssueIdentity, IssueIndex, IssueLink, IssueSelector, IssueTimestamps, MAX_LINEAGE_DEPTH, RepoInfo,
@@ -73,13 +77,14 @@ use v_utils::prelude::*;
 
 use crate::github::{self, GithubComment, GithubIssue};
 
-/// Marker type for remote GitHub operations.
+/// Marker type for remote GitHub sink operations.
 pub enum Remote {}
 
 /// Source for loading issues from GitHub.
 ///
 /// Contains the issue link and optional lineage (parent issue numbers from root to immediate parent).
 /// If lineage is None, it will be fetched from GitHub by traversing parent issues.
+/// Use `build()` to construct with validation of required tools.
 #[derive(Clone, Debug)]
 pub struct RemoteSource {
 	pub link: IssueLink,
@@ -88,8 +93,7 @@ pub struct RemoteSource {
 }
 
 impl RemoteSource {
-	/// Create source from a link. Lineage will be fetched from GitHub if needed.
-	pub fn new(link: IssueLink) -> Self {
+	fn new(link: IssueLink) -> Self {
 		Self {
 			link,
 			lineage: None,
@@ -97,8 +101,7 @@ impl RemoteSource {
 		}
 	}
 
-	/// Create source with known lineage (for sub-issues during recursive fetch).
-	pub fn with_lineage(link: IssueLink, lineage: &[u64]) -> Self {
+	fn new_with_lineage(link: IssueLink, lineage: &[u64]) -> Self {
 		assert!(lineage.len() <= MAX_LINEAGE_DEPTH);
 		let mut arr = [0u64; MAX_LINEAGE_DEPTH];
 		arr[..lineage.len()].copy_from_slice(lineage);
@@ -107,6 +110,32 @@ impl RemoteSource {
 			lineage: Some(arr),
 			lineage_len: lineage.len() as u8,
 		}
+	}
+
+	/// Build source from a link. Lineage will be fetched from GitHub if needed.
+	///
+	/// Checks that `gh` executable is available.
+	pub fn build(link: IssueLink) -> Result<Self, RemoteError> {
+		if std::process::Command::new("gh").arg("--version").output().is_err() {
+			return Err(RemoteError::MissingExecutable {
+				executable: "gh",
+				operation: "GitHub operations",
+			});
+		}
+		Ok(Self::new(link))
+	}
+
+	/// Build source with known lineage (for sub-issues during recursive fetch).
+	///
+	/// Checks that `gh` executable is available.
+	pub fn build_with_lineage(link: IssueLink, lineage: &[u64]) -> Result<Self, RemoteError> {
+		if std::process::Command::new("gh").arg("--version").output().is_err() {
+			return Err(RemoteError::MissingExecutable {
+				executable: "gh",
+				operation: "GitHub operations",
+			});
+		}
+		Ok(Self::new_with_lineage(link, lineage))
 	}
 
 	fn lineage_slice(&self) -> Option<&[u64]> {
@@ -168,16 +197,15 @@ impl RemoteSource {
 	}
 }
 
-impl tedi::LazyIssue<Remote> for Issue {
+impl tedi::LazyIssue<RemoteSource> for Issue {
 	type Error = RemoteError;
-	type Source = RemoteSource;
 
-	async fn parent_index(source: &Self::Source) -> Result<Option<IssueIndex>, Self::Error> {
+	async fn parent_index(source: &RemoteSource) -> Result<Option<IssueIndex>, Self::Error> {
 		source.resolve_parent_index().await
 	}
 
 	#[instrument]
-	async fn identity(&mut self, source: Self::Source) -> Result<IssueIdentity, Self::Error> {
+	async fn identity(&mut self, source: RemoteSource) -> Result<IssueIdentity, Self::Error> {
 		if self.identity.is_linked() {
 			return Ok(self.identity.clone());
 		}
@@ -211,7 +239,7 @@ impl tedi::LazyIssue<Remote> for Issue {
 	}
 
 	#[instrument]
-	async fn contents(&mut self, source: Self::Source) -> Result<IssueContents, Self::Error> {
+	async fn contents(&mut self, source: RemoteSource) -> Result<IssueContents, Self::Error> {
 		if !self.contents.title.is_empty() {
 			return Ok(self.contents.clone());
 		}
@@ -256,7 +284,7 @@ impl tedi::LazyIssue<Remote> for Issue {
 	}
 
 	#[instrument]
-	async fn children(&mut self, source: Self::Source) -> Result<Vec<Issue>, Self::Error> {
+	async fn children(&mut self, source: RemoteSource) -> Result<Vec<Issue>, Self::Error> {
 		if !self.children.is_empty() {
 			return Ok(self.children.clone());
 		}
@@ -286,9 +314,9 @@ impl tedi::LazyIssue<Remote> for Issue {
 			let child_source = source.child(child_link, parent_number);
 			let mut child = Issue::empty_local(child_parent_index);
 
-			<Issue as tedi::LazyIssue<Remote>>::identity(&mut child, child_source.clone()).await?;
-			<Issue as tedi::LazyIssue<Remote>>::contents(&mut child, child_source.clone()).await?;
-			Box::pin(<Issue as tedi::LazyIssue<Remote>>::children(&mut child, child_source)).await?;
+			Self::identity(&mut child, child_source.clone()).await?;
+			Self::contents(&mut child, child_source.clone()).await?;
+			Box::pin(Self::children(&mut child, child_source)).await?;
 
 			children.push(child);
 		}
@@ -298,15 +326,7 @@ impl tedi::LazyIssue<Remote> for Issue {
 		Ok(children)
 	}
 
-	#[instrument]
-	async fn load(source: Self::Source) -> Result<Issue, Self::Error> {
-		let parent_index = <Self as tedi::LazyIssue<Remote>>::parent_index(&source).await?.unwrap();
-		let mut issue = Issue::empty_local(parent_index);
-		<Self as tedi::LazyIssue<Remote>>::identity(&mut issue, source.clone()).await?;
-		<Self as tedi::LazyIssue<Remote>>::contents(&mut issue, source.clone()).await?;
-		Box::pin(<Self as tedi::LazyIssue<Remote>>::children(&mut issue, source)).await?;
-		Ok(issue)
-	}
+	// Uses default load() impl from LazyIssue trait
 }
 
 /// Build IssueContents from GitHub API data.

@@ -5,13 +5,13 @@ use std::path::Path;
 use clap::Args;
 use tedi::{
 	Issue, IssueIndex, IssueLink, IssueSelector, LazyIssue, RepoInfo,
-	local::{ExactMatchLevel, FsReader, Local, LocalIssueSource, LocalPath, Submitted},
+	local::{Consensus, ExactMatchLevel, FsReader, Local, LocalFs, LocalIssueSource, LocalPath},
 	sink::Sink,
 };
 use v_utils::prelude::*;
 
 use super::{
-	remote::{Remote, RemoteSource},
+	remote::RemoteSource,
 	sync::{MergeMode, Modifier, Side, SyncOptions, modify_and_sync_issue},
 	touch::{TouchPathResult, parse_touch_path, resolve_touch_path},
 };
@@ -182,8 +182,8 @@ pub async fn open_command(settings: &LiveSettings, args: OpenArgs, offline: bool
 	let (issue, sync_opts, effective_offline) = if args.last {
 		// Handle --last mode: open the most recently modified issue file
 		let path = Local::most_recent_issue_file()?.ok_or_else(|| eyre!("No issue files found. Use a Github URL to fetch an issue first."))?;
-		let source = LocalIssueSource::<FsReader>::from_path(&path)?;
-		let issue = <Issue as LazyIssue<Local>>::load(source).await?;
+		let source = LocalIssueSource::<FsReader>::build_from_path(&path)?;
+		let issue = Issue::load(source).await?;
 		(issue, local_sync_opts(), offline)
 	} else if github::is_github_issue_url(input) {
 		// Github URL mode: unified with --pull behavior
@@ -205,8 +205,8 @@ pub async fn open_command(settings: &LiveSettings, args: OpenArgs, offline: bool
 		let issue = if let Some(path) = existing_path {
 			// File exists locally - proceed with unified sync (like --pull)
 			println!("Found existing local file, will sync with remote...");
-			let source = LocalIssueSource::<FsReader>::from_path(&path)?;
-			<Issue as LazyIssue<Local>>::load(source).await?
+			let source = LocalIssueSource::<FsReader>::build_from_path(&path)?;
+			Issue::load(source).await?
 		} else {
 			// File doesn't exist - fetch and create it
 			println!("Fetching issue #{issue_number} from {owner}/{repo}...");
@@ -214,17 +214,16 @@ pub async fn open_command(settings: &LiveSettings, args: OpenArgs, offline: bool
 			// Load from GitHub (lineage=None means it will be fetched if needed)
 			let url = format!("https://github.com/{owner}/{repo}/issues/{issue_number}");
 			let link = IssueLink::parse(&url).expect("valid URL");
-			let source = RemoteSource::new(link);
-			let mut issue = <Issue as LazyIssue<Remote>>::load(source).await?;
+			let source = RemoteSource::build(link)?;
+			let mut issue = Issue::load(source).await?;
 
 			// Write to local filesystem
-			<Issue as Sink<Submitted>>::sink(&mut issue, None).await?;
+			<Issue as Sink<LocalFs>>::sink(&mut issue, None).await?;
 
 			println!("Stored issue");
 
 			// Commit the fetched state as the consensus baseline
-			use super::consensus::commit_issue_changes;
-			commit_issue_changes(&issue)?;
+			<Issue as Sink<Consensus>>::sink(&mut issue, None).await?;
 
 			issue
 		};
@@ -242,8 +241,8 @@ pub async fn open_command(settings: &LiveSettings, args: OpenArgs, offline: bool
 			Local::fzf_issue(input, exact)?
 		};
 
-		let source = LocalIssueSource::<FsReader>::from_path(&issue_file_path)?;
-		let issue = <Issue as LazyIssue<Local>>::load(source).await?;
+		let source = LocalIssueSource::<FsReader>::build_from_path(&issue_file_path)?;
+		let issue = Issue::load(source).await?;
 		(issue, local_sync_opts(), offline)
 	};
 

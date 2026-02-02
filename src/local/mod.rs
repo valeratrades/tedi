@@ -46,6 +46,15 @@ pub enum LocalError {
 	/// Unresolved merge conflict blocks operation.
 	#[error(transparent)]
 	ConflictBlocked(conflict::ConflictBlockedError),
+
+	/// Required executable not found.
+	#[error("`{executable}` not found in PATH (required for {operation})")]
+	MissingExecutable { executable: &'static str, operation: &'static str },
+
+	/// Path extraction failed.
+	#[error("failed to extract issue index from path: {0}")]
+	#[from(skip)]
+	PathExtraction(String),
 }
 
 /// Error type for consensus sink operations.
@@ -82,13 +91,14 @@ pub enum ConsensusSinkError {
 /// Source for loading issues from local storage.
 ///
 /// Combines a `LocalPath` (for path computation) with a reader (for reading from fs or git).
+/// Use `build()` to construct with validation of required tools.
 #[derive(Clone, Debug)]
 pub struct LocalIssueSource<R: LocalReader> {
 	pub local_path: LocalPath,
 	pub reader: R,
 }
 impl<R: LocalReader> LocalIssueSource<R> {
-	pub fn new(local_path: LocalPath, reader: R) -> Self {
+	fn new(local_path: LocalPath, reader: R) -> Self {
 		Self { local_path, reader }
 	}
 
@@ -106,24 +116,61 @@ impl<R: LocalReader> LocalIssueSource<R> {
 	}
 }
 impl LocalIssueSource<FsReader> {
-	/// Create a source for reading from filesystem (submitted state).
-	pub fn submitted(local_path: LocalPath) -> Self {
-		Self::new(local_path, FsReader)
+	/// Build a source for reading from filesystem (submitted state).
+	///
+	/// Checks:
+	/// - `fd` executable is available (for file searches)
+	/// - No unresolved merge conflicts exist
+	pub fn build(local_path: LocalPath) -> Result<Self, LocalError> {
+		// Check for fd
+		if std::process::Command::new("fd").arg("--version").output().is_err() {
+			return Err(LocalError::MissingExecutable {
+				executable: "fd",
+				operation: "local filesystem operations",
+			});
+		}
+
+		// Check for unresolved conflicts
+		conflict::check_conflict(local_path.index.owner())?;
+
+		Ok(Self::new(local_path, FsReader))
 	}
 
-	/// Create a source from a filesystem path by extracting the IssueIndex.
+	/// Build a source from a filesystem path by extracting the IssueIndex.
 	///
 	/// This extracts the parent_index from the path, then constructs the full index
 	/// by adding the target issue's selector.
-	pub fn from_path(path: &Path) -> Result<Self, color_eyre::Report> {
-		let index = Local::extract_index_from_path(path)?;
+	pub fn build_from_path(path: &Path) -> Result<Self, LocalError> {
+		// Check for fd
+		if std::process::Command::new("fd").arg("--version").output().is_err() {
+			return Err(LocalError::MissingExecutable {
+				executable: "fd",
+				operation: "local filesystem operations",
+			});
+		}
+
+		let index = Local::extract_index_from_path(path).map_err(|e| LocalError::PathExtraction(e.to_string()))?;
+
+		// Check for unresolved conflicts
+		conflict::check_conflict(index.owner())?;
+
 		Ok(Self::new(LocalPath::new(index), FsReader))
 	}
 }
 impl LocalIssueSource<GitReader> {
-	/// Create a source for reading from git HEAD (consensus state).
-	pub fn consensus(local_path: LocalPath) -> Self {
-		Self::new(local_path, GitReader)
+	/// Build a source for reading from git HEAD (consensus state).
+	///
+	/// Checks that `git` executable is available.
+	pub fn build(local_path: LocalPath) -> Result<Self, LocalError> {
+		// Check for git
+		if std::process::Command::new("git").arg("--version").output().is_err() {
+			return Err(LocalError::MissingExecutable {
+				executable: "git",
+				operation: "consensus state operations",
+			});
+		}
+
+		Ok(Self::new(local_path, GitReader))
 	}
 }
 
@@ -640,9 +687,6 @@ pub struct IssueMeta {
 	#[serde(default)]
 	pub timestamps: crate::IssueTimestamps,
 }
-/// Marker type for loading from consensus (git HEAD).
-/// Note: This is different from `impl_sink::Consensus` which is for writing.
-pub enum LocalConsensus {}
 mod reader;
 
 pub use reader::{FsReader, GitReader, LocalReader, ReaderError};
@@ -1076,29 +1120,12 @@ mod local_path {
 }
 pub use local_path::{LocalPath, LocalPathError, LocalPathErrorKind, LocalPathResolved};
 
-impl<R: LocalReader> From<LocalPath> for LocalIssueSource<R>
-where
-	R: Default,
-{
-	fn from(local_path: LocalPath) -> Self {
-		Self::new(local_path, R::default())
-	}
-}
-
-impl<R: LocalReader> From<IssueIndex> for LocalIssueSource<R>
-where
-	R: Default,
-{
-	fn from(index: IssueIndex) -> Self {
-		Self::new(LocalPath::new(index), R::default())
-	}
-}
-
-mod impl_sink;
+mod fs_sink;
 
 use std::path::{Path, PathBuf};
 
-pub use impl_sink::{Consensus, Submitted};
+pub use consensus::Consensus;
+pub use fs_sink::LocalFs;
 //==============================================================================
 // Error Types
 //==============================================================================
@@ -1138,19 +1165,18 @@ impl TryFrom<u8> for ExactMatchLevel {
 // LazyIssue Implementation for LocalIssueSource<FsReader>
 //==============================================================================
 
-impl crate::LazyIssue<Local> for Issue {
+impl crate::LazyIssue<LocalIssueSource<FsReader>> for Issue {
 	type Error = LocalError;
-	type Source = LocalIssueSource<FsReader>;
 
 	#[tracing::instrument(skip_all)]
-	async fn parent_index(source: &Self::Source) -> Result<Option<crate::IssueIndex>, Self::Error> {
+	async fn parent_index(source: &LocalIssueSource<FsReader>) -> Result<Option<crate::IssueIndex>, Self::Error> {
 		// The source's IssueIndex IS the issue's index; parent_index is derived from it
 		let index = source.index();
 		Ok(index.parent())
 	}
 
 	#[tracing::instrument(skip_all)]
-	async fn identity(&mut self, source: Self::Source) -> Result<crate::IssueIdentity, Self::Error> {
+	async fn identity(&mut self, source: LocalIssueSource<FsReader>) -> Result<crate::IssueIdentity, Self::Error> {
 		if self.identity.is_linked() {
 			return Ok(self.identity.clone());
 		}
@@ -1176,7 +1202,7 @@ impl crate::LazyIssue<Local> for Issue {
 	}
 
 	#[tracing::instrument(skip(self, source))]
-	async fn contents(&mut self, source: Self::Source) -> Result<crate::IssueContents, Self::Error> {
+	async fn contents(&mut self, source: LocalIssueSource<FsReader>) -> Result<crate::IssueContents, Self::Error> {
 		if !self.contents.title.is_empty() {
 			return Ok(self.contents.clone());
 		}
@@ -1192,7 +1218,7 @@ impl crate::LazyIssue<Local> for Issue {
 	}
 
 	#[tracing::instrument(skip_all)]
-	async fn children(&mut self, source: Self::Source) -> Result<Vec<Issue>, Self::Error> {
+	async fn children(&mut self, source: LocalIssueSource<FsReader>) -> Result<Vec<Issue>, Self::Error> {
 		if !self.children.is_empty() {
 			return Ok(self.children.clone());
 		}
@@ -1219,7 +1245,7 @@ impl crate::LazyIssue<Local> for Issue {
 			let child_index = this_index.child(child_selector);
 			let child_source = source.child(child_index);
 
-			let child = <Issue as crate::LazyIssue<Local>>::load(child_source).await?;
+			let child = Issue::load(child_source).await?;
 			children.push(child);
 		}
 
@@ -1229,46 +1255,38 @@ impl crate::LazyIssue<Local> for Issue {
 		Ok(children)
 	}
 
-	#[tracing::instrument]
-	async fn load(source: Self::Source) -> Result<Issue, Self::Error> {
-		// Check for unresolved conflicts (only for FsReader/Submitted, and only for root loads)
-		conflict::check_conflict(source.index().owner())?;
-
-		let parent_index = <Self as crate::LazyIssue<Local>>::parent_index(&source).await?.unwrap();
-		let mut issue = Issue::empty_local(parent_index);
-		<Self as crate::LazyIssue<Local>>::identity(&mut issue, source.clone()).await?;
-		<Self as crate::LazyIssue<Local>>::contents(&mut issue, source.clone()).await?;
-		Box::pin(<Self as crate::LazyIssue<Local>>::children(&mut issue, source)).await?;
-		Ok(issue)
-	}
+	// Uses default load() impl from LazyIssue trait
 }
 
 //==============================================================================
 // LazyIssue Implementation for LocalIssueSource<GitReader> (Consensus loading)
 //==============================================================================
 
-impl crate::LazyIssue<LocalConsensus> for Issue {
+impl crate::LazyIssue<LocalIssueSource<GitReader>> for Issue {
 	type Error = LocalError;
-	type Source = LocalIssueSource<GitReader>;
 
-	async fn parent_index(source: &Self::Source) -> Result<Option<crate::IssueIndex>, Self::Error> {
+	async fn parent_index(source: &LocalIssueSource<GitReader>) -> Result<Option<crate::IssueIndex>, Self::Error> {
 		let index = source.index();
 		Ok(index.parent())
 	}
 
 	#[instrument]
-	async fn identity(&mut self, source: Self::Source) -> Result<crate::IssueIdentity, Self::Error> {
-		tracing::debug!(is_linked = self.identity.is_linked(), "LazyIssue<LocalConsensus>::identity");
+	async fn identity(&mut self, source: LocalIssueSource<GitReader>) -> Result<crate::IssueIdentity, Self::Error> {
+		tracing::debug!(is_linked = self.identity.is_linked(), "LazyIssue<LocalIssueSource<GitReader>>::identity");
 		if self.identity.is_linked() {
 			return Ok(self.identity.clone());
 		}
 
 		let index = *source.index();
-		tracing::debug!(?index, title_empty = self.contents.title.is_empty(), "LazyIssue<LocalConsensus>::identity check title");
+		tracing::debug!(
+			?index,
+			title_empty = self.contents.title.is_empty(),
+			"LazyIssue<LocalIssueSource<GitReader>>::identity check title"
+		);
 
 		if self.contents.title.is_empty() {
 			let search_result = source.local_path.clone().resolve_parent(source.reader).and_then(|r| r.search());
-			tracing::debug!(?search_result, "LazyIssue<LocalConsensus>::identity search");
+			tracing::debug!(?search_result, "LazyIssue<LocalIssueSource<GitReader>>::identity search");
 			let file_path = search_result?.path();
 			let content = source.reader.read_content(&file_path)?;
 			let parsed = Local::parse_single_node(&content, index, &file_path)?;
@@ -1287,7 +1305,7 @@ impl crate::LazyIssue<LocalConsensus> for Issue {
 	}
 
 	#[instrument]
-	async fn contents(&mut self, source: Self::Source) -> Result<crate::IssueContents, Self::Error> {
+	async fn contents(&mut self, source: LocalIssueSource<GitReader>) -> Result<crate::IssueContents, Self::Error> {
 		if !self.contents.title.is_empty() {
 			return Ok(self.contents.clone());
 		}
@@ -1303,7 +1321,7 @@ impl crate::LazyIssue<LocalConsensus> for Issue {
 	}
 
 	#[instrument]
-	async fn children(&mut self, source: Self::Source) -> Result<Vec<Issue>, Self::Error> {
+	async fn children(&mut self, source: LocalIssueSource<GitReader>) -> Result<Vec<Issue>, Self::Error> {
 		if !self.children.is_empty() {
 			return Ok(self.children.clone());
 		}
@@ -1330,7 +1348,7 @@ impl crate::LazyIssue<LocalConsensus> for Issue {
 			let child_index = this_index.child(child_selector);
 			let child_source = source.child(child_index);
 
-			let child = <Issue as crate::LazyIssue<LocalConsensus>>::load(child_source).await?;
+			let child = Issue::load(child_source).await?;
 			children.push(child);
 		}
 
@@ -1340,14 +1358,5 @@ impl crate::LazyIssue<LocalConsensus> for Issue {
 		Ok(children)
 	}
 
-	#[instrument]
-	async fn load(source: Self::Source) -> Result<Issue, Self::Error> {
-		// No conflict check for consensus loading (we're reading committed state)
-		let parent_index = <Self as crate::LazyIssue<LocalConsensus>>::parent_index(&source).await?.unwrap();
-		let mut issue = Issue::empty_local(parent_index);
-		<Self as crate::LazyIssue<LocalConsensus>>::identity(&mut issue, source.clone()).await?;
-		<Self as crate::LazyIssue<LocalConsensus>>::contents(&mut issue, source.clone()).await?;
-		Box::pin(<Self as crate::LazyIssue<LocalConsensus>>::children(&mut issue, source)).await?;
-		Ok(issue)
-	}
+	// Uses default load() impl from LazyIssue trait
 }

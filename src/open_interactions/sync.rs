@@ -24,7 +24,7 @@
 use color_eyre::eyre::{Result, bail};
 use tedi::{
 	Issue, IssueIndex, IssueLink, IssueSelector, LazyIssue, RepoInfo,
-	local::{FsReader, Local, LocalIssueSource, Submitted},
+	local::{Consensus, FsReader, Local, LocalFs, LocalIssueSource, LocalPath},
 	sink::Sink,
 };
 use tracing::instrument;
@@ -32,14 +32,14 @@ use v_utils::elog;
 
 use super::{
 	conflict::{ConflictOutcome, complete_conflict_resolution, initiate_conflict_merge, read_resolved_conflict},
-	consensus::{commit_issue_changes, load_consensus_issue},
+	consensus::load_consensus_issue,
 	merge::Merge,
 	remote::{Remote, RemoteSource},
 };
 
 /// Modify a local issue, then sync changes back to Github.
 ///
-/// Caller is responsible for loading the issue (via `LazyIssue<Local>::load`).
+/// Caller is responsible for loading the issue (via `Issue::load(LocalIssueSource)`).
 #[instrument]
 pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Modifier, sync_opts: SyncOptions) -> Result<ModifyResult> {
 	let repo_info = issue.identity.repo_info();
@@ -68,7 +68,7 @@ pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Mo
 
 	match offline || Local::is_virtual_project(repo_info) {
 		true => {
-			<Issue as Sink<Submitted>>::sink(&mut issue, None).await?;
+			<Issue as Sink<LocalFs>>::sink(&mut issue, None).await?;
 			println!("Offline: saved locally and exiting.");
 			return Ok(new_modified);
 		}
@@ -85,23 +85,24 @@ pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Mo
 					let parent_index = issue.identity.parent_index;
 					if let Some((i, _)) = parent_index.index().iter().enumerate().find(|(_, s)| matches!(s, IssueSelector::Title(_))) {
 						// 1. Sink current issue to local so ancestor can find it
-						<Issue as Sink<Submitted>>::sink(&mut issue, None).await?;
+						<Issue as Sink<LocalFs>>::sink(&mut issue, None).await?;
 
 						// 2. Load ancestor up to first Title selector
 						let ancestor_index = IssueIndex::with_index(repo_info, parent_index.index()[..=i].to_vec());
-						let mut ancestor = <Issue as LazyIssue<Local>>::load(LocalIssueSource::<FsReader>::from(ancestor_index)).await?;
+						let ancestor_source = LocalIssueSource::<FsReader>::build(LocalPath::new(ancestor_index))?;
+						let mut ancestor = Issue::load(ancestor_source).await?;
 						let old_ancestor = ancestor.clone();
 
 						// 3. Sink ancestor to Remote, then Local (with old state for cleanup)
 						<Issue as Sink<Remote>>::sink(&mut ancestor, None).await?;
-						<Issue as Sink<Submitted>>::sink(&mut ancestor, Some(&old_ancestor)).await?;
+						<Issue as Sink<LocalFs>>::sink(&mut ancestor, Some(&old_ancestor)).await?;
 
 						// 4. Commit
-						commit_issue_changes(&ancestor)?;
+						<Issue as Sink<Consensus>>::sink(&mut ancestor, None).await?;
 					} else {
 						<Issue as Sink<Remote>>::sink(&mut issue, None).await?;
-						<Issue as Sink<Submitted>>::sink(&mut issue, None).await?;
-						commit_issue_changes(&issue)?;
+						<Issue as Sink<LocalFs>>::sink(&mut issue, None).await?;
+						<Issue as Sink<Consensus>>::sink(&mut issue, None).await?;
 					}
 				}
 			}
@@ -135,7 +136,7 @@ mod core {
 				}
 				Side::Remote => {
 					let mut resolved = remote;
-					<Issue as Sink<Submitted>>::sink(&mut resolved, None).await?;
+					<Issue as Sink<LocalFs>>::sink(&mut resolved, None).await?;
 					Ok((resolved, true))
 				}
 			};
@@ -170,7 +171,7 @@ mod core {
 			true => {
 				// Auto-resolved - sink to both sides
 				let mut resolved = local_merged;
-				<Issue as Sink<Submitted>>::sink(&mut resolved, None).await?;
+				<Issue as Sink<LocalFs>>::sink(&mut resolved, None).await?;
 				<Issue as Sink<Remote>>::sink(&mut resolved, None).await?;
 				Ok((resolved, true))
 			}
@@ -181,7 +182,7 @@ mod core {
 						let resolved = read_resolved_conflict(repo_info.owner())?;
 						complete_conflict_resolution(repo_info.owner())?;
 						let mut resolved = resolved;
-						<Issue as Sink<Submitted>>::sink(&mut resolved, None).await?;
+						<Issue as Sink<LocalFs>>::sink(&mut resolved, None).await?;
 						<Issue as Sink<Remote>>::sink(&mut resolved, None).await?;
 						Ok((resolved, true))
 					}
@@ -202,8 +203,8 @@ mod core {
 		}
 	}
 
+	#[instrument]
 	pub(super) async fn sync(current_issue: &mut Issue, consensus: Option<Issue>, mode: MergeMode) -> Result<()> {
-		eprintln!("DEBUG: core::sync entered");
 		println!("Syncing...");
 		let issue_number = current_issue.git_id().expect(
 			"can't be linked and not have number associated\nunless we die in a weird moment I guess. If this ever triggers, should fix it to set issue as pending (not linked) and sink",
@@ -212,20 +213,17 @@ mod core {
 
 		let url = format!("https://github.com/{}/{}/issues/{issue_number}", repo_info.owner(), repo_info.repo());
 		let link = IssueLink::parse(&url).expect("valid URL");
-		let remote_source = RemoteSource::with_lineage(link, &current_issue.identity.git_lineage()?);
-		eprintln!("DEBUG: about to load Remote");
-		let remote = <Issue as LazyIssue<Remote>>::load(remote_source).await?;
-		eprintln!("DEBUG: Remote loaded, calling resolve_merge");
+		let remote_source = RemoteSource::build_with_lineage(link, &current_issue.identity.git_lineage()?)?; //DEPENDS: git_lineage() will error if any parent is not synced. //Q: should I move the logic for traversing IssueIndex in search of pending parents right here?
+		let remote = Issue::load(remote_source).await?;
 
 		let (resolved, changed) = core::resolve_merge(current_issue.clone(), consensus, remote, mode, repo_info, issue_number).await?;
-		eprintln!("DEBUG: resolve_merge done");
 		*current_issue = resolved;
 
 		match changed {
 			true => {
 				// Re-sink local in case issue numbers changed
-				<Issue as Sink<Submitted>>::sink(current_issue, None).await?;
-				commit_issue_changes(current_issue)?;
+				<Issue as Sink<LocalFs>>::sink(current_issue, None).await?;
+				<Issue as Sink<Consensus>>::sink(current_issue, None).await?;
 			}
 			false => println!("No changes."),
 		}

@@ -1,4 +1,4 @@
-//! Sink implementations for local filesystem mutations.
+//! Sink implementation for local filesystem (submitted state).
 //!
 //! r[local.sink-only-mutation]
 
@@ -7,13 +7,12 @@ use std::path::{Path, PathBuf};
 use tracing::{debug, info, instrument, trace, warn};
 use v_utils::prelude::*;
 
-use super::{ConsensusSinkError, FsReader, IssueMeta, Local, LocalPath, LocalReader};
+use super::{FsReader, IssueMeta, Local, LocalPath, LocalReader};
 use crate::{Issue, RepoInfo, local::LocalPathErrorKind, sink::Sink};
 
 /// Marker type for sinking to filesystem (submitted state).
-pub struct Submitted;
-/// Marker type for sinking to git (consensus state).
-pub struct Consensus;
+pub struct LocalFs;
+
 /// Remove a file, ignoring NotFound errors (file may not exist).
 /// Propagates other errors (permission denied, etc.).
 fn try_remove_file(path: &Path) -> Result<()> {
@@ -26,73 +25,11 @@ fn try_remove_file(path: &Path) -> Result<()> {
 
 //TODO: @claude: create proper error type for Submitted sink (see ConsensusSinkError for reference)
 /// r[local.sink-only-mutation]
-impl Sink<Submitted> for Issue {
+impl Sink<LocalFs> for Issue {
 	type Error = color_eyre::Report;
 
 	async fn sink(&mut self, old: Option<&Issue>) -> Result<bool, Self::Error> {
 		sink_issue_node(self, old, &FsReader)
-	}
-}
-
-/// r[local.sink-only-mutation]
-impl Sink<Consensus> for Issue {
-	type Error = ConsensusSinkError;
-
-	async fn sink(&mut self, old: Option<&Issue>) -> Result<bool, Self::Error> {
-		use std::process::Command;
-
-		let owner = self.identity.owner();
-		let repo = self.identity.repo();
-
-		// Write files to filesystem (same as Submitted)
-		let any_written = sink_issue_node(self, old, &FsReader).map_err(ConsensusSinkError::Write)?;
-
-		if !any_written {
-			return Ok(false);
-		}
-
-		// Stage and commit to git
-		let data_dir = Local::issues_dir();
-		let data_dir_str = data_dir.to_str().ok_or(ConsensusSinkError::InvalidDataDir)?;
-
-		// Stage all changes
-		let add_output = Command::new("git").args(["-C", data_dir_str, "add", "-A"]).output()?;
-		if !add_output.status.success() {
-			return Err(ConsensusSinkError::GitAdd(String::from_utf8_lossy(&add_output.stderr).into_owned()));
-		}
-
-		// Check if any files were ignored (would indicate .gitignore rejection)
-		let status_output = Command::new("git").args(["-C", data_dir_str, "status", "--porcelain"]).output()?;
-		if !status_output.status.success() {
-			return Err(ConsensusSinkError::GitStatus(String::from_utf8_lossy(&status_output.stderr).into_owned()));
-		}
-
-		// Check for ignored files that we tried to add
-		let project_dir = Local::project_dir(RepoInfo::new(owner, repo));
-		if let Ok(rel) = project_dir.strip_prefix(&data_dir) {
-			let check_ignored = Command::new("git").args(["-C", data_dir_str, "check-ignore", "--no-index", "-v"]).arg(rel.join("**")).output()?;
-			// check-ignore returns 0 if files ARE ignored, 1 if none are ignored
-			if check_ignored.status.success() && !check_ignored.stdout.is_empty() {
-				return Err(ConsensusSinkError::GitIgnoreRejection(String::from_utf8_lossy(&check_ignored.stdout).into_owned()));
-			}
-		}
-
-		// Check if there are staged changes to commit
-		let diff_output = Command::new("git").args(["-C", data_dir_str, "diff", "--cached", "--quiet"]).status()?;
-		if diff_output.success() {
-			// No staged changes - nothing to commit
-			return Ok(false);
-		}
-
-		// Commit with a descriptive message
-		let issue_number = self.git_id().map(|n| format!("#{n}")).unwrap_or_else(|| "new".to_string());
-		let commit_msg = format!("sync: {owner}/{repo}{issue_number}");
-		let commit_output = Command::new("git").args(["-C", data_dir_str, "commit", "-m", &commit_msg]).output()?;
-		if !commit_output.status.success() {
-			return Err(ConsensusSinkError::GitCommit(String::from_utf8_lossy(&commit_output.stderr).into_owned()));
-		}
-
-		Ok(true)
 	}
 }
 

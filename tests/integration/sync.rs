@@ -32,84 +32,45 @@ use crate::common::{
 	parse, render_fixture,
 };
 
-#[tokio::test]
-async fn test_both_diverged_triggers_conflict() {
-	let ctx = TestContext::build("");
-
-	let consensus = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tconsensus body\n");
-	let local = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tlocal body\n");
-	let remote = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tremote changed body\n");
-
-	// Both local and remote changed since consensus - should conflict
-	// Seeds: consensus=-50, local=40, remote=45 (local and remote close but both newer than consensus)
-	ctx.consensus(&consensus, Some(Seed::new(-50))).await;
-	ctx.local(&local, Some(Seed::new(40))).await;
-	ctx.remote(&remote, Some(Seed::new(45)));
-
-	let out = ctx.open_issue(&local).run();
-
-	// Capture the resulting directory state - this shows actual timestamps and merge result
-	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap(), &out), @r#"
-	//- /o/r/.meta.json
-	{
-	  "virtual_project": false,
-	  "next_virtual_issue_number": 0,
-	  "issues": {
-	    "1": {
-	      "timestamps": {
-	        "title": "2001-09-11T09:01:50Z",
-	        "description": "2001-09-11T11:07:36Z",
-	        "labels": "2001-09-11T16:40:49Z",
-	        "state": "2001-09-11T22:22:01Z",
-	        "comments": []
-	      }
-	    }
-	  }
-	}
-	//- /o/r/1_-_Test_Issue.md
-	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-			remote changed body
-	"#);
+/// Fixture for tests where consensus, local, and remote all have different bodies.
+/// The key difference between these tests is the seed values, which determine timestamps
+/// and therefore which side "wins" the merge.
+struct DivergedBodiesFixture {
+	ctx: TestContext,
+	local: tedi::Issue,
 }
 
-#[tokio::test]
-async fn test_both_diverged_with_git_initiates_merge() {
-	let ctx = TestContext::build("");
+impl DivergedBodiesFixture {
+	async fn new(consensus_seed: i64, local_seed: i64, remote_seed: i64) -> Self {
+		let ctx = TestContext::build("");
 
-	let consensus = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tconsensus body\n");
-	let local = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tlocal body\n");
-	let remote = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tremote changed body\n");
+		let consensus = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tconsensus body\n");
+		let local = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tlocal body\n");
+		let remote = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tremote changed body\n");
 
-	// Both local and remote changed since consensus - should merge/conflict
-	// Seeds: consensus=-70, local=60, remote=65 (far apart from consensus, close to each other)
-	ctx.consensus(&consensus, Some(Seed::new(-70))).await;
-	ctx.local(&local, Some(Seed::new(60))).await;
-	ctx.remote(&remote, Some(Seed::new(65)));
+		ctx.consensus(&consensus, Some(Seed::new(consensus_seed))).await;
+		ctx.local(&local, Some(Seed::new(local_seed))).await;
+		ctx.remote(&remote, Some(Seed::new(remote_seed)));
 
-	let out = ctx.open_issue(&local).run();
-
-	// Capture the resulting directory state - this shows actual timestamps and merge result
-	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap(), &out), @r#"
-	//- /o/r/.meta.json
-	{
-	  "virtual_project": false,
-	  "next_virtual_issue_number": 0,
-	  "issues": {
-	    "1": {
-	      "timestamps": {
-	        "title": "2001-09-12T01:58:13Z",
-	        "description": "2001-09-12T04:56:40Z",
-	        "labels": "2001-09-11T14:34:47Z",
-	        "state": "2001-09-12T03:35:54Z",
-	        "comments": []
-	      }
-	    }
-	  }
+		Self { ctx, local }
 	}
-	//- /o/r/1_-_Test_Issue.md
-	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-			local body
-	"#);
+}
+
+/// Tests that different timestamp seeds lead to different merge winners.
+/// - remote_wins: seeds cause remote timestamps to win
+/// - local_wins: seeds cause local timestamps to win
+#[rstest]
+#[case::remote_wins(-50, 40, 45, "remote changed body")]
+#[case::local_wins(-70, 60, 65, "local body")]
+#[tokio::test]
+async fn test_both_diverged_merge_winner(#[case] consensus_seed: i64, #[case] local_seed: i64, #[case] remote_seed: i64, #[case] expected_body: &str) {
+	let f = DivergedBodiesFixture::new(consensus_seed, local_seed, remote_seed).await;
+
+	let out = f.ctx.open_issue(&f.local).run();
+
+	// Verify the expected side won the merge
+	let rendered = render_fixture(FixtureRenderer::try_new(&f.ctx).unwrap(), &out);
+	assert!(rendered.contains(expected_body), "Expected body '{expected_body}' not found in:\n{rendered}");
 }
 
 /// When local matches consensus (no uncommitted changes) and remote has changed,
