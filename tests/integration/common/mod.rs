@@ -163,7 +163,7 @@ impl<'a> OpenBuilder<'a> {
 
 	/// Edit the file to this issue while "editor is open".
 	pub fn edit(mut self, issue: &Issue) -> Self {
-		self.edit_op = Some(EditOperation::FullIssue(issue.clone()));
+		self.edit_op = Some(EditOperation::FullIssue(Box::new(issue.clone())));
 		self
 	}
 
@@ -370,7 +370,9 @@ pub mod are_you_sure {
 
 		fn dir_issue_path(&self, repo_info: tedi::RepoInfo, number: u64, title: &str) -> PathBuf {
 			let sanitized = title.replace(' ', "_");
-			self.xdg.data_dir().join(format!("issues/{}/{}/{number}_-_{sanitized}/__main__.md", repo_info.owner(), repo_info.repo()))
+			self.xdg
+				.data_dir()
+				.join(format!("issues/{}/{}/{number}_-_{sanitized}/__main__.md", repo_info.owner(), repo_info.repo()))
 		}
 
 		fn resolve_issue_path(&self, issue: &tedi::Issue) -> PathBuf {
@@ -468,7 +470,7 @@ fn get_binary_path() -> PathBuf {
 #[derive(Clone)]
 enum EditOperation {
 	/// Edit using a full Issue (writes serialize_virtual)
-	FullIssue(Issue),
+	FullIssue(Box<Issue>),
 	/// Edit just the contents/body (preserves header, replaces body)
 	ContentsOnly(String),
 }

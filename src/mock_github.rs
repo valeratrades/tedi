@@ -201,7 +201,6 @@ impl MockGithubClient {
 
 	/// Add a comment to an issue
 	#[cfg(test)]
-	#[expect(clippy::too_many_arguments, reason = "test helper, extra verbosity is fine")]
 	pub fn add_comment(&self, repo_info: RepoInfo, issue_number: u64, comment_id: u64, body: &str, owner_login: &str, timestamp: jiff::Timestamp) {
 		let key = RepoKey::from(repo_info);
 

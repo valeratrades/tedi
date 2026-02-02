@@ -14,6 +14,8 @@
 //!
 //! All public access goes through methods on the `Local` type.
 
+#![allow(unused_assignments)] // miette's derive macro triggers false positives
+
 pub mod conflict;
 pub mod consensus;
 /// Error type for local issue loading operations.
