@@ -15,19 +15,7 @@ pub enum MockType {
 }
 #[tokio::main]
 async fn main() {
-	{
-		color_eyre::config::HookBuilder::default().capture_span_trace_by_default(false).install().unwrap();
-		miette::set_hook(Box::new(|_| Box::new(miette::MietteHandlerOpts::new().terminal_links(true).context_lines(3).build()))).expect("miette hook already set");
-		if std::env::var("__IS_INTEGRATION_TEST").is_ok() {
-			// SAFETY: This is called at program start before any other threads are spawned
-			unsafe { std::env::set_var("LOG_DIRECTIVES", concat!("debug,", env!("CARGO_PKG_NAME"), "=debug")) };
-			v_utils::utils::init_subscriber(v_utils::utils::LogDestination::default());
-		} else if let Some(filename) = extract_log_to() {
-			v_utils::utils::init_subscriber(v_utils::utils::LogDestination::xdg(env!("CARGO_PKG_NAME")).fname(filename).stderr_errors(true));
-		} else {
-			v_utils::utils::init_subscriber(v_utils::utils::LogDestination::xdg(env!("CARGO_PKG_NAME")).stderr_errors(true));
-		}
-	}
+	v_utils::clientside!(extract_log_to());
 
 	let cli = Cli::parse();
 

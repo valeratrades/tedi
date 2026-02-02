@@ -4095,9 +4095,9 @@ dependencies = [
 
 [[package]]
 name = "v_utils"
-version = "2.15.25"
+version = "2.15.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7058043f0c364ee75e207fd74bf8f88306cddf6f0fd07f3ac81afbe28c93f967"
+checksum = "801358ee746fb626975076c19653b45adff13d6801af949bd939a886cbf25bd9"
 dependencies = [
  "config",
  "const_format",
@@ -4113,6 +4113,7 @@ dependencies = [
  "jiff",
  "libc",
  "macro-attr",
+ "miette",
  "serde",
  "serde_json",
  "strum",
@@ -4129,9 +4130,9 @@ dependencies = [
 
 [[package]]
 name = "v_utils_macros"
-version = "2.11.25"
+version = "2.11.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4e1b5190cdee7a5ea56bb3dc4e7035aafdb9e11478cf20050ecaae696a8d2d18"
+checksum = "528c6340bc844284a01b116c8f0e44341cf2a0a58c2fcf5ed7150aae01db8995"
 dependencies = [
  "eyre",
  "heck",
