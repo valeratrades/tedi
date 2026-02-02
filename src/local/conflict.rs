@@ -308,56 +308,7 @@ pub fn complete_conflict_resolution(owner: &str) -> Result<()> {
 
 	Ok(())
 }
-/// Legacy: Check for any unresolved conflicts (marker-file based).
-/// DEPRECATED: Will be removed when sync.rs is rewritten.
-pub fn check_any_conflicts() -> Result<(), ConflictBlockedError> {
-	let conflicts_dir = legacy_conflicts_dir();
-	if !conflicts_dir.exists() {
-		return Ok(());
-	}
 
-	let entries = match std::fs::read_dir(&conflicts_dir) {
-		Ok(e) => e,
-		Err(_) => return Ok(()),
-	};
-
-	for entry in entries.flatten() {
-		let marker_path = entry.path();
-		if marker_path.extension().is_some_and(|e| e == "conflict") {
-			// Read the file path from the marker
-			let file_path_str = match std::fs::read_to_string(&marker_path) {
-				Ok(s) => s,
-				Err(_) => {
-					// Can't read marker, remove it
-					let _ = std::fs::remove_file(&marker_path);
-					continue;
-				}
-			};
-
-			let file_path = PathBuf::from(&file_path_str);
-
-			// Check if the file still has conflict markers
-			let content = match std::fs::read_to_string(&file_path) {
-				Ok(c) => c,
-				Err(_) => {
-					// File doesn't exist anymore, remove marker
-					let _ = std::fs::remove_file(&marker_path);
-					continue;
-				}
-			};
-
-			if has_conflict_markers(&content) {
-				// Still has conflicts - block
-				return Err(ConflictBlockedError { conflict_file: file_path });
-			} else {
-				// Resolved! Remove the marker
-				let _ = std::fs::remove_file(&marker_path);
-			}
-		}
-	}
-
-	Ok(())
-}
 /// Check if file content contains git conflict markers.
 fn has_conflict_markers(content: &str) -> bool {
 	let has_ours = content.contains("<<<<<<<");
@@ -384,16 +335,6 @@ fn is_merge_in_progress() -> bool {
 /// Cleanup the remote-state branch after merge completes.
 fn cleanup_branch(data_dir_str: &str, _current_branch: &str) {
 	let _ = Command::new("git").args(["-C", data_dir_str, "branch", "-D", "remote-state"]).output();
-}
-
-//==============================================================================
-// Legacy API (deprecated, used by old sync.rs until rewrite)
-//==============================================================================
-
-/// Legacy: Get the conflicts directory (marker-file based approach).
-/// DEPRECATED: Will be removed when sync.rs is rewritten.
-fn legacy_conflicts_dir() -> PathBuf {
-	v_utils::xdg_state_dir!("conflicts")
 }
 
 #[cfg(test)]

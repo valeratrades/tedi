@@ -189,7 +189,8 @@ mod core {
 						bail!(
 							"Conflict detected for {}/{}#{issue_number}.\n\
 							Resolve using standard git tools, then re-run.",
-							repo_info.owner(), repo_info.repo()
+							repo_info.owner(),
+							repo_info.repo()
 						);
 					}
 					ConflictOutcome::NoChanges => {

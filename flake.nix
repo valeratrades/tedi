@@ -96,14 +96,6 @@
                 combined.shellHook +
                 ''
                   cp -f ${(v-utils.files.treefmt) { inherit pkgs; }} ./.treefmt.toml
-
-                  #DEPRECATE: once GHA is working
-                  # qlty
-                  if [ ! -f "$HOME/.qlty/bin/qlty" ]; then
-                    echo "Installing qlty..."
-                    curl -fsSL https://qlty.sh | sh
-                  fi
-                  export PATH="$HOME/.qlty/bin:$PATH"
                 '';
               packages =
                 alwaysPkgs ++

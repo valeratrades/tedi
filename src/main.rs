@@ -15,7 +15,6 @@ pub enum MockType {
 #[tokio::main]
 async fn main() {
 	{
-		//TODO: deprecate color_eyre::install() after full miette migration
 		color_eyre::config::HookBuilder::default().capture_span_trace_by_default(false).install().unwrap();
 		miette::set_hook(Box::new(|_| Box::new(miette::MietteHandlerOpts::new().terminal_links(true).context_lines(3).build()))).expect("miette hook already set");
 		if std::env::var("__IS_INTEGRATION_TEST").is_ok() {
