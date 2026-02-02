@@ -153,28 +153,7 @@ pub async fn start_time_entry_with_defaults(workspace: Option<&str>, project: Op
 		None => get_active_workspace(&client).await?,
 	};
 
-	// Determine the project to use (from cache or parameter)
-	let cached_project = if project.is_none() {
-		let persisted_project_file = v_utils::xdg_cache_file!(CURRENT_PROJECT_CACHE_FILENAME);
-		std::fs::read_to_string(&persisted_project_file).ok()
-	} else {
-		None
-	};
-
-	let processed_project = cached_project.as_ref().map(|filename| process_filename_as_project(filename));
-
-	let project_name = match project {
-		Some(p) => p,
-		None => match &processed_project {
-			Some(processed) => {
-				println!("Using cached project (processed from filename): {processed}");
-				processed.as_str()
-			}
-			None => {
-				bail!("--project is required for starting time entries. Set one with 'todo blocker set <issue>' (project is derived from issue filename)");
-			}
-		},
-	};
+	let project_name = project.ok_or_else(|| eyre!("--project is required for starting time entries"))?;
 
 	let resolved_project_id = resolve_project(&client, &workspace_id, project_name).await?;
 
@@ -242,33 +221,8 @@ pub async fn stop_time_entry_with_defaults(workspace: Option<&str>) -> Result<()
 
 	Ok(())
 }
-static CURRENT_PROJECT_CACHE_FILENAME: &str = "current_blocker_issue.txt";
 fn normalize_name_for_matching(name: &str) -> String {
 	name.replace('_', " ")
-}
-//HACK: should rely on something in [Local] probably. Reimplementing file parsing is barbaric
-fn process_filename_as_project(relative_path: &str) -> String {
-	// Extract filename from path (everything after the last slash, or the whole string if no slash)
-	let filename = match relative_path.rfind('/') {
-		Some(pos) => &relative_path[pos + 1..],
-		None => relative_path,
-	};
-
-	// Strip file extension
-	let name_without_ext = match filename.rfind('.') {
-		Some(pos) => &filename[..pos],
-		None => filename,
-	};
-
-	// Convert underscores to spaces
-	let normalized = normalize_name_for_matching(name_without_ext);
-
-	// Strip issue number prefix (e.g., "131 - test" -> "test")
-	// Format is "<number> - <title>"
-	match normalized.find(" - ") {
-		Some(pos) => normalized[pos + 3..].to_string(),
-		None => normalized,
-	}
 }
 #[derive(Deserialize)]
 struct User {

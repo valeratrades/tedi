@@ -19,11 +19,13 @@ use super::{BlockerSequence, operations::BlockerSequenceExt, source::BlockerSour
 use crate::open_interactions::local::ExactMatchLevel;
 
 /// Get the currently selected blocker issue file path
+#[deprecated(note = "move as a method on IssueSource")]
 pub fn get_current_blocker_issue() -> Option<PathBuf> {
 	let cache_path = get_current_blocker_cache_path();
 	std::fs::read_to_string(&cache_path).ok().map(|s| PathBuf::from(s.trim())).filter(|p| p.exists())
 }
 /// Set the current blocker issue file path
+#[deprecated(note = "move as a method on IssueSource")]
 pub fn set_current_blocker_issue(path: &Path) -> Result<()> {
 	let cache_path = get_current_blocker_cache_path();
 	std::fs::write(&cache_path, path.to_string_lossy().as_bytes())?;
@@ -303,7 +305,7 @@ pub async fn main_integrated(command: super::io::Command, format: DisplayFormat,
 			}
 		}
 
-		Command::Resume(resume_args) => {
+		Command::Resume(mut resume_args) => {
 			// Get current blocker description for tracking
 			let source = get_current_source()?;
 			let blockers = source.load()?;
@@ -314,6 +316,11 @@ pub async fn main_integrated(command: super::io::Command, format: DisplayFormat,
 
 			// Enable tracking state
 			super::clockify::set_tracking_enabled(true)?;
+
+			// Use issue title as project if not explicitly provided
+			if resume_args.project.is_none() {
+				resume_args.project = Some(source.cached_issue.borrow().as_ref().unwrap().contents.title.clone());
+			}
 
 			// Build hierarchy for fully-qualified mode
 			let issue_name = source.path_for_hierarchy().and_then(|p| p.file_stem().map(|s| s.to_string_lossy().to_string()));
