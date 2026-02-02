@@ -578,14 +578,16 @@ async fn test_comment_shorthand_creates_comment() {
 	// Capture the resulting directory state
 	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().skip_meta(), &out), @"
 	//- /o/__conflict.md
+	<<<<<<< HEAD
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
 			issue body
-	<<<<<<< HEAD
 		
 		<!-- new comment -->
 			My new comment content
 	||||||| [hash]
 	=======
+	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+			issue body
 	>>>>>>> remote-state
 	//- /o/r/1_-_Test_Issue.md
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->

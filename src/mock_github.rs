@@ -703,6 +703,18 @@ impl GithubClient for MockGithubClient {
 
 		Ok(crate::github::GraphqlTimelineTimestamps::default())
 	}
+
+	#[instrument(skip(self), name = "MockGithubClient::repo_exists")]
+	async fn repo_exists(&self, repo: RepoInfo) -> Result<bool> {
+		let owner = repo.owner();
+		let repo_name = repo.repo();
+		tracing::info!(target: "mock_github", owner, repo_name, "repo_exists");
+		self.log_call(&format!("repo_exists({owner}, {repo_name})"));
+
+		let key = RepoKey::new(owner, repo_name);
+		let issues = self.issues.lock().unwrap();
+		Ok(issues.contains_key(&key))
+	}
 }
 
 #[cfg(test)]

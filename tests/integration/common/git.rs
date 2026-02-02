@@ -197,7 +197,10 @@ where
 
 impl GitExt for TestContext {
 	fn init_git(&self) -> Git {
-		Git::init(self.xdg.data_dir().join("issues"))
+		let git = Git::init(self.xdg.data_dir().join("issues"));
+		// Use diff3 conflict style for consistent snapshots across environments
+		git.run(&["config", "merge.conflictStyle", "diff3"]).expect("git config merge.conflictStyle failed");
+		git
 	}
 
 	async fn local(&self, issue: &Issue, seed: Option<Seed>) {

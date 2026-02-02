@@ -9,3 +9,4 @@ mod issue_preservation;
 mod reset_conflict;
 mod sync;
 mod touch;
+mod touch_parent;

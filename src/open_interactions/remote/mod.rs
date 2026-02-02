@@ -347,6 +347,7 @@ fn build_contents_from_github(issue: &GithubIssue, comments: &[GithubComment]) -
 //==============================================================================
 
 //TODO: @claude: create proper error type for Remote sink (see ConsensusSinkError for reference)
+// in the perfect world would have a common SinkError<T> type with encapsulation of shared failure modes. Generic <T> there is for tool-specific errors, - so for local and consensus it should embed `LocalError`, for remote `GithubError`
 impl Sink<Remote> for Issue {
 	type Error = color_eyre::Report;
 

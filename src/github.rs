@@ -122,6 +122,9 @@ pub trait GithubClient: Send + Sync {
 	/// All fields are optional because GitHub only retains timeline events for 90 days.
 	/// Note: Comment timestamps should be extracted from GithubComment's created_at/updated_at fields.
 	async fn fetch_timeline_timestamps(&self, repo: RepoInfo, issue_number: u64) -> Result<GraphqlTimelineTimestamps>;
+
+	/// Check if a repository exists and is accessible (we have at least read access)
+	async fn repo_exists(&self, repo: RepoInfo) -> Result<bool>;
 }
 
 //==============================================================================
@@ -469,6 +472,12 @@ impl GithubClient for RealGithubClient {
 		}
 
 		Ok(timestamps)
+	}
+
+	async fn repo_exists(&self, repo: RepoInfo) -> Result<bool> {
+		let url = format!("https://api.github.com/repos/{}/{}", repo.owner(), repo.repo());
+		let res = self.get(&url).send().await?;
+		Ok(res.status().is_success())
 	}
 }
 

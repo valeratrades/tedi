@@ -50,7 +50,7 @@ pub struct OpenArgs {
 
 	/// Fetch latest from Github before opening. If remote differs from local,
 	/// prompts: [s]kip (use local), [o]verwrite (use remote), [m]erge (attempt merge)
-	#[arg(short, long)]
+	#[arg(long)] // no short version, as it introduces ambiguity against `--parent`
 	pub pull: bool,
 
 	/// Use the current blocker issue file (from `todo blocker set`)
@@ -76,6 +76,23 @@ pub struct OpenArgs {
 	/// When opening via Github URL: overwrites local with remote.
 	#[arg(short, long)]
 	pub reset: bool,
+
+	/// Create missing parent components (like mkdir -p). Used with --touch.
+	/// Without value or with "remote": creates missing repo on GitHub.
+	/// With "virtual": creates missing repo as virtual (local-only).
+	#[arg(long, value_name = "TYPE", default_missing_value = "default", num_args = 0..=1)]
+	pub parent: Option<ProjectType>, // no short version, as it introduces ambiguity against `--pull`
+}
+
+/// Type of parent to create when using --parent flag
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, clap::ValueEnum)]
+pub enum ProjectType {
+	/// Require repo to exist on GitHub (default)
+	#[default]
+	#[value(name = "default")]
+	Default,
+	/// Create missing repo as virtual (local-only)
+	Virtual,
 }
 
 #[tracing::instrument(level = "debug", skip(settings))]
@@ -139,7 +156,7 @@ pub async fn open_command(settings: &LiveSettings, args: OpenArgs, offline: bool
 
 	// Handle --touch mode first and separately
 	if args.touch {
-		let touch_result = parse_touch_path(input)?;
+		let touch_result = parse_touch_path(input, args.parent, offline).await?;
 		let is_create = matches!(touch_result, TouchPathResult::Create(_));
 		let issue = resolve_touch_path(touch_result).await?;
 		let project_is_virtual = issue.identity.is_virtual();

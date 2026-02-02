@@ -9,6 +9,9 @@ use tedi::{
 };
 use v_utils::prelude::*;
 
+use super::command::ProjectType;
+use crate::github;
+
 /// Result of parsing a touch path.
 pub enum TouchPathResult {
 	/// Found an existing issue file on disk.
@@ -46,11 +49,14 @@ pub async fn resolve_touch_path(result: TouchPathResult) -> Result<Issue> {
 /// If owner/repo match but issue doesn't exist, returns `Create` with descriptor for creating a new issue.
 /// For nested paths, matches as far as possible, then returns `Create` for the remaining title.
 ///
+/// If owner/repo don't exist locally but are accessible on GitHub, returns `Create` for the new issue.
+/// If `parent` is Some, missing repos will be created (on GitHub or as virtual, depending on the value).
+///
 /// The final component may have `.md` extension which is stripped before matching.
 //TODO!!!: this has duplication against LocalPath logic. I think I should do both:
 //a) update IssueSelector to have a Regex variant (same for application logic as here; preference even below Title)
 //b) have this one only regex against owner and repo; delegate the rest
-pub fn parse_touch_path(user_input: &str) -> Result<TouchPathResult> {
+pub async fn parse_touch_path(user_input: &str, parent: Option<ProjectType>, offline: bool) -> Result<TouchPathResult> {
 	if user_input.starts_with('/') {
 		bail!("Expecting semantic per-component match string for owner/repo/issue/optional-sub-issues, got: {user_input}")
 	}
@@ -64,31 +70,78 @@ pub fn parse_touch_path(user_input: &str) -> Result<TouchPathResult> {
 	let repo_rgx = segments[1];
 	let lineage_rgxs = &segments[2..];
 
-	let mut actual_path = Local::issues_dir();
+	// Try to match locally first
+	let local_result: Result<TouchPathResult> = try {
+		let mut actual_path = Local::issues_dir();
 
-	// Match owner
-	let owner_children = list_children(&actual_path)?;
-	let owner = match match_single_or_none(&owner_children, owner_rgx) {
-		MatchOrNone::Unique(matched) => matched,
-		MatchOrNone::NoMatch => bail!("No owner matches pattern '{owner_rgx}'"),
-		MatchOrNone::Ambiguous(matches) => {
-			bail!("Ambiguous owner: pattern '{owner_rgx}' matches multiple entries.\nMatches: {}", matches.join(", "))
-		}
+		// Match owner
+		let owner_children = list_children(&actual_path)?;
+		let owner = match match_single_or_none(&owner_children, owner_rgx) {
+			MatchOrNone::Unique(matched) => matched,
+			MatchOrNone::NoMatch => Err(eyre!("No owner matches pattern '{owner_rgx}'"))?,
+			MatchOrNone::Ambiguous(matches) => Err(eyre!("Ambiguous owner: pattern '{owner_rgx}' matches multiple entries.\nMatches: {}", matches.join(", ")))?,
+		};
+		actual_path = actual_path.join(&owner);
+
+		// Match repo
+		let repo_children = list_children(&actual_path)?;
+		let repo = match match_single_or_none(&repo_children, repo_rgx) {
+			MatchOrNone::Unique(matched) => matched,
+			MatchOrNone::NoMatch => Err(eyre!("No repo matches pattern '{repo_rgx}' under owner '{owner}'"))?,
+			MatchOrNone::Ambiguous(matches) => Err(eyre!("Ambiguous repo: pattern '{repo_rgx}' matches multiple entries.\nMatches: {}", matches.join(", ")))?,
+		};
+		actual_path = actual_path.join(&repo);
+
+		parse_touch_path_issue_segments(RepoInfo::new(&owner, &repo), actual_path, lineage_rgxs)?
 	};
-	actual_path = actual_path.join(&owner);
 
-	// Match repo
-	let repo_children = list_children(&actual_path)?;
-	let repo = match match_single_or_none(&repo_children, repo_rgx) {
-		MatchOrNone::Unique(matched) => matched,
-		MatchOrNone::NoMatch => bail!("No repo matches pattern '{repo_rgx}' under owner '{owner}'"),
-		MatchOrNone::Ambiguous(matches) => {
-			bail!("Ambiguous repo: pattern '{repo_rgx}' matches multiple entries.\nMatches: {}", matches.join(", "))
+	if let Ok(result) = local_result {
+		return Ok(result);
+	}
+
+	// Local match failed - try GitHub or create with --parent
+	// For GitHub, owner/repo patterns must be exact (no regex)
+	let owner = owner_rgx.to_string();
+	let repo = repo_rgx.to_string();
+	let repo_info = RepoInfo::new(&owner, &repo);
+
+	// Check if we can access this repo on GitHub (unless offline)
+	let repo_accessible = if offline { false } else { github::client::get().repo_exists(repo_info.clone()).await? };
+
+	if repo_accessible {
+		// Repo is accessible on GitHub - create issue descriptor
+		let issue_title = strip_md_extension(lineage_rgxs[0]);
+		let mut index = vec![IssueSelector::title(issue_title)];
+		for segment in &lineage_rgxs[1..] {
+			index.push(IssueSelector::title(strip_md_extension(segment)));
 		}
-	};
-	actual_path = actual_path.join(&repo);
+		return Ok(TouchPathResult::Create(Box::new(IssueIndex::with_index(repo_info, index))));
+	}
 
-	// Match remaining segments (issue and optional sub-issues)
+	// Repo not accessible - check if we should create it with --parent
+	match parent {
+		Some(ProjectType::Virtual) => {
+			// Create as virtual project
+			Local::ensure_virtual_project(repo_info)?;
+			// TODO: create missing issue parents in the lineage
+			let issue_title = strip_md_extension(lineage_rgxs[0]);
+			let mut index = vec![IssueSelector::title(issue_title)];
+			for segment in &lineage_rgxs[1..] {
+				index.push(IssueSelector::title(strip_md_extension(segment)));
+			}
+			Ok(TouchPathResult::Create(Box::new(IssueIndex::with_index(repo_info, index))))
+		}
+		Some(ProjectType::Default) | None => {
+			bail!(
+				"Repository '{owner}/{repo}' doesn't exist locally and is not accessible on GitHub.\n\
+				Check that the owner/repo is correct, or use --parent=virtual for local-only tracking."
+			)
+		}
+	}
+}
+
+/// Parse issue segments after owner/repo have been resolved
+fn parse_touch_path_issue_segments(repo_info: RepoInfo, mut actual_path: PathBuf, lineage_rgxs: &[&str]) -> Result<TouchPathResult> {
 	let mut matched_lineage: Vec<String> = Vec::new();
 	for (i, segment) in lineage_rgxs.iter().enumerate() {
 		let is_last = i == lineage_rgxs.len() - 1;
@@ -106,7 +159,7 @@ pub fn parse_touch_path(user_input: &str) -> Result<TouchPathResult> {
 					index.push(parent_selector);
 					let child_title = strip_md_extension(lineage_rgxs[i + 1]);
 					index.push(IssueSelector::title(child_title));
-					return Ok(TouchPathResult::Create(Box::new(IssueIndex::with_index(RepoInfo::new(&owner, &repo), index))));
+					return Ok(TouchPathResult::Create(Box::new(IssueIndex::with_index(repo_info, index))));
 				}
 
 				matched_lineage.push(matched);
@@ -116,7 +169,7 @@ pub fn parse_touch_path(user_input: &str) -> Result<TouchPathResult> {
 				// No match - this is a create request
 				let mut index: Vec<IssueSelector> = matched_lineage.iter().filter_map(|s| Local::parse_issue_selector_from_name(s)).collect();
 				index.push(IssueSelector::title(pattern));
-				return Ok(TouchPathResult::Create(Box::new(IssueIndex::with_index(RepoInfo::new(&owner, &repo), index))));
+				return Ok(TouchPathResult::Create(Box::new(IssueIndex::with_index(repo_info, index))));
 			}
 			MatchOrNone::Ambiguous(matches) => {
 				let desc = if is_last { "issue" } else { "parent issue" };
@@ -190,19 +243,15 @@ fn match_single_or_none(children: &[String], pattern: &str) -> MatchOrNone {
 mod tests {
 	use super::*;
 
-	#[test]
-	fn test_parse_touch_path_errors() {
-		// Too few components
-		assert!(parse_touch_path("owner/issue.md").is_err());
-		assert!(parse_touch_path("issue.md").is_err());
+	#[tokio::test]
+	async fn test_parse_touch_path_errors() {
+		// Too few components (offline mode to avoid network)
+		assert!(parse_touch_path("owner/issue.md", None, true).await.is_err());
+		assert!(parse_touch_path("issue.md", None, true).await.is_err());
 	}
 
-	#[test]
-	fn test_parse_touch_path_nonexistent_owner_fails() {
-		// When owner doesn't exist, parse_touch_path fails
-		let result = parse_touch_path("nonexistent-owner/nonexistent-repo/my-issue.md");
-		assert!(result.is_err());
-	}
+	// Note: test_parse_touch_path_nonexistent_owner_fails removed because now it falls through
+	// to GitHub check which requires network access
 
 	#[test]
 	fn test_match_single_or_none() {
