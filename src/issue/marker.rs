@@ -60,6 +60,51 @@ impl IssueMarker {
 		Self::Pending
 	}
 
+	/// Parse an issue marker from the end of a string, returning the marker and remaining content.
+	///
+	/// Recognizes:
+	/// - `<!-- @user url -->` (linked)
+	/// - `<!-- pending -->` or `<!-- -->` (pending)
+	/// - `<!-- virtual -->` (virtual)
+	/// - `<!--sub ... -->` (legacy sub prefix, stripped)
+	/// - `!n` shorthand for pending (case insensitive)
+	///
+	/// Returns `None` if no valid marker is found at the end.
+	pub fn parse_from_end(s: &str) -> Option<(Self, &str)> {
+		let trimmed = s.trim_end();
+
+		// Shorthand: `!n` or `!N` for pending
+		if trimmed.ends_with("!n") || trimmed.ends_with("!N") {
+			let rest = trimmed[..trimmed.len() - 2].trim_end();
+			return Some((Self::Pending, rest));
+		}
+
+		// HTML comment: `<!-- ... -->`
+		if let Some(marker_end) = trimmed.rfind("-->") {
+			if let Some(marker_start) = trimmed[..marker_end].rfind("<!--") {
+				let inner = trimmed[marker_start + 4..marker_end].trim();
+				// Strip legacy `sub ` prefix if present
+				let inner = match inner.strip_prefix("sub ") {
+					Some(stripped) => {
+						tracing::warn!("legacy `<!--sub ...-->` marker detected; use `<!-- ... -->` instead");
+						stripped
+					}
+					None => inner,
+				};
+				let marker = Self::decode(inner);
+				let rest = trimmed[..marker_start].trim_end();
+				return Some((marker, rest));
+			}
+		}
+
+		None
+	}
+
+	/// Check if a string ends with a valid issue marker.
+	pub fn is_at_end(s: &str) -> bool {
+		Self::parse_from_end(s).is_some()
+	}
+
 	/// Encode the issue marker to HTML comment inner content.
 	pub fn encode(&self) -> String {
 		match self {
@@ -366,5 +411,39 @@ mod tests {
 			let decoded = Marker::decode(&encoded).unwrap_or_else(|| panic!("Failed to decode: {encoded}"));
 			assert_eq!(marker, decoded, "Roundtrip failed for {marker:?}");
 		}
+	}
+
+	#[test]
+	fn test_issue_marker_parse_from_end() {
+		// Shorthand !n
+		let (marker, title) = IssueMarker::parse_from_end("My title !n").unwrap();
+		assert_eq!(marker, IssueMarker::Pending);
+		assert_eq!(title, "My title");
+
+		let (marker, title) = IssueMarker::parse_from_end("My title !N").unwrap();
+		assert_eq!(marker, IssueMarker::Pending);
+		assert_eq!(title, "My title");
+
+		// HTML comment markers
+		let (marker, title) = IssueMarker::parse_from_end("My title <!-- pending -->").unwrap();
+		assert_eq!(marker, IssueMarker::Pending);
+		assert_eq!(title, "My title");
+
+		let (marker, title) = IssueMarker::parse_from_end("My title <!-- virtual -->").unwrap();
+		assert_eq!(marker, IssueMarker::Virtual);
+		assert_eq!(title, "My title");
+
+		let (marker, title) = IssueMarker::parse_from_end("My title <!-- @owner https://github.com/owner/repo/issues/123 -->").unwrap();
+		assert!(matches!(marker, IssueMarker::Linked { user, .. } if user == "owner"));
+		assert_eq!(title, "My title");
+
+		// Legacy sub prefix
+		let (marker, title) = IssueMarker::parse_from_end("My title <!--sub @owner https://github.com/owner/repo/issues/123 -->").unwrap();
+		assert!(matches!(marker, IssueMarker::Linked { user, .. } if user == "owner"));
+		assert_eq!(title, "My title");
+
+		// No marker
+		assert!(IssueMarker::parse_from_end("My title").is_none());
+		assert!(IssueMarker::parse_from_end("My title with - [ ] checkbox").is_none());
 	}
 }

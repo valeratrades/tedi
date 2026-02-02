@@ -1169,7 +1169,7 @@ impl Issue /*{{{1*/ {
 		})
 	}
 
-	/// Parse title line: `- [ ] [label1, label2] Title <!--url-->` or `- [ ] Title <!--immutable url-->`
+	/// Parse title line: `- [ ] [label1, label2] Title <!--url-->` or `- [ ] Title !n`
 	/// Also supports `- [-]` for not-planned and `- [123]` for duplicates.
 	fn parse_title_line(line: &str, line_num: usize, ctx: &ParseContext) -> Result<ParsedTitleLine, ParseError> {
 		// Parse checkbox: `- [CONTENT] `
@@ -1196,32 +1196,15 @@ impl Issue /*{{{1*/ {
 			(vec![], rest)
 		};
 
-		let marker_start = rest.find("<!--").ok_or_else(|| ParseError::missing_url_marker(ctx.named_source(), ctx.line_span(line_num)))?;
-		let marker_end = rest.find("-->").ok_or_else(|| ParseError::malformed_url_marker(ctx.named_source(), ctx.line_span(line_num)))?;
-		if marker_end <= marker_start {
-			return Err(ParseError::malformed_url_marker(ctx.named_source(), ctx.line_span(line_num)));
-		}
-
-		let title = rest[..marker_start].trim().to_string();
-		let inner = rest[marker_start + 4..marker_end].trim();
-
-		// Handle both root format `<!-- @user url -->` and sub format `<!--sub @user url -->`
-		let inner = inner.strip_prefix("sub ").unwrap_or(inner);
-
-		// Parse identity info from marker content
-		let identity_info = Self::parse_identity_info(inner);
+		// Parse issue marker from end of line
+		let (identity_info, title) = IssueMarker::parse_from_end(rest).ok_or_else(|| ParseError::missing_url_marker(ctx.named_source(), ctx.line_span(line_num)))?;
 
 		Ok(ParsedTitleLine {
-			title,
+			title: title.to_string(),
 			identity_info,
 			close_state,
 			labels,
 		})
-	}
-
-	/// Parse identity info from the HTML comment content.
-	fn parse_identity_info(s: &str) -> IssueMarker {
-		IssueMarker::decode(s)
 	}
 
 	/// Parse `@user url#issuecomment-id` format into CommentIdentity.
@@ -1272,29 +1255,11 @@ impl Issue /*{{{1*/ {
 			CheckboxParseResult::InvalidContent(content) => return ChildTitleParseResult::InvalidCheckbox(content),
 		};
 
-		// Check for marker: `<!-- ... -->`
-		if let Some(marker_start) = rest.find("<!--") {
-			let Some(marker_end) = rest.find("-->") else {
-				return ChildTitleParseResult::NotChildTitle;
-			};
-			if marker_end <= marker_start {
-				return ChildTitleParseResult::NotChildTitle;
-			}
-			let title = rest[..marker_start].trim();
-			if title.is_empty() {
-				return ChildTitleParseResult::NotChildTitle;
-			}
-			// Extract marker content and validate it's an issue marker
-			let inner = rest[marker_start + 4..marker_end].trim();
-			// Strip legacy `sub ` prefix if present
-			let inner = inner.strip_prefix("sub ").unwrap_or(inner);
-			// Check if it's a valid issue marker (linked, pending, or virtual)
-			// IssueMarker::decode returns Pending for unrecognized content, so we accept everything
-			// The actual validation is that we have a non-empty title and a marker
-			let _ = IssueMarker::decode(inner);
-			ChildTitleParseResult::Ok
+		// Check if there's a valid issue marker at the end
+		if let Some((_, title)) = IssueMarker::parse_from_end(rest) {
+			if title.is_empty() { ChildTitleParseResult::NotChildTitle } else { ChildTitleParseResult::Ok }
 		} else {
-			// No marker - could be a new pending child being added
+			// No marker - could be a new pending child being added (bare title)
 			let title = rest.trim();
 			if !title.is_empty() {
 				ChildTitleParseResult::Ok
