@@ -171,7 +171,7 @@ pub async fn start_time_entry_with_defaults(workspace: Option<&str>, project: Op
 				processed.as_str()
 			}
 			None => {
-				bail!("--project is required for starting time entries. You can set a default with 'todo blocker project <project-name>'");
+				bail!("--project is required for starting time entries. Set one with 'todo blocker set <issue>' (project is derived from issue filename)");
 			}
 		},
 	};
@@ -242,10 +242,11 @@ pub async fn stop_time_entry_with_defaults(workspace: Option<&str>) -> Result<()
 
 	Ok(())
 }
-static CURRENT_PROJECT_CACHE_FILENAME: &str = "current_project.txt";
+static CURRENT_PROJECT_CACHE_FILENAME: &str = "current_blocker_issue.txt";
 fn normalize_name_for_matching(name: &str) -> String {
 	name.replace('_', " ")
 }
+//HACK: should rely on something in [Local] probably. Reimplementing file parsing is barbaric
 fn process_filename_as_project(relative_path: &str) -> String {
 	// Extract filename from path (everything after the last slash, or the whole string if no slash)
 	let filename = match relative_path.rfind('/') {
@@ -260,7 +261,14 @@ fn process_filename_as_project(relative_path: &str) -> String {
 	};
 
 	// Convert underscores to spaces
-	normalize_name_for_matching(name_without_ext)
+	let normalized = normalize_name_for_matching(name_without_ext);
+
+	// Strip issue number prefix (e.g., "131 - test" -> "test")
+	// Format is "<number> - <title>"
+	match normalized.find(" - ") {
+		Some(pos) => normalized[pos + 3..].to_string(),
+		None => normalized,
+	}
 }
 #[derive(Deserialize)]
 struct User {
