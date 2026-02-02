@@ -26,12 +26,8 @@ pub enum LocalError {
 	Io(LocalPathError),
 
 	/// Failed to parse issue content.
-	#[error("failed to parse issue file: {path}")]
-	ParseError {
-		path: PathBuf,
-		#[source]
-		source: Box<crate::ParseError>,
-	},
+	#[error(transparent)]
+	Parse(crate::ParseError),
 
 	//Q: LocalPathError also contains ReaderError. Seems suboptimal, - wonder if I can restructure somehow to remove this proprietor level ambiguity
 	/// Reader operation failed.
@@ -223,11 +219,8 @@ impl Local {
 	///
 	/// This parses one issue file (without loading children from separate files).
 	/// Children field will be empty - they're loaded separately via LazyIssue.
-	fn parse_single_node(content: &str, index: IssueIndex, fpath_for_error_context_only: &Path) -> Result<Issue, LocalError> {
-		let mut issue = Issue::parse_virtual(content, index).map_err(|e| LocalError::ParseError {
-			path: fpath_for_error_context_only.to_path_buf(),
-			source: Box::new(e),
-		})?;
+	fn parse_single_node(content: &str, index: IssueIndex, _fpath_for_error_context_only: &Path) -> Result<Issue, LocalError> {
+		let mut issue = Issue::parse_virtual(content, index)?;
 		// Clear any inline children (filesystem format stores them in separate files)
 		if !issue.children.is_empty() {
 			tracing::warn!("issue children read from file are not empty. Wtf {:?}", &issue.children);

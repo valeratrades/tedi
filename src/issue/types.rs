@@ -896,12 +896,10 @@ impl Issue /*{{{1*/ {
 		let child_indent = "\t".repeat(depth + 1);
 
 		// Parse title line: `- [ ] [label1, label2] Title <!--url-->` or `- [ ] Title <!--immutable url-->`
-		let first_line = lines.next().ok_or(ParseError::EmptyFile)?;
-		let title_content = first_line.strip_prefix(&indent).ok_or_else(|| ParseError::BadIndentation {
-			src: ctx.named_source(),
-			span: ctx.line_span(line_num),
-			expected_tabs: depth,
-		})?;
+		let first_line = lines.next().ok_or_else(ParseError::empty_file)?;
+		let title_content = first_line
+			.strip_prefix(&indent)
+			.ok_or_else(|| ParseError::bad_indentation(ctx.named_source(), ctx.line_span(line_num), depth))?;
 		let parsed = Self::parse_title_line(title_content, line_num, ctx)?;
 
 		let mut comments = Vec::new();
@@ -977,11 +975,7 @@ impl Issue /*{{{1*/ {
 							// Fall through to sub-issue processing below
 						}
 						ChildTitleParseResult::InvalidCheckbox(invalid_content) => {
-							return Err(ParseError::InvalidCheckbox {
-								src: ctx.named_source(),
-								span: ctx.line_span(current_line),
-								content: invalid_content,
-							});
+							return Err(ParseError::invalid_checkbox(ctx.named_source(), ctx.line_span(current_line), invalid_content));
 						}
 						ChildTitleParseResult::NotChildTitle => {
 							// Not a sub-issue, continue parsing as blocker
@@ -1055,11 +1049,7 @@ impl Issue /*{{{1*/ {
 				let is_child_title = match Self::parse_child_title_line_detailed(content) {
 					ChildTitleParseResult::Ok => true,
 					ChildTitleParseResult::InvalidCheckbox(invalid_content) => {
-						return Err(ParseError::InvalidCheckbox {
-							src: ctx.named_source(),
-							span: ctx.line_span(current_line),
-							content: invalid_content,
-						});
+						return Err(ParseError::invalid_checkbox(ctx.named_source(), ctx.line_span(current_line), invalid_content));
 					}
 					ChildTitleParseResult::NotChildTitle => false,
 				};
@@ -1200,18 +1190,10 @@ impl Issue /*{{{1*/ {
 		let (close_state, rest) = match Self::parse_checkbox_prefix_detailed(line) {
 			CheckboxParseResult::Ok(state, rest) => (state, rest),
 			CheckboxParseResult::NotCheckbox => {
-				return Err(ParseError::InvalidTitle {
-					src: ctx.named_source(),
-					span: ctx.line_span(line_num),
-					detail: format!("got: {line:?}"),
-				});
+				return Err(ParseError::invalid_title(ctx.named_source(), ctx.line_span(line_num), format!("got: {line:?}")));
 			}
 			CheckboxParseResult::InvalidContent(content) => {
-				return Err(ParseError::InvalidCheckbox {
-					src: ctx.named_source(),
-					span: ctx.line_span(line_num),
-					content,
-				});
+				return Err(ParseError::invalid_checkbox(ctx.named_source(), ctx.line_span(line_num), content));
 			}
 		};
 
@@ -1228,19 +1210,10 @@ impl Issue /*{{{1*/ {
 			(vec![], rest)
 		};
 
-		let marker_start = rest.find("<!--").ok_or_else(|| ParseError::MissingUrlMarker {
-			src: ctx.named_source(),
-			span: ctx.line_span(line_num),
-		})?;
-		let marker_end = rest.find("-->").ok_or_else(|| ParseError::MalformedUrlMarker {
-			src: ctx.named_source(),
-			span: ctx.line_span(line_num),
-		})?;
+		let marker_start = rest.find("<!--").ok_or_else(|| ParseError::missing_url_marker(ctx.named_source(), ctx.line_span(line_num)))?;
+		let marker_end = rest.find("-->").ok_or_else(|| ParseError::malformed_url_marker(ctx.named_source(), ctx.line_span(line_num)))?;
 		if marker_end <= marker_start {
-			return Err(ParseError::MalformedUrlMarker {
-				src: ctx.named_source(),
-				span: ctx.line_span(line_num),
-			});
+			return Err(ParseError::malformed_url_marker(ctx.named_source(), ctx.line_span(line_num)));
 		}
 
 		let title = rest[..marker_start].trim().to_string();
@@ -1927,12 +1900,14 @@ mod tests {
 		// Invalid checkbox on root issue
 		let content = "- [abc] Invalid issue <!-- @owner https://github.com/owner/repo/issues/123 -->\n\tBody\n";
 		let result = Issue::deserialize_virtual(content);
-		assert!(matches!(result, Err(ParseError::InvalidCheckbox { content, .. }) if content == "abc"));
+		assert!(result.is_err());
+		assert!(result.unwrap_err().to_string().contains("invalid checkbox"));
 
 		// Invalid checkbox on sub-issue
 		let content = "- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->\n\tBody\n\n\t- [xyz] Bad sub <!--sub @owner https://github.com/owner/repo/issues/2 -->\n";
 		let result = Issue::deserialize_virtual(content);
-		assert!(matches!(result, Err(ParseError::InvalidCheckbox { content, .. }) if content == "xyz"));
+		assert!(result.is_err());
+		assert!(result.unwrap_err().to_string().contains("invalid checkbox"));
 	}
 
 	#[test]
