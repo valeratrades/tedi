@@ -6,18 +6,99 @@
 
 use std::fmt;
 
-use crate::Header;
+use crate::{Header, IssueIdentity, IssueLink};
+
+/// Issue identity marker - encodes how an issue relates to GitHub.
+///
+/// Formats:
+/// - Linked: `<!-- @user url -->`
+/// - Pending: `<!-- pending -->` or no marker (default)
+/// - Virtual: `<!-- virtual -->`
+#[derive(Clone, Debug, PartialEq)]
+pub enum IssueMarker {
+	/// Linked to GitHub: `<!-- @user url -->`
+	Linked { user: String, link: IssueLink },
+	/// Pending creation on GitHub (will be created on first sync)
+	Pending,
+	/// Virtual (local-only, never syncs to GitHub)
+	Virtual,
+}
+
+impl IssueMarker {
+	/// Decode an issue marker from HTML comment inner content.
+	/// Returns `Pending` for empty/unrecognized content (default).
+	pub fn decode(inner: &str) -> Self {
+		let s = inner.trim();
+
+		// Empty or explicit pending
+		if s.is_empty() || s == "pending" {
+			return Self::Pending;
+		}
+
+		// Legacy: `local:` also means pending
+		if s.starts_with("local:") {
+			return Self::Pending;
+		}
+
+		// Virtual
+		if s == "virtual" || s.starts_with("virtual:") {
+			return Self::Virtual;
+		}
+
+		// Linked format: `@user url`
+		if let Some(rest) = s.strip_prefix('@') {
+			if let Some(space_idx) = rest.find(' ') {
+				let user = rest[..space_idx].to_string();
+				let url = rest[space_idx + 1..].trim();
+				if let Some(link) = IssueLink::parse(url) {
+					return Self::Linked { user, link };
+				}
+			}
+		}
+
+		// Default to pending for unrecognized
+		Self::Pending
+	}
+
+	/// Encode the issue marker to HTML comment inner content.
+	pub fn encode(&self) -> String {
+		match self {
+			Self::Linked { user, link } => format!("@{user} {}", link.as_str()),
+			Self::Pending => "pending".to_string(),
+			Self::Virtual => "virtual".to_string(),
+		}
+	}
+}
+
+impl fmt::Display for IssueMarker {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		write!(f, "<!-- {} -->", self.encode())
+	}
+}
+
+impl From<&IssueIdentity> for IssueMarker {
+	fn from(identity: &IssueIdentity) -> Self {
+		if let Some(meta) = identity.as_linked() {
+			IssueMarker::Linked {
+				user: meta.user.clone(),
+				link: meta.link.clone(),
+			}
+		} else if identity.is_virtual() {
+			IssueMarker::Virtual
+		} else {
+			IssueMarker::Pending
+		}
+	}
+}
 
 /// A marker that can appear in issue files.
 /// All markers normalize whitespace on decode and encode with consistent spacing.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Marker {
-	/// Issue URL marker: `<!-- url -->` or `<!--immutable url -->`
-	IssueUrl { url: String, immutable: bool },
-	/// Sub-issue marker: `<!--sub url -->`
-	SubIssue { url: String },
-	/// Comment marker: `<!-- url#issuecomment-123 -->` or `<!--immutable url#issuecomment-123 -->`
-	Comment { url: String, id: u64, immutable: bool },
+	/// Issue identity marker
+	Issue(IssueMarker),
+	/// Comment marker: `<!-- @user url#issuecomment-123 -->`
+	Comment { user: String, url: String, id: u64 },
 	/// New comment marker: `<!-- new comment -->`
 	NewComment,
 	/// Blockers section marker: `# Blockers`
@@ -85,57 +166,32 @@ impl Marker {
 			return Some(Marker::OmittedEnd);
 		}
 
-		// Check for immutable prefix
-		let (immutable, rest) = if let Some(rest) = inner.strip_prefix("immutable ").or_else(|| inner.strip_prefix("immutable\t")) {
-			(true, rest.trim())
-		} else {
-			(false, inner)
-		};
-
-		// Sub-issue marker
-		if let Some(url) = rest.strip_prefix("sub ").or_else(|| rest.strip_prefix("sub\t")) {
-			return Some(Marker::SubIssue { url: url.trim().to_string() });
-		}
-
 		// Comment marker (contains #issuecomment-)
-		if rest.contains("#issuecomment-") {
-			let id = rest.split("#issuecomment-").nth(1).and_then(|s| {
-				// Take only digits
-				let digits: String = s.chars().take_while(|c| c.is_ascii_digit()).collect();
-				digits.parse().ok()
-			})?;
-			return Some(Marker::Comment {
-				url: rest.to_string(),
-				id,
-				immutable,
-			});
+		if inner.contains("#issuecomment-") {
+			// Must have @user prefix
+			if let Some(rest) = inner.strip_prefix('@') {
+				if let Some(space_idx) = rest.find(' ') {
+					let user = rest[..space_idx].to_string();
+					let url = rest[space_idx + 1..].trim();
+					let id = url.split("#issuecomment-").nth(1).and_then(|s| {
+						let digits: String = s.chars().take_while(|c| c.is_ascii_digit()).collect();
+						digits.parse().ok()
+					})?;
+					return Some(Marker::Comment { user, url: url.to_string(), id });
+				}
+			}
+			return None;
 		}
 
-		// Issue URL marker (anything else is treated as a URL)
-		if !rest.is_empty() {
-			return Some(Marker::IssueUrl { url: rest.to_string(), immutable });
-		}
-
-		None
+		// Issue marker (delegate to IssueMarker::decode)
+		Some(Marker::Issue(IssueMarker::decode(inner)))
 	}
 
 	/// Encode the marker to a string with consistent formatting.
-	/// Uses `<!-- content -->` HTML comment format.
 	pub fn encode(&self) -> String {
 		match self {
-			Marker::IssueUrl { url, immutable } =>
-				if *immutable {
-					format!("<!--immutable {url} -->")
-				} else {
-					format!("<!-- {url} -->")
-				},
-			Marker::SubIssue { url } => format!("<!--sub {url} -->"),
-			Marker::Comment { url, immutable, .. } =>
-				if *immutable {
-					format!("<!--immutable {url} -->")
-				} else {
-					format!("<!-- {url} -->")
-				},
+			Marker::Issue(issue) => issue.to_string(),
+			Marker::Comment { user, url, .. } => format!("<!-- @{user} {url} -->"),
 			Marker::NewComment => "<!-- new comment -->".to_string(),
 			Marker::BlockersSection(header) => header.encode(),
 			Marker::OmittedStart => "<!--omitted {{{always-->".to_string(),
@@ -155,80 +211,75 @@ mod tests {
 	use super::*;
 
 	#[test]
-	fn test_decode_issue_url() {
-		// With spaces
-		assert_eq!(
-			Marker::decode("<!-- https://github.com/owner/repo/issues/123 -->"),
-			Some(Marker::IssueUrl {
-				url: "https://github.com/owner/repo/issues/123".to_string(),
-				immutable: false
-			})
-		);
-		// Without spaces
-		assert_eq!(
-			Marker::decode("<!--https://github.com/owner/repo/issues/123-->"),
-			Some(Marker::IssueUrl {
-				url: "https://github.com/owner/repo/issues/123".to_string(),
-				immutable: false
-			})
-		);
-		// Immutable
-		assert_eq!(
-			Marker::decode("<!--immutable https://github.com/owner/repo/issues/123-->"),
-			Some(Marker::IssueUrl {
-				url: "https://github.com/owner/repo/issues/123".to_string(),
-				immutable: true
-			})
-		);
+	fn test_issue_marker_decode_linked() {
+		let marker = IssueMarker::decode("@owner https://github.com/owner/repo/issues/123");
+		assert!(matches!(marker, IssueMarker::Linked { user, link } if user == "owner" && link.number() == 123));
 	}
 
 	#[test]
-	fn test_decode_sub_issue() {
-		assert_eq!(
-			Marker::decode("<!--sub https://github.com/owner/repo/issues/124-->"),
-			Some(Marker::SubIssue {
-				url: "https://github.com/owner/repo/issues/124".to_string()
-			})
-		);
-		assert_eq!(
-			Marker::decode("<!--sub https://github.com/owner/repo/issues/124 -->"),
-			Some(Marker::SubIssue {
-				url: "https://github.com/owner/repo/issues/124".to_string()
-			})
-		);
+	fn test_issue_marker_decode_pending() {
+		assert_eq!(IssueMarker::decode(""), IssueMarker::Pending);
+		assert_eq!(IssueMarker::decode("pending"), IssueMarker::Pending);
+		assert_eq!(IssueMarker::decode("local:"), IssueMarker::Pending);
+		assert_eq!(IssueMarker::decode("local:anything"), IssueMarker::Pending);
+		assert_eq!(IssueMarker::decode("unrecognized stuff"), IssueMarker::Pending);
+	}
+
+	#[test]
+	fn test_issue_marker_decode_virtual() {
+		assert_eq!(IssueMarker::decode("virtual"), IssueMarker::Virtual);
+		assert_eq!(IssueMarker::decode("virtual:"), IssueMarker::Virtual);
+	}
+
+	#[test]
+	fn test_issue_marker_encode() {
+		assert_eq!(IssueMarker::Pending.encode(), "pending");
+		assert_eq!(IssueMarker::Virtual.encode(), "virtual");
+
+		let link = IssueLink::parse("https://github.com/owner/repo/issues/123").unwrap();
+		let linked = IssueMarker::Linked { user: "owner".to_string(), link };
+		assert_eq!(linked.encode(), "@owner https://github.com/owner/repo/issues/123");
+	}
+
+	#[test]
+	fn test_issue_marker_roundtrip() {
+		let link = IssueLink::parse("https://github.com/owner/repo/issues/123").unwrap();
+		let markers = vec![IssueMarker::Pending, IssueMarker::Virtual, IssueMarker::Linked { user: "owner".to_string(), link }];
+
+		for marker in markers {
+			let encoded = marker.encode();
+			let decoded = IssueMarker::decode(&encoded);
+			assert_eq!(marker, decoded, "Roundtrip failed for {marker:?}");
+		}
+	}
+
+	#[test]
+	fn test_decode_issue_marker_via_marker() {
+		// Linked
+		let m = Marker::decode("<!-- @owner https://github.com/owner/repo/issues/123 -->");
+		assert!(matches!(m, Some(Marker::Issue(IssueMarker::Linked { .. }))));
+
+		// Pending (explicit)
+		let m = Marker::decode("<!-- pending -->");
+		assert!(matches!(m, Some(Marker::Issue(IssueMarker::Pending))));
+
+		// Virtual
+		let m = Marker::decode("<!-- virtual -->");
+		assert!(matches!(m, Some(Marker::Issue(IssueMarker::Virtual))));
+
+		// Legacy local:
+		let m = Marker::decode("<!-- local: -->");
+		assert!(matches!(m, Some(Marker::Issue(IssueMarker::Pending))));
 	}
 
 	#[test]
 	fn test_decode_comment() {
-		assert_eq!(
-			Marker::decode("<!--https://github.com/owner/repo/issues/123#issuecomment-456-->"),
-			Some(Marker::Comment {
-				url: "https://github.com/owner/repo/issues/123#issuecomment-456".to_string(),
-				id: 456,
-				immutable: false
-			})
-		);
-		assert_eq!(
-			Marker::decode("<!-- https://github.com/owner/repo/issues/123#issuecomment-456 -->"),
-			Some(Marker::Comment {
-				url: "https://github.com/owner/repo/issues/123#issuecomment-456".to_string(),
-				id: 456,
-				immutable: false
-			})
-		);
-		assert_eq!(
-			Marker::decode("<!--immutable https://github.com/owner/repo/issues/123#issuecomment-456-->"),
-			Some(Marker::Comment {
-				url: "https://github.com/owner/repo/issues/123#issuecomment-456".to_string(),
-				id: 456,
-				immutable: true
-			})
-		);
+		let m = Marker::decode("<!-- @owner https://github.com/owner/repo/issues/123#issuecomment-456 -->");
+		assert!(matches!(m, Some(Marker::Comment { user, id, .. }) if user == "owner" && id == 456));
 	}
 
 	#[test]
 	fn test_decode_blockers_section() {
-		// Helper to check if a marker is a BlockersSection
 		fn is_blockers_section(marker: Option<Marker>) -> bool {
 			matches!(marker, Some(Marker::BlockersSection(_)))
 		}
@@ -281,29 +332,8 @@ mod tests {
 
 	#[test]
 	fn test_encode() {
-		assert_eq!(
-			Marker::IssueUrl {
-				url: "https://github.com/owner/repo/issues/123".to_string(),
-				immutable: false
-			}
-			.encode(),
-			"<!-- https://github.com/owner/repo/issues/123 -->"
-		);
-		assert_eq!(
-			Marker::IssueUrl {
-				url: "https://github.com/owner/repo/issues/123".to_string(),
-				immutable: true
-			}
-			.encode(),
-			"<!--immutable https://github.com/owner/repo/issues/123 -->"
-		);
-		assert_eq!(
-			Marker::SubIssue {
-				url: "https://github.com/owner/repo/issues/124".to_string()
-			}
-			.encode(),
-			"<!--sub https://github.com/owner/repo/issues/124 -->"
-		);
+		assert_eq!(Marker::Issue(IssueMarker::Pending).encode(), "<!-- pending -->");
+		assert_eq!(Marker::Issue(IssueMarker::Virtual).encode(), "<!-- virtual -->");
 		assert_eq!(Marker::BlockersSection(Header::new(1, "Blockers")).encode(), "# Blockers");
 		assert_eq!(Marker::BlockersSection(Header::new(2, "Blockers")).encode(), "## Blockers");
 		assert_eq!(Marker::NewComment.encode(), "<!-- new comment -->");
@@ -313,22 +343,18 @@ mod tests {
 
 	#[test]
 	fn test_roundtrip() {
+		let link = IssueLink::parse("https://github.com/owner/repo/issues/123").unwrap();
 		let markers = vec![
-			Marker::IssueUrl {
-				url: "https://github.com/owner/repo/issues/123".to_string(),
-				immutable: false,
-			},
-			Marker::IssueUrl {
-				url: "https://github.com/owner/repo/issues/123".to_string(),
-				immutable: true,
-			},
-			Marker::SubIssue {
-				url: "https://github.com/owner/repo/issues/124".to_string(),
-			},
+			Marker::Issue(IssueMarker::Pending),
+			Marker::Issue(IssueMarker::Virtual),
+			Marker::Issue(IssueMarker::Linked {
+				user: "owner".to_string(),
+				link: link.clone(),
+			}),
 			Marker::Comment {
+				user: "owner".to_string(),
 				url: "https://github.com/owner/repo/issues/123#issuecomment-456".to_string(),
 				id: 456,
-				immutable: false,
 			},
 			Marker::NewComment,
 			Marker::OmittedStart,

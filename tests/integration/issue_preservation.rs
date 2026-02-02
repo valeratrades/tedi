@@ -51,10 +51,10 @@ async fn test_nested_issues_preserved_through_sync() {
 		"- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
 		 \tlorem ipsum\n\
 		 \n\
-		 \t- [ ] b <!--sub @mock_user https://github.com/o/r/issues/2 -->\n\
+		 \t- [ ] b <!-- @mock_user https://github.com/o/r/issues/2 -->\n\
 		 \t\tnested body b\n\
 		 \n\
-		 \t- [ ] c <!--sub @mock_user https://github.com/o/r/issues/3 -->\n\
+		 \t- [ ] c <!-- @mock_user https://github.com/o/r/issues/3 -->\n\
 		 \t\tnested body c\n",
 	);
 
@@ -259,7 +259,7 @@ async fn test_closing_nested_issue_creates_bak_file() {
 		"- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
 		 \tlorem ipsum\n\
 		 \n\
-		 \t- [ ] b <!--sub @mock_user https://github.com/o/r/issues/2 -->\n\
+		 \t- [ ] b <!-- @mock_user https://github.com/o/r/issues/2 -->\n\
 		 \t\tnested body content\n",
 	);
 
@@ -271,7 +271,7 @@ async fn test_closing_nested_issue_creates_bak_file() {
 		"- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
 		 \tlorem ipsum\n\
 		 \n\
-		 \t- [x] b <!--sub @mock_user https://github.com/o/r/issues/2 -->\n\
+		 \t- [x] b <!-- @mock_user https://github.com/o/r/issues/2 -->\n\
 		 \t\tnested body content\n",
 	);
 
