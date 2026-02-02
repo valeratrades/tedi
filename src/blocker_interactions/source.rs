@@ -3,8 +3,6 @@
 //! This module defines the `BlockerSource` trait for reading blockers from issue files.
 //! Writing is handled through `modify_and_sync_issue` to ensure proper Github sync.
 
-use std::path::PathBuf;
-
 use color_eyre::eyre::Result;
 
 use super::BlockerSequence;
@@ -19,6 +17,7 @@ pub trait BlockerSource {
 	/// Get a display name for this source (for user messages)
 	fn display_name(&self) -> String;
 
-	/// Get the path for building ownership hierarchy (project name extraction)
-	fn path_for_hierarchy(&self) -> Option<PathBuf>;
+	/// Get the hierarchy for context display (e.g., project name).
+	/// Returns parsed hierarchy components ready for use.
+	fn hierarchy(&self) -> Vec<String>;
 }
