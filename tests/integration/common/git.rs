@@ -40,7 +40,7 @@ use std::{cell::RefCell, collections::HashSet};
 
 use tedi::{
 	Issue, IssueTimestamps,
-	local::{Consensus, Submitted},
+	local::{Consensus, IssueMeta, Local, Submitted},
 	sink::Sink,
 };
 use v_fixtures::fs_standards::git::Git;
@@ -219,7 +219,8 @@ impl GitExt for TestContext {
 		// Write timestamps to .meta.json if seed provided
 		if let Some(seed) = seed {
 			let timestamps = timestamps_from_seed(seed);
-			self.write_issue_meta(tedi::RepoInfo::new(&owner, &repo), number, &timestamps);
+			let meta = IssueMeta { timestamps };
+			Local::save_issue_meta(tedi::RepoInfo::new(&owner, &repo), number, &meta).expect("save_issue_meta failed");
 		}
 	}
 
@@ -245,7 +246,8 @@ impl GitExt for TestContext {
 		// Write timestamps to .meta.json if seed provided
 		if let Some(seed) = seed {
 			let timestamps = timestamps_from_seed(seed);
-			self.write_issue_meta(tedi::RepoInfo::new(&owner, &repo), number, &timestamps);
+			let meta = IssueMeta { timestamps };
+			Local::save_issue_meta(tedi::RepoInfo::new(&owner, &repo), number, &meta).expect("save_issue_meta failed");
 		}
 	}
 
@@ -363,44 +365,11 @@ impl TestContext {
 			self.setup_mock_state(&mock_state);
 		});
 	}
-
-	/// Write timestamps to .meta.json for an issue.
-	#[deprecated(note = "should use actualy logic from the actual lib instead of reimplementing it")]
-	fn write_issue_meta(&self, repo_info: tedi::RepoInfo, number: u64, timestamps: &IssueTimestamps) {
-		let meta_path = self.xdg.data_dir().join(format!("issues/{}/{}/.meta.json", repo_info.owner(), repo_info.repo()));
-
-		// Load existing meta or create new
-		let mut project_meta: serde_json::Value = if meta_path.exists() {
-			let content = std::fs::read_to_string(&meta_path).unwrap();
-			serde_json::from_str(&content).expect("meta.json should be valid JSON")
-		} else {
-			serde_json::json!({"issues": {}})
-		};
-
-		// Build issue meta with timestamps
-		let issue_meta = serde_json::json!({
-			"timestamps": {
-				"title": timestamps.title.map(|t| t.to_string()),
-				"description": timestamps.description.map(|t| t.to_string()),
-				"labels": timestamps.labels.map(|t| t.to_string()),
-				"state": timestamps.state.map(|t| t.to_string()),
-				"comments": timestamps.comments.iter().map(|t| t.to_string()).collect::<Vec<_>>()
-			}
-		});
-
-		// Insert into project meta
-		project_meta["issues"][number.to_string()] = issue_meta;
-
-		// Write back
-		if let Some(parent) = meta_path.parent() {
-			std::fs::create_dir_all(parent).unwrap();
-		}
-		std::fs::write(&meta_path, serde_json::to_string_pretty(&project_meta).unwrap()).unwrap();
-	}
 }
 
 /// Extract owner, repo, number from an Issue's identity, with defaults.
-#[deprecated(note = "should use actualy logic from the actual lib instead of reimplementing it")]
+/// Uses `issue.identity.link()` from the library, with test-specific fallback defaults
+/// for unlinked issues (owner="owner", repo="repo", number=1).
 fn extract_issue_coords(issue: &Issue) -> (String, String, u64) {
 	if let Some(link) = issue.identity.link() {
 		(link.owner().to_string(), link.repo().to_string(), link.number())
@@ -410,7 +379,7 @@ fn extract_issue_coords(issue: &Issue) -> (String, String, u64) {
 }
 
 /// Recursively add an issue and all its children to the mock state.
-#[deprecated(note = "should use actualy logic from the actual lib instead of reimplementing it")]
+/// Transforms library `Issue` types into mock JSON state for the test mock server.
 fn add_issue_recursive(state: &mut GitState, repo_info: tedi::RepoInfo, number: u64, parent_number: Option<u64>, issue: &Issue, timestamps: Option<&IssueTimestamps>) {
 	let owner = repo_info.owner();
 	let repo = repo_info.repo();
@@ -471,7 +440,8 @@ fn add_issue_recursive(state: &mut GitState, repo_info: tedi::RepoInfo, number: 
 	}
 }
 
-#[deprecated(note = "should use actualy logic from the actual lib instead of reimplementing it")]
+/// Intermediate type for building mock JSON state. Stores owner/repo per-entry
+/// because the mock JSON format requires them (unlike library types where they're implicit).
 struct MockIssue {
 	owner: String,
 	repo: String,
@@ -485,7 +455,8 @@ struct MockIssue {
 	timestamps: Option<IssueTimestamps>,
 }
 
-#[deprecated(note = "should use actualy logic from the actual lib instead of reimplementing it")]
+/// Intermediate type for building mock JSON state. Stores owner/repo/issue_number per-entry
+/// because the mock JSON format requires them (unlike library types where they're implicit).
 struct MockComment {
 	owner: String,
 	repo: String,

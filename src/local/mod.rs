@@ -597,7 +597,7 @@ impl Local {
 
 	/// Save metadata for a specific issue to the project's .meta.json.
 	#[instrument]
-	fn save_issue_meta(repo_info: RepoInfo, issue_number: u64, meta: &IssueMeta) -> Result<()> {
+	pub fn save_issue_meta(repo_info: RepoInfo, issue_number: u64, meta: &IssueMeta) -> Result<()> {
 		let mut project_meta = Self::load_project_meta(repo_info);
 		project_meta.issues.insert(issue_number, meta.clone());
 		Self::save_project_meta(repo_info, &project_meta)
