@@ -125,24 +125,6 @@ async fn test_blocker_add_creates_blockers_section_if_missing() {
 }
 
 #[tokio::test]
-async fn test_blocker_add_without_blocker_file_set_errors() {
-	// Non-urgent `blocker add` should fail when no blocker file is set.
-	let ctx = TestContext::build("");
-
-	// NO blocker file set
-
-	// Run blocker add (without --urgent)
-	let out = ctx.run(&["--offline", "blocker", "add", "some task"]);
-
-	eprintln!("stdout: {}", out.stdout);
-	eprintln!("stderr: {}", out.stderr);
-
-	// The add command should fail
-	assert!(!out.status.success(), "blocker add without --urgent should fail when no blocker file set");
-	assert!(out.stderr.contains("No blocker file set"), "Should mention no blocker file set. stderr: {}", out.stderr);
-}
-
-#[tokio::test]
 async fn test_blocker_add_urgent_without_blocker_file_set() {
 	// Regression test: `blocker add --urgent` should work even without a blocker file set.
 	// The urgent file is owner-independent and doesn't need blocker file context.

@@ -15,7 +15,6 @@ pub enum MockType {
 #[tokio::main]
 async fn main() {
 	{
-		//TODO: deprecate color_eyre::install() after full miette migration
 		color_eyre::config::HookBuilder::default().capture_span_trace_by_default(false).install().unwrap();
 		miette::set_hook(Box::new(|_| Box::new(miette::MietteHandlerOpts::new().terminal_links(true).context_lines(3).build()))).expect("miette hook already set");
 		if std::env::var("__IS_INTEGRATION_TEST").is_ok() {
@@ -31,13 +30,7 @@ async fn main() {
 
 	let cli = Cli::parse();
 
-	let settings = match config::LiveSettings::new(cli.settings_flags.clone(), Duration::from_secs(3)) {
-		Ok(s) => s,
-		Err(e) => {
-			eprintln!("Error: {e}");
-			std::process::exit(1);
-		}
-	};
+	let settings = exit_on_error(config::LiveSettings::new(cli.settings_flags.clone(), Duration::from_secs(3)));
 
 	// Commands that require GitHub client (when not offline)
 	let needs_github = matches!(cli.command, Commands::Open(_) | Commands::Blocker(_)) && !cli.offline;
@@ -45,13 +38,8 @@ async fn main() {
 	let github_client: Option<github::BoxedGithubClient> = if cli.mock.is_some() {
 		Some(std::sync::Arc::new(mock_github::MockGithubClient::new("mock_user")))
 	} else if needs_github {
-		match github::RealGithubClient::new(&settings) {
-			Ok(client) => Some(std::sync::Arc::new(client)),
-			Err(e) => {
-				eprintln!("Error: {e}");
-				std::process::exit(1);
-			}
-		}
+		let client = exit_on_error(github::RealGithubClient::new(&settings));
+		Some(std::sync::Arc::new(client))
 	} else {
 		// Commands that don't need GitHub - don't initialize client
 		None
@@ -63,7 +51,7 @@ async fn main() {
 	}
 
 	// All the functions here can rely on config being correct.
-	let success = match cli.command {
+	exit_on_error(match cli.command {
 		Commands::Manual(manual_args) => manual_stats::update_or_open(&settings, manual_args).await,
 		Commands::Milestones(milestones_command) => milestones::milestones_command(&settings, milestones_command).await,
 		Commands::Init(args) => {
@@ -75,15 +63,7 @@ async fn main() {
 		Commands::PerfEval(args) => perf_eval::main(&settings, args).await,
 		Commands::WatchMonitors(args) => watch_monitors::main(&settings, args),
 		Commands::Open(args) => open_interactions::open_command(&settings, args, cli.offline, cli.mock).await,
-	};
-
-	match success {
-		Ok(_) => std::process::exit(0),
-		Err(e) => {
-			eprintln!("{e:?}");
-			std::process::exit(1);
-		}
-	}
+	});
 }
 mod blocker_interactions;
 mod github;
@@ -97,6 +77,7 @@ mod watch_monitors;
 use std::time::Duration;
 
 use clap::{Parser, Subcommand, ValueEnum};
+use v_utils::utils::exit_on_error;
 
 const MANUAL_PATH_APPENDIX: &str = "manual_stats/";
 

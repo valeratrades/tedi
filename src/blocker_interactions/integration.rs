@@ -18,24 +18,11 @@ use tedi::{
 use super::{BlockerSequence, operations::BlockerSequenceExt, source::BlockerSource};
 use crate::open_interactions::local::ExactMatchLevel;
 
-/// Get the currently selected blocker issue file path
-#[deprecated(note = "move as a method on IssueSource")]
-pub fn get_current_blocker_issue() -> Option<PathBuf> {
-	let cache_path = get_current_blocker_cache_path();
-	std::fs::read_to_string(&cache_path).ok().map(|s| PathBuf::from(s.trim())).filter(|p| p.exists())
-}
-/// Set the current blocker issue file path
-#[deprecated(note = "move as a method on IssueSource")]
-pub fn set_current_blocker_issue(path: &Path) -> Result<()> {
-	let cache_path = get_current_blocker_cache_path();
-	std::fs::write(&cache_path, path.to_string_lossy().as_bytes())?;
-	Ok(())
-}
 /// Issue-based blocker source for blockers embedded in issue files.
 pub struct IssueSource {
-	issue_path: PathBuf,
+	pub issue_path: PathBuf,
 	/// Cached parsed issue (needed for save to preserve structure)
-	cached_issue: std::cell::RefCell<Option<Issue>>,
+	pub cached_issue: std::cell::RefCell<Option<Issue>>,
 }
 impl IssueSource {
 	pub fn new(issue_path: PathBuf) -> Self {
@@ -45,12 +32,81 @@ impl IssueSource {
 		}
 	}
 
+	/// Get the currently selected blocker issue source
+	pub fn current() -> Option<Self> {
+		let cache_path = get_current_blocker_cache_path();
+		std::fs::read_to_string(&cache_path).ok().map(|s| PathBuf::from(s.trim())).filter(|p| p.exists()).map(Self::new)
+	}
+
+	/// Set this issue as the current blocker issue
+	pub fn set_current(&self) -> Result<()> {
+		let cache_path = get_current_blocker_cache_path();
+		std::fs::write(&cache_path, self.issue_path.to_string_lossy().as_bytes())?;
+		Ok(())
+	}
+
 	/// Get relative path for display
 	pub fn display_relative(&self) -> String {
 		self.issue_path
 			.strip_prefix(Local::issues_dir())
 			.map(|p| p.to_string_lossy().to_string())
 			.unwrap_or_else(|_| self.issue_path.to_string_lossy().to_string())
+	}
+}
+
+/// Standalone blocker source for simple blocker files (no Issue metadata).
+/// Used for urgent.md and similar standalone blocker lists.
+pub struct StandaloneSource {
+	path: PathBuf,
+}
+impl StandaloneSource {
+	pub fn new(path: PathBuf) -> Self {
+		Self { path }
+	}
+
+	/// Get the urgent blocker source if it exists
+	pub fn urgent() -> Option<Self> {
+		let path = Local::issues_dir().join("urgent.md");
+		path.exists().then(|| Self::new(path))
+	}
+
+	/// Get or create the urgent blocker source
+	pub fn urgent_or_create() -> Result<Self> {
+		let path = Local::issues_dir().join("urgent.md");
+		if !path.exists() {
+			if let Some(parent) = path.parent() {
+				std::fs::create_dir_all(parent)?;
+			}
+			std::fs::write(&path, "")?;
+		}
+		Ok(Self::new(path))
+	}
+
+	/// Save blockers to the file
+	pub fn save(&self, blockers: &BlockerSequence) -> Result<()> {
+		if let Some(parent) = self.path.parent() {
+			std::fs::create_dir_all(parent)?;
+		}
+		std::fs::write(&self.path, blockers.serialize(DisplayFormat::Headers))?;
+		Ok(())
+	}
+
+	/// Remove the file if blockers are empty
+	pub fn cleanup_if_empty(&self) -> Result<()> {
+		if !self.path.exists() {
+			return Ok(());
+		}
+		let blockers = <Self as BlockerSource>::load(self)?;
+		if blockers.is_empty() {
+			std::fs::remove_file(&self.path)?;
+			eprintln!("Removed empty file: {}", self.path.display());
+		}
+		Ok(())
+	}
+
+	/// Get the path
+	pub fn path(&self) -> &Path {
+		&self.path
 	}
 }
 
@@ -63,11 +119,11 @@ pub async fn main_integrated(command: super::io::Command, format: DisplayFormat,
 	match command {
 		Command::Set { pattern } => {
 			// Check if there's an urgent file - can't switch away until it's empty
-			if let Some(urgent_path) = urgent::find_existing() {
-				let blockers = urgent::load_blockers(&urgent_path)?;
+			if let Some(urgent) = StandaloneSource::urgent() {
+				let blockers = urgent.load()?;
 				if !blockers.is_empty() {
 					eprintln!("Cannot switch project while urgent tasks exist. Complete urgent tasks first.");
-					eprintln!("  {}", urgent_path.display());
+					eprintln!("  {}", urgent.path().display());
 					if let Some(current) = blockers.current_with_context(&[]) {
 						eprintln!("  Current urgent: {current}");
 					}
@@ -76,9 +132,8 @@ pub async fn main_integrated(command: super::io::Command, format: DisplayFormat,
 			}
 
 			let issue_path = resolve_issue_file(&pattern)?;
-			set_current_blocker_issue(&issue_path)?;
-
 			let source = IssueSource::new(issue_path);
+			source.set_current()?;
 			println!("Set blockers to: {}", source.display_name());
 
 			// Load and show current blocker
@@ -93,43 +148,38 @@ pub async fn main_integrated(command: super::io::Command, format: DisplayFormat,
 			}
 		}
 
-		Command::Open { pattern, set_after, urgent } => {
-			if urgent {
+		Command::Open {
+			pattern,
+			set_after,
+			urgent: is_urgent,
+		} => {
+			if is_urgent {
 				// Open the urgent file
-				let urgent_path = urgent::get_path();
+				let urgent = StandaloneSource::urgent_or_create()?;
 
-				if !urgent_path.exists() {
-					// Create empty urgent file
-					if let Some(parent) = urgent_path.parent() {
-						std::fs::create_dir_all(parent)?;
-					}
-					std::fs::write(&urgent_path, "")?;
-				}
-
-				v_utils::io::file_open::open(&urgent_path).await?;
+				v_utils::io::file_open::open(urgent.path()).await?;
 
 				// Cleanup if empty after editing
-				urgent::cleanup_if_empty(&urgent_path)?;
+				urgent.cleanup_if_empty()?;
 
 				// Update tracking if enabled
 				update_tracking_after_change().await;
 			} else {
-				let issue_path = if let Some(pat) = pattern {
-					resolve_issue_file(&pat)?
+				let issue_source = if let Some(pat) = pattern {
+					IssueSource::new(resolve_issue_file(&pat)?)
 				} else {
-					get_current_blocker_issue().ok_or_else(|| eyre!("No issue set. Use `todo blocker set <pattern>` first."))?
+					IssueSource::current().ok_or_else(|| eyre!("No issue set. Use `todo blocker set <pattern>` first."))?
 				};
 
 				// Use unified modify flow
-				let source = LocalIssueSource::<FsReader>::from_path(&issue_path)?;
-				let issue = <Issue as LazyIssue<Local>>::load(source).await?;
+				let local_source = LocalIssueSource::<FsReader>::from_path(&issue_source.issue_path)?;
+				let issue = <Issue as LazyIssue<Local>>::load(local_source).await?;
 				modify_and_sync_issue(issue, offline, Modifier::Editor { open_at_blocker: false }, SyncOptions::default()).await?;
 
 				// If set_after flag is set, update the current blocker issue
 				if set_after {
-					set_current_blocker_issue(&issue_path)?;
-					let source = IssueSource::new(issue_path.clone());
-					println!("Set blockers to: {}", source.display_name());
+					issue_source.set_current()?;
+					println!("Set blockers to: {}", issue_source.display_name());
 				}
 
 				// Update tracking after change
@@ -139,8 +189,8 @@ pub async fn main_integrated(command: super::io::Command, format: DisplayFormat,
 
 		Command::List => {
 			// Check if there's an urgent file - show that first
-			if let Some(urgent_path) = urgent::find_existing() {
-				let blockers = urgent::load_blockers(&urgent_path)?;
+			if let Some(urgent) = StandaloneSource::urgent() {
+				let blockers = urgent.load()?;
 				if !blockers.is_empty() {
 					println!("=== URGENT ===");
 					println!("{}", blockers.serialize(format));
@@ -148,7 +198,7 @@ pub async fn main_integrated(command: super::io::Command, format: DisplayFormat,
 				}
 			}
 
-			let source = get_current_source()?;
+			let source = IssueSource::current().ok_or_else(|| eyre!("No blocker file set. Use `todo blocker set <pattern>` first."))?;
 			let blockers = source.load()?;
 
 			if blockers.is_empty() {
@@ -166,8 +216,8 @@ pub async fn main_integrated(command: super::io::Command, format: DisplayFormat,
 
 		Command::Current { fully_qualified } => {
 			// Check urgent file first - urgent tasks take priority
-			if let Some(urgent_path) = urgent::find_existing() {
-				let blockers = urgent::load_blockers(&urgent_path)?;
+			if let Some(urgent) = StandaloneSource::urgent() {
+				let blockers = urgent.load()?;
 				if let Some(current) = blockers.current_with_context(&[]) {
 					let prefix = if fully_qualified { "URGENT: " } else { "" };
 					let output = format!("{prefix}{current}");
@@ -180,19 +230,11 @@ pub async fn main_integrated(command: super::io::Command, format: DisplayFormat,
 				}
 			}
 
-			let source = get_current_source()?;
+			let source = IssueSource::current().ok_or_else(|| eyre!("No blocker file set. Use `todo blocker set <pattern>` first."))?;
 			let blockers = source.load()?;
 
 			if !blockers.is_empty() {
-				let hierarchy = if fully_qualified {
-					source
-						.path_for_hierarchy()
-						.and_then(|p| p.file_stem().map(|s| s.to_string_lossy().to_string()))
-						.map(|s| vec![s])
-						.unwrap_or_default()
-				} else {
-					vec![]
-				};
+				let hierarchy = if fully_qualified { source.hierarchy() } else { vec![] };
 
 				if let Some(current) = blockers.current_with_context(&hierarchy) {
 					const MAX_LEN: usize = 70;
@@ -207,17 +249,17 @@ pub async fn main_integrated(command: super::io::Command, format: DisplayFormat,
 
 		Command::Pop => {
 			// Check if there's an urgent file - pop from there first
-			if let Some(urgent_path) = urgent::find_existing() {
-				let mut blockers = urgent::load_blockers(&urgent_path)?;
+			if let Some(urgent) = StandaloneSource::urgent() {
+				let mut blockers = urgent.load()?;
 				if !blockers.is_empty() {
 					let popped = blockers.pop();
-					urgent::save_blockers(&urgent_path, &blockers)?;
+					urgent.save(&blockers)?;
 
 					if let Some(text) = popped {
 						println!("Popped (urgent): {text}");
 					}
 
-					urgent::cleanup_if_empty(&urgent_path)?;
+					urgent.cleanup_if_empty()?;
 
 					// Update tracking after pop
 					update_tracking_after_change().await;
@@ -232,19 +274,18 @@ pub async fn main_integrated(command: super::io::Command, format: DisplayFormat,
 				}
 			}
 
-			let issue_path = get_current_blocker_issue().ok_or_else(|| eyre!("No blocker file set. Use `todo blocker set <pattern>` first."))?;
+			let issue_source = IssueSource::current().ok_or_else(|| eyre!("No blocker file set. Use `todo blocker set <pattern>` first."))?;
 
 			// Check if blockers section exists before attempting pop
-			let source = IssueSource::new(issue_path.clone());
-			let blockers = source.load()?;
+			let blockers = issue_source.load()?;
 			if blockers.is_empty() {
 				let marker = Marker::BlockersSection(tedi::Header::new(1, "Blockers"));
 				bail!("No `{marker}` marker found in issue body.");
 			}
 
 			// Use unified modify workflow
-			let source = LocalIssueSource::<FsReader>::from_path(&issue_path)?;
-			let issue = <Issue as LazyIssue<Local>>::load(source).await?;
+			let local_source = LocalIssueSource::<FsReader>::from_path(&issue_source.issue_path)?;
+			let issue = <Issue as LazyIssue<Local>>::load(local_source).await?;
 			let result = modify_and_sync_issue(issue, offline, Modifier::BlockerPop, SyncOptions::default()).await?;
 
 			// Output results
@@ -255,9 +296,8 @@ pub async fn main_integrated(command: super::io::Command, format: DisplayFormat,
 			// Update tracking after pop
 			update_tracking_after_change().await;
 
-			// Show new current blocker
-			let source = IssueSource::new(issue_path);
-			let blockers = source.load()?;
+			// Show new current blocker (reload to get updated state)
+			let blockers = issue_source.load()?;
 			if let Some(new_current) = blockers.current_with_context(&[]) {
 				println!("Current: {new_current}");
 			} else {
@@ -265,13 +305,13 @@ pub async fn main_integrated(command: super::io::Command, format: DisplayFormat,
 			}
 		}
 
-		Command::Add { name, urgent } => {
-			if urgent {
+		Command::Add { name, urgent: is_urgent } => {
+			if is_urgent {
 				// Add to global urgent.md
-				let urgent_path = urgent::get_path();
-				let mut blockers = urgent::load_blockers(&urgent_path)?;
+				let urgent = StandaloneSource::urgent_or_create()?;
+				let mut blockers = urgent.load()?;
 				blockers.add(&name);
-				urgent::save_blockers(&urgent_path, &blockers)?;
+				urgent.save(&blockers)?;
 
 				// Update tracking after add
 				update_tracking_after_change().await;
@@ -281,11 +321,11 @@ pub async fn main_integrated(command: super::io::Command, format: DisplayFormat,
 					println!("Current (urgent): {current}");
 				}
 			} else {
-				let issue_path = get_current_blocker_issue().ok_or_else(|| eyre!("No blocker file set. Use `todo blocker set <pattern>` first."))?;
+				let issue_source = IssueSource::current().ok_or_else(|| eyre!("No blocker file set. Use `todo blocker set <pattern>` first."))?;
 
 				// Use unified modify workflow
-				let source = LocalIssueSource::<FsReader>::from_path(&issue_path)?;
-				let issue = <Issue as LazyIssue<Local>>::load(source).await?;
+				let local_source = LocalIssueSource::<FsReader>::from_path(&issue_source.issue_path)?;
+				let issue = <Issue as LazyIssue<Local>>::load(local_source).await?;
 				let result = modify_and_sync_issue(issue, offline, Modifier::BlockerAdd { text: name.clone() }, SyncOptions::default()).await?;
 
 				// Output results
@@ -296,9 +336,8 @@ pub async fn main_integrated(command: super::io::Command, format: DisplayFormat,
 				// Update tracking after add
 				update_tracking_after_change().await;
 
-				// Show new current blocker
-				let source = IssueSource::new(issue_path);
-				let blockers = source.load()?;
+				// Show new current blocker (reload to get updated state)
+				let blockers = issue_source.load()?;
 				if let Some(new_current) = blockers.current_with_context(&[]) {
 					println!("Current: {new_current}");
 				}
@@ -307,7 +346,7 @@ pub async fn main_integrated(command: super::io::Command, format: DisplayFormat,
 
 		Command::Resume(mut resume_args) => {
 			// Get current blocker description for tracking
-			let source = get_current_source()?;
+			let source = IssueSource::current().ok_or_else(|| eyre!("No blocker file set. Use `todo blocker set <pattern>` first."))?;
 			let blockers = source.load()?;
 
 			if blockers.current().is_none() {
@@ -323,13 +362,13 @@ pub async fn main_integrated(command: super::io::Command, format: DisplayFormat,
 			}
 
 			// Build hierarchy for fully-qualified mode
-			let issue_name = source.path_for_hierarchy().and_then(|p| p.file_stem().map(|s| s.to_string_lossy().to_string()));
+			let hierarchy = source.hierarchy();
 
 			// Start tracking with current blocker description
 			super::clockify::start_tracking_for_task(
 				|fully_qualified| {
-					let hierarchy = if fully_qualified { issue_name.clone().map(|s| vec![s]).unwrap_or_default() } else { vec![] };
-					blockers.current_with_context(&hierarchy).unwrap_or_default()
+					let h = if fully_qualified { hierarchy.clone() } else { vec![] };
+					blockers.current_with_context(&h).unwrap_or_default()
 				},
 				&resume_args,
 				None,
@@ -377,8 +416,26 @@ impl super::source::BlockerSource for IssueSource {
 		self.display_relative()
 	}
 
-	fn path_for_hierarchy(&self) -> Option<PathBuf> {
-		Some(self.issue_path.clone())
+	fn hierarchy(&self) -> Vec<String> {
+		self.issue_path.file_stem().map(|s| vec![s.to_string_lossy().into_owned()]).unwrap_or_default()
+	}
+}
+
+impl super::source::BlockerSource for StandaloneSource {
+	fn load(&self) -> Result<BlockerSequence> {
+		match std::fs::read_to_string(&self.path) {
+			Ok(content) => Ok(BlockerSequence::parse(&content)),
+			Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(BlockerSequence::default()),
+			Err(e) => Err(e.into()),
+		}
+	}
+
+	fn display_name(&self) -> String {
+		self.path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "standalone".to_string())
+	}
+
+	fn hierarchy(&self) -> Vec<String> {
+		vec!["urgent".to_string()]
 	}
 }
 
@@ -387,111 +444,23 @@ fn resolve_issue_file(pattern: &str) -> Result<PathBuf> {
 	Local::fzf_issue(pattern, ExactMatchLevel::default())
 }
 
-/// Get the current issue source, or error if none set.
-fn get_current_source() -> Result<IssueSource> {
-	let issue_path = get_current_blocker_issue().ok_or_else(|| eyre!("No blocker file set. Use `todo blocker set <pattern>` first."))?;
-	Ok(IssueSource::new(issue_path))
-}
-
-/// Urgent file handling - standalone blocker interface, NOT connected to issues.
-///
-/// This is intentionally separate from the issue-based blocker system.
-/// Urgent.md files are simple blocker lists stored at `issues/urgent.md`
-/// with no Github sync, no issue metadata - just raw blockers for immediate tasks.
-/// Only one urgent file can exist at a time.
-mod urgent {
-	use super::*;
-
-	/// Get the path to the urgent.md file (global, not owner-scoped).
-	pub fn get_path() -> PathBuf {
-		Local::issues_dir().join("urgent.md")
-	}
-
-	/// Check if an urgent.md file exists.
-	/// Returns the path if found.
-	pub fn find_existing() -> Option<PathBuf> {
-		let path = get_path();
-		path.exists().then_some(path)
-	}
-
-	/// Load blockers from an urgent.md file (simple blocker list, no issue metadata).
-	/// Returns empty blockers if the file doesn't exist yet.
-	pub fn load_blockers(path: &Path) -> Result<BlockerSequence> {
-		match std::fs::read_to_string(path) {
-			Ok(content) => Ok(BlockerSequence::parse(&content)),
-			Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(BlockerSequence::default()),
-			Err(e) => Err(e.into()),
-		}
-	}
-
-	/// Save blockers to an urgent.md file.
-	pub fn save_blockers(path: &Path, blockers: &BlockerSequence) -> Result<()> {
-		if let Some(parent) = path.parent() {
-			std::fs::create_dir_all(parent)?;
-		}
-		std::fs::write(path, blockers.serialize(DisplayFormat::Headers))?;
-		Ok(())
-	}
-
-	/// Check if urgent file is semantically empty and delete it if so.
-	pub fn cleanup_if_empty(path: &Path) -> Result<()> {
-		if !path.exists() {
-			return Ok(());
-		}
-
-		let content = std::fs::read_to_string(path)?;
-		let blockers = BlockerSequence::parse(&content);
-
-		if blockers.is_empty() {
-			std::fs::remove_file(path)?;
-			eprintln!("Removed empty urgent file: {}", path.display());
-		}
-
-		Ok(())
-	}
-
-	/// Get the current urgent blocker description for tracking purposes.
-	/// Returns (description, is_urgent=true) if found.
-	pub fn description(fully_qualified: bool) -> Option<(String, bool)> {
-		let urgent_path = find_existing()?;
-		let blockers = load_blockers(&urgent_path).ok()?;
-		let current = blockers.current_with_context(&[])?;
-		let prefix = if fully_qualified { "URGENT: " } else { "" };
-		Some((format!("{prefix}{current}"), true))
-	}
-}
-
-/// Trait for getting current blocker description from different sources.
-trait BlockerDescription {
-	/// Get the current blocker description for tracking purposes.
-	/// Returns (description, is_urgent) if found.
-	fn description(&self, fully_qualified: bool) -> Option<(String, bool)>;
-}
-
-impl BlockerDescription for IssueSource {
-	fn description(&self, fully_qualified: bool) -> Option<(String, bool)> {
-		let blockers = self.load().ok()?;
-		let hierarchy = if fully_qualified {
-			self.path_for_hierarchy()
-				.and_then(|p| p.file_stem().map(|s| s.to_string_lossy().to_string()))
-				.map(|s| vec![s])
-				.unwrap_or_default()
-		} else {
-			vec![]
-		};
-		blockers.current_with_context(&hierarchy).map(|desc| (desc, false))
-	}
-}
-
 /// Get the current blocker description, checking urgent first then falling back to issue.
-fn get_current_blocker_description(fully_qualified: bool) -> Option<(String, bool)> {
+fn get_current_blocker_description(fully_qualified: bool) -> Option<String> {
 	// Check urgent file first
-	if let Some(desc) = urgent::description(fully_qualified) {
-		return Some(desc);
+	if let Some(urgent) = StandaloneSource::urgent()
+		&& let Ok(blockers) = urgent.load()
+	{
+		let hierarchy = if fully_qualified { urgent.hierarchy() } else { vec![] };
+		if let Some(current) = blockers.current_with_context(&hierarchy) {
+			return Some(current);
+		}
 	}
 
 	// Fall back to current issue
-	get_current_source().ok()?.description(fully_qualified)
+	let source = IssueSource::current()?;
+	let blockers = source.load().ok()?;
+	let hierarchy = if fully_qualified { source.hierarchy() } else { vec![] };
+	blockers.current_with_context(&hierarchy)
 }
 
 /// Update clockify tracking after a blocker change (add/pop).
@@ -507,7 +476,7 @@ async fn update_tracking_after_change() {
 	}
 
 	// Restart with new current blocker
-	if let Err(e) = super::clockify::restart_tracking_for_project(|fully_qualified| get_current_blocker_description(fully_qualified).map(|(desc, _)| desc), None).await {
+	if let Err(e) = super::clockify::restart_tracking_for_project(get_current_blocker_description, None).await {
 		tracing::warn!("failed to restart clockify tracking: {e}");
 	}
 }

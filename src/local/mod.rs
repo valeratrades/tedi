@@ -176,16 +176,16 @@ impl Local {
 	///
 	/// This parses one issue file (without loading children from separate files).
 	/// Children field will be empty - they're loaded separately via LazyIssue.
-	#[deprecated(
-		note = "needs to be reimplemented. Should take `Reader` implementor for reading contents, and `file_path` is excessive since we already have IssueIndex, - at most pass LocalPathResolved here"
-	)]
-	fn parse_single_node(content: &str, index: IssueIndex, file_path: &Path) -> Result<Issue, LocalError> {
+	fn parse_single_node(content: &str, index: IssueIndex, fpath_for_error_context_only: &Path) -> Result<Issue, LocalError> {
 		let mut issue = Issue::parse_virtual(content, index).map_err(|e| LocalError::ParseError {
-			path: file_path.to_path_buf(),
+			path: fpath_for_error_context_only.to_path_buf(),
 			source: Box::new(e),
 		})?;
 		// Clear any inline children (filesystem format stores them in separate files)
-		issue.children.clear();
+		if !issue.children.is_empty() {
+			tracing::warn!("issue children read from file are not empty. Wtf {:?}", &issue.children);
+			issue.children.clear();
+		}
 		Ok(issue)
 	}
 
@@ -597,7 +597,7 @@ impl Local {
 
 	/// Save metadata for a specific issue to the project's .meta.json.
 	#[instrument]
-	fn save_issue_meta(repo_info: RepoInfo, issue_number: u64, meta: &IssueMeta) -> Result<()> {
+	pub fn save_issue_meta(repo_info: RepoInfo, issue_number: u64, meta: &IssueMeta) -> Result<()> {
 		let mut project_meta = Self::load_project_meta(repo_info);
 		project_meta.issues.insert(issue_number, meta.clone());
 		Self::save_project_meta(repo_info, &project_meta)
