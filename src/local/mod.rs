@@ -1162,21 +1162,20 @@ impl TryFrom<u8> for ExactMatchLevel {
 }
 
 //==============================================================================
-// LazyIssue Implementation for LocalIssueSource<FsReader>
+// LazyIssue Implementation for LocalIssueSource<R: LocalReader>
 //==============================================================================
 
-impl crate::LazyIssue<LocalIssueSource<FsReader>> for Issue {
+impl<R: LocalReader> crate::LazyIssue<LocalIssueSource<R>> for Issue {
 	type Error = LocalError;
 
 	#[tracing::instrument(skip_all)]
-	async fn parent_index(source: &LocalIssueSource<FsReader>) -> Result<Option<crate::IssueIndex>, Self::Error> {
-		// The source's IssueIndex IS the issue's index; parent_index is derived from it
+	async fn parent_index(source: &LocalIssueSource<R>) -> Result<Option<crate::IssueIndex>, Self::Error> {
 		let index = source.index();
 		Ok(index.parent())
 	}
 
 	#[tracing::instrument(skip_all)]
-	async fn identity(&mut self, source: LocalIssueSource<FsReader>) -> Result<crate::IssueIdentity, Self::Error> {
+	async fn identity(&mut self, source: LocalIssueSource<R>) -> Result<crate::IssueIdentity, Self::Error> {
 		if self.identity.is_linked() {
 			return Ok(self.identity.clone());
 		}
@@ -1202,7 +1201,7 @@ impl crate::LazyIssue<LocalIssueSource<FsReader>> for Issue {
 	}
 
 	#[tracing::instrument(skip(self, source))]
-	async fn contents(&mut self, source: LocalIssueSource<FsReader>) -> Result<crate::IssueContents, Self::Error> {
+	async fn contents(&mut self, source: LocalIssueSource<R>) -> Result<crate::IssueContents, Self::Error> {
 		if !self.contents.title.is_empty() {
 			return Ok(self.contents.clone());
 		}
@@ -1218,110 +1217,7 @@ impl crate::LazyIssue<LocalIssueSource<FsReader>> for Issue {
 	}
 
 	#[tracing::instrument(skip_all)]
-	async fn children(&mut self, source: LocalIssueSource<FsReader>) -> Result<Vec<Issue>, Self::Error> {
-		if !self.children.is_empty() {
-			return Ok(self.children.clone());
-		}
-
-		let dir_path = source.local_path.clone().resolve_parent(source.reader)?.search()?.issue_dir();
-		let Some(dir_path) = dir_path else {
-			return Ok(Vec::new()); // Flat file, no children
-		};
-
-		let entries = source.reader.list_dir(&dir_path)?;
-		let mut children = Vec::new();
-		let this_index = *source.index();
-
-		for name in entries {
-			if name.starts_with(Local::MAIN_ISSUE_FILENAME) {
-				continue;
-			}
-
-			let child_selector = match Local::parse_issue_selector_from_name(&name) {
-				Some(sel) => sel,
-				None => continue,
-			};
-
-			let child_index = this_index.child(child_selector);
-			let child_source = source.child(child_index);
-
-			let child = Issue::load(child_source).await?;
-			children.push(child);
-		}
-
-		children.sort_by_key(|issue| issue.git_id().unwrap_or(0)); //IGNORED_ERROR: pending issues (no number) sort first
-
-		self.children = children.clone();
-		Ok(children)
-	}
-
-	// Uses default load() impl from LazyIssue trait
-}
-
-//==============================================================================
-// LazyIssue Implementation for LocalIssueSource<GitReader> (Consensus loading)
-//==============================================================================
-
-impl crate::LazyIssue<LocalIssueSource<GitReader>> for Issue {
-	type Error = LocalError;
-
-	async fn parent_index(source: &LocalIssueSource<GitReader>) -> Result<Option<crate::IssueIndex>, Self::Error> {
-		let index = source.index();
-		Ok(index.parent())
-	}
-
-	#[instrument]
-	async fn identity(&mut self, source: LocalIssueSource<GitReader>) -> Result<crate::IssueIdentity, Self::Error> {
-		tracing::debug!(is_linked = self.identity.is_linked(), "LazyIssue<LocalIssueSource<GitReader>>::identity");
-		if self.identity.is_linked() {
-			return Ok(self.identity.clone());
-		}
-
-		let index = *source.index();
-		tracing::debug!(
-			?index,
-			title_empty = self.contents.title.is_empty(),
-			"LazyIssue<LocalIssueSource<GitReader>>::identity check title"
-		);
-
-		if self.contents.title.is_empty() {
-			let search_result = source.local_path.clone().resolve_parent(source.reader).and_then(|r| r.search());
-			tracing::debug!(?search_result, "LazyIssue<LocalIssueSource<GitReader>>::identity search");
-			let file_path = search_result?.path();
-			let content = source.reader.read_content(&file_path)?;
-			let parsed = Local::parse_single_node(&content, index, &file_path)?;
-			self.identity = parsed.identity;
-			self.contents = parsed.contents;
-		}
-
-		if let Some(issue_number) = self.identity.number()
-			&& let Some(meta) = Local::load_issue_meta_from_reader(index.repo_info(), issue_number, &source.reader)
-			&& let Some(linked) = self.identity.mut_linked_issue_meta()
-		{
-			linked.timestamps = meta.timestamps;
-		}
-
-		Ok(self.identity.clone())
-	}
-
-	#[instrument]
-	async fn contents(&mut self, source: LocalIssueSource<GitReader>) -> Result<crate::IssueContents, Self::Error> {
-		if !self.contents.title.is_empty() {
-			return Ok(self.contents.clone());
-		}
-
-		let index = *source.index();
-		let file_path = source.local_path.clone().resolve_parent(source.reader)?.search()?.path();
-		let content = source.reader.read_content(&file_path)?;
-		let parsed = Local::parse_single_node(&content, index, &file_path)?;
-		self.identity = parsed.identity;
-		self.contents = parsed.contents;
-
-		Ok(self.contents.clone())
-	}
-
-	#[instrument]
-	async fn children(&mut self, source: LocalIssueSource<GitReader>) -> Result<Vec<Issue>, Self::Error> {
+	async fn children(&mut self, source: LocalIssueSource<R>) -> Result<Vec<Issue>, Self::Error> {
 		if !self.children.is_empty() {
 			return Ok(self.children.clone());
 		}
