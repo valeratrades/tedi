@@ -255,3 +255,51 @@ fn test_nested_issue_under_unsynced_parent_online() {
 
 	assert!(out.status.success(), "Should succeed syncing child under unsynced parent. stderr: {}", out.stderr);
 }
+
+/// Test `break_to_edit` allows pausing execution to inspect and modify the virtual file.
+#[test]
+fn test_break_to_edit_allows_mid_execution_modification() {
+	let ctx = TestContext::build(
+		r#"
+		//- /data/issues/o/r/.meta.json
+		{
+			"virtual_project": false,
+			"next_virtual_issue_number": 0,
+			"issues": {
+				"1": {
+					"timestamps": {
+						"title": null,
+						"description": null,
+						"labels": null,
+						"state": null,
+						"comments": []
+					}
+				}
+			}
+		}
+		//- /data/issues/o/r/1_-_test_issue.md
+		- [ ] test issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+			original body
+	"#,
+	);
+
+	let (vpath, continuation) = ctx.open_touch("o/r/test").args(&["--offline"]).break_to_edit();
+
+	let content = std::fs::read_to_string(&vpath).expect("should read virtual file");
+	assert!(content.contains("test issue"), "should contain title");
+	assert!(content.contains("original body"), "should contain body");
+
+	let modified = content.replace("original body", "original body\n\tappended content");
+	std::fs::write(&vpath, &modified).expect("should write virtual file");
+
+	let out = continuation.resume();
+
+	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().skip_meta(), &out), @r"
+	//- /o/r/1_-_test_issue.md
+	- [ ] test issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+			original body
+			appended content
+	");
+
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+}
