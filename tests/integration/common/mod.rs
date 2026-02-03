@@ -181,6 +181,111 @@ impl<'a> OpenBuilder<'a> {
 		self
 	}
 
+	/// Pause execution when the virtual file is ready for editing.
+	///
+	/// Returns `(virtual_file_path, continuation)`. The test can:
+	/// 1. Read the virtual file at the returned path
+	/// 2. Modify it as needed
+	/// 3. Call `.resume()` on the continuation to signal completion and get the result
+	///
+	/// This allows testing direct append-based writes and other operations that
+	/// require inspecting/modifying the virtual file mid-execution.
+	///
+	/// # Example
+	/// ```ignore
+	/// let (vpath, continuation) = ctx.open_touch("owner/repo/issue").break_to_edit();
+	///
+	/// // Inspect current state
+	/// let content = std::fs::read_to_string(&vpath).unwrap();
+	/// println!("Virtual file content: {content}");
+	///
+	/// // Make modifications
+	/// std::fs::write(&vpath, modified_content).unwrap();
+	///
+	/// // Resume and get result
+	/// let output = continuation.resume();
+	/// assert!(output.status.success());
+	/// ```
+	pub fn break_to_edit(self) -> (PathBuf, PausedEdit) {
+		self.ctx.set_issues_dir_override();
+
+		// Separate global flags from subcommand flags
+		let (global_args, subcommand_args): (Vec<&str>, Vec<&str>) = self.extra_args.into_iter().partition(|arg| GLOBAL_FLAGS.iter().any(|f| arg.starts_with(f)));
+
+		let mut cmd = Command::new(get_binary_path());
+
+		// Global flags come first (before subcommand)
+		// break_to_edit never uses ghost_edit - we want full control
+		cmd.arg("--mock");
+		cmd.args(&global_args);
+
+		// Then the subcommand
+		cmd.arg("open");
+
+		// Then subcommand-specific flags
+		cmd.args(&subcommand_args);
+
+		// Then the target
+		match &self.target {
+			BuilderTarget::Issue(issue) => {
+				let issue_path = tedi::local::LocalPath::from(*issue)
+					.resolve_parent(tedi::local::FsReader)
+					.expect("failed to resolve issue parent path")
+					.search()
+					.expect("failed to find issue file")
+					.path();
+				cmd.arg(&issue_path);
+			}
+			BuilderTarget::Url(url) => {
+				cmd.arg(url);
+			}
+			BuilderTarget::Touch(pattern) => {
+				cmd.arg("--touch").arg(pattern);
+			}
+		}
+
+		cmd.env("__IS_INTEGRATION_TEST", "1");
+		cmd.env(ENV_GITHUB_TOKEN, "test_token");
+		for (key, value) in self.ctx.xdg.env_vars() {
+			cmd.env(key, value);
+		}
+		cmd.env(ENV_MOCK_STATE, &self.ctx.mock_state_path);
+		cmd.env(ENV_MOCK_PIPE, &self.ctx.pipe_path);
+		cmd.stdout(std::process::Stdio::piped());
+		cmd.stderr(std::process::Stdio::piped());
+
+		let mut child = cmd.spawn().unwrap();
+
+		// Take ownership of stdout/stderr
+		let stdout = child.stdout.take().unwrap();
+		let stderr = child.stderr.take().unwrap();
+		set_nonblocking(&stdout);
+		set_nonblocking(&stderr);
+
+		let pipe_path = self.ctx.pipe_path.clone();
+
+		// Wait for virtual file to appear (process reached pipe wait)
+		let virtual_edit_base = self.ctx.xdg.inner.root.clone();
+		let vpath = loop {
+			// Drain pipes to prevent deadlock
+			// (we need mutable access, so create temp buffers - they'll be discarded)
+			// Actually, we need to accumulate. Let's store in PausedEdit.
+			std::thread::sleep(std::time::Duration::from_millis(50));
+
+			if let Some(vpath) = find_virtual_edit_file(&virtual_edit_base) {
+				// File exists - process is waiting on pipe
+				break vpath;
+			}
+
+			// Check process hasn't died
+			if child.try_wait().unwrap().is_some() {
+				panic!("Process exited before creating virtual file");
+			}
+		};
+
+		(vpath, PausedEdit { child, stdout, stderr, pipe_path })
+	}
+
 	/// Run the command and return RunOutput.
 	pub fn run(self) -> RunOutput {
 		self.ctx.set_issues_dir_override();
@@ -327,6 +432,60 @@ pub struct RunOutput {
 	pub stdout: String,
 	pub stderr: String,
 }
+
+/// Handle for a paused edit operation.
+///
+/// Created by [`OpenBuilder::break_to_edit`]. Holds the running process state
+/// and allows resuming execution after the test has modified the virtual file.
+pub struct PausedEdit {
+	child: std::process::Child,
+	stdout: std::process::ChildStdout,
+	stderr: std::process::ChildStderr,
+	pipe_path: PathBuf,
+}
+
+impl PausedEdit {
+	/// Resume execution after modifying the virtual file.
+	///
+	/// Signals the process via the named pipe and waits for completion.
+	/// Returns the final output from the command.
+	pub fn resume(mut self) -> RunOutput {
+		let mut stdout_buf = Vec::new();
+		let mut stderr_buf = Vec::new();
+
+		// Signal the pipe to resume the process
+		#[cfg(unix)]
+		{
+			use std::os::unix::fs::OpenOptionsExt;
+			// Block until we can write - process should be waiting
+			let mut pipe = std::fs::OpenOptions::new()
+				.write(true)
+				.custom_flags(0x800) // O_NONBLOCK
+				.open(&self.pipe_path)
+				.expect("failed to open pipe for signaling");
+			pipe.write_all(b"x").expect("failed to signal pipe");
+		}
+
+		// Wait for process completion, draining pipes
+		while self.child.try_wait().unwrap().is_none() {
+			drain_pipe(&mut self.stdout, &mut stdout_buf);
+			drain_pipe(&mut self.stderr, &mut stderr_buf);
+			std::thread::sleep(std::time::Duration::from_millis(10));
+		}
+
+		// Final drain
+		drain_pipe(&mut self.stdout, &mut stdout_buf);
+		drain_pipe(&mut self.stderr, &mut stderr_buf);
+
+		self.child.wait().unwrap();
+		RunOutput {
+			status: self.child.try_wait().unwrap().unwrap(),
+			stdout: String::from_utf8_lossy(&stdout_buf).into_owned(),
+			stderr: String::from_utf8_lossy(&stderr_buf).into_owned(),
+		}
+	}
+}
+
 /// Unsafe filesystem operations for tests that genuinely need path-based access.
 ///
 /// **DO NOT USE** unless you are testing filesystem edge cases specifically.

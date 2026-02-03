@@ -255,3 +255,61 @@ fn test_nested_issue_under_unsynced_parent_online() {
 
 	assert!(out.status.success(), "Should succeed syncing child under unsynced parent. stderr: {}", out.stderr);
 }
+
+/// Test `break_to_edit` allows pausing execution to inspect and modify the virtual file.
+///
+/// This demonstrates the two-phase edit pattern:
+/// 1. Start the open command, pause when virtual file is ready
+/// 2. Inspect the file contents, make modifications
+/// 3. Resume execution and verify result
+#[test]
+fn test_break_to_edit_allows_mid_execution_modification() {
+	let ctx = TestContext::build(
+		r#"
+		//- /data/issues/o/r/.meta.json
+		{
+			"virtual_project": false,
+			"next_virtual_issue_number": 0,
+			"issues": {
+				"1": {
+					"timestamps": {
+						"title": null,
+						"description": null,
+						"labels": null,
+						"state": null,
+						"comments": []
+					}
+				}
+			}
+		}
+		//- /data/issues/o/r/1_-_test_issue.md
+		- [ ] test issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+			original body
+	"#,
+	);
+
+	// Phase 1: Start the command and pause when virtual file is ready
+	let (vpath, continuation) = ctx.open_touch("o/r/test").args(&["--offline"]).break_to_edit();
+
+	// Verify we can read the virtual file
+	let content = std::fs::read_to_string(&vpath).expect("should be able to read virtual file");
+	assert!(content.contains("test issue"), "virtual file should contain issue title");
+	assert!(content.contains("original body"), "virtual file should contain original body");
+
+	// Phase 2: Modify the virtual file (append to body)
+	let modified = content.replace("original body", "original body\n\tappended content");
+	std::fs::write(&vpath, &modified).expect("should be able to write to virtual file");
+
+	// Phase 3: Resume and verify
+	let out = continuation.resume();
+
+	// Verify: the modification was applied
+	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().skip_meta(), &out), @r"
+	//- /o/r/1_-_test_issue.md
+	- [ ] test issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+			original body
+			appended content
+	");
+
+	assert!(out.status.success(), "Should succeed after resume. stderr: {}", out.stderr);
+}
