@@ -837,14 +837,17 @@ impl Issue /*{{{1*/ {
 		self.identity.parent_index
 	}
 
+	fn selector(&self) -> IssueSelector {
+		match self.git_id() {
+			Some(n) => IssueSelector::GitId(n),
+			None => IssueSelector::title(&self.contents.title),
+		}
+	}
+
 	/// Get full index pointing to this issue.
 	/// Combines parent_index with this issue's selector.
 	pub fn full_index(&self) -> IssueIndex {
-		let selector = match self.git_id() {
-			Some(n) => IssueSelector::GitId(n),
-			None => IssueSelector::title(&self.contents.title),
-		};
-		self.identity.parent_index.child(selector)
+		self.identity.parent_index.child(self.selector())
 	}
 
 	/// Get lineage (parent issue numbers).
