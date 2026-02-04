@@ -396,9 +396,10 @@ impl IssueRemote {
 /// Identity of an issue - has optional parent_index (for location) with remote connection info.
 #[derive(Clone, Debug)]
 pub struct IssueIdentity {
-	/// Parent's IssueIndex. None for root issues.
+	/// Parent's IssueIndex. For root it's the default variant with null ancestry (but owner+repo specified)
+	/// NB: it's index of the PARENT, not ourselves. Done this way to allow for eg title changes.
 	pub parent_index: IssueIndex,
-	/// Remote connection status (Github linked/pending, or Virtual)
+	/// Remote connection status
 	remote: IssueRemote,
 }
 impl IssueIdentity {
@@ -868,9 +869,7 @@ impl Issue /*{{{1*/ {
 
 	/// Parse virtual representation (markdown with full tree) into an Issue.
 	///
-	/// Takes the full `IssueIndex` pointing to this issue (not the parent).
-	/// For pending/virtual issues, this index is used to derive the parent_index.
-	/// For linked issues, the parent_index can also be derived from the URL in content.
+	/// Takes the full `IssueIndex` pointing to this issue (not the parent). Need it to derive the parent_index.
 	pub fn parse_virtual(content: &str, index: IssueIndex) -> Result<Self, ParseError> {
 		let ctx = ParseContext::new(content.to_string(), index.to_string());
 		let mut lines = content.lines().peekable();
@@ -1150,7 +1149,7 @@ impl Issue /*{{{1*/ {
 			IssueMarker::Linked { user, link } => {
 				// Linked issues: use parent_index if provided, otherwise derive from link (via None)
 				// Timestamps will be loaded from .meta.json separately
-				IssueIdentity::linked(parent_index, user, link, IssueTimestamps::default())
+				IssueIdentity::linked(parent_index, user, link, IssueTimestamps::default()) //XXX: not something we should be parsing. Should know this already. User shouldn't be able to specify this manually; we should store it ourselves.
 			}
 			IssueMarker::Pending => {
 				// Pending issues require parent_index from caller
@@ -1491,6 +1490,7 @@ impl Issue /*{{{1*/ {
 	///
 	/// Derives the issue index from the URL embedded in the content.
 	/// Only works for linked issues - pending/virtual issues will panic.
+	#[deprecated(note = "outdated, and is a horrible hack in the first place. We should have content-only parsing of the issue contents as a separate method")]
 	pub fn deserialize_virtual(content: &str) -> Result<Self, ParseError> {
 		let ctx = ParseContext::new(content.to_string(), "virtual".to_string());
 		let mut lines = content.lines().peekable();
@@ -1504,40 +1504,22 @@ impl Issue /*{{{1*/ {
 	/// issues are matched by issue number and their identities are preserved.
 	///
 	/// Use this instead of `parse_virtual` when re-loading an issue after editor edits.
+	#[deprecated(note = "instead just require &mut self on parse_virtual itself")]
 	pub fn update_from_virtual(&mut self, content: &str) -> Result<(), ParseError> {
 		// Parse the new content using this issue's full index
-		let parsed = Self::parse_virtual(content, self.full_index())?;
+		let mut parsed = Self::parse_virtual(content, self.full_index())?;
 
-		eprintln!("[update_from_virtual] parsed.contents.state: {:?}", parsed.contents.state);
-		eprintln!("[update_from_virtual] parsed {} children", parsed.children.len());
-		for (i, c) in parsed.children.iter().enumerate() {
-			eprintln!("[update_from_virtual] parsed.children[{i}].contents.state: {:?}", c.contents.state);
-		}
+		let old = self.clone();
 
-		// Update contents (title, labels, state, comments, blockers)
-		self.contents = parsed.contents;
+		Self::update_timestamps_from_diff(&mut parsed, &old);
 
-		// For children: match by issue number to preserve identities
-		let old_children: std::collections::HashMap<u64, Issue> = self.children.drain(..).filter_map(|c| c.git_id().map(|n| (n, c))).collect();
-
-		for mut new_child in parsed.children {
-			eprintln!("[update_from_virtual] new_child state before identity copy: {:?}", new_child.contents.state);
-			if let Some(number) = new_child.git_id()
-				&& let Some(old_child) = old_children.get(&number)
-			{
-				// Preserve identity from existing child
-				new_child.identity = old_child.identity.clone();
-				// Recursively preserve child identities
-				Self::preserve_child_identities(&mut new_child, old_child);
-			}
-			eprintln!("[update_from_virtual] new_child state after identity copy: {:?}", new_child.contents.state);
-			self.children.push(new_child);
-		}
+		*self = parsed;
 
 		Ok(())
 	}
 
 	/// Recursively preserve child identities from old issue tree.
+	#[deprecated]
 	fn preserve_child_identities(new_issue: &mut Issue, old_issue: &Issue) {
 		let old_children: std::collections::HashMap<u64, &Issue> = old_issue.children.iter().filter_map(|c| c.git_id().map(|n| (n, c))).collect();
 
@@ -1549,18 +1531,6 @@ impl Issue /*{{{1*/ {
 				Self::preserve_child_identities(new_child, old_child);
 			}
 		}
-	}
-
-	/// Get a mutable reference to a child issue by path
-	pub fn get_child_mut(&mut self, path: &[usize]) -> Option<&mut Issue> {
-		if path.is_empty() {
-			return Some(self);
-		}
-		let mut current = self;
-		for &idx in path.iter().take(path.len() - 1) {
-			current = current.children.get_mut(idx)?;
-		}
-		current.children.get_mut(*path.last()?)
 	}
 
 	/// Find the position (line, col) of the last blocker item in the serialized content.
