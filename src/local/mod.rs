@@ -26,12 +26,8 @@ pub enum LocalError {
 	Io(LocalPathError),
 
 	/// Failed to parse issue content.
-	#[error("failed to parse issue file: {path}")]
-	ParseError {
-		path: PathBuf,
-		#[source]
-		source: Box<crate::ParseError>,
-	},
+	#[error(transparent)]
+	Parse(crate::ParseError),
 
 	//Q: LocalPathError also contains ReaderError. Seems suboptimal, - wonder if I can restructure somehow to remove this proprietor level ambiguity
 	/// Reader operation failed.
@@ -223,11 +219,8 @@ impl Local {
 	///
 	/// This parses one issue file (without loading children from separate files).
 	/// Children field will be empty - they're loaded separately via LazyIssue.
-	fn parse_single_node(content: &str, index: IssueIndex, fpath_for_error_context_only: &Path) -> Result<Issue, LocalError> {
-		let mut issue = Issue::parse_virtual(content, index).map_err(|e| LocalError::ParseError {
-			path: fpath_for_error_context_only.to_path_buf(),
-			source: Box::new(e),
-		})?;
+	fn parse_single_node(content: &str, index: IssueIndex, _fpath_for_error_context_only: &Path) -> Result<Issue, LocalError> {
+		let mut issue = Issue::parse_virtual(content, index)?;
 		// Clear any inline children (filesystem format stores them in separate files)
 		if !issue.children.is_empty() {
 			tracing::warn!("issue children read from file are not empty. Wtf {:?}", &issue.children);
@@ -689,7 +682,7 @@ pub struct IssueMeta {
 }
 mod reader;
 
-pub use reader::{FsReader, GitReader, LocalReader, ReaderError};
+pub use reader::{FsReader, GitReader, LocalReader, ReaderError, ReaderErrorKind};
 
 mod local_path {
 	use std::collections::VecDeque;
@@ -749,6 +742,23 @@ mod local_path {
 		pub fn reader(selector: IssueSelector, source: ReaderError) -> Self {
 			Self::from_diagnostic(LocalPathErrorKind::Reader, LocalPathDiagnostic::Reader { selector, source })
 		}
+
+		pub fn parent_is_flat(selector: IssueSelector, parent_file: PathBuf, source: ReaderError) -> Self {
+			let path_str = parent_file.display().to_string();
+			let last_component = parent_file.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+			let span_start = path_str.len().saturating_sub(last_component.len());
+			let span_len = last_component.len();
+
+			Self::from_diagnostic(
+				LocalPathErrorKind::ParentIsFlat,
+				LocalPathDiagnostic::ParentIsFlat {
+					selector,
+					path_source: miette::NamedSource::new("parent path", path_str),
+					span: (span_start, span_len).into(),
+					source,
+				},
+			)
+		}
 	}
 
 	/// The kind of local path error (for pattern matching).
@@ -757,6 +767,8 @@ mod local_path {
 		MissingParent,
 		NotFound,
 		NotUnique,
+		/// Attempted to search for children under a flat file (not a directory).
+		ParentIsFlat,
 		Reader,
 	}
 
@@ -800,6 +812,22 @@ mod local_path {
 			#[source]
 			source: ReaderError,
 		},
+
+		/// Attempted to search for children under a flat file.
+		#[error("cannot search for {selector:?} - parent is a flat file, not a directory")]
+		#[diagnostic(
+			code(tedi::local::parent_is_flat),
+			help("The parent issue exists as a flat file. It will be converted to directory format when a sub-issue is added.")
+		)]
+		ParentIsFlat {
+			selector: IssueSelector,
+			#[source_code]
+			path_source: miette::NamedSource<String>,
+			#[label("this is a flat file, cannot contain children")]
+			span: SourceSpan,
+			#[source]
+			source: ReaderError,
+		},
 	}
 
 	/// Result of finding an entry matching a selector.
@@ -824,30 +852,27 @@ mod local_path {
 				let entry_path = parent.join(name);
 				let is_dir = reader.is_dir(&entry_path)?;
 
-				match selector {
+				let matches = match selector {
 					IssueSelector::GitId(issue_number) => {
 						let prefix = format!("{issue_number}_-_");
-
-						if name.starts_with(&prefix) {
-							match is_dir {
-								true => return Ok(Some(FoundEntry::Dir(name.to_string()))),
-								false => return Ok(Some(FoundEntry::File(name.to_string()))),
-							}
-						}
-						Ok(None)
+						name.starts_with(&prefix)
 					}
 					IssueSelector::Title(title) => {
 						let sanitized = Local::sanitize_title(title.as_str());
-
-						if name.contains(&sanitized) {
-							match is_dir {
-								true => return Ok(Some(FoundEntry::Dir(name.to_string()))),
-								false => return Ok(Some(FoundEntry::File(name.to_string()))),
-							}
-						}
-						Ok(None)
+						name.contains(&sanitized)
 					}
+					IssueSelector::Regex(pattern) => {
+						let base = name.strip_suffix(".md.bak").or_else(|| name.strip_suffix(".md")).unwrap_or(name);
+						regex::Regex::new(pattern.as_str())
+							.map(|re| re.is_match(base))
+							.unwrap_or_else(|_| base.contains(pattern.as_str()))
+					}
+				};
+
+				if matches {
+					return Ok(Some(if is_dir { FoundEntry::Dir(name.to_string()) } else { FoundEntry::File(name.to_string()) }));
 				}
+				Ok(None)
 			}
 			if let Some(entry) = entry_matches_selector(reader, parent, name, selector)? {
 				results.push(entry);
@@ -899,8 +924,7 @@ mod local_path {
 							.map(|entry| {
 								path.join(match entry {
 									FoundEntry::Dir(name) => format!("{name}/"),
-									//Q: don't like that this loses informatio; am I sure this is fine?
-									FoundEntry::File(name) => format!("{}/", name.strip_suffix(".md.bak").or_else(|| name.strip_suffix(".md")).unwrap()), //HACK: don't like that we're assuming to know how to work with extensions at this level
+									FoundEntry::File(name) => format!("{}/", name.strip_suffix(".md.bak").or_else(|| name.strip_suffix(".md")).unwrap()),
 								})
 							})
 							.collect();
@@ -954,11 +978,29 @@ mod local_path {
 		/// # Errors
 		/// - `NotFound` if no matching entry exists
 		/// - `NotUnique` if multiple entries match the selector
-		/// - `Reader` if filesystem/git operations fail
+		/// - `ParentIsFlat` if parent path is a flat file (not a directory)
+		/// - `Reader` if other filesystem/git operations fail
 		#[tracing::instrument(skip(self), fields(resolved_path = %self.resolved_path.display(), selector = ?self.unresolved_selector_nodes.front()))]
 		pub fn search(mut self) -> Result<Self, LocalPathError> {
 			let selector = self.unresolved_selector_nodes.pop_front().expect("Cannot search with empty selectors");
-			let all_matches = find_all_entries_by_selector(&self.reader, &self.resolved_path, &selector).map_err(|source| LocalPathError::reader(selector, source))?;
+			let all_matches = find_all_entries_by_selector(&self.reader, &self.resolved_path, &selector).map_err(|source| {
+				// Check if the resolved_path is actually a flat file (parent was matched as file, not dir)
+				// The resolved_path looks like "foo/99_-_parent/" but actual file is "foo/99_-_parent.md"
+				let path_str = self.resolved_path.to_string_lossy();
+				let potential_flat_file = if let Some(stripped) = path_str.strip_suffix('/') {
+					PathBuf::from(format!("{stripped}.md"))
+				} else {
+					PathBuf::from(format!("{path_str}.md"))
+				};
+
+				if source.kind == super::ReaderErrorKind::NotFound && self.reader.exists(&potential_flat_file).unwrap_or(false) {
+					LocalPathError::parent_is_flat(selector, potential_flat_file, source)
+				} else if source.kind == super::ReaderErrorKind::NotADirectory {
+					LocalPathError::parent_is_flat(selector, self.resolved_path.clone(), source)
+				} else {
+					LocalPathError::reader(selector, source)
+				}
+			})?;
 
 			match all_matches.len() {
 				0 => return Err(LocalPathError::not_found(selector, self.resolved_path.clone())),
