@@ -523,7 +523,7 @@ pub const MAX_TITLE_LENGTH: usize = 256;
 /// Selector for identifying an issue within a repo.
 /// GitId is preferred when available, as title can change.
 /// Uses `ArrayString` for `Copy` semantics.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Ord, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[allow(clippy::large_enum_variant)] // Intentional: Title variant is large for Copy semantics
 //TODO: add `Exact {git_id: Option<u64>, title: ArrayString<MAX_TITLE_LENGTH>, has_children: bool, is_closed: bool}`. Then will be able to extend `LocalPath` to resolve deterministically. Will impl through just checking if can do deterministic + current mechanic as fallback. // No existence checks if deterministic
 pub enum IssueSelector {
