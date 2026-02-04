@@ -98,7 +98,7 @@ async fn test_reset_discards_local_subissue_modifications() {
 
 	// Step 2: User modifies the parent sub-issue (adds blockers)
 	// We need to get the parent issue from the remote state's children
-	let parent_issue = &remote_state.children[0];
+	let parent_issue = &remote_state[2]; // Issue #2 is the parent sub-issue
 
 	let modified_parent = parse(
 		"- [ ] Parent <!-- @mock_user https://github.com/o/r/issues/2 -->\n\

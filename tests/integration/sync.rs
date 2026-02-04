@@ -397,7 +397,8 @@ async fn test_duplicate_sub_issues_filtered_from_remote() {
 
 	// Build parent with children for remote
 	let mut parent_with_children = parent.clone();
-	parent_with_children.children = vec![normal_closed, duplicate];
+	parent_with_children.children.insert(normal_closed.selector(), normal_closed);
+	parent_with_children.children.insert(duplicate.selector(), duplicate);
 
 	// Seed: -10 (arbitrary)
 	ctx.remote(&parent_with_children, Some(Seed::new(-10)));

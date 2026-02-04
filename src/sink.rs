@@ -86,7 +86,7 @@ pub fn compute_node_diff(new: &Issue, old: Option<&Issue>) -> IssueDiff {
 				diff.comments_to_create.push(comment.clone());
 			}
 		}
-		for child in &new.children {
+		for (_, child) in &new.children {
 			if child.is_local() {
 				diff.children_to_create.push(child.clone());
 			}
@@ -140,20 +140,19 @@ pub fn compute_node_diff(new: &Issue, old: Option<&Issue>) -> IssueDiff {
 		}
 	}
 
-	// Compare children
-	let old_children: HashMap<u64, &Issue> = old.children.iter().filter_map(|c| c.git_id().map(|n| (n, c))).collect();
-	let new_child_numbers: HashSet<u64> = new.children.iter().filter_map(|c| c.git_id()).collect();
-
-	for child in &new.children {
+	// Compare children by selector
+	for (_, child) in &new.children {
 		if child.is_local() {
 			diff.children_to_create.push(child.clone());
 		}
 	}
 
 	// Find children to delete (in old but not in new)
-	for num in old_children.keys() {
-		if !new_child_numbers.contains(num) {
-			diff.children_to_delete.push(*num);
+	for (selector, old_child) in &old.children {
+		if !new.children.contains_key(selector) {
+			if let Some(num) = old_child.git_id() {
+				diff.children_to_delete.push(num);
+			}
 		}
 	}
 
@@ -212,7 +211,7 @@ mod tests {
 				}],
 				blockers: BlockerSequence::default(),
 			},
-			children: vec![],
+			children: HashMap::default(),
 		}
 	}
 
@@ -282,7 +281,8 @@ mod tests {
 	fn test_compute_node_diff_pending_child() {
 		let old = make_issue("Root", Some(1));
 		let mut new = make_issue("Root", Some(1));
-		new.children.push(make_issue("New Child", None)); // Pending
+		let child = make_issue("New Child", None);
+		new.children.insert(child.selector(), child); // Pending
 
 		let diff = compute_node_diff(&new, Some(&old));
 

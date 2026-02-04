@@ -16,6 +16,8 @@
 
 #![allow(unused_assignments)] // miette's derive macro triggers false positives
 
+use HashMap;
+
 pub mod conflict;
 pub mod consensus;
 /// Error type for local issue loading operations.
@@ -1259,18 +1261,18 @@ impl<R: LocalReader> crate::LazyIssue<LocalIssueSource<R>> for Issue {
 	}
 
 	#[tracing::instrument(skip_all)]
-	async fn children(&mut self, source: LocalIssueSource<R>) -> Result<Vec<Issue>, Self::Error> {
+	async fn children(&mut self, source: LocalIssueSource<R>) -> Result<HashMap<IssueSelector, Issue>, Self::Error> {
 		if !self.children.is_empty() {
 			return Ok(self.children.clone());
 		}
 
 		let dir_path = source.local_path.clone().resolve_parent(source.reader)?.search()?.issue_dir();
 		let Some(dir_path) = dir_path else {
-			return Ok(Vec::new()); // Flat file, no children
+			return Ok(HashMap::new()); // Flat file, no children
 		};
 
 		let entries = source.reader.list_dir(&dir_path)?;
-		let mut children = Vec::new();
+		let mut children = HashMap::new();
 		let this_index = *source.index();
 
 		for name in entries {
@@ -1287,10 +1289,8 @@ impl<R: LocalReader> crate::LazyIssue<LocalIssueSource<R>> for Issue {
 			let child_source = source.child(child_index);
 
 			let child = Issue::load(child_source).await?;
-			children.push(child);
+			children.insert(child.selector(), child);
 		}
-
-		children.sort_by_key(|issue| issue.git_id().unwrap_or(0)); //IGNORED_ERROR: pending issues (no number) sort first
 
 		self.children = children.clone();
 		Ok(children)

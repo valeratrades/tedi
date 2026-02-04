@@ -2,6 +2,8 @@
 //!
 //! This module contains the pure Issue type with parsing and serialization.
 
+use std::collections::HashMap;
+
 use arrayvec::ArrayString;
 use copy_arrayvec::CopyArrayVec;
 use jiff::Timestamp;
@@ -521,7 +523,7 @@ pub const MAX_TITLE_LENGTH: usize = 256;
 /// Selector for identifying an issue within a repo.
 /// GitId is preferred when available, as title can change.
 /// Uses `ArrayString` for `Copy` semantics.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Ord, PartialOrd)]
 #[allow(clippy::large_enum_variant)] // Intentional: Title variant is large for Copy semantics
 //TODO: add `Exact {git_id: Option<u64>, title: ArrayString<MAX_TITLE_LENGTH>, has_children: bool, is_closed: bool}`. Then will be able to extend `LocalPath` to resolve deterministically. Will impl through just checking if can do deterministic + current mechanic as fallback. // No existence checks if deterministic
 pub enum IssueSelector {
@@ -718,18 +720,17 @@ pub struct IssueContents {
 	pub blockers: BlockerSequence,
 }
 /// Complete representation of an issue file
-#[derive(Clone, Debug, derive_more::IntoIterator, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Issue {
 	/// Identity - linked to Github or local only
 	pub identity: IssueIdentity,
 	pub contents: IssueContents,
-	/// Sub-issues in order
-	#[into_iterator(owned, ref, ref_mut)]
-	pub children: Vec<Issue>,
+	/// Sub-issues keyed by selector
+	pub children: HashMap<IssueSelector, Issue>,
 }
 impl Issue /*{{{1*/ {
 	/// Iterate over children by mutable reference.
-	pub fn iter_mut(&mut self) -> std::slice::IterMut<'_, Issue> {
+	pub fn iter_mut(&mut self) -> std::collections::hash_map::IterMut<'_, IssueSelector, Issue> {
 		self.children.iter_mut()
 	}
 
@@ -745,7 +746,7 @@ impl Issue /*{{{1*/ {
 		Self {
 			identity: IssueIdentity::pending(parent_index),
 			contents: IssueContents::default(),
-			children: vec![],
+			children: HashMap::new(),
 		}
 	}
 
@@ -766,7 +767,7 @@ impl Issue /*{{{1*/ {
 		Self {
 			identity,
 			contents,
-			children: vec![],
+			children: HashMap::new(),
 		}
 	}
 
@@ -819,13 +820,9 @@ impl Issue /*{{{1*/ {
 		}
 
 		// Recursively update children's timestamps
-		// Match children by URL/number
-		for new_child in &mut self.children {
-			let old_child = old.children.iter().find(|c| match (new_child.url_str(), c.url_str()) {
-				(Some(a), Some(b)) => a == b,
-				_ => new_child.git_id() == c.git_id(),
-			});
-			if let Some(old_child) = old_child {
+		// Match children by selector
+		for (selector, new_child) in &mut self.children {
+			if let Some(old_child) = old.children.get(selector) {
 				new_child.update_timestamps_from_diff(old_child);
 			}
 			// New children (not in old) don't need timestamp updates - they'll use defaults
@@ -837,7 +834,7 @@ impl Issue /*{{{1*/ {
 		self.identity.parent_index
 	}
 
-	fn selector(&self) -> IssueSelector {
+	pub fn selector(&self) -> IssueSelector {
 		match self.git_id() {
 			Some(n) => IssueSelector::GitId(n),
 			None => IssueSelector::title(&self.contents.title),
@@ -899,7 +896,7 @@ impl Issue /*{{{1*/ {
 		let parsed = Self::parse_title_line(title_content, line_num, ctx)?;
 
 		let mut comments = Vec::new();
-		let mut children = Vec::new();
+		let mut children = HashMap::new();
 		let mut blocker_lines = Vec::new();
 		let mut current_comment_lines: Vec<String> = Vec::new();
 		let mut current_comment_meta: Option<CommentIdentity> = None;
@@ -1119,7 +1116,7 @@ impl Issue /*{{{1*/ {
 				let child_content = child_lines.join("\n");
 				let mut child_lines_iter = child_content.lines().peekable();
 				let child = Self::parse_virtual_at_depth(&mut child_lines_iter, 0, current_line, ctx, child_parent_idx)?;
-				children.push(child);
+				children.insert(child.selector(), child);
 				continue;
 			}
 
@@ -1361,7 +1358,12 @@ impl Issue /*{{{1*/ {
 
 		// Children - recursively serialize full tree
 		// Closed children wrap their content in vim fold markers
-		for child in &self.children {
+		// Sort: open issues first by selector, then closed issues by selector
+		let (mut open, mut closed): (Vec<_>, Vec<_>) = self.children.iter().partition(|(_, child)| !child.contents.state.is_closed());
+		open.sort_by_key(|(sel, _)| *sel);
+		closed.sort_by_key(|(sel, _)| *sel);
+		let sorted_children = open.into_iter().chain(closed);
+		for (_, child) in sorted_children {
 			if out.lines().last().is_some_and(|l| !l.trim().is_empty()) {
 				out.push_str(&format!("{content_indent}\n"));
 			}
@@ -1521,21 +1523,6 @@ impl Issue /*{{{1*/ {
 		Ok(())
 	}
 
-	/// Recursively preserve child identities from old issue tree.
-	#[deprecated]
-	fn preserve_child_identities(new_issue: &mut Issue, old_issue: &Issue) {
-		let old_children: std::collections::HashMap<u64, &Issue> = old_issue.children.iter().filter_map(|c| c.git_id().map(|n| (n, c))).collect();
-
-		for new_child in &mut new_issue.children {
-			if let Some(number) = new_child.git_id()
-				&& let Some(&old_child) = old_children.get(&number)
-			{
-				new_child.identity = old_child.identity.clone();
-				Self::preserve_child_identities(new_child, old_child);
-			}
-		}
-	}
-
 	/// Find the position (line, col) of the last blocker item in the serialized content.
 	/// Returns None if there are no blockers.
 	/// Line numbers are 1-indexed to match editor conventions.
@@ -1585,7 +1572,7 @@ impl Issue /*{{{1*/ {
 	pub fn get(&self, lineage: &[u64]) -> Option<&Issue> {
 		let mut current = self;
 		for &num in lineage {
-			current = current.children.iter().find(|c| c.git_id() == Some(num))?;
+			current = current.children.get(&IssueSelector::GitId(num))?;
 		}
 		Some(current)
 	}
@@ -1595,7 +1582,7 @@ impl Issue /*{{{1*/ {
 	pub fn get_mut(&mut self, lineage: &[u64]) -> Option<&mut Issue> {
 		let mut current = self;
 		for &num in lineage {
-			current = current.children.iter_mut().find(|c| c.git_id() == Some(num))?;
+			current = current.children.get_mut(&IssueSelector::GitId(num))?;
 		}
 		Some(current)
 	}
@@ -1615,7 +1602,7 @@ pub trait LazyIssue<S: Clone + std::fmt::Debug>: Sized {
 	async fn parent_index(source: &S) -> Result<Option<IssueIndex>, Self::Error>;
 	async fn identity(&mut self, source: S) -> Result<IssueIdentity, Self::Error>;
 	async fn contents(&mut self, source: S) -> Result<IssueContents, Self::Error>;
-	async fn children(&mut self, source: S) -> Result<Vec<Issue>, Self::Error>;
+	async fn children(&mut self, source: S) -> Result<HashMap<IssueSelector, Issue>, Self::Error>;
 
 	/// Load a full issue tree from the source.
 	/// Default implementation calls parent_index, then populates identity, contents, and children.
@@ -1683,8 +1670,7 @@ impl std::ops::Index<u64> for Issue {
 	/// Panics if no child with that number exists.
 	fn index(&self, issue_number: u64) -> &Self::Output {
 		self.children
-			.iter()
-			.find(|child| child.git_id() == Some(issue_number))
+			.get(&IssueSelector::GitId(issue_number))
 			.unwrap_or_else(|| panic!("no child with issue number {issue_number}"))
 	}
 }
@@ -1694,8 +1680,7 @@ impl std::ops::IndexMut<u64> for Issue {
 	/// Panics if no child with that number exists.
 	fn index_mut(&mut self, issue_number: u64) -> &mut Self::Output {
 		self.children
-			.iter_mut()
-			.find(|child| child.git_id() == Some(issue_number))
+			.get_mut(&IssueSelector::GitId(issue_number))
 			.unwrap_or_else(|| panic!("no child with issue number {issue_number}"))
 	}
 }
@@ -1981,7 +1966,7 @@ mod tests {
 		// parse_virtual preserves inline children
 		assert_eq!(issue.children.len(), 1);
 		assert_eq!(issue.contents.title, "Parent");
-		assert_eq!(issue.children[0].contents.title, "Child");
+		assert_eq!(issue[2].contents.title, "Child");
 	}
 
 	#[test]
@@ -2036,7 +2021,7 @@ mod tests {
 		Child body
 "#;
 		let mut issue = Issue::deserialize_virtual(initial).unwrap();
-		assert_eq!(issue.children[0].contents.state, CloseState::Open);
+		assert_eq!(issue[2].contents.state, CloseState::Open);
 
 		// Update with closed child
 		let updated = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
@@ -2046,7 +2031,7 @@ mod tests {
 		Child body
 "#;
 		issue.update_from_virtual(updated).unwrap();
-		assert_eq!(issue.children[0].contents.state, CloseState::Closed, "Child should be Closed after update");
+		assert_eq!(issue[2].contents.state, CloseState::Closed, "Child should be Closed after update");
 	}
 
 	#[test]
@@ -2058,7 +2043,7 @@ mod tests {
 		Child body
 "#;
 		let mut issue = Issue::deserialize_virtual(initial).unwrap();
-		assert_eq!(issue.children[0].contents.state, CloseState::Open);
+		assert_eq!(issue[2].contents.state, CloseState::Open);
 
 		let updated = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
 	Body
@@ -2067,7 +2052,7 @@ mod tests {
 		Child body
 "#;
 		issue.update_from_virtual(updated).unwrap();
-		assert_eq!(issue.children[0].contents.state, CloseState::NotPlanned, "Child should be NotPlanned after update");
+		assert_eq!(issue[2].contents.state, CloseState::NotPlanned, "Child should be NotPlanned after update");
 	}
 
 	#[test]
@@ -2079,7 +2064,7 @@ mod tests {
 		Child body
 "#;
 		let mut issue = Issue::deserialize_virtual(initial).unwrap();
-		assert_eq!(issue.children[0].contents.state, CloseState::Open);
+		assert_eq!(issue[2].contents.state, CloseState::Open);
 
 		let updated = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
 	Body
@@ -2088,7 +2073,7 @@ mod tests {
 		Child body
 "#;
 		issue.update_from_virtual(updated).unwrap();
-		assert_eq!(issue.children[0].contents.state, CloseState::Duplicate(99), "Child should be Duplicate(99) after update");
+		assert_eq!(issue[2].contents.state, CloseState::Duplicate(99), "Child should be Duplicate(99) after update");
 	}
 
 	#[test]
@@ -2100,7 +2085,7 @@ mod tests {
 		Child body
 "#;
 		let mut issue = Issue::deserialize_virtual(initial).unwrap();
-		assert_eq!(issue.children[0].contents.state, CloseState::Closed);
+		assert_eq!(issue[2].contents.state, CloseState::Closed);
 
 		let updated = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
 	Body
@@ -2109,6 +2094,6 @@ mod tests {
 		Child body
 "#;
 		issue.update_from_virtual(updated).unwrap();
-		assert_eq!(issue.children[0].contents.state, CloseState::Open, "Child should be Open after update");
+		assert_eq!(issue[2].contents.state, CloseState::Open, "Child should be Open after update");
 	}
 }

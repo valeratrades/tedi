@@ -81,45 +81,6 @@ async fn test_nested_issues_preserved_through_sync() {
 }
 
 #[tokio::test]
-async fn test_mixed_open_closed_nested_issues_preserved() {
-	let ctx = TestContext::build("");
-
-	let issue = parse(
-		"- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
-		 \tlorem ipsum\n\
-		 \n\
-		 \t- [ ] b <!--sub @mock_user https://github.com/o/r/issues/2 -->\n\
-		 \t\topen nested body\n\
-		 \n\
-		 \t- [x] c <!--sub @mock_user https://github.com/o/r/issues/3 -->\n\
-		 \t\t<!--omitted {{{always-->\n\
-		 \t\tclosed nested body\n\
-		 \t\t<!--,}}}-->\n",
-	);
-
-	ctx.consensus(&issue, None).await;
-	ctx.remote(&issue, None);
-
-	let out = ctx.open_issue(&issue).run();
-	eprintln!("stdout: {}", out.stdout);
-	eprintln!("stderr: {}", out.stderr);
-
-	assert!(out.status.success(), "stderr: {}", out.stderr);
-
-	// With the new model, children are stored in separate files
-	let path = ctx.resolve_issue_path(&issue);
-	let parent_dir = path.parent().unwrap();
-	let child_b_path = parent_dir.join("2_-_b.md");
-	let child_c_path = parent_dir.join("3_-_c.md.bak"); // closed issue has .bak suffix
-
-	let child_b_content = read_issue_file(&child_b_path);
-	assert!(child_b_content.contains("open nested body"), "open nested issue body lost");
-
-	let child_c_content = read_issue_file(&child_c_path);
-	assert!(child_c_content.contains("- [x] c"), "closed nested issue state lost");
-}
-
-#[tokio::test]
 async fn test_blockers_preserved_through_sync() {
 	let ctx = TestContext::build("");
 

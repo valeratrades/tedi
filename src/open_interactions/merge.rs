@@ -18,8 +18,10 @@
 //! - Virtual issues cannot be merged (error)
 //! - Pending issues have timestamps initialized to `default()` before merge
 
+use std::collections::HashMap;
+
 use jiff::Timestamp;
-use tedi::Issue;
+use tedi::{Issue, IssueSelector};
 use thiserror::Error;
 
 /// Error from merge operations.
@@ -131,66 +133,27 @@ impl Merge for Issue {
 			}
 		}
 
-		// Merge children
+		// Merge children by selector
 		merge_children(&mut self.children, other.children, force)?;
 
 		Ok(())
 	}
 }
 
-/// Merge children lists, matching by URL.
-fn merge_children(self_children: &mut Vec<Issue>, other_children: Vec<Issue>, force: bool) -> Result<(), MergeError> {
-	use std::collections::HashMap;
-
-	// Build map of other children by URL (or by number for pending)
-	let mut other_by_url: HashMap<String, Issue> = HashMap::new();
-	let mut other_pending: Vec<Issue> = Vec::new();
-
-	for child in other_children {
-		if let Some(url) = child.url_str() {
-			other_by_url.insert(url.to_string(), child);
-		} else if let Some(num) = child.git_id() {
-			// Pending issues matched by number
-			other_by_url.insert(format!("pending:{num}"), child);
-		} else {
-			other_pending.push(child);
-		}
-	}
-
-	// Merge existing children
-	for self_child in self_children.iter_mut() {
-		let key = if let Some(url) = self_child.url_str() {
-			url.to_string()
-		} else if let Some(num) = self_child.git_id() {
-			format!("pending:{num}")
-		} else {
-			continue; // Can't match without URL or number
-		};
-
-		if let Some(other_child) = other_by_url.remove(&key) {
+/// Merge children maps by selector.
+fn merge_children(self_children: &mut HashMap<IssueSelector, Issue>, other_children: HashMap<IssueSelector, Issue>, force: bool) -> Result<(), MergeError> {
+	// Merge existing children that match by selector
+	for (selector, other_child) in other_children {
+		if let Some(self_child) = self_children.get_mut(&selector) {
 			self_child.merge(other_child, force)?;
+		} else {
+			// Add new children from other (ones that weren't in self)
+			// Only add if not virtual
+			if !other_child.identity.is_virtual() {
+				self_children.insert(selector, other_child);
+			}
 		}
 	}
-
-	// Add new children from other (ones that weren't in self)
-	for (_, child) in other_by_url {
-		self_children.push(child);
-	}
-
-	// Add pending children from other that couldn't be matched
-	for child in other_pending {
-		// Only add if not virtual
-		if !child.identity.is_virtual() {
-			self_children.push(child);
-		}
-	}
-
-	// Sort children by issue number for consistent ordering
-	self_children.sort_by(|a, b| {
-		let a_num = a.git_id().unwrap_or(u64::MAX);
-		let b_num = b.git_id().unwrap_or(u64::MAX);
-		a_num.cmp(&b_num)
-	});
 
 	Ok(())
 }
@@ -219,7 +182,7 @@ mod tests {
 				comments: vec![],
 				blockers: Default::default(),
 			},
-			children: vec![],
+			children: HashMap::default(),
 		}
 	}
 
@@ -235,7 +198,7 @@ mod tests {
 				comments: vec![],
 				blockers: Default::default(),
 			},
-			children: vec![],
+			children: HashMap::default(),
 		}
 	}
 
@@ -246,7 +209,7 @@ mod tests {
 		let mut virtual_issue = Issue {
 			identity: IssueIdentity::virtual_issue(parent_index),
 			contents: IssueContents::default(),
-			children: vec![],
+			children: HashMap::default(),
 		};
 
 		let ts = Timestamp::now();

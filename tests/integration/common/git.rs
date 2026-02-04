@@ -90,7 +90,7 @@ pub fn timestamps_from_seed(seed: Seed) -> IssueTimestamps {
 /// Set timestamps on an issue and all its children.
 pub fn set_timestamps(issue: &mut Issue, seed: Seed) {
 	let timestamps = timestamps_from_seed(seed);
-	for node in issue.iter_mut() {
+	for (_, node) in issue.iter_mut() {
 		node.identity.mut_linked_issue_meta().unwrap().timestamps = timestamps.clone();
 	}
 }
@@ -438,7 +438,7 @@ fn add_issue_recursive(state: &mut GitState, repo_info: tedi::RepoInfo, number: 
 	}
 
 	// Recursively add children (they inherit the same timestamps)
-	for child in &issue.children {
+	for (_, child) in &issue.children {
 		let child_number = child.git_id().expect("child issue must have number for remote mock state");
 		add_issue_recursive(state, repo_info, child_number, Some(number), child, timestamps);
 	}
