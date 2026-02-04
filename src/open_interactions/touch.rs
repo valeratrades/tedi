@@ -86,7 +86,8 @@ pub async fn parse_touch_path(user_input: &str, parent: Option<ProjectType>, off
 		match resolved.clone().search() {
 			Ok(found) => Ok(LocalIssueSource::<FsReader>::build_from_path(&found.path())?),
 			Err(e) => match e.kind {
-				LocalPathErrorKind::NotFound | LocalPathErrorKind::MissingParent => {
+				// Reader errors often mean parent directory doesn't exist (flat file case)
+				LocalPathErrorKind::NotFound | LocalPathErrorKind::MissingParent | LocalPathErrorKind::Reader => {
 					let title = strip_md_extension(issue_rgxs.last().unwrap());
 					let create_path = resolved.deterministic(title, false, false).path();
 					Ok(LocalIssueSource::<FsReader>::build_from_path(&create_path)?)
@@ -96,7 +97,6 @@ pub async fn parse_touch_path(user_input: &str, parent: Option<ProjectType>, off
 					pattern: issue_rgxs.last().unwrap().to_string(),
 					matches: format!("{e}"),
 				}),
-				LocalPathErrorKind::Reader => Err(e.into()),
 			},
 		}
 	})();

@@ -158,7 +158,14 @@ pub async fn open_command(settings: &LiveSettings, args: OpenArgs, offline: bool
 	if args.touch {
 		let source = parse_touch_path(input, args.parent, offline).await?;
 		let is_create = !source.local_path.clone().resolve_parent(FsReader)?.search().is_ok();
-		let issue = Issue::load(source).await?;
+
+		let issue = if is_create {
+			let index = source.index().clone();
+			let project_is_virtual = Local::is_virtual_project(index.repo_info());
+			Issue::pending_from_descriptor(&index, project_is_virtual)
+		} else {
+			Issue::load(source).await?
+		};
 		let project_is_virtual = issue.identity.is_virtual();
 
 		if is_create {
