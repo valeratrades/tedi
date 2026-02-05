@@ -8,6 +8,7 @@ use v_utils::prelude::*;
 
 use crate::config::LiveSettings;
 
+pub type BoxedGithubClient = Arc<dyn GithubClient>;
 #[derive(Clone, Debug, Deserialize)]
 pub struct GithubIssue {
 	pub number: u64,
@@ -484,8 +485,6 @@ impl GithubClient for RealGithubClient {
 //==============================================================================
 // Convenience type alias for boxed client
 //==============================================================================
-
-pub type BoxedGithubClient = Arc<dyn GithubClient>;
 
 //==============================================================================
 // Global client storage
