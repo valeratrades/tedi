@@ -194,7 +194,7 @@ mod tests {
 		let identity = match number {
 			Some(n) => {
 				let link = IssueLink::parse(&format!("https://github.com/o/r/issues/{n}")).unwrap();
-				IssueIdentity::linked(Some(parent_index), "testuser".to_string(), link, IssueTimestamps::default())
+				IssueIdentity::new_linked(Some(parent_index), "testuser".to_string(), link, IssueTimestamps::default())
 			}
 			None => IssueIdentity::pending(parent_index),
 		};

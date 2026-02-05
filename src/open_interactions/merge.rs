@@ -172,7 +172,7 @@ mod tests {
 		let url = format!("https://github.com/test/repo/issues/{number}");
 		let link = IssueLink::parse(&url).unwrap();
 		let parent_index = IssueIndex::repo_only(test_repo());
-		let identity = IssueIdentity::linked(Some(parent_index), "user".to_string(), link, timestamps);
+		let identity = IssueIdentity::new_linked(Some(parent_index), "user".to_string(), link, timestamps);
 		Issue {
 			identity,
 			contents: IssueContents {

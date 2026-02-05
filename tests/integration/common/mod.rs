@@ -510,6 +510,12 @@ pub mod are_you_sure {
 		std::fs::write(path, content).expect("failed to write file");
 	}
 }
+/// Global CLI flags that must appear before the subcommand.
+const GLOBAL_FLAGS: &[&str] = &["--offline", "--mock", "-v", "--verbose", "-q", "--quiet"];
+/// Environment variable names derived from package name
+const ENV_GITHUB_TOKEN: &str = concat!(env!("CARGO_PKG_NAME"), "__GITHUB_TOKEN");
+const ENV_MOCK_STATE: &str = concat!(env!("CARGO_PKG_NAME"), "_MOCK_STATE");
+const ENV_MOCK_PIPE: &str = concat!(env!("CARGO_PKG_NAME"), "_MOCK_PIPE");
 /// What target the OpenBuilder opens.
 enum BuilderTarget<'a> {
 	/// Open by issue reference (derives path from issue)
@@ -519,9 +525,6 @@ enum BuilderTarget<'a> {
 	/// Open by touch pattern (--touch flag)
 	Touch(String),
 }
-
-/// Global CLI flags that must appear before the subcommand.
-const GLOBAL_FLAGS: &[&str] = &["--offline", "--mock", "-v", "--verbose", "-q", "--quiet"];
 
 mod snapshot;
 
@@ -560,11 +563,6 @@ fn drain_pipe<R: Read>(pipe: &mut R, buf: &mut Vec<u8>) {
 pub use snapshot::FixtureIssuesExt;
 use tedi::Issue;
 use v_fixtures::{Fixture, FixtureRenderer, fs_standards::xdg::Xdg};
-
-/// Environment variable names derived from package name
-const ENV_GITHUB_TOKEN: &str = concat!(env!("CARGO_PKG_NAME"), "__GITHUB_TOKEN");
-const ENV_MOCK_STATE: &str = concat!(env!("CARGO_PKG_NAME"), "_MOCK_STATE");
-const ENV_MOCK_PIPE: &str = concat!(env!("CARGO_PKG_NAME"), "_MOCK_PIPE");
 
 static BINARY_COMPILED: OnceLock<()> = OnceLock::new();
 

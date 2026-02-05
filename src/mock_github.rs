@@ -278,6 +278,8 @@ impl MockGithubClient {
 	}
 }
 
+/// Environment variable name for mock state file (integration tests)
+const ENV_MOCK_STATE: &str = concat!(env!("CARGO_PKG_NAME"), "_MOCK_STATE");
 /// Scan the project directory for the maximum issue number in filenames.
 /// Looks at files/dirs matching pattern `{number}_-_*` or just `{number}`.
 fn scan_max_issue_number(repo_info: RepoInfo) -> u64 {
@@ -319,9 +321,6 @@ fn scan_max_issue_number(repo_info: RepoInfo) -> u64 {
 	scan_dir(&project_dir, &mut max);
 	max
 }
-
-/// Environment variable name for mock state file (integration tests)
-const ENV_MOCK_STATE: &str = concat!(env!("CARGO_PKG_NAME"), "_MOCK_STATE");
 
 /// Internal representation of an issue in the mock
 #[derive(Clone, Debug)]

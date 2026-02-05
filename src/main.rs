@@ -13,6 +13,7 @@ pub enum MockType {
 	/// Ghost edit - skip editor and pretend edit was made.
 	GhostEdit,
 }
+const MANUAL_PATH_APPENDIX: &str = "manual_stats/";
 #[tokio::main]
 async fn main() {
 	v_utils::clientside!(extract_log_to());
@@ -67,8 +68,6 @@ use std::time::Duration;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use v_utils::utils::exit_on_error;
-
-const MANUAL_PATH_APPENDIX: &str = "manual_stats/";
 
 #[derive(Parser)]
 #[command(author, version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("GIT_HASH"), ")"), about, long_about = None)]

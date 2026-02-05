@@ -139,6 +139,12 @@ const BASE_TIMESTAMP_SECS: i64 = 1000209600;
 /// 12 hours in seconds - the range for randomization.
 const HALF_DAY_SECS: i64 = 12 * 60 * 60;
 
+/// Default owner for test issues without a link
+const DEFAULT_OWNER: &str = "owner";
+/// Default repo for test issues without a link
+const DEFAULT_REPO: &str = "repo";
+/// Default issue number for test issues without a link
+const DEFAULT_NUMBER: u64 = 1;
 /// Generate a timestamp for a specific field index.
 ///
 /// Combines pseudo-random scatter (from seed+index) with deterministic offset (from seed).
@@ -168,13 +174,6 @@ fn pseudo_random_offset(seed: Seed, index: i64) -> i64 {
 	let normalized = (x % (2 * HALF_DAY_SECS as u64 + 1)) as i64;
 	normalized - HALF_DAY_SECS
 }
-
-/// Default owner for test issues without a link
-const DEFAULT_OWNER: &str = "owner";
-/// Default repo for test issues without a link
-const DEFAULT_REPO: &str = "repo";
-/// Default issue number for test issues without a link
-const DEFAULT_NUMBER: u64 = 1;
 
 thread_local! {
 	static GIT_STATE: RefCell<std::collections::HashMap<usize, GitState>> = RefCell::new(std::collections::HashMap::new());

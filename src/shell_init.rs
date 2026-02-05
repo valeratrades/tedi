@@ -50,13 +50,14 @@ alias tdp="{exe_name} open --pull"
 # {exe_name}s-blocker
 alias tbp="{exe_name} --offline blocker pop"
 alias tba="{exe_name} --offline blocker add"
-alias tbo="{exe_name} --offline open --blocker"
+alias tbo="{exe_name} --offline blocker open"
+
+alias tbs="{exe_name} --offline blocker set-project"
+alias tbl="{exe_name} --offline blocker list"
+alias tbc="{exe_name} --offline blocker current"
+
 alias tbr="{exe_name} blocker resume"
 alias tbh="{exe_name} blocker halt"
-alias tbs="{exe_name} blocker set-project"
-
-alias tbl="{exe_name} blocker list"
-alias tbc="{exe_name} blocker current"
 "#
 		)
 	}

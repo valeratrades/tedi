@@ -10,6 +10,12 @@ use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
+/// Maximum title length enforced by Github.
+pub const MAX_TITLE_LENGTH: usize = 256;
+
+/// Maximum index depth (lineage + the issue itself).
+pub const MAX_INDEX_DEPTH: usize = MAX_LINEAGE_DEPTH + 1;
+pub const MAX_LINEAGE_DEPTH: usize = 8;
 /// Repository identification: owner and repo name.
 /// Uses fixed-size `ArrayString`s to be `Copy`.
 /// GitHub limits: owner max 39 chars, repo max 100 chars.
@@ -358,11 +364,6 @@ pub enum IssueRemote {
 	Virtual,
 }
 impl IssueRemote {
-	/// Returns true if this is a Github issue (linked or pending).
-	pub fn is_github(&self) -> bool {
-		matches!(self, IssueRemote::Github(_))
-	}
-
 	/// Returns true if this is a virtual (local-only) issue.
 	pub fn is_virtual(&self) -> bool {
 		matches!(self, IssueRemote::Virtual)
@@ -394,6 +395,11 @@ impl IssueRemote {
 		}
 	}
 }
+impl Default for IssueRemote {
+	fn default() -> Self {
+		Self::Github(Box::new(None))
+	}
+}
 
 /// Identity of an issue - has optional parent_index (for location) with remote connection info.
 #[derive(Clone, Debug)]
@@ -407,7 +413,7 @@ pub struct IssueIdentity {
 impl IssueIdentity {
 	/// Create a new linked Github issue identity.
 	/// If `parent_index` is None, derives repo_only from the link.
-	pub fn linked(parent_index: Option<IssueIndex>, user: String, link: IssueLink, timestamps: IssueTimestamps) -> Self {
+	pub fn new_linked(parent_index: Option<IssueIndex>, user: String, link: IssueLink, timestamps: IssueTimestamps) -> Self {
 		let parent_index = parent_index.unwrap_or_else(|| {
 			let repo_info = link.repo_info();
 			IssueIndex::repo_only(repo_info)
@@ -517,15 +523,11 @@ impl IssueIdentity {
 	}
 }
 
-/// Maximum title length enforced by Github.
-pub const MAX_TITLE_LENGTH: usize = 256;
-
 /// Selector for identifying an issue within a repo.
 /// GitId is preferred when available, as title can change.
 /// Uses `ArrayString` for `Copy` semantics.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[allow(clippy::large_enum_variant)] // Intentional: Title variant is large for Copy semantics
-//TODO: add `Exact {git_id: Option<u64>, title: ArrayString<MAX_TITLE_LENGTH>, has_children: bool, is_closed: bool}`. Then will be able to extend `LocalPath` to resolve deterministically. Will impl through just checking if can do deterministic + current mechanic as fallback. // No existence checks if deterministic
 pub enum IssueSelector {
 	/// Github issue number (stable identifier)
 	GitId(u64),
@@ -553,9 +555,6 @@ impl IssueSelector {
 		Self::Regex(ArrayString::from(pattern).unwrap_or_else(|_| panic!("pattern too long (max {MAX_TITLE_LENGTH} chars): {}", pattern.len())))
 	}
 }
-
-/// Maximum index depth (lineage + the issue itself).
-pub const MAX_INDEX_DEPTH: usize = MAX_LINEAGE_DEPTH + 1;
 
 /// Minimal descriptor for locating an issue.
 /// Contains repo info and a path of selectors from root to the target issue (inclusive).
@@ -699,8 +698,6 @@ impl From<&Issue> for IssueIndex {
 		}
 	}
 }
-
-pub const MAX_LINEAGE_DEPTH: usize = 8;
 
 /// A comment in the issue conversation (first one is always the issue body)
 #[derive(Clone, Debug, PartialEq)]
@@ -1149,7 +1146,7 @@ impl Issue /*{{{1*/ {
 			IssueMarker::Linked { user, link } => {
 				// Linked issues: use parent_index if provided, otherwise derive from link (via None)
 				// Timestamps will be loaded from .meta.json separately
-				IssueIdentity::linked(parent_index, user, link, IssueTimestamps::default()) //XXX: not something we should be parsing. Should know this already. User shouldn't be able to specify this manually; we should store it ourselves.
+				IssueIdentity::new_linked(parent_index, user, link, IssueTimestamps::default()) //XXX: not something we should be parsing. Should know this already. User shouldn't be able to specify this manually; we should store it ourselves.
 			}
 			IssueMarker::Pending => {
 				// Pending issues require parent_index from caller
@@ -1495,7 +1492,7 @@ impl Issue /*{{{1*/ {
 	///
 	/// Derives the issue index from the URL embedded in the content.
 	/// Only works for linked issues - pending/virtual issues will panic.
-	#[deprecated(note = "outdated, and is a horrible hack in the first place. We should have content-only parsing of the issue contents as a separate method")]
+	#[deprecated(note = "outdated, and is a hack in the first place. We should have content-only parsing of the issue contents as a separate method")]
 	pub fn deserialize_virtual(content: &str) -> Result<Self, ParseError> {
 		let ctx = ParseContext::new(content.to_string(), "virtual".to_string());
 		let mut lines = content.lines().peekable();
@@ -1588,6 +1585,27 @@ impl Issue /*{{{1*/ {
 	}
 }
 
+#[derive(Clone, Debug, PartialEq)]
+/// Hollow Issue container, - used for [parsing virtual repr](Issue::parse_virtual)
+///
+/// Stripped of all info parsable from virtual
+pub struct HollowIssue {
+	pub remote: IssueRemote,
+	pub children: IssueChildren<HollowIssue>,
+}
+impl From<Issue> for HollowIssue {
+	fn from(value: Issue) -> Self {
+		let mut children = HashMap::with_capacity(value.children.capacity());
+		for (selector, child) in value.children.into_iter() {
+			children.insert(selector, child.into());
+		}
+		HollowIssue {
+			remote: value.identity.remote,
+			children,
+		}
+	}
+}
+
 /// Trait for lazily loading an issue from a source.
 ///
 /// `S` is the source type directly (e.g., `LocalIssueSource<FsReader>`, `RemoteSource`).
@@ -1602,7 +1620,7 @@ pub trait LazyIssue<S: Clone + std::fmt::Debug>: Sized {
 	async fn parent_index(source: &S) -> Result<Option<IssueIndex>, Self::Error>;
 	async fn identity(&mut self, source: S) -> Result<IssueIdentity, Self::Error>;
 	async fn contents(&mut self, source: S) -> Result<IssueContents, Self::Error>;
-	async fn children(&mut self, source: S) -> Result<HashMap<IssueSelector, Issue>, Self::Error>;
+	async fn children(&mut self, source: S) -> Result<IssueChildren<Issue>, Self::Error>;
 
 	/// Load a full issue tree from the source.
 	/// Default implementation calls parent_index, then populates identity, contents, and children.
@@ -1617,6 +1635,8 @@ pub trait LazyIssue<S: Clone + std::fmt::Debug>: Sized {
 		Ok(issue)
 	}
 }
+type IssueChildren<T> = HashMap<IssueSelector, T>;
+
 /// Result of parsing a checkbox prefix.
 enum CheckboxParseResult<'a> {
 	/// Successfully parsed checkbox
