@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use color_eyre::eyre::{Result, bail, eyre};
 use tedi::{
-	DisplayFormat, Issue, LazyIssue, Marker,
+	DisplayFormat, Issue, LazyIssue, Marker, VirtualIssue,
 	local::{ExactMatchLevel, FsReader, Local, LocalIssueSource},
 };
 
@@ -21,7 +21,7 @@ use super::{BlockerSequence, operations::BlockerSequenceExt, source::BlockerSour
 pub struct IssueSource {
 	pub virtual_issue_buffer_path: PathBuf,
 	/// Cached parsed issue (needed for save to preserve structure)
-	pub cached_issue: std::cell::RefCell<Option<Issue>>,
+	pub cached_issue: std::cell::RefCell<Option<VirtualIssue>>,
 }
 impl IssueSource {
 	pub fn new(issue_path: PathBuf) -> Self {
@@ -400,16 +400,15 @@ fn get_current_blocker_cache_path() -> PathBuf {
 impl super::source::BlockerSource for IssueSource {
 	fn load(&self) -> Result<BlockerSequence> {
 		let content = std::fs::read_to_string(&self.virtual_issue_buffer_path)?;
-		todo!();
-		//let issue = Issue::unsafe_mock_parse_virtual(&content).map_err(|e| eyre!("Failed to parse issue: {e}"))?; //XXX: wtf even is this, why are we loading it ourselves??
+		let interpreted_issue = VirtualIssue::parse(&content, self.virtual_issue_buffer_path.clone())?;
 
-		//// Clone the blockers before caching the issue
-		//let blockers = issue.contents.blockers.clone();
-		//
-		//// Cache the parsed issue (unused now, but kept for potential future use)
-		//*self.cached_issue.borrow_mut() = Some(issue);
-		//
-		//Ok(blockers)
+		// Clone the blockers before caching the issue
+		let blockers = interpreted_issue.contents.blockers.clone();
+
+		// Cache the parsed issue (unused now, but kept for potential future use)
+		*self.cached_issue.borrow_mut() = Some(interpreted_issue);
+
+		Ok(blockers)
 	}
 
 	fn display_name(&self) -> String {
