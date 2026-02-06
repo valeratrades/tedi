@@ -128,11 +128,11 @@ async fn test_duplicate_removes_local_file() {
 	ctx.remote_legacy(&original, None);
 
 	// Modify the issue to mark it as duplicate
-	let mut duplicate = original.clone();
+	let mut duplicate = parse_virtual("- [ ] Some Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tbody\n");
 	duplicate.contents.state = tedi::CloseState::Duplicate(999);
 
 	// Sync the duplicate state
-	let out = ctx.open_issue(&original).edit(&duplicate).run();
+	let out = ctx.open_issue(&original).edit(&duplicate, false).run();
 
 	eprintln!("stdout: {}", out.stdout);
 	eprintln!("stderr: {}", out.stderr);
@@ -160,12 +160,12 @@ async fn test_duplicate_reference_to_existing_issue_succeeds() {
 	ctx.remote(&dup_target, None, is_virtual);
 
 	// Modify the issue to mark it as duplicate of #2 (which exists)
-	let original_issue = with_timestamps(&original, None, is_virtual);
-	let mut duplicate = original_issue.clone();
+	let mut duplicate = original.clone();
 	duplicate.contents.state = tedi::CloseState::Duplicate(2);
 
 	// Sync the duplicate state
-	let out = ctx.open_issue(&original_issue).edit(&duplicate).run();
+	let original_issue = with_timestamps(&original, None, is_virtual);
+	let out = ctx.open_issue(&original_issue).edit(&duplicate, is_virtual).run();
 
 	eprintln!("stdout: {}", out.stdout);
 	eprintln!("stderr: {}", out.stderr);

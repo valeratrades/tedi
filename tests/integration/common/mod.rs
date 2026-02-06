@@ -169,8 +169,8 @@ impl<'a> OpenBuilder<'a> {
 	}
 
 	/// Edit the file to this issue while "editor is open".
-	pub fn edit(mut self, issue: &Issue) -> Self {
-		self.edit_op = Some(EditOperation::FullIssue(Box::new(issue.clone())));
+	pub fn edit(mut self, issue: &tedi::VirtualIssue, is_virtual: bool) -> Self {
+		self.edit_op = Some(EditOperation::FullIssue(Box::new(issue.clone()), is_virtual));
 		self
 	}
 
@@ -335,9 +335,9 @@ impl<'a> OpenBuilder<'a> {
 
 				// Edit the file while "editor is open" if requested
 				match &edit_op {
-					Some(EditOperation::FullIssue(issue)) => {
-						// Write to the virtual edit path computed from the issue
-						let vpath = tedi::local::Local::virtual_edit_path(issue);
+					Some(EditOperation::FullIssue(virtual_issue, is_virtual)) => {
+						let issue = git::with_timestamps(virtual_issue, None, *is_virtual);
+						let vpath = tedi::local::Local::virtual_edit_path(&issue);
 						let content = issue.serialize_virtual();
 						eprintln!("[test:OpenBuilder] submitting user input // writing to {vpath:?}:\n{content}");
 						std::fs::write(&vpath, content).unwrap();
@@ -595,8 +595,8 @@ fn get_binary_path() -> PathBuf {
 /// Type of edit operation for the builder.
 #[derive(Clone)]
 enum EditOperation {
-	/// Edit using a full Issue (writes serialize_virtual)
-	FullIssue(Box<Issue>),
+	/// Edit using a full VirtualIssue (converted to Issue at run time, writes serialize_virtual)
+	FullIssue(Box<tedi::VirtualIssue>, bool),
 	/// Edit just the contents/body (preserves header, replaces body)
 	ContentsOnly(String),
 }

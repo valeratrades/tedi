@@ -11,6 +11,7 @@ use crate::{
 		FixtureIssuesExt, TestContext,
 		are_you_sure::{UnsafePathExt, read_issue_file},
 		git::GitExt,
+		parse_virtual,
 	},
 	render_fixture,
 };
@@ -120,7 +121,7 @@ async fn test_blockers_added_during_edit_preserved() {
 	ctx.remote_legacy(&initial_issue, None);
 
 	// User adds blockers during edit
-	let edited_issue = parse(
+	let edited_issue = parse_virtual(
 		"- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
 		 \tlorem ipsum\n\
 		 \n\
@@ -128,7 +129,7 @@ async fn test_blockers_added_during_edit_preserved() {
 		 \t- new blocker added\n",
 	);
 
-	let out = ctx.open_issue(&initial_issue).edit(&edited_issue).run();
+	let out = ctx.open_issue(&initial_issue).edit(&edited_issue, false).run();
 	eprintln!("stdout: {}", out.stdout);
 	eprintln!("stderr: {}", out.stderr);
 
@@ -228,7 +229,7 @@ async fn test_closing_nested_issue_creates_bak_file() {
 	ctx.remote_legacy(&initial_issue, None);
 
 	// User closes nested issue during edit
-	let edited_issue = parse(
+	let edited_issue = parse_virtual(
 		"- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
 		 \tlorem ipsum\n\
 		 \n\
@@ -236,7 +237,7 @@ async fn test_closing_nested_issue_creates_bak_file() {
 		 \t\tnested body content\n",
 	);
 
-	let out = ctx.open_issue(&initial_issue).edit(&edited_issue).run();
+	let out = ctx.open_issue(&initial_issue).edit(&edited_issue, false).run();
 	eprintln!("stdout: {}", out.stdout);
 	eprintln!("stderr: {}", out.stderr);
 

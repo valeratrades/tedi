@@ -32,7 +32,7 @@ use crate::common::{
 	FixtureIssuesExt, TestContext,
 	are_you_sure::{UnsafePathExt, read_issue_file, write_to_path},
 	git::{GitExt as _, Seed},
-	hollow_mock, parse, render_fixture,
+	hollow_mock, parse, parse_virtual, render_fixture,
 };
 
 /// Fixture for tests where consensus, local, and remote all have different bodies.
@@ -376,10 +376,10 @@ async fn test_closing_issue_syncs_state_change() {
 	ctx.remote_legacy(&open_issue, Some(Seed::new(5)));
 
 	// Edit to close the issue
-	let mut closed_issue = open_issue.clone();
+	let mut closed_issue = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tbody\n");
 	closed_issue.contents.state = tedi::CloseState::Closed;
 
-	let out = ctx.open_issue(&open_issue).edit(&closed_issue).run();
+	let out = ctx.open_issue(&open_issue).edit(&closed_issue, false).run();
 
 	// Line 11 contains `state` timestamp set via Timestamp::now() when detecting state change
 	let result_str = render_fixture(FixtureRenderer::try_new(&ctx).unwrap().redact_timestamps(&[11]), &out);
@@ -510,9 +510,9 @@ async fn test_reset_syncs_changes_after_editor() {
 	ctx.remote_legacy(&remote_issue, None);
 
 	// emulate user closing the issue after
-	let mut modified_issue = remote_issue.clone();
+	let mut modified_issue = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tremote body\n");
 	modified_issue.contents.state = tedi::CloseState::Closed;
-	let out = ctx.open_url(("o", "r").into(), 1).args(&["--reset"]).edit(&modified_issue).run();
+	let out = ctx.open_url(("o", "r").into(), 1).args(&["--reset"]).edit(&modified_issue, false).run();
 
 	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().redact_timestamps(&[11]), &out), @r#"
 	//- /o/r/.meta.json
