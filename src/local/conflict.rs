@@ -121,15 +121,6 @@ pub async fn check_and_resolve_conflict(issue_index: IssueIndex) -> Result<Optio
 	}
 }
 
-/// Remove the conflict file after successful resolution.
-pub fn remove_conflict_file(owner: &str) -> Result<(), std::io::Error> {
-	let conflict_file = conflict_file_path(owner);
-	if conflict_file.exists() {
-		std::fs::remove_file(&conflict_file)?;
-	}
-	Ok(())
-}
-
 /// Check if file content contains git conflict markers.
 pub fn has_conflict_markers(content: &str) -> bool {
 	let has_ours = content.contains("<<<<<<<");
@@ -328,8 +319,13 @@ pub fn conflict_resolution_cleanup(owner: &str) -> Result<()> {
 	// Cleanup branch
 	let _ = Command::new("git").args(["-C", data_dir_str, "branch", "-D", "remote-state"]).output();
 
-	// Remove conflict file if it still exists (user may have already removed it)
-	remove_conflict_file(owner)?;
+	// Remove the conflict file after successful resolution.
+	{
+		let conflict_file = conflict_file_path(owner);
+		if conflict_file.exists() {
+			std::fs::remove_file(&conflict_file)?;
+		}
+	}
 
 	Ok(())
 }
