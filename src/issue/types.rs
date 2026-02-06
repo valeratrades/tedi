@@ -869,10 +869,53 @@ impl Issue /*{{{1*/ {
 	///
 	/// Takes the full `IssueIndex` pointing to this issue (not the parent). Need it to derive the parent_index.
 	//TODO: switch to `content: String`, once we don't need to clone it for passing to `parse_virtual_at_depth` twice
+	#[deprecated(note = "use VirtualIssue::parse_virtual + Issue::from_combined instead")]
 	pub fn parse_virtual(content: &str, hollow: HollowIssue, parent_idx: IssueIndex, path: PathBuf) -> Result<Self, ParseError> {
 		let ctx = ParseContext::new(content.to_owned(), path); //HACK
 		let mut lines = content.lines().peekable();
 		Self::parse_virtual_at_depth(&mut lines, 0, 1, &ctx, parent_idx, hollow)
+	}
+
+	/// Combine a HollowIssue (identity/metadata) with a VirtualIssue (parsed content) into a full Issue.
+	///
+	/// The hollow provides identity (remote info, timestamps) while virtual provides contents.
+	/// For children, recursively combines hollow.children with virtual.children by selector.
+	pub fn from_combined(hollow: HollowIssue, virtual_issue: VirtualIssue, parent_idx: IssueIndex) -> Self {
+		// Identity comes entirely from hollow - VirtualIssue only has selector (no user/link info)
+		let identity = IssueIdentity {
+			parent_index: parent_idx,
+			remote: hollow.remote.clone(),
+		};
+
+		// Recursively combine children
+		let children = virtual_issue
+			.children
+			.into_iter()
+			.map(|(selector, virtual_child)| {
+				// Look up hollow child - use default if not found
+				let child_hollow = hollow.children.get(&selector).cloned().unwrap_or_default();
+
+				// Build child's parent_index
+				let child_parent_idx = match &identity.remote {
+					IssueRemote::Github(inner) =>
+						if let Some(meta) = inner.as_ref() {
+							parent_idx.child(IssueSelector::GitId(meta.link.number()))
+						} else {
+							parent_idx
+						},
+					IssueRemote::Virtual => parent_idx,
+				};
+
+				let child = Self::from_combined(child_hollow, virtual_child, child_parent_idx);
+				(selector, child)
+			})
+			.collect();
+
+		Issue {
+			identity,
+			contents: virtual_issue.contents,
+			children,
+		}
 	}
 
 	/// Parse virtual representation at given nesting depth.
@@ -1630,6 +1673,280 @@ pub struct VirtualIssue {
 	pub children: IssueChildren<Self>,
 }
 
+impl VirtualIssue {
+	/// Parse virtual representation (markdown with full tree) into a VirtualIssue.
+	///
+	/// Unlike `Issue::parse_virtual`, this doesn't need a `HollowIssue` - it purely parses content.
+	/// Use `Issue::from_combined` to merge with identity info from a `HollowIssue`.
+	pub fn parse_virtual(content: &str, path: PathBuf) -> Result<Self, ParseError> {
+		let ctx = ParseContext::new(content.to_owned(), path);
+		let mut lines = content.lines().peekable();
+		Self::parse_virtual_at_depth(&mut lines, 0, 1, &ctx)
+	}
+
+	/// Parse virtual representation at given nesting depth.
+	fn parse_virtual_at_depth(lines: &mut std::iter::Peekable<std::str::Lines>, depth: usize, line_num: usize, ctx: &ParseContext) -> Result<Self, ParseError> {
+		let indent = "\t".repeat(depth);
+		let child_indent = "\t".repeat(depth + 1);
+
+		// Parse title line: `- [ ] [label1, label2] Title <!--url-->` or `- [ ] Title <!--immutable url-->`
+		let first_line = lines.next().ok_or_else(ParseError::empty_file)?;
+		let title_content = first_line
+			.strip_prefix(&indent)
+			.ok_or_else(|| ParseError::bad_indentation(ctx.named_source(), ctx.line_span(line_num), depth))?;
+		let parsed = Issue::parse_title_line(title_content, line_num, ctx)?;
+		let selector = parsed.identity_info.selector(&parsed.title);
+
+		let mut comments = Vec::new();
+		let mut children = HashMap::new();
+		let mut blocker_lines = Vec::new();
+		let mut current_comment_lines: Vec<String> = Vec::new();
+		let mut current_comment_meta: Option<CommentIdentity> = None;
+		let mut in_body = true;
+		let mut in_blockers = false;
+		let mut current_line = line_num;
+
+		// Body is first comment (no marker)
+		let mut body_lines: Vec<String> = Vec::new();
+
+		while let Some(&line) = lines.peek() {
+			// Check if this line belongs to us (has our indent level or deeper)
+			if !line.is_empty() && !line.starts_with(&indent) {
+				break; // Less indented = parent's content
+			}
+
+			let line = lines.next().unwrap();
+			current_line += 1;
+
+			// Empty line handling
+			if line.is_empty() {
+				if in_blockers {
+					// Empty lines in blockers are ignored by classify_line
+				} else if current_comment_meta.is_some() {
+					current_comment_lines.push(String::new());
+				} else if in_body {
+					body_lines.push(String::new());
+				}
+				continue;
+			}
+
+			// Strip our indent level to get content
+			let content = line.strip_prefix(&child_indent).unwrap_or(line);
+
+			// Check for blockers marker
+			if matches!(Marker::decode(content), Some(Marker::BlockersSection(_))) {
+				// Flush current comment/body
+				if in_body {
+					in_body = false;
+					if !body_lines.is_empty() {
+						let body_text = body_lines.join("\n").trim().to_string();
+						comments.push(Comment {
+							identity: CommentIdentity::Body,
+							body: super::Events::parse(&body_text),
+						});
+					}
+				} else if let Some(identity) = current_comment_meta.take() {
+					let body_text = current_comment_lines.join("\n").trim().to_string();
+					comments.push(Comment {
+						identity,
+						body: super::Events::parse(&body_text),
+					});
+					current_comment_lines.clear();
+				}
+				in_blockers = true;
+				tracing::debug!("[parse] entering blockers section");
+				continue;
+			}
+
+			// If in blockers section, parse as blocker lines
+			// But stop at sub-issue lines (they end the blockers section)
+			if in_blockers {
+				// Check if this is a sub-issue line - if so, exit blockers mode and process it below
+				if content.starts_with("- [") {
+					match Issue::parse_child_title_line_detailed(content) {
+						ChildTitleParseResult::Ok => {
+							in_blockers = false;
+							tracing::debug!("[parse] exiting blockers section due to sub-issue: {content:?}");
+							// Fall through to sub-issue processing below
+						}
+						ChildTitleParseResult::InvalidCheckbox(invalid_content) => {
+							return Err(ParseError::invalid_checkbox(ctx.named_source(), ctx.line_span(current_line), invalid_content));
+						}
+						ChildTitleParseResult::NotChildTitle => {
+							// Not a sub-issue, continue parsing as blocker
+							if let Some(line) = classify_line(content) {
+								tracing::debug!("[parse] blocker line: {content:?} -> {line:?}");
+								blocker_lines.push(line);
+							} else {
+								tracing::debug!("[parse] blocker line SKIPPED (classify_line returned None): {content:?}");
+							}
+							continue;
+						}
+					}
+				} else {
+					if let Some(line) = classify_line(content) {
+						tracing::debug!("[parse] blocker line: {content:?} -> {line:?}");
+						blocker_lines.push(line);
+					} else {
+						tracing::debug!("[parse] blocker line SKIPPED (classify_line returned None): {content:?}");
+					}
+					continue;
+				}
+			}
+
+			// Check for comment marker (including !c shorthand)
+			let is_new_comment_shorthand = content.trim().eq_ignore_ascii_case("!c");
+			if is_new_comment_shorthand || (content.starts_with("<!--") && content.contains("-->")) {
+				let inner = content.strip_prefix("<!--").and_then(|s| s.split("-->").next()).unwrap_or("").trim();
+
+				// vim fold markers are just visual wrappers, not comment separators - skip without flushing
+				if inner.starts_with("omitted") && inner.contains("{{{") {
+					continue;
+				}
+				if inner.starts_with(",}}}") {
+					continue;
+				}
+
+				// Flush previous (only for actual comment markers, not fold markers)
+				if in_body {
+					in_body = false;
+					let body_text = body_lines.join("\n").trim().to_string();
+					comments.push(Comment {
+						identity: CommentIdentity::Body,
+						body: super::Events::parse(&body_text),
+					});
+				} else if let Some(identity) = current_comment_meta.take() {
+					let body_text = current_comment_lines.join("\n").trim().to_string();
+					comments.push(Comment {
+						identity,
+						body: super::Events::parse(&body_text),
+					});
+					current_comment_lines.clear();
+				}
+
+				// Handle !c shorthand
+				if is_new_comment_shorthand {
+					current_comment_meta = Some(CommentIdentity::Pending);
+					continue;
+				}
+
+				if inner == "new comment" {
+					current_comment_meta = Some(CommentIdentity::Pending);
+				} else if inner.contains("#issuecomment-") {
+					let identity = Issue::parse_comment_identity(inner);
+					current_comment_meta = Some(identity);
+				}
+				continue;
+			}
+
+			// Check for sub-issue line: `- [x] Title <!--sub url-->` or `- [ ] Title` (new)
+			if content.starts_with("- [") {
+				let is_child_title = match Issue::parse_child_title_line_detailed(content) {
+					ChildTitleParseResult::Ok => true,
+					ChildTitleParseResult::InvalidCheckbox(invalid_content) => {
+						return Err(ParseError::invalid_checkbox(ctx.named_source(), ctx.line_span(current_line), invalid_content));
+					}
+					ChildTitleParseResult::NotChildTitle => false,
+				};
+
+				if !is_child_title {
+					// Not a sub-issue line, treat as regular content
+					let content_line = content.strip_prefix('\t').unwrap_or(content);
+					if in_body {
+						body_lines.push(content_line.to_string());
+					} else if current_comment_meta.is_some() {
+						current_comment_lines.push(content_line.to_string());
+					}
+					continue;
+				}
+
+				// Flush current
+				if in_body {
+					in_body = false;
+					let body_text = body_lines.join("\n").trim().to_string();
+					comments.push(Comment {
+						identity: CommentIdentity::Body,
+						body: super::Events::parse(&body_text),
+					});
+				} else if let Some(identity) = current_comment_meta.take() {
+					let body_text = current_comment_lines.join("\n").trim().to_string();
+					comments.push(Comment {
+						identity,
+						body: super::Events::parse(&body_text),
+					});
+					current_comment_lines.clear();
+				}
+
+				// Collect all lines belonging to this child (at depth+1 and deeper)
+				let child_content_indent = "\t".repeat(depth + 2);
+				let mut child_lines: Vec<String> = vec![content.to_string()]; // Start with the title line (without parent indent)
+
+				while let Some(&next_line) = lines.peek() {
+					if next_line.is_empty() {
+						// Preserve empty lines
+						let _ = lines.next();
+						child_lines.push(String::new());
+					} else if next_line.starts_with(&child_content_indent) {
+						let _ = lines.next();
+						// Strip one level of indent (the child's content indent) to normalize for recursive parsing
+						let stripped = next_line.strip_prefix(&child_indent).unwrap_or(next_line);
+						child_lines.push(stripped.to_string());
+					} else {
+						// Not a child content line - break
+						break;
+					}
+				}
+
+				// Trim trailing empty lines
+				while child_lines.last().is_some_and(|l| l.is_empty()) {
+					child_lines.pop();
+				}
+
+				let child_content = child_lines.join("\n");
+				let mut child_lines_iter = child_content.lines().peekable();
+				let child = Self::parse_virtual_at_depth(&mut child_lines_iter, 0, current_line, ctx)?;
+				children.insert(child.selector.clone(), child);
+				continue;
+			}
+
+			// Regular content line (doesn't start with "- [")
+			let content_line = content.strip_prefix('\t').unwrap_or(content); // Extra indent for immutable
+			if in_body {
+				body_lines.push(content_line.to_string());
+			} else if current_comment_meta.is_some() {
+				current_comment_lines.push(content_line.to_string());
+			}
+		}
+
+		// Flush final
+		if in_body {
+			let body_text = body_lines.join("\n").trim().to_string();
+			comments.push(Comment {
+				identity: CommentIdentity::Body,
+				body: super::Events::parse(&body_text),
+			});
+		} else if let Some(identity) = current_comment_meta.take() {
+			let body_text = current_comment_lines.join("\n").trim().to_string();
+			comments.push(Comment {
+				identity,
+				body: super::Events::parse(&body_text),
+			});
+		}
+
+		Ok(VirtualIssue {
+			selector,
+			contents: IssueContents {
+				title: parsed.title,
+				labels: parsed.labels,
+				state: parsed.close_state,
+				comments,
+				blockers: BlockerSequence::from_lines(blocker_lines),
+			},
+			children,
+		})
+	}
+}
+
 /// Trait for lazily loading an issue from a source.
 ///
 /// `S` is the source type directly (e.g., `LocalIssueSource<FsReader>`, `RemoteSource`).
@@ -1823,13 +2140,13 @@ mod tests {
 	fn test_parse_invalid_checkbox_returns_error() {
 		// Invalid checkbox on root issue
 		let content = "- [abc] Invalid issue <!-- @owner https://github.com/owner/repo/issues/123 -->\n\tBody\n";
-		let result = Issue::deserialize_virtual(content);
+		let result = VirtualIssue::parse_virtual(content, PathBuf::from("test.md"));
 		assert!(result.is_err());
 		assert!(result.unwrap_err().to_string().contains("invalid checkbox"));
 
 		// Invalid checkbox on sub-issue
 		let content = "- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->\n\tBody\n\n\t- [xyz] Bad sub <!--sub @owner https://github.com/owner/repo/issues/2 -->\n";
-		let result = Issue::deserialize_virtual(content);
+		let result = VirtualIssue::parse_virtual(content, PathBuf::from("test.md"));
 		assert!(result.is_err());
 		assert!(result.unwrap_err().to_string().contains("invalid checkbox"));
 	}
@@ -1837,27 +2154,19 @@ mod tests {
 	#[test]
 	fn test_parse_and_serialize_not_planned() {
 		let content = "- [-] Not planned issue <!-- @owner https://github.com/owner/repo/issues/123 -->\n\tBody text\n";
-		let issue = Issue::deserialize_virtual(content).unwrap();
+		let virtual_issue = VirtualIssue::parse_virtual(content, PathBuf::from("test.md")).unwrap();
 
-		assert_eq!(issue.contents.state, CloseState::NotPlanned);
-		assert_eq!(issue.contents.title, "Not planned issue");
-
-		// Verify serialization preserves the state
-		let serialized = issue.serialize_virtual();
-		assert!(serialized.starts_with("- [-] Not planned issue"));
+		assert_eq!(virtual_issue.contents.state, CloseState::NotPlanned);
+		assert_eq!(virtual_issue.contents.title, "Not planned issue");
 	}
 
 	#[test]
 	fn test_parse_and_serialize_duplicate() {
 		let content = "- [456] Duplicate issue <!-- @owner https://github.com/owner/repo/issues/123 -->\n\tBody text\n";
-		let issue = Issue::deserialize_virtual(content).unwrap();
+		let virtual_issue = VirtualIssue::parse_virtual(content, PathBuf::from("test.md")).unwrap();
 
-		assert_eq!(issue.contents.state, CloseState::Duplicate(456));
-		assert_eq!(issue.contents.title, "Duplicate issue");
-
-		// Verify serialization preserves the state
-		let serialized = issue.serialize_virtual();
-		assert!(serialized.starts_with("- [456] Duplicate issue"));
+		assert_eq!(virtual_issue.contents.state, CloseState::Duplicate(456));
+		assert_eq!(virtual_issue.contents.title, "Duplicate issue");
 	}
 
 	#[test]
@@ -2005,11 +2314,12 @@ mod tests {
 	- [ ] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
-		let issue = Issue::deserialize_virtual(content).unwrap();
+		let virtual_issue = VirtualIssue::parse_virtual(content, PathBuf::from("test.md")).unwrap();
 		// parse_virtual preserves inline children
-		assert_eq!(issue.children.len(), 1);
-		assert_eq!(issue.contents.title, "Parent");
-		assert_eq!(issue[2].contents.title, "Child");
+		assert_eq!(virtual_issue.children.len(), 1);
+		assert_eq!(virtual_issue.contents.title, "Parent");
+		let child = virtual_issue.children.get(&IssueSelector::GitId(2)).unwrap();
+		assert_eq!(child.contents.title, "Child");
 	}
 
 	#[test]
@@ -2063,20 +2373,20 @@ mod tests {
 	- [ ] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
-		let issue = Issue::deserialize_virtual(initial).unwrap();
-		assert_eq!(issue[2].contents.state, CloseState::Open);
+		let initial_virtual = VirtualIssue::parse_virtual(initial, PathBuf::from("test.md")).unwrap();
+		let child = initial_virtual.children.get(&IssueSelector::GitId(2)).unwrap();
+		assert_eq!(child.contents.state, CloseState::Open);
 
-		// Update with closed child using parse_virtual with hollow from initial
+		// Update with closed child
 		let updated = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
 	Body
 
 	- [x] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
-		let hollow = issue.clone().into();
-		let parent_idx = issue.identity.parent_index;
-		let updated_issue = Issue::parse_virtual(updated, hollow, parent_idx, PathBuf::from("test.md")).unwrap();
-		assert_eq!(updated_issue[2].contents.state, CloseState::Closed, "Child should be Closed after update");
+		let updated_virtual = VirtualIssue::parse_virtual(updated, PathBuf::from("test.md")).unwrap();
+		let child = updated_virtual.children.get(&IssueSelector::GitId(2)).unwrap();
+		assert_eq!(child.contents.state, CloseState::Closed, "Child should be Closed after update");
 	}
 
 	#[test]
@@ -2087,8 +2397,9 @@ mod tests {
 	- [ ] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
-		let issue = Issue::deserialize_virtual(initial).unwrap();
-		assert_eq!(issue[2].contents.state, CloseState::Open);
+		let initial_virtual = VirtualIssue::parse_virtual(initial, PathBuf::from("test.md")).unwrap();
+		let child = initial_virtual.children.get(&IssueSelector::GitId(2)).unwrap();
+		assert_eq!(child.contents.state, CloseState::Open);
 
 		let updated = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
 	Body
@@ -2096,10 +2407,9 @@ mod tests {
 	- [-] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
-		let hollow = issue.clone().into();
-		let parent_idx = issue.identity.parent_index;
-		let updated_issue = Issue::parse_virtual(updated, hollow, parent_idx, PathBuf::from("test.md")).unwrap();
-		assert_eq!(updated_issue[2].contents.state, CloseState::NotPlanned, "Child should be NotPlanned after update");
+		let updated_virtual = VirtualIssue::parse_virtual(updated, PathBuf::from("test.md")).unwrap();
+		let child = updated_virtual.children.get(&IssueSelector::GitId(2)).unwrap();
+		assert_eq!(child.contents.state, CloseState::NotPlanned, "Child should be NotPlanned after update");
 	}
 
 	#[test]
@@ -2110,8 +2420,9 @@ mod tests {
 	- [ ] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
-		let issue = Issue::deserialize_virtual(initial).unwrap();
-		assert_eq!(issue[2].contents.state, CloseState::Open);
+		let initial_virtual = VirtualIssue::parse_virtual(initial, PathBuf::from("test.md")).unwrap();
+		let child = initial_virtual.children.get(&IssueSelector::GitId(2)).unwrap();
+		assert_eq!(child.contents.state, CloseState::Open);
 
 		let updated = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
 	Body
@@ -2119,10 +2430,9 @@ mod tests {
 	- [99] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
-		let hollow = issue.clone().into();
-		let parent_idx = issue.identity.parent_index;
-		let updated_issue = Issue::parse_virtual(updated, hollow, parent_idx, PathBuf::from("test.md")).unwrap();
-		assert_eq!(updated_issue[2].contents.state, CloseState::Duplicate(99), "Child should be Duplicate(99) after update");
+		let updated_virtual = VirtualIssue::parse_virtual(updated, PathBuf::from("test.md")).unwrap();
+		let child = updated_virtual.children.get(&IssueSelector::GitId(2)).unwrap();
+		assert_eq!(child.contents.state, CloseState::Duplicate(99), "Child should be Duplicate(99) after update");
 	}
 
 	#[test]
@@ -2133,8 +2443,9 @@ mod tests {
 	- [x] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
-		let issue = Issue::deserialize_virtual(initial).unwrap();
-		assert_eq!(issue[2].contents.state, CloseState::Closed);
+		let initial_virtual = VirtualIssue::parse_virtual(initial, PathBuf::from("test.md")).unwrap();
+		let child = initial_virtual.children.get(&IssueSelector::GitId(2)).unwrap();
+		assert_eq!(child.contents.state, CloseState::Closed);
 
 		let updated = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
 	Body
@@ -2142,9 +2453,8 @@ mod tests {
 	- [ ] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
-		let hollow = issue.clone().into();
-		let parent_idx = issue.identity.parent_index;
-		let updated_issue = Issue::parse_virtual(updated, hollow, parent_idx, PathBuf::from("test.md")).unwrap();
-		assert_eq!(updated_issue[2].contents.state, CloseState::Open, "Child should be Open after update");
+		let updated_virtual = VirtualIssue::parse_virtual(updated, PathBuf::from("test.md")).unwrap();
+		let child = updated_virtual.children.get(&IssueSelector::GitId(2)).unwrap();
+		assert_eq!(child.contents.state, CloseState::Open, "Child should be Open after update");
 	}
 }

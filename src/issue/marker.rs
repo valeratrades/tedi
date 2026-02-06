@@ -113,6 +113,15 @@ impl IssueMarker {
 			Self::Virtual => "virtual".to_string(),
 		}
 	}
+
+	/// Get the selector for this marker.
+	/// For linked issues, returns GitId. For pending/virtual, returns Title.
+	pub fn selector(&self, title: &str) -> super::IssueSelector {
+		match self {
+			Self::Linked { link, .. } => super::IssueSelector::GitId(link.number()),
+			Self::Pending | Self::Virtual => super::IssueSelector::title(title),
+		}
+	}
 }
 
 impl fmt::Display for IssueMarker {
