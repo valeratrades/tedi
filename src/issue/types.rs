@@ -2023,27 +2023,54 @@ struct ParsedTitleLine {
 // We sacrifice some performance for determinism - the tree structure
 // is navigated by issue numbers rather than positional indices.
 
-impl std::ops::Index<u64> for Issue {
-	type Output = Issue;
+/// Implement Index<u64> and IndexMut<u64> for types with `children: IssueChildren<Self>`.
+macro_rules! impl_issue_tree_index {
+	($ty:ty) => {
+		impl std::ops::Index<u64> for $ty {
+			type Output = $ty;
 
-	/// Index into children by issue number.
-	/// Panics if no child with that number exists.
-	fn index(&self, issue_number: u64) -> &Self::Output {
-		self.children
-			.get(&IssueSelector::GitId(issue_number))
-			.unwrap_or_else(|| panic!("no child with issue number {issue_number}"))
-	}
+			/// Index into children by issue number.
+			/// Panics if no child with that number exists.
+			fn index(&self, issue_number: u64) -> &Self::Output {
+				self.children
+					.get(&IssueSelector::GitId(issue_number))
+					.unwrap_or_else(|| panic!("no child with issue number {issue_number}"))
+			}
+		}
+
+		impl std::ops::IndexMut<u64> for $ty {
+			/// Index into children by issue number (mutable).
+			/// Panics if no child with that number exists.
+			fn index_mut(&mut self, issue_number: u64) -> &mut Self::Output {
+				self.children
+					.get_mut(&IssueSelector::GitId(issue_number))
+					.unwrap_or_else(|| panic!("no child with issue number {issue_number}"))
+			}
+		}
+
+		impl std::ops::Index<IssueSelector> for $ty {
+			type Output = $ty;
+
+			/// Index into children by selector.
+			/// Panics if no child with that selector exists.
+			fn index(&self, selector: IssueSelector) -> &Self::Output {
+				self.children.get(&selector).unwrap_or_else(|| panic!("no child with selector {selector:?}"))
+			}
+		}
+
+		impl std::ops::IndexMut<IssueSelector> for $ty {
+			/// Index into children by selector (mutable).
+			/// Panics if no child with that selector exists.
+			fn index_mut(&mut self, selector: IssueSelector) -> &mut Self::Output {
+				self.children.get_mut(&selector).unwrap_or_else(|| panic!("no child with selector {selector:?}"))
+			}
+		}
+	};
 }
 
-impl std::ops::IndexMut<u64> for Issue {
-	/// Index into children by issue number (mutable).
-	/// Panics if no child with that number exists.
-	fn index_mut(&mut self, issue_number: u64) -> &mut Self::Output {
-		self.children
-			.get_mut(&IssueSelector::GitId(issue_number))
-			.unwrap_or_else(|| panic!("no child with issue number {issue_number}"))
-	}
-}
+impl_issue_tree_index!(Issue);
+impl_issue_tree_index!(HollowIssue);
+impl_issue_tree_index!(VirtualIssue);
 
 #[cfg(test)]
 mod tests {
@@ -2318,8 +2345,7 @@ mod tests {
 		// parse_virtual preserves inline children
 		assert_eq!(virtual_issue.children.len(), 1);
 		assert_eq!(virtual_issue.contents.title, "Parent");
-		let child = virtual_issue.children.get(&IssueSelector::GitId(2)).unwrap();
-		assert_eq!(child.contents.title, "Child");
+		assert_eq!(virtual_issue[2].contents.title, "Child");
 	}
 
 	#[test]
@@ -2374,8 +2400,7 @@ mod tests {
 		Child body
 "#;
 		let initial_virtual = VirtualIssue::parse_virtual(initial, PathBuf::from("test.md")).unwrap();
-		let child = initial_virtual.children.get(&IssueSelector::GitId(2)).unwrap();
-		assert_eq!(child.contents.state, CloseState::Open);
+		assert_eq!(initial_virtual[2].contents.state, CloseState::Open);
 
 		// Update with closed child
 		let updated = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
@@ -2385,8 +2410,7 @@ mod tests {
 		Child body
 "#;
 		let updated_virtual = VirtualIssue::parse_virtual(updated, PathBuf::from("test.md")).unwrap();
-		let child = updated_virtual.children.get(&IssueSelector::GitId(2)).unwrap();
-		assert_eq!(child.contents.state, CloseState::Closed, "Child should be Closed after update");
+		assert_eq!(updated_virtual[2].contents.state, CloseState::Closed, "Child should be Closed after update");
 	}
 
 	#[test]
@@ -2398,8 +2422,7 @@ mod tests {
 		Child body
 "#;
 		let initial_virtual = VirtualIssue::parse_virtual(initial, PathBuf::from("test.md")).unwrap();
-		let child = initial_virtual.children.get(&IssueSelector::GitId(2)).unwrap();
-		assert_eq!(child.contents.state, CloseState::Open);
+		assert_eq!(initial_virtual[2].contents.state, CloseState::Open);
 
 		let updated = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
 	Body
@@ -2408,8 +2431,7 @@ mod tests {
 		Child body
 "#;
 		let updated_virtual = VirtualIssue::parse_virtual(updated, PathBuf::from("test.md")).unwrap();
-		let child = updated_virtual.children.get(&IssueSelector::GitId(2)).unwrap();
-		assert_eq!(child.contents.state, CloseState::NotPlanned, "Child should be NotPlanned after update");
+		assert_eq!(updated_virtual[2].contents.state, CloseState::NotPlanned, "Child should be NotPlanned after update");
 	}
 
 	#[test]
@@ -2421,8 +2443,7 @@ mod tests {
 		Child body
 "#;
 		let initial_virtual = VirtualIssue::parse_virtual(initial, PathBuf::from("test.md")).unwrap();
-		let child = initial_virtual.children.get(&IssueSelector::GitId(2)).unwrap();
-		assert_eq!(child.contents.state, CloseState::Open);
+		assert_eq!(initial_virtual[2].contents.state, CloseState::Open);
 
 		let updated = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
 	Body
@@ -2431,8 +2452,7 @@ mod tests {
 		Child body
 "#;
 		let updated_virtual = VirtualIssue::parse_virtual(updated, PathBuf::from("test.md")).unwrap();
-		let child = updated_virtual.children.get(&IssueSelector::GitId(2)).unwrap();
-		assert_eq!(child.contents.state, CloseState::Duplicate(99), "Child should be Duplicate(99) after update");
+		assert_eq!(updated_virtual[2].contents.state, CloseState::Duplicate(99), "Child should be Duplicate(99) after update");
 	}
 
 	#[test]
@@ -2444,8 +2464,7 @@ mod tests {
 		Child body
 "#;
 		let initial_virtual = VirtualIssue::parse_virtual(initial, PathBuf::from("test.md")).unwrap();
-		let child = initial_virtual.children.get(&IssueSelector::GitId(2)).unwrap();
-		assert_eq!(child.contents.state, CloseState::Closed);
+		assert_eq!(initial_virtual[2].contents.state, CloseState::Closed);
 
 		let updated = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
 	Body
@@ -2454,7 +2473,6 @@ mod tests {
 		Child body
 "#;
 		let updated_virtual = VirtualIssue::parse_virtual(updated, PathBuf::from("test.md")).unwrap();
-		let child = updated_virtual.children.get(&IssueSelector::GitId(2)).unwrap();
-		assert_eq!(child.contents.state, CloseState::Open, "Child should be Open after update");
+		assert_eq!(updated_virtual[2].contents.state, CloseState::Open, "Child should be Open after update");
 	}
 }
