@@ -307,6 +307,8 @@ pub struct IssueTimestamps {
 	pub comments: Vec<Timestamp>,
 }
 impl IssueTimestamps {
+	pub fn now() -> Self {}
+
 	/// Update timestamps based on what changed between old and new issue contents.
 	/// Sets the current time for any field that changed.
 	pub fn update_from_diff(&mut self, old: &super::IssueContents, new: &super::IssueContents) {

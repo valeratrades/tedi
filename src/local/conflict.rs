@@ -18,7 +18,7 @@ use thiserror::Error;
 use v_utils::prelude::*;
 
 use super::Local;
-use crate::{Issue, RepoInfo, local::consensus::is_git_initialized};
+use crate::{Issue, IssueIndex, RepoInfo, VirtualIssue, local::consensus::is_git_initialized};
 
 //==============================================================================
 // Error Types
@@ -72,23 +72,23 @@ pub fn conflict_file_path(owner: &str) -> PathBuf {
 //==============================================================================
 
 /// Check for unresolved conflict for a given owner.
-pub fn check_conflict(owner: &str) -> Result<Option<PathBuf>> {
-	let conflict_file = conflict_file_path(owner);
+pub fn check_conflict(issue_index: IssueIndex) -> Result<Option<PathBuf>> {
+	let conflict_fpath = conflict_file_path(issue_index.owner());
 
-	if !conflict_file.exists() {
+	if !conflict_fpath.exists() {
 		return Ok(None);
 	}
 
-	let content = std::fs::read_to_string(&conflict_file)?;
+	let content = std::fs::read_to_string(&conflict_fpath)?;
 
 	if has_conflict_markers(&content) {
 		//Err(ConflictBlockedError { conflict_file })
-		Ok(Some(conflict_file))
+		Ok(Some(conflict_fpath))
 	} else {
 		// have the conflict file, but user has had resolved it, - sync then cleanup
 		{
-			//TODO!!!!!!!!: load issue from
-			//DO: read into `VirtualIssue`
+			let virtual_issue = VirtualIssue::parse_virtual(&content, conflict_fpath)?;
+			let hollow_issue = Local::read_hollow_from_project_meta(issue_index)?;
 
 			//Q: we should preserve the timestamps of original issues post resolution.
 			//C [consequence]: so we must have actual IssueIndex of the issue being resolved, to get both sources
@@ -96,7 +96,7 @@ pub fn check_conflict(owner: &str) -> Result<Option<PathBuf>> {
 			//TODO: impl IssueIndex -> HollowIssue
 		}
 
-		conflict_resolution_cleanup(owner)?;
+		conflict_resolution_cleanup(issue_index.owner())?;
 		Ok(None)
 	}
 }
