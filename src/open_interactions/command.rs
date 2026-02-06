@@ -4,18 +4,18 @@ use std::path::Path;
 
 use clap::Args;
 use tedi::{
-	Issue, IssueIndex, IssueLink, IssueSelector, LazyIssue, RepoInfo,
+	Issue, IssueIndex, IssueLink, IssueSelector, LazyIssue, RepoInfo, github,
 	local::{Consensus, ExactMatchLevel, FsReader, Local, LocalFs, LocalIssueSource, LocalPath},
+	remote::RemoteSource,
 	sink::Sink,
 };
 use v_utils::prelude::*;
 
 use super::{
-	remote::RemoteSource,
 	sync::{MergeMode, Modifier, Side, SyncOptions, modify_and_sync_issue},
 	touch::parse_touch_path,
 };
-use crate::{MockType, config::LiveSettings, github};
+use crate::{MockType, config::LiveSettings};
 
 /// Open a Github issue in $EDITOR.
 ///
@@ -189,7 +189,7 @@ pub async fn open_command(settings: &LiveSettings, args: OpenArgs, offline: bool
 	let (issue, sync_opts, effective_offline) = if args.last {
 		// Handle --last mode: open the most recently modified issue file
 		let path = Local::most_recent_issue_file()?.ok_or_else(|| eyre!("No issue files found. Use a Github URL to fetch an issue first."))?;
-		let source = LocalIssueSource::<FsReader>::build_from_path(&path)?;
+		let source = LocalIssueSource::<FsReader>::build_from_path(&path).await?;
 		let issue = Issue::load(source).await?;
 		(issue, local_sync_opts(), offline)
 	} else if github::is_github_issue_url(input) {
@@ -212,7 +212,7 @@ pub async fn open_command(settings: &LiveSettings, args: OpenArgs, offline: bool
 		let issue = if let Some(path) = existing_path {
 			// File exists locally - proceed with unified sync (like --pull)
 			println!("Found existing local file, will sync with remote...");
-			let source = LocalIssueSource::<FsReader>::build_from_path(&path)?;
+			let source = LocalIssueSource::<FsReader>::build_from_path(&path).await?;
 			Issue::load(source).await?
 		} else {
 			// File doesn't exist - fetch and create it
@@ -248,7 +248,7 @@ pub async fn open_command(settings: &LiveSettings, args: OpenArgs, offline: bool
 			Local::fzf_issue(input, exact)?
 		};
 
-		let source = LocalIssueSource::<FsReader>::build_from_path(&issue_file_path)?;
+		let source = LocalIssueSource::<FsReader>::build_from_path(&issue_file_path).await?;
 		let issue = Issue::load(source).await?;
 		(issue, local_sync_opts(), offline)
 	};

@@ -171,7 +171,7 @@ pub async fn main_integrated(command: super::io::Command, format: DisplayFormat,
 				};
 
 				// Use unified modify flow
-				let local_source = LocalIssueSource::<FsReader>::build_from_path(&issue_source.virtual_issue_buffer_path)?;
+				let local_source = LocalIssueSource::<FsReader>::build_from_path(&issue_source.virtual_issue_buffer_path).await?;
 				let issue = Issue::load(local_source).await?;
 				modify_and_sync_issue(issue, offline, Modifier::Editor { open_at_blocker: false }, SyncOptions::default()).await?;
 
@@ -283,7 +283,7 @@ pub async fn main_integrated(command: super::io::Command, format: DisplayFormat,
 			}
 
 			// Use unified modify workflow
-			let local_source = LocalIssueSource::<FsReader>::build_from_path(&issue_source.virtual_issue_buffer_path)?;
+			let local_source = LocalIssueSource::<FsReader>::build_from_path(&issue_source.virtual_issue_buffer_path).await?;
 			let issue = Issue::load(local_source).await?;
 			let result = modify_and_sync_issue(issue, offline, Modifier::BlockerPop, SyncOptions::default()).await?;
 
@@ -323,7 +323,7 @@ pub async fn main_integrated(command: super::io::Command, format: DisplayFormat,
 				let issue_source = IssueSource::current().ok_or_else(|| eyre!("No blocker file set. Use `todo blocker set <pattern>` first."))?;
 
 				// Use unified modify workflow
-				let local_source = LocalIssueSource::<FsReader>::build_from_path(&issue_source.virtual_issue_buffer_path)?;
+				let local_source = LocalIssueSource::<FsReader>::build_from_path(&issue_source.virtual_issue_buffer_path).await?;
 				let issue = Issue::load(local_source).await?;
 				let result = modify_and_sync_issue(issue, offline, Modifier::BlockerAdd { text: name.clone() }, SyncOptions::default()).await?;
 

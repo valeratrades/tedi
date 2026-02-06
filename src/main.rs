@@ -25,10 +25,11 @@ async fn main() {
 	// Commands that require GitHub client (when not offline)
 	let needs_github = matches!(cli.command, Commands::Open(_) | Commands::Blocker(_)) && !cli.offline;
 
-	let github_client: Option<github::BoxedGithubClient> = if cli.mock.is_some() {
+	let github_client: Option<tedi::github::BoxedGithubClient> = if cli.mock.is_some() {
 		Some(std::sync::Arc::new(mock_github::MockGithubClient::new("mock_user")))
 	} else if needs_github {
-		let client = exit_on_error(github::RealGithubClient::new(&settings));
+		let config = exit_on_error(settings.config());
+		let client = tedi::github::RealGithubClient::new(config.github_token.clone());
 		Some(std::sync::Arc::new(client))
 	} else {
 		// Commands that don't need GitHub - don't initialize client
@@ -37,7 +38,7 @@ async fn main() {
 
 	// Set global GitHub client for sink operations (if initialized)
 	if let Some(client) = github_client {
-		github::client::set(client);
+		tedi::github::client::set(client);
 	}
 
 	// All the functions here can rely on config being correct.
@@ -56,7 +57,6 @@ async fn main() {
 	});
 }
 mod blocker_interactions;
-mod github;
 mod manual_stats;
 mod milestones;
 mod mock_github;

@@ -24,17 +24,18 @@
 use color_eyre::eyre::{Result, bail};
 use tedi::{
 	HollowIssue, Issue, IssueIndex, IssueLink, IssueSelector, LazyIssue, RepoInfo, VirtualIssue,
-	local::{Consensus, FsReader, Local, LocalFs, LocalIssueSource, LocalPath, consensus::load_consensus_issue},
+	local::{
+		Consensus, FsReader, Local, LocalFs, LocalIssueSource, LocalPath,
+		conflict::{ConflictOutcome, initiate_conflict_merge},
+		consensus::load_consensus_issue,
+	},
+	remote::{Remote, RemoteSource},
 	sink::Sink,
 };
 use tracing::instrument;
 use v_utils::elog;
 
-use super::{
-	conflict::{ConflictOutcome, initiate_conflict_merge},
-	merge::Merge,
-	remote::{Remote, RemoteSource},
-};
+use super::merge::Merge;
 
 /// Modify a local issue, then sync changes back to Github.
 ///
@@ -88,7 +89,7 @@ pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Mo
 
 						// 2. Load ancestor up to first Title selector
 						let ancestor_index = IssueIndex::with_index(repo_info, parent_index.index()[..=i].to_vec());
-						let ancestor_source = LocalIssueSource::<FsReader>::build(LocalPath::new(ancestor_index))?;
+						let ancestor_source = LocalIssueSource::<FsReader>::build(LocalPath::new(ancestor_index)).await?;
 						let mut ancestor = Issue::load(ancestor_source).await?;
 						let old_ancestor = ancestor.clone();
 

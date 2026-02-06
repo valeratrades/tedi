@@ -1,8 +1,10 @@
 #![feature(vec_peek_mut)]
 
+pub mod github;
 pub mod issue;
 pub mod local;
 pub mod mocks;
+pub mod remote;
 pub mod sink;
 
 pub mod current_user {

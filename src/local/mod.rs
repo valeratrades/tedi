@@ -132,10 +132,7 @@ impl LocalIssueSource<FsReader> {
 		}
 
 		// Check for unresolved conflicts (resolves if user already fixed markers)
-		if let Some(conflict_file) = crate::open_interactions::conflict::check_and_resolve_conflict(local_path.index.into())
-			.await
-			.map_err(|e| LocalError::Other(e))?
-		{
+		if let Some(conflict_file) = conflict::check_and_resolve_conflict(local_path.index.into()).await.map_err(|e| LocalError::Other(e))? {
 			return Err(ConflictBlockedError { conflict_file }.into());
 		}
 

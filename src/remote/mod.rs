@@ -70,14 +70,14 @@ pub enum RemoteError {
 	#[error("`{executable}` not found in PATH (required for {operation})")]
 	MissingExecutable { executable: &'static str, operation: &'static str },
 }
-use tedi::{
+use v_utils::prelude::*;
+
+use crate::{
 	CloseState, Comment, CommentIdentity, Issue, IssueContents, IssueIdentity, IssueIndex, IssueLink, IssueSelector, IssueTimestamps, MAX_LINEAGE_DEPTH, RepoInfo,
+	github::{self, GithubComment, GithubIssue},
 	sink::{Sink, compute_node_diff},
 	split_blockers,
 };
-use v_utils::prelude::*;
-
-use crate::github::{self, GithubComment, GithubIssue};
 
 /// Marker type for remote GitHub sink operations.
 pub enum Remote {}
@@ -199,7 +199,7 @@ impl RemoteSource {
 	}
 }
 
-impl tedi::LazyIssue<RemoteSource> for Issue {
+impl crate::LazyIssue<RemoteSource> for Issue {
 	type Error = RemoteError;
 
 	async fn parent_index(source: &RemoteSource) -> Result<Option<IssueIndex>, Self::Error> {
@@ -341,7 +341,7 @@ fn build_contents_from_github(issue: &GithubIssue, comments: &[GithubComment]) -
 
 	let mut issue_comments = vec![Comment {
 		identity: CommentIdentity::Body,
-		body: tedi::Events::parse(&body),
+		body: crate::Events::parse(&body),
 	}];
 
 	for c in comments {
@@ -350,7 +350,7 @@ fn build_contents_from_github(issue: &GithubIssue, comments: &[GithubComment]) -
 				user: c.user.login.clone(),
 				id: c.id,
 			},
-			body: tedi::Events::parse(c.body.as_deref().unwrap_or("")), //IGNORED_ERROR: GitHub API null comment body is valid
+			body: crate::Events::parse(c.body.as_deref().unwrap_or("")), //IGNORED_ERROR: GitHub API null comment body is valid
 		});
 	}
 
@@ -409,7 +409,7 @@ impl Sink<Remote> for Issue {
 			let url = format!("https://github.com/{}/{}/issues/{}", repo_info.owner(), repo_info.repo(), created.number);
 			let link = IssueLink::parse(&url).expect("just constructed valid URL");
 			let user = gh.fetch_authenticated_user().await?;
-			self.identity = IssueIdentity::new_linked(Some(parent_index), user, link, tedi::IssueTimestamps::default());
+			self.identity = IssueIdentity::new_linked(Some(parent_index), user, link, crate::IssueTimestamps::default());
 			changed = true;
 		}
 
@@ -445,7 +445,7 @@ impl Sink<Remote> for Issue {
 		// Update existing comments
 		for (comment_id, comment) in &diff.comments_to_update {
 			if let CommentIdentity::Created { user, .. } = &comment.identity
-				&& !tedi::current_user::is(user)
+				&& !crate::current_user::is(user)
 			{
 				continue;
 			}

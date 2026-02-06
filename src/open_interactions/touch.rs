@@ -4,13 +4,12 @@ use std::path::PathBuf;
 
 use regex::Regex;
 use tedi::{
-	IssueIndex, IssueSelector, RepoInfo,
+	IssueIndex, IssueSelector, RepoInfo, github,
 	local::{FsReader, Local, LocalError, LocalIssueSource, LocalPath, LocalPathError, LocalPathErrorKind, ReaderError},
 };
 use v_utils::utils::exit_on_error;
 
 use super::command::ProjectType;
-use crate::github;
 
 #[derive(Debug, thiserror::Error)]
 pub enum TouchError {
@@ -66,7 +65,7 @@ pub async fn parse_touch_path(user_input: &str, parent: Option<ProjectType>, off
 	let issue_rgxs = &segments[2..];
 
 	// Try to match locally first
-	let local_result: Result<LocalIssueSource<FsReader>, TouchError> = (|| {
+	let local_result: Result<LocalIssueSource<FsReader>, TouchError> = async {
 		let issues_dir = Local::issues_dir();
 
 		// Match owner and repo
@@ -84,13 +83,13 @@ pub async fn parse_touch_path(user_input: &str, parent: Option<ProjectType>, off
 
 		// HACK: clone before search() since search() consumes self
 		match resolved.clone().search() {
-			Ok(found) => Ok(LocalIssueSource::<FsReader>::build_from_path(&found.path())?),
+			Ok(found) => Ok(LocalIssueSource::<FsReader>::build_from_path(&found.path()).await?),
 			Err(e) => match e.kind {
 				// These mean we should create the issue
 				LocalPathErrorKind::NotFound | LocalPathErrorKind::MissingParent | LocalPathErrorKind::ParentIsFlat => {
 					let title = strip_md_extension(issue_rgxs.last().unwrap());
 					let create_path = resolved.deterministic(title, false, false).path();
-					Ok(LocalIssueSource::<FsReader>::build_from_path(&create_path)?)
+					Ok(LocalIssueSource::<FsReader>::build_from_path(&create_path).await?)
 				}
 				LocalPathErrorKind::NotUnique => Err(TouchError::Ambiguous {
 					kind: "issue",
@@ -100,7 +99,8 @@ pub async fn parse_touch_path(user_input: &str, parent: Option<ProjectType>, off
 				LocalPathErrorKind::Reader => Err(e.into()),
 			},
 		}
-	})();
+	}
+	.await;
 
 	if let Ok(source) = local_result {
 		return Ok(source);
@@ -121,7 +121,7 @@ pub async fn parse_touch_path(user_input: &str, parent: Option<ProjectType>, off
 		let resolved = local_path.resolve_parent(FsReader)?;
 		let title = strip_md_extension(issue_rgxs.last().unwrap());
 		let create_path = resolved.deterministic(title, false, false).path();
-		return Ok(LocalIssueSource::<FsReader>::build_from_path(&create_path)?);
+		return Ok(LocalIssueSource::<FsReader>::build_from_path(&create_path).await?);
 	}
 
 	// Repo not accessible - check if we should create it with --parent
@@ -134,7 +134,7 @@ pub async fn parse_touch_path(user_input: &str, parent: Option<ProjectType>, off
 			let resolved = local_path.resolve_parent(FsReader)?;
 			let title = strip_md_extension(issue_rgxs.last().unwrap());
 			let create_path = resolved.deterministic(title, false, false).path();
-			Ok(LocalIssueSource::<FsReader>::build_from_path(&create_path)?)
+			Ok(LocalIssueSource::<FsReader>::build_from_path(&create_path).await?)
 		}
 		Some(ProjectType::Default) | None => Err(TouchError::RepoNotAccessible { owner, repo }),
 	}

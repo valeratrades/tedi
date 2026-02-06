@@ -3,10 +3,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::Deserialize;
-pub use tedi::RepoInfo;
 use v_utils::prelude::*;
 
-use crate::config::LiveSettings;
+pub use crate::RepoInfo;
 
 pub type BoxedGithubClient = Arc<dyn GithubClient>;
 /// Trait defining all Github API operations.
@@ -138,13 +137,11 @@ pub struct RealGithubClient {
 }
 
 impl RealGithubClient {
-	pub fn new(settings: &LiveSettings) -> Result<Self> {
-		let config = settings.config()?;
-
-		Ok(Self {
+	pub fn new(github_token: String) -> Self {
+		Self {
 			http_client: Client::new(),
-			github_token: config.github_token.clone(),
-		})
+			github_token,
+		}
 	}
 
 	fn request(&self, method: reqwest::Method, url: &str) -> reqwest::RequestBuilder {

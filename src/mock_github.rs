@@ -12,11 +12,12 @@ use std::{
 };
 
 use async_trait::async_trait;
-use tedi::local::Local;
+use tedi::{
+	github::{CreatedIssue, GithubClient, GithubComment, GithubIssue, GithubLabel, GithubUser, RepoInfo},
+	local::Local,
+};
 use tracing::instrument;
 use v_utils::prelude::*;
-
-use crate::github::{CreatedIssue, GithubClient, GithubComment, GithubIssue, GithubLabel, GithubUser, RepoInfo};
 
 /// Environment variable name for mock state file (integration tests)
 const ENV_MOCK_STATE: &str = concat!(env!("CARGO_PKG_NAME"), "_MOCK_STATE");
@@ -678,7 +679,7 @@ impl GithubClient for MockGithubClient {
 	}
 
 	#[instrument(skip(self), name = "MockGithubClient::fetch_timeline_timestamps")]
-	async fn fetch_timeline_timestamps(&self, repo: RepoInfo, issue_number: u64) -> Result<crate::github::GraphqlTimelineTimestamps> {
+	async fn fetch_timeline_timestamps(&self, repo: RepoInfo, issue_number: u64) -> Result<tedi::github::GraphqlTimelineTimestamps> {
 		let owner = repo.owner();
 		let repo_name = repo.repo();
 		tracing::info!(target: "mock_github", owner, repo_name, issue_number, "fetch_timeline_timestamps");
@@ -690,7 +691,7 @@ impl GithubClient for MockGithubClient {
 		if let Some(repo_issues) = issues.get(&key)
 			&& let Some(issue) = repo_issues.get(&issue_number)
 		{
-			return Ok(crate::github::GraphqlTimelineTimestamps {
+			return Ok(tedi::github::GraphqlTimelineTimestamps {
 				title: issue.title_timestamp,
 				description: issue.description_timestamp,
 				labels: issue.labels_timestamp,
@@ -698,7 +699,7 @@ impl GithubClient for MockGithubClient {
 			});
 		}
 
-		Ok(crate::github::GraphqlTimelineTimestamps::default())
+		Ok(tedi::github::GraphqlTimelineTimestamps::default())
 	}
 
 	#[instrument(skip(self), name = "MockGithubClient::repo_exists")]
