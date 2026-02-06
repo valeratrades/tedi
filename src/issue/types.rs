@@ -2,12 +2,50 @@
 //!
 //! This module contains the pure Issue type with parsing and serialization.
 
+use std::{collections::HashMap, path::PathBuf, str::FromStr as _};
+
 use arrayvec::ArrayString;
 use copy_arrayvec::CopyArrayVec;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
+/// Maximum title length enforced by Github.
+pub const MAX_TITLE_LENGTH: usize = 256;
+
+/// Maximum index depth (lineage + the issue itself).
+pub const MAX_INDEX_DEPTH: usize = MAX_LINEAGE_DEPTH + 1;
+pub const MAX_LINEAGE_DEPTH: usize = 8;
+pub type IssueChildren<T> = HashMap<IssueSelector, T>;
+/// Trait for lazily loading an issue from a source.
+///
+/// `S` is the source type directly (e.g., `LocalIssueSource<FsReader>`, `RemoteSource`).
+/// Methods load data on demand; `&mut self` allows caching intermediate results.
+#[allow(async_fn_in_trait)]
+pub trait LazyIssue<S: Clone + std::fmt::Debug>: Sized {
+	/// Error type for operations on this source.
+	type Error: std::error::Error;
+
+	/// Resolve parent_index from the source.
+	/// Returns None for root-level issues (no parent).
+	async fn parent_index(source: &S) -> Result<Option<IssueIndex>, Self::Error>;
+	async fn identity(&mut self, source: S) -> Result<IssueIdentity, Self::Error>;
+	async fn contents(&mut self, source: S) -> Result<IssueContents, Self::Error>;
+	async fn children(&mut self, source: S) -> Result<IssueChildren<Issue>, Self::Error>;
+
+	/// Load a full issue tree from the source.
+	/// Default implementation calls parent_index, then populates identity, contents, and children.
+	async fn load(source: S) -> Result<Issue, Self::Error>
+	where
+		Issue: LazyIssue<S, Error = Self::Error>, {
+		let parent_index = <Issue as LazyIssue<S>>::parent_index(&source).await?.expect("load requires parent_index to be Some");
+		let mut issue = Issue::empty_local(parent_index);
+		<Issue as LazyIssue<S>>::identity(&mut issue, source.clone()).await?;
+		<Issue as LazyIssue<S>>::contents(&mut issue, source.clone()).await?;
+		Box::pin(<Issue as LazyIssue<S>>::children(&mut issue, source)).await?;
+		Ok(issue)
+	}
+}
 /// Repository identification: owner and repo name.
 /// Uses fixed-size `ArrayString`s to be `Copy`.
 /// GitHub limits: owner max 39 chars, repo max 100 chars.
@@ -313,7 +351,7 @@ impl IssueTimestamps {
 
 /// Metadata for an issue linked to Github.
 /// Parent chain is stored in `IssueIdentity.parent_index`.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, derive_new::new)]
 pub struct LinkedIssueMeta {
 	/// User who created the issue
 	pub user: String,
@@ -356,11 +394,6 @@ pub enum IssueRemote {
 	Virtual,
 }
 impl IssueRemote {
-	/// Returns true if this is a Github issue (linked or pending).
-	pub fn is_github(&self) -> bool {
-		matches!(self, IssueRemote::Github(_))
-	}
-
 	/// Returns true if this is a virtual (local-only) issue.
 	pub fn is_virtual(&self) -> bool {
 		matches!(self, IssueRemote::Virtual)
@@ -396,15 +429,16 @@ impl IssueRemote {
 /// Identity of an issue - has optional parent_index (for location) with remote connection info.
 #[derive(Clone, Debug)]
 pub struct IssueIdentity {
-	/// Parent's IssueIndex. None for root issues.
+	/// Parent's IssueIndex. For root it's the default variant with null ancestry (but owner+repo specified)
+	/// NB: it's index of the PARENT, not ourselves. Done this way to allow for eg title changes.
 	pub parent_index: IssueIndex,
-	/// Remote connection status (Github linked/pending, or Virtual)
-	remote: IssueRemote,
+	/// Remote connection status
+	pub remote: IssueRemote,
 }
 impl IssueIdentity {
 	/// Create a new linked Github issue identity.
 	/// If `parent_index` is None, derives repo_only from the link.
-	pub fn linked(parent_index: Option<IssueIndex>, user: String, link: IssueLink, timestamps: IssueTimestamps) -> Self {
+	pub fn new_linked(parent_index: Option<IssueIndex>, user: String, link: IssueLink, timestamps: IssueTimestamps) -> Self {
 		let parent_index = parent_index.unwrap_or_else(|| {
 			let repo_info = link.repo_info();
 			IssueIndex::repo_only(repo_info)
@@ -514,15 +548,11 @@ impl IssueIdentity {
 	}
 }
 
-/// Maximum title length enforced by Github.
-pub const MAX_TITLE_LENGTH: usize = 256;
-
 /// Selector for identifying an issue within a repo.
 /// GitId is preferred when available, as title can change.
 /// Uses `ArrayString` for `Copy` semantics.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[allow(clippy::large_enum_variant)] // Intentional: Title variant is large for Copy semantics
-//TODO: add `Exact {git_id: Option<u64>, title: ArrayString<MAX_TITLE_LENGTH>, has_children: bool, is_closed: bool}`. Then will be able to extend `LocalPath` to resolve deterministically. Will impl through just checking if can do deterministic + current mechanic as fallback. // No existence checks if deterministic
 pub enum IssueSelector {
 	/// Github issue number (stable identifier)
 	GitId(u64),
@@ -550,9 +580,6 @@ impl IssueSelector {
 		Self::Regex(ArrayString::from(pattern).unwrap_or_else(|_| panic!("pattern too long (max {MAX_TITLE_LENGTH} chars): {}", pattern.len())))
 	}
 }
-
-/// Maximum index depth (lineage + the issue itself).
-pub const MAX_INDEX_DEPTH: usize = MAX_LINEAGE_DEPTH + 1;
 
 /// Minimal descriptor for locating an issue.
 /// Contains repo info and a path of selectors from root to the target issue (inclusive).
@@ -697,8 +724,6 @@ impl From<&Issue> for IssueIndex {
 	}
 }
 
-pub const MAX_LINEAGE_DEPTH: usize = 8;
-
 /// A comment in the issue conversation (first one is always the issue body)
 #[derive(Clone, Debug, PartialEq)]
 pub struct Comment {
@@ -717,18 +742,17 @@ pub struct IssueContents {
 	pub blockers: BlockerSequence,
 }
 /// Complete representation of an issue file
-#[derive(Clone, Debug, derive_more::IntoIterator, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Issue {
 	/// Identity - linked to Github or local only
 	pub identity: IssueIdentity,
 	pub contents: IssueContents,
-	/// Sub-issues in order
-	#[into_iterator(owned, ref, ref_mut)]
-	pub children: Vec<Issue>,
+	/// Sub-issues keyed by selector
+	pub children: HashMap<IssueSelector, Issue>,
 }
 impl Issue /*{{{1*/ {
 	/// Iterate over children by mutable reference.
-	pub fn iter_mut(&mut self) -> std::slice::IterMut<'_, Issue> {
+	pub fn iter_mut(&mut self) -> std::collections::hash_map::IterMut<'_, IssueSelector, Issue> {
 		self.children.iter_mut()
 	}
 
@@ -744,7 +768,7 @@ impl Issue /*{{{1*/ {
 		Self {
 			identity: IssueIdentity::pending(parent_index),
 			contents: IssueContents::default(),
-			children: vec![],
+			children: HashMap::new(),
 		}
 	}
 
@@ -765,7 +789,7 @@ impl Issue /*{{{1*/ {
 		Self {
 			identity,
 			contents,
-			children: vec![],
+			children: HashMap::new(),
 		}
 	}
 
@@ -818,13 +842,9 @@ impl Issue /*{{{1*/ {
 		}
 
 		// Recursively update children's timestamps
-		// Match children by URL/number
-		for new_child in &mut self.children {
-			let old_child = old.children.iter().find(|c| match (new_child.url_str(), c.url_str()) {
-				(Some(a), Some(b)) => a == b,
-				_ => new_child.git_id() == c.git_id(),
-			});
-			if let Some(old_child) = old_child {
+		// Match children by selector
+		for (selector, new_child) in &mut self.children {
+			if let Some(old_child) = old.children.get(selector) {
 				new_child.update_timestamps_from_diff(old_child);
 			}
 			// New children (not in old) don't need timestamp updates - they'll use defaults
@@ -836,14 +856,17 @@ impl Issue /*{{{1*/ {
 		self.identity.parent_index
 	}
 
+	pub fn selector(&self) -> IssueSelector {
+		match self.git_id() {
+			Some(n) => IssueSelector::GitId(n),
+			None => IssueSelector::title(&self.contents.title),
+		}
+	}
+
 	/// Get full index pointing to this issue.
 	/// Combines parent_index with this issue's selector.
 	pub fn full_index(&self) -> IssueIndex {
-		let selector = match self.git_id() {
-			Some(n) => IssueSelector::GitId(n),
-			None => IssueSelector::title(&self.contents.title),
-		};
-		self.identity.parent_index.child(selector)
+		self.identity.parent_index.child(self.selector())
 	}
 
 	/// Get lineage (parent issue numbers).
@@ -868,23 +891,70 @@ impl Issue /*{{{1*/ {
 
 	/// Parse virtual representation (markdown with full tree) into an Issue.
 	///
-	/// Takes the full `IssueIndex` pointing to this issue (not the parent).
-	/// For pending/virtual issues, this index is used to derive the parent_index.
-	/// For linked issues, the parent_index can also be derived from the URL in content.
-	pub fn parse_virtual(content: &str, index: IssueIndex) -> Result<Self, ParseError> {
-		let ctx = ParseContext::new(content.to_string(), index.to_string());
+	/// Takes the full `IssueIndex` pointing to this issue (not the parent). Need it to derive the parent_index.
+	//TODO: switch to `content: String`, once we don't need to clone it for passing to `parse_virtual_at_depth` twice
+	#[deprecated(note = "use VirtualIssue::parse_virtual + Issue::from_combined instead")]
+	pub fn parse_virtual(content: &str, hollow: HollowIssue, parent_idx: IssueIndex, path: PathBuf) -> Result<Self, ParseError> {
+		let ctx = ParseContext::new(content.to_owned(), path); //HACK
 		let mut lines = content.lines().peekable();
-		Self::parse_virtual_at_depth(&mut lines, 0, 1, &ctx, index.parent())
+		Self::parse_virtual_at_depth(&mut lines, 0, 1, &ctx, parent_idx, hollow)
+	}
+
+	/// Combine a HollowIssue (identity/metadata) with a VirtualIssue (parsed content) into a full Issue.
+	///
+	/// The hollow provides identity (remote info, timestamps) while virtual provides contents.
+	/// For children, recursively combines hollow.children with virtual.children by selector.
+	pub fn from_combined(hollow: HollowIssue, virtual_issue: VirtualIssue, parent_idx: IssueIndex) -> Self {
+		// Identity comes entirely from hollow - VirtualIssue only has selector (no user/link info)
+		let identity = IssueIdentity {
+			parent_index: parent_idx,
+			remote: hollow.remote.clone(),
+		};
+
+		// Recursively combine children
+		let children = virtual_issue
+			.children
+			.into_iter()
+			.map(|(selector, virtual_child)| {
+				// Look up hollow child - use default if not found
+				let child_hollow = hollow.children.get(&selector).cloned().unwrap_or(match hollow.remote {
+					IssueRemote::Github(_) => HollowIssue::default_pending(),
+					IssueRemote::Virtual => HollowIssue::default_virtual(),
+				});
+
+				// Build child's parent_index
+				let child_parent_idx = match &identity.remote {
+					IssueRemote::Github(inner) =>
+						if let Some(meta) = inner.as_ref() {
+							parent_idx.child(IssueSelector::GitId(meta.link.number()))
+						} else {
+							parent_idx
+						},
+					IssueRemote::Virtual => parent_idx,
+				};
+
+				let child = Self::from_combined(child_hollow, virtual_child, child_parent_idx);
+				(selector, child)
+			})
+			.collect();
+
+		Issue {
+			identity,
+			contents: virtual_issue.contents,
+			children,
+		}
 	}
 
 	/// Parse virtual representation at given nesting depth.
 	/// `parent_index` is the parent's IssueIndex (for non-root), or None for root issues parsed from file.
+	//TODO!!: switch to use lines from inside ParseContext, and take mutable ref to it instead.
 	fn parse_virtual_at_depth(
 		lines: &mut std::iter::Peekable<std::str::Lines>,
 		depth: usize,
 		line_num: usize,
 		ctx: &ParseContext,
-		parent_index: Option<IssueIndex>,
+		parent_idx: IssueIndex,
+		hollow: HollowIssue,
 	) -> Result<Self, ParseError> {
 		let indent = "\t".repeat(depth);
 		let child_indent = "\t".repeat(depth + 1);
@@ -897,7 +967,7 @@ impl Issue /*{{{1*/ {
 		let parsed = Self::parse_title_line(title_content, line_num, ctx)?;
 
 		let mut comments = Vec::new();
-		let mut children = Vec::new();
+		let mut children = HashMap::new();
 		let mut blocker_lines = Vec::new();
 		let mut current_comment_lines: Vec<String> = Vec::new();
 		let mut current_comment_meta: Option<CommentIdentity> = None;
@@ -1101,23 +1171,57 @@ impl Issue /*{{{1*/ {
 					child_lines.pop();
 				}
 
-				// Recursively parse the child
-				// Build child's parent_index from this issue's identity info
-				let child_parent_idx = match &parsed.identity_info {
-					IssueMarker::Linked { link, .. } => {
-						// Parent is linked - child's parent_index is this issue's full index
-						let base = parent_index.unwrap_or_else(|| IssueIndex::repo_only(link.repo_info()));
-						Some(base.child(IssueSelector::GitId(link.number())))
+				// Parse the child's selector from its title line to look up in hollow.children
+				let child_parsed = Self::parse_title_line(&child_lines[0], current_line, ctx)?;
+				let child_selector = match &child_parsed.identity_info {
+					IssueMarker::Linked { link, .. } => IssueSelector::GitId(link.number()),
+					IssueMarker::Pending | IssueMarker::Virtual => IssueSelector::title(&child_parsed.title),
+				};
+
+				// Look up child in hollow.children
+				// Only error on missing git-linked child if hollow.children is non-empty (we had prior state)
+				let child_hollow = match hollow.children.get(&child_selector) {
+					Some(ch) => ch.clone(),
+					None => {
+						// Not found - if hollow.children is non-empty and this was git-linked, that's suspicious
+						if !hollow.children.is_empty()
+							&& let IssueMarker::Linked { link, .. } = &child_parsed.identity_info
+						{
+							return Err(ParseError::child_not_in_hollow(ctx.named_source(), ctx.line_span(current_line), link.number()));
+						}
+						// Fresh parse or new child - use default hollow
+						// If parent is virtual, child should also be virtual by default
+						if hollow.remote.is_virtual() {
+							HollowIssue {
+								remote: IssueRemote::Virtual,
+								children: HashMap::new(),
+							}
+						} else {
+							match hollow.remote {
+								IssueRemote::Github(_) => HollowIssue::default_pending(),
+								IssueRemote::Virtual => HollowIssue::default_virtual(),
+							}
+						}
 					}
-					IssueMarker::Pending | IssueMarker::Virtual => {
-						// Local/virtual parent - pass through parent_index
-						parent_index
+				};
+
+				// Build child's parent_index from this issue's identity
+				let child_parent_idx = match &hollow.remote {
+					IssueRemote::Github(inner) => {
+						if let Some(meta) = inner.as_ref() {
+							// Parent is linked - child's parent_index is this issue's full index
+							parent_idx.child(IssueSelector::GitId(meta.link.number()))
+						} else {
+							// Parent is pending - pass through parent_index
+							parent_idx
+						}
 					}
+					IssueRemote::Virtual => parent_idx,
 				};
 				let child_content = child_lines.join("\n");
 				let mut child_lines_iter = child_content.lines().peekable();
-				let child = Self::parse_virtual_at_depth(&mut child_lines_iter, 0, current_line, ctx, child_parent_idx)?;
-				children.push(child);
+				let child = Self::parse_virtual_at_depth(&mut child_lines_iter, 0, current_line, ctx, child_parent_idx, child_hollow)?;
+				children.insert(child.selector(), child);
 				continue;
 			}
 
@@ -1145,24 +1249,24 @@ impl Issue /*{{{1*/ {
 			});
 		}
 
-		// Build identity from identity_info
-		let identity = match parsed.identity_info {
-			IssueMarker::Linked { user, link } => {
-				// Linked issues: use parent_index if provided, otherwise derive from link (via None)
-				// Timestamps will be loaded from .meta.json separately
-				IssueIdentity::linked(parent_index, user, link, IssueTimestamps::default())
-			}
-			IssueMarker::Pending => {
-				// Pending issues require parent_index from caller
-				let pi = parent_index.expect("BUG: pending issue without parent_index - use parse_virtual with the issue's full IssueIndex");
-				IssueIdentity::pending(pi)
-			}
-			IssueMarker::Virtual => {
-				// Virtual issues require parent_index from caller
-				let pi = parent_index.expect("BUG: virtual issue without parent_index - use parse_virtual with the issue's full IssueIndex");
-				IssueIdentity::virtual_issue(pi)
+		// Build identity from hollow.remote if it has meaningful data, otherwise derive from marker
+		// hollow.remote is "meaningful" if it's linked or explicitly virtual
+		// A default hollow (pending with empty children) means we're doing a fresh parse
+		let remote = if hollow.remote.is_linked() || hollow.remote.is_virtual() {
+			hollow.remote
+		} else {
+			// Fresh parse - derive from marker
+			match parsed.identity_info {
+				IssueMarker::Linked { user, link } => IssueRemote::Github(Box::new(Some(LinkedIssueMeta {
+					user,
+					link,
+					timestamps: IssueTimestamps::default(),
+				}))),
+				IssueMarker::Pending => IssueRemote::Github(Box::new(None)),
+				IssueMarker::Virtual => IssueRemote::Virtual,
 			}
 		};
+		let identity = IssueIdentity { parent_index: parent_idx, remote };
 
 		Ok(Issue {
 			identity,
@@ -1359,7 +1463,12 @@ impl Issue /*{{{1*/ {
 
 		// Children - recursively serialize full tree
 		// Closed children wrap their content in vim fold markers
-		for child in &self.children {
+		// Sort: open issues first by selector, then closed issues by selector
+		let (mut open, mut closed): (Vec<_>, Vec<_>) = self.children.iter().partition(|(_, child)| !child.contents.state.is_closed());
+		open.sort_by_key(|(sel, _)| *sel);
+		closed.sort_by_key(|(sel, _)| *sel);
+		let sorted_children = open.into_iter().chain(closed);
+		for (_, child) in sorted_children {
 			if out.lines().last().is_some_and(|l| !l.trim().is_empty()) {
 				out.push_str(&format!("{content_indent}\n"));
 			}
@@ -1491,76 +1600,14 @@ impl Issue /*{{{1*/ {
 	///
 	/// Derives the issue index from the URL embedded in the content.
 	/// Only works for linked issues - pending/virtual issues will panic.
+	#[deprecated(note = "outdated, and is a hack in the first place. We should have content-only parsing of the issue contents as a separate method")]
 	pub fn deserialize_virtual(content: &str) -> Result<Self, ParseError> {
-		let ctx = ParseContext::new(content.to_string(), "virtual".to_string());
+		let ctx = ParseContext::new(
+			content.to_string(),
+			PathBuf::from_str("a naughty naughty test decided to use a bad to not pass the filepath").unwrap(),
+		);
 		let mut lines = content.lines().peekable();
-		Self::parse_virtual_at_depth(&mut lines, 0, 1, &ctx, None)
-	}
-
-	/// Update this issue from virtual format content.
-	///
-	/// This preserves identity information (timestamps, link, user, parent_index) while
-	/// updating the contents from the parsed virtual format. For children, existing
-	/// issues are matched by issue number and their identities are preserved.
-	///
-	/// Use this instead of `parse_virtual` when re-loading an issue after editor edits.
-	pub fn update_from_virtual(&mut self, content: &str) -> Result<(), ParseError> {
-		// Parse the new content using this issue's full index
-		let parsed = Self::parse_virtual(content, self.full_index())?;
-
-		eprintln!("[update_from_virtual] parsed.contents.state: {:?}", parsed.contents.state);
-		eprintln!("[update_from_virtual] parsed {} children", parsed.children.len());
-		for (i, c) in parsed.children.iter().enumerate() {
-			eprintln!("[update_from_virtual] parsed.children[{i}].contents.state: {:?}", c.contents.state);
-		}
-
-		// Update contents (title, labels, state, comments, blockers)
-		self.contents = parsed.contents;
-
-		// For children: match by issue number to preserve identities
-		let old_children: std::collections::HashMap<u64, Issue> = self.children.drain(..).filter_map(|c| c.git_id().map(|n| (n, c))).collect();
-
-		for mut new_child in parsed.children {
-			eprintln!("[update_from_virtual] new_child state before identity copy: {:?}", new_child.contents.state);
-			if let Some(number) = new_child.git_id()
-				&& let Some(old_child) = old_children.get(&number)
-			{
-				// Preserve identity from existing child
-				new_child.identity = old_child.identity.clone();
-				// Recursively preserve child identities
-				Self::preserve_child_identities(&mut new_child, old_child);
-			}
-			eprintln!("[update_from_virtual] new_child state after identity copy: {:?}", new_child.contents.state);
-			self.children.push(new_child);
-		}
-
-		Ok(())
-	}
-
-	/// Recursively preserve child identities from old issue tree.
-	fn preserve_child_identities(new_issue: &mut Issue, old_issue: &Issue) {
-		let old_children: std::collections::HashMap<u64, &Issue> = old_issue.children.iter().filter_map(|c| c.git_id().map(|n| (n, c))).collect();
-
-		for new_child in &mut new_issue.children {
-			if let Some(number) = new_child.git_id()
-				&& let Some(&old_child) = old_children.get(&number)
-			{
-				new_child.identity = old_child.identity.clone();
-				Self::preserve_child_identities(new_child, old_child);
-			}
-		}
-	}
-
-	/// Get a mutable reference to a child issue by path
-	pub fn get_child_mut(&mut self, path: &[usize]) -> Option<&mut Issue> {
-		if path.is_empty() {
-			return Some(self);
-		}
-		let mut current = self;
-		for &idx in path.iter().take(path.len() - 1) {
-			current = current.children.get_mut(idx)?;
-		}
-		current.children.get_mut(*path.last()?)
+		Self::parse_virtual_at_depth(&mut lines, 0, 1, &ctx, IssueIndex::repo_only(("owner", "repo").into()), HollowIssue::default_pending()) // a horrible horrible hack, - everything should really be using standalone IssueContents deser or pass an actual path. There should never be a need to use this stupid function
 	}
 
 	/// Find the position (line, col) of the last blocker item in the serialized content.
@@ -1612,7 +1659,7 @@ impl Issue /*{{{1*/ {
 	pub fn get(&self, lineage: &[u64]) -> Option<&Issue> {
 		let mut current = self;
 		for &num in lineage {
-			current = current.children.iter().find(|c| c.git_id() == Some(num))?;
+			current = current.children.get(&IssueSelector::GitId(num))?;
 		}
 		Some(current)
 	}
@@ -1622,41 +1669,340 @@ impl Issue /*{{{1*/ {
 	pub fn get_mut(&mut self, lineage: &[u64]) -> Option<&mut Issue> {
 		let mut current = self;
 		for &num in lineage {
-			current = current.children.iter_mut().find(|c| c.git_id() == Some(num))?;
+			current = current.children.get_mut(&IssueSelector::GitId(num))?;
 		}
 		Some(current)
 	}
 }
 
-/// Trait for lazily loading an issue from a source.
+#[derive(Clone, Debug, PartialEq, derive_new::new)]
+/// Hollow Issue container, - used for [parsing virtual repr](Issue::parse_virtual)
 ///
-/// `S` is the source type directly (e.g., `LocalIssueSource<FsReader>`, `RemoteSource`).
-/// Methods load data on demand; `&mut self` allows caching intermediate results.
-#[allow(async_fn_in_trait)]
-pub trait LazyIssue<S: Clone + std::fmt::Debug>: Sized {
-	/// Error type for operations on this source.
-	type Error: std::error::Error;
+/// Stripped of all info parsable from virtual
+pub struct HollowIssue {
+	pub remote: IssueRemote,
+	pub children: IssueChildren<HollowIssue>,
+}
+impl HollowIssue {
+	pub fn default_virtual() -> Self {
+		Self {
+			remote: IssueRemote::Virtual,
+			children: HashMap::new(),
+		}
+	}
 
-	/// Resolve parent_index from the source.
-	/// Returns None for root-level issues (no parent).
-	async fn parent_index(source: &S) -> Result<Option<IssueIndex>, Self::Error>;
-	async fn identity(&mut self, source: S) -> Result<IssueIdentity, Self::Error>;
-	async fn contents(&mut self, source: S) -> Result<IssueContents, Self::Error>;
-	async fn children(&mut self, source: S) -> Result<Vec<Issue>, Self::Error>;
-
-	/// Load a full issue tree from the source.
-	/// Default implementation calls parent_index, then populates identity, contents, and children.
-	async fn load(source: S) -> Result<Issue, Self::Error>
-	where
-		Issue: LazyIssue<S, Error = Self::Error>, {
-		let parent_index = <Issue as LazyIssue<S>>::parent_index(&source).await?.expect("load requires parent_index to be Some");
-		let mut issue = Issue::empty_local(parent_index);
-		<Issue as LazyIssue<S>>::identity(&mut issue, source.clone()).await?;
-		<Issue as LazyIssue<S>>::contents(&mut issue, source.clone()).await?;
-		Box::pin(<Issue as LazyIssue<S>>::children(&mut issue, source)).await?;
-		Ok(issue)
+	pub fn default_pending() -> Self {
+		Self {
+			remote: IssueRemote::Github(Box::new(None)),
+			children: HashMap::new(),
+		}
 	}
 }
+impl From<Issue> for HollowIssue {
+	fn from(value: Issue) -> Self {
+		let mut children = HashMap::with_capacity(value.children.capacity());
+		for (selector, child) in value.children.into_iter() {
+			children.insert(selector, child.into());
+		}
+		HollowIssue {
+			remote: value.identity.remote,
+			children,
+		}
+	}
+}
+
+#[derive(Clone, Debug, PartialEq, derive_new::new)]
+pub struct VirtualIssue {
+	pub selector: IssueSelector,
+	pub contents: IssueContents,
+	pub children: IssueChildren<Self>,
+}
+impl VirtualIssue {
+	/// Parse virtual representation (markdown with full tree) into a VirtualIssue.
+	///
+	/// Unlike `Issue::parse_virtual`, this doesn't need a `HollowIssue` - it purely parses content.
+	/// Use `Issue::from_combined` to merge with identity info from a `HollowIssue`.
+	pub fn parse_virtual(content: &str, path: PathBuf) -> Result<Self, ParseError> {
+		let ctx = ParseContext::new(content.to_owned(), path);
+		let mut lines = content.lines().peekable();
+		Self::parse_virtual_at_depth(&mut lines, 0, 1, &ctx)
+	}
+
+	/// Parse virtual representation at given nesting depth.
+	fn parse_virtual_at_depth(lines: &mut std::iter::Peekable<std::str::Lines>, depth: usize, line_num: usize, ctx: &ParseContext) -> Result<Self, ParseError> {
+		let indent = "\t".repeat(depth);
+		let child_indent = "\t".repeat(depth + 1);
+
+		// Parse title line: `- [ ] [label1, label2] Title <!--url-->` or `- [ ] Title <!--immutable url-->`
+		let first_line = lines.next().ok_or_else(ParseError::empty_file)?;
+		let title_content = first_line
+			.strip_prefix(&indent)
+			.ok_or_else(|| ParseError::bad_indentation(ctx.named_source(), ctx.line_span(line_num), depth))?;
+		let parsed = Issue::parse_title_line(title_content, line_num, ctx)?;
+		let selector = parsed.identity_info.selector(&parsed.title);
+
+		let mut comments = Vec::new();
+		let mut children = HashMap::new();
+		let mut blocker_lines = Vec::new();
+		let mut current_comment_lines: Vec<String> = Vec::new();
+		let mut current_comment_meta: Option<CommentIdentity> = None;
+		let mut in_body = true;
+		let mut in_blockers = false;
+		let mut current_line = line_num;
+
+		// Body is first comment (no marker)
+		let mut body_lines: Vec<String> = Vec::new();
+
+		while let Some(&line) = lines.peek() {
+			// Check if this line belongs to us (has our indent level or deeper)
+			if !line.is_empty() && !line.starts_with(&indent) {
+				break; // Less indented = parent's content
+			}
+
+			let line = lines.next().unwrap();
+			current_line += 1;
+
+			// Empty line handling
+			if line.is_empty() {
+				if in_blockers {
+					// Empty lines in blockers are ignored by classify_line
+				} else if current_comment_meta.is_some() {
+					current_comment_lines.push(String::new());
+				} else if in_body {
+					body_lines.push(String::new());
+				}
+				continue;
+			}
+
+			// Strip our indent level to get content
+			let content = line.strip_prefix(&child_indent).unwrap_or(line);
+
+			// Check for blockers marker
+			if matches!(Marker::decode(content), Some(Marker::BlockersSection(_))) {
+				// Flush current comment/body
+				if in_body {
+					in_body = false;
+					if !body_lines.is_empty() {
+						let body_text = body_lines.join("\n").trim().to_string();
+						comments.push(Comment {
+							identity: CommentIdentity::Body,
+							body: super::Events::parse(&body_text),
+						});
+					}
+				} else if let Some(identity) = current_comment_meta.take() {
+					let body_text = current_comment_lines.join("\n").trim().to_string();
+					comments.push(Comment {
+						identity,
+						body: super::Events::parse(&body_text),
+					});
+					current_comment_lines.clear();
+				}
+				in_blockers = true;
+				tracing::debug!("[parse] entering blockers section");
+				continue;
+			}
+
+			// If in blockers section, parse as blocker lines
+			// But stop at sub-issue lines (they end the blockers section)
+			if in_blockers {
+				// Check if this is a sub-issue line - if so, exit blockers mode and process it below
+				if content.starts_with("- [") {
+					match Issue::parse_child_title_line_detailed(content) {
+						ChildTitleParseResult::Ok => {
+							in_blockers = false;
+							tracing::debug!("[parse] exiting blockers section due to sub-issue: {content:?}");
+							// Fall through to sub-issue processing below
+						}
+						ChildTitleParseResult::InvalidCheckbox(invalid_content) => {
+							return Err(ParseError::invalid_checkbox(ctx.named_source(), ctx.line_span(current_line), invalid_content));
+						}
+						ChildTitleParseResult::NotChildTitle => {
+							// Not a sub-issue, continue parsing as blocker
+							if let Some(line) = classify_line(content) {
+								tracing::debug!("[parse] blocker line: {content:?} -> {line:?}");
+								blocker_lines.push(line);
+							} else {
+								tracing::debug!("[parse] blocker line SKIPPED (classify_line returned None): {content:?}");
+							}
+							continue;
+						}
+					}
+				} else {
+					if let Some(line) = classify_line(content) {
+						tracing::debug!("[parse] blocker line: {content:?} -> {line:?}");
+						blocker_lines.push(line);
+					} else {
+						tracing::debug!("[parse] blocker line SKIPPED (classify_line returned None): {content:?}");
+					}
+					continue;
+				}
+			}
+
+			// Check for comment marker (including !c shorthand)
+			let is_new_comment_shorthand = content.trim().eq_ignore_ascii_case("!c");
+			if is_new_comment_shorthand || (content.starts_with("<!--") && content.contains("-->")) {
+				let inner = content.strip_prefix("<!--").and_then(|s| s.split("-->").next()).unwrap_or("").trim();
+
+				// vim fold markers are just visual wrappers, not comment separators - skip without flushing
+				if inner.starts_with("omitted") && inner.contains("{{{") {
+					continue;
+				}
+				if inner.starts_with(",}}}") {
+					continue;
+				}
+
+				// Flush previous (only for actual comment markers, not fold markers)
+				if in_body {
+					in_body = false;
+					let body_text = body_lines.join("\n").trim().to_string();
+					comments.push(Comment {
+						identity: CommentIdentity::Body,
+						body: super::Events::parse(&body_text),
+					});
+				} else if let Some(identity) = current_comment_meta.take() {
+					let body_text = current_comment_lines.join("\n").trim().to_string();
+					comments.push(Comment {
+						identity,
+						body: super::Events::parse(&body_text),
+					});
+					current_comment_lines.clear();
+				}
+
+				// Handle !c shorthand
+				if is_new_comment_shorthand {
+					current_comment_meta = Some(CommentIdentity::Pending);
+					continue;
+				}
+
+				if inner == "new comment" {
+					current_comment_meta = Some(CommentIdentity::Pending);
+				} else if inner.contains("#issuecomment-") {
+					let identity = Issue::parse_comment_identity(inner);
+					current_comment_meta = Some(identity);
+				}
+				continue;
+			}
+
+			// Check for sub-issue line: `- [x] Title <!--sub url-->` or `- [ ] Title` (new)
+			if content.starts_with("- [") {
+				let is_child_title = match Issue::parse_child_title_line_detailed(content) {
+					ChildTitleParseResult::Ok => true,
+					ChildTitleParseResult::InvalidCheckbox(invalid_content) => {
+						return Err(ParseError::invalid_checkbox(ctx.named_source(), ctx.line_span(current_line), invalid_content));
+					}
+					ChildTitleParseResult::NotChildTitle => false,
+				};
+
+				if !is_child_title {
+					// Not a sub-issue line, treat as regular content
+					let content_line = content.strip_prefix('\t').unwrap_or(content);
+					if in_body {
+						body_lines.push(content_line.to_string());
+					} else if current_comment_meta.is_some() {
+						current_comment_lines.push(content_line.to_string());
+					}
+					continue;
+				}
+
+				// Flush current
+				if in_body {
+					in_body = false;
+					let body_text = body_lines.join("\n").trim().to_string();
+					comments.push(Comment {
+						identity: CommentIdentity::Body,
+						body: super::Events::parse(&body_text),
+					});
+				} else if let Some(identity) = current_comment_meta.take() {
+					let body_text = current_comment_lines.join("\n").trim().to_string();
+					comments.push(Comment {
+						identity,
+						body: super::Events::parse(&body_text),
+					});
+					current_comment_lines.clear();
+				}
+
+				// Collect all lines belonging to this child (at depth+1 and deeper)
+				let child_content_indent = "\t".repeat(depth + 2);
+				let mut child_lines: Vec<String> = vec![content.to_string()]; // Start with the title line (without parent indent)
+
+				while let Some(&next_line) = lines.peek() {
+					if next_line.is_empty() {
+						// Preserve empty lines
+						let _ = lines.next();
+						child_lines.push(String::new());
+					} else if next_line.starts_with(&child_content_indent) {
+						let _ = lines.next();
+						// Strip one level of indent (the child's content indent) to normalize for recursive parsing
+						let stripped = next_line.strip_prefix(&child_indent).unwrap_or(next_line);
+						child_lines.push(stripped.to_string());
+					} else {
+						// Not a child content line - break
+						break;
+					}
+				}
+
+				// Trim trailing empty lines
+				while child_lines.last().is_some_and(|l| l.is_empty()) {
+					child_lines.pop();
+				}
+
+				let child_content = child_lines.join("\n");
+				let mut child_lines_iter = child_content.lines().peekable();
+				let child = Self::parse_virtual_at_depth(&mut child_lines_iter, 0, current_line, ctx)?;
+				children.insert(child.selector.clone(), child);
+				continue;
+			}
+
+			// Regular content line (doesn't start with "- [")
+			let content_line = content.strip_prefix('\t').unwrap_or(content); // Extra indent for immutable
+			if in_body {
+				body_lines.push(content_line.to_string());
+			} else if current_comment_meta.is_some() {
+				current_comment_lines.push(content_line.to_string());
+			}
+		}
+
+		// Flush final
+		if in_body {
+			let body_text = body_lines.join("\n").trim().to_string();
+			comments.push(Comment {
+				identity: CommentIdentity::Body,
+				body: super::Events::parse(&body_text),
+			});
+		} else if let Some(identity) = current_comment_meta.take() {
+			let body_text = current_comment_lines.join("\n").trim().to_string();
+			comments.push(Comment {
+				identity,
+				body: super::Events::parse(&body_text),
+			});
+		}
+
+		Ok(VirtualIssue {
+			selector,
+			contents: IssueContents {
+				title: parsed.title,
+				labels: parsed.labels,
+				state: parsed.close_state,
+				comments,
+				blockers: BlockerSequence::from_lines(blocker_lines),
+			},
+			children,
+		})
+	}
+}
+
+impl From<Issue> for VirtualIssue {
+	fn from(issue: Issue) -> Self {
+		let selector = issue.selector();
+		let children = issue.children.into_iter().map(|(sel, child)| (sel, child.into())).collect();
+		Self {
+			selector,
+			contents: issue.contents,
+			children,
+		}
+	}
+}
+
 /// Result of parsing a checkbox prefix.
 enum CheckboxParseResult<'a> {
 	/// Successfully parsed checkbox
@@ -1703,29 +2049,54 @@ struct ParsedTitleLine {
 // We sacrifice some performance for determinism - the tree structure
 // is navigated by issue numbers rather than positional indices.
 
-impl std::ops::Index<u64> for Issue {
-	type Output = Issue;
+/// Implement Index<u64> and IndexMut<u64> for types with `children: IssueChildren<Self>`.
+macro_rules! impl_issue_tree_index {
+	($ty:ty) => {
+		impl std::ops::Index<u64> for $ty {
+			type Output = $ty;
 
-	/// Index into children by issue number.
-	/// Panics if no child with that number exists.
-	fn index(&self, issue_number: u64) -> &Self::Output {
-		self.children
-			.iter()
-			.find(|child| child.git_id() == Some(issue_number))
-			.unwrap_or_else(|| panic!("no child with issue number {issue_number}"))
-	}
+			/// Index into children by issue number.
+			/// Panics if no child with that number exists.
+			fn index(&self, issue_number: u64) -> &Self::Output {
+				self.children
+					.get(&IssueSelector::GitId(issue_number))
+					.unwrap_or_else(|| panic!("no child with issue number {issue_number}"))
+			}
+		}
+
+		impl std::ops::IndexMut<u64> for $ty {
+			/// Index into children by issue number (mutable).
+			/// Panics if no child with that number exists.
+			fn index_mut(&mut self, issue_number: u64) -> &mut Self::Output {
+				self.children
+					.get_mut(&IssueSelector::GitId(issue_number))
+					.unwrap_or_else(|| panic!("no child with issue number {issue_number}"))
+			}
+		}
+
+		impl std::ops::Index<IssueSelector> for $ty {
+			type Output = $ty;
+
+			/// Index into children by selector.
+			/// Panics if no child with that selector exists.
+			fn index(&self, selector: IssueSelector) -> &Self::Output {
+				self.children.get(&selector).unwrap_or_else(|| panic!("no child with selector {selector:?}"))
+			}
+		}
+
+		impl std::ops::IndexMut<IssueSelector> for $ty {
+			/// Index into children by selector (mutable).
+			/// Panics if no child with that selector exists.
+			fn index_mut(&mut self, selector: IssueSelector) -> &mut Self::Output {
+				self.children.get_mut(&selector).unwrap_or_else(|| panic!("no child with selector {selector:?}"))
+			}
+		}
+	};
 }
 
-impl std::ops::IndexMut<u64> for Issue {
-	/// Index into children by issue number (mutable).
-	/// Panics if no child with that number exists.
-	fn index_mut(&mut self, issue_number: u64) -> &mut Self::Output {
-		self.children
-			.iter_mut()
-			.find(|child| child.git_id() == Some(issue_number))
-			.unwrap_or_else(|| panic!("no child with issue number {issue_number}"))
-	}
-}
+impl_issue_tree_index!(Issue);
+impl_issue_tree_index!(HollowIssue);
+impl_issue_tree_index!(VirtualIssue);
 
 #[cfg(test)]
 mod tests {
@@ -1822,13 +2193,13 @@ mod tests {
 	fn test_parse_invalid_checkbox_returns_error() {
 		// Invalid checkbox on root issue
 		let content = "- [abc] Invalid issue <!-- @owner https://github.com/owner/repo/issues/123 -->\n\tBody\n";
-		let result = Issue::deserialize_virtual(content);
+		let result = VirtualIssue::parse_virtual(content, PathBuf::from("test.md"));
 		assert!(result.is_err());
 		assert!(result.unwrap_err().to_string().contains("invalid checkbox"));
 
 		// Invalid checkbox on sub-issue
 		let content = "- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->\n\tBody\n\n\t- [xyz] Bad sub <!--sub @owner https://github.com/owner/repo/issues/2 -->\n";
-		let result = Issue::deserialize_virtual(content);
+		let result = VirtualIssue::parse_virtual(content, PathBuf::from("test.md"));
 		assert!(result.is_err());
 		assert!(result.unwrap_err().to_string().contains("invalid checkbox"));
 	}
@@ -1836,27 +2207,19 @@ mod tests {
 	#[test]
 	fn test_parse_and_serialize_not_planned() {
 		let content = "- [-] Not planned issue <!-- @owner https://github.com/owner/repo/issues/123 -->\n\tBody text\n";
-		let issue = Issue::deserialize_virtual(content).unwrap();
+		let virtual_issue = VirtualIssue::parse_virtual(content, PathBuf::from("test.md")).unwrap();
 
-		assert_eq!(issue.contents.state, CloseState::NotPlanned);
-		assert_eq!(issue.contents.title, "Not planned issue");
-
-		// Verify serialization preserves the state
-		let serialized = issue.serialize_virtual();
-		assert!(serialized.starts_with("- [-] Not planned issue"));
+		assert_eq!(virtual_issue.contents.state, CloseState::NotPlanned);
+		assert_eq!(virtual_issue.contents.title, "Not planned issue");
 	}
 
 	#[test]
 	fn test_parse_and_serialize_duplicate() {
 		let content = "- [456] Duplicate issue <!-- @owner https://github.com/owner/repo/issues/123 -->\n\tBody text\n";
-		let issue = Issue::deserialize_virtual(content).unwrap();
+		let virtual_issue = VirtualIssue::parse_virtual(content, PathBuf::from("test.md")).unwrap();
 
-		assert_eq!(issue.contents.state, CloseState::Duplicate(456));
-		assert_eq!(issue.contents.title, "Duplicate issue");
-
-		// Verify serialization preserves the state
-		let serialized = issue.serialize_virtual();
-		assert!(serialized.starts_with("- [456] Duplicate issue"));
+		assert_eq!(virtual_issue.contents.state, CloseState::Duplicate(456));
+		assert_eq!(virtual_issue.contents.title, "Duplicate issue");
 	}
 
 	#[test]
@@ -2004,11 +2367,11 @@ mod tests {
 	- [ ] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
-		let issue = Issue::deserialize_virtual(content).unwrap();
+		let virtual_issue = VirtualIssue::parse_virtual(content, PathBuf::from("test.md")).unwrap();
 		// parse_virtual preserves inline children
-		assert_eq!(issue.children.len(), 1);
-		assert_eq!(issue.contents.title, "Parent");
-		assert_eq!(issue.children[0].contents.title, "Child");
+		assert_eq!(virtual_issue.children.len(), 1);
+		assert_eq!(virtual_issue.contents.title, "Parent");
+		assert_eq!(virtual_issue[2].contents.title, "Child");
 	}
 
 	#[test]
@@ -2054,7 +2417,7 @@ mod tests {
 	}
 
 	#[test]
-	fn test_update_from_virtual_child_open_to_closed() {
+	fn test_parse_virtual_child_open_to_closed() {
 		// Start with parent + open child
 		let initial = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
 	Body
@@ -2062,8 +2425,8 @@ mod tests {
 	- [ ] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
-		let mut issue = Issue::deserialize_virtual(initial).unwrap();
-		assert_eq!(issue.children[0].contents.state, CloseState::Open);
+		let initial_virtual = VirtualIssue::parse_virtual(initial, PathBuf::from("test.md")).unwrap();
+		assert_eq!(initial_virtual[2].contents.state, CloseState::Open);
 
 		// Update with closed child
 		let updated = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
@@ -2072,20 +2435,20 @@ mod tests {
 	- [x] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
-		issue.update_from_virtual(updated).unwrap();
-		assert_eq!(issue.children[0].contents.state, CloseState::Closed, "Child should be Closed after update");
+		let updated_virtual = VirtualIssue::parse_virtual(updated, PathBuf::from("test.md")).unwrap();
+		assert_eq!(updated_virtual[2].contents.state, CloseState::Closed, "Child should be Closed after update");
 	}
 
 	#[test]
-	fn test_update_from_virtual_child_open_to_not_planned() {
+	fn test_parse_virtual_child_open_to_not_planned() {
 		let initial = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
 	Body
 
 	- [ ] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
-		let mut issue = Issue::deserialize_virtual(initial).unwrap();
-		assert_eq!(issue.children[0].contents.state, CloseState::Open);
+		let initial_virtual = VirtualIssue::parse_virtual(initial, PathBuf::from("test.md")).unwrap();
+		assert_eq!(initial_virtual[2].contents.state, CloseState::Open);
 
 		let updated = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
 	Body
@@ -2093,20 +2456,20 @@ mod tests {
 	- [-] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
-		issue.update_from_virtual(updated).unwrap();
-		assert_eq!(issue.children[0].contents.state, CloseState::NotPlanned, "Child should be NotPlanned after update");
+		let updated_virtual = VirtualIssue::parse_virtual(updated, PathBuf::from("test.md")).unwrap();
+		assert_eq!(updated_virtual[2].contents.state, CloseState::NotPlanned, "Child should be NotPlanned after update");
 	}
 
 	#[test]
-	fn test_update_from_virtual_child_open_to_duplicate() {
+	fn test_parse_virtual_child_open_to_duplicate() {
 		let initial = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
 	Body
 
 	- [ ] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
-		let mut issue = Issue::deserialize_virtual(initial).unwrap();
-		assert_eq!(issue.children[0].contents.state, CloseState::Open);
+		let initial_virtual = VirtualIssue::parse_virtual(initial, PathBuf::from("test.md")).unwrap();
+		assert_eq!(initial_virtual[2].contents.state, CloseState::Open);
 
 		let updated = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
 	Body
@@ -2114,20 +2477,20 @@ mod tests {
 	- [99] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
-		issue.update_from_virtual(updated).unwrap();
-		assert_eq!(issue.children[0].contents.state, CloseState::Duplicate(99), "Child should be Duplicate(99) after update");
+		let updated_virtual = VirtualIssue::parse_virtual(updated, PathBuf::from("test.md")).unwrap();
+		assert_eq!(updated_virtual[2].contents.state, CloseState::Duplicate(99), "Child should be Duplicate(99) after update");
 	}
 
 	#[test]
-	fn test_update_from_virtual_child_closed_to_open() {
+	fn test_parse_virtual_child_closed_to_open() {
 		let initial = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
 	Body
 
 	- [x] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
-		let mut issue = Issue::deserialize_virtual(initial).unwrap();
-		assert_eq!(issue.children[0].contents.state, CloseState::Closed);
+		let initial_virtual = VirtualIssue::parse_virtual(initial, PathBuf::from("test.md")).unwrap();
+		assert_eq!(initial_virtual[2].contents.state, CloseState::Closed);
 
 		let updated = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
 	Body
@@ -2135,7 +2498,7 @@ mod tests {
 	- [ ] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
-		issue.update_from_virtual(updated).unwrap();
-		assert_eq!(issue.children[0].contents.state, CloseState::Open, "Child should be Open after update");
+		let updated_virtual = VirtualIssue::parse_virtual(updated, PathBuf::from("test.md")).unwrap();
+		assert_eq!(updated_virtual[2].contents.state, CloseState::Open, "Child should be Open after update");
 	}
 }

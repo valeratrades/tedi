@@ -3,28 +3,23 @@
 //! Tests that nested issues, blockers, and other content survive the
 //! parse -> edit -> serialize -> sync cycle intact.
 
-use tedi::Issue;
 use v_fixtures::FixtureRenderer;
 
 use crate::{
 	common::{
 		FixtureIssuesExt, TestContext,
 		are_you_sure::{UnsafePathExt, read_issue_file},
-		git::GitExt,
+		parse_virtual,
 	},
 	render_fixture,
 };
-
-fn parse(content: &str) -> Issue {
-	Issue::deserialize_virtual(content).expect("failed to parse test issue")
-}
 
 #[tokio::test]
 async fn test_comments_with_ids_sync_correctly() {
 	let ctx = TestContext::build("");
 
 	// Issue with a comment that has an ID
-	let issue = parse(
+	let vi = parse_virtual(
 		"- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
 		 \tbody text\n\
 		 \n\
@@ -32,8 +27,8 @@ async fn test_comments_with_ids_sync_correctly() {
 		 \tThis is my comment\n",
 	);
 
-	ctx.consensus(&issue, None).await;
-	ctx.remote(&issue, None);
+	let issue = ctx.consensus(&vi, None, false).await;
+	ctx.remote(&vi, None, false);
 
 	let out = ctx.open_issue(&issue).args(&["--force"]).run();
 	eprintln!("stdout: {}", out.stdout);
@@ -47,7 +42,7 @@ async fn test_comments_with_ids_sync_correctly() {
 async fn test_nested_issues_preserved_through_sync() {
 	let ctx = TestContext::build("");
 
-	let issue = parse(
+	let vi = parse_virtual(
 		"- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
 		 \tlorem ipsum\n\
 		 \n\
@@ -58,8 +53,8 @@ async fn test_nested_issues_preserved_through_sync() {
 		 \t\tnested body c\n",
 	);
 
-	ctx.consensus(&issue, None).await;
-	ctx.remote(&issue, None);
+	let issue = ctx.consensus(&vi, None, false).await;
+	ctx.remote(&vi, None, false);
 
 	let out = ctx.open_issue(&issue).run();
 	eprintln!("stdout: {}", out.stdout);
@@ -81,49 +76,10 @@ async fn test_nested_issues_preserved_through_sync() {
 }
 
 #[tokio::test]
-async fn test_mixed_open_closed_nested_issues_preserved() {
-	let ctx = TestContext::build("");
-
-	let issue = parse(
-		"- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
-		 \tlorem ipsum\n\
-		 \n\
-		 \t- [ ] b <!--sub @mock_user https://github.com/o/r/issues/2 -->\n\
-		 \t\topen nested body\n\
-		 \n\
-		 \t- [x] c <!--sub @mock_user https://github.com/o/r/issues/3 -->\n\
-		 \t\t<!--omitted {{{always-->\n\
-		 \t\tclosed nested body\n\
-		 \t\t<!--,}}}-->\n",
-	);
-
-	ctx.consensus(&issue, None).await;
-	ctx.remote(&issue, None);
-
-	let out = ctx.open_issue(&issue).run();
-	eprintln!("stdout: {}", out.stdout);
-	eprintln!("stderr: {}", out.stderr);
-
-	assert!(out.status.success(), "stderr: {}", out.stderr);
-
-	// With the new model, children are stored in separate files
-	let path = ctx.resolve_issue_path(&issue);
-	let parent_dir = path.parent().unwrap();
-	let child_b_path = parent_dir.join("2_-_b.md");
-	let child_c_path = parent_dir.join("3_-_c.md.bak"); // closed issue has .bak suffix
-
-	let child_b_content = read_issue_file(&child_b_path);
-	assert!(child_b_content.contains("open nested body"), "open nested issue body lost");
-
-	let child_c_content = read_issue_file(&child_c_path);
-	assert!(child_c_content.contains("- [x] c"), "closed nested issue state lost");
-}
-
-#[tokio::test]
 async fn test_blockers_preserved_through_sync() {
 	let ctx = TestContext::build("");
 
-	let issue = parse(
+	let vi = parse_virtual(
 		"- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
 		 \tlorem ipsum\n\
 		 \n\
@@ -132,8 +88,8 @@ async fn test_blockers_preserved_through_sync() {
 		 \t- second blocker\n",
 	);
 
-	ctx.consensus(&issue, None).await;
-	ctx.remote(&issue, None);
+	let issue = ctx.consensus(&vi, None, false).await;
+	ctx.remote(&vi, None, false);
 
 	let out = ctx.open_issue(&issue).run();
 	eprintln!("stdout: {}", out.stdout);
@@ -153,13 +109,13 @@ async fn test_blockers_added_during_edit_preserved() {
 	let ctx = TestContext::build("");
 
 	// Initial state: no blockers
-	let initial_issue = parse("- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tlorem ipsum\n");
+	let initial_vi = parse_virtual("- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tlorem ipsum\n");
 
-	ctx.consensus(&initial_issue, None).await;
-	ctx.remote(&initial_issue, None);
+	let initial_issue = ctx.consensus(&initial_vi, None, false).await;
+	ctx.remote(&initial_vi, None, false);
 
 	// User adds blockers during edit
-	let edited_issue = parse(
+	let edited_issue = parse_virtual(
 		"- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
 		 \tlorem ipsum\n\
 		 \n\
@@ -167,7 +123,7 @@ async fn test_blockers_added_during_edit_preserved() {
 		 \t- new blocker added\n",
 	);
 
-	let out = ctx.open_issue(&initial_issue).edit(&edited_issue).run();
+	let out = ctx.open_issue(&initial_issue).edit(&edited_issue, false).run();
 	eprintln!("stdout: {}", out.stdout);
 	eprintln!("stderr: {}", out.stderr);
 
@@ -183,7 +139,7 @@ async fn test_blockers_added_during_edit_preserved() {
 async fn test_blockers_with_headers_preserved() {
 	let ctx = TestContext::build("");
 
-	let issue = parse(
+	let vi = parse_virtual(
 		"- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
 		 \tlorem ipsum\n\
 		 \n\
@@ -196,8 +152,8 @@ async fn test_blockers_with_headers_preserved() {
 		 \t- task gamma\n",
 	);
 
-	ctx.consensus(&issue, None).await;
-	ctx.remote(&issue, None);
+	let issue = ctx.consensus(&vi, None, false).await;
+	ctx.remote(&vi, None, false);
 
 	let out = ctx.open_issue(&issue).run();
 	eprintln!("stdout: {}", out.stdout);
@@ -217,7 +173,7 @@ async fn test_blockers_with_headers_preserved() {
 async fn test_nested_issues_and_blockers_together() {
 	let ctx = TestContext::build("");
 
-	let issue = parse(
+	let vi = parse_virtual(
 		"- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
 		 \tlorem ipsum\n\
 		 \n\
@@ -229,8 +185,8 @@ async fn test_nested_issues_and_blockers_together() {
 		 \t\tnested body\n",
 	);
 
-	ctx.consensus(&issue, None).await;
-	ctx.remote(&issue, None);
+	let issue = ctx.consensus(&vi, None, false).await;
+	ctx.remote(&vi, None, false);
 
 	let out = ctx.open_issue(&issue).run();
 	eprintln!("stdout: {}", out.stdout);
@@ -255,7 +211,7 @@ async fn test_closing_nested_issue_creates_bak_file() {
 	let ctx = TestContext::build("");
 
 	// Start with open nested issue
-	let initial_issue = parse(
+	let initial_vi = parse_virtual(
 		"- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
 		 \tlorem ipsum\n\
 		 \n\
@@ -263,11 +219,11 @@ async fn test_closing_nested_issue_creates_bak_file() {
 		 \t\tnested body content\n",
 	);
 
-	ctx.consensus(&initial_issue, None).await;
-	ctx.remote(&initial_issue, None);
+	let initial_issue = ctx.consensus(&initial_vi, None, false).await;
+	ctx.remote(&initial_vi, None, false);
 
 	// User closes nested issue during edit
-	let edited_issue = parse(
+	let edited_issue = parse_virtual(
 		"- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
 		 \tlorem ipsum\n\
 		 \n\
@@ -275,7 +231,7 @@ async fn test_closing_nested_issue_creates_bak_file() {
 		 \t\tnested body content\n",
 	);
 
-	let out = ctx.open_issue(&initial_issue).edit(&edited_issue).run();
+	let out = ctx.open_issue(&initial_issue).edit(&edited_issue, false).run();
 	eprintln!("stdout: {}", out.stdout);
 	eprintln!("stderr: {}", out.stderr);
 

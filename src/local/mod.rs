@@ -16,6 +16,8 @@
 
 #![allow(unused_assignments)] // miette's derive macro triggers false positives
 
+use HashMap;
+
 pub mod conflict;
 pub mod consensus;
 /// Error type for local issue loading operations.
@@ -219,8 +221,11 @@ impl Local {
 	///
 	/// This parses one issue file (without loading children from separate files).
 	/// Children field will be empty - they're loaded separately via LazyIssue.
-	fn parse_single_node(content: &str, index: IssueIndex, _fpath_for_error_context_only: &Path) -> Result<Issue, LocalError> {
-		let mut issue = Issue::parse_virtual(content, index)?;
+	fn parse_single_node(content: &str, index: IssueIndex, fpath_for_error_context_only: &Path) -> Result<Issue, LocalError> {
+		// Derive parent_index from the full index (all but the last selector)
+		let parent_idx = index.parent().unwrap_or_else(|| IssueIndex::repo_only(index.repo_info()));
+		let hollow = HollowIssue::default_pending(); //HACK: this is just a plug to have deprecated logic compile. HollowIssue won't be needed at all when we write it correctly; and the function itself should return `VirtualIssue` not `Issue`
+		let mut issue = Issue::parse_virtual(content, hollow, parent_idx, fpath_for_error_context_only.to_path_buf())?;
 		// Clear any inline children (filesystem format stores them in separate files)
 		if !issue.children.is_empty() {
 			tracing::warn!("issue children read from file are not empty. Wtf {:?}", &issue.children);
@@ -1175,7 +1180,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use v_utils::prelude::*;
 
-use crate::{Issue, IssueIndex, IssueSelector, RepoInfo};
+use crate::{HollowIssue, Issue, IssueIndex, IssueSelector, RepoInfo};
 
 //==============================================================================
 // Local - The interface for local issue storage
@@ -1259,18 +1264,18 @@ impl<R: LocalReader> crate::LazyIssue<LocalIssueSource<R>> for Issue {
 	}
 
 	#[tracing::instrument(skip_all)]
-	async fn children(&mut self, source: LocalIssueSource<R>) -> Result<Vec<Issue>, Self::Error> {
+	async fn children(&mut self, source: LocalIssueSource<R>) -> Result<HashMap<IssueSelector, Issue>, Self::Error> {
 		if !self.children.is_empty() {
 			return Ok(self.children.clone());
 		}
 
 		let dir_path = source.local_path.clone().resolve_parent(source.reader)?.search()?.issue_dir();
 		let Some(dir_path) = dir_path else {
-			return Ok(Vec::new()); // Flat file, no children
+			return Ok(HashMap::new()); // Flat file, no children
 		};
 
 		let entries = source.reader.list_dir(&dir_path)?;
-		let mut children = Vec::new();
+		let mut children = HashMap::new();
 		let this_index = *source.index();
 
 		for name in entries {
@@ -1287,10 +1292,8 @@ impl<R: LocalReader> crate::LazyIssue<LocalIssueSource<R>> for Issue {
 			let child_source = source.child(child_index);
 
 			let child = Issue::load(child_source).await?;
-			children.push(child);
+			children.insert(child.selector(), child);
 		}
-
-		children.sort_by_key(|issue| issue.git_id().unwrap_or(0)); //IGNORED_ERROR: pending issues (no number) sort first
 
 		self.children = children.clone();
 		Ok(children)

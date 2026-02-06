@@ -11,6 +11,23 @@ use tracing_error::SpanTrace;
 
 use super::Local;
 
+/// Trait for reading content from different sources (filesystem or git).
+///
+/// Separates the read abstraction from path computation.
+pub trait LocalReader: Copy + std::fmt::Debug {
+	/// Read file content at the given path.
+	fn read_content(&self, path: &Path) -> Result<String, ReaderError>;
+	/// List directory entries at the given path.
+	fn list_dir(&self, path: &Path) -> Result<Vec<String>, ReaderError>;
+	/// Check if the path is a directory.
+	fn is_dir(&self, path: &Path) -> Result<bool, ReaderError>;
+	/// Check if the path exists.
+	fn exists(&self, path: &Path) -> Result<bool, ReaderError>;
+	/// Whether this reader supports filesystem mutations (cleanup operations).
+	fn is_mutable(&self) -> bool {
+		false
+	}
+}
 /// Error type for LocalReader operations.
 ///
 /// Contains the error kind (for matching), pre-rendered miette diagnostic,
@@ -88,23 +105,6 @@ pub enum ReaderErrorKind {
 	Other,
 }
 
-/// Trait for reading content from different sources (filesystem or git).
-///
-/// Separates the read abstraction from path computation.
-pub trait LocalReader: Copy + std::fmt::Debug {
-	/// Read file content at the given path.
-	fn read_content(&self, path: &Path) -> Result<String, ReaderError>;
-	/// List directory entries at the given path.
-	fn list_dir(&self, path: &Path) -> Result<Vec<String>, ReaderError>;
-	/// Check if the path is a directory.
-	fn is_dir(&self, path: &Path) -> Result<bool, ReaderError>;
-	/// Check if the path exists.
-	fn exists(&self, path: &Path) -> Result<bool, ReaderError>;
-	/// Whether this reader supports filesystem mutations (cleanup operations).
-	fn is_mutable(&self) -> bool {
-		false
-	}
-}
 /// Reader that reads from the filesystem (submitted/current state).
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct FsReader;

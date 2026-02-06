@@ -153,8 +153,8 @@ pub async fn main_integrated(command: super::io::Command, format: DisplayFormat,
 			set_after,
 			urgent: is_urgent,
 		} => {
-			if is_urgent {
-				// Open the urgent file
+			// When urgent exists, always open it (--urgent flag is only for creating new urgent file)
+			if StandaloneSource::urgent().is_some() || is_urgent {
 				let urgent = StandaloneSource::urgent_or_create()?;
 
 				v_utils::io::file_open::open(urgent.path()).await?;
@@ -188,13 +188,13 @@ pub async fn main_integrated(command: super::io::Command, format: DisplayFormat,
 		}
 
 		Command::List => {
-			// Check if there's an urgent file - show that first
+			// Check if there's an urgent file - only show urgent when it exists
 			if let Some(urgent) = StandaloneSource::urgent() {
 				let blockers = urgent.load()?;
 				if !blockers.is_empty() {
 					println!("=== URGENT ===");
 					println!("{}", blockers.serialize(format));
-					println!();
+					return Ok(());
 				}
 			}
 
@@ -608,6 +608,6 @@ mod tests {
 
 		// Sub-issue should be in children
 		assert_eq!(issue.children.len(), 1);
-		assert_eq!(issue.children[0].contents.title, "Sub-issue");
+		assert_eq!(issue[2].contents.title, "Sub-issue");
 	}
 }
