@@ -13,7 +13,6 @@
 /// - `Ok(Some(Issue))` if file is tracked and consensus loaded successfully
 /// - `Ok(None)` if file is not tracked (new file, no consensus yet)
 /// - `Err(LocalError)` if file exists but failed to load
-#[deprecated(note = "pretty sure that's duplication over Issue::load(LocalIssueSource::<GitReader>::build(index.into()))")]
 pub async fn load_consensus_issue(index: IssueIndex) -> Result<Option<Issue>, LocalError> {
 	let source = LocalIssueSource::<GitReader>::build(LocalPath::new(index))?;
 

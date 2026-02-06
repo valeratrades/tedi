@@ -132,7 +132,9 @@ impl LocalIssueSource<FsReader> {
 		}
 
 		// Check for unresolved conflicts
-		conflict::check_conflict(local_path.index.owner())?;
+		if let Some(conflict_file) = conflict::check_conflict(local_path.index.owner()).map_err(|e| LocalError::Other(e.into()))? {
+			return Err(ConflictBlockedError { conflict_file }.into());
+		}
 
 		Ok(Self::new(local_path, FsReader))
 	}
@@ -154,7 +156,7 @@ impl LocalIssueSource<FsReader> {
 
 		// Check for unresolved conflicts
 		{
-			let maybe_conflict_file = conflict::check_conflict(index.owner())?;
+			let maybe_conflict_file = conflict::check_conflict(index.owner()).map_err(|e| LocalError::Other(e.into()))?;
 			if let Some(conflict_file) = maybe_conflict_file {
 				return Err(ConflictBlockedError { conflict_file }.into());
 			}

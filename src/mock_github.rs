@@ -12,13 +12,11 @@ use std::{
 };
 
 use async_trait::async_trait;
+use tedi::local::Local;
 use tracing::instrument;
 use v_utils::prelude::*;
 
-use crate::{
-	github::{CreatedIssue, GithubClient, GithubComment, GithubIssue, GithubLabel, GithubUser, RepoInfo},
-	open_interactions::local::Local,
-};
+use crate::github::{CreatedIssue, GithubClient, GithubComment, GithubIssue, GithubLabel, GithubUser, RepoInfo};
 
 /// Environment variable name for mock state file (integration tests)
 const ENV_MOCK_STATE: &str = concat!(env!("CARGO_PKG_NAME"), "_MOCK_STATE");

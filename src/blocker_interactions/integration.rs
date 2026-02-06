@@ -12,11 +12,10 @@ use std::path::{Path, PathBuf};
 use color_eyre::eyre::{Result, bail, eyre};
 use tedi::{
 	DisplayFormat, Issue, LazyIssue, Marker,
-	local::{FsReader, Local, LocalIssueSource},
+	local::{ExactMatchLevel, FsReader, Local, LocalIssueSource},
 };
 
 use super::{BlockerSequence, operations::BlockerSequenceExt, source::BlockerSource};
-use crate::open_interactions::local::ExactMatchLevel;
 
 /// Issue-based blocker source for blockers embedded in issue files.
 pub struct IssueSource {

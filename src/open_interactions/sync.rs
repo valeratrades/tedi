@@ -24,7 +24,7 @@
 use color_eyre::eyre::{Result, bail};
 use tedi::{
 	HollowIssue, Issue, IssueIndex, IssueLink, IssueSelector, LazyIssue, RepoInfo, VirtualIssue,
-	local::{Consensus, FsReader, Local, LocalFs, LocalIssueSource, LocalPath},
+	local::{Consensus, FsReader, Local, LocalFs, LocalIssueSource, LocalPath, consensus::load_consensus_issue},
 	sink::Sink,
 };
 use tracing::instrument;
@@ -32,7 +32,6 @@ use v_utils::elog;
 
 use super::{
 	conflict::{ConflictOutcome, initiate_conflict_merge},
-	consensus::load_consensus_issue,
 	merge::Merge,
 	remote::{Remote, RemoteSource},
 };
