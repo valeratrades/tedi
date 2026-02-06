@@ -9,12 +9,7 @@
 
 use tedi::Issue;
 
-use crate::common::{
-	TestContext,
-	are_you_sure::UnsafePathExt,
-	git::{GitExt, with_timestamps},
-	parse_virtual,
-};
+use crate::common::{TestContext, are_you_sure::UnsafePathExt, git::GitExt, parse_virtual};
 
 fn parse(content: &str) -> Issue {
 	Issue::deserialize_virtual(content).expect("failed to parse test issue")
@@ -153,7 +148,7 @@ async fn test_duplicate_reference_to_existing_issue_succeeds() {
 
 	// Set up a local issue and a target duplicate issue
 	let original = parse_virtual("- [ ] Some Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tbody\n");
-	ctx.consensus(&original, None, is_virtual).await;
+	let original_issue = ctx.consensus(&original, None, is_virtual).await;
 	ctx.remote(&original, None, is_virtual);
 
 	let dup_target = parse_virtual("- [ ] Target Issue <!-- @mock_user https://github.com/o/r/issues/2 -->\n\ttarget body\n");
@@ -164,7 +159,6 @@ async fn test_duplicate_reference_to_existing_issue_succeeds() {
 	duplicate.contents.state = tedi::CloseState::Duplicate(2);
 
 	// Sync the duplicate state
-	let original_issue = with_timestamps(&original, None, is_virtual);
 	let out = ctx.open_issue(&original_issue).edit(&duplicate, is_virtual).run();
 
 	eprintln!("stdout: {}", out.stdout);
