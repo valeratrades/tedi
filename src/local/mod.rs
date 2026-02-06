@@ -31,6 +31,10 @@ pub enum LocalError {
 	#[error(transparent)]
 	Parse(crate::ParseError),
 
+	/// Issue composition error.
+	#[error(transparent)]
+	Issue(crate::IssueError),
+
 	//Q: LocalPathError also contains ReaderError. Seems suboptimal, - wonder if I can restructure somehow to remove this proprietor level ambiguity
 	/// Reader operation failed.
 	#[error(transparent)]
@@ -132,7 +136,7 @@ impl LocalIssueSource<FsReader> {
 		}
 
 		// Check for unresolved conflicts (resolves if user already fixed markers)
-		if let Some(conflict_file) = conflict::check_and_resolve_conflict(local_path.index.into()).await.map_err(|e| LocalError::Other(e))? {
+		if let Some(conflict_file) = conflict::check_for_existing_conflict(local_path.index.into()).await.map_err(|e| LocalError::Other(e))? {
 			return Err(ConflictBlockedError { conflict_file }.into());
 		}
 
@@ -218,7 +222,7 @@ impl Local {
 		let parent_idx = index.parent().unwrap_or_else(|| IssueIndex::repo_only(index.repo_info()));
 		let is_virtual = Self::is_virtual_project(index.repo_info());
 		let virtual_issue = crate::VirtualIssue::parse_virtual(content, fpath_for_error_context_only.to_path_buf())?;
-		let mut issue = Issue::from_combined(crate::HollowIssue::default(), virtual_issue, parent_idx, is_virtual);
+		let mut issue = Issue::from_combined(crate::HollowIssue::default(), virtual_issue, parent_idx, is_virtual)?;
 		// Clear any inline children (filesystem format stores them in separate files)
 		if !issue.children.is_empty() {
 			tracing::warn!("issue children read from file are not empty. Wtf {:?}", &issue.children);

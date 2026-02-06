@@ -151,7 +151,7 @@ pub(super) fn with_timestamps(virtual_issue: &tedi::VirtualIssue, seed: Option<S
 	let timestamps = seed.map(timestamps_from_seed).unwrap_or_default();
 	let hollow = build_hollow_from_virtual(virtual_issue, &timestamps);
 	let parent_idx = tedi::IssueIndex::repo_only((OWNER, REPO).into());
-	Issue::from_combined(hollow, virtual_issue.clone(), parent_idx, is_virtual)
+	Issue::from_combined(hollow, virtual_issue.clone(), parent_idx, is_virtual).expect("test hollow must match virtual")
 }
 
 /// Generate a timestamp for a specific field index.

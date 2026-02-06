@@ -326,7 +326,7 @@ mod types {
 					let is_virtual = issue.identity.is_virtual;
 					let hollow: HollowIssue = old_issue.clone().into();
 					let virtual_issue = VirtualIssue::parse_virtual(&content, vpath.clone())?;
-					*issue = Issue::from_combined(hollow, virtual_issue, parent_idx, is_virtual);
+					*issue = Issue::from_combined(hollow, virtual_issue, parent_idx, is_virtual)?;
 
 					ModifyResult { output: None, file_modified }
 				}

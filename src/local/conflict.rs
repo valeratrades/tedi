@@ -81,11 +81,11 @@ pub enum ConflictOutcome {
 	NoChanges,
 }
 
-/// Check for unresolved conflict, resolving if the user already fixed the markers.
+/// Check for conflict file. If user fixed it, sinks.
 ///
 /// Returns `Some(path)` if conflict markers are still present, `None` if resolved (or no conflict).
 /// When the file exists but markers are gone, syncs the resolved content to local + remote sinks.
-pub async fn check_and_resolve_conflict(issue_index: IssueIndex) -> Result<Option<PathBuf>> {
+pub async fn check_for_existing_conflict(issue_index: IssueIndex) -> Result<Option<PathBuf>> {
 	let conflict_fpath = conflict_file_path(issue_index.owner());
 
 	if !conflict_fpath.exists() {
@@ -104,7 +104,7 @@ pub async fn check_and_resolve_conflict(issue_index: IssueIndex) -> Result<Optio
 					let virtual_issue = VirtualIssue::parse_virtual(&content, conflict_fpath)?;
 					let hollow = Local::read_hollow_from_project_meta(issue_index)?;
 					let project_meta = Local::load_project_meta(issue_index.repo_info());
-					Issue::from_combined(hollow, virtual_issue, issue_index.parent().unwrap(), project_meta.virtual_project)
+					Issue::from_combined(hollow, virtual_issue, issue_index.parent().unwrap(), project_meta.virtual_project)?
 				};
 
 				let last_consensus_issue = Issue::load(LocalIssueSource::<GitReader>::build(LocalPath::from(issue_index))?).await?;

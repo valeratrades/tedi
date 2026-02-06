@@ -61,6 +61,18 @@ impl ParseError {
 	}
 }
 
+/// Error type for issue composition and structural invariant violations.
+#[derive(Debug, thiserror::Error)]
+pub enum IssueError {
+	/// A git-linked child (GitId selector) exists in virtual representation but not in HollowIssue.
+	///
+	/// This means either:
+	/// - Internal bug: we constructed the HollowIssue incorrectly and missed a child
+	/// - User error: user manually embedded an issue with a `<!-- @user url -->` marker, which is not permitted
+	#[error("git-linked child #{issue_number} present in virtual but missing from HollowIssue: {detail}")]
+	ErroneousComposition { issue_number: u64, detail: String },
+}
+
 /// Error when converting IssueIndex to a git number path.
 /// Occurs when a Title selector is encountered but only GitId selectors are valid.
 #[derive(Debug, miette::Diagnostic, thiserror::Error)]

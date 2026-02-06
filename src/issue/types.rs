@@ -858,7 +858,11 @@ impl Issue /*{{{1*/ {
 	/// The hollow provides identity (remote info, timestamps) while virtual provides contents.
 	/// `is_virtual` comes from project metadata - the hollow itself doesn't know.
 	/// For children, recursively combines hollow.children with virtual.children by selector.
-	pub fn from_combined(hollow: HollowIssue, virtual_issue: VirtualIssue, parent_idx: IssueIndex, is_virtual: bool) -> Self {
+	///
+	/// # Errors
+	/// Returns `IssueError::ErroneousComposition` if a git-linked child (GitId selector) exists
+	/// in virtual but not in hollow — either an internal bug or user manually embedded a linked marker.
+	pub fn from_combined(hollow: HollowIssue, virtual_issue: VirtualIssue, parent_idx: IssueIndex, is_virtual: bool) -> Result<Self, super::error::IssueError> {
 		let identity = IssueIdentity {
 			parent_index: parent_idx,
 			is_virtual,
@@ -866,39 +870,38 @@ impl Issue /*{{{1*/ {
 		};
 
 		// Recursively combine children
-		let children = virtual_issue
-			.children
-			.into_iter()
-			.map(|(selector, virtual_child)| {
-				// Look up hollow child. If not found, this child is new from user input —
-				// stamp all timestamps as now so sync treats local as authoritative.
-				let child_hollow = hollow.children.get(&selector).cloned().unwrap_or_else(|| {
-					let remote = if let IssueSelector::GitId(n) = selector {
-						let link = IssueLink::parse(&format!("https://github.com/{}/{}/issues/{n}", parent_idx.owner(), parent_idx.repo())).expect("constructed link must be valid");
-						Some(Box::new(LinkedIssueMeta::new(String::new(), link, IssueTimestamps::now())))
-					} else {
-						None
-					};
-					HollowIssue { remote, children: HashMap::new() }
-				});
+		let mut children = HashMap::new();
+		for (selector, virtual_child) in virtual_issue.children {
+			let child_hollow = match hollow.children.get(&selector) {
+				Some(ch) => ch.clone(),
+				None => {
+					if let IssueSelector::GitId(n) = selector {
+						return Err(super::error::IssueError::ErroneousComposition {
+							issue_number: n,
+							detail: "either internal bug (HollowIssue was constructed incorrectly) or user manually embedded a `<!-- @user url -->` marker, which is not permitted"
+								.to_string(),
+						});
+					}
+					HollowIssue::default()
+				}
+			};
 
-				// Build child's parent_index
-				let child_parent_idx = if let Some(meta) = &identity.remote {
-					parent_idx.child(IssueSelector::GitId(meta.link.number()))
-				} else {
-					parent_idx
-				};
+			// Build child's parent_index
+			let child_parent_idx = if let Some(meta) = &identity.remote {
+				parent_idx.child(IssueSelector::GitId(meta.link.number()))
+			} else {
+				parent_idx
+			};
 
-				let child = Self::from_combined(child_hollow, virtual_child, child_parent_idx, is_virtual);
-				(selector, child)
-			})
-			.collect();
+			let child = Self::from_combined(child_hollow, virtual_child, child_parent_idx, is_virtual)?;
+			children.insert(selector, child);
+		}
 
-		Issue {
+		Ok(Issue {
 			identity,
 			contents: virtual_issue.contents,
 			children,
-		}
+		})
 	}
 
 	/// Parse virtual representation at given nesting depth.
