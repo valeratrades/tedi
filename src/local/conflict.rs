@@ -57,33 +57,6 @@ pub fn conflict_file_path(owner: &str) -> PathBuf {
 	Local::issues_dir().join(owner).join("__conflict.md")
 }
 
-//==============================================================================
-// Conflict Detection
-//==============================================================================
-
-/// Check whether an unresolved conflict file exists for this owner.
-///
-/// Returns `Some(path)` if conflict markers are present, `None` otherwise.
-/// Does NOT attempt resolution — that's `open_interactions::conflict::check_and_resolve_conflict`.
-pub fn check_conflict(owner: &str) -> Result<Option<PathBuf>, std::io::Error> {
-	let conflict_fpath = conflict_file_path(owner);
-
-	if !conflict_fpath.exists() {
-		return Ok(None);
-	}
-
-	let content = std::fs::read_to_string(&conflict_fpath)?;
-
-	if has_conflict_markers(&content) {
-		Ok(Some(conflict_fpath))
-	} else {
-		// File exists but no conflict markers — resolution happened outside our flow.
-		// Clean up the stale file.
-		std::fs::remove_file(&conflict_fpath)?;
-		Ok(None)
-	}
-}
-
 /// Remove the conflict file after successful resolution.
 pub fn remove_conflict_file(owner: &str) -> Result<(), std::io::Error> {
 	let conflict_file = conflict_file_path(owner);

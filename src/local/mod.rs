@@ -122,7 +122,7 @@ impl LocalIssueSource<FsReader> {
 	/// Checks:
 	/// - `fd` executable is available (for file searches)
 	/// - No unresolved merge conflicts exist
-	pub fn build(local_path: LocalPath) -> Result<Self, LocalError> {
+	pub async fn build(local_path: LocalPath) -> Result<Self, LocalError> {
 		// Check for fd
 		if std::process::Command::new("fd").arg("--version").output().is_err() {
 			return Err(LocalError::MissingExecutable {
@@ -131,8 +131,11 @@ impl LocalIssueSource<FsReader> {
 			});
 		}
 
-		// Check for unresolved conflicts
-		if let Some(conflict_file) = conflict::check_conflict(local_path.index.owner()).map_err(|e| LocalError::Other(e.into()))? {
+		// Check for unresolved conflicts (resolves if user already fixed markers)
+		if let Some(conflict_file) = crate::open_interactions::conflict::check_and_resolve_conflict(local_path.index.into())
+			.await
+			.map_err(|e| LocalError::Other(e))?
+		{
 			return Err(ConflictBlockedError { conflict_file }.into());
 		}
 
@@ -143,26 +146,9 @@ impl LocalIssueSource<FsReader> {
 	///
 	/// This extracts the parent_index from the path, then constructs the full index
 	/// by adding the target issue's selector.
-	pub fn build_from_path(path: &Path) -> Result<Self, LocalError> {
-		// Check for fd
-		if std::process::Command::new("fd").arg("--version").output().is_err() {
-			return Err(LocalError::MissingExecutable {
-				executable: "fd",
-				operation: "local filesystem operations",
-			});
-		}
-
+	pub async fn build_from_path(path: &Path) -> Result<Self, LocalError> {
 		let index = Local::extract_index_from_path(path).map_err(|e| LocalError::PathExtraction(e.to_string()))?;
-
-		// Check for unresolved conflicts
-		{
-			let maybe_conflict_file = conflict::check_conflict(index.owner()).map_err(|e| LocalError::Other(e.into()))?;
-			if let Some(conflict_file) = maybe_conflict_file {
-				return Err(ConflictBlockedError { conflict_file }.into());
-			}
-		}
-
-		Ok(Self::new(LocalPath::new(index), FsReader))
+		Self::build(LocalPath::new(index)).await
 	}
 }
 impl LocalIssueSource<GitReader> {
