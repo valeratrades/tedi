@@ -307,7 +307,16 @@ pub struct IssueTimestamps {
 	pub comments: Vec<Timestamp>,
 }
 impl IssueTimestamps {
-	pub fn now() -> Self {}
+	pub fn now() -> Self {
+		let now = Timestamp::now();
+		Self {
+			title: Some(now),
+			description: Some(now),
+			labels: Some(now),
+			state: Some(now),
+			comments: Vec::new(),
+		}
+	}
 
 	/// Update timestamps based on what changed between old and new issue contents.
 	/// Sets the current time for any field that changed.
@@ -861,8 +870,17 @@ impl Issue /*{{{1*/ {
 			.children
 			.into_iter()
 			.map(|(selector, virtual_child)| {
-				// Look up hollow child - use default if not found
-				let child_hollow = hollow.children.get(&selector).cloned().unwrap_or_default();
+				// Look up hollow child. If not found, this child is new from user input —
+				// stamp all timestamps as now so sync treats local as authoritative.
+				let child_hollow = hollow.children.get(&selector).cloned().unwrap_or_else(|| {
+					let remote = if let IssueSelector::GitId(n) = selector {
+						let link = IssueLink::parse(&format!("https://github.com/{}/{}/issues/{n}", parent_idx.owner(), parent_idx.repo())).expect("constructed link must be valid");
+						Some(Box::new(LinkedIssueMeta::new(String::new(), link, IssueTimestamps::now())))
+					} else {
+						None
+					};
+					HollowIssue { remote, children: HashMap::new() }
+				});
 
 				// Build child's parent_index
 				let child_parent_idx = if let Some(meta) = &identity.remote {

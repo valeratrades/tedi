@@ -18,7 +18,7 @@ use thiserror::Error;
 use v_utils::prelude::*;
 
 use super::Local;
-use crate::{Issue, IssueIndex, RepoInfo, VirtualIssue, local::consensus::is_git_initialized};
+use crate::{HollowIssue, Issue, IssueIndex, RepoInfo, VirtualIssue, local::consensus::is_git_initialized};
 
 //==============================================================================
 // Error Types
@@ -88,7 +88,8 @@ pub fn check_conflict(issue_index: IssueIndex) -> Result<Option<PathBuf>> {
 		// have the conflict file, but user has had resolved it, - sync then cleanup
 		{
 			let virtual_issue = VirtualIssue::parse_virtual(&content, conflict_fpath)?;
-			let hollow_issue = Local::read_hollow_from_project_meta(issue_index)?;
+			let project_meta = Local::load_project_meta(issue_index.repo_info());
+			let issue = Issue::from_combined(HollowIssue::default(), virtual_issue, issue_index.parent().unwrap(), project_meta.virtual_project);
 
 			//Q: we should preserve the timestamps of original issues post resolution.
 			//C [consequence]: so we must have actual IssueIndex of the issue being resolved, to get both sources
