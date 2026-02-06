@@ -4,6 +4,8 @@
 
 #![allow(unused_assignments)] // Fields are read by miette's derive macro via attributes
 
+use std::path::PathBuf;
+
 use miette::{NamedSource, SourceSpan};
 use tracing_error::SpanTrace;
 
@@ -73,16 +75,16 @@ pub struct TitleInGitPathError {
 #[derive(Clone, Debug)]
 pub struct ParseContext {
 	pub content: String,
-	pub filename: String,
+	pub filename: PathBuf,
 }
 impl ParseContext {
-	pub fn new(content: String, filename: impl Into<String>) -> Self {
-		Self { content, filename: filename.into() }
+	pub fn new(content: String, filename: PathBuf) -> Self {
+		Self { content, filename }
 	}
 
 	/// Create a NamedSource for miette diagnostics.
 	pub fn named_source(&self) -> NamedSource<String> {
-		NamedSource::new(&self.filename, self.content.clone())
+		NamedSource::new(self.filename.display().to_string(), self.content.clone())
 	}
 
 	/// Get byte offset for a given line number (1-indexed).

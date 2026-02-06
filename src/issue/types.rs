@@ -2,7 +2,7 @@
 //!
 //! This module contains the pure Issue type with parsing and serialization.
 
-use std::collections::HashMap;
+use std::{collections::HashMap, path::PathBuf};
 
 use arrayvec::ArrayString;
 use copy_arrayvec::CopyArrayVec;
@@ -867,21 +867,15 @@ impl Issue /*{{{1*/ {
 	/// Parse virtual representation (markdown with full tree) into an Issue.
 	///
 	/// Takes the full `IssueIndex` pointing to this issue (not the parent). Need it to derive the parent_index.
-	pub fn parse_virtual(content: &str, index: IssueIndex) -> Result<Self, ParseError> {
-		let ctx = ParseContext::new(content.to_string(), index.to_string());
+	pub fn parse_virtual(content: String, hollow: HollowIssue, parent_idx: IssueIndex, path: PathBuf) -> Result<Self, ParseError> {
+		let ctx = ParseContext::new(content, path);
 		let mut lines = content.lines().peekable();
-		Self::parse_virtual_at_depth(&mut lines, 0, 1, &ctx, index.parent())
+		Self::parse_virtual_at_depth(&mut lines, 0, 1, &ctx, parent_idx)
 	}
 
 	/// Parse virtual representation at given nesting depth.
 	/// `parent_index` is the parent's IssueIndex (for non-root), or None for root issues parsed from file.
-	fn parse_virtual_at_depth(
-		lines: &mut std::iter::Peekable<std::str::Lines>,
-		depth: usize,
-		line_num: usize,
-		ctx: &ParseContext,
-		parent_index: Option<IssueIndex>,
-	) -> Result<Self, ParseError> {
+	fn parse_virtual_at_depth(lines: &mut std::iter::Peekable<std::str::Lines>, depth: usize, line_num: usize, ctx: &ParseContext, parent_index: IssueIndex) -> Result<Self, ParseError> {
 		let indent = "\t".repeat(depth);
 		let child_indent = "\t".repeat(depth + 1);
 
@@ -1102,8 +1096,7 @@ impl Issue /*{{{1*/ {
 				let child_parent_idx = match &parsed.identity_info {
 					IssueMarker::Linked { link, .. } => {
 						// Parent is linked - child's parent_index is this issue's full index
-						let base = parent_index.unwrap_or_else(|| IssueIndex::repo_only(link.repo_info()));
-						Some(base.child(IssueSelector::GitId(link.number())))
+						parent_index.child(IssueSelector::GitId(link.number()))
 					}
 					IssueMarker::Pending | IssueMarker::Virtual => {
 						// Local/virtual parent - pass through parent_index
