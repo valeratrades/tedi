@@ -21,8 +21,11 @@
 //! The `.meta.json` file contains actual timestamps from seed-based generation,
 //! so snapshots verify both file content and timestamp values.
 
+use std::collections::HashMap;
+
 use insta::assert_snapshot;
 use rstest::rstest;
+use tedi::{IssueLink, IssueTimestamps, LinkedIssueMeta};
 use v_fixtures::FixtureRenderer;
 
 use crate::common::{
@@ -233,11 +236,36 @@ async fn test_reset_with_remote_url_nukes_local_state() {
 /// When opening via URL with --reset and there's divergence, should NOT trigger merge conflict.
 #[tokio::test]
 async fn test_reset_with_remote_url_skips_merge_on_divergence() {
-	let ctx = TestContext::build("");
+	use std::path::PathBuf;
 
-	let consensus = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tconsensus body\n");
-	let local = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tlocal diverged body\n");
-	let remote = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tremote diverged body\n");
+	use tedi::{HollowIssue, Issue, IssueIndex};
+
+	let ctx = TestContext::build("");
+	let parent_idx = IssueIndex::repo_only(("o", "r").into());
+	let meta = LinkedIssueMeta::new("@mock_user".to_string(), IssueLink::parse("https://github.com/o/r/issues/1").unwrap(), IssueTimestamps::default());
+	let hollow = HollowIssue::new(tedi::IssueRemote::Github(Box::new(Some(meta))), HashMap::default());
+
+	let consensus = Issue::parse_virtual(
+		"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tconsensus body\n",
+		hollow.clone(),
+		parent_idx,
+		PathBuf::from("test.md"),
+	)
+	.unwrap();
+	let local = Issue::parse_virtual(
+		"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tlocal diverged body\n",
+		hollow.clone(),
+		parent_idx,
+		PathBuf::from("test.md"),
+	)
+	.unwrap();
+	let remote = Issue::parse_virtual(
+		"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tremote diverged body\n",
+		hollow,
+		parent_idx,
+		PathBuf::from("test.md"),
+	)
+	.unwrap();
 
 	// Both diverged, but --reset via URL should skip merge and use remote
 	// Seeds: consensus=-60, local=30, remote=35

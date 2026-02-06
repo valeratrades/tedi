@@ -324,7 +324,9 @@ mod types {
 					let content = std::fs::read_to_string(&vpath)?;
 					tracing::Span::current().record("vpath", tracing::field::debug(&vpath));
 					tracing::Span::current().record("content", content.as_str());
-					issue.update_from_virtual(&content)?;
+					let parent_idx = issue.identity.parent_index;
+					let hollow = old_issue.clone().into();
+					*issue = Issue::parse_virtual(&content, hollow, parent_idx, vpath.clone())?;
 
 					ModifyResult { output: None, file_modified }
 				}

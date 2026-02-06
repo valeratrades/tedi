@@ -321,7 +321,7 @@ impl IssueTimestamps {
 
 /// Metadata for an issue linked to Github.
 /// Parent chain is stored in `IssueIdentity.parent_index`.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, derive_new::new)]
 pub struct LinkedIssueMeta {
 	/// User who created the issue
 	pub user: String,
@@ -408,7 +408,7 @@ pub struct IssueIdentity {
 	/// NB: it's index of the PARENT, not ourselves. Done this way to allow for eg title changes.
 	pub parent_index: IssueIndex,
 	/// Remote connection status
-	remote: IssueRemote,
+	pub remote: IssueRemote,
 }
 impl IssueIdentity {
 	/// Create a new linked Github issue identity.
@@ -1100,21 +1100,53 @@ impl Issue /*{{{1*/ {
 					child_lines.pop();
 				}
 
-				// Recursively parse the child
-				// Build child's parent_index from this issue's identity info
-				let child_parent_idx = match &parsed.identity_info {
-					IssueMarker::Linked { link, .. } => {
-						// Parent is linked - child's parent_index is this issue's full index
-						parent_idx.child(IssueSelector::GitId(link.number()))
+				// Parse the child's selector from its title line to look up in hollow.children
+				let child_parsed = Self::parse_title_line(&child_lines[0], current_line, ctx)?;
+				let child_selector = match &child_parsed.identity_info {
+					IssueMarker::Linked { link, .. } => IssueSelector::GitId(link.number()),
+					IssueMarker::Pending | IssueMarker::Virtual => IssueSelector::title(&child_parsed.title),
+				};
+
+				// Look up child in hollow.children
+				// Only error on missing git-linked child if hollow.children is non-empty (we had prior state)
+				let child_hollow = match hollow.children.get(&child_selector) {
+					Some(ch) => ch.clone(),
+					None => {
+						// Not found - if hollow.children is non-empty and this was git-linked, that's suspicious
+						if !hollow.children.is_empty()
+							&& let IssueMarker::Linked { link, .. } = &child_parsed.identity_info
+						{
+							return Err(ParseError::child_not_in_hollow(ctx.named_source(), ctx.line_span(current_line), link.number()));
+						}
+						// Fresh parse or new child - use default hollow
+						// If parent is virtual, child should also be virtual by default
+						if hollow.remote.is_virtual() {
+							HollowIssue {
+								remote: IssueRemote::Virtual,
+								children: HashMap::new(),
+							}
+						} else {
+							HollowIssue::default()
+						}
 					}
-					IssueMarker::Pending | IssueMarker::Virtual => {
-						// Local/virtual parent - pass through parent_index
-						parent_idx
+				};
+
+				// Build child's parent_index from this issue's identity
+				let child_parent_idx = match &hollow.remote {
+					IssueRemote::Github(inner) => {
+						if let Some(meta) = inner.as_ref() {
+							// Parent is linked - child's parent_index is this issue's full index
+							parent_idx.child(IssueSelector::GitId(meta.link.number()))
+						} else {
+							// Parent is pending - pass through parent_index
+							parent_idx
+						}
 					}
+					IssueRemote::Virtual => parent_idx,
 				};
 				let child_content = child_lines.join("\n");
 				let mut child_lines_iter = child_content.lines().peekable();
-				let child = Self::parse_virtual_at_depth(&mut child_lines_iter, 0, current_line, ctx, child_parent_idx)?;
+				let child = Self::parse_virtual_at_depth(&mut child_lines_iter, 0, current_line, ctx, child_parent_idx, child_hollow)?;
 				children.insert(child.selector(), child);
 				continue;
 			}
@@ -1143,24 +1175,24 @@ impl Issue /*{{{1*/ {
 			});
 		}
 
-		// Build identity from identity_info
-		let identity = match parsed.identity_info {
-			IssueMarker::Linked { user, link } => {
-				// Linked issues: use parent_index if provided, otherwise derive from link (via None)
-				// Timestamps will be loaded from .meta.json separately
-				IssueIdentity::new_linked(parent_idx, user, link, IssueTimestamps::default()) //XXX: not something we should be parsing. Should know this already. User shouldn't be able to specify this manually; we should store it ourselves.
-			}
-			IssueMarker::Pending => {
-				// Pending issues require parent_index from caller
-				let pi = parent_idx.expect("BUG: pending issue without parent_index - use parse_virtual with the issue's full IssueIndex");
-				IssueIdentity::pending(pi)
-			}
-			IssueMarker::Virtual => {
-				// Virtual issues require parent_index from caller
-				let pi = parent_idx.expect("BUG: virtual issue without parent_index - use parse_virtual with the issue's full IssueIndex");
-				IssueIdentity::virtual_issue(pi)
+		// Build identity from hollow.remote if it has meaningful data, otherwise derive from marker
+		// hollow.remote is "meaningful" if it's linked or explicitly virtual
+		// A default hollow (pending with empty children) means we're doing a fresh parse
+		let remote = if hollow.remote.is_linked() || hollow.remote.is_virtual() {
+			hollow.remote
+		} else {
+			// Fresh parse - derive from marker
+			match parsed.identity_info {
+				IssueMarker::Linked { user, link } => IssueRemote::Github(Box::new(Some(LinkedIssueMeta {
+					user,
+					link,
+					timestamps: IssueTimestamps::default(),
+				}))),
+				IssueMarker::Pending => IssueRemote::Github(Box::new(None)),
+				IssueMarker::Virtual => IssueRemote::Virtual,
 			}
 		};
+		let identity = IssueIdentity { parent_index: parent_idx, remote };
 
 		Ok(Issue {
 			identity,
@@ -1504,27 +1536,6 @@ impl Issue /*{{{1*/ {
 		Self::parse_virtual_at_depth(&mut lines, 0, 1, &ctx, IssueIndex::repo_only(("owner", "repo").into()), HollowIssue::default()) // a horrible horrible hack, - everything should really be using standalone IssueContents deser or pass an actual path. There should never be a need to use this stupid function
 	}
 
-	/// Update this issue from virtual format content.
-	///
-	/// This preserves identity information (timestamps, link, user, parent_index) while
-	/// updating the contents from the parsed virtual format. For children, existing
-	/// issues are matched by issue number and their identities are preserved.
-	///
-	/// Use this instead of `parse_virtual` when re-loading an issue after editor edits.
-	//#[deprecated(note = "instead just require &mut self on parse_virtual itself")]
-	//pub fn update_from_virtual(&mut self, content: &str) -> Result<(), ParseError> {
-	//	// Parse the new content using this issue's full index
-	//	let mut parsed = Self::parse_virtual(content, self.full_index())?;
-	//
-	//	let old = self.clone();
-	//
-	//	Self::update_timestamps_from_diff(&mut parsed, &old);
-	//
-	//	*self = parsed;
-	//
-	//	Ok(())
-	//}
-
 	/// Find the position (line, col) of the last blocker item in the serialized content.
 	/// Returns None if there are no blockers.
 	/// Line numbers are 1-indexed to match editor conventions.
@@ -1590,7 +1601,7 @@ impl Issue /*{{{1*/ {
 	}
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, derive_new::new)]
 /// Hollow Issue container, - used for [parsing virtual repr](Issue::parse_virtual)
 ///
 /// Stripped of all info parsable from virtual
@@ -1640,7 +1651,7 @@ pub trait LazyIssue<S: Clone + std::fmt::Debug>: Sized {
 		Ok(issue)
 	}
 }
-type IssueChildren<T> = HashMap<IssueSelector, T>;
+pub type IssueChildren<T> = HashMap<IssueSelector, T>;
 
 /// Result of parsing a checkbox prefix.
 enum CheckboxParseResult<'a> {
@@ -2037,7 +2048,7 @@ mod tests {
 	}
 
 	#[test]
-	fn test_update_from_virtual_child_open_to_closed() {
+	fn test_parse_virtual_child_open_to_closed() {
 		// Start with parent + open child
 		let initial = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
 	Body
@@ -2045,29 +2056,31 @@ mod tests {
 	- [ ] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
-		let mut issue = Issue::deserialize_virtual(initial).unwrap();
+		let issue = Issue::deserialize_virtual(initial).unwrap();
 		assert_eq!(issue[2].contents.state, CloseState::Open);
 
-		// Update with closed child
+		// Update with closed child using parse_virtual with hollow from initial
 		let updated = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
 	Body
 
 	- [x] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
-		issue.update_from_virtual(updated).unwrap();
-		assert_eq!(issue[2].contents.state, CloseState::Closed, "Child should be Closed after update");
+		let hollow = issue.clone().into();
+		let parent_idx = issue.identity.parent_index;
+		let updated_issue = Issue::parse_virtual(updated, hollow, parent_idx, PathBuf::from("test.md")).unwrap();
+		assert_eq!(updated_issue[2].contents.state, CloseState::Closed, "Child should be Closed after update");
 	}
 
 	#[test]
-	fn test_update_from_virtual_child_open_to_not_planned() {
+	fn test_parse_virtual_child_open_to_not_planned() {
 		let initial = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
 	Body
 
 	- [ ] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
-		let mut issue = Issue::deserialize_virtual(initial).unwrap();
+		let issue = Issue::deserialize_virtual(initial).unwrap();
 		assert_eq!(issue[2].contents.state, CloseState::Open);
 
 		let updated = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
@@ -2076,19 +2089,21 @@ mod tests {
 	- [-] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
-		issue.update_from_virtual(updated).unwrap();
-		assert_eq!(issue[2].contents.state, CloseState::NotPlanned, "Child should be NotPlanned after update");
+		let hollow = issue.clone().into();
+		let parent_idx = issue.identity.parent_index;
+		let updated_issue = Issue::parse_virtual(updated, hollow, parent_idx, PathBuf::from("test.md")).unwrap();
+		assert_eq!(updated_issue[2].contents.state, CloseState::NotPlanned, "Child should be NotPlanned after update");
 	}
 
 	#[test]
-	fn test_update_from_virtual_child_open_to_duplicate() {
+	fn test_parse_virtual_child_open_to_duplicate() {
 		let initial = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
 	Body
 
 	- [ ] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
-		let mut issue = Issue::deserialize_virtual(initial).unwrap();
+		let issue = Issue::deserialize_virtual(initial).unwrap();
 		assert_eq!(issue[2].contents.state, CloseState::Open);
 
 		let updated = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
@@ -2097,19 +2112,21 @@ mod tests {
 	- [99] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
-		issue.update_from_virtual(updated).unwrap();
-		assert_eq!(issue[2].contents.state, CloseState::Duplicate(99), "Child should be Duplicate(99) after update");
+		let hollow = issue.clone().into();
+		let parent_idx = issue.identity.parent_index;
+		let updated_issue = Issue::parse_virtual(updated, hollow, parent_idx, PathBuf::from("test.md")).unwrap();
+		assert_eq!(updated_issue[2].contents.state, CloseState::Duplicate(99), "Child should be Duplicate(99) after update");
 	}
 
 	#[test]
-	fn test_update_from_virtual_child_closed_to_open() {
+	fn test_parse_virtual_child_closed_to_open() {
 		let initial = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
 	Body
 
 	- [x] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
-		let mut issue = Issue::deserialize_virtual(initial).unwrap();
+		let issue = Issue::deserialize_virtual(initial).unwrap();
 		assert_eq!(issue[2].contents.state, CloseState::Closed);
 
 		let updated = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
@@ -2118,7 +2135,9 @@ mod tests {
 	- [ ] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
-		issue.update_from_virtual(updated).unwrap();
-		assert_eq!(issue[2].contents.state, CloseState::Open, "Child should be Open after update");
+		let hollow = issue.clone().into();
+		let parent_idx = issue.identity.parent_index;
+		let updated_issue = Issue::parse_virtual(updated, hollow, parent_idx, PathBuf::from("test.md")).unwrap();
+		assert_eq!(updated_issue[2].contents.state, CloseState::Open, "Child should be Open after update");
 	}
 }

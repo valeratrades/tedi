@@ -55,6 +55,10 @@ impl ParseError {
 	pub fn invalid_duplicate_reference(src: NamedSource<String>, span: SourceSpan, issue_number: u64) -> Self {
 		Self::from_diagnostic(ParseDiagnostic::InvalidDuplicateReference { src, span, issue_number })
 	}
+
+	pub fn child_not_in_hollow(src: NamedSource<String>, span: SourceSpan, issue_number: u64) -> Self {
+		Self::from_diagnostic(ParseDiagnostic::ChildNotInHollow { src, span, issue_number })
+	}
 }
 
 /// Error when converting IssueIndex to a git number path.
@@ -169,6 +173,19 @@ enum ParseDiagnostic {
 		#[source_code]
 		src: NamedSource<String>,
 		#[label("issue #{issue_number} not found")]
+		span: SourceSpan,
+		issue_number: u64,
+	},
+
+	#[error("git-linked child issue #{issue_number} not found in HollowIssue.children")]
+	#[diagnostic(
+		code(tedi::parse::child_not_in_hollow),
+		help("when parsing a git-linked child issue, it must exist in the provided HollowIssue.children map. This issue may have been renamed or the local state is out of sync.")
+	)]
+	ChildNotInHollow {
+		#[source_code]
+		src: NamedSource<String>,
+		#[label("issue #{issue_number} not found in HollowIssue.children")]
 		span: SourceSpan,
 		issue_number: u64,
 	},

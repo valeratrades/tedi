@@ -221,8 +221,11 @@ impl Local {
 	///
 	/// This parses one issue file (without loading children from separate files).
 	/// Children field will be empty - they're loaded separately via LazyIssue.
-	fn parse_single_node(content: &str, index: IssueIndex, _fpath_for_error_context_only: &Path) -> Result<Issue, LocalError> {
-		let mut issue = Issue::parse_virtual(content, index)?;
+	fn parse_single_node(content: &str, index: IssueIndex, fpath_for_error_context_only: &Path) -> Result<Issue, LocalError> {
+		// Derive parent_index from the full index (all but the last selector)
+		let parent_idx = index.parent().unwrap_or_else(|| IssueIndex::repo_only(index.repo_info()));
+		let hollow = HollowIssue::default();
+		let mut issue = Issue::parse_virtual(content, hollow, parent_idx, fpath_for_error_context_only.to_path_buf())?;
 		// Clear any inline children (filesystem format stores them in separate files)
 		if !issue.children.is_empty() {
 			tracing::warn!("issue children read from file are not empty. Wtf {:?}", &issue.children);
@@ -1177,7 +1180,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use v_utils::prelude::*;
 
-use crate::{Issue, IssueIndex, IssueSelector, RepoInfo};
+use crate::{HollowIssue, Issue, IssueIndex, IssueSelector, RepoInfo};
 
 //==============================================================================
 // Local - The interface for local issue storage
