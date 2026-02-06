@@ -1718,6 +1718,18 @@ pub struct VirtualIssue {
 	pub children: IssueChildren<Self>,
 }
 
+impl From<Issue> for VirtualIssue {
+	fn from(issue: Issue) -> Self {
+		let selector = issue.selector();
+		let children = issue.children.into_iter().map(|(sel, child)| (sel, child.into())).collect();
+		Self {
+			selector,
+			contents: issue.contents,
+			children,
+		}
+	}
+}
+
 impl VirtualIssue {
 	/// Parse virtual representation (markdown with full tree) into a VirtualIssue.
 	///

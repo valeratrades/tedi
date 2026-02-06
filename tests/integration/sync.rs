@@ -376,7 +376,7 @@ async fn test_closing_issue_syncs_state_change() {
 	ctx.remote_legacy(&open_issue, Some(Seed::new(5)));
 
 	// Edit to close the issue
-	let mut closed_issue = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tbody\n");
+	let mut closed_issue: tedi::VirtualIssue = open_issue.clone().into();
 	closed_issue.contents.state = tedi::CloseState::Closed;
 
 	let out = ctx.open_issue(&open_issue).edit(&closed_issue, false).run();
@@ -510,7 +510,7 @@ async fn test_reset_syncs_changes_after_editor() {
 	ctx.remote_legacy(&remote_issue, None);
 
 	// emulate user closing the issue after
-	let mut modified_issue = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tremote body\n");
+	let mut modified_issue: tedi::VirtualIssue = remote_issue.clone().into();
 	modified_issue.contents.state = tedi::CloseState::Closed;
 	let out = ctx.open_url(("o", "r").into(), 1).args(&["--reset"]).edit(&modified_issue, false).run();
 

@@ -128,7 +128,7 @@ async fn test_duplicate_removes_local_file() {
 	ctx.remote_legacy(&original, None);
 
 	// Modify the issue to mark it as duplicate
-	let mut duplicate = parse_virtual("- [ ] Some Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tbody\n");
+	let mut duplicate: tedi::VirtualIssue = original.clone().into();
 	duplicate.contents.state = tedi::CloseState::Duplicate(999);
 
 	// Sync the duplicate state
