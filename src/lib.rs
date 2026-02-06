@@ -3,6 +3,7 @@
 pub mod issue;
 pub mod local;
 pub mod mocks;
+pub mod open_interactions;
 pub mod sink;
 
 pub mod current_user {

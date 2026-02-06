@@ -665,6 +665,60 @@ impl Local {
 		}
 		Ok(())
 	}
+
+	/// Reconstruct a `HollowIssue` from project metadata and filesystem tree.
+	///
+	/// Traverses the directory tree for the issue at `idx`, parses child filenames
+	/// into `IssueSelector`s, and for each `GitId` child looks up its `IssueMeta`
+	/// in `ProjectMeta` to build the `LinkedIssueMeta`.
+	pub fn read_hollow_from_project_meta(idx: IssueIndex) -> Result<crate::HollowIssue, LocalError> {
+		let repo_info = idx.repo_info();
+		let project_meta = Self::load_project_meta(repo_info);
+
+		let parent_is_git_id = idx.index().last().map_or(false, |s| matches!(s, IssueSelector::GitId(_)));
+
+		// Build this node's remote from project_meta
+		let remote = if let Some(IssueSelector::GitId(n)) = idx.index().last() {
+			let issue_meta = project_meta.issues.get(n);
+			let user = issue_meta.and_then(|m| m.user.clone()).unwrap_or_default();
+			let timestamps = issue_meta.map(|m| m.timestamps.clone()).unwrap_or_default();
+			let link = crate::IssueLink::parse(&format!("https://github.com/{}/{}/issues/{n}", repo_info.owner(), repo_info.repo())).expect("constructed link must be valid");
+			Some(Box::new(crate::LinkedIssueMeta::new(user, link, timestamps)))
+		} else {
+			None
+		};
+
+		// Resolve the issue directory to find children
+		let local_path = LocalPath::new(idx);
+		let issue_dir = match local_path.resolve_parent(FsReader) {
+			Ok(resolved) => resolved.search().ok().and_then(|r| r.issue_dir()),
+			Err(_) => None,
+		};
+
+		let mut children = HashMap::new();
+		if let Some(dir_path) = issue_dir {
+			let entries = FsReader.list_dir(&dir_path)?;
+			for name in entries {
+				if name.starts_with(Self::MAIN_ISSUE_FILENAME) {
+					continue;
+				}
+				let Some(child_selector) = Self::parse_issue_selector_from_name(&name) else {
+					continue;
+				};
+
+				// If child is GitId but parent isn't, that's an error
+				if matches!(child_selector, IssueSelector::GitId(_)) && !parent_is_git_id {
+					return Err(LocalError::Other(eyre!("child issue {child_selector:?} has GitId but parent {:?} does not", idx.index().last())));
+				}
+
+				let child_idx = idx.child(child_selector);
+				let child_hollow = Self::read_hollow_from_project_meta(child_idx)?;
+				children.insert(child_selector, child_hollow);
+			}
+		}
+
+		Ok(crate::HollowIssue::new(remote, children))
+	}
 }
 
 /// Exact match level for fzf queries.

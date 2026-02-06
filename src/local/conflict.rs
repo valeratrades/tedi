@@ -18,7 +18,12 @@ use thiserror::Error;
 use v_utils::prelude::*;
 
 use super::Local;
-use crate::{HollowIssue, Issue, IssueIndex, RepoInfo, VirtualIssue, local::consensus::is_git_initialized};
+use crate::{
+	Issue, IssueIndex, LazyIssue as _, RepoInfo, VirtualIssue,
+	local::{GitReader, LocalFs, LocalIssueSource, LocalPath, consensus::is_git_initialized},
+	open_interactions::Remote,
+	sink::Sink,
+};
 
 //==============================================================================
 // Error Types
@@ -72,7 +77,7 @@ pub fn conflict_file_path(owner: &str) -> PathBuf {
 //==============================================================================
 
 /// Check for unresolved conflict for a given owner.
-pub fn check_conflict(issue_index: IssueIndex) -> Result<Option<PathBuf>> {
+pub async fn check_conflict(issue_index: IssueIndex) -> Result<Option<PathBuf>> {
 	let conflict_fpath = conflict_file_path(issue_index.owner());
 
 	if !conflict_fpath.exists() {
@@ -87,16 +92,23 @@ pub fn check_conflict(issue_index: IssueIndex) -> Result<Option<PathBuf>> {
 	} else {
 		// have the conflict file, but user has had resolved it, - sync then cleanup
 		{
-			let virtual_issue = VirtualIssue::parse_virtual(&content, conflict_fpath)?;
-			let project_meta = Local::load_project_meta(issue_index.repo_info());
-			let issue = Issue::from_combined(HollowIssue::default(), virtual_issue, issue_index.parent().unwrap(), project_meta.virtual_project);
+			let new_issue = {
+				let mut new_issue_but_old_local_timestamps = {
+					let virtual_issue = VirtualIssue::parse_virtual(&content, conflict_fpath)?;
+					let hollow = Local::read_hollow_from_project_meta(issue_index)?;
+					let project_meta = Local::load_project_meta(issue_index.repo_info());
+					Issue::from_combined(hollow, virtual_issue, issue_index.parent().unwrap(), project_meta.virtual_project)
+				};
 
-			//Q: we should preserve the timestamps of original issues post resolution.
-			//C [consequence]: so we must have actual IssueIndex of the issue being resolved, to get both sources
-			//C: this should take IssueIndex; then
-			//TODO: impl IssueIndex -> HollowIssue
+				let last_consensus_issue = Issue::load(LocalIssueSource::new(LocalPath::from(issue_index), GitReader)).await?;
+
+				new_issue_but_old_local_timestamps.update_timestamps_from_diff(&last_consensus_issue);
+				new_issue_but_old_local_timestamps
+			};
+
+			<Issue as Sink<LocalFs>>::sink(&mut new_issue, None).await?;
+			<Issue as Sink<Remote>>::sink(&mut new_issue, None).await?;
 		}
-
 		conflict_resolution_cleanup(issue_index.owner())?;
 		Ok(None)
 	}
