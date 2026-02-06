@@ -224,7 +224,7 @@ impl Local {
 	fn parse_single_node(content: &str, index: IssueIndex, fpath_for_error_context_only: &Path) -> Result<Issue, LocalError> {
 		// Derive parent_index from the full index (all but the last selector)
 		let parent_idx = index.parent().unwrap_or_else(|| IssueIndex::repo_only(index.repo_info()));
-		let hollow = HollowIssue::default();
+		let hollow = HollowIssue::default_pending(); //HACK: this is just a plug to have deprecated logic compile. HollowIssue won't be needed at all when we write it correctly; and the function itself should return `VirtualIssue` not `Issue`
 		let mut issue = Issue::parse_virtual(content, hollow, parent_idx, fpath_for_error_context_only.to_path_buf())?;
 		// Clear any inline children (filesystem format stores them in separate files)
 		if !issue.children.is_empty() {

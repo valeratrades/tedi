@@ -132,6 +132,24 @@ pub trait GitExt {
 	///
 	/// If `seed` is provided, timestamps are generated from it for the mock response.
 	fn remote_legacy(&self, issue: &Issue, seed: Option<Seed>);
+
+	/// Set up mock Github API from VirtualIssue. Uses defaults: owner="o", repo="r", user="mock_user".
+	/// Handles sub-issues automatically.
+	/// Panics if same (owner, repo, number) is submitted twice.
+	///
+	/// If `seed` is provided, timestamps are generated from it for the mock response.
+	fn remote(&self, issue: &tedi::VirtualIssue, seed: Option<Seed>, is_virtual: bool);
+
+	/// Write issue to local filesystem (uncommitted). Uses defaults: owner="o", repo="r", user="mock_user".
+	///
+	/// If `seed` is provided, timestamps are generated from it and written to `.meta.json`.
+	async fn local(&self, issue: &tedi::VirtualIssue, seed: Option<Seed>, is_virtual: bool);
+
+	/// Write issue and commit to git as consensus state. Uses defaults: owner="o", repo="r", user="mock_user".
+	/// Panics if same (owner, repo, number) is submitted twice.
+	///
+	/// If `seed` is provided, timestamps are generated from it and written to `.meta.json`.
+	async fn consensus(&self, issue: &tedi::VirtualIssue, seed: Option<Seed>, is_virtual: bool);
 }
 /// Base timestamp: 2001-09-11 12:00:00 UTC (midday).
 const BASE_TIMESTAMP_SECS: i64 = 1000209600;
@@ -192,6 +210,44 @@ where
 		let entry = map.entry(id).or_default();
 		f(entry)
 	})
+}
+
+const OWNER: &str = "o";
+const REPO: &str = "r";
+const USER: &str = "mock_user";
+
+/// Convert VirtualIssue to Issue by building HollowIssue with timestamps from seed.
+/// Uses defaults: owner="o", repo="r", user="mock_user".
+pub fn with_timestamps(virtual_issue: &tedi::VirtualIssue, seed: Option<Seed>, is_virtual: bool) -> Issue {
+	let timestamps = seed.map(timestamps_from_seed).unwrap_or_default();
+	let hollow = build_hollow_from_virtual(virtual_issue, &timestamps, is_virtual);
+	let parent_idx = tedi::IssueIndex::repo_only((OWNER, REPO).into());
+	Issue::from_combined(hollow, virtual_issue.clone(), parent_idx)
+}
+
+/// Recursively build HollowIssue tree from VirtualIssue, setting up remote with timestamps.
+fn build_hollow_from_virtual(virtual_issue: &tedi::VirtualIssue, timestamps: &IssueTimestamps, is_virtual: bool) -> tedi::HollowIssue {
+	let remote = match &virtual_issue.selector {
+		tedi::IssueSelector::GitId(n) => {
+			let link = tedi::IssueLink::parse(&format!("https://github.com/{OWNER}/{REPO}/issues/{n}")).unwrap();
+			tedi::IssueRemote::Github(Box::new(Some(tedi::LinkedIssueMeta::new(USER.to_string(), link, timestamps.clone()))))
+		}
+		tedi::IssueSelector::Title(_) | tedi::IssueSelector::Regex(_) => match is_virtual {
+			true => tedi::IssueRemote::Virtual,
+			false => tedi::IssueRemote::Github(Box::new(None)),
+		},
+	};
+
+	let children = virtual_issue
+		.children
+		.iter()
+		.map(|(selector, child)| {
+			let child_hollow = build_hollow_from_virtual(child, timestamps, is_virtual);
+			(*selector, child_hollow)
+		})
+		.collect();
+
+	tedi::HollowIssue::new(remote, children)
 }
 
 impl GitExt for TestContext {
@@ -271,6 +327,69 @@ impl GitExt for TestContext {
 
 		// Rebuild and write mock state
 		self.rebuild_mock_state();
+	}
+
+	fn remote(&self, issue: &tedi::VirtualIssue, seed: Option<Seed>, is_virtual: bool) {
+		let issue = with_timestamps(issue, seed, is_virtual);
+		let (owner, repo, number) = extract_issue_coords(&issue);
+		let key = (owner.clone(), repo.clone(), number);
+
+		with_state(self, |state| {
+			if state.remote_issue_ids.contains(&key) {
+				panic!("remote() called twice for same issue: {owner}/{repo}#{number}");
+			}
+			add_issue_recursive(state, tedi::RepoInfo::new(&owner, &repo), number, None, &issue, issue.identity.as_linked().map(|m| &m.timestamps));
+		});
+
+		self.rebuild_mock_state();
+	}
+
+	async fn local(&self, issue: &tedi::VirtualIssue, seed: Option<Seed>, is_virtual: bool) {
+		let issue = with_timestamps(issue, seed, is_virtual);
+		let (owner, repo, number) = extract_issue_coords(&issue);
+		let key = (owner.clone(), repo.clone(), number);
+
+		with_state(self, |state| {
+			if state.local_issues.contains(&key) {
+				panic!("local() called twice for same issue: {owner}/{repo}#{number}");
+			}
+			state.local_issues.insert(key);
+		});
+
+		self.set_issues_dir_override();
+		let mut issue_clone = issue.clone();
+		<Issue as Sink<LocalFs>>::sink(&mut issue_clone, None).await.expect("local sink failed");
+
+		if let Some(seed) = seed {
+			let timestamps = timestamps_from_seed(seed);
+			let meta = IssueMeta { timestamps };
+			Local::save_issue_meta(tedi::RepoInfo::new(&owner, &repo), number, &meta).expect("save_issue_meta failed");
+		}
+	}
+
+	async fn consensus(&self, issue: &tedi::VirtualIssue, seed: Option<Seed>, is_virtual: bool) {
+		let issue = with_timestamps(issue, seed, is_virtual);
+		let (owner, repo, number) = extract_issue_coords(&issue);
+		let key = (owner.clone(), repo.clone(), number);
+
+		with_state(self, |state| {
+			if state.consensus_issues.contains(&key) {
+				panic!("consensus() called twice for same issue: {owner}/{repo}#{number}");
+			}
+			state.consensus_issues.insert(key);
+		});
+
+		self.init_git();
+		self.set_issues_dir_override();
+		let mut issue_clone = issue.clone();
+		<Issue as Sink<LocalFs>>::sink(&mut issue_clone, None).await.expect("local sink failed");
+		<Issue as Sink<Consensus>>::sink(&mut issue_clone, None).await.expect("consensus sink failed");
+
+		if let Some(seed) = seed {
+			let timestamps = timestamps_from_seed(seed);
+			let meta = IssueMeta { timestamps };
+			Local::save_issue_meta(tedi::RepoInfo::new(&owner, &repo), number, &meta).expect("save_issue_meta failed");
+		}
 	}
 }
 

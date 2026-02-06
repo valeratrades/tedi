@@ -389,6 +389,10 @@ pub fn hollow_mock(issue_number: u64, children: IssueChildren<HollowIssue>) -> H
 pub fn parse(content: &str) -> Issue {
 	Issue::deserialize_virtual(content).expect("failed to parse test issue")
 }
+
+pub fn parse_virtual(content: &str) -> tedi::VirtualIssue {
+	tedi::VirtualIssue::parse_virtual(content, std::path::PathBuf::from("test.md")).expect("failed to parse test issue")
+}
 /// Render a fixture with optional error output if the command failed.
 pub fn render_fixture(renderer: FixtureRenderer<'_>, output: &RunOutput) -> String {
 	let result = renderer.always_show_filepath().render();

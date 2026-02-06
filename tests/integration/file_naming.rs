@@ -9,7 +9,12 @@
 
 use tedi::Issue;
 
-use crate::common::{TestContext, are_you_sure::UnsafePathExt, git::GitExt};
+use crate::common::{
+	TestContext,
+	are_you_sure::UnsafePathExt,
+	git::{GitExt, with_timestamps},
+	parse_virtual,
+};
 
 fn parse(content: &str) -> Issue {
 	Issue::deserialize_virtual(content).expect("failed to parse test issue")
@@ -144,22 +149,23 @@ async fn test_duplicate_removes_local_file() {
 #[tokio::test]
 async fn test_duplicate_reference_to_existing_issue_succeeds() {
 	let ctx = TestContext::build("");
+	let is_virtual = false;
 
 	// Set up a local issue and a target duplicate issue
-	let original = parse("- [ ] Some Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tbody\n");
-	let dup_target = parse("- [ ] Target Issue <!-- @mock_user https://github.com/o/r/issues/2 -->\n\ttarget body\n");
-	ctx.consensus_legacy(&original, None).await;
+	let original = parse_virtual("- [ ] Some Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tbody\n");
+	ctx.consensus(&original, None, is_virtual).await;
+	ctx.remote(&original, None, is_virtual);
 
-	// Set up mock Github with both issues
-	ctx.remote_legacy(&original, None);
-	ctx.remote_legacy(&dup_target, None);
+	let dup_target = parse_virtual("- [ ] Target Issue <!-- @mock_user https://github.com/o/r/issues/2 -->\n\ttarget body\n");
+	ctx.remote(&dup_target, None, is_virtual);
 
 	// Modify the issue to mark it as duplicate of #2 (which exists)
-	let mut duplicate = original.clone();
+	let original_issue = with_timestamps(&original, None, is_virtual);
+	let mut duplicate = original_issue.clone();
 	duplicate.contents.state = tedi::CloseState::Duplicate(2);
 
 	// Sync the duplicate state
-	let out = ctx.open_issue(&original).edit(&duplicate).run();
+	let out = ctx.open_issue(&original_issue).edit(&duplicate).run();
 
 	eprintln!("stdout: {}", out.stdout);
 	eprintln!("stderr: {}", out.stderr);

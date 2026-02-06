@@ -396,11 +396,6 @@ impl IssueRemote {
 		}
 	}
 }
-impl Default for IssueRemote {
-	fn default() -> Self {
-		Self::Github(Box::new(None))
-	}
-}
 
 /// Identity of an issue - has optional parent_index (for location) with remote connection info.
 #[derive(Clone, Debug)]
@@ -893,7 +888,10 @@ impl Issue /*{{{1*/ {
 			.into_iter()
 			.map(|(selector, virtual_child)| {
 				// Look up hollow child - use default if not found
-				let child_hollow = hollow.children.get(&selector).cloned().unwrap_or_default();
+				let child_hollow = hollow.children.get(&selector).cloned().unwrap_or(match hollow.remote {
+					IssueRemote::Github(_) => HollowIssue::default_pending(),
+					IssueRemote::Virtual => HollowIssue::default_virtual(),
+				});
 
 				// Build child's parent_index
 				let child_parent_idx = match &identity.remote {
@@ -1170,7 +1168,10 @@ impl Issue /*{{{1*/ {
 								children: HashMap::new(),
 							}
 						} else {
-							HollowIssue::default()
+							match hollow.remote {
+								IssueRemote::Github(_) => HollowIssue::default_pending(),
+								IssueRemote::Virtual => HollowIssue::default_virtual(),
+							}
 						}
 					}
 				};
@@ -1577,7 +1578,7 @@ impl Issue /*{{{1*/ {
 			PathBuf::from_str("a naughty naughty test decided to use a bad to not pass the filepath").unwrap(),
 		);
 		let mut lines = content.lines().peekable();
-		Self::parse_virtual_at_depth(&mut lines, 0, 1, &ctx, IssueIndex::repo_only(("owner", "repo").into()), HollowIssue::default()) // a horrible horrible hack, - everything should really be using standalone IssueContents deser or pass an actual path. There should never be a need to use this stupid function
+		Self::parse_virtual_at_depth(&mut lines, 0, 1, &ctx, IssueIndex::repo_only(("owner", "repo").into()), HollowIssue::default_pending()) // a horrible horrible hack, - everything should really be using standalone IssueContents deser or pass an actual path. There should never be a need to use this stupid function
 	}
 
 	/// Find the position (line, col) of the last blocker item in the serialized content.
@@ -1645,13 +1646,28 @@ impl Issue /*{{{1*/ {
 	}
 }
 
-#[derive(Clone, Debug, Default, PartialEq, derive_new::new)]
+#[derive(Clone, Debug, PartialEq, derive_new::new)]
 /// Hollow Issue container, - used for [parsing virtual repr](Issue::parse_virtual)
 ///
 /// Stripped of all info parsable from virtual
 pub struct HollowIssue {
 	pub remote: IssueRemote,
 	pub children: IssueChildren<HollowIssue>,
+}
+impl HollowIssue {
+	pub fn default_virtual() -> Self {
+		Self {
+			remote: IssueRemote::Virtual,
+			children: HashMap::new(),
+		}
+	}
+
+	pub fn default_pending() -> Self {
+		Self {
+			remote: IssueRemote::Github(Box::new(None)),
+			children: HashMap::new(),
+		}
+	}
 }
 impl From<Issue> for HollowIssue {
 	fn from(value: Issue) -> Self {
