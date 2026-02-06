@@ -3,24 +3,19 @@
 //! These tests verify that `blocker add` and `blocker pop` work correctly
 //! when operating on issue files (integrated mode) rather than standalone blocker files.
 
-use tedi::Issue;
-
 use crate::common::{
 	TestContext,
 	are_you_sure::{UnsafePathExt, read_issue_file},
 	git::GitExt,
+	parse_virtual,
 };
-
-fn parse(content: &str) -> Issue {
-	Issue::deserialize_virtual(content).expect("failed to parse test issue")
-}
 
 #[tokio::test]
 async fn test_blocker_add_in_integrated_mode() {
 	let ctx = TestContext::build("");
 
 	// Create issue with existing blockers section
-	let issue = parse(
+	let vi = parse_virtual(
 		"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
 		 \tBody text.\n\
 		 \n\
@@ -29,7 +24,7 @@ async fn test_blocker_add_in_integrated_mode() {
 	);
 
 	// Set up: local issue file exists
-	ctx.local_legacy(&issue, None).await;
+	let issue = ctx.local(&vi, None, false).await;
 	let issue_path = ctx.resolve_issue_path(&issue);
 
 	// Set this issue as the current blocker issue
@@ -55,7 +50,7 @@ async fn test_blocker_pop_in_integrated_mode() {
 	let ctx = TestContext::build("");
 
 	// Create issue with multiple blockers
-	let issue = parse(
+	let vi = parse_virtual(
 		"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
 		 \tBody text.\n\
 		 \n\
@@ -66,7 +61,7 @@ async fn test_blocker_pop_in_integrated_mode() {
 	);
 
 	// Set up: local issue file exists
-	ctx.local_legacy(&issue, None).await;
+	let issue = ctx.local(&vi, None, false).await;
 	let issue_path = ctx.resolve_issue_path(&issue);
 
 	// Set this issue as the current blocker issue
@@ -100,10 +95,10 @@ async fn test_blocker_add_creates_blockers_section_if_missing() {
 	let ctx = TestContext::build("");
 
 	// Create issue WITHOUT blockers section
-	let issue = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tBody text without blockers section.\n");
+	let vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tBody text without blockers section.\n");
 
 	// Set up: local issue file exists
-	ctx.local_legacy(&issue, None).await;
+	let issue = ctx.local(&vi, None, false).await;
 	let issue_path = ctx.resolve_issue_path(&issue);
 
 	// Set this issue as the current blocker issue
@@ -155,7 +150,7 @@ async fn test_blocker_add_with_header_context() {
 	let ctx = TestContext::build("");
 
 	// Create issue with blockers section containing headers
-	let issue = parse(
+	let vi = parse_virtual(
 		"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
 		 \tBody text.\n\
 		 \n\
@@ -167,7 +162,7 @@ async fn test_blocker_add_with_header_context() {
 	);
 
 	// Set up: local issue file exists
-	ctx.local_legacy(&issue, None).await;
+	let issue = ctx.local(&vi, None, false).await;
 	let issue_path = ctx.resolve_issue_path(&issue);
 
 	// Set this issue as the current blocker issue

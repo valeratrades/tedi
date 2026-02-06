@@ -7,21 +7,15 @@
 //! Also tests that old file placements are automatically cleaned up when the
 //! format changes (e.g., when an issue gains sub-issues).
 
-use tedi::Issue;
-
 use crate::common::{TestContext, are_you_sure::UnsafePathExt, git::GitExt, parse_virtual};
-
-fn parse(content: &str) -> Issue {
-	Issue::deserialize_virtual(content).expect("failed to parse test issue")
-}
 
 #[tokio::test]
 async fn test_flat_format_preserved_when_no_sub_issues() {
 	let ctx = TestContext::build("");
 
-	let parent = parse("- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tparent body\n");
-	ctx.consensus_legacy(&parent, None).await;
-	ctx.remote_legacy(&parent, None);
+	let vi = parse_virtual("- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tparent body\n");
+	let parent = ctx.consensus(&vi, None, false).await;
+	ctx.remote(&vi, None, false);
 
 	let out = ctx.open_issue(&parent).run();
 
@@ -42,11 +36,11 @@ async fn test_old_flat_file_removed_when_sub_issues_appear() {
 	let ctx = TestContext::build("");
 
 	// Start with a flat issue locally
-	let parent = parse("- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tparent body\n");
-	ctx.consensus_legacy(&parent, None).await;
+	let parent_vi = parse_virtual("- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tparent body\n");
+	let parent = ctx.consensus(&parent_vi, None, false).await;
 
 	// Remote now has sub-issues - create a version with children for mock
-	let with_children = parse(
+	let with_children = parse_virtual(
 		"- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
 		 \tparent body\n\
 		 \n\
@@ -54,7 +48,7 @@ async fn test_old_flat_file_removed_when_sub_issues_appear() {
 		 \t\tchild body\n",
 	);
 	// Remote has the version with children
-	ctx.remote_legacy(&with_children, None);
+	ctx.remote(&with_children, None, false);
 
 	// Need --pull since local == consensus (no uncommitted changes)
 	let out = ctx.open_issue(&parent).args(&["--pull"]).run();
@@ -79,18 +73,18 @@ async fn test_old_placement_discarded_with_pull() {
 	let ctx = TestContext::build("");
 
 	// Set up a flat issue locally, committed to git
-	let parent = parse("- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tparent body\n");
-	ctx.consensus_legacy(&parent, None).await;
+	let parent_vi = parse_virtual("- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tparent body\n");
+	let parent = ctx.consensus(&parent_vi, None, false).await;
 
 	// Remote has sub-issues now (simulating someone else adding them)
-	let with_children = parse(
+	let with_children = parse_virtual(
 		"- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
 		 \tparent body\n\
 		 \n\
 		 \t- [ ] Child Issue <!--sub @mock_user https://github.com/o/r/issues/2 -->\n\
 		 \t\tchild body\n",
 	);
-	ctx.remote_legacy(&with_children, None);
+	ctx.remote(&with_children, None, false);
 
 	// Need --pull since local == consensus (no uncommitted local changes)
 	let out = ctx.open_issue(&parent).args(&["--pull"]).run();
@@ -118,12 +112,12 @@ async fn test_duplicate_removes_local_file() {
 	let ctx = TestContext::build("");
 
 	// Set up a local issue
-	let original = parse("- [ ] Some Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tbody\n");
-	ctx.consensus_legacy(&original, None).await;
-	ctx.remote_legacy(&original, None);
+	let original_vi = parse_virtual("- [ ] Some Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tbody\n");
+	let original = ctx.consensus(&original_vi, None, false).await;
+	ctx.remote(&original_vi, None, false);
 
 	// Modify the issue to mark it as duplicate
-	let mut duplicate: tedi::VirtualIssue = original.clone().into();
+	let mut duplicate = original_vi.clone();
 	duplicate.contents.state = tedi::CloseState::Duplicate(999);
 
 	// Sync the duplicate state

@@ -4,13 +4,7 @@
 //! After `open --reset`, the consensus matches remote exactly, so any user edit
 //! should be detected as LocalOnly (no merge needed).
 
-use tedi::Issue;
-
 use crate::common::{TestContext, git::GitExt, parse_virtual};
-
-fn parse(content: &str) -> Issue {
-	Issue::deserialize_virtual(content).expect("failed to parse test issue")
-}
 
 /// After --reset on an issue with sub-issues, marking a sub-issue closed should succeed.
 /// No conflict should occur because consensus == remote after reset.
@@ -19,14 +13,14 @@ fn test_reset_with_subissue_edit() {
 	let ctx = TestContext::build("");
 
 	// Remote has parent with one open sub-issue
-	let remote_state = parse(
+	let remote_vi = parse_virtual(
 		"- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
 		 \tparent body\n\
 		 \n\
 		 \t- [ ] Sub Issue <!--sub @mock_user https://github.com/o/r/issues/2 -->\n\
 		 \t\tsub body\n",
 	);
-	ctx.remote_legacy(&remote_state, None);
+	ctx.remote(&remote_vi, None, false);
 
 	// User edits: mark sub-issue as closed
 	let edited = parse_virtual(
@@ -50,8 +44,8 @@ fn test_reset_with_subissue_edit() {
 fn test_reset_with_body_edit() {
 	let ctx = TestContext::build("");
 
-	let remote_state = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\toriginal body\n");
-	ctx.remote_legacy(&remote_state, None);
+	let remote_vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\toriginal body\n");
+	ctx.remote(&remote_vi, None, false);
 
 	let edited = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tmodified body\n");
 
@@ -80,7 +74,7 @@ async fn test_reset_discards_local_subissue_modifications() {
 
 	// 3-level hierarchy: grandparent -> parent -> child
 	// Parent gets its own directory because it has children
-	let remote_state = parse(
+	let remote_vi = parse_virtual(
 		"- [ ] Grandparent <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
 		 \tgrandparent body\n\
 		 \n\
@@ -90,7 +84,7 @@ async fn test_reset_discards_local_subissue_modifications() {
 		 \t\t- [ ] Child <!--sub @mock_user https://github.com/o/r/issues/3 -->\n\
 		 \t\t\tchild body\n",
 	);
-	ctx.remote_legacy(&remote_state, None);
+	let remote_state = ctx.remote(&remote_vi, None, false);
 
 	// Step 1: Initial fetch to create local files
 	let out = ctx.open_url(("o", "r").into(), 1).run();

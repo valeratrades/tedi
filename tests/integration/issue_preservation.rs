@@ -3,7 +3,6 @@
 //! Tests that nested issues, blockers, and other content survive the
 //! parse -> edit -> serialize -> sync cycle intact.
 
-use tedi::Issue;
 use v_fixtures::FixtureRenderer;
 
 use crate::{
@@ -16,16 +15,12 @@ use crate::{
 	render_fixture,
 };
 
-fn parse(content: &str) -> Issue {
-	Issue::deserialize_virtual(content).expect("failed to parse test issue")
-}
-
 #[tokio::test]
 async fn test_comments_with_ids_sync_correctly() {
 	let ctx = TestContext::build("");
 
 	// Issue with a comment that has an ID
-	let issue = parse(
+	let vi = parse_virtual(
 		"- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
 		 \tbody text\n\
 		 \n\
@@ -33,8 +28,8 @@ async fn test_comments_with_ids_sync_correctly() {
 		 \tThis is my comment\n",
 	);
 
-	ctx.consensus_legacy(&issue, None).await;
-	ctx.remote_legacy(&issue, None);
+	let issue = ctx.consensus(&vi, None, false).await;
+	ctx.remote(&vi, None, false);
 
 	let out = ctx.open_issue(&issue).args(&["--force"]).run();
 	eprintln!("stdout: {}", out.stdout);
@@ -48,7 +43,7 @@ async fn test_comments_with_ids_sync_correctly() {
 async fn test_nested_issues_preserved_through_sync() {
 	let ctx = TestContext::build("");
 
-	let issue = parse(
+	let vi = parse_virtual(
 		"- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
 		 \tlorem ipsum\n\
 		 \n\
@@ -59,8 +54,8 @@ async fn test_nested_issues_preserved_through_sync() {
 		 \t\tnested body c\n",
 	);
 
-	ctx.consensus_legacy(&issue, None).await;
-	ctx.remote_legacy(&issue, None);
+	let issue = ctx.consensus(&vi, None, false).await;
+	ctx.remote(&vi, None, false);
 
 	let out = ctx.open_issue(&issue).run();
 	eprintln!("stdout: {}", out.stdout);
@@ -85,7 +80,7 @@ async fn test_nested_issues_preserved_through_sync() {
 async fn test_blockers_preserved_through_sync() {
 	let ctx = TestContext::build("");
 
-	let issue = parse(
+	let vi = parse_virtual(
 		"- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
 		 \tlorem ipsum\n\
 		 \n\
@@ -94,8 +89,8 @@ async fn test_blockers_preserved_through_sync() {
 		 \t- second blocker\n",
 	);
 
-	ctx.consensus_legacy(&issue, None).await;
-	ctx.remote_legacy(&issue, None);
+	let issue = ctx.consensus(&vi, None, false).await;
+	ctx.remote(&vi, None, false);
 
 	let out = ctx.open_issue(&issue).run();
 	eprintln!("stdout: {}", out.stdout);
@@ -115,10 +110,10 @@ async fn test_blockers_added_during_edit_preserved() {
 	let ctx = TestContext::build("");
 
 	// Initial state: no blockers
-	let initial_issue = parse("- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tlorem ipsum\n");
+	let initial_vi = parse_virtual("- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tlorem ipsum\n");
 
-	ctx.consensus_legacy(&initial_issue, None).await;
-	ctx.remote_legacy(&initial_issue, None);
+	let initial_issue = ctx.consensus(&initial_vi, None, false).await;
+	ctx.remote(&initial_vi, None, false);
 
 	// User adds blockers during edit
 	let edited_issue = parse_virtual(
@@ -145,7 +140,7 @@ async fn test_blockers_added_during_edit_preserved() {
 async fn test_blockers_with_headers_preserved() {
 	let ctx = TestContext::build("");
 
-	let issue = parse(
+	let vi = parse_virtual(
 		"- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
 		 \tlorem ipsum\n\
 		 \n\
@@ -158,8 +153,8 @@ async fn test_blockers_with_headers_preserved() {
 		 \t- task gamma\n",
 	);
 
-	ctx.consensus_legacy(&issue, None).await;
-	ctx.remote_legacy(&issue, None);
+	let issue = ctx.consensus(&vi, None, false).await;
+	ctx.remote(&vi, None, false);
 
 	let out = ctx.open_issue(&issue).run();
 	eprintln!("stdout: {}", out.stdout);
@@ -179,7 +174,7 @@ async fn test_blockers_with_headers_preserved() {
 async fn test_nested_issues_and_blockers_together() {
 	let ctx = TestContext::build("");
 
-	let issue = parse(
+	let vi = parse_virtual(
 		"- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
 		 \tlorem ipsum\n\
 		 \n\
@@ -191,8 +186,8 @@ async fn test_nested_issues_and_blockers_together() {
 		 \t\tnested body\n",
 	);
 
-	ctx.consensus_legacy(&issue, None).await;
-	ctx.remote_legacy(&issue, None);
+	let issue = ctx.consensus(&vi, None, false).await;
+	ctx.remote(&vi, None, false);
 
 	let out = ctx.open_issue(&issue).run();
 	eprintln!("stdout: {}", out.stdout);
@@ -217,7 +212,7 @@ async fn test_closing_nested_issue_creates_bak_file() {
 	let ctx = TestContext::build("");
 
 	// Start with open nested issue
-	let initial_issue = parse(
+	let initial_vi = parse_virtual(
 		"- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
 		 \tlorem ipsum\n\
 		 \n\
@@ -225,8 +220,8 @@ async fn test_closing_nested_issue_creates_bak_file() {
 		 \t\tnested body content\n",
 	);
 
-	ctx.consensus_legacy(&initial_issue, None).await;
-	ctx.remote_legacy(&initial_issue, None);
+	let initial_issue = ctx.consensus(&initial_vi, None, false).await;
+	ctx.remote(&initial_vi, None, false);
 
 	// User closes nested issue during edit
 	let edited_issue = parse_virtual(

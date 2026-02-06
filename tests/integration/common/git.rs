@@ -66,25 +66,6 @@ pub trait GitExt {
 	/// Initialize git in the issues directory.
 	fn init_git(&self) -> Git;
 
-	/// Write issue to local file (uncommitted). Additive - can call multiple times.
-	/// Panics if same (owner, repo, number) is submitted twice.
-	///
-	/// If `seed` is provided, timestamps are generated from it and written to `.meta.json`.
-	async fn local_legacy(&self, issue: &Issue, seed: Option<Seed>);
-
-	/// Write issue and commit to git as consensus state. Additive - can call multiple times.
-	/// Panics if same (owner, repo, number) is submitted twice.
-	///
-	/// If `seed` is provided, timestamps are generated from it and written to `.meta.json`.
-	async fn consensus_legacy(&self, issue: &Issue, seed: Option<Seed>);
-
-	/// Set up mock Github API to return this issue. Additive - can call multiple times.
-	/// Handles sub-issues automatically.
-	/// Panics if same (owner, repo, number) is submitted twice.
-	///
-	/// If `seed` is provided, timestamps are generated from it for the mock response.
-	fn remote_legacy(&self, issue: &Issue, seed: Option<Seed>);
-
 	/// Set up mock Github API from VirtualIssue. Uses defaults: owner="o", repo="r", user="mock_user".
 	/// Handles sub-issues automatically.
 	/// Panics if same (owner, repo, number) is submitted twice.
@@ -253,77 +234,6 @@ impl GitExt for TestContext {
 		// Use diff3 conflict style for consistent snapshots across environments
 		git.run(&["config", "merge.conflictStyle", "diff3"]).expect("git config merge.conflictStyle failed");
 		git
-	}
-
-	async fn local_legacy(&self, issue: &Issue, seed: Option<Seed>) {
-		let (owner, repo, number) = extract_issue_coords(issue);
-		let key = (owner.clone(), repo.clone(), number);
-
-		with_state(self, |state| {
-			if state.local_issues.contains(&key) {
-				panic!("local() called twice for same issue: {owner}/{repo}#{number}");
-			}
-			state.local_issues.insert(key);
-		});
-
-		// Set issues dir override and sink using actual library implementation
-		self.set_issues_dir_override();
-		let mut issue_clone = issue.clone();
-		<Issue as Sink<LocalFs>>::sink(&mut issue_clone, None).await.expect("local sink failed");
-
-		// Write timestamps to .meta.json if seed provided
-		if let Some(seed) = seed {
-			let timestamps = timestamps_from_seed(seed);
-			let meta = IssueMeta { timestamps };
-			Local::save_issue_meta(tedi::RepoInfo::new(&owner, &repo), number, &meta).expect("save_issue_meta failed");
-		}
-	}
-
-	async fn consensus_legacy(&self, issue: &Issue, seed: Option<Seed>) {
-		let (owner, repo, number) = extract_issue_coords(issue);
-		let key = (owner.clone(), repo.clone(), number);
-
-		with_state(self, |state| {
-			if state.consensus_issues.contains(&key) {
-				panic!("consensus() called twice for same issue: {owner}/{repo}#{number}");
-			}
-			state.consensus_issues.insert(key);
-		});
-
-		// Ensure git is initialized (Sink<Consensus> needs it)
-		self.init_git();
-
-		// Set issues dir override and sink using actual library implementation
-		self.set_issues_dir_override();
-		let mut issue_clone = issue.clone();
-		<Issue as Sink<LocalFs>>::sink(&mut issue_clone, None).await.expect("local sink failed");
-		<Issue as Sink<Consensus>>::sink(&mut issue_clone, None).await.expect("consensus sink failed");
-
-		// Write timestamps to .meta.json if seed provided
-		if let Some(seed) = seed {
-			let timestamps = timestamps_from_seed(seed);
-			let meta = IssueMeta { timestamps };
-			Local::save_issue_meta(tedi::RepoInfo::new(&owner, &repo), number, &meta).expect("save_issue_meta failed");
-		}
-	}
-
-	fn remote_legacy(&self, issue: &Issue, seed: Option<Seed>) {
-		let (owner, repo, number) = extract_issue_coords(issue);
-		let key = (owner.clone(), repo.clone(), number);
-
-		let timestamps = seed.map(timestamps_from_seed);
-
-		with_state(self, |state| {
-			if state.remote_issue_ids.contains(&key) {
-				panic!("remote() called twice for same issue: {owner}/{repo}#{number}");
-			}
-
-			// Recursively add issue and all its children
-			add_issue_recursive(state, tedi::RepoInfo::new(&owner, &repo), number, None, issue, timestamps.as_ref());
-		});
-
-		// Rebuild and write mock state
-		self.rebuild_mock_state();
 	}
 
 	fn remote(&self, issue: &tedi::VirtualIssue, seed: Option<Seed>, is_virtual: bool) -> Issue {

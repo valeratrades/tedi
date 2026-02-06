@@ -27,7 +27,6 @@ const GLOBAL_FLAGS: &[&str] = &["--offline", "--mock", "-v", "--verbose", "-q", 
 const ENV_GITHUB_TOKEN: &str = concat!(env!("CARGO_PKG_NAME"), "__GITHUB_TOKEN");
 const ENV_MOCK_STATE: &str = concat!(env!("CARGO_PKG_NAME"), "_MOCK_STATE");
 const ENV_MOCK_PIPE: &str = concat!(env!("CARGO_PKG_NAME"), "_MOCK_PIPE");
-type IssueChildren<T> = std::collections::HashMap<tedi::IssueSelector, T>;
 pub mod git;
 /// Compile the binary before running any tests
 pub fn ensure_binary_compiled() {
@@ -383,20 +382,6 @@ impl<'a> OpenBuilder<'a> {
 	}
 }
 
-pub fn hollow_mock(issue_number: u64, children: IssueChildren<HollowIssue>) -> HollowIssue {
-	let meta = LinkedIssueMeta::new(
-		"@mock_user".to_string(),
-		IssueLink::parse(&format!("https://github.com/o/r/issues/{issue_number}")).unwrap(),
-		IssueTimestamps::default(),
-	);
-	HollowIssue::new(IssueRemote::Github(Box::new(Some(meta))), children)
-}
-
-#[deprecated]
-pub fn parse(content: &str) -> Issue {
-	Issue::deserialize_virtual(content).expect("failed to parse test issue")
-}
-
 pub fn parse_virtual(content: &str) -> tedi::VirtualIssue {
 	tedi::VirtualIssue::parse_virtual(content, std::path::PathBuf::from("test.md")).expect("failed to parse test issue")
 }
@@ -544,7 +529,6 @@ enum BuilderTarget<'a> {
 mod snapshot;
 
 use std::{
-	collections::HashMap,
 	io::{Read, Write},
 	os::fd::AsRawFd,
 	path::{Path, PathBuf},
@@ -577,7 +561,7 @@ fn drain_pipe<R: Read>(pipe: &mut R, buf: &mut Vec<u8>) {
 }
 
 pub use snapshot::FixtureIssuesExt;
-use tedi::{HollowIssue, Issue, IssueIndex, IssueLink, IssueRemote, IssueTimestamps, LinkedIssueMeta};
+use tedi::Issue;
 use v_fixtures::{Fixture, FixtureRenderer, fs_standards::xdg::Xdg};
 
 static BINARY_COMPILED: OnceLock<()> = OnceLock::new();

@@ -5,8 +5,8 @@
 //! - Only conflict if BOTH local and remote changed since last sync
 //! - Single-side changes auto-resolve
 //!
-//! Tests work with `Issue` directly - our canonical representation.
-//! The mock Github layer translates to API format at the boundary.
+//! Tests work with `VirtualIssue` for setup, converting to `Issue` through
+//! the test context methods. The mock Github layer translates to API format at the boundary.
 //!
 //! ## Timestamp Seeds
 //!
@@ -21,18 +21,15 @@
 //! The `.meta.json` file contains actual timestamps from seed-based generation,
 //! so snapshots verify both file content and timestamp values.
 
-use std::collections::HashMap;
-
 use insta::assert_snapshot;
 use rstest::rstest;
-use tedi::{IssueLink, IssueTimestamps, LinkedIssueMeta};
 use v_fixtures::FixtureRenderer;
 
 use crate::common::{
 	FixtureIssuesExt, TestContext,
 	are_you_sure::{UnsafePathExt, read_issue_file, write_to_path},
 	git::{GitExt as _, Seed},
-	hollow_mock, parse, parse_virtual, render_fixture,
+	parse_virtual, render_fixture,
 };
 
 /// Fixture for tests where consensus, local, and remote all have different bodies.
@@ -47,13 +44,13 @@ impl DivergedBodiesFixture {
 	async fn new(consensus_seed: i64, local_seed: i64, remote_seed: i64) -> Self {
 		let ctx = TestContext::build("");
 
-		let consensus = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tconsensus body\n");
-		let local = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tlocal body\n");
-		let remote = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tremote changed body\n");
+		let consensus_vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tconsensus body\n");
+		let local_vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tlocal body\n");
+		let remote_vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tremote changed body\n");
 
-		ctx.consensus_legacy(&consensus, Some(Seed::new(consensus_seed))).await;
-		ctx.local_legacy(&local, Some(Seed::new(local_seed))).await;
-		ctx.remote_legacy(&remote, Some(Seed::new(remote_seed)));
+		ctx.consensus(&consensus_vi, Some(Seed::new(consensus_seed)), false).await;
+		let local = ctx.local(&local_vi, Some(Seed::new(local_seed)), false).await;
+		ctx.remote(&remote_vi, Some(Seed::new(remote_seed)), false);
 
 		Self { ctx, local }
 	}
@@ -82,13 +79,13 @@ async fn test_both_diverged_merge_winner(#[case] consensus_seed: i64, #[case] lo
 async fn test_only_remote_changed_takes_remote_with_pull() {
 	let ctx = TestContext::build("");
 
-	let consensus = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tconsensus body\n");
-	let remote = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tremote changed body\n");
+	let consensus_vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tconsensus body\n");
+	let remote_vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tremote changed body\n");
 
 	// Local matches consensus (no uncommitted changes), remote changed
 	// Seeds: consensus=-45, remote=90 (remote much newer, guarantees dominance)
-	ctx.consensus_legacy(&consensus, Some(Seed::new(-45))).await;
-	ctx.remote_legacy(&remote, Some(Seed::new(90)));
+	let consensus = ctx.consensus(&consensus_vi, Some(Seed::new(-45)), false).await;
+	ctx.remote(&remote_vi, Some(Seed::new(90)), false);
 
 	// Must use --pull to fetch remote changes when local is unchanged
 	let out = ctx.open_issue(&consensus).args(&["--pull"]).run();
@@ -111,14 +108,14 @@ async fn test_only_remote_changed_takes_remote_with_pull() {
 async fn test_only_local_changed_pushes_local() {
 	let ctx = TestContext::build("");
 
-	let consensus = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tconsensus body\n");
-	let local = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tlocal changed body\n");
+	let consensus_vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tconsensus body\n");
+	let local_vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tlocal changed body\n");
 
 	// Local changed, remote still matches consensus
 	// Seeds: consensus=-25, local=85, remote=-25 (local much newer than unchanged remote)
-	ctx.consensus_legacy(&consensus, Some(Seed::new(-100))).await;
-	ctx.local_legacy(&local, Some(Seed::new(100))).await;
-	ctx.remote_legacy(&consensus, Some(Seed::new(-100)));
+	ctx.consensus(&consensus_vi, Some(Seed::new(-100)), false).await;
+	let local = ctx.local(&local_vi, Some(Seed::new(100)), false).await;
+	ctx.remote(&consensus_vi, Some(Seed::new(-100)), false);
 
 	let out = ctx.open_issue(&local).run();
 
@@ -152,15 +149,15 @@ async fn test_only_local_changed_pushes_local() {
 async fn test_reset_with_local_source_skips_sync() {
 	let ctx = TestContext::build("");
 
-	let consensus = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tconsensus body\n");
-	let local = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tlocal body\n");
-	let remote = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tremote changed body\n");
+	let consensus_vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tconsensus body\n");
+	let local_vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tlocal body\n");
+	let remote_vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tremote changed body\n");
 
 	// --reset uses local as source, so timestamps don't affect result
 	// Seeds: consensus=-30, local=20, remote=25
-	ctx.consensus_legacy(&consensus, Some(Seed::new(-30))).await;
-	ctx.local_legacy(&local, Some(Seed::new(20))).await;
-	ctx.remote_legacy(&remote, Some(Seed::new(25)));
+	ctx.consensus(&consensus_vi, Some(Seed::new(-30)), false).await;
+	let local = ctx.local(&local_vi, Some(Seed::new(20)), false).await;
+	ctx.remote(&remote_vi, Some(Seed::new(25)), false);
 
 	// Run with --reset flag
 	let out = ctx.open_issue(&local).args(&["--reset"]).run();
@@ -183,9 +180,9 @@ async fn test_reset_with_local_source_skips_sync() {
 async fn test_url_open_creates_local_file_from_remote() {
 	let ctx = TestContext::build("");
 
-	let remote = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tremote body content\n");
+	let remote_vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tremote body content\n");
 	// Seed: 15 (arbitrary, no comparison needed)
-	ctx.remote_legacy(&remote, Some(Seed::new(15)));
+	ctx.remote(&remote_vi, Some(Seed::new(15)), false);
 
 	// No local file exists - URL open should create it
 	let expected_path = ctx.flat_issue_path(("o", "r").into(), 1, "Test Issue");
@@ -210,13 +207,13 @@ async fn test_url_open_creates_local_file_from_remote() {
 async fn test_reset_with_remote_url_nukes_local_state() {
 	let ctx = TestContext::build("");
 
-	let local = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tlocal body that should be nuked\n");
-	let remote = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tremote body wins\n");
+	let local_vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tlocal body that should be nuked\n");
+	let remote_vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tremote body wins\n");
 
 	// --reset overrides everything, but remote is the source when opening via URL
 	// Seeds: consensus=-40, remote=80 (remote much newer)
-	ctx.consensus_legacy(&local, Some(Seed::new(-40))).await;
-	ctx.remote_legacy(&remote, Some(Seed::new(80)));
+	let local = ctx.consensus(&local_vi, Some(Seed::new(-40)), false).await;
+	ctx.remote(&remote_vi, Some(Seed::new(80)), false);
 
 	// Open via URL with --reset should nuke local and use remote
 	let out = ctx.open_url(("o", "r").into(), 1).args(&["--reset"]).run();
@@ -236,41 +233,17 @@ async fn test_reset_with_remote_url_nukes_local_state() {
 /// When opening via URL with --reset and there's divergence, should NOT trigger merge conflict.
 #[tokio::test]
 async fn test_reset_with_remote_url_skips_merge_on_divergence() {
-	use std::path::PathBuf;
-
-	use tedi::{Issue, IssueIndex};
-
 	let ctx = TestContext::build("");
-	let parent_idx = IssueIndex::repo_only(("o", "r").into());
-	let hollow = hollow_mock(1, HashMap::default());
 
-	let consensus = Issue::parse_virtual(
-		"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tconsensus body\n",
-		hollow.clone(),
-		parent_idx,
-		PathBuf::from("test.md"),
-	)
-	.unwrap();
-	let local = Issue::parse_virtual(
-		"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tlocal diverged body\n",
-		hollow.clone(),
-		parent_idx,
-		PathBuf::from("test.md"),
-	)
-	.unwrap();
-	let remote = Issue::parse_virtual(
-		"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tremote diverged body\n",
-		hollow,
-		parent_idx,
-		PathBuf::from("test.md"),
-	)
-	.unwrap();
+	let consensus_vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tconsensus body\n");
+	let local_vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tlocal diverged body\n");
+	let remote_vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tremote diverged body\n");
 
 	// Both diverged, but --reset via URL should skip merge and use remote
 	// Seeds: consensus=-60, local=30, remote=35
-	ctx.consensus_legacy(&consensus, Some(Seed::new(-60))).await;
-	ctx.local_legacy(&local, Some(Seed::new(30))).await;
-	ctx.remote_legacy(&remote, Some(Seed::new(35)));
+	ctx.consensus(&consensus_vi, Some(Seed::new(-60)), false).await;
+	let local = ctx.local(&local_vi, Some(Seed::new(30)), false).await;
+	ctx.remote(&remote_vi, Some(Seed::new(35)), false);
 
 	// Open via URL with --reset should NOT trigger merge conflict
 	let out = ctx.open_url(("o", "r").into(), 1).args(&["--reset"]).run();
@@ -295,13 +268,13 @@ async fn test_reset_with_remote_url_skips_merge_on_divergence() {
 async fn test_pull_fetches_before_editor() {
 	let ctx = TestContext::build("");
 
-	let local = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tlocal body\n");
-	let remote = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tremote body from github\n");
+	let local_vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tlocal body\n");
+	let remote_vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tremote body from github\n");
 
 	// Local unchanged from consensus, remote changed
 	// Seeds: consensus=-20, remote=70
-	ctx.consensus_legacy(&local, Some(Seed::new(-20))).await;
-	ctx.remote_legacy(&remote, Some(Seed::new(70)));
+	let local = ctx.consensus(&local_vi, Some(Seed::new(-20)), false).await;
+	ctx.remote(&remote_vi, Some(Seed::new(70)), false);
 
 	// --pull should fetch from Github before opening editor
 	let out = ctx.open_issue(&local).args(&["--pull"]).run();
@@ -320,15 +293,15 @@ async fn test_pull_fetches_before_editor() {
 async fn test_pull_with_divergence_runs_sync_before_editor() {
 	let ctx = TestContext::build("");
 
-	let consensus = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tconsensus body\n");
-	let local = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tlocal diverged body\n");
-	let remote = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tremote diverged body\n");
+	let consensus_vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tconsensus body\n");
+	let local_vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tlocal diverged body\n");
+	let remote_vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tremote diverged body\n");
 
 	// Both local and remote changed since consensus
 	// Seeds: consensus=-80, local=50, remote=55
-	ctx.consensus_legacy(&consensus, Some(Seed::new(-80))).await;
-	ctx.local_legacy(&local, Some(Seed::new(50))).await;
-	ctx.remote_legacy(&remote, Some(Seed::new(55)));
+	ctx.consensus(&consensus_vi, Some(Seed::new(-80)), false).await;
+	let local = ctx.local(&local_vi, Some(Seed::new(50)), false).await;
+	ctx.remote(&remote_vi, Some(Seed::new(55)), false);
 
 	// --pull should attempt to sync/merge BEFORE editor opens
 	let out = ctx.open_issue(&local).args(&["--pull"]).run();
@@ -369,14 +342,14 @@ async fn test_pull_with_divergence_runs_sync_before_editor() {
 async fn test_closing_issue_syncs_state_change() {
 	let ctx = TestContext::build("");
 
-	let open_issue = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tbody\n");
+	let open_vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tbody\n");
 	// Local = consensus = remote initially
 	// Seeds: consensus=5, remote=5 (same seed = same base time)
-	ctx.consensus_legacy(&open_issue, Some(Seed::new(5))).await;
-	ctx.remote_legacy(&open_issue, Some(Seed::new(5)));
+	let open_issue = ctx.consensus(&open_vi, Some(Seed::new(5)), false).await;
+	ctx.remote(&open_vi, Some(Seed::new(5)), false);
 
 	// Edit to close the issue
-	let mut closed_issue: tedi::VirtualIssue = open_issue.clone().into();
+	let mut closed_issue = open_vi.clone();
 	closed_issue.contents.state = tedi::CloseState::Closed;
 
 	let out = ctx.open_issue(&open_issue).edit(&closed_issue, false).run();
@@ -413,22 +386,20 @@ async fn test_closing_issue_syncs_state_change() {
 async fn test_duplicate_sub_issues_filtered_from_remote() {
 	let ctx = TestContext::build("");
 
-	// Create issues with proper CloseState
-	let parent = parse("- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tparent body\n");
-
-	let normal_closed = parse("- [x] Normal Closed Sub <!-- @mock_user https://github.com/o/r/issues/2 -->\n\tsub body\n");
-	//normal_closed.contents.state = tedi::CloseState::Closed;
-
-	let duplicate = parse("- [2] Duplicate Sub <!-- @mock_user https://github.com/o/r/issues/3 -->\n\tduplicate body\n");
-	//duplicate.contents.state = tedi::CloseState::Duplicate(2); // duplicate of #2
-
-	// Build parent with children for remote
-	let mut parent_with_children = parent.clone();
-	parent_with_children.children.insert(normal_closed.selector(), normal_closed);
-	parent_with_children.children.insert(duplicate.selector(), duplicate);
+	// Create parent with children for remote - normal closed and duplicate sub-issues
+	let parent_vi = parse_virtual(
+		"- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
+		 \tparent body\n\
+		 \n\
+		 \t- [x] Normal Closed Sub <!--sub @mock_user https://github.com/o/r/issues/2 -->\n\
+		 \t\tsub body\n\
+		 \n\
+		 \t- [2] Duplicate Sub <!--sub @mock_user https://github.com/o/r/issues/3 -->\n\
+		 \t\tduplicate body\n",
+	);
 
 	// Seed: -10 (arbitrary)
-	ctx.remote_legacy(&parent_with_children, Some(Seed::new(-10)));
+	ctx.remote(&parent_vi, Some(Seed::new(-10)), false);
 
 	// Open via URL to fetch from remote
 	let out = ctx.open_url(("o", "r").into(), 1).run();
@@ -458,9 +429,9 @@ async fn test_duplicate_sub_issues_filtered_from_remote() {
 async fn test_open_unchanged_succeeds() {
 	let ctx = TestContext::build("");
 
-	let issue = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tissue body\n");
+	let vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tissue body\n");
 	// Seed: 10 (arbitrary)
-	ctx.remote_legacy(&issue, Some(Seed::new(10)));
+	let issue = ctx.remote(&vi, Some(Seed::new(10)), false);
 
 	// First open via URL
 	let out = ctx.open_url(("o", "r").into(), 1).run();
@@ -482,8 +453,8 @@ async fn test_open_unchanged_succeeds() {
 async fn test_open_by_number_unchanged_succeeds() {
 	let ctx = TestContext::build("");
 
-	let issue = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tissue body\n");
-	ctx.remote_legacy(&issue, None);
+	let vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tissue body\n");
+	ctx.remote(&vi, None, false);
 
 	// First open via URL with --reset
 	let out = ctx.open_url(("o", "r").into(), 1).args(&["--reset"]).run();
@@ -506,11 +477,11 @@ async fn test_open_by_number_unchanged_succeeds() {
 async fn test_reset_syncs_changes_after_editor() {
 	let ctx = TestContext::build("");
 
-	let remote_issue = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tremote body\n");
-	ctx.remote_legacy(&remote_issue, None);
+	let remote_vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tremote body\n");
+	ctx.remote(&remote_vi, None, false);
 
 	// emulate user closing the issue after
-	let mut modified_issue: tedi::VirtualIssue = remote_issue.clone().into();
+	let mut modified_issue = remote_vi.clone();
 	modified_issue.contents.state = tedi::CloseState::Closed;
 	let out = ctx.open_url(("o", "r").into(), 1).args(&["--reset"]).edit(&modified_issue, false).run();
 
@@ -546,9 +517,9 @@ async fn test_comment_shorthand_creates_comment() {
 	let ctx = TestContext::build("");
 
 	// Start with an issue that has no comments
-	let issue = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tissue body\n");
-	ctx.consensus_legacy(&issue, None).await;
-	ctx.remote_legacy(&issue, None);
+	let vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tissue body\n");
+	let issue = ctx.consensus(&vi, None, false).await;
+	ctx.remote(&vi, None, false);
 
 	// Simulate user adding `!c` followed by comment content
 	// After expansion, the file should have `<!-- new comment -->` marker
@@ -605,7 +576,7 @@ async fn test_force_merge_preserves_both_sub_issues(#[case] args: &[&str], #[cas
 	let ctx = TestContext::build("");
 
 	// Local: parent with local-only sub-issue and modified description
-	let local = parse(
+	let local_vi = parse_virtual(
 		"- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
 		 \tparent body\n\
 		 \textra line from local\n\
@@ -615,7 +586,7 @@ async fn test_force_merge_preserves_both_sub_issues(#[case] args: &[&str], #[cas
 	);
 
 	// Remote: parent with remote-only sub-issue (no extra description line)
-	let remote = parse(
+	let remote_vi = parse_virtual(
 		"- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
 		 \tparent body\n\
 		 \n\
@@ -624,14 +595,14 @@ async fn test_force_merge_preserves_both_sub_issues(#[case] args: &[&str], #[cas
 	);
 
 	// Consensus: original state (no sub-issues, original description)
-	let consensus = parse(
+	let consensus_vi = parse_virtual(
 		"- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
 		 \tparent body\n",
 	);
 
-	ctx.consensus_legacy(&consensus, Some(Seed::new(-100))).await;
-	ctx.local_legacy(&local, Some(Seed::new(100))).await;
-	ctx.remote_legacy(&remote, Some(Seed::new(100)));
+	ctx.consensus(&consensus_vi, Some(Seed::new(-100)), false).await;
+	let local = ctx.local(&local_vi, Some(Seed::new(100)), false).await;
+	ctx.remote(&remote_vi, Some(Seed::new(100)), false);
 
 	let out = ctx.open_issue(&local).args(args).run();
 
@@ -674,7 +645,7 @@ async fn test_consensus_sink_writes_meta_json_with_timestamps() {
 	let ctx = TestContext::build("");
 
 	// Set up a remote issue with a comment (will have timestamps from mock)
-	let remote = parse(
+	let remote_vi = parse_virtual(
 		"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
 		 \tremote body\n\
 		 \n\
@@ -682,7 +653,7 @@ async fn test_consensus_sink_writes_meta_json_with_timestamps() {
 		 \t<!-- comment 1001 @commenter -->\n\
 		 \tA test comment\n",
 	);
-	ctx.remote_legacy(&remote, None);
+	ctx.remote(&remote_vi, None, false);
 
 	// Fetch the issue via URL - this should sink to Consensus and write .meta.json
 	let out = ctx.open_url(("o", "r").into(), 1).run();
