@@ -345,14 +345,16 @@ impl GitExt for TestContext {
 	async fn local(&self, issue: &tedi::VirtualIssue, seed: Option<Seed>, is_virtual: bool) {
 		let mut issue = with_timestamps(issue, seed, is_virtual);
 		let (owner, repo, number) = extract_issue_coords(&issue);
-		with_state(self, |state| assert_unique(&mut state.local_issues, "local", &owner, &repo, number));
+		with_state(self, |state| assert!(state.local_issues.insert((owner, repo, number)), "local() called twice for same issue"));
 		self.sink_local(&mut issue, seed).await;
 	}
 
 	async fn consensus(&self, issue: &tedi::VirtualIssue, seed: Option<Seed>, is_virtual: bool) {
 		let mut issue = with_timestamps(issue, seed, is_virtual);
 		let (owner, repo, number) = extract_issue_coords(&issue);
-		with_state(self, |state| assert_unique(&mut state.consensus_issues, "consensus", &owner, &repo, number));
+		with_state(self, |state| {
+			assert!(state.consensus_issues.insert((owner, repo, number)), "consensus() called twice for same issue")
+		});
 		self.init_git();
 		self.sink_local(&mut issue, seed).await;
 		<Issue as Sink<Consensus>>::sink(&mut issue, None).await.expect("consensus sink failed");
@@ -463,13 +465,6 @@ impl TestContext {
 
 			self.setup_mock_state(&mock_state);
 		});
-	}
-}
-
-fn assert_unique(set: &mut HashSet<(String, String, u64)>, method: &str, owner: &str, repo: &str, number: u64) {
-	let key = (owner.to_string(), repo.to_string(), number);
-	if !set.insert(key) {
-		panic!("{method}() called twice for same issue: {owner}/{repo}#{number}");
 	}
 }
 
