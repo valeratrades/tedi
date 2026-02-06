@@ -214,23 +214,6 @@ impl Local {
 		v_utils::xdg_data_dir!("issues")
 	}
 
-	/// Parse a single issue node from filesystem content.
-	///
-	/// This parses one issue file (without loading children from separate files).
-	/// Children field will be empty - they're loaded separately via LazyIssue.
-	fn parse_single_node(content: &str, index: IssueIndex, fpath_for_error_context_only: &Path) -> Result<Issue, LocalError> {
-		let parent_idx = index.parent().unwrap_or_else(|| IssueIndex::repo_only(index.repo_info()));
-		let is_virtual = Self::is_virtual_project(index.repo_info());
-		let virtual_issue = crate::VirtualIssue::parse_virtual(content, fpath_for_error_context_only.to_path_buf())?;
-		let mut issue = Issue::from_combined(crate::HollowIssue::default(), virtual_issue, parent_idx, is_virtual)?;
-		// Clear any inline children (filesystem format stores them in separate files)
-		if !issue.children.is_empty() {
-			tracing::warn!("issue children read from file are not empty. Wtf {:?}", &issue.children);
-			issue.children.clear();
-		}
-		Ok(issue)
-	}
-
 	/// Get the project directory path (where .meta.json lives).
 	/// Structure: issues/{owner}/{repo}/
 	pub fn project_dir(repo_info: RepoInfo) -> PathBuf {
@@ -1286,9 +1269,10 @@ impl<R: LocalReader> crate::LazyIssue<LocalIssueSource<R>> for Issue {
 		if self.contents.title.is_empty() {
 			let file_path = source.local_path.clone().resolve_parent(source.reader)?.search()?.path();
 			let content = source.reader.read_content(&file_path)?;
-			let parsed = Local::parse_single_node(&content, index, &file_path)?;
-			self.identity = parsed.identity;
+			let parsed = crate::VirtualIssue::parse(&content, file_path)?;
 			self.contents = parsed.contents;
+			self.identity.parent_index = index.parent().unwrap_or_else(|| IssueIndex::repo_only(index.repo_info()));
+			self.identity.is_virtual = Local::is_virtual_project(index.repo_info());
 		}
 
 		if let Some(issue_number) = self.identity.number()
@@ -1310,9 +1294,10 @@ impl<R: LocalReader> crate::LazyIssue<LocalIssueSource<R>> for Issue {
 		let index = *source.index();
 		let file_path = source.local_path.clone().resolve_parent(source.reader)?.search()?.path();
 		let content = source.reader.read_content(&file_path)?;
-		let parsed = Local::parse_single_node(&content, index, &file_path)?;
-		self.identity = parsed.identity;
+		let parsed = crate::VirtualIssue::parse(&content, file_path)?;
 		self.contents = parsed.contents;
+		self.identity.parent_index = index.parent().unwrap_or_else(|| IssueIndex::repo_only(index.repo_info()));
+		self.identity.is_virtual = Local::is_virtual_project(index.repo_info());
 
 		Ok(self.contents.clone())
 	}

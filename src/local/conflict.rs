@@ -101,7 +101,7 @@ pub async fn check_for_existing_conflict(issue_index: IssueIndex) -> Result<Opti
 		{
 			let mut new_issue = {
 				let mut new_issue_but_old_local_timestamps = {
-					let virtual_issue = VirtualIssue::parse_virtual(&content, conflict_fpath)?;
+					let virtual_issue = VirtualIssue::parse(&content, conflict_fpath)?;
 					let hollow = Local::read_hollow_from_project_meta(issue_index)?;
 					let project_meta = Local::load_project_meta(issue_index.repo_info());
 					Issue::from_combined(hollow, virtual_issue, issue_index.parent().unwrap(), project_meta.virtual_project)?

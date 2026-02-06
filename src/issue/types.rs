@@ -1633,7 +1633,7 @@ impl VirtualIssue {
 	///
 	/// Unlike `Issue::parse_virtual`, this doesn't need a `HollowIssue` - it purely parses content.
 	/// Use `Issue::from_combined` to merge with identity info from a `HollowIssue`.
-	pub fn parse_virtual(content: &str, path: PathBuf) -> Result<Self, ParseError> {
+	pub fn parse(content: &str, path: PathBuf) -> Result<Self, ParseError> {
 		let ctx = ParseContext::new(content.to_owned(), path);
 		let mut lines = content.lines().peekable();
 		Self::parse_virtual_at_depth(&mut lines, 0, 1, &ctx)
@@ -2110,13 +2110,13 @@ mod tests {
 	fn test_parse_invalid_checkbox_returns_error() {
 		// Invalid checkbox on root issue
 		let content = "- [abc] Invalid issue <!-- @owner https://github.com/owner/repo/issues/123 -->\n\tBody\n";
-		let result = VirtualIssue::parse_virtual(content, PathBuf::from("test.md"));
+		let result = VirtualIssue::parse(content, PathBuf::from("test.md"));
 		assert!(result.is_err());
 		assert!(result.unwrap_err().to_string().contains("invalid checkbox"));
 
 		// Invalid checkbox on sub-issue
 		let content = "- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->\n\tBody\n\n\t- [xyz] Bad sub <!--sub @owner https://github.com/owner/repo/issues/2 -->\n";
-		let result = VirtualIssue::parse_virtual(content, PathBuf::from("test.md"));
+		let result = VirtualIssue::parse(content, PathBuf::from("test.md"));
 		assert!(result.is_err());
 		assert!(result.unwrap_err().to_string().contains("invalid checkbox"));
 	}
@@ -2124,7 +2124,7 @@ mod tests {
 	#[test]
 	fn test_parse_and_serialize_not_planned() {
 		let content = "- [-] Not planned issue <!-- @owner https://github.com/owner/repo/issues/123 -->\n\tBody text\n";
-		let virtual_issue = VirtualIssue::parse_virtual(content, PathBuf::from("test.md")).unwrap();
+		let virtual_issue = VirtualIssue::parse(content, PathBuf::from("test.md")).unwrap();
 
 		assert_eq!(virtual_issue.contents.state, CloseState::NotPlanned);
 		assert_eq!(virtual_issue.contents.title, "Not planned issue");
@@ -2133,7 +2133,7 @@ mod tests {
 	#[test]
 	fn test_parse_and_serialize_duplicate() {
 		let content = "- [456] Duplicate issue <!-- @owner https://github.com/owner/repo/issues/123 -->\n\tBody text\n";
-		let virtual_issue = VirtualIssue::parse_virtual(content, PathBuf::from("test.md")).unwrap();
+		let virtual_issue = VirtualIssue::parse(content, PathBuf::from("test.md")).unwrap();
 
 		assert_eq!(virtual_issue.contents.state, CloseState::Duplicate(456));
 		assert_eq!(virtual_issue.contents.title, "Duplicate issue");
@@ -2284,7 +2284,7 @@ mod tests {
 	- [ ] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
-		let virtual_issue = VirtualIssue::parse_virtual(content, PathBuf::from("test.md")).unwrap();
+		let virtual_issue = VirtualIssue::parse(content, PathBuf::from("test.md")).unwrap();
 		// parse_virtual preserves inline children
 		assert_eq!(virtual_issue.children.len(), 1);
 		assert_eq!(virtual_issue.contents.title, "Parent");
@@ -2342,7 +2342,7 @@ mod tests {
 	- [ ] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
-		let initial_virtual = VirtualIssue::parse_virtual(initial, PathBuf::from("test.md")).unwrap();
+		let initial_virtual = VirtualIssue::parse(initial, PathBuf::from("test.md")).unwrap();
 		assert_eq!(initial_virtual[2].contents.state, CloseState::Open);
 
 		// Update with closed child
@@ -2352,7 +2352,7 @@ mod tests {
 	- [x] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
-		let updated_virtual = VirtualIssue::parse_virtual(updated, PathBuf::from("test.md")).unwrap();
+		let updated_virtual = VirtualIssue::parse(updated, PathBuf::from("test.md")).unwrap();
 		assert_eq!(updated_virtual[2].contents.state, CloseState::Closed, "Child should be Closed after update");
 	}
 
@@ -2364,7 +2364,7 @@ mod tests {
 	- [ ] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
-		let initial_virtual = VirtualIssue::parse_virtual(initial, PathBuf::from("test.md")).unwrap();
+		let initial_virtual = VirtualIssue::parse(initial, PathBuf::from("test.md")).unwrap();
 		assert_eq!(initial_virtual[2].contents.state, CloseState::Open);
 
 		let updated = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
@@ -2373,7 +2373,7 @@ mod tests {
 	- [-] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
-		let updated_virtual = VirtualIssue::parse_virtual(updated, PathBuf::from("test.md")).unwrap();
+		let updated_virtual = VirtualIssue::parse(updated, PathBuf::from("test.md")).unwrap();
 		assert_eq!(updated_virtual[2].contents.state, CloseState::NotPlanned, "Child should be NotPlanned after update");
 	}
 
@@ -2385,7 +2385,7 @@ mod tests {
 	- [ ] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
-		let initial_virtual = VirtualIssue::parse_virtual(initial, PathBuf::from("test.md")).unwrap();
+		let initial_virtual = VirtualIssue::parse(initial, PathBuf::from("test.md")).unwrap();
 		assert_eq!(initial_virtual[2].contents.state, CloseState::Open);
 
 		let updated = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
@@ -2394,7 +2394,7 @@ mod tests {
 	- [99] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
-		let updated_virtual = VirtualIssue::parse_virtual(updated, PathBuf::from("test.md")).unwrap();
+		let updated_virtual = VirtualIssue::parse(updated, PathBuf::from("test.md")).unwrap();
 		assert_eq!(updated_virtual[2].contents.state, CloseState::Duplicate(99), "Child should be Duplicate(99) after update");
 	}
 
@@ -2406,7 +2406,7 @@ mod tests {
 	- [x] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
-		let initial_virtual = VirtualIssue::parse_virtual(initial, PathBuf::from("test.md")).unwrap();
+		let initial_virtual = VirtualIssue::parse(initial, PathBuf::from("test.md")).unwrap();
 		assert_eq!(initial_virtual[2].contents.state, CloseState::Closed);
 
 		let updated = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
@@ -2415,7 +2415,7 @@ mod tests {
 	- [ ] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
-		let updated_virtual = VirtualIssue::parse_virtual(updated, PathBuf::from("test.md")).unwrap();
+		let updated_virtual = VirtualIssue::parse(updated, PathBuf::from("test.md")).unwrap();
 		assert_eq!(updated_virtual[2].contents.state, CloseState::Open, "Child should be Open after update");
 	}
 }

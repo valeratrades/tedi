@@ -383,7 +383,7 @@ impl<'a> OpenBuilder<'a> {
 }
 
 pub fn parse_virtual(content: &str) -> tedi::VirtualIssue {
-	tedi::VirtualIssue::parse_virtual(content, std::path::PathBuf::from("test.md")).expect("failed to parse test issue")
+	tedi::VirtualIssue::parse(content, std::path::PathBuf::from("test.md")).expect("failed to parse test issue")
 }
 /// Render a fixture with optional error output if the command failed.
 pub fn render_fixture(renderer: FixtureRenderer<'_>, output: &RunOutput) -> String {
