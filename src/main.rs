@@ -1,6 +1,7 @@
 #![feature(try_blocks)]
 #![allow(clippy::len_zero)]
 #![allow(clippy::doc_lazy_continuation)]
+const MANUAL_PATH_APPENDIX: &str = "manual_stats/";
 pub mod config;
 pub mod utils;
 /// Mock behavior type for testing.
@@ -13,7 +14,6 @@ pub enum MockType {
 	/// Ghost edit - skip editor and pretend edit was made.
 	GhostEdit,
 }
-const MANUAL_PATH_APPENDIX: &str = "manual_stats/";
 #[tokio::main]
 async fn main() {
 	v_utils::clientside!(extract_log_to());

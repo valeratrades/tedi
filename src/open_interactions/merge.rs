@@ -24,14 +24,6 @@ use jiff::Timestamp;
 use tedi::{Issue, IssueSelector};
 use thiserror::Error;
 
-/// Error from merge operations.
-#[derive(Debug, Error)]
-pub enum MergeError {
-	/// Cannot merge virtual-only issues.
-	#[error("cannot merge virtual-only issue: virtual issues are local-only and should not participate in sync")]
-	VirtualIssue,
-}
-
 /// Extension trait for merging Issues.
 pub trait Merge {
 	/// Merge `other` into `self`, using timestamps to resolve conflicts.
@@ -41,6 +33,13 @@ pub trait Merge {
 	///
 	/// Returns error if either issue is virtual-only.
 	fn merge(&mut self, other: Issue, force: bool) -> Result<(), MergeError>;
+}
+/// Error from merge operations.
+#[derive(Debug, Error)]
+pub enum MergeError {
+	/// Cannot merge virtual-only issues.
+	#[error("cannot merge virtual-only issue: virtual issues are local-only and should not participate in sync")]
+	VirtualIssue,
 }
 
 impl Merge for Issue {

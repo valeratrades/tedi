@@ -26,6 +26,26 @@ use crate::{Comment, CommentIdentity, Issue};
 // Diff Results
 //==============================================================================
 
+/// Trait for sinking (pushing) issues to a destination.
+///
+/// Implemented for `Issue` with marker type parameters to select the destination.
+/// Location is derived from the issue's `identity.ancestry` (owner/repo/lineage).
+#[allow(async_fn_in_trait)]
+pub trait Sink<S> {
+	/// Error type for this sink implementation.
+	type Error: std::fmt::Debug + std::fmt::Display;
+
+	/// Sink this issue to the destination, comparing against `old` state.
+	///
+	/// # Arguments
+	/// * `old` - The current state at the target location (from last pull), or None if no previous state exists
+	///
+	/// # Returns
+	/// * `Ok(true)` if any changes were made
+	/// * `Ok(false)` if already in sync
+	/// * `Err(_)` on failure
+	async fn sink(&mut self, old: Option<&Issue>) -> Result<bool, Self::Error>;
+}
 /// Result of comparing an issue node with its old state.
 #[derive(Clone, Debug, Default)]
 pub struct IssueDiff {
@@ -162,27 +182,6 @@ pub fn compute_node_diff(new: &Issue, old: Option<&Issue>) -> IssueDiff {
 //==============================================================================
 // Sink Trait
 //==============================================================================
-
-/// Trait for sinking (pushing) issues to a destination.
-///
-/// Implemented for `Issue` with marker type parameters to select the destination.
-/// Location is derived from the issue's `identity.ancestry` (owner/repo/lineage).
-#[allow(async_fn_in_trait)]
-pub trait Sink<S> {
-	/// Error type for this sink implementation.
-	type Error: std::fmt::Debug + std::fmt::Display;
-
-	/// Sink this issue to the destination, comparing against `old` state.
-	///
-	/// # Arguments
-	/// * `old` - The current state at the target location (from last pull), or None if no previous state exists
-	///
-	/// # Returns
-	/// * `Ok(true)` if any changes were made
-	/// * `Ok(false)` if already in sync
-	/// * `Err(_)` on failure
-	async fn sink(&mut self, old: Option<&Issue>) -> Result<bool, Self::Error>;
-}
 
 #[cfg(test)]
 mod tests {

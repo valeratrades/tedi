@@ -17,6 +17,35 @@ pub const MAX_TITLE_LENGTH: usize = 256;
 pub const MAX_INDEX_DEPTH: usize = MAX_LINEAGE_DEPTH + 1;
 pub const MAX_LINEAGE_DEPTH: usize = 8;
 pub type IssueChildren<T> = HashMap<IssueSelector, T>;
+/// Trait for lazily loading an issue from a source.
+///
+/// `S` is the source type directly (e.g., `LocalIssueSource<FsReader>`, `RemoteSource`).
+/// Methods load data on demand; `&mut self` allows caching intermediate results.
+#[allow(async_fn_in_trait)]
+pub trait LazyIssue<S: Clone + std::fmt::Debug>: Sized {
+	/// Error type for operations on this source.
+	type Error: std::error::Error;
+
+	/// Resolve parent_index from the source.
+	/// Returns None for root-level issues (no parent).
+	async fn parent_index(source: &S) -> Result<Option<IssueIndex>, Self::Error>;
+	async fn identity(&mut self, source: S) -> Result<IssueIdentity, Self::Error>;
+	async fn contents(&mut self, source: S) -> Result<IssueContents, Self::Error>;
+	async fn children(&mut self, source: S) -> Result<IssueChildren<Issue>, Self::Error>;
+
+	/// Load a full issue tree from the source.
+	/// Default implementation calls parent_index, then populates identity, contents, and children.
+	async fn load(source: S) -> Result<Issue, Self::Error>
+	where
+		Issue: LazyIssue<S, Error = Self::Error>, {
+		let parent_index = <Issue as LazyIssue<S>>::parent_index(&source).await?.expect("load requires parent_index to be Some");
+		let mut issue = Issue::empty_local(parent_index);
+		<Issue as LazyIssue<S>>::identity(&mut issue, source.clone()).await?;
+		<Issue as LazyIssue<S>>::contents(&mut issue, source.clone()).await?;
+		Box::pin(<Issue as LazyIssue<S>>::children(&mut issue, source)).await?;
+		Ok(issue)
+	}
+}
 /// Repository identification: owner and repo name.
 /// Uses fixed-size `ArrayString`s to be `Copy`.
 /// GitHub limits: owner max 39 chars, repo max 100 chars.
@@ -1960,36 +1989,6 @@ impl VirtualIssue {
 			},
 			children,
 		})
-	}
-}
-
-/// Trait for lazily loading an issue from a source.
-///
-/// `S` is the source type directly (e.g., `LocalIssueSource<FsReader>`, `RemoteSource`).
-/// Methods load data on demand; `&mut self` allows caching intermediate results.
-#[allow(async_fn_in_trait)]
-pub trait LazyIssue<S: Clone + std::fmt::Debug>: Sized {
-	/// Error type for operations on this source.
-	type Error: std::error::Error;
-
-	/// Resolve parent_index from the source.
-	/// Returns None for root-level issues (no parent).
-	async fn parent_index(source: &S) -> Result<Option<IssueIndex>, Self::Error>;
-	async fn identity(&mut self, source: S) -> Result<IssueIdentity, Self::Error>;
-	async fn contents(&mut self, source: S) -> Result<IssueContents, Self::Error>;
-	async fn children(&mut self, source: S) -> Result<IssueChildren<Issue>, Self::Error>;
-
-	/// Load a full issue tree from the source.
-	/// Default implementation calls parent_index, then populates identity, contents, and children.
-	async fn load(source: S) -> Result<Issue, Self::Error>
-	where
-		Issue: LazyIssue<S, Error = Self::Error>, {
-		let parent_index = <Issue as LazyIssue<S>>::parent_index(&source).await?.expect("load requires parent_index to be Some");
-		let mut issue = Issue::empty_local(parent_index);
-		<Issue as LazyIssue<S>>::identity(&mut issue, source.clone()).await?;
-		<Issue as LazyIssue<S>>::contents(&mut issue, source.clone()).await?;
-		Box::pin(<Issue as LazyIssue<S>>::children(&mut issue, source)).await?;
-		Ok(issue)
 	}
 }
 

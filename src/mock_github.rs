@@ -20,6 +20,8 @@ use crate::{
 	open_interactions::local::Local,
 };
 
+/// Environment variable name for mock state file (integration tests)
+const ENV_MOCK_STATE: &str = concat!(env!("CARGO_PKG_NAME"), "_MOCK_STATE");
 /// Mock Github client that stores all state in memory.
 /// Thread-safe for use in async contexts.
 pub struct MockGithubClient {
@@ -278,8 +280,6 @@ impl MockGithubClient {
 	}
 }
 
-/// Environment variable name for mock state file (integration tests)
-const ENV_MOCK_STATE: &str = concat!(env!("CARGO_PKG_NAME"), "_MOCK_STATE");
 /// Scan the project directory for the maximum issue number in filenames.
 /// Looks at files/dirs matching pattern `{number}_-_*` or just `{number}`.
 fn scan_max_issue_number(repo_info: RepoInfo) -> u64 {

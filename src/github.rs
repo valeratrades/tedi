@@ -9,6 +9,63 @@ use v_utils::prelude::*;
 use crate::config::LiveSettings;
 
 pub type BoxedGithubClient = Arc<dyn GithubClient>;
+/// Trait defining all Github API operations.
+/// This allows for both real API calls and mock implementations for testing.
+#[async_trait]
+pub trait GithubClient: Send + Sync {
+	/// Fetch the authenticated user's login name
+	async fn fetch_authenticated_user(&self) -> Result<String>;
+
+	/// Fetch a single issue by number
+	async fn fetch_issue(&self, repo: RepoInfo, issue_number: u64) -> Result<GithubIssue>;
+
+	/// Fetch all comments on an issue
+	async fn fetch_comments(&self, repo: RepoInfo, issue_number: u64) -> Result<Vec<GithubComment>>;
+
+	/// Fetch all sub-issues of an issue
+	async fn fetch_sub_issues(&self, repo: RepoInfo, issue_number: u64) -> Result<Vec<GithubIssue>>;
+
+	/// Update an issue's body
+	async fn update_issue_body(&self, repo: RepoInfo, issue_number: u64, body: &str) -> Result<()>;
+
+	/// Update an issue's state (open/closed)
+	async fn update_issue_state(&self, repo: RepoInfo, issue_number: u64, state: &str) -> Result<()>;
+
+	/// Update a comment's body
+	async fn update_comment(&self, repo: RepoInfo, comment_id: u64, body: &str) -> Result<()>;
+
+	/// Create a new comment on an issue
+	async fn create_comment(&self, repo: RepoInfo, issue_number: u64, body: &str) -> Result<()>;
+
+	/// Delete a comment
+	async fn delete_comment(&self, repo: RepoInfo, comment_id: u64) -> Result<()>;
+
+	/// Create a new issue
+	async fn create_issue(&self, repo: RepoInfo, title: &str, body: &str) -> Result<CreatedIssue>;
+
+	/// Add a sub-issue to a parent issue
+	/// Note: `child_issue_id` is the resource ID (not the issue number)
+	async fn add_sub_issue(&self, repo: RepoInfo, parent_issue_number: u64, child_issue_id: u64) -> Result<()>;
+
+	/// Find an issue by exact title match
+	#[allow(dead_code)]
+	async fn find_issue_by_title(&self, repo: RepoInfo, title: &str) -> Result<Option<u64>>;
+
+	/// Check if an issue exists by number
+	#[allow(dead_code)]
+	async fn issue_exists(&self, repo: RepoInfo, issue_number: u64) -> Result<bool>;
+
+	/// Fetch the parent issue of a sub-issue (returns None if issue has no parent)
+	async fn fetch_parent_issue(&self, repo: RepoInfo, issue_number: u64) -> Result<Option<GithubIssue>>;
+
+	/// Fetch timestamps from GraphQL timeline API for title, description, and label changes.
+	/// All fields are optional because GitHub only retains timeline events for 90 days.
+	/// Note: Comment timestamps should be extracted from GithubComment's created_at/updated_at fields.
+	async fn fetch_timeline_timestamps(&self, repo: RepoInfo, issue_number: u64) -> Result<GraphqlTimelineTimestamps>;
+
+	/// Check if a repository exists and is accessible (we have at least read access)
+	async fn repo_exists(&self, repo: RepoInfo) -> Result<bool>;
+}
 #[derive(Clone, Debug, Deserialize)]
 pub struct GithubIssue {
 	pub number: u64,
@@ -69,64 +126,6 @@ pub struct GraphqlTimelineTimestamps {
 //==============================================================================
 // Github Client Trait
 //==============================================================================
-
-/// Trait defining all Github API operations.
-/// This allows for both real API calls and mock implementations for testing.
-#[async_trait]
-pub trait GithubClient: Send + Sync {
-	/// Fetch the authenticated user's login name
-	async fn fetch_authenticated_user(&self) -> Result<String>;
-
-	/// Fetch a single issue by number
-	async fn fetch_issue(&self, repo: RepoInfo, issue_number: u64) -> Result<GithubIssue>;
-
-	/// Fetch all comments on an issue
-	async fn fetch_comments(&self, repo: RepoInfo, issue_number: u64) -> Result<Vec<GithubComment>>;
-
-	/// Fetch all sub-issues of an issue
-	async fn fetch_sub_issues(&self, repo: RepoInfo, issue_number: u64) -> Result<Vec<GithubIssue>>;
-
-	/// Update an issue's body
-	async fn update_issue_body(&self, repo: RepoInfo, issue_number: u64, body: &str) -> Result<()>;
-
-	/// Update an issue's state (open/closed)
-	async fn update_issue_state(&self, repo: RepoInfo, issue_number: u64, state: &str) -> Result<()>;
-
-	/// Update a comment's body
-	async fn update_comment(&self, repo: RepoInfo, comment_id: u64, body: &str) -> Result<()>;
-
-	/// Create a new comment on an issue
-	async fn create_comment(&self, repo: RepoInfo, issue_number: u64, body: &str) -> Result<()>;
-
-	/// Delete a comment
-	async fn delete_comment(&self, repo: RepoInfo, comment_id: u64) -> Result<()>;
-
-	/// Create a new issue
-	async fn create_issue(&self, repo: RepoInfo, title: &str, body: &str) -> Result<CreatedIssue>;
-
-	/// Add a sub-issue to a parent issue
-	/// Note: `child_issue_id` is the resource ID (not the issue number)
-	async fn add_sub_issue(&self, repo: RepoInfo, parent_issue_number: u64, child_issue_id: u64) -> Result<()>;
-
-	/// Find an issue by exact title match
-	#[allow(dead_code)]
-	async fn find_issue_by_title(&self, repo: RepoInfo, title: &str) -> Result<Option<u64>>;
-
-	/// Check if an issue exists by number
-	#[allow(dead_code)]
-	async fn issue_exists(&self, repo: RepoInfo, issue_number: u64) -> Result<bool>;
-
-	/// Fetch the parent issue of a sub-issue (returns None if issue has no parent)
-	async fn fetch_parent_issue(&self, repo: RepoInfo, issue_number: u64) -> Result<Option<GithubIssue>>;
-
-	/// Fetch timestamps from GraphQL timeline API for title, description, and label changes.
-	/// All fields are optional because GitHub only retains timeline events for 90 days.
-	/// Note: Comment timestamps should be extracted from GithubComment's created_at/updated_at fields.
-	async fn fetch_timeline_timestamps(&self, repo: RepoInfo, issue_number: u64) -> Result<GraphqlTimelineTimestamps>;
-
-	/// Check if a repository exists and is accessible (we have at least read access)
-	async fn repo_exists(&self, repo: RepoInfo) -> Result<bool>;
-}
 
 //==============================================================================
 // Real Github Client Implementation
