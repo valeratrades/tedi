@@ -23,7 +23,7 @@
 
 use color_eyre::eyre::{Result, bail};
 use tedi::{
-	Issue, IssueIndex, IssueLink, IssueSelector, LazyIssue, RepoInfo,
+	HollowIssue, Issue, IssueIndex, IssueLink, IssueSelector, LazyIssue, RepoInfo, VirtualIssue,
 	local::{Consensus, FsReader, Local, LocalFs, LocalIssueSource, LocalPath},
 	sink::Sink,
 };
@@ -31,7 +31,7 @@ use tracing::instrument;
 use v_utils::elog;
 
 use super::{
-	conflict::{ConflictOutcome, complete_conflict_resolution, initiate_conflict_merge, read_resolved_conflict},
+	conflict::{ConflictOutcome, initiate_conflict_merge},
 	consensus::load_consensus_issue,
 	merge::Merge,
 	remote::{Remote, RemoteSource},
@@ -179,14 +179,12 @@ mod core {
 				// Conflict - initiate git merge
 				match initiate_conflict_merge(repo_info, issue_number, &local_merged, &remote_merged)? {
 					ConflictOutcome::AutoMerged => {
-						let resolved = read_resolved_conflict(repo_info.owner())?;
-						complete_conflict_resolution(repo_info.owner())?;
-						let mut resolved = resolved;
-						<Issue as Sink<LocalFs>>::sink(&mut resolved, None).await?;
-						<Issue as Sink<Remote>>::sink(&mut resolved, None).await?;
-						Ok((resolved, true))
+						unreachable!(
+							"AutoMerged means when we triggered a merge of local against remote (which we've already checked are divergent), it succeeded. Which would be an implementation error, - whole point of the call is to record the conflict before getting user to resolve it manually."
+						);
 					}
 					ConflictOutcome::NeedsResolution => {
+						//TODO!: switch to a preview Error return type. This branch is EXPECTED to be reached during real-world usage, and must have first-class formatting and a miette error nicely propagated to user.
 						bail!(
 							"Conflict detected for {}/{}#{issue_number}.\n\
 							Resolve using standard git tools, then re-run.",
@@ -325,8 +323,10 @@ mod types {
 					tracing::Span::current().record("vpath", tracing::field::debug(&vpath));
 					tracing::Span::current().record("content", content.as_str());
 					let parent_idx = issue.identity.parent_index;
-					let hollow = old_issue.clone().into();
-					*issue = Issue::parse_virtual(&content, hollow, parent_idx, vpath.clone())?;
+					let is_virtual = issue.identity.is_virtual;
+					let hollow: HollowIssue = old_issue.clone().into();
+					let virtual_issue = VirtualIssue::parse_virtual(&content, vpath.clone())?;
+					*issue = Issue::from_combined(hollow, virtual_issue, parent_idx, is_virtual);
 
 					ModifyResult { output: None, file_modified }
 				}

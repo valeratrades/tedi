@@ -53,6 +53,9 @@ pub enum LocalError {
 	#[error("failed to extract issue index from path: {0}")]
 	#[from(skip)]
 	PathExtraction(String),
+
+	#[error(transparent)]
+	Other(Report),
 }
 
 /// Error type for consensus sink operations.
@@ -150,7 +153,12 @@ impl LocalIssueSource<FsReader> {
 		let index = Local::extract_index_from_path(path).map_err(|e| LocalError::PathExtraction(e.to_string()))?;
 
 		// Check for unresolved conflicts
-		conflict::check_conflict(index.owner())?;
+		{
+			let maybe_conflict_file = conflict::check_conflict(index.owner())?;
+			if let Some(conflict_file) = maybe_conflict_file {
+				return Err(ConflictBlockedError { conflict_file }.into());
+			}
+		}
 
 		Ok(Self::new(LocalPath::new(index), FsReader))
 	}
@@ -222,10 +230,10 @@ impl Local {
 	/// This parses one issue file (without loading children from separate files).
 	/// Children field will be empty - they're loaded separately via LazyIssue.
 	fn parse_single_node(content: &str, index: IssueIndex, fpath_for_error_context_only: &Path) -> Result<Issue, LocalError> {
-		// Derive parent_index from the full index (all but the last selector)
 		let parent_idx = index.parent().unwrap_or_else(|| IssueIndex::repo_only(index.repo_info()));
-		let hollow = HollowIssue::default_pending(); //HACK: this is just a plug to have deprecated logic compile. HollowIssue won't be needed at all when we write it correctly; and the function itself should return `VirtualIssue` not `Issue`
-		let mut issue = Issue::parse_virtual(content, hollow, parent_idx, fpath_for_error_context_only.to_path_buf())?;
+		let is_virtual = Self::is_virtual_project(index.repo_info());
+		let virtual_issue = crate::VirtualIssue::parse_virtual(content, fpath_for_error_context_only.to_path_buf())?;
+		let mut issue = Issue::from_combined(crate::HollowIssue::default(), virtual_issue, parent_idx, is_virtual);
 		// Clear any inline children (filesystem format stores them in separate files)
 		if !issue.children.is_empty() {
 			tracing::warn!("issue children read from file are not empty. Wtf {:?}", &issue.children);
@@ -680,6 +688,7 @@ pub struct ProjectMeta {
 }
 /// Per-issue metadata stored in .meta.json.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[deprecated(note = "just pass around IssueTimestamps directly; wtf is this")]
 pub struct IssueMeta {
 	/// Timestamps for individual field changes.
 	#[serde(default)]
@@ -1180,7 +1189,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use v_utils::prelude::*;
 
-use crate::{HollowIssue, Issue, IssueIndex, IssueSelector, RepoInfo};
+use crate::{Issue, IssueIndex, IssueSelector, RepoInfo, local::conflict::ConflictBlockedError};
 
 //==============================================================================
 // Local - The interface for local issue storage

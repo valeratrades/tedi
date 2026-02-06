@@ -3,6 +3,7 @@
 //! Tests that nested issues, blockers, and other content survive the
 //! parse -> edit -> serialize -> sync cycle intact.
 
+use tedi::{CloseState, IssueSelector};
 use v_fixtures::FixtureRenderer;
 
 use crate::{
@@ -224,15 +225,14 @@ async fn test_closing_nested_issue_creates_bak_file() {
 	ctx.remote(&initial_vi, None, false);
 
 	// User closes nested issue during edit
-	let edited_issue = parse_virtual(
-		"- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
-		 \tlorem ipsum\n\
-		 \n\
-		 \t- [x] b <!-- @mock_user https://github.com/o/r/issues/2 -->\n\
-		 \t\tnested body content\n",
-	);
+	let edited_issue = {
+		let mut initial = initial_issue.clone();
+		let (_, child) = initial.children.iter_mut().next().unwrap();
+		child.contents.state = CloseState::Closed;
+		initial
+	};
 
-	let out = ctx.open_issue(&initial_issue).edit(&edited_issue, false).run();
+	let out = ctx.open_issue(&initial_issue).edit(&edited_issue.into(), false).run();
 	eprintln!("stdout: {}", out.stdout);
 	eprintln!("stderr: {}", out.stderr);
 

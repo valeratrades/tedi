@@ -137,7 +137,7 @@ impl From<&IssueIdentity> for IssueMarker {
 				user: meta.user.clone(),
 				link: meta.link.clone(),
 			}
-		} else if identity.is_virtual() {
+		} else if identity.is_virtual {
 			IssueMarker::Virtual
 		} else {
 			IssueMarker::Pending

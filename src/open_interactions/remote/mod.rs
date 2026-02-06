@@ -374,7 +374,7 @@ impl Sink<Remote> for Issue {
 
 	async fn sink(&mut self, old: Option<&Issue>) -> Result<bool, Self::Error> {
 		// Virtual issues never sync to remote - they're local-only
-		if self.identity.is_virtual() {
+		if self.identity.is_virtual {
 			return Ok(false);
 		}
 

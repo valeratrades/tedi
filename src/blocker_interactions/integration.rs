@@ -20,14 +20,14 @@ use crate::open_interactions::local::ExactMatchLevel;
 
 /// Issue-based blocker source for blockers embedded in issue files.
 pub struct IssueSource {
-	pub issue_path: PathBuf,
+	pub virtual_issue_buffer_path: PathBuf,
 	/// Cached parsed issue (needed for save to preserve structure)
 	pub cached_issue: std::cell::RefCell<Option<Issue>>,
 }
 impl IssueSource {
 	pub fn new(issue_path: PathBuf) -> Self {
 		Self {
-			issue_path,
+			virtual_issue_buffer_path: issue_path,
 			cached_issue: std::cell::RefCell::new(None),
 		}
 	}
@@ -41,16 +41,16 @@ impl IssueSource {
 	/// Set this issue as the current blocker issue
 	pub fn set_current(&self) -> Result<()> {
 		let cache_path = get_current_blocker_cache_path();
-		std::fs::write(&cache_path, self.issue_path.to_string_lossy().as_bytes())?;
+		std::fs::write(&cache_path, self.virtual_issue_buffer_path.to_string_lossy().as_bytes())?;
 		Ok(())
 	}
 
 	/// Get relative path for display
 	pub fn display_relative(&self) -> String {
-		self.issue_path
+		self.virtual_issue_buffer_path
 			.strip_prefix(Local::issues_dir())
 			.map(|p| p.to_string_lossy().to_string())
-			.unwrap_or_else(|_| self.issue_path.to_string_lossy().to_string())
+			.unwrap_or_else(|_| self.virtual_issue_buffer_path.to_string_lossy().to_string())
 	}
 }
 
@@ -172,7 +172,7 @@ pub async fn main_integrated(command: super::io::Command, format: DisplayFormat,
 				};
 
 				// Use unified modify flow
-				let local_source = LocalIssueSource::<FsReader>::build_from_path(&issue_source.issue_path)?;
+				let local_source = LocalIssueSource::<FsReader>::build_from_path(&issue_source.virtual_issue_buffer_path)?;
 				let issue = Issue::load(local_source).await?;
 				modify_and_sync_issue(issue, offline, Modifier::Editor { open_at_blocker: false }, SyncOptions::default()).await?;
 
@@ -284,7 +284,7 @@ pub async fn main_integrated(command: super::io::Command, format: DisplayFormat,
 			}
 
 			// Use unified modify workflow
-			let local_source = LocalIssueSource::<FsReader>::build_from_path(&issue_source.issue_path)?;
+			let local_source = LocalIssueSource::<FsReader>::build_from_path(&issue_source.virtual_issue_buffer_path)?;
 			let issue = Issue::load(local_source).await?;
 			let result = modify_and_sync_issue(issue, offline, Modifier::BlockerPop, SyncOptions::default()).await?;
 
@@ -324,7 +324,7 @@ pub async fn main_integrated(command: super::io::Command, format: DisplayFormat,
 				let issue_source = IssueSource::current().ok_or_else(|| eyre!("No blocker file set. Use `todo blocker set <pattern>` first."))?;
 
 				// Use unified modify workflow
-				let local_source = LocalIssueSource::<FsReader>::build_from_path(&issue_source.issue_path)?;
+				let local_source = LocalIssueSource::<FsReader>::build_from_path(&issue_source.virtual_issue_buffer_path)?;
 				let issue = Issue::load(local_source).await?;
 				let result = modify_and_sync_issue(issue, offline, Modifier::BlockerAdd { text: name.clone() }, SyncOptions::default()).await?;
 
@@ -400,16 +400,17 @@ fn get_current_blocker_cache_path() -> PathBuf {
 
 impl super::source::BlockerSource for IssueSource {
 	fn load(&self) -> Result<BlockerSequence> {
-		let content = std::fs::read_to_string(&self.issue_path)?;
-		let issue = Issue::deserialize_virtual(&content).map_err(|e| eyre!("Failed to parse issue: {e}"))?;
+		let content = std::fs::read_to_string(&self.virtual_issue_buffer_path)?;
+		todo!();
+		//let issue = Issue::unsafe_mock_parse_virtual(&content).map_err(|e| eyre!("Failed to parse issue: {e}"))?; //XXX: wtf even is this, why are we loading it ourselves??
 
-		// Clone the blockers before caching the issue
-		let blockers = issue.contents.blockers.clone();
-
-		// Cache the parsed issue (unused now, but kept for potential future use)
-		*self.cached_issue.borrow_mut() = Some(issue);
-
-		Ok(blockers)
+		//// Clone the blockers before caching the issue
+		//let blockers = issue.contents.blockers.clone();
+		//
+		//// Cache the parsed issue (unused now, but kept for potential future use)
+		//*self.cached_issue.borrow_mut() = Some(issue);
+		//
+		//Ok(blockers)
 	}
 
 	fn display_name(&self) -> String {
@@ -417,7 +418,7 @@ impl super::source::BlockerSource for IssueSource {
 	}
 
 	fn hierarchy(&self) -> Vec<String> {
-		self.issue_path.file_stem().map(|s| vec![s.to_string_lossy().into_owned()]).unwrap_or_default()
+		self.virtual_issue_buffer_path.file_stem().map(|s| vec![s.to_string_lossy().into_owned()]).unwrap_or_default()
 	}
 }
 
@@ -478,136 +479,5 @@ async fn update_tracking_after_change() {
 	// Restart with new current blocker
 	if let Err(e) = super::clockify::restart_tracking_for_project(get_current_blocker_description, None).await {
 		tracing::warn!("failed to restart clockify tracking: {e}");
-	}
-}
-
-#[cfg(test)]
-mod tests {
-	use super::*;
-
-	#[test]
-	fn test_issue_source_load_and_save() {
-		// This test verifies that IssueSource correctly loads and saves blockers
-		// via the Issue struct. The actual parsing/serialization is tested in
-		// open/issue.rs tests.
-	}
-
-	#[test]
-	fn test_issue_parse_with_blockers() {
-		let content = r#"- [ ] Issue Title <!-- @owner https://github.com/owner/repo/issues/1 -->
-	Body text.
-
-	# Blockers
-	# Phase 1
-	- First task
-		comment on first task
-	- Second task
-
-	# Phase 2
-	- Third task
-"#;
-		let issue = Issue::deserialize_virtual(content).unwrap();
-
-		assert!(!issue.contents.blockers.is_empty());
-		insta::assert_snapshot!(issue.contents.blockers.serialize(tedi::DisplayFormat::Headers), @"
-		# Phase 1
-		- First task
-			comment on first task
-		- Second task
-		# Phase 2
-		- Third task
-		");
-	}
-
-	#[test]
-	fn test_issue_blockers_current_with_context() {
-		let content = r#"- [ ] Issue Title <!-- @owner https://github.com/owner/repo/issues/1 -->
-	Body text.
-
-	# Blockers
-	# Phase 1
-	- First task
-	# Phase 2
-	- Third task
-"#;
-		let issue = Issue::deserialize_virtual(content).unwrap();
-
-		assert_eq!(issue.contents.blockers.current_with_context(&[]), Some("Phase 2: Third task".to_string()));
-
-		let hierarchy = vec!["my_project".to_string()];
-		assert_eq!(issue.contents.blockers.current_with_context(&hierarchy), Some("my_project: Phase 2: Third task".to_string()));
-	}
-
-	#[test]
-	fn test_issue_blockers_pop() {
-		let content = r#"- [ ] Issue Title <!-- @owner https://github.com/owner/repo/issues/1 -->
-	Body text.
-
-	# Blockers
-	- First task
-	- Second task
-	- Third task
-"#;
-		let mut issue = Issue::deserialize_virtual(content).unwrap();
-
-		issue.contents.blockers.pop();
-
-		insta::assert_snapshot!(issue.contents.blockers.serialize(tedi::DisplayFormat::Headers), @"
-		- First task
-		- Second task
-		");
-	}
-
-	#[test]
-	fn test_issue_serialize_with_blockers() {
-		let content = r#"- [ ] Issue Title <!-- @owner https://github.com/owner/repo/issues/1 -->
-	Body text.
-
-	# Blockers
-	- First task
-	- Second task
-"#;
-		let issue = Issue::deserialize_virtual(content).unwrap();
-
-		let serialized = issue.serialize_virtual();
-		assert!(serialized.contains("# Blockers"));
-		assert!(serialized.contains("- First task"));
-		assert!(serialized.contains("- Second task"));
-	}
-
-	#[test]
-	fn test_issue_no_blockers_section() {
-		let content = r#"- [ ] Issue Title <!-- @owner https://github.com/owner/repo/issues/1 -->
-	Just some regular body text without blockers marker.
-	- This is NOT a blocker, just body content.
-"#;
-		let issue = Issue::deserialize_virtual(content).unwrap();
-
-		assert!(issue.contents.blockers.is_empty());
-	}
-
-	#[test]
-	fn test_issue_blockers_with_subissue() {
-		let content = r#"- [ ] Issue Title <!-- @owner https://github.com/owner/repo/issues/1 -->
-	Body.
-
-	# Blockers
-	- Blocker one
-	- Blocker two
-
-	- [ ] Sub-issue <!--sub @owner https://github.com/owner/repo/issues/2 -->
-		Sub-issue body
-"#;
-		let issue = Issue::deserialize_virtual(content).unwrap();
-
-		// Blockers should only contain the blocker items, not the sub-issue
-		insta::assert_snapshot!(issue.contents.blockers.serialize(tedi::DisplayFormat::Headers), @"
-		- Blocker one
-		- Blocker two
-		");
-
-		// Sub-issue should be in children
-		assert_eq!(issue.children.len(), 1);
-		assert_eq!(issue[2].contents.title, "Sub-issue");
 	}
 }

@@ -149,9 +149,9 @@ pub struct GitState {
 /// Uses defaults: owner="o", repo="r", user="mock_user".
 pub(super) fn with_timestamps(virtual_issue: &tedi::VirtualIssue, seed: Option<Seed>, is_virtual: bool) -> Issue {
 	let timestamps = seed.map(timestamps_from_seed).unwrap_or_default();
-	let hollow = build_hollow_from_virtual(virtual_issue, &timestamps, is_virtual);
+	let hollow = build_hollow_from_virtual(virtual_issue, &timestamps);
 	let parent_idx = tedi::IssueIndex::repo_only((OWNER, REPO).into());
-	Issue::from_combined(hollow, virtual_issue.clone(), parent_idx)
+	Issue::from_combined(hollow, virtual_issue.clone(), parent_idx, is_virtual)
 }
 
 /// Generate a timestamp for a specific field index.
@@ -204,23 +204,20 @@ where
 }
 
 /// Recursively build HollowIssue tree from VirtualIssue, setting up remote with timestamps.
-fn build_hollow_from_virtual(virtual_issue: &tedi::VirtualIssue, timestamps: &IssueTimestamps, is_virtual: bool) -> tedi::HollowIssue {
+fn build_hollow_from_virtual(virtual_issue: &tedi::VirtualIssue, timestamps: &IssueTimestamps) -> tedi::HollowIssue {
 	let remote = match &virtual_issue.selector {
 		tedi::IssueSelector::GitId(n) => {
 			let link = tedi::IssueLink::parse(&format!("https://github.com/{OWNER}/{REPO}/issues/{n}")).unwrap();
-			tedi::IssueRemote::Github(Box::new(Some(tedi::LinkedIssueMeta::new(USER.to_string(), link, timestamps.clone()))))
+			Some(Box::new(tedi::LinkedIssueMeta::new(USER.to_string(), link, timestamps.clone())))
 		}
-		tedi::IssueSelector::Title(_) | tedi::IssueSelector::Regex(_) => match is_virtual {
-			true => tedi::IssueRemote::Virtual,
-			false => tedi::IssueRemote::Github(Box::new(None)),
-		},
+		tedi::IssueSelector::Title(_) | tedi::IssueSelector::Regex(_) => None,
 	};
 
 	let children = virtual_issue
 		.children
 		.iter()
 		.map(|(selector, child)| {
-			let child_hollow = build_hollow_from_virtual(child, timestamps, is_virtual);
+			let child_hollow = build_hollow_from_virtual(child, timestamps);
 			(*selector, child_hollow)
 		})
 		.collect();

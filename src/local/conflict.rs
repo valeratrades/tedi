@@ -17,8 +17,8 @@ use miette::Diagnostic;
 use thiserror::Error;
 use v_utils::prelude::*;
 
-use super::{Local, consensus::is_git_initialized};
-use crate::{Issue, RepoInfo};
+use super::Local;
+use crate::{Issue, RepoInfo, local::consensus::is_git_initialized};
 
 //==============================================================================
 // Error Types
@@ -72,43 +72,35 @@ pub fn conflict_file_path(owner: &str) -> PathBuf {
 //==============================================================================
 
 /// Check for unresolved conflict for a given owner.
-///
-/// Returns:
-/// - `Ok(())` if no conflict or conflict is resolved
-/// - `Err(ConflictBlockedError)` if conflict exists and has markers
-pub fn check_conflict(owner: &str) -> Result<(), ConflictBlockedError> {
+pub fn check_conflict(owner: &str) -> Result<Option<PathBuf>> {
 	let conflict_file = conflict_file_path(owner);
 
 	if !conflict_file.exists() {
-		return Ok(());
+		return Ok(None);
 	}
 
-	let content = match std::fs::read_to_string(&conflict_file) {
-		Ok(c) => c,
-		Err(_) => return Ok(()), // Can't read = treat as no conflict
-	};
+	let content = std::fs::read_to_string(&conflict_file)?;
 
 	if has_conflict_markers(&content) {
-		Err(ConflictBlockedError { conflict_file })
+		//Err(ConflictBlockedError { conflict_file })
+		Ok(Some(conflict_file))
 	} else {
-		Ok(())
+		// have the conflict file, but user has had resolved it, - sync then cleanup
+		{
+			//TODO!!!!!!!!: load issue from
+			//DO: read into `VirtualIssue`
+
+			//Q: we should preserve the timestamps of original issues post resolution.
+			//C [consequence]: so we must have actual IssueIndex of the issue being resolved, to get both sources
+			//C: this should take IssueIndex; then
+			//TODO: impl IssueIndex -> HollowIssue
+		}
+
+		conflict_resolution_cleanup(owner)?;
+		Ok(None)
 	}
 }
-/// Read the resolved conflict issue from `__conflict.md`.
-///
-/// Call this after user has resolved the conflict (no more markers).
-/// Returns the parsed Issue from the resolved file.
-pub fn read_resolved_conflict(owner: &str) -> Result<Issue> {
-	let conflict_file = conflict_file_path(owner);
 
-	let content = std::fs::read_to_string(&conflict_file).map_err(|e| eyre!("Failed to read conflict file: {e}"))?;
-
-	if has_conflict_markers(&content) {
-		bail!("Conflict file still has unresolved markers");
-	}
-
-	Issue::deserialize_virtual(&content).map_err(|e| eyre!("Failed to parse resolved conflict: {e}"))
-}
 /// Remove the conflict file after successful resolution.
 pub fn remove_conflict_file(owner: &str) -> Result<()> {
 	let conflict_file = conflict_file_path(owner);
@@ -274,6 +266,7 @@ pub fn initiate_conflict_merge(repo_info: RepoInfo, issue_number: u64, local_iss
 	let stdout = String::from_utf8_lossy(&merge_output.stdout);
 	let stderr = String::from_utf8_lossy(&merge_output.stderr);
 
+	//TODO: switch all actual git operations to [gitoxide](https://docs.rs/gitoxide/latest/gitoxide/), to not have to parse STDOUT
 	if stdout.contains("CONFLICT") || stderr.contains("CONFLICT") || stdout.contains("Automatic merge failed") {
 		tracing::debug!("[conflict] Merge produced conflicts in {conflict_file_rel_str}");
 		// Don't cleanup branch - user needs it for resolution
@@ -291,7 +284,7 @@ pub fn initiate_conflict_merge(repo_info: RepoInfo, issue_number: u64, local_iss
 ///
 /// Call this after user has resolved conflicts and committed.
 /// Cleans up the remote-state branch.
-pub fn complete_conflict_resolution(owner: &str) -> Result<()> {
+pub fn conflict_resolution_cleanup(owner: &str) -> Result<()> {
 	let data_dir = Local::issues_dir();
 	let data_dir_str = data_dir.to_str().ok_or_else(|| eyre!("Invalid data directory path"))?;
 

@@ -166,7 +166,7 @@ pub async fn open_command(settings: &LiveSettings, args: OpenArgs, offline: bool
 		} else {
 			Issue::load(source).await?
 		};
-		let project_is_virtual = issue.identity.is_virtual();
+		let project_is_virtual = issue.identity.is_virtual;
 
 		if is_create {
 			if !issue.identity.parent_index.index().is_empty() {
