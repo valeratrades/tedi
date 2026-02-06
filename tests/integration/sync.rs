@@ -32,7 +32,7 @@ use crate::common::{
 	FixtureIssuesExt, TestContext,
 	are_you_sure::{UnsafePathExt, read_issue_file, write_to_path},
 	git::{GitExt as _, Seed},
-	parse, render_fixture,
+	hollow_mock, parse, render_fixture,
 };
 
 /// Fixture for tests where consensus, local, and remote all have different bodies.
@@ -238,12 +238,11 @@ async fn test_reset_with_remote_url_nukes_local_state() {
 async fn test_reset_with_remote_url_skips_merge_on_divergence() {
 	use std::path::PathBuf;
 
-	use tedi::{HollowIssue, Issue, IssueIndex};
+	use tedi::{Issue, IssueIndex};
 
 	let ctx = TestContext::build("");
 	let parent_idx = IssueIndex::repo_only(("o", "r").into());
-	let meta = LinkedIssueMeta::new("@mock_user".to_string(), IssueLink::parse("https://github.com/o/r/issues/1").unwrap(), IssueTimestamps::default());
-	let hollow = HollowIssue::new(tedi::IssueRemote::Github(Box::new(Some(meta))), HashMap::default());
+	let hollow = hollow_mock(1, HashMap::default());
 
 	let consensus = Issue::parse_virtual(
 		"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tconsensus body\n",

@@ -16,6 +16,7 @@ pub const MAX_TITLE_LENGTH: usize = 256;
 /// Maximum index depth (lineage + the issue itself).
 pub const MAX_INDEX_DEPTH: usize = MAX_LINEAGE_DEPTH + 1;
 pub const MAX_LINEAGE_DEPTH: usize = 8;
+pub type IssueChildren<T> = HashMap<IssueSelector, T>;
 /// Repository identification: owner and repo name.
 /// Uses fixed-size `ArrayString`s to be `Copy`.
 /// GitHub limits: owner max 39 chars, repo max 100 chars.
@@ -1651,7 +1652,6 @@ pub trait LazyIssue<S: Clone + std::fmt::Debug>: Sized {
 		Ok(issue)
 	}
 }
-pub type IssueChildren<T> = HashMap<IssueSelector, T>;
 
 /// Result of parsing a checkbox prefix.
 enum CheckboxParseResult<'a> {

@@ -377,8 +377,12 @@ impl<'a> OpenBuilder<'a> {
 }
 
 pub fn hollow_mock(issue_number: u64, children: IssueChildren<HollowIssue>) -> HollowIssue {
-	let parent_idx = IssueIndex::repo_only(("o", "r").into());
-	let meta = LinkedIssueMeta::new("@mock_user".to_string(), IssueLink::parse("https://github.com/o/r/issues/1").unwrap(), IssueTimestamps::default());
+	let meta = LinkedIssueMeta::new(
+		"@mock_user".to_string(),
+		IssueLink::parse(&format!("https://github.com/o/r/issues/{issue_number}")).unwrap(),
+		IssueTimestamps::default(),
+	);
+	HollowIssue::new(IssueRemote::Github(Box::new(Some(meta))), children)
 }
 
 #[deprecated]
@@ -568,7 +572,8 @@ fn drain_pipe<R: Read>(pipe: &mut R, buf: &mut Vec<u8>) {
 }
 
 pub use snapshot::FixtureIssuesExt;
-use tedi::{HollowIssue, Issue, IssueIndex, IssueLink, IssueTimestamps, LinkedIssueMeta};
+use tedi::{HollowIssue, Issue, IssueIndex, IssueLink, IssueRemote, IssueTimestamps, LinkedIssueMeta};
+type IssueChildren<T> = std::collections::HashMap<tedi::IssueSelector, T>;
 use v_fixtures::{Fixture, FixtureRenderer, fs_standards::xdg::Xdg};
 
 static BINARY_COMPILED: OnceLock<()> = OnceLock::new();
