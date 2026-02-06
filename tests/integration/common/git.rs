@@ -118,20 +118,20 @@ pub trait GitExt {
 	/// Panics if same (owner, repo, number) is submitted twice.
 	///
 	/// If `seed` is provided, timestamps are generated from it and written to `.meta.json`.
-	async fn local(&self, issue: &Issue, seed: Option<Seed>);
+	async fn local_legacy(&self, issue: &Issue, seed: Option<Seed>);
 
 	/// Write issue and commit to git as consensus state. Additive - can call multiple times.
 	/// Panics if same (owner, repo, number) is submitted twice.
 	///
 	/// If `seed` is provided, timestamps are generated from it and written to `.meta.json`.
-	async fn consensus(&self, issue: &Issue, seed: Option<Seed>);
+	async fn consensus_legacy(&self, issue: &Issue, seed: Option<Seed>);
 
 	/// Set up mock Github API to return this issue. Additive - can call multiple times.
 	/// Handles sub-issues automatically.
 	/// Panics if same (owner, repo, number) is submitted twice.
 	///
 	/// If `seed` is provided, timestamps are generated from it for the mock response.
-	fn remote(&self, issue: &Issue, seed: Option<Seed>);
+	fn remote_legacy(&self, issue: &Issue, seed: Option<Seed>);
 }
 /// Base timestamp: 2001-09-11 12:00:00 UTC (midday).
 const BASE_TIMESTAMP_SECS: i64 = 1000209600;
@@ -202,7 +202,7 @@ impl GitExt for TestContext {
 		git
 	}
 
-	async fn local(&self, issue: &Issue, seed: Option<Seed>) {
+	async fn local_legacy(&self, issue: &Issue, seed: Option<Seed>) {
 		let (owner, repo, number) = extract_issue_coords(issue);
 		let key = (owner.clone(), repo.clone(), number);
 
@@ -226,7 +226,7 @@ impl GitExt for TestContext {
 		}
 	}
 
-	async fn consensus(&self, issue: &Issue, seed: Option<Seed>) {
+	async fn consensus_legacy(&self, issue: &Issue, seed: Option<Seed>) {
 		let (owner, repo, number) = extract_issue_coords(issue);
 		let key = (owner.clone(), repo.clone(), number);
 
@@ -254,7 +254,7 @@ impl GitExt for TestContext {
 		}
 	}
 
-	fn remote(&self, issue: &Issue, seed: Option<Seed>) {
+	fn remote_legacy(&self, issue: &Issue, seed: Option<Seed>) {
 		let (owner, repo, number) = extract_issue_coords(issue);
 		let key = (owner.clone(), repo.clone(), number);
 

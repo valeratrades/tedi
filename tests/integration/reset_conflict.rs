@@ -26,7 +26,7 @@ fn test_reset_with_subissue_edit() {
 		 \t- [ ] Sub Issue <!--sub @mock_user https://github.com/o/r/issues/2 -->\n\
 		 \t\tsub body\n",
 	);
-	ctx.remote(&remote_state, None);
+	ctx.remote_legacy(&remote_state, None);
 
 	// User edits: mark sub-issue as closed
 	let edited = parse(
@@ -51,7 +51,7 @@ fn test_reset_with_body_edit() {
 	let ctx = TestContext::build("");
 
 	let remote_state = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\toriginal body\n");
-	ctx.remote(&remote_state, None);
+	ctx.remote_legacy(&remote_state, None);
 
 	let edited = parse("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tmodified body\n");
 
@@ -90,7 +90,7 @@ async fn test_reset_discards_local_subissue_modifications() {
 		 \t\t- [ ] Child <!--sub @mock_user https://github.com/o/r/issues/3 -->\n\
 		 \t\t\tchild body\n",
 	);
-	ctx.remote(&remote_state, None);
+	ctx.remote_legacy(&remote_state, None);
 
 	// Step 1: Initial fetch to create local files
 	let out = ctx.open_url(("o", "r").into(), 1).run();

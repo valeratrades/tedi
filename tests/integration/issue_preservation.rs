@@ -32,8 +32,8 @@ async fn test_comments_with_ids_sync_correctly() {
 		 \tThis is my comment\n",
 	);
 
-	ctx.consensus(&issue, None).await;
-	ctx.remote(&issue, None);
+	ctx.consensus_legacy(&issue, None).await;
+	ctx.remote_legacy(&issue, None);
 
 	let out = ctx.open_issue(&issue).args(&["--force"]).run();
 	eprintln!("stdout: {}", out.stdout);
@@ -58,8 +58,8 @@ async fn test_nested_issues_preserved_through_sync() {
 		 \t\tnested body c\n",
 	);
 
-	ctx.consensus(&issue, None).await;
-	ctx.remote(&issue, None);
+	ctx.consensus_legacy(&issue, None).await;
+	ctx.remote_legacy(&issue, None);
 
 	let out = ctx.open_issue(&issue).run();
 	eprintln!("stdout: {}", out.stdout);
@@ -93,8 +93,8 @@ async fn test_blockers_preserved_through_sync() {
 		 \t- second blocker\n",
 	);
 
-	ctx.consensus(&issue, None).await;
-	ctx.remote(&issue, None);
+	ctx.consensus_legacy(&issue, None).await;
+	ctx.remote_legacy(&issue, None);
 
 	let out = ctx.open_issue(&issue).run();
 	eprintln!("stdout: {}", out.stdout);
@@ -116,8 +116,8 @@ async fn test_blockers_added_during_edit_preserved() {
 	// Initial state: no blockers
 	let initial_issue = parse("- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tlorem ipsum\n");
 
-	ctx.consensus(&initial_issue, None).await;
-	ctx.remote(&initial_issue, None);
+	ctx.consensus_legacy(&initial_issue, None).await;
+	ctx.remote_legacy(&initial_issue, None);
 
 	// User adds blockers during edit
 	let edited_issue = parse(
@@ -157,8 +157,8 @@ async fn test_blockers_with_headers_preserved() {
 		 \t- task gamma\n",
 	);
 
-	ctx.consensus(&issue, None).await;
-	ctx.remote(&issue, None);
+	ctx.consensus_legacy(&issue, None).await;
+	ctx.remote_legacy(&issue, None);
 
 	let out = ctx.open_issue(&issue).run();
 	eprintln!("stdout: {}", out.stdout);
@@ -190,8 +190,8 @@ async fn test_nested_issues_and_blockers_together() {
 		 \t\tnested body\n",
 	);
 
-	ctx.consensus(&issue, None).await;
-	ctx.remote(&issue, None);
+	ctx.consensus_legacy(&issue, None).await;
+	ctx.remote_legacy(&issue, None);
 
 	let out = ctx.open_issue(&issue).run();
 	eprintln!("stdout: {}", out.stdout);
@@ -224,8 +224,8 @@ async fn test_closing_nested_issue_creates_bak_file() {
 		 \t\tnested body content\n",
 	);
 
-	ctx.consensus(&initial_issue, None).await;
-	ctx.remote(&initial_issue, None);
+	ctx.consensus_legacy(&initial_issue, None).await;
+	ctx.remote_legacy(&initial_issue, None);
 
 	// User closes nested issue during edit
 	let edited_issue = parse(
