@@ -2,7 +2,7 @@
 //!
 //! This module contains the pure Issue type with parsing and serialization.
 
-use std::{collections::HashMap, path::PathBuf};
+use std::{collections::HashMap, path::PathBuf, str::FromStr as _};
 
 use arrayvec::ArrayString;
 use copy_arrayvec::CopyArrayVec;
@@ -867,15 +867,24 @@ impl Issue /*{{{1*/ {
 	/// Parse virtual representation (markdown with full tree) into an Issue.
 	///
 	/// Takes the full `IssueIndex` pointing to this issue (not the parent). Need it to derive the parent_index.
-	pub fn parse_virtual(content: String, hollow: HollowIssue, parent_idx: IssueIndex, path: PathBuf) -> Result<Self, ParseError> {
-		let ctx = ParseContext::new(content, path);
+	//TODO: switch to `content: String`, once we don't need to clone it for passing to `parse_virtual_at_depth` twice
+	pub fn parse_virtual(content: &str, hollow: HollowIssue, parent_idx: IssueIndex, path: PathBuf) -> Result<Self, ParseError> {
+		let ctx = ParseContext::new(content.to_owned(), path); //HACK
 		let mut lines = content.lines().peekable();
-		Self::parse_virtual_at_depth(&mut lines, 0, 1, &ctx, parent_idx)
+		Self::parse_virtual_at_depth(&mut lines, 0, 1, &ctx, parent_idx, hollow)
 	}
 
 	/// Parse virtual representation at given nesting depth.
 	/// `parent_index` is the parent's IssueIndex (for non-root), or None for root issues parsed from file.
-	fn parse_virtual_at_depth(lines: &mut std::iter::Peekable<std::str::Lines>, depth: usize, line_num: usize, ctx: &ParseContext, parent_index: IssueIndex) -> Result<Self, ParseError> {
+	//TODO!!: switch to use lines from inside ParseContext, and take mutable ref to it instead.
+	fn parse_virtual_at_depth(
+		lines: &mut std::iter::Peekable<std::str::Lines>,
+		depth: usize,
+		line_num: usize,
+		ctx: &ParseContext,
+		parent_idx: IssueIndex,
+		hollow: HollowIssue,
+	) -> Result<Self, ParseError> {
 		let indent = "\t".repeat(depth);
 		let child_indent = "\t".repeat(depth + 1);
 
@@ -1096,11 +1105,11 @@ impl Issue /*{{{1*/ {
 				let child_parent_idx = match &parsed.identity_info {
 					IssueMarker::Linked { link, .. } => {
 						// Parent is linked - child's parent_index is this issue's full index
-						parent_index.child(IssueSelector::GitId(link.number()))
+						parent_idx.child(IssueSelector::GitId(link.number()))
 					}
 					IssueMarker::Pending | IssueMarker::Virtual => {
 						// Local/virtual parent - pass through parent_index
-						parent_index
+						parent_idx
 					}
 				};
 				let child_content = child_lines.join("\n");
@@ -1139,16 +1148,16 @@ impl Issue /*{{{1*/ {
 			IssueMarker::Linked { user, link } => {
 				// Linked issues: use parent_index if provided, otherwise derive from link (via None)
 				// Timestamps will be loaded from .meta.json separately
-				IssueIdentity::new_linked(parent_index, user, link, IssueTimestamps::default()) //XXX: not something we should be parsing. Should know this already. User shouldn't be able to specify this manually; we should store it ourselves.
+				IssueIdentity::new_linked(parent_idx, user, link, IssueTimestamps::default()) //XXX: not something we should be parsing. Should know this already. User shouldn't be able to specify this manually; we should store it ourselves.
 			}
 			IssueMarker::Pending => {
 				// Pending issues require parent_index from caller
-				let pi = parent_index.expect("BUG: pending issue without parent_index - use parse_virtual with the issue's full IssueIndex");
+				let pi = parent_idx.expect("BUG: pending issue without parent_index - use parse_virtual with the issue's full IssueIndex");
 				IssueIdentity::pending(pi)
 			}
 			IssueMarker::Virtual => {
 				// Virtual issues require parent_index from caller
-				let pi = parent_index.expect("BUG: virtual issue without parent_index - use parse_virtual with the issue's full IssueIndex");
+				let pi = parent_idx.expect("BUG: virtual issue without parent_index - use parse_virtual with the issue's full IssueIndex");
 				IssueIdentity::virtual_issue(pi)
 			}
 		};
@@ -1487,9 +1496,12 @@ impl Issue /*{{{1*/ {
 	/// Only works for linked issues - pending/virtual issues will panic.
 	#[deprecated(note = "outdated, and is a hack in the first place. We should have content-only parsing of the issue contents as a separate method")]
 	pub fn deserialize_virtual(content: &str) -> Result<Self, ParseError> {
-		let ctx = ParseContext::new(content.to_string(), "virtual".to_string());
+		let ctx = ParseContext::new(
+			content.to_string(),
+			PathBuf::from_str("a naughty naughty test decided to use a bad to not pass the filepath").unwrap(),
+		);
 		let mut lines = content.lines().peekable();
-		Self::parse_virtual_at_depth(&mut lines, 0, 1, &ctx, None)
+		Self::parse_virtual_at_depth(&mut lines, 0, 1, &ctx, IssueIndex::repo_only(("owner", "repo").into()), HollowIssue::default()) // a horrible horrible hack, - everything should really be using standalone IssueContents deser or pass an actual path. There should never be a need to use this stupid function
 	}
 
 	/// Update this issue from virtual format content.
@@ -1499,19 +1511,19 @@ impl Issue /*{{{1*/ {
 	/// issues are matched by issue number and their identities are preserved.
 	///
 	/// Use this instead of `parse_virtual` when re-loading an issue after editor edits.
-	#[deprecated(note = "instead just require &mut self on parse_virtual itself")]
-	pub fn update_from_virtual(&mut self, content: &str) -> Result<(), ParseError> {
-		// Parse the new content using this issue's full index
-		let mut parsed = Self::parse_virtual(content, self.full_index())?;
-
-		let old = self.clone();
-
-		Self::update_timestamps_from_diff(&mut parsed, &old);
-
-		*self = parsed;
-
-		Ok(())
-	}
+	//#[deprecated(note = "instead just require &mut self on parse_virtual itself")]
+	//pub fn update_from_virtual(&mut self, content: &str) -> Result<(), ParseError> {
+	//	// Parse the new content using this issue's full index
+	//	let mut parsed = Self::parse_virtual(content, self.full_index())?;
+	//
+	//	let old = self.clone();
+	//
+	//	Self::update_timestamps_from_diff(&mut parsed, &old);
+	//
+	//	*self = parsed;
+	//
+	//	Ok(())
+	//}
 
 	/// Find the position (line, col) of the last blocker item in the serialized content.
 	/// Returns None if there are no blockers.
@@ -1578,7 +1590,7 @@ impl Issue /*{{{1*/ {
 	}
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 /// Hollow Issue container, - used for [parsing virtual repr](Issue::parse_virtual)
 ///
 /// Stripped of all info parsable from virtual
