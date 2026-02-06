@@ -71,18 +71,18 @@ pub trait GitExt {
 	/// Panics if same (owner, repo, number) is submitted twice.
 	///
 	/// If `seed` is provided, timestamps are generated from it for the mock response.
-	fn remote(&self, issue: &tedi::VirtualIssue, seed: Option<Seed>, is_virtual: bool) -> Issue;
+	fn remote(&self, issue: &tedi::VirtualIssue, seed: Option<Seed>) -> Issue;
 
 	/// Write issue to local filesystem (uncommitted). Uses defaults: owner="o", repo="r", user="mock_user".
 	///
 	/// If `seed` is provided, timestamps are generated from it and written to `.meta.json`.
-	async fn local(&self, issue: &tedi::VirtualIssue, seed: Option<Seed>, is_virtual: bool) -> Issue;
+	async fn local(&self, issue: &tedi::VirtualIssue, seed: Option<Seed>) -> Issue;
 
 	/// Write issue and commit to git as consensus state. Uses defaults: owner="o", repo="r", user="mock_user".
 	/// Panics if same (owner, repo, number) is submitted twice.
 	///
 	/// If `seed` is provided, timestamps are generated from it and written to `.meta.json`.
-	async fn consensus(&self, issue: &tedi::VirtualIssue, seed: Option<Seed>, is_virtual: bool) -> Issue;
+	async fn consensus(&self, issue: &tedi::VirtualIssue, seed: Option<Seed>) -> Issue;
 }
 /// Seed for deterministic timestamp generation. Must be in range -100..=100.
 #[derive(Clone, Copy, Debug, derive_more::Deref, derive_more::DerefMut, derive_more::Display, Eq, derive_more::Into, PartialEq)]
@@ -233,8 +233,8 @@ impl GitExt for TestContext {
 		git
 	}
 
-	fn remote(&self, issue: &tedi::VirtualIssue, seed: Option<Seed>, is_virtual: bool) -> Issue {
-		let issue = with_timestamps(issue, seed, is_virtual);
+	fn remote(&self, issue: &tedi::VirtualIssue, seed: Option<Seed>) -> Issue {
+		let issue = with_timestamps(issue, seed, self.is_virtual_repo);
 		let (owner, repo, number) = extract_issue_coords(&issue);
 
 		with_state(self, |state| {
@@ -250,16 +250,16 @@ impl GitExt for TestContext {
 		issue
 	}
 
-	async fn local(&self, issue: &tedi::VirtualIssue, seed: Option<Seed>, is_virtual: bool) -> Issue {
-		let mut issue = with_timestamps(issue, seed, is_virtual);
+	async fn local(&self, issue: &tedi::VirtualIssue, seed: Option<Seed>) -> Issue {
+		let mut issue = with_timestamps(issue, seed, self.is_virtual_repo);
 		let (owner, repo, number) = extract_issue_coords(&issue);
 		with_state(self, |state| assert!(state.local_issues.insert((owner, repo, number)), "local() called twice for same issue"));
 		self.sink_local(&mut issue, seed).await;
 		issue
 	}
 
-	async fn consensus(&self, issue: &tedi::VirtualIssue, seed: Option<Seed>, is_virtual: bool) -> Issue {
-		let mut issue = with_timestamps(issue, seed, is_virtual);
+	async fn consensus(&self, issue: &tedi::VirtualIssue, seed: Option<Seed>) -> Issue {
+		let mut issue = with_timestamps(issue, seed, self.is_virtual_repo);
 		let (owner, repo, number) = extract_issue_coords(&issue);
 		with_state(self, |state| {
 			assert!(state.consensus_issues.insert((owner, repo, number)), "consensus() called twice for same issue")

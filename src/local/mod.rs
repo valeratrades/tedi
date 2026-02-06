@@ -614,12 +614,6 @@ impl Local {
 		}
 	}
 
-	/// Load metadata for a specific issue using the provided reader.
-	pub(crate) fn load_issue_meta_from_reader<R: LocalReader>(repo_info: RepoInfo, issue_number: u64, reader: &R) -> Option<IssueMeta> {
-		let project_meta = Self::load_project_meta_from_reader(repo_info, reader);
-		project_meta.issues.get(&issue_number).cloned()
-	}
-
 	/// Save metadata for a specific issue to the project's .meta.json.
 	#[instrument(skip(meta), fields(issue_number))]
 	pub fn save_issue_meta(repo_info: RepoInfo, issue_number: u64, meta: &IssueMeta) -> Result<()> {
@@ -1217,7 +1211,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use v_utils::prelude::*;
 
-use crate::{Issue, IssueIndex, IssueSelector, RepoInfo, local::conflict::ConflictBlockedError};
+use crate::{Issue, IssueIndex, IssueLink, IssueSelector, LinkedIssueMeta, RepoInfo, local::conflict::ConflictBlockedError};
 
 //==============================================================================
 // Local - The interface for local issue storage
@@ -1271,15 +1265,22 @@ impl<R: LocalReader> crate::LazyIssue<LocalIssueSource<R>> for Issue {
 			let content = source.reader.read_content(&file_path)?;
 			let parsed = crate::VirtualIssue::parse(&content, file_path)?;
 			self.contents = parsed.contents;
+			let remote = match parsed.selector {
+				IssueSelector::GitId(n) => {
+					let repo_info = index.repo_info();
+					let meta = Local::load_project_meta_from_reader(repo_info, &source.reader).issues.remove(&n);
+					let link = IssueLink::parse(&format!("https://github.com/{}/{}/issues/{n}", repo_info.owner(), repo_info.repo())).expect("constructed URL must be valid");
+					Some(Box::new(LinkedIssueMeta::new(
+						meta.as_ref().and_then(|m| m.user.clone()).unwrap_or_default(),
+						link,
+						meta.map(|m| m.timestamps).unwrap_or_default(),
+					)))
+				}
+				_ => None,
+			};
 			self.identity.parent_index = index.parent().unwrap_or_else(|| IssueIndex::repo_only(index.repo_info()));
 			self.identity.is_virtual = Local::is_virtual_project(index.repo_info());
-		}
-
-		if let Some(issue_number) = self.identity.number()
-			&& let Some(meta) = Local::load_issue_meta_from_reader(index.repo_info(), issue_number, &source.reader)
-			&& let Some(linked) = self.identity.mut_linked_issue_meta()
-		{
-			linked.timestamps = meta.timestamps;
+			self.identity.remote = remote;
 		}
 
 		Ok(self.identity.clone())

@@ -29,8 +29,8 @@ async fn test_comments_with_ids_sync_correctly() {
 		 \tThis is my comment\n",
 	);
 
-	let issue = ctx.consensus(&vi, None, false).await;
-	ctx.remote(&vi, None, false);
+	let issue = ctx.consensus(&vi, None).await;
+	ctx.remote(&vi, None);
 
 	let out = ctx.open_issue(&issue).args(&["--force"]).run();
 	eprintln!("stdout: {}", out.stdout);
@@ -55,8 +55,8 @@ async fn test_nested_issues_preserved_through_sync() {
 		 \t\tnested body c\n",
 	);
 
-	let issue = ctx.consensus(&vi, None, false).await;
-	ctx.remote(&vi, None, false);
+	let issue = ctx.consensus(&vi, None).await;
+	ctx.remote(&vi, None);
 
 	let out = ctx.open_issue(&issue).run();
 	eprintln!("stdout: {}", out.stdout);
@@ -90,8 +90,8 @@ async fn test_blockers_preserved_through_sync() {
 		 \t- second blocker\n",
 	);
 
-	let issue = ctx.consensus(&vi, None, false).await;
-	ctx.remote(&vi, None, false);
+	let issue = ctx.consensus(&vi, None).await;
+	ctx.remote(&vi, None);
 
 	let out = ctx.open_issue(&issue).run();
 	eprintln!("stdout: {}", out.stdout);
@@ -113,8 +113,8 @@ async fn test_blockers_added_during_edit_preserved() {
 	// Initial state: no blockers
 	let initial_vi = parse_virtual("- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tlorem ipsum\n");
 
-	let initial_issue = ctx.consensus(&initial_vi, None, false).await;
-	ctx.remote(&initial_vi, None, false);
+	let initial_issue = ctx.consensus(&initial_vi, None).await;
+	ctx.remote(&initial_vi, None);
 
 	// User adds blockers during edit
 	let edited_issue = parse_virtual(
@@ -125,7 +125,7 @@ async fn test_blockers_added_during_edit_preserved() {
 		 \t- new blocker added\n",
 	);
 
-	let out = ctx.open_issue(&initial_issue).edit(&edited_issue, false).run();
+	let out = ctx.open_issue(&initial_issue).edit(&edited_issue).run();
 	eprintln!("stdout: {}", out.stdout);
 	eprintln!("stderr: {}", out.stderr);
 
@@ -154,8 +154,8 @@ async fn test_blockers_with_headers_preserved() {
 		 \t- task gamma\n",
 	);
 
-	let issue = ctx.consensus(&vi, None, false).await;
-	ctx.remote(&vi, None, false);
+	let issue = ctx.consensus(&vi, None).await;
+	ctx.remote(&vi, None);
 
 	let out = ctx.open_issue(&issue).run();
 	eprintln!("stdout: {}", out.stdout);
@@ -187,8 +187,8 @@ async fn test_nested_issues_and_blockers_together() {
 		 \t\tnested body\n",
 	);
 
-	let issue = ctx.consensus(&vi, None, false).await;
-	ctx.remote(&vi, None, false);
+	let issue = ctx.consensus(&vi, None).await;
+	ctx.remote(&vi, None);
 
 	let out = ctx.open_issue(&issue).run();
 	eprintln!("stdout: {}", out.stdout);
@@ -221,8 +221,8 @@ async fn test_closing_nested_issue_creates_bak_file() {
 		 \t\tnested body content\n",
 	);
 
-	let initial_issue = ctx.consensus(&initial_vi, None, false).await;
-	ctx.remote(&initial_vi, None, false);
+	let initial_issue = ctx.consensus(&initial_vi, None).await;
+	ctx.remote(&initial_vi, None);
 
 	// User closes nested issue during edit
 	let edited_issue = {
@@ -232,11 +232,11 @@ async fn test_closing_nested_issue_creates_bak_file() {
 		initial
 	};
 
-	let out = ctx.open_issue(&initial_issue).edit(&edited_issue.into(), false).run();
+	let out = ctx.open_issue(&initial_issue).edit(&edited_issue.into()).run();
 
 	assert!(out.status.success(), "stderr: {}", out.stderr);
 
-	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().redact_timestamps(&[20]), &out), @r#"
+	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().redact_timestamps(&[22]), &out), @r#"
 	//- /o/r/.meta.json
 	{
 	  "virtual_project": false,
@@ -256,9 +256,9 @@ async fn test_closing_nested_issue_creates_bak_file() {
 	      "user": "mock_user",
 	      "timestamps": {
 	        "title": null,
-	        [REDACTED - non-deterministic timestamp]
+	        "description": null,
 	        "labels": null,
-	        "state": null,
+	        [REDACTED - non-deterministic timestamp]
 	        "comments": []
 	      }
 	    }
