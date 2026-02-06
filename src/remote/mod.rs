@@ -409,7 +409,7 @@ impl Sink<Remote> for Issue {
 			let url = format!("https://github.com/{}/{}/issues/{}", repo_info.owner(), repo_info.repo(), created.number);
 			let link = IssueLink::parse(&url).expect("just constructed valid URL");
 			let user = gh.fetch_authenticated_user().await?;
-			self.identity = IssueIdentity::new_linked(Some(parent_index), user, link, crate::IssueTimestamps::default());
+			self.identity = IssueIdentity::new_linked(Some(parent_index), user, link, crate::IssueTimestamps::now());
 			changed = true;
 		}
 
