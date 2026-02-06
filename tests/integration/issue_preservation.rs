@@ -9,7 +9,6 @@ use crate::{
 	common::{
 		FixtureIssuesExt, TestContext,
 		are_you_sure::{UnsafePathExt, read_issue_file},
-		git::GitExt,
 		parse_virtual,
 	},
 	render_fixture,

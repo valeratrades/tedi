@@ -28,7 +28,7 @@ use v_fixtures::FixtureRenderer;
 use crate::common::{
 	FixtureIssuesExt, TestContext,
 	are_you_sure::{UnsafePathExt, read_issue_file, write_to_path},
-	git::{GitExt as _, Seed},
+	Seed,
 	parse_virtual, render_fixture,
 };
 

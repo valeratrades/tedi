@@ -4,7 +4,7 @@
 //! After `open --reset`, the consensus matches remote exactly, so any user edit
 //! should be detected as LocalOnly (no merge needed).
 
-use crate::common::{TestContext, git::GitExt, parse_virtual};
+use crate::common::{TestContext, parse_virtual};
 
 /// After --reset on an issue with sub-issues, marking a sub-issue closed should succeed.
 /// No conflict should occur because consensus == remote after reset.
