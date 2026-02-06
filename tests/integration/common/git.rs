@@ -286,7 +286,10 @@ impl TestContext {
 		if let Some(seed) = seed {
 			let (owner, repo, number) = extract_issue_coords(issue);
 			let timestamps = timestamps_from_seed(seed);
-			let meta = IssueMeta { timestamps };
+			let meta = IssueMeta {
+				user: Some(USER.to_string()),
+				timestamps,
+			};
 			Local::save_issue_meta(tedi::RepoInfo::new(&owner, &repo), number, &meta).expect("save_issue_meta failed");
 		}
 	}

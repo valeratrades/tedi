@@ -120,7 +120,10 @@ fn sink_issue_node<R: LocalReader>(new: &Issue, maybe_old: Option<&Issue>, reade
 	if let Some(issue_num) = new.git_id()
 		&& let Some(timestamps) = new.identity.timestamps()
 	{
-		let meta = IssueMeta { timestamps: timestamps.clone() };
+		let meta = IssueMeta {
+			user: new.user().map(str::to_owned),
+			timestamps: timestamps.clone(),
+		};
 		Local::save_issue_meta(RepoInfo::new(&owner, &repo), issue_num, &meta)?;
 	}
 

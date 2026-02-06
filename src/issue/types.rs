@@ -356,6 +356,7 @@ pub struct LinkedIssueMeta {
 	/// User who created the issue
 	pub user: String,
 	/// Link to the issue on Github
+	//TODO: I'm pretty sure we can remove this field and just construct it from context when needed
 	pub link: IssueLink,
 	/// Timestamps of last changes to individual fields.
 	/// Used for sync conflict resolution.
