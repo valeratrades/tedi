@@ -526,6 +526,7 @@ const GLOBAL_FLAGS: &[&str] = &["--offline", "--mock", "-v", "--verbose", "-q", 
 const ENV_GITHUB_TOKEN: &str = concat!(env!("CARGO_PKG_NAME"), "__GITHUB_TOKEN");
 const ENV_MOCK_STATE: &str = concat!(env!("CARGO_PKG_NAME"), "_MOCK_STATE");
 const ENV_MOCK_PIPE: &str = concat!(env!("CARGO_PKG_NAME"), "_MOCK_PIPE");
+type IssueChildren<T> = std::collections::HashMap<tedi::IssueSelector, T>;
 /// What target the OpenBuilder opens.
 enum BuilderTarget<'a> {
 	/// Open by issue reference (derives path from issue)
@@ -573,7 +574,6 @@ fn drain_pipe<R: Read>(pipe: &mut R, buf: &mut Vec<u8>) {
 
 pub use snapshot::FixtureIssuesExt;
 use tedi::{HollowIssue, Issue, IssueIndex, IssueLink, IssueRemote, IssueTimestamps, LinkedIssueMeta};
-type IssueChildren<T> = std::collections::HashMap<tedi::IssueSelector, T>;
 use v_fixtures::{Fixture, FixtureRenderer, fs_standards::xdg::Xdg};
 
 static BINARY_COMPILED: OnceLock<()> = OnceLock::new();

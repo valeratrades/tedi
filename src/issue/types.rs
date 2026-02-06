@@ -1623,6 +1623,13 @@ impl From<Issue> for HollowIssue {
 	}
 }
 
+#[derive(Clone, Debug, PartialEq, derive_new::new)]
+pub struct VirtualIssue {
+	pub selector: IssueSelector,
+	pub contents: IssueContents,
+	pub children: IssueChildren<Self>,
+}
+
 /// Trait for lazily loading an issue from a source.
 ///
 /// `S` is the source type directly (e.g., `LocalIssueSource<FsReader>`, `RemoteSource`).
