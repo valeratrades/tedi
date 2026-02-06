@@ -26,6 +26,26 @@ use crate::{Comment, CommentIdentity, Issue};
 // Diff Results
 //==============================================================================
 
+/// Trait for sinking (pushing) issues to a destination.
+///
+/// Implemented for `Issue` with marker type parameters to select the destination.
+/// Location is derived from the issue's `identity.ancestry` (owner/repo/lineage).
+#[allow(async_fn_in_trait)]
+pub trait Sink<S> {
+	/// Error type for this sink implementation.
+	type Error: std::fmt::Debug + std::fmt::Display;
+
+	/// Sink this issue to the destination, comparing against `old` state.
+	///
+	/// # Arguments
+	/// * `old` - The current state at the target location (from last pull), or None if no previous state exists
+	///
+	/// # Returns
+	/// * `Ok(true)` if any changes were made
+	/// * `Ok(false)` if already in sync
+	/// * `Err(_)` on failure
+	async fn sink(&mut self, old: Option<&Issue>) -> Result<bool, Self::Error>;
+}
 /// Result of comparing an issue node with its old state.
 #[derive(Clone, Debug, Default)]
 pub struct IssueDiff {
@@ -86,7 +106,7 @@ pub fn compute_node_diff(new: &Issue, old: Option<&Issue>) -> IssueDiff {
 				diff.comments_to_create.push(comment.clone());
 			}
 		}
-		for child in &new.children {
+		for (_, child) in &new.children {
 			if child.is_local() {
 				diff.children_to_create.push(child.clone());
 			}
@@ -140,20 +160,19 @@ pub fn compute_node_diff(new: &Issue, old: Option<&Issue>) -> IssueDiff {
 		}
 	}
 
-	// Compare children
-	let old_children: HashMap<u64, &Issue> = old.children.iter().filter_map(|c| c.git_id().map(|n| (n, c))).collect();
-	let new_child_numbers: HashSet<u64> = new.children.iter().filter_map(|c| c.git_id()).collect();
-
-	for child in &new.children {
+	// Compare children by selector
+	for (_, child) in &new.children {
 		if child.is_local() {
 			diff.children_to_create.push(child.clone());
 		}
 	}
 
 	// Find children to delete (in old but not in new)
-	for num in old_children.keys() {
-		if !new_child_numbers.contains(num) {
-			diff.children_to_delete.push(*num);
+	for (selector, old_child) in &old.children {
+		if !new.children.contains_key(selector) {
+			if let Some(num) = old_child.git_id() {
+				diff.children_to_delete.push(num);
+			}
 		}
 	}
 
@@ -163,27 +182,6 @@ pub fn compute_node_diff(new: &Issue, old: Option<&Issue>) -> IssueDiff {
 //==============================================================================
 // Sink Trait
 //==============================================================================
-
-/// Trait for sinking (pushing) issues to a destination.
-///
-/// Implemented for `Issue` with marker type parameters to select the destination.
-/// Location is derived from the issue's `identity.ancestry` (owner/repo/lineage).
-#[allow(async_fn_in_trait)]
-pub trait Sink<S> {
-	/// Error type for this sink implementation.
-	type Error: std::fmt::Debug + std::fmt::Display;
-
-	/// Sink this issue to the destination, comparing against `old` state.
-	///
-	/// # Arguments
-	/// * `old` - The current state at the target location (from last pull), or None if no previous state exists
-	///
-	/// # Returns
-	/// * `Ok(true)` if any changes were made
-	/// * `Ok(false)` if already in sync
-	/// * `Err(_)` on failure
-	async fn sink(&mut self, old: Option<&Issue>) -> Result<bool, Self::Error>;
-}
 
 #[cfg(test)]
 mod tests {
@@ -195,7 +193,7 @@ mod tests {
 		let identity = match number {
 			Some(n) => {
 				let link = IssueLink::parse(&format!("https://github.com/o/r/issues/{n}")).unwrap();
-				IssueIdentity::linked(Some(parent_index), "testuser".to_string(), link, IssueTimestamps::default())
+				IssueIdentity::new_linked(Some(parent_index), "testuser".to_string(), link, IssueTimestamps::default())
 			}
 			None => IssueIdentity::pending(parent_index),
 		};
@@ -212,7 +210,7 @@ mod tests {
 				}],
 				blockers: BlockerSequence::default(),
 			},
-			children: vec![],
+			children: HashMap::default(),
 		}
 	}
 
@@ -282,7 +280,8 @@ mod tests {
 	fn test_compute_node_diff_pending_child() {
 		let old = make_issue("Root", Some(1));
 		let mut new = make_issue("Root", Some(1));
-		new.children.push(make_issue("New Child", None)); // Pending
+		let child = make_issue("New Child", None);
+		new.children.insert(child.selector(), child); // Pending
 
 		let diff = compute_node_diff(&new, Some(&old));
 

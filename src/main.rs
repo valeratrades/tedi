@@ -1,6 +1,7 @@
 #![feature(try_blocks)]
 #![allow(clippy::len_zero)]
 #![allow(clippy::doc_lazy_continuation)]
+const MANUAL_PATH_APPENDIX: &str = "manual_stats/";
 pub mod config;
 pub mod utils;
 /// Mock behavior type for testing.
@@ -67,8 +68,6 @@ use std::time::Duration;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use v_utils::utils::exit_on_error;
-
-const MANUAL_PATH_APPENDIX: &str = "manual_stats/";
 
 #[derive(Parser)]
 #[command(author, version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("GIT_HASH"), ")"), about, long_about = None)]

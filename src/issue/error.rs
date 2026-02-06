@@ -4,6 +4,8 @@
 
 #![allow(unused_assignments)] // Fields are read by miette's derive macro via attributes
 
+use std::path::PathBuf;
+
 use miette::{NamedSource, SourceSpan};
 use tracing_error::SpanTrace;
 
@@ -53,6 +55,10 @@ impl ParseError {
 	pub fn invalid_duplicate_reference(src: NamedSource<String>, span: SourceSpan, issue_number: u64) -> Self {
 		Self::from_diagnostic(ParseDiagnostic::InvalidDuplicateReference { src, span, issue_number })
 	}
+
+	pub fn child_not_in_hollow(src: NamedSource<String>, span: SourceSpan, issue_number: u64) -> Self {
+		Self::from_diagnostic(ParseDiagnostic::ChildNotInHollow { src, span, issue_number })
+	}
 }
 
 /// Error when converting IssueIndex to a git number path.
@@ -73,16 +79,16 @@ pub struct TitleInGitPathError {
 #[derive(Clone, Debug)]
 pub struct ParseContext {
 	pub content: String,
-	pub filename: String,
+	pub filename: PathBuf,
 }
 impl ParseContext {
-	pub fn new(content: String, filename: impl Into<String>) -> Self {
-		Self { content, filename: filename.into() }
+	pub fn new(content: String, filename: PathBuf) -> Self {
+		Self { content, filename }
 	}
 
 	/// Create a NamedSource for miette diagnostics.
 	pub fn named_source(&self) -> NamedSource<String> {
-		NamedSource::new(&self.filename, self.content.clone())
+		NamedSource::new(self.filename.display().to_string(), self.content.clone())
 	}
 
 	/// Get byte offset for a given line number (1-indexed).
@@ -167,6 +173,19 @@ enum ParseDiagnostic {
 		#[source_code]
 		src: NamedSource<String>,
 		#[label("issue #{issue_number} not found")]
+		span: SourceSpan,
+		issue_number: u64,
+	},
+
+	#[error("git-linked child issue #{issue_number} not found in HollowIssue.children")]
+	#[diagnostic(
+		code(tedi::parse::child_not_in_hollow),
+		help("when parsing a git-linked child issue, it must exist in the provided HollowIssue.children map. This issue may have been renamed or the local state is out of sync.")
+	)]
+	ChildNotInHollow {
+		#[source_code]
+		src: NamedSource<String>,
+		#[label("issue #{issue_number} not found in HollowIssue.children")]
 		span: SourceSpan,
 		issue_number: u64,
 	},

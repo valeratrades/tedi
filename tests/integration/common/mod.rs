@@ -21,6 +21,12 @@
 //! assert!(out.status.success());
 //! ```
 
+/// Global CLI flags that must appear before the subcommand.
+const GLOBAL_FLAGS: &[&str] = &["--offline", "--mock", "-v", "--verbose", "-q", "--quiet"];
+/// Environment variable names derived from package name
+const ENV_GITHUB_TOKEN: &str = concat!(env!("CARGO_PKG_NAME"), "__GITHUB_TOKEN");
+const ENV_MOCK_STATE: &str = concat!(env!("CARGO_PKG_NAME"), "_MOCK_STATE");
+const ENV_MOCK_PIPE: &str = concat!(env!("CARGO_PKG_NAME"), "_MOCK_PIPE");
 pub mod git;
 /// Compile the binary before running any tests
 pub fn ensure_binary_compiled() {
@@ -162,8 +168,8 @@ impl<'a> OpenBuilder<'a> {
 	}
 
 	/// Edit the file to this issue while "editor is open".
-	pub fn edit(mut self, issue: &Issue) -> Self {
-		self.edit_op = Some(EditOperation::FullIssue(Box::new(issue.clone())));
+	pub fn edit(mut self, issue: &tedi::VirtualIssue, is_virtual: bool) -> Self {
+		self.edit_op = Some(EditOperation::FullIssue(Box::new(issue.clone()), is_virtual));
 		self
 	}
 
@@ -328,9 +334,9 @@ impl<'a> OpenBuilder<'a> {
 
 				// Edit the file while "editor is open" if requested
 				match &edit_op {
-					Some(EditOperation::FullIssue(issue)) => {
-						// Write to the virtual edit path computed from the issue
-						let vpath = tedi::local::Local::virtual_edit_path(issue);
+					Some(EditOperation::FullIssue(virtual_issue, is_virtual)) => {
+						let issue = git::with_timestamps(virtual_issue, None, *is_virtual);
+						let vpath = tedi::local::Local::virtual_edit_path(&issue);
 						let content = issue.serialize_virtual();
 						eprintln!("[test:OpenBuilder] submitting user input // writing to {vpath:?}:\n{content}");
 						std::fs::write(&vpath, content).unwrap();
@@ -376,8 +382,8 @@ impl<'a> OpenBuilder<'a> {
 	}
 }
 
-pub fn parse(content: &str) -> Issue {
-	Issue::deserialize_virtual(content).expect("failed to parse test issue")
+pub fn parse_virtual(content: &str) -> tedi::VirtualIssue {
+	tedi::VirtualIssue::parse_virtual(content, std::path::PathBuf::from("test.md")).expect("failed to parse test issue")
 }
 /// Render a fixture with optional error output if the command failed.
 pub fn render_fixture(renderer: FixtureRenderer<'_>, output: &RunOutput) -> String {
@@ -520,9 +526,6 @@ enum BuilderTarget<'a> {
 	Touch(String),
 }
 
-/// Global CLI flags that must appear before the subcommand.
-const GLOBAL_FLAGS: &[&str] = &["--offline", "--mock", "-v", "--verbose", "-q", "--quiet"];
-
 mod snapshot;
 
 use std::{
@@ -561,11 +564,6 @@ pub use snapshot::FixtureIssuesExt;
 use tedi::Issue;
 use v_fixtures::{Fixture, FixtureRenderer, fs_standards::xdg::Xdg};
 
-/// Environment variable names derived from package name
-const ENV_GITHUB_TOKEN: &str = concat!(env!("CARGO_PKG_NAME"), "__GITHUB_TOKEN");
-const ENV_MOCK_STATE: &str = concat!(env!("CARGO_PKG_NAME"), "_MOCK_STATE");
-const ENV_MOCK_PIPE: &str = concat!(env!("CARGO_PKG_NAME"), "_MOCK_PIPE");
-
 static BINARY_COMPILED: OnceLock<()> = OnceLock::new();
 
 fn get_binary_path() -> PathBuf {
@@ -581,8 +579,8 @@ fn get_binary_path() -> PathBuf {
 /// Type of edit operation for the builder.
 #[derive(Clone)]
 enum EditOperation {
-	/// Edit using a full Issue (writes serialize_virtual)
-	FullIssue(Box<Issue>),
+	/// Edit using a full VirtualIssue (converted to Issue at run time, writes serialize_virtual)
+	FullIssue(Box<tedi::VirtualIssue>, bool),
 	/// Edit just the contents/body (preserves header, replaces body)
 	ContentsOnly(String),
 }

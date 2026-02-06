@@ -2,7 +2,10 @@
 //!
 //! r[local.sink-only-mutation]
 
-use std::path::{Path, PathBuf};
+use std::{
+	collections::HashMap,
+	path::{Path, PathBuf},
+};
 
 use tracing::{debug, info, instrument, trace, warn};
 use v_utils::prelude::*;
@@ -121,17 +124,17 @@ fn sink_issue_node<R: LocalReader>(new: &Issue, maybe_old: Option<&Issue>, reade
 		Local::save_issue_meta(RepoInfo::new(&owner, &repo), issue_num, &meta)?;
 	}
 
-	// Recursively sink children - match by title (full_index changes when parent syncs)
-	let old_children: Vec<&Issue> = maybe_old.map(|o| o.children.iter().collect()).unwrap_or_default();
+	// Recursively sink children - match by selector
+	let old_children: HashMap<_, _> = maybe_old.map(|o| o.children.iter().collect()).unwrap_or_default();
 
-	for child in &new.children {
-		let old_child = old_children.iter().find(|c| c.contents.title == child.contents.title).copied();
+	for (selector, child) in &new.children {
+		let old_child = old_children.get(selector).copied();
 		any_written |= sink_issue_node(child, old_child, reader)?;
 	}
 
-	// Remove deleted children (by title, since parent_index may have changed)
-	for old_child in &old_children {
-		if !new.children.iter().any(|c| c.contents.title == old_child.contents.title) {
+	// Remove deleted children (by selector)
+	for (selector, old_child) in &old_children {
+		if !new.children.contains_key(selector) {
 			remove_issue_files(old_child, reader)?;
 			if let Some(old_num) = old_child.git_id() {
 				Local::remove_issue_meta(RepoInfo::new(&owner, &repo), old_num)?;

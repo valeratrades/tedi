@@ -20,6 +20,8 @@ use crate::{
 	open_interactions::local::Local,
 };
 
+/// Environment variable name for mock state file (integration tests)
+const ENV_MOCK_STATE: &str = concat!(env!("CARGO_PKG_NAME"), "_MOCK_STATE");
 /// Mock Github client that stores all state in memory.
 /// Thread-safe for use in async contexts.
 pub struct MockGithubClient {
@@ -319,9 +321,6 @@ fn scan_max_issue_number(repo_info: RepoInfo) -> u64 {
 	scan_dir(&project_dir, &mut max);
 	max
 }
-
-/// Environment variable name for mock state file (integration tests)
-const ENV_MOCK_STATE: &str = concat!(env!("CARGO_PKG_NAME"), "_MOCK_STATE");
 
 /// Internal representation of an issue in the mock
 #[derive(Clone, Debug)]

@@ -8,6 +8,8 @@
 //! - Local: `Issue::load(LocalIssueSource<FsReader>)` - loads from filesystem
 //! - Remote: `Issue::load(RemoteSource)` - loads from GitHub via IssueLink
 
+use HashMap;
+
 //==============================================================================
 // Error Types
 //==============================================================================
@@ -234,7 +236,7 @@ impl tedi::LazyIssue<RemoteSource> for Issue {
 		};
 
 		let parent_index = source.resolve_parent_index().await?;
-		self.identity = IssueIdentity::linked(parent_index, issue.user.login.clone(), source.link.clone(), timestamps);
+		self.identity = IssueIdentity::new_linked(parent_index, issue.user.login.clone(), source.link.clone(), timestamps);
 		Ok(self.identity.clone())
 	}
 
@@ -277,14 +279,14 @@ impl tedi::LazyIssue<RemoteSource> for Issue {
 				state: timeline.state,
 				comments: comments_ts,
 			};
-			self.identity = IssueIdentity::linked(parent_index, issue.user.login.clone(), source.link.clone(), timestamps);
+			self.identity = IssueIdentity::new_linked(parent_index, issue.user.login.clone(), source.link.clone(), timestamps);
 		}
 
 		Ok(self.contents.clone())
 	}
 
 	#[instrument]
-	async fn children(&mut self, source: RemoteSource) -> Result<Vec<Issue>, Self::Error> {
+	async fn children(&mut self, source: RemoteSource) -> Result<HashMap<IssueSelector, Issue>, Self::Error> {
 		if !self.children.is_empty() {
 			return Ok(self.children.clone());
 		}
@@ -301,13 +303,13 @@ impl tedi::LazyIssue<RemoteSource> for Issue {
 		let filtered: Vec<&GithubIssue> = sub_issues.iter().filter(|si| !CloseState::is_duplicate_reason(si.state_reason.as_deref())).collect();
 
 		if filtered.is_empty() {
-			return Ok(Vec::new());
+			return Ok(HashMap::new());
 		}
 
 		let parent_number = source.link.number();
 		let child_parent_index = self.identity.child_parent_index().expect("parent must be linked before fetching children");
 
-		let mut children = Vec::new();
+		let mut children = HashMap::new();
 		for sub_issue in filtered {
 			let child_url = format!("https://github.com/{}/{}/issues/{}", repo_info.owner(), repo_info.repo(), sub_issue.number);
 			let child_link = IssueLink::parse(&child_url).expect("valid URL");
@@ -318,10 +320,9 @@ impl tedi::LazyIssue<RemoteSource> for Issue {
 			Self::contents(&mut child, child_source.clone()).await?;
 			Box::pin(Self::children(&mut child, child_source)).await?;
 
-			children.push(child);
+			children.insert(child.selector(), child);
 		}
 
-		children.sort_by_key(|c| c.git_id().expect("remote child must have issue number"));
 		self.children = children.clone();
 		Ok(children)
 	}
@@ -408,7 +409,7 @@ impl Sink<Remote> for Issue {
 			let url = format!("https://github.com/{}/{}/issues/{}", repo_info.owner(), repo_info.repo(), created.number);
 			let link = IssueLink::parse(&url).expect("just constructed valid URL");
 			let user = gh.fetch_authenticated_user().await?;
-			self.identity = IssueIdentity::linked(Some(parent_index), user, link, tedi::IssueTimestamps::default());
+			self.identity = IssueIdentity::new_linked(Some(parent_index), user, link, tedi::IssueTimestamps::default());
 			changed = true;
 		}
 
@@ -463,12 +464,12 @@ impl Sink<Remote> for Issue {
 
 		// Update children's parent_index to use our git number, then sink
 		if let Some(child_parent_index) = self.identity.child_parent_index() {
-			for child in &mut self.children {
+			for (_, child) in &mut self.children {
 				child.identity.parent_index = child_parent_index;
 			}
 		}
-		for (i, child) in self.children.iter_mut().enumerate() {
-			let old_child = old.and_then(|o| o.children.get(i));
+		for (selector, child) in self.children.iter_mut() {
+			let old_child = old.and_then(|o| o.children.get(selector));
 			changed |= Box::pin(<Issue as Sink<Remote>>::sink(child, old_child)).await?;
 		}
 

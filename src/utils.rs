@@ -12,6 +12,8 @@ pub use v_utils::io::file_open::{Client as OpenClient, OpenMode, Position};
 
 use crate::config::LiveSettings;
 
+/// Environment variable name for mock pipe (integration tests)
+const ENV_MOCK_PIPE: &str = concat!(env!("CARGO_PKG_NAME"), "_MOCK_PIPE");
 /// Open a file in editor.
 ///
 /// Behavior depends on environment:
@@ -106,8 +108,6 @@ pub fn same_day_buffer() -> SignedDuration {
 	let new_day_mins = (bedtime_mins + 6 * 60) % (24 * 60); // wrap at 24h
 	SignedDuration::from_mins(new_day_mins)
 }
-/// Environment variable name for mock pipe (integration tests)
-const ENV_MOCK_PIPE: &str = concat!(env!("CARGO_PKG_NAME"), "_MOCK_PIPE");
 
 impl std::str::FromStr for DaySectionBorders {
 	type Err = Report;

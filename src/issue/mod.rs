@@ -19,8 +19,8 @@ pub use marker::{IssueMarker, Marker};
 
 mod types;
 pub use types::{
-	CloseState, Comment, CommentIdentity, Issue, IssueContents, IssueIdentity, IssueIndex, IssueLink, IssueRemote, IssueSelector, IssueTimestamps, LazyIssue, LinkedIssueMeta,
-	MAX_INDEX_DEPTH, MAX_LINEAGE_DEPTH, MAX_TITLE_LENGTH, RepoInfo,
+	CloseState, Comment, CommentIdentity, HollowIssue, Issue, IssueContents, IssueIdentity, IssueIndex, IssueLink, IssueRemote, IssueSelector, IssueTimestamps, LazyIssue, LinkedIssueMeta,
+	MAX_INDEX_DEPTH, MAX_LINEAGE_DEPTH, MAX_TITLE_LENGTH, RepoInfo, VirtualIssue,
 };
 
 // Re-export Header from parent
