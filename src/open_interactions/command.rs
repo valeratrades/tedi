@@ -95,7 +95,15 @@ pub enum ProjectType {
 	Virtual,
 }
 
-#[tracing::instrument(level = "debug", skip(settings))]
+#[tracing::instrument(level = "debug", skip_all, fields(
+	url_or_pattern = ?args.url_or_pattern,
+	touch = args.touch,
+	blocker = args.blocker,
+	force = args.force,
+	reset = args.reset,
+	offline,
+	mock = ?mock,
+))]
 pub async fn open_command(settings: &LiveSettings, args: OpenArgs, offline: bool, mock: Option<MockType>) -> Result<()> {
 	tracing::debug!("open_command entered, blocker={}", args.blocker);
 
@@ -157,10 +165,10 @@ pub async fn open_command(settings: &LiveSettings, args: OpenArgs, offline: bool
 	// Handle --touch mode first and separately
 	if args.touch {
 		let source = parse_touch_path(input, args.parent, offline).await?;
-		let is_create = !source.local_path.clone().resolve_parent(FsReader)?.search().is_ok();
+		let is_create = source.local_path.clone().resolve_parent(FsReader)?.search().is_err();
 
 		let issue = if is_create {
-			let index = source.index().clone();
+			let index = *source.index();
 			let project_is_virtual = Local::is_virtual_project(index.repo_info());
 			Issue::pending_from_descriptor(&index, project_is_virtual)
 		} else {

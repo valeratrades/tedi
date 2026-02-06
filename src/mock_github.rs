@@ -377,14 +377,14 @@ impl From<RepoInfo> for RepoKey {
 
 #[async_trait]
 impl GithubClient for MockGithubClient {
-	#[instrument(skip(self), name = "MockGithubClient::fetch_authenticated_user")]
+	#[instrument(skip_all)]
 	async fn fetch_authenticated_user(&self) -> Result<String> {
 		tracing::info!(target: "mock_github", "fetch_authenticated_user");
 		self.log_call("fetch_authenticated_user()");
 		Ok(self.user_login.clone())
 	}
 
-	#[instrument(skip(self), name = "MockGithubClient::fetch_issue")]
+	#[instrument(skip_all, fields(issue_number))]
 	async fn fetch_issue(&self, repo: RepoInfo, issue_number: u64) -> Result<GithubIssue> {
 		let owner = repo.owner();
 		let repo_name = repo.repo();
@@ -401,7 +401,7 @@ impl GithubClient for MockGithubClient {
 		Ok(self.convert_issue_data(issue_data))
 	}
 
-	#[instrument(skip(self), name = "MockGithubClient::fetch_comments")]
+	#[instrument(skip_all, fields(issue_number))]
 	async fn fetch_comments(&self, repo: RepoInfo, issue_number: u64) -> Result<Vec<GithubComment>> {
 		let owner = repo.owner();
 		let repo_name = repo.repo();
@@ -431,7 +431,7 @@ impl GithubClient for MockGithubClient {
 		Ok(issue_comments)
 	}
 
-	#[instrument(skip(self), name = "MockGithubClient::fetch_sub_issues")]
+	#[instrument(skip_all, fields(issue_number))]
 	async fn fetch_sub_issues(&self, repo: RepoInfo, issue_number: u64) -> Result<Vec<GithubIssue>> {
 		let owner = repo.owner();
 		let repo_name = repo.repo();
@@ -462,7 +462,7 @@ impl GithubClient for MockGithubClient {
 		Ok(result)
 	}
 
-	#[instrument(skip(self, body), name = "MockGithubClient::update_issue_body")]
+	#[instrument(skip_all, fields(issue_number))]
 	async fn update_issue_body(&self, repo: RepoInfo, issue_number: u64, body: &str) -> Result<()> {
 		let owner = repo.owner();
 		let repo_name = repo.repo();
@@ -471,7 +471,7 @@ impl GithubClient for MockGithubClient {
 		self.with_issue_mut(repo, issue_number, |issue| issue.body = body.to_string())
 	}
 
-	#[instrument(skip(self), name = "MockGithubClient::update_issue_state")]
+	#[instrument(skip_all, fields(issue_number, state))]
 	async fn update_issue_state(&self, repo: RepoInfo, issue_number: u64, state: &str) -> Result<()> {
 		let owner = repo.owner();
 		let repo_name = repo.repo();
@@ -480,7 +480,7 @@ impl GithubClient for MockGithubClient {
 		self.with_issue_mut(repo, issue_number, |issue| issue.state = state.to_string())
 	}
 
-	#[instrument(skip(self, body), name = "MockGithubClient::update_comment")]
+	#[instrument(skip_all, fields(comment_id))]
 	async fn update_comment(&self, repo: RepoInfo, comment_id: u64, body: &str) -> Result<()> {
 		let owner = repo.owner();
 		let repo_name = repo.repo();
@@ -489,7 +489,7 @@ impl GithubClient for MockGithubClient {
 		self.with_comment_mut(repo, comment_id, |comment| comment.body = body.to_string())
 	}
 
-	#[instrument(skip(self, body), name = "MockGithubClient::create_comment")]
+	#[instrument(skip_all, fields(issue_number))]
 	async fn create_comment(&self, repo: RepoInfo, issue_number: u64, body: &str) -> Result<()> {
 		let owner = repo.owner();
 		let repo_name = repo.repo();
@@ -515,7 +515,7 @@ impl GithubClient for MockGithubClient {
 		Ok(())
 	}
 
-	#[instrument(skip(self), name = "MockGithubClient::delete_comment")]
+	#[instrument(skip_all, fields(comment_id))]
 	async fn delete_comment(&self, repo: RepoInfo, comment_id: u64) -> Result<()> {
 		let owner = repo.owner();
 		let repo_name = repo.repo();
@@ -532,7 +532,7 @@ impl GithubClient for MockGithubClient {
 		Ok(())
 	}
 
-	#[instrument(skip(self, body), name = "MockGithubClient::create_issue")]
+	#[instrument(skip_all, fields(title))]
 	async fn create_issue(&self, repo: RepoInfo, title: &str, body: &str) -> Result<CreatedIssue> {
 		let owner = repo.owner();
 		let repo_name = repo.repo();
@@ -577,7 +577,7 @@ impl GithubClient for MockGithubClient {
 		})
 	}
 
-	#[instrument(skip(self), name = "MockGithubClient::add_sub_issue")]
+	#[instrument(skip_all, fields(parent_issue_number, child_issue_id))]
 	async fn add_sub_issue(&self, repo: RepoInfo, parent_issue_number: u64, child_issue_id: u64) -> Result<()> {
 		let owner = repo.owner();
 		let repo_name = repo.repo();
@@ -604,7 +604,7 @@ impl GithubClient for MockGithubClient {
 		Ok(())
 	}
 
-	#[instrument(skip(self), name = "MockGithubClient::find_issue_by_title")]
+	#[instrument(skip_all, fields(title))]
 	async fn find_issue_by_title(&self, repo: RepoInfo, title: &str) -> Result<Option<u64>> {
 		let owner = repo.owner();
 		let repo_name = repo.repo();
@@ -628,7 +628,7 @@ impl GithubClient for MockGithubClient {
 		Ok(None)
 	}
 
-	#[instrument(skip(self), name = "MockGithubClient::issue_exists")]
+	#[instrument(skip_all, fields(issue_number))]
 	async fn issue_exists(&self, repo: RepoInfo, issue_number: u64) -> Result<bool> {
 		let owner = repo.owner();
 		let repo_name = repo.repo();
@@ -645,7 +645,7 @@ impl GithubClient for MockGithubClient {
 		Ok(false)
 	}
 
-	#[instrument(skip(self), name = "MockGithubClient::fetch_parent_issue")]
+	#[instrument(skip_all, fields(issue_number))]
 	async fn fetch_parent_issue(&self, repo: RepoInfo, issue_number: u64) -> Result<Option<GithubIssue>> {
 		let owner = repo.owner();
 		let repo_name = repo.repo();
@@ -678,7 +678,7 @@ impl GithubClient for MockGithubClient {
 		}
 	}
 
-	#[instrument(skip(self), name = "MockGithubClient::fetch_timeline_timestamps")]
+	#[instrument(skip_all, fields(issue_number))]
 	async fn fetch_timeline_timestamps(&self, repo: RepoInfo, issue_number: u64) -> Result<tedi::github::GraphqlTimelineTimestamps> {
 		let owner = repo.owner();
 		let repo_name = repo.repo();
@@ -702,7 +702,7 @@ impl GithubClient for MockGithubClient {
 		Ok(tedi::github::GraphqlTimelineTimestamps::default())
 	}
 
-	#[instrument(skip(self), name = "MockGithubClient::repo_exists")]
+	#[instrument(skip_all)]
 	async fn repo_exists(&self, repo: RepoInfo) -> Result<bool> {
 		let owner = repo.owner();
 		let repo_name = repo.repo();

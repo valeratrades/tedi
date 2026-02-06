@@ -129,6 +129,7 @@ async fn test_only_local_changed_pushes_local() {
 	  "next_virtual_issue_number": 0,
 	  "issues": {
 	    "1": {
+	      "user": "mock_user",
 	      "timestamps": {
 	        "title": "2001-09-12T11:20:39Z",
 	        "description": "2001-09-12T10:04:12Z",
@@ -671,6 +672,7 @@ async fn test_consensus_sink_writes_meta_json_with_timestamps() {
 	  "next_virtual_issue_number": 0,
 	  "issues": {
 	    "1": {
+	      "user": "mock_user",
 	      "timestamps": {
 	        "title": null,
 	        "description": null,

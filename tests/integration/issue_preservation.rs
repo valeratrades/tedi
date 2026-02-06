@@ -3,7 +3,7 @@
 //! Tests that nested issues, blockers, and other content survive the
 //! parse -> edit -> serialize -> sync cycle intact.
 
-use tedi::{CloseState, IssueSelector};
+use tedi::CloseState;
 use v_fixtures::FixtureRenderer;
 
 use crate::{
@@ -233,8 +233,6 @@ async fn test_closing_nested_issue_creates_bak_file() {
 	};
 
 	let out = ctx.open_issue(&initial_issue).edit(&edited_issue.into(), false).run();
-	eprintln!("stdout: {}", out.stdout);
-	eprintln!("stderr: {}", out.stderr);
 
 	assert!(out.status.success(), "stderr: {}", out.stderr);
 
@@ -245,6 +243,7 @@ async fn test_closing_nested_issue_creates_bak_file() {
 	  "next_virtual_issue_number": 0,
 	  "issues": {
 	    "1": {
+	      "user": "mock_user",
 	      "timestamps": {
 	        "title": null,
 	        "description": null,
@@ -254,11 +253,12 @@ async fn test_closing_nested_issue_creates_bak_file() {
 	      }
 	    },
 	    "2": {
+	      "user": "mock_user",
 	      "timestamps": {
 	        "title": null,
-	        "description": null,
-	        "labels": null,
 	        [REDACTED - non-deterministic timestamp]
+	        "labels": null,
+	        "state": null,
 	        "comments": []
 	      }
 	    }

@@ -1860,7 +1860,7 @@ impl VirtualIssue {
 				let child_content = child_lines.join("\n");
 				let mut child_lines_iter = child_content.lines().peekable();
 				let child = Self::parse_virtual_at_depth(&mut child_lines_iter, 0, current_line, ctx)?;
-				children.insert(child.selector.clone(), child);
+				children.insert(child.selector, child);
 				continue;
 			}
 

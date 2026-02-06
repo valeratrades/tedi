@@ -49,6 +49,9 @@ pub struct TestContext {
 	pub mock_state_path: PathBuf,
 	/// Path to named pipe for editor simulation (for sync tests)
 	pub pipe_path: PathBuf,
+	/// encodes whether the repo associated with test context is virtual.
+	//DEPENDS: on us hardcoding `repo` across the board. If that's not a case, then having two issue at different repos where only one is virtual is possible. But with current arch it's always the same repo, so can't have two ways about it.
+	is_virtual_repo: bool,
 }
 impl TestContext {
 	/// Create a new test context from a fixture string with git initialized.
@@ -79,9 +82,19 @@ impl TestContext {
 		// Set overrides so all library calls use our temp dir
 		tedi::mocks::set_issues_dir(xdg.data_dir().join("issues"));
 
-		let ctx = Self { xdg, mock_state_path, pipe_path };
+		let ctx = Self {
+			xdg,
+			mock_state_path,
+			pipe_path,
+			is_virtual_repo: false,
+		};
 		ctx.init_git();
 		ctx
+	}
+
+	pub fn virtual_repo(mut self) -> Self {
+		self.is_virtual_repo = true;
+		self
 	}
 
 	/// Run a command with proper XDG environment.

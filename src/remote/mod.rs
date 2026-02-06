@@ -206,7 +206,7 @@ impl crate::LazyIssue<RemoteSource> for Issue {
 		source.resolve_parent_index().await
 	}
 
-	#[instrument]
+	#[instrument(skip_all)]
 	async fn identity(&mut self, source: RemoteSource) -> Result<IssueIdentity, Self::Error> {
 		if self.identity.is_linked() {
 			return Ok(self.identity.clone());
@@ -240,7 +240,7 @@ impl crate::LazyIssue<RemoteSource> for Issue {
 		Ok(self.identity.clone())
 	}
 
-	#[instrument]
+	#[instrument(skip_all)]
 	async fn contents(&mut self, source: RemoteSource) -> Result<IssueContents, Self::Error> {
 		if !self.contents.title.is_empty() {
 			return Ok(self.contents.clone());
@@ -285,7 +285,7 @@ impl crate::LazyIssue<RemoteSource> for Issue {
 		Ok(self.contents.clone())
 	}
 
-	#[instrument]
+	#[instrument(skip_all)]
 	async fn children(&mut self, source: RemoteSource) -> Result<HashMap<IssueSelector, Issue>, Self::Error> {
 		if !self.children.is_empty() {
 			return Ok(self.children.clone());
@@ -331,7 +331,7 @@ impl crate::LazyIssue<RemoteSource> for Issue {
 }
 
 /// Build IssueContents from GitHub API data.
-#[instrument]
+#[instrument(skip_all, fields(issue_number = issue.number, title = %issue.title))]
 fn build_contents_from_github(issue: &GithubIssue, comments: &[GithubComment]) -> IssueContents {
 	let close_state = CloseState::from_github(&issue.state, issue.state_reason.as_deref());
 	let labels: Vec<String> = issue.labels.iter().map(|l| l.name.clone()).collect();
@@ -464,7 +464,7 @@ impl Sink<Remote> for Issue {
 
 		// Update children's parent_index to use our git number, then sink
 		if let Some(child_parent_index) = self.identity.child_parent_index() {
-			for (_, child) in &mut self.children {
+			for child in self.children.values_mut() {
 				child.identity.parent_index = child_parent_index;
 			}
 		}

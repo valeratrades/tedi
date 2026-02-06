@@ -46,13 +46,13 @@ impl IssueMarker {
 		}
 
 		// Linked format: `@user url`
-		if let Some(rest) = s.strip_prefix('@') {
-			if let Some(space_idx) = rest.find(' ') {
-				let user = rest[..space_idx].to_string();
-				let url = rest[space_idx + 1..].trim();
-				if let Some(link) = IssueLink::parse(url) {
-					return Self::Linked { user, link };
-				}
+		if let Some(rest) = s.strip_prefix('@')
+			&& let Some(space_idx) = rest.find(' ')
+		{
+			let user = rest[..space_idx].to_string();
+			let url = rest[space_idx + 1..].trim();
+			if let Some(link) = IssueLink::parse(url) {
+				return Self::Linked { user, link };
 			}
 		}
 
@@ -80,21 +80,21 @@ impl IssueMarker {
 		}
 
 		// HTML comment: `<!-- ... -->`
-		if let Some(marker_end) = trimmed.rfind("-->") {
-			if let Some(marker_start) = trimmed[..marker_end].rfind("<!--") {
-				let inner = trimmed[marker_start + 4..marker_end].trim();
-				// Strip legacy `sub ` prefix if present
-				let inner = match inner.strip_prefix("sub ") {
-					Some(stripped) => {
-						tracing::warn!("legacy `<!--sub ...-->` marker detected; use `<!-- ... -->` instead");
-						stripped
-					}
-					None => inner,
-				};
-				let marker = Self::decode(inner);
-				let rest = trimmed[..marker_start].trim_end();
-				return Some((marker, rest));
-			}
+		if let Some(marker_end) = trimmed.rfind("-->")
+			&& let Some(marker_start) = trimmed[..marker_end].rfind("<!--")
+		{
+			let inner = trimmed[marker_start + 4..marker_end].trim();
+			// Strip legacy `sub ` prefix if present
+			let inner = match inner.strip_prefix("sub ") {
+				Some(stripped) => {
+					tracing::warn!("legacy `<!--sub ...-->` marker detected; use `<!-- ... -->` instead");
+					stripped
+				}
+				None => inner,
+			};
+			let marker = Self::decode(inner);
+			let rest = trimmed[..marker_start].trim_end();
+			return Some((marker, rest));
 		}
 
 		None
@@ -223,16 +223,16 @@ impl Marker {
 		// Comment marker (contains #issuecomment-)
 		if inner.contains("#issuecomment-") {
 			// Must have @user prefix
-			if let Some(rest) = inner.strip_prefix('@') {
-				if let Some(space_idx) = rest.find(' ') {
-					let user = rest[..space_idx].to_string();
-					let url = rest[space_idx + 1..].trim();
-					let id = url.split("#issuecomment-").nth(1).and_then(|s| {
-						let digits: String = s.chars().take_while(|c| c.is_ascii_digit()).collect();
-						digits.parse().ok()
-					})?;
-					return Some(Marker::Comment { user, url: url.to_string(), id });
-				}
+			if let Some(rest) = inner.strip_prefix('@')
+				&& let Some(space_idx) = rest.find(' ')
+			{
+				let user = rest[..space_idx].to_string();
+				let url = rest[space_idx + 1..].trim();
+				let id = url.split("#issuecomment-").nth(1).and_then(|s| {
+					let digits: String = s.chars().take_while(|c| c.is_ascii_digit()).collect();
+					digits.parse().ok()
+				})?;
+				return Some(Marker::Comment { user, url: url.to_string(), id });
 			}
 			return None;
 		}

@@ -52,6 +52,7 @@ fn test_touch_matches_issue_by_substring() {
 /// - The Sink (Local) converts the flat file to directory format automatically
 #[test]
 fn test_touch_path_with_more_segments_after_flat_file_match() {
+	//HACK: shouldn't write out TestContext contents
 	let ctx = TestContext::build(
 		r#"
 		//- /data/issues/testowner/testrepo/.meta.json
@@ -79,38 +80,13 @@ fn test_touch_path_with_more_segments_after_flat_file_match() {
 	let out = ctx.open_touch("testowner/testrepo/parent/child").ghost_edit().run();
 
 	// Verify: flat file converted to directory, sub-issue created inside
-	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap(), &out), @r#"
-	//- /testowner/testrepo/.meta.json
-	{
-	  "virtual_project": false,
-	  "next_virtual_issue_number": 0,
-	  "issues": {
-	    "99": {
-	      "timestamps": {
-	        "title": null,
-	        "description": null,
-	        "labels": null,
-	        "state": null,
-	        "comments": []
-	      }
-	    },
-	    "100": {
-	      "timestamps": {
-	        "title": null,
-	        "description": null,
-	        "labels": null,
-	        "state": null,
-	        "comments": []
-	      }
-	    }
-	  }
-	}
+	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().skip_meta(), &out), @"
 	//- /testowner/testrepo/99_-_parent/100_-_child.md
 	- [ ] child <!-- @mock_user https://github.com/testowner/testrepo/issues/100 -->
 	//- /testowner/testrepo/99_-_parent/__main__.md
 	- [ ] parent <!-- @mock_user https://github.com/testowner/testrepo/issues/99-->
 		_
-	"#);
+	");
 
 	assert!(out.status.success(), "Expected success, got stderr: {}", out.stderr);
 }
@@ -220,7 +196,7 @@ fn test_nested_issue_under_unsynced_parent_online() {
 	let out = ctx.open_touch("o/r/Parent/child").ghost_edit().run();
 
 	// Verify: parent synced (#1), child synced (#2), proper nesting
-	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap(), &out), @r#"
+	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().skip_meta(), &out), @r#"
 	//- /o/r/.meta.json
 	{
 	  "virtual_project": false,

@@ -448,7 +448,7 @@ fn add_issue_recursive(state: &mut GitState, repo_info: tedi::RepoInfo, number: 
 	}
 
 	// Recursively add children (they inherit the same timestamps)
-	for (_, child) in &issue.children {
+	for child in issue.children.values() {
 		let child_number = child.git_id().expect("child issue must have number for remote mock state");
 		add_issue_recursive(state, repo_info, child_number, Some(number), child, timestamps);
 	}

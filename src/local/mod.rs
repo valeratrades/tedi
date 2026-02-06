@@ -136,7 +136,7 @@ impl LocalIssueSource<FsReader> {
 		}
 
 		// Check for unresolved conflicts (resolves if user already fixed markers)
-		if let Some(conflict_file) = conflict::check_for_existing_conflict(local_path.index.into()).await.map_err(|e| LocalError::Other(e))? {
+		if let Some(conflict_file) = conflict::check_for_existing_conflict(local_path.index).await.map_err(LocalError::Other)? {
 			return Err(ConflictBlockedError { conflict_file }.into());
 		}
 
@@ -621,7 +621,7 @@ impl Local {
 	}
 
 	/// Save metadata for a specific issue to the project's .meta.json.
-	#[instrument]
+	#[instrument(skip(meta), fields(issue_number))]
 	pub fn save_issue_meta(repo_info: RepoInfo, issue_number: u64, meta: &IssueMeta) -> Result<()> {
 		let mut project_meta = Self::load_project_meta(repo_info);
 		project_meta.issues.insert(issue_number, meta.clone());
@@ -629,7 +629,7 @@ impl Local {
 	}
 
 	/// Remove metadata for a specific issue from the project's .meta.json.
-	#[instrument]
+	#[instrument(skip(repo_info), fields(issue_number))]
 	fn remove_issue_meta(repo_info: RepoInfo, issue_number: u64) -> Result<()> {
 		let mut project_meta = Self::load_project_meta(repo_info);
 		if project_meta.issues.remove(&issue_number).is_some() {
@@ -647,7 +647,7 @@ impl Local {
 		let repo_info = idx.repo_info();
 		let project_meta = Self::load_project_meta(repo_info);
 
-		let parent_is_git_id = idx.index().last().map_or(false, |s| matches!(s, IssueSelector::GitId(_)));
+		let parent_is_git_id = idx.index().last().is_some_and(|s| matches!(s, IssueSelector::GitId(_)));
 
 		// Build this node's remote from project_meta
 		let remote = if let Some(IssueSelector::GitId(n)) = idx.index().last() {

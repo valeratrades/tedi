@@ -44,7 +44,10 @@ impl Sink<LocalFs> for Issue {
 /// - Creating directories as needed
 /// - Removing old file locations when format changes
 /// - Writing issue content
-#[instrument]
+#[instrument(skip_all, fields(
+	issue_id = ?new.git_id(),
+	title = %new.contents.title,
+))]
 fn sink_issue_node<R: LocalReader>(new: &Issue, maybe_old: Option<&Issue>, reader: &R) -> Result<bool> {
 	// Duplicate issues self-eliminate: remove local files instead of writing
 	if let crate::CloseState::Duplicate(dup_of) = new.contents.state {
@@ -151,12 +154,7 @@ fn sink_issue_node<R: LocalReader>(new: &Issue, maybe_old: Option<&Issue>, reade
 ///
 /// Strategy: find all matching paths via `matching_subpaths`, compute the correct target path
 /// via `deterministic`, then remove any matching paths that aren't the target.
-#[instrument(skip(issue), fields(
-	issue_number = ?issue.git_id(),
-	title = %issue.contents.title,
-	has_children,
-	closed,
-))]
+#[instrument(skip(issue), fields(has_children, closed))]
 fn cleanup_old_locations(issue: &Issue, has_children: bool, closed: bool) -> Result<()> {
 	let parent_issue_idx = issue.parent_index();
 	let parent_path = LocalPath::from(parent_issue_idx);
@@ -261,7 +259,7 @@ fn cleanup_old_locations(issue: &Issue, has_children: bool, closed: bool) -> Res
 }
 
 /// Remove all file variants for an issue.
-#[instrument(skip(issue, reader), fields(issue_number = ?issue.git_id(), title = %issue.contents.title))]
+#[instrument(skip_all)]
 fn remove_issue_files<R: LocalReader>(issue: &Issue, reader: &R) -> Result<bool> {
 	let owner = issue.identity.owner().to_string();
 	let repo = issue.identity.repo().to_string();

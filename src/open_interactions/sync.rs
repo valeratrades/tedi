@@ -40,7 +40,13 @@ use super::merge::Merge;
 /// Modify a local issue, then sync changes back to Github.
 ///
 /// Caller is responsible for loading the issue (via `Issue::load(LocalIssueSource)`).
-#[instrument]
+#[instrument(skip_all, fields(
+	repo = ?issue.identity.repo_info(),
+	issue_id = ?issue.git_id(),
+	title = %issue.contents.title,
+	offline,
+	modifier = ?modifier,
+))]
 pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Modifier, sync_opts: SyncOptions) -> Result<ModifyResult> {
 	let repo_info = issue.identity.repo_info();
 	let issue_index = IssueIndex::from(&issue);
@@ -124,7 +130,7 @@ mod core {
 	/// ```
 	///
 	/// Returns `(resolved_issue, changed)` where `changed` indicates if any updates were made.
-	#[instrument]
+	#[instrument(skip_all, fields(?mode))]
 	pub(super) async fn resolve_merge(local: Issue, consensus: Option<Issue>, remote: Issue, mode: MergeMode, repo_info: RepoInfo, issue_number: u64) -> Result<(Issue, bool)> {
 		// Handle Reset mode - take one side entirely
 		if let MergeMode::Reset { prefer } = mode {
@@ -201,7 +207,7 @@ mod core {
 		}
 	}
 
-	#[instrument]
+	#[instrument(skip_all, fields(?mode, has_consensus = consensus.is_some()))]
 	pub(super) async fn sync(current_issue: &mut Issue, consensus: Option<Issue>, mode: MergeMode) -> Result<()> {
 		println!("Syncing...");
 		let issue_number = current_issue.git_id().expect(
@@ -296,7 +302,7 @@ mod types {
 	}
 
 	impl Modifier {
-		#[tracing::instrument]
+		#[tracing::instrument(skip_all)]
 		pub(super) async fn apply(&self, issue: &mut Issue) -> Result<ModifyResult> {
 			let old_issue = issue.clone();
 			let vpath = Local::virtual_edit_path(issue);
