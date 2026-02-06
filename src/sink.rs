@@ -37,6 +37,10 @@ pub trait Sink<S> {
 
 	/// Sink this issue to the destination, comparing against `old` state.
 	///
+	///NB: `&mut self` because `Sink<Remote>` mutates the issue: pending identities
+	/// become linked (with the new GitHub number), and children's `parent_index`
+	/// gets updated to reference it. Other impls don't mutate.
+	///
 	/// # Arguments
 	/// * `old` - The current state at the target location (from last pull), or None if no previous state exists
 	///
