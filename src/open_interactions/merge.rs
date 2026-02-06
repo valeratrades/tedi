@@ -45,7 +45,7 @@ pub enum MergeError {
 impl Merge for Issue {
 	fn merge(&mut self, other: Issue, force: bool) -> Result<(), MergeError> {
 		// Virtual issues cannot participate in merge
-		if self.identity.is_virtual() || other.identity.is_virtual() {
+		if self.identity.is_virtual || other.identity.is_virtual {
 			return Err(MergeError::VirtualIssue);
 		}
 
@@ -148,7 +148,7 @@ fn merge_children(self_children: &mut HashMap<IssueSelector, Issue>, other_child
 		} else {
 			// Add new children from other (ones that weren't in self)
 			// Only add if not virtual
-			if !other_child.identity.is_virtual() {
+			if !other_child.identity.is_virtual {
 				self_children.insert(selector, other_child);
 			}
 		}

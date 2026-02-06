@@ -48,9 +48,9 @@ impl DivergedBodiesFixture {
 		let local_vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tlocal body\n");
 		let remote_vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tremote changed body\n");
 
-		ctx.consensus(&consensus_vi, Some(Seed::new(consensus_seed)), false).await;
-		let local = ctx.local(&local_vi, Some(Seed::new(local_seed)), false).await;
-		ctx.remote(&remote_vi, Some(Seed::new(remote_seed)), false);
+		ctx.consensus(&consensus_vi, Some(Seed::new(consensus_seed))).await;
+		let local = ctx.local(&local_vi, Some(Seed::new(local_seed))).await;
+		ctx.remote(&remote_vi, Some(Seed::new(remote_seed)));
 
 		Self { ctx, local }
 	}
@@ -84,21 +84,17 @@ async fn test_only_remote_changed_takes_remote_with_pull() {
 
 	// Local matches consensus (no uncommitted changes), remote changed
 	// Seeds: consensus=-45, remote=90 (remote much newer, guarantees dominance)
-	let consensus = ctx.consensus(&consensus_vi, Some(Seed::new(-45)), false).await;
-	ctx.remote(&remote_vi, Some(Seed::new(90)), false);
+	let consensus = ctx.consensus(&consensus_vi, Some(Seed::new(-45))).await;
+	ctx.remote(&remote_vi, Some(Seed::new(90)));
 
 	// Must use --pull to fetch remote changes when local is unchanged
 	let out = ctx.open_issue(&consensus).args(&["--pull"]).run();
 
-	eprintln!("stdout: {}", out.stdout);
-	eprintln!("stderr: {}", out.stderr);
-	eprintln!("status: {:?}", out.status);
-
 	assert!(out.status.success(), "Should succeed with --pull when only remote changed. stderr: {}", out.stderr);
-	// Verify we pulled (shows "Pulling latest...")
+	// Verify pre-open sync was triggered
 	assert!(
-		out.stdout.contains("Pulling") || out.stdout.contains("pull"),
-		"Expected pull activity message. stdout: {}, stderr: {}",
+		out.stdout.contains("Syncing") || out.stdout.contains("pre-open sync"),
+		"Expected sync activity message. stdout: {}, stderr: {}",
 		out.stdout,
 		out.stderr
 	);
@@ -113,9 +109,9 @@ async fn test_only_local_changed_pushes_local() {
 
 	// Local changed, remote still matches consensus
 	// Seeds: consensus=-25, local=85, remote=-25 (local much newer than unchanged remote)
-	ctx.consensus(&consensus_vi, Some(Seed::new(-100)), false).await;
-	let local = ctx.local(&local_vi, Some(Seed::new(100)), false).await;
-	ctx.remote(&consensus_vi, Some(Seed::new(-100)), false);
+	ctx.consensus(&consensus_vi, Some(Seed::new(-100))).await;
+	let local = ctx.local(&local_vi, Some(Seed::new(100))).await;
+	ctx.remote(&consensus_vi, Some(Seed::new(-100)));
 
 	let out = ctx.open_issue(&local).run();
 
@@ -129,12 +125,14 @@ async fn test_only_local_changed_pushes_local() {
 	  "next_virtual_issue_number": 0,
 	  "issues": {
 	    "1": {
+	      "user": "mock_user",
 	      "timestamps": {
 	        "title": "2001-09-12T11:20:39Z",
 	        "description": "2001-09-12T10:04:12Z",
 	        "labels": "2001-09-12T01:55:52Z",
 	        "state": "2001-09-12T00:39:25Z",
-	        "comments": []
+	        "comments": [
+					]
 	      }
 	    }
 	  }
@@ -155,9 +153,9 @@ async fn test_reset_with_local_source_skips_sync() {
 
 	// --reset uses local as source, so timestamps don't affect result
 	// Seeds: consensus=-30, local=20, remote=25
-	ctx.consensus(&consensus_vi, Some(Seed::new(-30)), false).await;
-	let local = ctx.local(&local_vi, Some(Seed::new(20)), false).await;
-	ctx.remote(&remote_vi, Some(Seed::new(25)), false);
+	ctx.consensus(&consensus_vi, Some(Seed::new(-30))).await;
+	let local = ctx.local(&local_vi, Some(Seed::new(20))).await;
+	ctx.remote(&remote_vi, Some(Seed::new(25)));
 
 	// Run with --reset flag
 	let out = ctx.open_issue(&local).args(&["--reset"]).run();
@@ -182,7 +180,7 @@ async fn test_url_open_creates_local_file_from_remote() {
 
 	let remote_vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tremote body content\n");
 	// Seed: 15 (arbitrary, no comparison needed)
-	ctx.remote(&remote_vi, Some(Seed::new(15)), false);
+	ctx.remote(&remote_vi, Some(Seed::new(15)));
 
 	// No local file exists - URL open should create it
 	let expected_path = ctx.flat_issue_path(("o", "r").into(), 1, "Test Issue");
@@ -212,8 +210,8 @@ async fn test_reset_with_remote_url_nukes_local_state() {
 
 	// --reset overrides everything, but remote is the source when opening via URL
 	// Seeds: consensus=-40, remote=80 (remote much newer)
-	let local = ctx.consensus(&local_vi, Some(Seed::new(-40)), false).await;
-	ctx.remote(&remote_vi, Some(Seed::new(80)), false);
+	let local = ctx.consensus(&local_vi, Some(Seed::new(-40))).await;
+	ctx.remote(&remote_vi, Some(Seed::new(80)));
 
 	// Open via URL with --reset should nuke local and use remote
 	let out = ctx.open_url(("o", "r").into(), 1).args(&["--reset"]).run();
@@ -241,9 +239,9 @@ async fn test_reset_with_remote_url_skips_merge_on_divergence() {
 
 	// Both diverged, but --reset via URL should skip merge and use remote
 	// Seeds: consensus=-60, local=30, remote=35
-	ctx.consensus(&consensus_vi, Some(Seed::new(-60)), false).await;
-	let local = ctx.local(&local_vi, Some(Seed::new(30)), false).await;
-	ctx.remote(&remote_vi, Some(Seed::new(35)), false);
+	ctx.consensus(&consensus_vi, Some(Seed::new(-60))).await;
+	let local = ctx.local(&local_vi, Some(Seed::new(30))).await;
+	ctx.remote(&remote_vi, Some(Seed::new(35)));
 
 	// Open via URL with --reset should NOT trigger merge conflict
 	let out = ctx.open_url(("o", "r").into(), 1).args(&["--reset"]).run();
@@ -273,8 +271,8 @@ async fn test_pull_fetches_before_editor() {
 
 	// Local unchanged from consensus, remote changed
 	// Seeds: consensus=-20, remote=70
-	let local = ctx.consensus(&local_vi, Some(Seed::new(-20)), false).await;
-	ctx.remote(&remote_vi, Some(Seed::new(70)), false);
+	let local = ctx.consensus(&local_vi, Some(Seed::new(-20))).await;
+	ctx.remote(&remote_vi, Some(Seed::new(70)));
 
 	// --pull should fetch from Github before opening editor
 	let out = ctx.open_issue(&local).args(&["--pull"]).run();
@@ -299,9 +297,9 @@ async fn test_pull_with_divergence_runs_sync_before_editor() {
 
 	// Both local and remote changed since consensus
 	// Seeds: consensus=-80, local=50, remote=55
-	ctx.consensus(&consensus_vi, Some(Seed::new(-80)), false).await;
-	let local = ctx.local(&local_vi, Some(Seed::new(50)), false).await;
-	ctx.remote(&remote_vi, Some(Seed::new(55)), false);
+	ctx.consensus(&consensus_vi, Some(Seed::new(-80))).await;
+	let local = ctx.local(&local_vi, Some(Seed::new(50))).await;
+	ctx.remote(&remote_vi, Some(Seed::new(55)));
 
 	// --pull should attempt to sync/merge BEFORE editor opens
 	let out = ctx.open_issue(&local).args(&["--pull"]).run();
@@ -322,6 +320,7 @@ async fn test_pull_with_divergence_runs_sync_before_editor() {
 	  "next_virtual_issue_number": 0,
 	  "issues": {
 	    "1": {
+	      "user": "mock_user",
 	      "timestamps": {
 	        "title": "2001-09-12T05:40:40Z",
 	        "description": "2001-09-12T05:40:20Z",
@@ -345,17 +344,17 @@ async fn test_closing_issue_syncs_state_change() {
 	let open_vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tbody\n");
 	// Local = consensus = remote initially
 	// Seeds: consensus=5, remote=5 (same seed = same base time)
-	let open_issue = ctx.consensus(&open_vi, Some(Seed::new(5)), false).await;
-	ctx.remote(&open_vi, Some(Seed::new(5)), false);
+	let open_issue = ctx.consensus(&open_vi, Some(Seed::new(5))).await;
+	ctx.remote(&open_vi, Some(Seed::new(5)));
 
 	// Edit to close the issue
 	let mut closed_issue = open_vi.clone();
 	closed_issue.contents.state = tedi::CloseState::Closed;
 
-	let out = ctx.open_issue(&open_issue).edit(&closed_issue, false).run();
+	let out = ctx.open_issue(&open_issue).edit(&closed_issue).run();
 
 	// Line 11 contains `state` timestamp set via Timestamp::now() when detecting state change
-	let result_str = render_fixture(FixtureRenderer::try_new(&ctx).unwrap().redact_timestamps(&[11]), &out);
+	let result_str = render_fixture(FixtureRenderer::try_new(&ctx).unwrap().redact_timestamps(&[12]), &out);
 
 	insta::assert_snapshot!(result_str, @r#"
 	//- /o/r/.meta.json
@@ -364,6 +363,7 @@ async fn test_closing_issue_syncs_state_change() {
 	  "next_virtual_issue_number": 0,
 	  "issues": {
 	    "1": {
+	      "user": "mock_user",
 	      "timestamps": {
 	        "title": "2001-09-11T09:15:20Z",
 	        "description": "2001-09-11T04:30:34Z",
@@ -399,7 +399,7 @@ async fn test_duplicate_sub_issues_filtered_from_remote() {
 	);
 
 	// Seed: -10 (arbitrary)
-	ctx.remote(&parent_vi, Some(Seed::new(-10)), false);
+	ctx.remote(&parent_vi, Some(Seed::new(-10)));
 
 	// Open via URL to fetch from remote
 	let out = ctx.open_url(("o", "r").into(), 1).run();
@@ -431,7 +431,7 @@ async fn test_open_unchanged_succeeds() {
 
 	let vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tissue body\n");
 	// Seed: 10 (arbitrary)
-	let issue = ctx.remote(&vi, Some(Seed::new(10)), false);
+	let issue = ctx.remote(&vi, Some(Seed::new(10)));
 
 	// First open via URL
 	let out = ctx.open_url(("o", "r").into(), 1).run();
@@ -454,7 +454,7 @@ async fn test_open_by_number_unchanged_succeeds() {
 	let ctx = TestContext::build("");
 
 	let vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tissue body\n");
-	ctx.remote(&vi, None, false);
+	ctx.remote(&vi, None);
 
 	// First open via URL with --reset
 	let out = ctx.open_url(("o", "r").into(), 1).args(&["--reset"]).run();
@@ -478,20 +478,21 @@ async fn test_reset_syncs_changes_after_editor() {
 	let ctx = TestContext::build("");
 
 	let remote_vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tremote body\n");
-	ctx.remote(&remote_vi, None, false);
+	ctx.remote(&remote_vi, None);
 
 	// emulate user closing the issue after
 	let mut modified_issue = remote_vi.clone();
 	modified_issue.contents.state = tedi::CloseState::Closed;
-	let out = ctx.open_url(("o", "r").into(), 1).args(&["--reset"]).edit(&modified_issue, false).run();
+	let out = ctx.open_url(("o", "r").into(), 1).args(&["--reset"]).edit(&modified_issue).run();
 
-	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().redact_timestamps(&[11]), &out), @r#"
+	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().redact_timestamps(&[12]), &out), @r#"
 	//- /o/r/.meta.json
 	{
 	  "virtual_project": false,
 	  "next_virtual_issue_number": 0,
 	  "issues": {
 	    "1": {
+	      "user": "mock_user",
 	      "timestamps": {
 	        "title": null,
 	        "description": null,
@@ -518,8 +519,8 @@ async fn test_comment_shorthand_creates_comment() {
 
 	// Start with an issue that has no comments
 	let vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tissue body\n");
-	let issue = ctx.consensus(&vi, None, false).await;
-	ctx.remote(&vi, None, false);
+	let issue = ctx.consensus(&vi, None).await;
+	ctx.remote(&vi, None);
 
 	// Simulate user adding `!c` followed by comment content
 	// After expansion, the file should have `<!-- new comment -->` marker
@@ -600,9 +601,9 @@ async fn test_force_merge_preserves_both_sub_issues(#[case] args: &[&str], #[cas
 		 \tparent body\n",
 	);
 
-	ctx.consensus(&consensus_vi, Some(Seed::new(-100)), false).await;
-	let local = ctx.local(&local_vi, Some(Seed::new(100)), false).await;
-	ctx.remote(&remote_vi, Some(Seed::new(100)), false);
+	ctx.consensus(&consensus_vi, Some(Seed::new(-100))).await;
+	let local = ctx.local(&local_vi, Some(Seed::new(100))).await;
+	ctx.remote(&remote_vi, Some(Seed::new(100)));
 
 	let out = ctx.open_issue(&local).args(args).run();
 
@@ -653,7 +654,7 @@ async fn test_consensus_sink_writes_meta_json_with_timestamps() {
 		 \t<!-- comment 1001 @commenter -->\n\
 		 \tA test comment\n",
 	);
-	ctx.remote(&remote_vi, None, false);
+	ctx.remote(&remote_vi, None);
 
 	// Fetch the issue via URL - this should sink to Consensus and write .meta.json
 	let out = ctx.open_url(("o", "r").into(), 1).run();
@@ -671,6 +672,7 @@ async fn test_consensus_sink_writes_meta_json_with_timestamps() {
 	  "next_virtual_issue_number": 0,
 	  "issues": {
 	    "1": {
+	      "user": "mock_user",
 	      "timestamps": {
 	        "title": null,
 	        "description": null,

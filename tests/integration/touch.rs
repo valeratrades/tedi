@@ -5,7 +5,7 @@
 use v_fixtures::FixtureRenderer;
 
 use crate::{
-	common::{FixtureIssuesExt, TestContext},
+	common::{FixtureIssuesExt, TestContext, git::GitExt, parse_virtual},
 	render_fixture,
 };
 
@@ -52,6 +52,7 @@ fn test_touch_matches_issue_by_substring() {
 /// - The Sink (Local) converts the flat file to directory format automatically
 #[test]
 fn test_touch_path_with_more_segments_after_flat_file_match() {
+	//HACK: shouldn't write out TestContext contents
 	let ctx = TestContext::build(
 		r#"
 		//- /data/issues/testowner/testrepo/.meta.json
@@ -79,38 +80,13 @@ fn test_touch_path_with_more_segments_after_flat_file_match() {
 	let out = ctx.open_touch("testowner/testrepo/parent/child").ghost_edit().run();
 
 	// Verify: flat file converted to directory, sub-issue created inside
-	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap(), &out), @r#"
-	//- /testowner/testrepo/.meta.json
-	{
-	  "virtual_project": false,
-	  "next_virtual_issue_number": 0,
-	  "issues": {
-	    "99": {
-	      "timestamps": {
-	        "title": null,
-	        "description": null,
-	        "labels": null,
-	        "state": null,
-	        "comments": []
-	      }
-	    },
-	    "100": {
-	      "timestamps": {
-	        "title": null,
-	        "description": null,
-	        "labels": null,
-	        "state": null,
-	        "comments": []
-	      }
-	    }
-	  }
-	}
+	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().skip_meta(), &out), @"
 	//- /testowner/testrepo/99_-_parent/100_-_child.md
 	- [ ] child <!-- @mock_user https://github.com/testowner/testrepo/issues/100 -->
 	//- /testowner/testrepo/99_-_parent/__main__.md
 	- [ ] parent <!-- @mock_user https://github.com/testowner/testrepo/issues/99-->
 		_
-	"#);
+	");
 
 	assert!(out.status.success(), "Expected success, got stderr: {}", out.stderr);
 }
@@ -220,68 +196,24 @@ fn test_nested_issue_under_unsynced_parent_online() {
 	let out = ctx.open_touch("o/r/Parent/child").ghost_edit().run();
 
 	// Verify: parent synced (#1), child synced (#2), proper nesting
-	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap(), &out), @r#"
-	//- /o/r/.meta.json
-	{
-	  "virtual_project": false,
-	  "next_virtual_issue_number": 0,
-	  "issues": {
-	    "1": {
-	      "timestamps": {
-	        "title": null,
-	        "description": null,
-	        "labels": null,
-	        "state": null,
-	        "comments": []
-	      }
-	    },
-	    "2": {
-	      "timestamps": {
-	        "title": null,
-	        "description": null,
-	        "labels": null,
-	        "state": null,
-	        "comments": []
-	      }
-	    }
-	  }
-	}
+	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().skip_meta(), &out), @"
 	//- /o/r/1_-_Parent_Issue/2_-_child.md
 	- [ ] child <!-- @mock_user https://github.com/o/r/issues/2 -->
 	//- /o/r/1_-_Parent_Issue/__main__.md
 	- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
 			parent body
-	"#);
+	");
 
 	assert!(out.status.success(), "Should succeed syncing child under unsynced parent. stderr: {}", out.stderr);
 }
 
 /// Test `break_to_edit` allows pausing execution to inspect and modify the virtual file.
-#[test]
-fn test_break_to_edit_allows_mid_execution_modification() {
-	let ctx = TestContext::build(
-		r#"
-		//- /data/issues/o/r/.meta.json
-		{
-			"virtual_project": false,
-			"next_virtual_issue_number": 0,
-			"issues": {
-				"1": {
-					"timestamps": {
-						"title": null,
-						"description": null,
-						"labels": null,
-						"state": null,
-						"comments": []
-					}
-				}
-			}
-		}
-		//- /data/issues/o/r/1_-_test_issue.md
-		- [ ] test issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-			original body
-	"#,
-	);
+#[tokio::test]
+async fn test_break_to_edit_allows_mid_execution_modification() {
+	let ctx = TestContext::build("");
+
+	let vi = parse_virtual("- [ ] test issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\toriginal body\n");
+	ctx.local(&vi, None).await;
 
 	let (vpath, continuation) = ctx.open_touch("o/r/test").args(&["--offline"]).break_to_edit();
 

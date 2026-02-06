@@ -224,7 +224,7 @@ impl LocalReader for FsReader {
 }
 
 impl LocalReader for GitReader {
-	#[instrument]
+	#[instrument(skip(self))]
 	fn read_content(&self, path: &Path) -> Result<String, ReaderError> {
 		use std::process::Command;
 
@@ -256,7 +256,7 @@ impl LocalReader for GitReader {
 		String::from_utf8(output.stdout).map_err(|_| ReaderError::invalid_utf8(path))
 	}
 
-	#[instrument]
+	#[instrument(skip(self))]
 	fn list_dir(&self, path: &Path) -> Result<Vec<String>, ReaderError> {
 		use std::process::Command;
 

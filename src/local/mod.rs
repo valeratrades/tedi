@@ -31,6 +31,10 @@ pub enum LocalError {
 	#[error(transparent)]
 	Parse(crate::ParseError),
 
+	/// Issue composition error.
+	#[error(transparent)]
+	Issue(crate::IssueError),
+
 	//Q: LocalPathError also contains ReaderError. Seems suboptimal, - wonder if I can restructure somehow to remove this proprietor level ambiguity
 	/// Reader operation failed.
 	#[error(transparent)]
@@ -53,6 +57,9 @@ pub enum LocalError {
 	#[error("failed to extract issue index from path: {0}")]
 	#[from(skip)]
 	PathExtraction(String),
+
+	#[error(transparent)]
+	Other(Report),
 }
 
 /// Error type for consensus sink operations.
@@ -119,7 +126,7 @@ impl LocalIssueSource<FsReader> {
 	/// Checks:
 	/// - `fd` executable is available (for file searches)
 	/// - No unresolved merge conflicts exist
-	pub fn build(local_path: LocalPath) -> Result<Self, LocalError> {
+	pub async fn build(local_path: LocalPath) -> Result<Self, LocalError> {
 		// Check for fd
 		if std::process::Command::new("fd").arg("--version").output().is_err() {
 			return Err(LocalError::MissingExecutable {
@@ -128,8 +135,10 @@ impl LocalIssueSource<FsReader> {
 			});
 		}
 
-		// Check for unresolved conflicts
-		conflict::check_conflict(local_path.index.owner())?;
+		// Check for unresolved conflicts (resolves if user already fixed markers)
+		if let Some(conflict_file) = conflict::check_for_existing_conflict(local_path.index).await.map_err(LocalError::Other)? {
+			return Err(ConflictBlockedError { conflict_file }.into());
+		}
 
 		Ok(Self::new(local_path, FsReader))
 	}
@@ -138,21 +147,9 @@ impl LocalIssueSource<FsReader> {
 	///
 	/// This extracts the parent_index from the path, then constructs the full index
 	/// by adding the target issue's selector.
-	pub fn build_from_path(path: &Path) -> Result<Self, LocalError> {
-		// Check for fd
-		if std::process::Command::new("fd").arg("--version").output().is_err() {
-			return Err(LocalError::MissingExecutable {
-				executable: "fd",
-				operation: "local filesystem operations",
-			});
-		}
-
+	pub async fn build_from_path(path: &Path) -> Result<Self, LocalError> {
 		let index = Local::extract_index_from_path(path).map_err(|e| LocalError::PathExtraction(e.to_string()))?;
-
-		// Check for unresolved conflicts
-		conflict::check_conflict(index.owner())?;
-
-		Ok(Self::new(LocalPath::new(index), FsReader))
+		Self::build(LocalPath::new(index)).await
 	}
 }
 impl LocalIssueSource<GitReader> {
@@ -215,23 +212,6 @@ impl Local {
 			return override_dir;
 		}
 		v_utils::xdg_data_dir!("issues")
-	}
-
-	/// Parse a single issue node from filesystem content.
-	///
-	/// This parses one issue file (without loading children from separate files).
-	/// Children field will be empty - they're loaded separately via LazyIssue.
-	fn parse_single_node(content: &str, index: IssueIndex, fpath_for_error_context_only: &Path) -> Result<Issue, LocalError> {
-		// Derive parent_index from the full index (all but the last selector)
-		let parent_idx = index.parent().unwrap_or_else(|| IssueIndex::repo_only(index.repo_info()));
-		let hollow = HollowIssue::default_pending(); //HACK: this is just a plug to have deprecated logic compile. HollowIssue won't be needed at all when we write it correctly; and the function itself should return `VirtualIssue` not `Issue`
-		let mut issue = Issue::parse_virtual(content, hollow, parent_idx, fpath_for_error_context_only.to_path_buf())?;
-		// Clear any inline children (filesystem format stores them in separate files)
-		if !issue.children.is_empty() {
-			tracing::warn!("issue children read from file are not empty. Wtf {:?}", &issue.children);
-			issue.children.clear();
-		}
-		Ok(issue)
 	}
 
 	/// Get the project directory path (where .meta.json lives).
@@ -634,14 +614,8 @@ impl Local {
 		}
 	}
 
-	/// Load metadata for a specific issue using the provided reader.
-	pub(crate) fn load_issue_meta_from_reader<R: LocalReader>(repo_info: RepoInfo, issue_number: u64, reader: &R) -> Option<IssueMeta> {
-		let project_meta = Self::load_project_meta_from_reader(repo_info, reader);
-		project_meta.issues.get(&issue_number).cloned()
-	}
-
 	/// Save metadata for a specific issue to the project's .meta.json.
-	#[instrument]
+	#[instrument(skip(meta), fields(issue_number))]
 	pub fn save_issue_meta(repo_info: RepoInfo, issue_number: u64, meta: &IssueMeta) -> Result<()> {
 		let mut project_meta = Self::load_project_meta(repo_info);
 		project_meta.issues.insert(issue_number, meta.clone());
@@ -649,13 +623,67 @@ impl Local {
 	}
 
 	/// Remove metadata for a specific issue from the project's .meta.json.
-	#[instrument]
+	#[instrument(skip(repo_info), fields(issue_number))]
 	fn remove_issue_meta(repo_info: RepoInfo, issue_number: u64) -> Result<()> {
 		let mut project_meta = Self::load_project_meta(repo_info);
 		if project_meta.issues.remove(&issue_number).is_some() {
 			Self::save_project_meta(repo_info, &project_meta)?;
 		}
 		Ok(())
+	}
+
+	/// Reconstruct a `HollowIssue` from project metadata and filesystem tree.
+	///
+	/// Traverses the directory tree for the issue at `idx`, parses child filenames
+	/// into `IssueSelector`s, and for each `GitId` child looks up its `IssueMeta`
+	/// in `ProjectMeta` to build the `LinkedIssueMeta`.
+	pub fn read_hollow_from_project_meta(idx: IssueIndex) -> Result<crate::HollowIssue, LocalError> {
+		let repo_info = idx.repo_info();
+		let project_meta = Self::load_project_meta(repo_info);
+
+		let parent_is_git_id = idx.index().last().is_some_and(|s| matches!(s, IssueSelector::GitId(_)));
+
+		// Build this node's remote from project_meta
+		let remote = if let Some(IssueSelector::GitId(n)) = idx.index().last() {
+			let issue_meta = project_meta.issues.get(n);
+			let user = issue_meta.and_then(|m| m.user.clone()).unwrap_or_default();
+			let timestamps = issue_meta.map(|m| m.timestamps.clone()).unwrap_or_default();
+			let link = crate::IssueLink::parse(&format!("https://github.com/{}/{}/issues/{n}", repo_info.owner(), repo_info.repo())).expect("constructed link must be valid");
+			Some(Box::new(crate::LinkedIssueMeta::new(user, link, timestamps)))
+		} else {
+			None
+		};
+
+		// Resolve the issue directory to find children
+		let local_path = LocalPath::new(idx);
+		let issue_dir = match local_path.resolve_parent(FsReader) {
+			Ok(resolved) => resolved.search().ok().and_then(|r| r.issue_dir()),
+			Err(_) => None,
+		};
+
+		let mut children = HashMap::new();
+		if let Some(dir_path) = issue_dir {
+			let entries = FsReader.list_dir(&dir_path)?;
+			for name in entries {
+				if name.starts_with(Self::MAIN_ISSUE_FILENAME) {
+					continue;
+				}
+				let Some(child_selector) = Self::parse_issue_selector_from_name(&name) else {
+					continue;
+				};
+
+				// If child is GitId but parent isn't, that's an error
+				if matches!(child_selector, IssueSelector::GitId(_)) && !parent_is_git_id {
+					return Err(LocalError::Other(eyre!("child issue {child_selector:?} has GitId but parent {:?} does not", idx.index().last())));
+				}
+
+				let child_idx = idx.child(child_selector);
+				let child_hollow = Self::read_hollow_from_project_meta(child_idx)?;
+				children.insert(child_selector, child_hollow);
+			}
+		}
+
+		Ok(crate::HollowIssue::new(remote, children))
 	}
 }
 
@@ -681,6 +709,9 @@ pub struct ProjectMeta {
 /// Per-issue metadata stored in .meta.json.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct IssueMeta {
+	/// User who created the issue.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub user: Option<String>,
 	/// Timestamps for individual field changes.
 	#[serde(default)]
 	pub timestamps: crate::IssueTimestamps,
@@ -1180,7 +1211,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use v_utils::prelude::*;
 
-use crate::{HollowIssue, Issue, IssueIndex, IssueSelector, RepoInfo};
+use crate::{Issue, IssueIndex, IssueLink, IssueSelector, LinkedIssueMeta, RepoInfo, local::conflict::ConflictBlockedError};
 
 //==============================================================================
 // Local - The interface for local issue storage
@@ -1232,16 +1263,24 @@ impl<R: LocalReader> crate::LazyIssue<LocalIssueSource<R>> for Issue {
 		if self.contents.title.is_empty() {
 			let file_path = source.local_path.clone().resolve_parent(source.reader)?.search()?.path();
 			let content = source.reader.read_content(&file_path)?;
-			let parsed = Local::parse_single_node(&content, index, &file_path)?;
-			self.identity = parsed.identity;
+			let parsed = crate::VirtualIssue::parse(&content, file_path)?;
 			self.contents = parsed.contents;
-		}
-
-		if let Some(issue_number) = self.identity.number()
-			&& let Some(meta) = Local::load_issue_meta_from_reader(index.repo_info(), issue_number, &source.reader)
-			&& let Some(linked) = self.identity.mut_linked_issue_meta()
-		{
-			linked.timestamps = meta.timestamps;
+			let remote = match parsed.selector {
+				IssueSelector::GitId(n) => {
+					let repo_info = index.repo_info();
+					let meta = Local::load_project_meta_from_reader(repo_info, &source.reader).issues.remove(&n);
+					let link = IssueLink::parse(&format!("https://github.com/{}/{}/issues/{n}", repo_info.owner(), repo_info.repo())).expect("constructed URL must be valid");
+					Some(Box::new(LinkedIssueMeta::new(
+						meta.as_ref().and_then(|m| m.user.clone()).unwrap_or_default(),
+						link,
+						meta.map(|m| m.timestamps).unwrap_or_default(),
+					)))
+				}
+				_ => None,
+			};
+			self.identity.parent_index = index.parent().unwrap_or_else(|| IssueIndex::repo_only(index.repo_info()));
+			self.identity.is_virtual = Local::is_virtual_project(index.repo_info());
+			self.identity.remote = remote;
 		}
 
 		Ok(self.identity.clone())
@@ -1256,9 +1295,10 @@ impl<R: LocalReader> crate::LazyIssue<LocalIssueSource<R>> for Issue {
 		let index = *source.index();
 		let file_path = source.local_path.clone().resolve_parent(source.reader)?.search()?.path();
 		let content = source.reader.read_content(&file_path)?;
-		let parsed = Local::parse_single_node(&content, index, &file_path)?;
-		self.identity = parsed.identity;
+		let parsed = crate::VirtualIssue::parse(&content, file_path)?;
 		self.contents = parsed.contents;
+		self.identity.parent_index = index.parent().unwrap_or_else(|| IssueIndex::repo_only(index.repo_info()));
+		self.identity.is_virtual = Local::is_virtual_project(index.repo_info());
 
 		Ok(self.contents.clone())
 	}

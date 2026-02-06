@@ -37,6 +37,10 @@ pub trait Sink<S> {
 
 	/// Sink this issue to the destination, comparing against `old` state.
 	///
+	///NB: `&mut self` because `Sink<Remote>` mutates the issue: pending identities
+	/// become linked (with the new GitHub number), and children's `parent_index`
+	/// gets updated to reference it. Other impls don't mutate.
+	///
 	/// # Arguments
 	/// * `old` - The current state at the target location (from last pull), or None if no previous state exists
 	///
@@ -106,7 +110,7 @@ pub fn compute_node_diff(new: &Issue, old: Option<&Issue>) -> IssueDiff {
 				diff.comments_to_create.push(comment.clone());
 			}
 		}
-		for (_, child) in &new.children {
+		for child in new.children.values() {
 			if child.is_local() {
 				diff.children_to_create.push(child.clone());
 			}
@@ -161,7 +165,7 @@ pub fn compute_node_diff(new: &Issue, old: Option<&Issue>) -> IssueDiff {
 	}
 
 	// Compare children by selector
-	for (_, child) in &new.children {
+	for child in new.children.values() {
 		if child.is_local() {
 			diff.children_to_create.push(child.clone());
 		}
@@ -169,10 +173,10 @@ pub fn compute_node_diff(new: &Issue, old: Option<&Issue>) -> IssueDiff {
 
 	// Find children to delete (in old but not in new)
 	for (selector, old_child) in &old.children {
-		if !new.children.contains_key(selector) {
-			if let Some(num) = old_child.git_id() {
-				diff.children_to_delete.push(num);
-			}
+		if !new.children.contains_key(selector)
+			&& let Some(num) = old_child.git_id()
+		{
+			diff.children_to_delete.push(num);
 		}
 	}
 

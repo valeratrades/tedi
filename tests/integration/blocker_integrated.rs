@@ -24,7 +24,7 @@ async fn test_blocker_add_in_integrated_mode() {
 	);
 
 	// Set up: local issue file exists
-	let issue = ctx.local(&vi, None, false).await;
+	let issue = ctx.local(&vi, None).await;
 	let issue_path = ctx.resolve_issue_path(&issue);
 
 	// Set this issue as the current blocker issue
@@ -61,7 +61,7 @@ async fn test_blocker_pop_in_integrated_mode() {
 	);
 
 	// Set up: local issue file exists
-	let issue = ctx.local(&vi, None, false).await;
+	let issue = ctx.local(&vi, None).await;
 	let issue_path = ctx.resolve_issue_path(&issue);
 
 	// Set this issue as the current blocker issue
@@ -98,7 +98,7 @@ async fn test_blocker_add_creates_blockers_section_if_missing() {
 	let vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tBody text without blockers section.\n");
 
 	// Set up: local issue file exists
-	let issue = ctx.local(&vi, None, false).await;
+	let issue = ctx.local(&vi, None).await;
 	let issue_path = ctx.resolve_issue_path(&issue);
 
 	// Set this issue as the current blocker issue
@@ -162,7 +162,7 @@ async fn test_blocker_add_with_header_context() {
 	);
 
 	// Set up: local issue file exists
-	let issue = ctx.local(&vi, None, false).await;
+	let issue = ctx.local(&vi, None).await;
 	let issue_path = ctx.resolve_issue_path(&issue);
 
 	// Set this issue as the current blocker issue

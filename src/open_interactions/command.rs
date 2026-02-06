@@ -4,18 +4,18 @@ use std::path::Path;
 
 use clap::Args;
 use tedi::{
-	Issue, IssueIndex, IssueLink, IssueSelector, LazyIssue, RepoInfo,
+	Issue, IssueIndex, IssueLink, IssueSelector, LazyIssue, RepoInfo, github,
 	local::{Consensus, ExactMatchLevel, FsReader, Local, LocalFs, LocalIssueSource, LocalPath},
+	remote::RemoteSource,
 	sink::Sink,
 };
 use v_utils::prelude::*;
 
 use super::{
-	remote::RemoteSource,
 	sync::{MergeMode, Modifier, Side, SyncOptions, modify_and_sync_issue},
 	touch::parse_touch_path,
 };
-use crate::{MockType, config::LiveSettings, github};
+use crate::{MockType, config::LiveSettings};
 
 /// Open a Github issue in $EDITOR.
 ///
@@ -95,7 +95,15 @@ pub enum ProjectType {
 	Virtual,
 }
 
-#[tracing::instrument(level = "debug", skip(settings))]
+#[tracing::instrument(level = "debug", skip_all, fields(
+	url_or_pattern = ?args.url_or_pattern,
+	touch = args.touch,
+	blocker = args.blocker,
+	force = args.force,
+	reset = args.reset,
+	offline,
+	mock = ?mock,
+))]
 pub async fn open_command(settings: &LiveSettings, args: OpenArgs, offline: bool, mock: Option<MockType>) -> Result<()> {
 	tracing::debug!("open_command entered, blocker={}", args.blocker);
 
@@ -157,16 +165,16 @@ pub async fn open_command(settings: &LiveSettings, args: OpenArgs, offline: bool
 	// Handle --touch mode first and separately
 	if args.touch {
 		let source = parse_touch_path(input, args.parent, offline).await?;
-		let is_create = !source.local_path.clone().resolve_parent(FsReader)?.search().is_ok();
+		let is_create = source.local_path.clone().resolve_parent(FsReader)?.search().is_err();
 
 		let issue = if is_create {
-			let index = source.index().clone();
+			let index = *source.index();
 			let project_is_virtual = Local::is_virtual_project(index.repo_info());
 			Issue::pending_from_descriptor(&index, project_is_virtual)
 		} else {
 			Issue::load(source).await?
 		};
-		let project_is_virtual = issue.identity.is_virtual();
+		let project_is_virtual = issue.identity.is_virtual;
 
 		if is_create {
 			if !issue.identity.parent_index.index().is_empty() {
@@ -189,7 +197,7 @@ pub async fn open_command(settings: &LiveSettings, args: OpenArgs, offline: bool
 	let (issue, sync_opts, effective_offline) = if args.last {
 		// Handle --last mode: open the most recently modified issue file
 		let path = Local::most_recent_issue_file()?.ok_or_else(|| eyre!("No issue files found. Use a Github URL to fetch an issue first."))?;
-		let source = LocalIssueSource::<FsReader>::build_from_path(&path)?;
+		let source = LocalIssueSource::<FsReader>::build_from_path(&path).await?;
 		let issue = Issue::load(source).await?;
 		(issue, local_sync_opts(), offline)
 	} else if github::is_github_issue_url(input) {
@@ -212,7 +220,7 @@ pub async fn open_command(settings: &LiveSettings, args: OpenArgs, offline: bool
 		let issue = if let Some(path) = existing_path {
 			// File exists locally - proceed with unified sync (like --pull)
 			println!("Found existing local file, will sync with remote...");
-			let source = LocalIssueSource::<FsReader>::build_from_path(&path)?;
+			let source = LocalIssueSource::<FsReader>::build_from_path(&path).await?;
 			Issue::load(source).await?
 		} else {
 			// File doesn't exist - fetch and create it
@@ -248,7 +256,7 @@ pub async fn open_command(settings: &LiveSettings, args: OpenArgs, offline: bool
 			Local::fzf_issue(input, exact)?
 		};
 
-		let source = LocalIssueSource::<FsReader>::build_from_path(&issue_file_path)?;
+		let source = LocalIssueSource::<FsReader>::build_from_path(&issue_file_path).await?;
 		let issue = Issue::load(source).await?;
 		(issue, local_sync_opts(), offline)
 	};

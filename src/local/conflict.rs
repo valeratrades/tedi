@@ -17,8 +17,8 @@ use miette::Diagnostic;
 use thiserror::Error;
 use v_utils::prelude::*;
 
-use super::{Local, consensus::is_git_initialized};
-use crate::{Issue, RepoInfo};
+use super::{GitReader, Local, LocalFs, LocalIssueSource, LocalPath, consensus::is_git_initialized};
+use crate::{Issue, IssueIndex, LazyIssue as _, RepoInfo, VirtualIssue, remote::Remote, sink::Sink};
 
 //==============================================================================
 // Error Types
@@ -68,55 +68,9 @@ pub fn conflict_file_path(owner: &str) -> PathBuf {
 }
 
 //==============================================================================
-// Conflict Detection
+// Conflict Detection & Resolution
 //==============================================================================
 
-/// Check for unresolved conflict for a given owner.
-///
-/// Returns:
-/// - `Ok(())` if no conflict or conflict is resolved
-/// - `Err(ConflictBlockedError)` if conflict exists and has markers
-pub fn check_conflict(owner: &str) -> Result<(), ConflictBlockedError> {
-	let conflict_file = conflict_file_path(owner);
-
-	if !conflict_file.exists() {
-		return Ok(());
-	}
-
-	let content = match std::fs::read_to_string(&conflict_file) {
-		Ok(c) => c,
-		Err(_) => return Ok(()), // Can't read = treat as no conflict
-	};
-
-	if has_conflict_markers(&content) {
-		Err(ConflictBlockedError { conflict_file })
-	} else {
-		Ok(())
-	}
-}
-/// Read the resolved conflict issue from `__conflict.md`.
-///
-/// Call this after user has resolved the conflict (no more markers).
-/// Returns the parsed Issue from the resolved file.
-pub fn read_resolved_conflict(owner: &str) -> Result<Issue> {
-	let conflict_file = conflict_file_path(owner);
-
-	let content = std::fs::read_to_string(&conflict_file).map_err(|e| eyre!("Failed to read conflict file: {e}"))?;
-
-	if has_conflict_markers(&content) {
-		bail!("Conflict file still has unresolved markers");
-	}
-
-	Issue::deserialize_virtual(&content).map_err(|e| eyre!("Failed to parse resolved conflict: {e}"))
-}
-/// Remove the conflict file after successful resolution.
-pub fn remove_conflict_file(owner: &str) -> Result<()> {
-	let conflict_file = conflict_file_path(owner);
-	if conflict_file.exists() {
-		std::fs::remove_file(&conflict_file)?;
-	}
-	Ok(())
-}
 /// Outcome of initiating a conflict merge.
 pub enum ConflictOutcome {
 	/// Merge succeeded automatically (no conflicts).
@@ -126,6 +80,66 @@ pub enum ConflictOutcome {
 	/// Both sides are identical, no merge needed.
 	NoChanges,
 }
+
+/// Check for conflict file. If user fixed it, sinks.
+///
+/// Returns `Some(path)` if conflict markers are still present, `None` if resolved (or no conflict).
+/// When the file exists but markers are gone, syncs the resolved content to local + remote sinks.
+pub async fn check_for_existing_conflict(issue_index: IssueIndex) -> Result<Option<PathBuf>> {
+	let conflict_fpath = conflict_file_path(issue_index.owner());
+
+	if !conflict_fpath.exists() {
+		return Ok(None);
+	}
+
+	let content = std::fs::read_to_string(&conflict_fpath)?;
+
+	if has_conflict_markers(&content) {
+		Ok(Some(conflict_fpath))
+	} else {
+		// have the conflict file, but user has had resolved it, - sync then cleanup
+		{
+			let mut new_issue = {
+				let mut new_issue_but_old_local_timestamps = {
+					let virtual_issue = VirtualIssue::parse(&content, conflict_fpath)?;
+					let hollow = Local::read_hollow_from_project_meta(issue_index)?;
+					let project_meta = Local::load_project_meta(issue_index.repo_info());
+					Issue::from_combined(hollow, virtual_issue, issue_index.parent().unwrap(), project_meta.virtual_project)?
+				};
+
+				let last_consensus_issue = Issue::load(LocalIssueSource::<GitReader>::build(LocalPath::from(issue_index))?).await?;
+
+				new_issue_but_old_local_timestamps.update_timestamps_from_diff(&last_consensus_issue);
+				new_issue_but_old_local_timestamps
+			};
+
+			<Issue as Sink<LocalFs>>::sink(&mut new_issue, None).await?;
+			<Issue as Sink<Remote>>::sink(&mut new_issue, None).await?;
+		}
+		conflict_resolution_cleanup(issue_index.owner())?;
+		Ok(None)
+	}
+}
+
+/// Check if file content contains git conflict markers.
+pub fn has_conflict_markers(content: &str) -> bool {
+	let has_ours = content.contains("<<<<<<<");
+	let has_separator = content.contains("=======");
+	let has_theirs = content.contains(">>>>>>>");
+	has_ours && has_separator && has_theirs
+}
+
+/// Check if we're in the middle of a git merge.
+pub fn is_merge_in_progress() -> bool {
+	let data_dir = Local::issues_dir();
+	let merge_head = data_dir.join(".git/MERGE_HEAD");
+	merge_head.exists()
+}
+
+//==============================================================================
+// Conflict Creation (Git Branch Merge)
+//==============================================================================
+
 /// Initiate a git merge conflict between local and remote issue states.
 ///
 /// This creates a real git conflict by:
@@ -274,6 +288,7 @@ pub fn initiate_conflict_merge(repo_info: RepoInfo, issue_number: u64, local_iss
 	let stdout = String::from_utf8_lossy(&merge_output.stdout);
 	let stderr = String::from_utf8_lossy(&merge_output.stderr);
 
+	//TODO: switch all actual git operations to [gitoxide](https://docs.rs/gitoxide/latest/gitoxide/), to not have to parse STDOUT
 	if stdout.contains("CONFLICT") || stderr.contains("CONFLICT") || stdout.contains("Automatic merge failed") {
 		tracing::debug!("[conflict] Merge produced conflicts in {conflict_file_rel_str}");
 		// Don't cleanup branch - user needs it for resolution
@@ -287,11 +302,12 @@ pub fn initiate_conflict_merge(repo_info: RepoInfo, issue_number: u64, local_iss
 		})
 	}
 }
+
 /// Complete the conflict resolution process.
 ///
 /// Call this after user has resolved conflicts and committed.
 /// Cleans up the remote-state branch.
-pub fn complete_conflict_resolution(owner: &str) -> Result<()> {
+pub fn conflict_resolution_cleanup(owner: &str) -> Result<()> {
 	let data_dir = Local::issues_dir();
 	let data_dir_str = data_dir.to_str().ok_or_else(|| eyre!("Invalid data directory path"))?;
 
@@ -303,34 +319,16 @@ pub fn complete_conflict_resolution(owner: &str) -> Result<()> {
 	// Cleanup branch
 	let _ = Command::new("git").args(["-C", data_dir_str, "branch", "-D", "remote-state"]).output();
 
-	// Remove conflict file if it still exists (user may have already removed it)
-	remove_conflict_file(owner)?;
+	// Remove the conflict file after successful resolution.
+	{
+		let conflict_file = conflict_file_path(owner);
+		if conflict_file.exists() {
+			std::fs::remove_file(&conflict_file)?;
+		}
+	}
 
 	Ok(())
 }
-
-/// Check if file content contains git conflict markers.
-fn has_conflict_markers(content: &str) -> bool {
-	let has_ours = content.contains("<<<<<<<");
-	let has_separator = content.contains("=======");
-	let has_theirs = content.contains(">>>>>>>");
-	has_ours && has_separator && has_theirs
-}
-
-/// Check if we're in the middle of a git merge.
-fn is_merge_in_progress() -> bool {
-	let data_dir = Local::issues_dir();
-	let merge_head = data_dir.join(".git/MERGE_HEAD");
-	merge_head.exists()
-}
-
-//==============================================================================
-// Conflict Resolution
-//==============================================================================
-
-//==============================================================================
-// Conflict Creation (Git Branch Merge)
-//==============================================================================
 
 /// Cleanup the remote-state branch after merge completes.
 fn cleanup_branch(data_dir_str: &str, _current_branch: &str) {

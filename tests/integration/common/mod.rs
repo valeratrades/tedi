@@ -49,6 +49,9 @@ pub struct TestContext {
 	pub mock_state_path: PathBuf,
 	/// Path to named pipe for editor simulation (for sync tests)
 	pub pipe_path: PathBuf,
+	/// encodes whether the repo associated with test context is virtual.
+	//DEPENDS: on us hardcoding `repo` across the board. If that's not a case, then having two issue at different repos where only one is virtual is possible. But with current arch it's always the same repo, so can't have two ways about it.
+	pub(crate) is_virtual_repo: bool,
 }
 impl TestContext {
 	/// Create a new test context from a fixture string with git initialized.
@@ -79,9 +82,19 @@ impl TestContext {
 		// Set overrides so all library calls use our temp dir
 		tedi::mocks::set_issues_dir(xdg.data_dir().join("issues"));
 
-		let ctx = Self { xdg, mock_state_path, pipe_path };
+		let ctx = Self {
+			xdg,
+			mock_state_path,
+			pipe_path,
+			is_virtual_repo: false,
+		};
 		ctx.init_git();
 		ctx
+	}
+
+	pub fn virtual_repo(mut self) -> Self {
+		self.is_virtual_repo = true;
+		self
 	}
 
 	/// Run a command with proper XDG environment.
@@ -168,8 +181,8 @@ impl<'a> OpenBuilder<'a> {
 	}
 
 	/// Edit the file to this issue while "editor is open".
-	pub fn edit(mut self, issue: &tedi::VirtualIssue, is_virtual: bool) -> Self {
-		self.edit_op = Some(EditOperation::FullIssue(Box::new(issue.clone()), is_virtual));
+	pub fn edit(mut self, issue: &tedi::VirtualIssue) -> Self {
+		self.edit_op = Some(EditOperation::FullIssue(Box::new(issue.clone())));
 		self
 	}
 
@@ -319,6 +332,7 @@ impl<'a> OpenBuilder<'a> {
 
 		// Poll for process completion, signaling pipe when it's waiting
 		let pipe_path = self.ctx.pipe_path.clone();
+		let is_virtual = self.ctx.is_virtual_repo;
 		let edit_op = self.edit_op.clone();
 		let mut signaled = false;
 
@@ -334,8 +348,8 @@ impl<'a> OpenBuilder<'a> {
 
 				// Edit the file while "editor is open" if requested
 				match &edit_op {
-					Some(EditOperation::FullIssue(virtual_issue, is_virtual)) => {
-						let issue = git::with_timestamps(virtual_issue, None, *is_virtual);
+					Some(EditOperation::FullIssue(virtual_issue)) => {
+						let issue = git::with_timestamps(virtual_issue, None, is_virtual);
 						let vpath = tedi::local::Local::virtual_edit_path(&issue);
 						let content = issue.serialize_virtual();
 						eprintln!("[test:OpenBuilder] submitting user input // writing to {vpath:?}:\n{content}");
@@ -383,7 +397,7 @@ impl<'a> OpenBuilder<'a> {
 }
 
 pub fn parse_virtual(content: &str) -> tedi::VirtualIssue {
-	tedi::VirtualIssue::parse_virtual(content, std::path::PathBuf::from("test.md")).expect("failed to parse test issue")
+	tedi::VirtualIssue::parse(content, std::path::PathBuf::from("test.md")).expect("failed to parse test issue")
 }
 /// Render a fixture with optional error output if the command failed.
 pub fn render_fixture(renderer: FixtureRenderer<'_>, output: &RunOutput) -> String {
@@ -580,7 +594,7 @@ fn get_binary_path() -> PathBuf {
 #[derive(Clone)]
 enum EditOperation {
 	/// Edit using a full VirtualIssue (converted to Issue at run time, writes serialize_virtual)
-	FullIssue(Box<tedi::VirtualIssue>, bool),
+	FullIssue(Box<tedi::VirtualIssue>),
 	/// Edit just the contents/body (preserves header, replaces body)
 	ContentsOnly(String),
 }

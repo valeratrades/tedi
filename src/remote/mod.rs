@@ -70,14 +70,14 @@ pub enum RemoteError {
 	#[error("`{executable}` not found in PATH (required for {operation})")]
 	MissingExecutable { executable: &'static str, operation: &'static str },
 }
-use tedi::{
+use v_utils::prelude::*;
+
+use crate::{
 	CloseState, Comment, CommentIdentity, Issue, IssueContents, IssueIdentity, IssueIndex, IssueLink, IssueSelector, IssueTimestamps, MAX_LINEAGE_DEPTH, RepoInfo,
+	github::{self, GithubComment, GithubIssue},
 	sink::{Sink, compute_node_diff},
 	split_blockers,
 };
-use v_utils::prelude::*;
-
-use crate::github::{self, GithubComment, GithubIssue};
 
 /// Marker type for remote GitHub sink operations.
 pub enum Remote {}
@@ -199,14 +199,14 @@ impl RemoteSource {
 	}
 }
 
-impl tedi::LazyIssue<RemoteSource> for Issue {
+impl crate::LazyIssue<RemoteSource> for Issue {
 	type Error = RemoteError;
 
 	async fn parent_index(source: &RemoteSource) -> Result<Option<IssueIndex>, Self::Error> {
 		source.resolve_parent_index().await
 	}
 
-	#[instrument]
+	#[instrument(skip_all)]
 	async fn identity(&mut self, source: RemoteSource) -> Result<IssueIdentity, Self::Error> {
 		if self.identity.is_linked() {
 			return Ok(self.identity.clone());
@@ -240,7 +240,7 @@ impl tedi::LazyIssue<RemoteSource> for Issue {
 		Ok(self.identity.clone())
 	}
 
-	#[instrument]
+	#[instrument(skip_all)]
 	async fn contents(&mut self, source: RemoteSource) -> Result<IssueContents, Self::Error> {
 		if !self.contents.title.is_empty() {
 			return Ok(self.contents.clone());
@@ -285,7 +285,7 @@ impl tedi::LazyIssue<RemoteSource> for Issue {
 		Ok(self.contents.clone())
 	}
 
-	#[instrument]
+	#[instrument(skip_all)]
 	async fn children(&mut self, source: RemoteSource) -> Result<HashMap<IssueSelector, Issue>, Self::Error> {
 		if !self.children.is_empty() {
 			return Ok(self.children.clone());
@@ -331,7 +331,7 @@ impl tedi::LazyIssue<RemoteSource> for Issue {
 }
 
 /// Build IssueContents from GitHub API data.
-#[instrument]
+#[instrument(skip_all, fields(issue_number = issue.number, title = %issue.title))]
 fn build_contents_from_github(issue: &GithubIssue, comments: &[GithubComment]) -> IssueContents {
 	let close_state = CloseState::from_github(&issue.state, issue.state_reason.as_deref());
 	let labels: Vec<String> = issue.labels.iter().map(|l| l.name.clone()).collect();
@@ -341,7 +341,7 @@ fn build_contents_from_github(issue: &GithubIssue, comments: &[GithubComment]) -
 
 	let mut issue_comments = vec![Comment {
 		identity: CommentIdentity::Body,
-		body: tedi::Events::parse(&body),
+		body: crate::Events::parse(&body),
 	}];
 
 	for c in comments {
@@ -350,7 +350,7 @@ fn build_contents_from_github(issue: &GithubIssue, comments: &[GithubComment]) -
 				user: c.user.login.clone(),
 				id: c.id,
 			},
-			body: tedi::Events::parse(c.body.as_deref().unwrap_or("")), //IGNORED_ERROR: GitHub API null comment body is valid
+			body: crate::Events::parse(c.body.as_deref().unwrap_or("")), //IGNORED_ERROR: GitHub API null comment body is valid
 		});
 	}
 
@@ -374,7 +374,7 @@ impl Sink<Remote> for Issue {
 
 	async fn sink(&mut self, old: Option<&Issue>) -> Result<bool, Self::Error> {
 		// Virtual issues never sync to remote - they're local-only
-		if self.identity.is_virtual() {
+		if self.identity.is_virtual {
 			return Ok(false);
 		}
 
@@ -409,7 +409,7 @@ impl Sink<Remote> for Issue {
 			let url = format!("https://github.com/{}/{}/issues/{}", repo_info.owner(), repo_info.repo(), created.number);
 			let link = IssueLink::parse(&url).expect("just constructed valid URL");
 			let user = gh.fetch_authenticated_user().await?;
-			self.identity = IssueIdentity::new_linked(Some(parent_index), user, link, tedi::IssueTimestamps::default());
+			self.identity = IssueIdentity::new_linked(Some(parent_index), user, link, crate::IssueTimestamps::now());
 			changed = true;
 		}
 
@@ -445,7 +445,7 @@ impl Sink<Remote> for Issue {
 		// Update existing comments
 		for (comment_id, comment) in &diff.comments_to_update {
 			if let CommentIdentity::Created { user, .. } = &comment.identity
-				&& !tedi::current_user::is(user)
+				&& !crate::current_user::is(user)
 			{
 				continue;
 			}
@@ -464,7 +464,7 @@ impl Sink<Remote> for Issue {
 
 		// Update children's parent_index to use our git number, then sink
 		if let Some(child_parent_index) = self.identity.child_parent_index() {
-			for (_, child) in &mut self.children {
+			for child in self.children.values_mut() {
 				child.identity.parent_index = child_parent_index;
 			}
 		}

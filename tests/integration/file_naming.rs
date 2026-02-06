@@ -14,8 +14,8 @@ async fn test_flat_format_preserved_when_no_sub_issues() {
 	let ctx = TestContext::build("");
 
 	let vi = parse_virtual("- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tparent body\n");
-	let parent = ctx.consensus(&vi, None, false).await;
-	ctx.remote(&vi, None, false);
+	let parent = ctx.consensus(&vi, None).await;
+	ctx.remote(&vi, None);
 
 	let out = ctx.open_issue(&parent).run();
 
@@ -37,7 +37,7 @@ async fn test_old_flat_file_removed_when_sub_issues_appear() {
 
 	// Start with a flat issue locally
 	let parent_vi = parse_virtual("- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tparent body\n");
-	let parent = ctx.consensus(&parent_vi, None, false).await;
+	let parent = ctx.consensus(&parent_vi, None).await;
 
 	// Remote now has sub-issues - create a version with children for mock
 	let with_children = parse_virtual(
@@ -48,7 +48,7 @@ async fn test_old_flat_file_removed_when_sub_issues_appear() {
 		 \t\tchild body\n",
 	);
 	// Remote has the version with children
-	ctx.remote(&with_children, None, false);
+	ctx.remote(&with_children, None);
 
 	// Need --pull since local == consensus (no uncommitted changes)
 	let out = ctx.open_issue(&parent).args(&["--pull"]).run();
@@ -74,7 +74,7 @@ async fn test_old_placement_discarded_with_pull() {
 
 	// Set up a flat issue locally, committed to git
 	let parent_vi = parse_virtual("- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tparent body\n");
-	let parent = ctx.consensus(&parent_vi, None, false).await;
+	let parent = ctx.consensus(&parent_vi, None).await;
 
 	// Remote has sub-issues now (simulating someone else adding them)
 	let with_children = parse_virtual(
@@ -84,7 +84,7 @@ async fn test_old_placement_discarded_with_pull() {
 		 \t- [ ] Child Issue <!--sub @mock_user https://github.com/o/r/issues/2 -->\n\
 		 \t\tchild body\n",
 	);
-	ctx.remote(&with_children, None, false);
+	ctx.remote(&with_children, None);
 
 	// Need --pull since local == consensus (no uncommitted local changes)
 	let out = ctx.open_issue(&parent).args(&["--pull"]).run();
@@ -113,15 +113,15 @@ async fn test_duplicate_removes_local_file() {
 
 	// Set up a local issue
 	let original_vi = parse_virtual("- [ ] Some Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tbody\n");
-	let original = ctx.consensus(&original_vi, None, false).await;
-	ctx.remote(&original_vi, None, false);
+	let original = ctx.consensus(&original_vi, None).await;
+	ctx.remote(&original_vi, None);
 
 	// Modify the issue to mark it as duplicate
 	let mut duplicate = original_vi.clone();
 	duplicate.contents.state = tedi::CloseState::Duplicate(999);
 
 	// Sync the duplicate state
-	let out = ctx.open_issue(&original).edit(&duplicate, false).run();
+	let out = ctx.open_issue(&original).edit(&duplicate).run();
 
 	eprintln!("stdout: {}", out.stdout);
 	eprintln!("stderr: {}", out.stderr);
@@ -138,22 +138,21 @@ async fn test_duplicate_removes_local_file() {
 #[tokio::test]
 async fn test_duplicate_reference_to_existing_issue_succeeds() {
 	let ctx = TestContext::build("");
-	let is_virtual = false;
 
 	// Set up a local issue and a target duplicate issue
 	let original = parse_virtual("- [ ] Some Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tbody\n");
-	let original_issue = ctx.consensus(&original, None, is_virtual).await;
-	ctx.remote(&original, None, is_virtual);
+	let original_issue = ctx.consensus(&original, None).await;
+	ctx.remote(&original, None);
 
 	let dup_target = parse_virtual("- [ ] Target Issue <!-- @mock_user https://github.com/o/r/issues/2 -->\n\ttarget body\n");
-	ctx.remote(&dup_target, None, is_virtual);
+	ctx.remote(&dup_target, None);
 
 	// Modify the issue to mark it as duplicate of #2 (which exists)
 	let mut duplicate = original.clone();
 	duplicate.contents.state = tedi::CloseState::Duplicate(2);
 
 	// Sync the duplicate state
-	let out = ctx.open_issue(&original_issue).edit(&duplicate, is_virtual).run();
+	let out = ctx.open_issue(&original_issue).edit(&duplicate).run();
 
 	eprintln!("stdout: {}", out.stdout);
 	eprintln!("stderr: {}", out.stderr);

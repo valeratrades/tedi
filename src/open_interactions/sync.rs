@@ -23,24 +23,30 @@
 
 use color_eyre::eyre::{Result, bail};
 use tedi::{
-	Issue, IssueIndex, IssueLink, IssueSelector, LazyIssue, RepoInfo,
-	local::{Consensus, FsReader, Local, LocalFs, LocalIssueSource, LocalPath},
+	HollowIssue, Issue, IssueIndex, IssueLink, IssueSelector, LazyIssue, RepoInfo, VirtualIssue,
+	local::{
+		Consensus, FsReader, Local, LocalFs, LocalIssueSource, LocalPath,
+		conflict::{ConflictOutcome, initiate_conflict_merge},
+		consensus::load_consensus_issue,
+	},
+	remote::{Remote, RemoteSource},
 	sink::Sink,
 };
 use tracing::instrument;
 use v_utils::elog;
 
-use super::{
-	conflict::{ConflictOutcome, complete_conflict_resolution, initiate_conflict_merge, read_resolved_conflict},
-	consensus::load_consensus_issue,
-	merge::Merge,
-	remote::{Remote, RemoteSource},
-};
+use super::merge::Merge;
 
 /// Modify a local issue, then sync changes back to Github.
 ///
 /// Caller is responsible for loading the issue (via `Issue::load(LocalIssueSource)`).
-#[instrument]
+#[instrument(skip_all, fields(
+	repo = ?issue.identity.repo_info(),
+	issue_id = ?issue.git_id(),
+	title = %issue.contents.title,
+	offline,
+	modifier = ?modifier,
+))]
 pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Modifier, sync_opts: SyncOptions) -> Result<ModifyResult> {
 	let repo_info = issue.identity.repo_info();
 	let issue_index = IssueIndex::from(&issue);
@@ -89,7 +95,7 @@ pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Mo
 
 						// 2. Load ancestor up to first Title selector
 						let ancestor_index = IssueIndex::with_index(repo_info, parent_index.index()[..=i].to_vec());
-						let ancestor_source = LocalIssueSource::<FsReader>::build(LocalPath::new(ancestor_index))?;
+						let ancestor_source = LocalIssueSource::<FsReader>::build(LocalPath::new(ancestor_index)).await?;
 						let mut ancestor = Issue::load(ancestor_source).await?;
 						let old_ancestor = ancestor.clone();
 
@@ -124,7 +130,7 @@ mod core {
 	/// ```
 	///
 	/// Returns `(resolved_issue, changed)` where `changed` indicates if any updates were made.
-	#[instrument]
+	#[instrument(skip_all, fields(?mode))]
 	pub(super) async fn resolve_merge(local: Issue, consensus: Option<Issue>, remote: Issue, mode: MergeMode, repo_info: RepoInfo, issue_number: u64) -> Result<(Issue, bool)> {
 		// Handle Reset mode - take one side entirely
 		if let MergeMode::Reset { prefer } = mode {
@@ -179,14 +185,12 @@ mod core {
 				// Conflict - initiate git merge
 				match initiate_conflict_merge(repo_info, issue_number, &local_merged, &remote_merged)? {
 					ConflictOutcome::AutoMerged => {
-						let resolved = read_resolved_conflict(repo_info.owner())?;
-						complete_conflict_resolution(repo_info.owner())?;
-						let mut resolved = resolved;
-						<Issue as Sink<LocalFs>>::sink(&mut resolved, None).await?;
-						<Issue as Sink<Remote>>::sink(&mut resolved, None).await?;
-						Ok((resolved, true))
+						unreachable!(
+							"AutoMerged means when we triggered a merge of local against remote (which we've already checked are divergent), it succeeded. Which would be an implementation error, - whole point of the call is to record the conflict before getting user to resolve it manually."
+						);
 					}
 					ConflictOutcome::NeedsResolution => {
+						//TODO!: switch to a preview Error return type. This branch is EXPECTED to be reached during real-world usage, and must have first-class formatting and a miette error nicely propagated to user.
 						bail!(
 							"Conflict detected for {}/{}#{issue_number}.\n\
 							Resolve using standard git tools, then re-run.",
@@ -203,7 +207,7 @@ mod core {
 		}
 	}
 
-	#[instrument]
+	#[instrument(skip_all, fields(?mode, has_consensus = consensus.is_some()))]
 	pub(super) async fn sync(current_issue: &mut Issue, consensus: Option<Issue>, mode: MergeMode) -> Result<()> {
 		println!("Syncing...");
 		let issue_number = current_issue.git_id().expect(
@@ -298,7 +302,7 @@ mod types {
 	}
 
 	impl Modifier {
-		#[tracing::instrument]
+		#[tracing::instrument(skip_all)]
 		pub(super) async fn apply(&self, issue: &mut Issue) -> Result<ModifyResult> {
 			let old_issue = issue.clone();
 			let vpath = Local::virtual_edit_path(issue);
@@ -325,8 +329,10 @@ mod types {
 					tracing::Span::current().record("vpath", tracing::field::debug(&vpath));
 					tracing::Span::current().record("content", content.as_str());
 					let parent_idx = issue.identity.parent_index;
-					let hollow = old_issue.clone().into();
-					*issue = Issue::parse_virtual(&content, hollow, parent_idx, vpath.clone())?;
+					let is_virtual = issue.identity.is_virtual;
+					let hollow: HollowIssue = old_issue.clone().into();
+					let virtual_issue = VirtualIssue::parse(&content, vpath.clone())?;
+					*issue = Issue::from_combined(hollow, virtual_issue, parent_idx, is_virtual)?;
 
 					ModifyResult { output: None, file_modified }
 				}

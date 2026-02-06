@@ -20,7 +20,7 @@ fn test_reset_with_subissue_edit() {
 		 \t- [ ] Sub Issue <!--sub @mock_user https://github.com/o/r/issues/2 -->\n\
 		 \t\tsub body\n",
 	);
-	ctx.remote(&remote_vi, None, false);
+	ctx.remote(&remote_vi, None);
 
 	// User edits: mark sub-issue as closed
 	let edited = parse_virtual(
@@ -32,7 +32,7 @@ fn test_reset_with_subissue_edit() {
 	);
 
 	// --reset fetches remote and establishes consensus, then user edits
-	let out = ctx.open_url(("o", "r").into(), 1).args(&["--reset"]).edit(&edited, false).run();
+	let out = ctx.open_url(("o", "r").into(), 1).args(&["--reset"]).edit(&edited).run();
 
 	assert!(out.status.success(), "Should succeed. stderr: {}", out.stderr);
 	assert!(!out.stderr.contains("Conflict"), "No conflict expected. stderr: {}", out.stderr);
@@ -45,11 +45,11 @@ fn test_reset_with_body_edit() {
 	let ctx = TestContext::build("");
 
 	let remote_vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\toriginal body\n");
-	ctx.remote(&remote_vi, None, false);
+	ctx.remote(&remote_vi, None);
 
 	let edited = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tmodified body\n");
 
-	let out = ctx.open_url(("o", "r").into(), 1).args(&["--reset"]).edit(&edited, false).run();
+	let out = ctx.open_url(("o", "r").into(), 1).args(&["--reset"]).edit(&edited).run();
 
 	assert!(out.status.success(), "Should succeed. stderr: {}", out.stderr);
 	assert!(!out.stderr.contains("Conflict"), "No conflict expected. stderr: {}", out.stderr);
@@ -84,7 +84,7 @@ async fn test_reset_discards_local_subissue_modifications() {
 		 \t\t- [ ] Child <!--sub @mock_user https://github.com/o/r/issues/3 -->\n\
 		 \t\t\tchild body\n",
 	);
-	let remote_state = ctx.remote(&remote_vi, None, false);
+	let remote_state = ctx.remote(&remote_vi, None);
 
 	// Step 1: Initial fetch to create local files
 	let out = ctx.open_url(("o", "r").into(), 1).run();
@@ -107,7 +107,7 @@ async fn test_reset_discards_local_subissue_modifications() {
 	);
 
 	// Open and edit the parent sub-issue
-	let out = ctx.open_issue(parent_issue).edit(&modified_parent, false).run();
+	let out = ctx.open_issue(parent_issue).edit(&modified_parent).run();
 	assert!(out.status.success(), "Parent edit failed. stderr: {}", out.stderr);
 
 	// Step 3: --reset on grandparent should discard local modifications
@@ -125,7 +125,7 @@ async fn test_reset_discards_local_subissue_modifications() {
 		 \t\t\tchild body\n",
 	);
 
-	let out = ctx.open_url(("o", "r").into(), 1).args(&["--reset"]).edit(&edited_after_reset, false).run();
+	let out = ctx.open_url(("o", "r").into(), 1).args(&["--reset"]).edit(&edited_after_reset).run();
 
 	assert!(out.status.success(), "Edit after reset failed. stderr: {}", out.stderr);
 	assert!(!out.stderr.contains("Conflict"), "No conflict expected. stderr: {}", out.stderr);
