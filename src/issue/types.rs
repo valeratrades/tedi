@@ -953,6 +953,21 @@ impl Issue /*{{{1*/ {
 		// Parse issue marker from end of line
 		let (identity_info, title) = IssueMarker::parse_from_end(rest).ok_or_else(|| ParseError::missing_url_marker(ctx.named_source(), ctx.line_span(line_num)))?;
 
+		// Strip trailing omitted marker from title (it may appear inline before the issue marker)
+		let title = title.trim_end();
+		let title = if let Some(marker_end) = title.rfind("-->")
+			&& let Some(marker_start) = title[..marker_end].rfind("<!--")
+		{
+			let inner = title[marker_start + 4..marker_end].trim();
+			if inner.starts_with("omitted") && inner.contains("{{{") {
+				title[..marker_start].trim_end()
+			} else {
+				title
+			}
+		} else {
+			title
+		};
+
 		Ok(ParsedTitleLine {
 			title: title.to_string(),
 			identity_info,
@@ -1118,7 +1133,7 @@ impl Issue /*{{{1*/ {
 			// For closed children, we need to wrap the body in vim folds
 			// But still recurse for the full structure
 			if child.contents.state.is_closed() {
-				// Output child title line
+				// Output child title line with omitted marker before issue marker
 				let child_checked = child.contents.state.to_checkbox();
 				let child_issue_marker = IssueMarker::from(&child.identity);
 				let child_labels_part = if child.contents.labels.is_empty() {
@@ -1126,11 +1141,11 @@ impl Issue /*{{{1*/ {
 				} else {
 					format!("[{}] ", child.contents.labels.join(", "))
 				};
-				out.push_str(&format!("{content_indent}- [{child_checked}] {child_labels_part}{} {child_issue_marker}\n", child.contents.title));
-
-				// Vim fold start
-				let child_content_indent = "\t".repeat(depth + 2);
-				out.push_str(&format!("{child_content_indent}<!--omitted {{{{{{always-->\n"));
+				let omitted_start = Marker::OmittedStart.encode();
+				out.push_str(&format!(
+					"{content_indent}- [{child_checked}] {child_labels_part}{} {omitted_start} {child_issue_marker}\n",
+					child.contents.title
+				));
 
 				// Child body and nested content (without title line - we already output it)
 				let child_serialized = child.serialize_virtual_at_depth(depth + 1);
@@ -1140,7 +1155,8 @@ impl Issue /*{{{1*/ {
 				}
 
 				// Vim fold end
-				out.push_str(&format!("{child_content_indent}<!--,}}}}}}-->\n"));
+				let child_content_indent = "\t".repeat(depth + 2);
+				out.push_str(&format!("{child_content_indent}{}\n", Marker::OmittedEnd.encode()));
 			} else {
 				out.push_str(&child.serialize_virtual_at_depth(depth + 1));
 			}
@@ -1860,18 +1876,15 @@ mod tests {
 		let content = r#"- [ ] Parent issue <!-- @owner https://github.com/owner/repo/issues/1 -->
 	Body
 
-	- [x] Closed sub <!--sub @owner https://github.com/owner/repo/issues/2 -->
-		<!--omitted {{{always-->
+	- [x] Closed sub <!--omitted {{{always--> <!-- @owner https://github.com/owner/repo/issues/2 -->
 		closed body
 		<!--,}}}-->
 
-	- [-] Not planned sub <!--sub @owner https://github.com/owner/repo/issues/3 -->
-		<!--omitted {{{always-->
+	- [-] Not planned sub <!--omitted {{{always--> <!-- @owner https://github.com/owner/repo/issues/3 -->
 		not planned body
 		<!--,}}}-->
 
-	- [42] Duplicate sub <!--sub @owner https://github.com/owner/repo/issues/4 -->
-		<!--omitted {{{always-->
+	- [42] Duplicate sub <!--omitted {{{always--> <!-- @owner https://github.com/owner/repo/issues/4 -->
 		duplicate body
 		<!--,}}}-->
 "#;
@@ -1880,18 +1893,15 @@ mod tests {
 		- [ ] Parent issue <!-- @owner https://github.com/owner/repo/issues/1 -->
 			Body
 			
-			- [x] Closed sub <!-- @owner https://github.com/owner/repo/issues/2 -->
-				<!--omitted {{{always-->
+			- [x] Closed sub <!--omitted {{{always--> <!-- @owner https://github.com/owner/repo/issues/2 -->
 				closed body
 				<!--,}}}-->
 			
-			- [-] Not planned sub <!-- @owner https://github.com/owner/repo/issues/3 -->
-				<!--omitted {{{always-->
+			- [-] Not planned sub <!--omitted {{{always--> <!-- @owner https://github.com/owner/repo/issues/3 -->
 				not planned body
 				<!--,}}}-->
 			
-			- [42] Duplicate sub <!-- @owner https://github.com/owner/repo/issues/4 -->
-				<!--omitted {{{always-->
+			- [42] Duplicate sub <!--omitted {{{always--> <!-- @owner https://github.com/owner/repo/issues/4 -->
 				duplicate body
 				<!--,}}}-->
 		");
