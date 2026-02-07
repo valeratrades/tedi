@@ -18,6 +18,12 @@ todo milestones push "goal description"   # Add goal to current milestone
 todo clockify start                       # Start tracking current blocker
 todo clockify stop                        # Stop tracking
 
+# Editor shorthands (inside issue files)
+# !n  on title line end: mark issue as pending   (expands to <!-- pending -->)
+# !b  on its own line:   insert blockers section (expands to # Blockers)
+# !c  on its own line:   insert new comment      (expands to <!-- new comment -->)
+# !u  on last line:      undo — abort sync, treat as if no changes were made
+
 # Shell integration (add to your shell rc)
 eval "$(todo init zsh)"                   # Or: bash, fish
 ```

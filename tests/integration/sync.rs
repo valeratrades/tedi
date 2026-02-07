@@ -645,6 +645,34 @@ async fn test_force_merge_preserves_both_sub_issues(#[case] args: &[&str], #[cas
 	}
 }
 
+/// `!u` on the last line of the virtual file means "undo" - treat as if no changes were made.
+/// User makes edits but then changes their mind, appends `!u` to abort sync.
+/// The filesystem state should remain identical to the initial state.
+#[tokio::test]
+async fn test_undo_shorthand_aborts_sync() {
+	let ctx = TestContext::build("");
+
+	let vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tissue body\n");
+	let issue = ctx.consensus(&vi, None).await;
+	ctx.remote(&vi, None);
+
+	let (vpath, paused) = ctx.open_issue(&issue).args(&["--offline"]).break_to_edit();
+
+	// Simulate user making edits but then deciding to abort
+	let content = std::fs::read_to_string(&vpath).unwrap();
+	std::fs::write(&vpath, format!("{content}\tsome random edits\n\tanother line of changes\n!u\n")).unwrap();
+
+	let out = paused.resume();
+	assert!(out.status.success(), "Should succeed. stderr: {}", out.stderr);
+
+	// Issue file should remain unchanged from initial state
+	assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().skip_meta(), &out), @"
+	//- /o/r/1_-_Test_Issue.md
+	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+			issue body
+	");
+}
+
 /// Verify that .meta.json is written with timestamps when sinking to Consensus.
 /// This is critical for the merge algorithm to work - timestamps determine which side wins.
 #[tokio::test]

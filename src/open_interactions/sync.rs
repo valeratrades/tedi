@@ -326,6 +326,17 @@ mod types {
 					let file_modified = mtime_after != mtime_before;
 
 					let content = std::fs::read_to_string(&vpath)?;
+
+					// `!u` on the last line means "undo": treat as if no changes were made
+					let (content, file_modified) = {
+						let trimmed = content.trim_end();
+						let undo = trimmed.strip_suffix("!u").or_else(|| trimmed.strip_suffix("!U"));
+						match undo {
+							Some(before) if before.is_empty() || before.ends_with('\n') => (before.trim_end_matches('\n').to_string(), false),
+							_ => (content, file_modified),
+						}
+					};
+
 					tracing::Span::current().record("vpath", tracing::field::debug(&vpath));
 					tracing::Span::current().record("content", content.as_str());
 					let parent_idx = issue.identity.parent_index;
