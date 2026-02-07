@@ -1,6 +1,6 @@
 [package]
 name = "tedi"
-version = "0.14.1"
+version = "0.15.0"
 edition = "2024"
 authors = ["Valeriy Sakharov <valeratrades@gmail.com>"]
 description = "Personal productivity CLI for task tracking, time management, and GitHub issue integration"
