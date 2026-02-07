@@ -109,7 +109,7 @@ pub async fn check_for_existing_conflict(issue_index: IssueIndex) -> Result<Opti
 
 				let last_consensus_issue = Issue::load(LocalIssueSource::<GitReader>::build(LocalPath::from(issue_index))?).await?;
 
-				new_issue_but_old_local_timestamps.update_timestamps_from_diff(&last_consensus_issue);
+				new_issue_but_old_local_timestamps.post_update(&last_consensus_issue);
 				new_issue_but_old_local_timestamps
 			};
 

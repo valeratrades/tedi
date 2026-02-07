@@ -163,14 +163,14 @@ mod core {
 		let mut remote_merged = remote.clone();
 
 		if let Some(ref consensus) = consensus {
-			local_merged.merge(consensus.clone(), false)?;
+			local_merged.merge(&consensus, false)?;
 		}
-		local_merged.merge(remote.clone(), force_remote_wins)?;
+		local_merged.merge(&remote, force_remote_wins)?;
 
 		if let Some(consensus) = consensus {
-			remote_merged.merge(consensus, false)?;
+			remote_merged.merge(&consensus, false)?;
 		}
-		remote_merged.merge(local, force_local_wins)?;
+		remote_merged.merge(&local, force_local_wins)?;
 
 		// Compare results
 		match local_merged == remote_merged {
@@ -353,7 +353,7 @@ mod types {
 			};
 
 			if result.file_modified {
-				issue.update_timestamps_from_diff(&old_issue);
+				issue.post_update(&old_issue);
 			}
 
 			Ok(result)

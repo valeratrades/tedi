@@ -32,7 +32,7 @@ pub trait Merge {
 	/// When `force=false`, uses timestamp comparison to decide.
 	///
 	/// Returns error if either issue is virtual-only.
-	fn merge(&mut self, other: Issue, force: bool) -> Result<(), MergeError>;
+	fn merge(&mut self, other: &Issue, force: bool) -> Result<(), MergeError>;
 }
 /// Error from merge operations.
 #[derive(Debug, Error)]
@@ -43,7 +43,7 @@ pub enum MergeError {
 }
 
 impl Merge for Issue {
-	fn merge(&mut self, other: Issue, force: bool) -> Result<(), MergeError> {
+	fn merge(&mut self, other: &Issue, force: bool) -> Result<(), MergeError> {
 		// Virtual issues cannot participate in merge
 		if self.identity.is_virtual || other.identity.is_virtual {
 			return Err(MergeError::VirtualIssue);
@@ -114,33 +114,36 @@ impl Merge for Issue {
 		}
 
 		// Update timestamps on self to reflect the merge
-		if let Some(linked) = self.identity.mut_linked_issue_meta() {
-			if dominated_by(self_ts.title, other_ts.title) {
-				linked.timestamps.title = other_ts.title;
-			}
-			if dominated_by(self_ts.labels, other_ts.labels) {
-				linked.timestamps.labels = other_ts.labels;
-			}
-			if dominated_by(self_ts.description, other_ts.description) {
-				linked.timestamps.description = other_ts.description;
-			}
-			if dominated_by(self_ts.state, other_ts.state) {
-				linked.timestamps.state = other_ts.state;
-			}
-			if dominated_by(self_comments_ts, other_comments_ts) {
-				linked.timestamps.comments = other_ts.comments.clone();
-			}
-		}
+		//DEPRECATE: if `self.post_update` correctly takes care of this
+		//if let Some(linked) = self.identity.mut_linked_issue_meta() {
+		//	if dominated_by(self_ts.title, other_ts.title) {
+		//		linked.timestamps.title = other_ts.title;
+		//	}
+		//	if dominated_by(self_ts.labels, other_ts.labels) {
+		//		linked.timestamps.labels = other_ts.labels;
+		//	}
+		//	if dominated_by(self_ts.description, other_ts.description) {
+		//		linked.timestamps.description = other_ts.description;
+		//	}
+		//	if dominated_by(self_ts.state, other_ts.state) {
+		//		linked.timestamps.state = other_ts.state;
+		//	}
+		//	if dominated_by(self_comments_ts, other_comments_ts) {
+		//		linked.timestamps.comments = other_ts.comments.clone();
+		//	}
+		//}
 
 		// Merge children by selector
-		merge_children(&mut self.children, other.children, force)?;
+		merge_children(&mut self.children, &other.children, force)?;
+
+		self.post_update(&other);
 
 		Ok(())
 	}
 }
 
 /// Merge children maps by selector.
-fn merge_children(self_children: &mut HashMap<IssueSelector, Issue>, other_children: HashMap<IssueSelector, Issue>, force: bool) -> Result<(), MergeError> {
+fn merge_children(self_children: &mut HashMap<IssueSelector, Issue>, other_children: &HashMap<IssueSelector, Issue>, force: bool) -> Result<(), MergeError> {
 	// Merge existing children that match by selector
 	for (selector, other_child) in other_children {
 		if let Some(self_child) = self_children.get_mut(&selector) {
@@ -149,7 +152,7 @@ fn merge_children(self_children: &mut HashMap<IssueSelector, Issue>, other_child
 			// Add new children from other (ones that weren't in self)
 			// Only add if not virtual
 			if !other_child.identity.is_virtual {
-				self_children.insert(selector, other_child);
+				self_children.insert(*selector, other_child.clone());
 			}
 		}
 	}
@@ -221,7 +224,7 @@ mod tests {
 		};
 		let linked = make_linked_issue("test", 1, timestamps);
 
-		let result = virtual_issue.merge(linked, false);
+		let result = virtual_issue.merge(&linked, false);
 		assert!(matches!(result, Err(MergeError::VirtualIssue)));
 	}
 
@@ -248,7 +251,7 @@ mod tests {
 		let mut self_issue = make_linked_issue("old title", 1, old_timestamps);
 		let other_issue = make_linked_issue("new title", 1, new_timestamps);
 
-		self_issue.merge(other_issue, false).unwrap();
+		self_issue.merge(&other_issue, false).unwrap();
 
 		assert_eq!(self_issue.contents.title, "new title");
 	}
@@ -276,7 +279,7 @@ mod tests {
 		let mut self_issue = make_linked_issue("newer title", 1, new_timestamps);
 		let other_issue = make_linked_issue("older title", 1, old_timestamps);
 
-		self_issue.merge(other_issue, false).unwrap();
+		self_issue.merge(&other_issue, false).unwrap();
 
 		assert_eq!(self_issue.contents.title, "newer title");
 	}
@@ -297,7 +300,7 @@ mod tests {
 		let mut self_issue = make_linked_issue("self title", 1, none_timestamps);
 		let other_issue = make_linked_issue("other title", 1, some_timestamps);
 
-		self_issue.merge(other_issue, false).unwrap();
+		self_issue.merge(&other_issue, false).unwrap();
 
 		assert_eq!(self_issue.contents.title, "other title");
 	}
@@ -327,7 +330,7 @@ mod tests {
 		let other_issue = make_linked_issue("older title", 1, old_timestamps);
 
 		// With force=true, other should win even though it's older
-		self_issue.merge(other_issue, true).unwrap();
+		self_issue.merge(&other_issue, true).unwrap();
 
 		assert_eq!(self_issue.contents.title, "older title");
 	}
@@ -347,7 +350,7 @@ mod tests {
 		let linked = make_linked_issue("linked title", 1, timestamps);
 
 		// Pending has no timestamps (None), so linked should win
-		pending.merge(linked, false).unwrap();
+		pending.merge(&linked, false).unwrap();
 
 		assert_eq!(pending.contents.title, "linked title");
 	}
@@ -367,7 +370,7 @@ mod tests {
 		let mut self_issue = make_linked_issue("self title", 1, timestamps.clone());
 		let other_issue = make_linked_issue("other title", 1, timestamps);
 
-		self_issue.merge(other_issue, false).unwrap();
+		self_issue.merge(&other_issue, false).unwrap();
 
 		// Same timestamp -> keep self
 		assert_eq!(self_issue.contents.title, "self title");

@@ -2,7 +2,7 @@
 //!
 //! This module contains the pure Issue type with parsing and serialization.
 
-use std::{collections::HashMap, path::PathBuf, str::FromStr as _};
+use std::{collections::HashMap, path::PathBuf};
 
 use arrayvec::ArrayString;
 use copy_arrayvec::CopyArrayVec;
@@ -800,7 +800,7 @@ impl Issue /*{{{1*/ {
 	/// Update timestamps based on what changed compared to old issue.
 	/// This should be called after local modifications to track when fields changed.
 	/// Recursively updates children's timestamps too.
-	pub fn update_timestamps_from_diff(&mut self, old: &Issue) {
+	fn update_timestamps_from_diff(&mut self, old: &Issue) {
 		if let Some(linked) = self.identity.mut_linked_issue_meta() {
 			linked.timestamps.update_from_diff(&old.contents, &self.contents);
 		}
@@ -813,6 +813,25 @@ impl Issue /*{{{1*/ {
 			}
 			// New children (not in old) don't need timestamp updates - they'll use defaults
 		}
+	}
+
+	/// If this issue is closed, propagate its exact close state to all children recursively.
+	fn propagate_closed(&mut self) {
+		if !self.contents.state.is_closed() {
+			return;
+		}
+		let state = self.contents.state.clone();
+		for child in self.children.values_mut() {
+			child.contents.state = state.clone();
+			child.propagate_closed();
+		}
+	}
+
+	/// Post-update hook: call after any modification to an issue.
+	/// Updates timestamps from diff and propagates closed state to children.
+	pub fn post_update(&mut self, old: &Issue) {
+		self.update_timestamps_from_diff(old);
+		self.propagate_closed();
 	}
 
 	/// Get parent_index.
@@ -900,326 +919,6 @@ impl Issue /*{{{1*/ {
 		Ok(Issue {
 			identity,
 			contents: virtual_issue.contents,
-			children,
-		})
-	}
-
-	/// Parse virtual representation at given nesting depth.
-	/// `parent_index` is the parent's IssueIndex (for non-root), or None for root issues parsed from file.
-	//TODO!!: switch to use lines from inside ParseContext, and take mutable ref to it instead.
-	fn parse_virtual_at_depth(
-		lines: &mut std::iter::Peekable<std::str::Lines>,
-		depth: usize,
-		line_num: usize,
-		ctx: &ParseContext,
-		parent_idx: IssueIndex,
-		hollow: HollowIssue,
-	) -> Result<Self, ParseError> {
-		let indent = "\t".repeat(depth);
-		let child_indent = "\t".repeat(depth + 1);
-
-		// Parse title line: `- [ ] [label1, label2] Title <!--url-->` or `- [ ] Title <!--immutable url-->`
-		let first_line = lines.next().ok_or_else(ParseError::empty_file)?;
-		let title_content = first_line
-			.strip_prefix(&indent)
-			.ok_or_else(|| ParseError::bad_indentation(ctx.named_source(), ctx.line_span(line_num), depth))?;
-		let parsed = Self::parse_title_line(title_content, line_num, ctx)?;
-
-		let mut comments = Vec::new();
-		let mut children = HashMap::new();
-		let mut blocker_lines = Vec::new();
-		let mut current_comment_lines: Vec<String> = Vec::new();
-		let mut current_comment_meta: Option<CommentIdentity> = None;
-		let mut in_body = true;
-		let mut in_blockers = false;
-		let mut current_line = line_num;
-
-		// Body is first comment (no marker)
-		let mut body_lines: Vec<String> = Vec::new();
-
-		while let Some(&line) = lines.peek() {
-			// Check if this line belongs to us (has our indent level or deeper)
-			if !line.is_empty() && !line.starts_with(&indent) {
-				break; // Less indented = parent's content
-			}
-
-			let line = lines.next().unwrap();
-			current_line += 1;
-
-			// Empty line handling
-			if line.is_empty() {
-				if in_blockers {
-					// Empty lines in blockers are ignored by classify_line
-				} else if current_comment_meta.is_some() {
-					current_comment_lines.push(String::new());
-				} else if in_body {
-					body_lines.push(String::new());
-				}
-				continue;
-			}
-
-			// Strip our indent level to get content
-			let content = line.strip_prefix(&child_indent).unwrap_or(line);
-
-			// Check for blockers marker
-			if matches!(Marker::decode(content), Some(Marker::BlockersSection(_))) {
-				// Flush current comment/body
-				if in_body {
-					in_body = false;
-					if !body_lines.is_empty() {
-						let body_text = body_lines.join("\n").trim().to_string();
-						comments.push(Comment {
-							identity: CommentIdentity::Body,
-							body: super::Events::parse(&body_text),
-						});
-					}
-				} else if let Some(identity) = current_comment_meta.take() {
-					let body_text = current_comment_lines.join("\n").trim().to_string();
-					comments.push(Comment {
-						identity,
-						body: super::Events::parse(&body_text),
-					});
-					current_comment_lines.clear();
-				}
-				in_blockers = true;
-				tracing::debug!("[parse] entering blockers section");
-				continue;
-			}
-
-			// If in blockers section, parse as blocker lines
-			// But stop at sub-issue lines (they end the blockers section)
-			if in_blockers {
-				// Check if this is a sub-issue line - if so, exit blockers mode and process it below
-				if content.starts_with("- [") {
-					match Self::parse_child_title_line_detailed(content) {
-						ChildTitleParseResult::Ok => {
-							in_blockers = false;
-							tracing::debug!("[parse] exiting blockers section due to sub-issue: {content:?}");
-							// Fall through to sub-issue processing below
-						}
-						ChildTitleParseResult::InvalidCheckbox(invalid_content) => {
-							return Err(ParseError::invalid_checkbox(ctx.named_source(), ctx.line_span(current_line), invalid_content));
-						}
-						ChildTitleParseResult::NotChildTitle => {
-							// Not a sub-issue, continue parsing as blocker
-							if let Some(line) = classify_line(content) {
-								tracing::debug!("[parse] blocker line: {content:?} -> {line:?}");
-								blocker_lines.push(line);
-							} else {
-								tracing::debug!("[parse] blocker line SKIPPED (classify_line returned None): {content:?}");
-							}
-							continue;
-						}
-					}
-				} else {
-					if let Some(line) = classify_line(content) {
-						tracing::debug!("[parse] blocker line: {content:?} -> {line:?}");
-						blocker_lines.push(line);
-					} else {
-						tracing::debug!("[parse] blocker line SKIPPED (classify_line returned None): {content:?}");
-					}
-					continue;
-				}
-			}
-
-			// Check for comment marker (including !c shorthand)
-			let is_new_comment_shorthand = content.trim().eq_ignore_ascii_case("!c");
-			if is_new_comment_shorthand || (content.starts_with("<!--") && content.contains("-->")) {
-				let inner = content.strip_prefix("<!--").and_then(|s| s.split("-->").next()).unwrap_or("").trim();
-
-				// vim fold markers are just visual wrappers, not comment separators - skip without flushing
-				if inner.starts_with("omitted") && inner.contains("{{{") {
-					continue;
-				}
-				if inner.starts_with(",}}}") {
-					continue;
-				}
-
-				// Flush previous (only for actual comment markers, not fold markers)
-				if in_body {
-					in_body = false;
-					let body_text = body_lines.join("\n").trim().to_string();
-					comments.push(Comment {
-						identity: CommentIdentity::Body,
-						body: super::Events::parse(&body_text),
-					});
-				} else if let Some(identity) = current_comment_meta.take() {
-					let body_text = current_comment_lines.join("\n").trim().to_string();
-					comments.push(Comment {
-						identity,
-						body: super::Events::parse(&body_text),
-					});
-					current_comment_lines.clear();
-				}
-
-				// Handle !c shorthand
-				if is_new_comment_shorthand {
-					current_comment_meta = Some(CommentIdentity::Pending);
-					continue;
-				}
-
-				if inner == "new comment" {
-					current_comment_meta = Some(CommentIdentity::Pending);
-				} else if inner.contains("#issuecomment-") {
-					let identity = Self::parse_comment_identity(inner);
-					current_comment_meta = Some(identity);
-				}
-				continue;
-			}
-
-			// Check for sub-issue line: `- [x] Title <!--sub url-->` or `- [ ] Title` (new)
-			if content.starts_with("- [") {
-				let is_child_title = match Self::parse_child_title_line_detailed(content) {
-					ChildTitleParseResult::Ok => true,
-					ChildTitleParseResult::InvalidCheckbox(invalid_content) => {
-						return Err(ParseError::invalid_checkbox(ctx.named_source(), ctx.line_span(current_line), invalid_content));
-					}
-					ChildTitleParseResult::NotChildTitle => false,
-				};
-
-				if !is_child_title {
-					// Not a sub-issue line, treat as regular content
-					let content_line = content.strip_prefix('\t').unwrap_or(content);
-					if in_body {
-						body_lines.push(content_line.to_string());
-					} else if current_comment_meta.is_some() {
-						current_comment_lines.push(content_line.to_string());
-					}
-					continue;
-				}
-
-				// Flush current
-				if in_body {
-					in_body = false;
-					let body_text = body_lines.join("\n").trim().to_string();
-					comments.push(Comment {
-						identity: CommentIdentity::Body,
-						body: super::Events::parse(&body_text),
-					});
-				} else if let Some(identity) = current_comment_meta.take() {
-					let body_text = current_comment_lines.join("\n").trim().to_string();
-					comments.push(Comment {
-						identity,
-						body: super::Events::parse(&body_text),
-					});
-					current_comment_lines.clear();
-				}
-
-				// Collect all lines belonging to this child (at depth+1 and deeper)
-				let child_content_indent = "\t".repeat(depth + 2);
-				let mut child_lines: Vec<String> = vec![content.to_string()]; // Start with the title line (without parent indent)
-
-				while let Some(&next_line) = lines.peek() {
-					if next_line.is_empty() {
-						// Preserve empty lines
-						let _ = lines.next();
-						child_lines.push(String::new());
-					} else if next_line.starts_with(&child_content_indent) {
-						let _ = lines.next();
-						// Strip one level of indent (the child's content indent) to normalize for recursive parsing
-						let stripped = next_line.strip_prefix(&child_indent).unwrap_or(next_line);
-						child_lines.push(stripped.to_string());
-					} else {
-						// Not a child content line - break
-						break;
-					}
-				}
-
-				// Trim trailing empty lines
-				while child_lines.last().is_some_and(|l| l.is_empty()) {
-					child_lines.pop();
-				}
-
-				// Parse the child's selector from its title line to look up in hollow.children
-				let child_parsed = Self::parse_title_line(&child_lines[0], current_line, ctx)?;
-				let child_selector = match &child_parsed.identity_info {
-					IssueMarker::Linked { link, .. } => IssueSelector::GitId(link.number()),
-					IssueMarker::Pending | IssueMarker::Virtual => IssueSelector::title(&child_parsed.title),
-				};
-
-				// Look up child in hollow.children
-				// Only error on missing git-linked child if hollow.children is non-empty (we had prior state)
-				let child_hollow = match hollow.children.get(&child_selector) {
-					Some(ch) => ch.clone(),
-					None => {
-						// Not found - if hollow.children is non-empty and this was git-linked, that's suspicious
-						if !hollow.children.is_empty()
-							&& let IssueMarker::Linked { link, .. } = &child_parsed.identity_info
-						{
-							return Err(ParseError::child_not_in_hollow(ctx.named_source(), ctx.line_span(current_line), link.number()));
-						}
-						// Fresh parse or new child - use default hollow
-						HollowIssue::default()
-					}
-				};
-
-				// Build child's parent_index from this issue's identity
-				let child_parent_idx = if let Some(meta) = &hollow.remote {
-					parent_idx.child(IssueSelector::GitId(meta.link.number()))
-				} else {
-					parent_idx
-				};
-				let child_content = child_lines.join("\n");
-				let mut child_lines_iter = child_content.lines().peekable();
-				let child = Self::parse_virtual_at_depth(&mut child_lines_iter, 0, current_line, ctx, child_parent_idx, child_hollow)?;
-				children.insert(child.selector(), child);
-				continue;
-			}
-
-			// Regular content line (doesn't start with "- [")
-			let content_line = content.strip_prefix('\t').unwrap_or(content); // Extra indent for immutable
-			if in_body {
-				body_lines.push(content_line.to_string());
-			} else if current_comment_meta.is_some() {
-				current_comment_lines.push(content_line.to_string());
-			}
-		}
-
-		// Flush final
-		if in_body {
-			let body_text = body_lines.join("\n").trim().to_string();
-			comments.push(Comment {
-				identity: CommentIdentity::Body,
-				body: super::Events::parse(&body_text),
-			});
-		} else if let Some(identity) = current_comment_meta.take() {
-			let body_text = current_comment_lines.join("\n").trim().to_string();
-			comments.push(Comment {
-				identity,
-				body: super::Events::parse(&body_text),
-			});
-		}
-
-		// Build identity from hollow.remote if it has meaningful data, otherwise derive from marker
-		let is_virtual = matches!(parsed.identity_info, IssueMarker::Virtual);
-		let remote = if hollow.remote.is_some() {
-			hollow.remote
-		} else {
-			// Fresh parse - derive from marker
-			match parsed.identity_info {
-				IssueMarker::Linked { user, link } => Some(Box::new(LinkedIssueMeta {
-					user,
-					link,
-					timestamps: IssueTimestamps::default(),
-				})),
-				IssueMarker::Pending | IssueMarker::Virtual => None,
-			}
-		};
-		let identity = IssueIdentity {
-			parent_index: parent_idx,
-			is_virtual,
-			remote,
-		};
-
-		Ok(Issue {
-			identity,
-			contents: IssueContents {
-				title: parsed.title,
-				labels: parsed.labels,
-				state: parsed.close_state,
-				comments,
-				blockers: BlockerSequence::from_lines(blocker_lines),
-			},
 			children,
 		})
 	}
@@ -2013,10 +1712,24 @@ impl_issue_tree_index!(VirtualIssue);
 mod tests {
 	use super::*;
 
-	fn unsafe_mock_parse_virtual(content: &str) -> Result<Issue, ParseError> {
-		let ctx = ParseContext::new(content.to_string(), PathBuf::from_str("// file doesn't actually exist; caller mocked path to it").unwrap());
-		let mut lines = content.lines().peekable();
-		Issue::parse_virtual_at_depth(&mut lines, 0, 1, &ctx, IssueIndex::repo_only(("owner", "repo").into()), HollowIssue::default())
+	fn unsafe_mock_parse_virtual(content: &str) -> Issue {
+		let virtual_issue = VirtualIssue::parse(content, PathBuf::from("test.md")).unwrap();
+		let hollow = hollow_from_virtual(&virtual_issue);
+		let parent_idx = IssueIndex::repo_only(("owner", "repo").into());
+		Issue::from_combined(hollow, virtual_issue, parent_idx, false).unwrap()
+	}
+
+	/// needed to not fall for checks for existence of GitId-linked issue on the base structure (useful in the real world; but our tests here really only care about parsing itself.
+	fn hollow_from_virtual(v: &VirtualIssue) -> HollowIssue {
+		let remote = match &v.selector {
+			IssueSelector::GitId(n) => {
+				let link = IssueLink::parse(&format!("https://github.com/owner/repo/issues/{n}")).unwrap();
+				Some(Box::new(LinkedIssueMeta::new("owner".to_string(), link, IssueTimestamps::default())))
+			}
+			IssueSelector::Title(_) | IssueSelector::Regex(_) => None,
+		};
+		let children = v.children.iter().map(|(sel, child)| (*sel, hollow_from_virtual(child))).collect();
+		HollowIssue::new(remote, children)
 	}
 
 	#[test]
@@ -2162,7 +1875,7 @@ mod tests {
 		duplicate body
 		<!--,}}}-->
 "#;
-		let issue = unsafe_mock_parse_virtual(content).unwrap();
+		let issue = unsafe_mock_parse_virtual(content);
 		insta::assert_snapshot!(issue.serialize_virtual(), @"
 		- [ ] Parent issue <!-- @owner https://github.com/owner/repo/issues/1 -->
 			Body
@@ -2187,14 +1900,14 @@ mod tests {
 	#[test]
 	fn test_find_last_blocker_position_empty() {
 		let content = "- [ ] Issue <!-- @owner https://github.com/owner/repo/issues/1 -->\n\tBody\n";
-		let issue = unsafe_mock_parse_virtual(content).unwrap();
+		let issue = unsafe_mock_parse_virtual(content);
 		assert!(issue.find_last_blocker_position().is_none());
 	}
 
 	#[test]
 	fn test_find_last_blocker_position_single_item() {
 		let content = "- [ ] Issue <!-- @owner https://github.com/owner/repo/issues/1 -->\n\tBody\n\n\t# Blockers\n\t- task 1\n";
-		let issue = unsafe_mock_parse_virtual(content).unwrap();
+		let issue = unsafe_mock_parse_virtual(content);
 		let pos = issue.find_last_blocker_position();
 		assert!(pos.is_some());
 		let (line, col) = pos.unwrap();
@@ -2206,7 +1919,7 @@ mod tests {
 	#[test]
 	fn test_find_last_blocker_position_multiple_items() {
 		let content = "- [ ] Issue <!-- @owner https://github.com/owner/repo/issues/1 -->\n\tBody\n\n\t# Blockers\n\t- task 1\n\t- task 2\n\t- task 3\n";
-		let issue = unsafe_mock_parse_virtual(content).unwrap();
+		let issue = unsafe_mock_parse_virtual(content);
 		let pos = issue.find_last_blocker_position();
 		assert!(pos.is_some());
 		let (line, col) = pos.unwrap();
@@ -2217,7 +1930,7 @@ mod tests {
 	#[test]
 	fn test_find_last_blocker_position_with_headers() {
 		let content = "- [ ] Issue <!-- @owner https://github.com/owner/repo/issues/1 -->\n\tBody\n\n\t# Blockers\n\t# Phase 1\n\t- task a\n\t# Phase 2\n\t- task b\n";
-		let issue = unsafe_mock_parse_virtual(content).unwrap();
+		let issue = unsafe_mock_parse_virtual(content);
 		let pos = issue.find_last_blocker_position();
 		assert!(pos.is_some());
 		let (line, col) = pos.unwrap();
@@ -2228,7 +1941,7 @@ mod tests {
 	#[test]
 	fn test_find_last_blocker_position_before_sub_issues() {
 		let content = "- [ ] Issue <!-- @owner https://github.com/owner/repo/issues/1 -->\n\tBody\n\n\t# Blockers\n\t- blocker task\n\n\t- [ ] Sub issue <!--sub @owner https://github.com/owner/repo/issues/2 -->\n";
-		let issue = unsafe_mock_parse_virtual(content).unwrap();
+		let issue = unsafe_mock_parse_virtual(content);
 		let pos = issue.find_last_blocker_position();
 		assert!(pos.is_some());
 		let (line, col) = pos.unwrap();
@@ -2248,7 +1961,7 @@ mod tests {
 	- [ ] Child 2 <!--sub @owner https://github.com/owner/repo/issues/3 -->
 		Child 2 body
 "#;
-		let issue = unsafe_mock_parse_virtual(content).unwrap();
+		let issue = unsafe_mock_parse_virtual(content);
 		assert_eq!(issue.children.len(), 2);
 
 		// Filesystem serialization should NOT include children
@@ -2266,7 +1979,7 @@ mod tests {
 	- [ ] Child 1 <!--sub @owner https://github.com/owner/repo/issues/2 -->
 		Child 1 body
 "#;
-		let issue = unsafe_mock_parse_virtual(content).unwrap();
+		let issue = unsafe_mock_parse_virtual(content);
 
 		// Virtual serialization should include children
 		let virtual_serialized = issue.serialize_virtual();
@@ -2299,11 +2012,11 @@ mod tests {
 	- [ ] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
-		let issue = unsafe_mock_parse_virtual(content).unwrap();
+		let issue = unsafe_mock_parse_virtual(content);
 
 		// Serialize to virtual, then deserialize back
 		let serialized = issue.serialize_virtual();
-		let reparsed = unsafe_mock_parse_virtual(&serialized).unwrap();
+		let reparsed = unsafe_mock_parse_virtual(&serialized);
 
 		assert_eq!(issue.contents.title, reparsed.contents.title);
 		assert_eq!(issue.children.len(), reparsed.children.len());
@@ -2318,7 +2031,7 @@ mod tests {
 	- task 1
 	- task 2
 "#;
-		let issue = unsafe_mock_parse_virtual(content).unwrap();
+		let issue = unsafe_mock_parse_virtual(content);
 
 		// GitHub serialization is just the body (with blockers)
 		let github = issue.serialize_github();
