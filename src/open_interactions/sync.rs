@@ -163,7 +163,7 @@ mod core {
 		let mut remote_merged = remote.clone();
 
 		if let Some(ref consensus) = consensus {
-			local_merged.merge(&consensus, false)?;
+			local_merged.merge(consensus, false)?;
 		}
 		local_merged.merge(&remote, force_remote_wins)?;
 
@@ -217,7 +217,7 @@ mod core {
 
 		let url = format!("https://github.com/{}/{}/issues/{issue_number}", repo_info.owner(), repo_info.repo());
 		let link = IssueLink::parse(&url).expect("valid URL");
-		let remote_source = RemoteSource::build_with_lineage(link, &current_issue.identity.git_lineage()?)?; //DEPENDS: git_lineage() will error if any parent is not synced. //Q: should I move the logic for traversing IssueIndex in search of pending parents right here?
+		let remote_source = RemoteSource::build(link, Some(&current_issue.identity.git_lineage()?))?; //DEPENDS: git_lineage() will error if any parent is not synced. //Q: should I move the logic for traversing IssueIndex in search of pending parents right here?
 		let remote = Issue::load(remote_source).await?;
 
 		let (resolved, changed) = core::resolve_merge(current_issue.clone(), consensus, remote, mode, repo_info, issue_number).await?;

@@ -136,7 +136,7 @@ impl Merge for Issue {
 		// Merge children by selector
 		merge_children(&mut self.children, &other.children, force)?;
 
-		self.post_update(&other);
+		self.post_update(other);
 
 		Ok(())
 	}
@@ -146,7 +146,7 @@ impl Merge for Issue {
 fn merge_children(self_children: &mut HashMap<IssueSelector, Issue>, other_children: &HashMap<IssueSelector, Issue>, force: bool) -> Result<(), MergeError> {
 	// Merge existing children that match by selector
 	for (selector, other_child) in other_children {
-		if let Some(self_child) = self_children.get_mut(&selector) {
+		if let Some(self_child) = self_children.get_mut(selector) {
 			self_child.merge(other_child, force)?;
 		} else {
 			// Add new children from other (ones that weren't in self)

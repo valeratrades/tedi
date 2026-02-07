@@ -229,7 +229,7 @@ pub async fn open_command(settings: &LiveSettings, args: OpenArgs, offline: bool
 			// Load from GitHub (lineage=None means it will be fetched if needed)
 			let url = format!("https://github.com/{owner}/{repo}/issues/{issue_number}");
 			let link = IssueLink::parse(&url).expect("valid URL");
-			let source = RemoteSource::build(link)?;
+			let source = RemoteSource::build(link, None)?;
 			let mut issue = Issue::load(source).await?;
 
 			// Write to local filesystem

@@ -118,7 +118,7 @@ async fn test_only_local_changed_pushes_local() {
 	assert!(out.status.success(), "Should succeed when only local changed. stderr: {}", out.stderr);
 
 	// Capture the resulting directory state
-	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap(), &out), @r#"
+	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().redact_timestamps(&[10]), &out), @r#"
 	//- /o/r/.meta.json
 	{
 	  "virtual_project": false,
@@ -128,11 +128,10 @@ async fn test_only_local_changed_pushes_local() {
 	      "user": "mock_user",
 	      "timestamps": {
 	        "title": "2001-09-12T11:20:39Z",
-	        "description": "2001-09-12T10:04:12Z",
+	        [REDACTED - non-deterministic timestamp]
 	        "labels": "2001-09-12T01:55:52Z",
 	        "state": "2001-09-12T00:39:25Z",
-	        "comments": [
-					]
+	        "comments": []
 	      }
 	    }
 	  }
@@ -296,24 +295,31 @@ async fn test_pull_with_divergence_runs_sync_before_editor() {
 	let remote_vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tremote diverged body\n");
 
 	// Both local and remote changed since consensus
-	// Seeds: consensus=-80, local=50, remote=55
-	ctx.consensus(&consensus_vi, Some(Seed::new(-80))).await;
-	let local = ctx.local(&local_vi, Some(Seed::new(50))).await;
-	ctx.remote(&remote_vi, Some(Seed::new(55)));
+	ctx.consensus(&consensus_vi, Some(Seed::new(-100))).await;
+	let local = ctx.local(&local_vi, Some(Seed::new(100))).await;
+	ctx.remote(&remote_vi, Some(Seed::new(100)));
 
 	// --pull should attempt to sync/merge BEFORE editor opens
 	let out = ctx.open_issue(&local).args(&["--pull"]).run();
 
-	// Should either succeed (auto-resolved) or fail with conflict
-	// But importantly, it should attempt sync BEFORE editor
+	// Ensure we detect the conflict even before the editor is opened for the user
 	assert!(
 		out.stderr.contains("pre-open sync"), //Q: don't like reliance on impl-specific details
 		"Should attempt sync/merge with --pull before editor; stderr:\n{}",
 		out.stderr
 	);
 
-	// ensure we actualaly manage to auto-merge
-	assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap(), &out), r"", @r#"
+	// Ensure conflict is opened
+	assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap(), &out), @r#"
+	//- /o/__conflict.md
+	<<<<<<< HEAD
+	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+			local diverged body
+	||||||| [hash]
+	=======
+	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+			remote diverged body
+	>>>>>>> remote-state
 	//- /o/r/.meta.json
 	{
 	  "virtual_project": false,
@@ -322,10 +328,10 @@ async fn test_pull_with_divergence_runs_sync_before_editor() {
 	    "1": {
 	      "user": "mock_user",
 	      "timestamps": {
-	        "title": "2001-09-12T05:40:40Z",
-	        "description": "2001-09-12T05:40:20Z",
-	        "labels": "2001-09-11T12:57:56Z",
-	        "state": "2001-09-11T11:41:29Z",
+	        "title": "2001-09-12T11:20:39Z",
+	        "description": "2001-09-12T10:04:12Z",
+	        "labels": "2001-09-12T01:55:52Z",
+	        "state": "2001-09-12T00:39:25Z",
 	        "comments": []
 	      }
 	    }

@@ -70,6 +70,7 @@ pub enum RemoteError {
 	#[error("`{executable}` not found in PATH (required for {operation})")]
 	MissingExecutable { executable: &'static str, operation: &'static str },
 }
+use copy_arrayvec::CopyArrayVec;
 use v_utils::prelude::*;
 
 use crate::{
@@ -90,58 +91,32 @@ pub enum Remote {}
 #[derive(Clone, Debug)]
 pub struct RemoteSource {
 	pub link: IssueLink,
-	lineage: Option<[u64; MAX_LINEAGE_DEPTH]>,
-	lineage_len: u8,
+	lineage: Option<CopyArrayVec<u64, MAX_LINEAGE_DEPTH>>,
 }
 
 impl RemoteSource {
-	fn new(link: IssueLink) -> Self {
-		Self {
-			link,
-			lineage: None,
-			lineage_len: 0,
-		}
-	}
-
-	fn new_with_lineage(link: IssueLink, lineage: &[u64]) -> Self {
-		assert!(lineage.len() <= MAX_LINEAGE_DEPTH);
-		let mut arr = [0u64; MAX_LINEAGE_DEPTH];
-		arr[..lineage.len()].copy_from_slice(lineage);
-		Self {
-			link,
-			lineage: Some(arr),
-			lineage_len: lineage.len() as u8,
-		}
-	}
-
-	/// Build source from a link. Lineage will be fetched from GitHub if needed.
+	/// Build source for loading an issue from GitHub.
+	///
+	/// `lineage`: parent issue numbers from root to immediate parent.
+	/// `None` means lineage is unknown and will be fetched from GitHub on demand;
+	/// `Some(&[])` means the issue is known to be at root level.
 	///
 	/// Checks that `gh` executable is available.
-	pub fn build(link: IssueLink) -> Result<Self, RemoteError> {
+	pub fn build(link: IssueLink, lineage: Option<&[u64]>) -> Result<Self, RemoteError> {
 		if std::process::Command::new("gh").arg("--version").output().is_err() {
 			return Err(RemoteError::MissingExecutable {
 				executable: "gh",
 				operation: "GitHub operations",
 			});
 		}
-		Ok(Self::new(link))
-	}
-
-	/// Build source with known lineage (for sub-issues during recursive fetch).
-	///
-	/// Checks that `gh` executable is available.
-	pub fn build_with_lineage(link: IssueLink, lineage: &[u64]) -> Result<Self, RemoteError> {
-		if std::process::Command::new("gh").arg("--version").output().is_err() {
-			return Err(RemoteError::MissingExecutable {
-				executable: "gh",
-				operation: "GitHub operations",
-			});
-		}
-		Ok(Self::new_with_lineage(link, lineage))
+		Ok(Self {
+			link,
+			lineage: lineage.map(|l| l.iter().copied().collect()),
+		})
 	}
 
 	fn lineage_slice(&self) -> Option<&[u64]> {
-		self.lineage.as_ref().map(|arr| &arr[..self.lineage_len as usize])
+		self.lineage.as_ref().map(|v| v.as_slice())
 	}
 
 	/// Resolve parent_index, fetching lineage from GitHub if not provided.
@@ -185,16 +160,11 @@ impl RemoteSource {
 
 	/// Create a child source for a sub-issue.
 	fn child(&self, child_link: IssueLink, parent_number: u64) -> Self {
-		let parent_lineage = self.lineage_slice().unwrap_or(&[]);
-		let mut new_lineage = [0u64; MAX_LINEAGE_DEPTH];
-		let new_len = parent_lineage.len() + 1;
-		assert!(new_len <= MAX_LINEAGE_DEPTH);
-		new_lineage[..parent_lineage.len()].copy_from_slice(parent_lineage);
-		new_lineage[parent_lineage.len()] = parent_number;
+		let mut new_lineage: CopyArrayVec<u64, MAX_LINEAGE_DEPTH> = self.lineage_slice().unwrap_or(&[]).iter().copied().collect();
+		new_lineage.push(parent_number);
 		Self {
 			link: child_link,
 			lineage: Some(new_lineage),
-			lineage_len: new_len as u8,
 		}
 	}
 }
