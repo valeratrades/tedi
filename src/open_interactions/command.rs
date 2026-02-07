@@ -195,9 +195,11 @@ pub async fn open_command(settings: &LiveSettings, args: OpenArgs, offline: bool
 
 	// Resolve issue and sync options based on mode
 	let (issue, sync_opts, effective_offline) = if args.last {
-		// Handle --last mode: open the most recently modified issue file
-		let path = Local::most_recent_issue_file()?.ok_or_else(|| eyre!("No issue files found. Use a Github URL to fetch an issue first."))?;
-		let source = LocalIssueSource::<FsReader>::build_from_path(&path).await?;
+		// Handle --last mode: open the last modified issue (recorded in cache)
+		let cache_path = v_utils::xdg_cache_file!("last_modified_issue");
+		let index_str = std::fs::read_to_string(&cache_path).map_err(|_| eyre!("No last modified issue recorded. Open an issue first."))?;
+		let index: IssueIndex = index_str.parse()?;
+		let source = LocalIssueSource::<FsReader>::build(LocalPath::new(index)).await?;
 		let issue = Issue::load(source).await?;
 		(issue, local_sync_opts(), offline)
 	} else if github::is_github_issue_url(input) {

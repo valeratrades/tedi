@@ -290,42 +290,6 @@ impl Local {
 		None
 	}
 
-	/// Get the most recently modified issue file.
-	pub fn most_recent_issue_file() -> Result<Option<PathBuf>> {
-		fn collect_issue_files(dir: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<()> {
-			for entry in std::fs::read_dir(dir)? {
-				let entry = entry?;
-				let path = entry.path();
-				if path.is_dir() {
-					collect_issue_files(&path, files)?;
-				} else if path.is_file()
-					&& let Some(name) = path.file_name().and_then(|n| n.to_str())
-					&& (name.ends_with(".md") || name.ends_with(".md.bak"))
-				{
-					files.push(path);
-				}
-			}
-			Ok(())
-		}
-
-		let issues_base = Self::issues_dir();
-		if !issues_base.exists() {
-			return Ok(None);
-		}
-
-		let mut files = Vec::new();
-		collect_issue_files(&issues_base, &mut files)?;
-
-		// Sort by modification time (most recent first) and return the first
-		files.sort_by(|a, b| {
-			let a_time = std::fs::metadata(a).and_then(|m| m.modified()).ok();
-			let b_time = std::fs::metadata(b).and_then(|m| m.modified()).ok();
-			b_time.cmp(&a_time)
-		});
-
-		Ok(files.into_iter().next())
-	}
-
 	/// Parse an IssueSelector from a filename or directory name.
 	/// Format: `{number}_-_{title}[.md[.bak]]` or just `{title}[.md[.bak]]` for pending issues.
 	///

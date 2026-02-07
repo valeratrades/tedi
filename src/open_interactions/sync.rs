@@ -69,6 +69,9 @@ pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Mo
 			v_utils::log!("Aborted (no changes made)");
 			return Ok(result);
 		}
+		// Record this issue as the last modified
+		let cache_path = v_utils::xdg_cache_file!("last_modified_issue");
+		std::fs::write(&cache_path, issue.full_index().to_string()).ok();
 		result
 	};
 

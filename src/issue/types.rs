@@ -674,6 +674,26 @@ impl std::fmt::Display for IssueIndex {
 	}
 }
 
+impl std::str::FromStr for IssueIndex {
+	type Err = color_eyre::eyre::Report;
+
+	fn from_str(s: &str) -> Result<Self, Self::Err> {
+		let parts: Vec<&str> = s.split('/').collect();
+		if parts.len() < 2 {
+			color_eyre::eyre::bail!("IssueIndex requires at least owner/repo, got: {s}");
+		}
+		let repo_info = RepoInfo::new(parts[0], parts[1]);
+		let selectors: Vec<IssueSelector> = parts[2..]
+			.iter()
+			.map(|p| match p.parse::<u64>() {
+				Ok(n) => IssueSelector::GitId(n),
+				Err(_) => IssueSelector::title(p),
+			})
+			.collect();
+		Ok(Self::with_index(repo_info, selectors))
+	}
+}
+
 impl From<&Issue> for IssueIndex {
 	fn from(issue: &Issue) -> Self {
 		// Build this issue's IssueIndex by extending parent_index with this issue's selector
