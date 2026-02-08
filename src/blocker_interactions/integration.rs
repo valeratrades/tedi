@@ -11,30 +11,44 @@ use std::path::{Path, PathBuf};
 
 use color_eyre::eyre::{Result, bail, eyre};
 use tedi::{
-	DisplayFormat, Issue, LazyIssue, Marker, VirtualIssue,
+	DisplayFormat, Issue, LazyIssue, Marker, RepoInfo, VirtualIssue,
 	local::{ExactMatchLevel, FsReader, Local, LocalIssueSource},
 };
 
 use super::{BlockerSequence, operations::BlockerSequenceExt, source::BlockerSource};
 
 /// Issue-based blocker source for blockers embedded in issue files.
-pub struct IssueSource {
+pub struct BlockerIssueSource {
 	pub virtual_issue_buffer_path: PathBuf,
-	/// Cached parsed issue (needed for save to preserve structure)
-	pub cached_issue: std::cell::RefCell<Option<VirtualIssue>>,
+	pub repo_info: RepoInfo,
+	pub issue: VirtualIssue,
 }
-impl IssueSource {
-	pub fn new(issue_path: PathBuf) -> Self {
-		Self {
+impl BlockerIssueSource {
+	pub fn build(issue_path: PathBuf) -> Result<Self> {
+		let content = std::fs::read_to_string(&issue_path)?;
+		let issue = VirtualIssue::parse(&content, issue_path.clone())?;
+
+		let rel_path = issue_path
+			.strip_prefix(Local::issues_dir())
+			.map_err(|_| eyre!("Issue file is not in issues directory: {issue_path:?}"))?;
+		let components: Vec<_> = rel_path.components().collect();
+		assert!(components.len() >= 3, "Path too short to extract repo info: {issue_path:?}");
+		let owner = components[0].as_os_str().to_str().expect("non-utf8 owner in issue path");
+		let repo = components[1].as_os_str().to_str().expect("non-utf8 repo in issue path");
+		let repo_info = RepoInfo::new(owner, repo);
+
+		Ok(Self {
 			virtual_issue_buffer_path: issue_path,
-			cached_issue: std::cell::RefCell::new(None),
-		}
+			repo_info,
+			issue,
+		})
 	}
 
 	/// Get the currently selected blocker issue source
 	pub fn current() -> Option<Self> {
 		let cache_path = get_current_blocker_cache_path();
-		std::fs::read_to_string(&cache_path).ok().map(|s| PathBuf::from(s.trim())).filter(|p| p.exists()).map(Self::new)
+		let path = std::fs::read_to_string(&cache_path).ok().map(|s| PathBuf::from(s.trim())).filter(|p| p.exists())?;
+		Some(Self::build(path).expect("failed to build BlockerIssueSource from cached path"))
 	}
 
 	/// Set this issue as the current blocker issue
@@ -131,7 +145,7 @@ pub async fn main_integrated(command: super::io::Command, format: DisplayFormat,
 			}
 
 			let issue_path = resolve_issue_file(&pattern)?;
-			let source = IssueSource::new(issue_path);
+			let source = BlockerIssueSource::build(issue_path)?;
 			source.set_current()?;
 			println!("Set blockers to: {}", source.display_name());
 
@@ -165,9 +179,9 @@ pub async fn main_integrated(command: super::io::Command, format: DisplayFormat,
 				update_tracking_after_change().await;
 			} else {
 				let issue_source = if let Some(pat) = pattern {
-					IssueSource::new(resolve_issue_file(&pat)?)
+					BlockerIssueSource::build(resolve_issue_file(&pat)?)?
 				} else {
-					IssueSource::current().ok_or_else(|| eyre!("No issue set. Use `todo blocker set <pattern>` first."))?
+					BlockerIssueSource::current().ok_or_else(|| eyre!("No issue set. Use `todo blocker set <pattern>` first."))?
 				};
 
 				// Use unified modify flow
@@ -197,7 +211,7 @@ pub async fn main_integrated(command: super::io::Command, format: DisplayFormat,
 				}
 			}
 
-			let source = IssueSource::current().ok_or_else(|| eyre!("No blocker file set. Use `todo blocker set <pattern>` first."))?;
+			let source = BlockerIssueSource::current().ok_or_else(|| eyre!("No blocker file set. Use `todo blocker set <pattern>` first."))?;
 			let blockers = source.load()?;
 
 			if blockers.is_empty() {
@@ -229,7 +243,7 @@ pub async fn main_integrated(command: super::io::Command, format: DisplayFormat,
 				}
 			}
 
-			let source = IssueSource::current().ok_or_else(|| eyre!("No blocker file set. Use `todo blocker set <pattern>` first."))?;
+			let source = BlockerIssueSource::current().ok_or_else(|| eyre!("No blocker file set. Use `todo blocker set <pattern>` first."))?;
 			let blockers = source.load()?;
 
 			if !blockers.is_empty() {
@@ -273,7 +287,7 @@ pub async fn main_integrated(command: super::io::Command, format: DisplayFormat,
 				}
 			}
 
-			let issue_source = IssueSource::current().ok_or_else(|| eyre!("No blocker file set. Use `todo blocker set <pattern>` first."))?;
+			let issue_source = BlockerIssueSource::current().ok_or_else(|| eyre!("No blocker file set. Use `todo blocker set <pattern>` first."))?;
 
 			// Check if blockers section exists before attempting pop
 			let blockers = issue_source.load()?;
@@ -320,7 +334,7 @@ pub async fn main_integrated(command: super::io::Command, format: DisplayFormat,
 					println!("Current (urgent): {current}");
 				}
 			} else {
-				let issue_source = IssueSource::current().ok_or_else(|| eyre!("No blocker file set. Use `todo blocker set <pattern>` first."))?;
+				let issue_source = BlockerIssueSource::current().ok_or_else(|| eyre!("No blocker file set. Use `todo blocker set <pattern>` first."))?;
 
 				// Use unified modify workflow
 				let local_source = LocalIssueSource::<FsReader>::build_from_path(&issue_source.virtual_issue_buffer_path).await?;
@@ -345,7 +359,7 @@ pub async fn main_integrated(command: super::io::Command, format: DisplayFormat,
 
 		Command::Resume(mut resume_args) => {
 			// Get current blocker description for tracking
-			let source = IssueSource::current().ok_or_else(|| eyre!("No blocker file set. Use `todo blocker set <pattern>` first."))?;
+			let source = BlockerIssueSource::current().ok_or_else(|| eyre!("No blocker file set. Use `todo blocker set <pattern>` first."))?;
 			let blockers = source.load()?;
 
 			if blockers.current().is_none() {
@@ -355,9 +369,11 @@ pub async fn main_integrated(command: super::io::Command, format: DisplayFormat,
 			// Enable tracking state
 			super::clockify::set_tracking_enabled(true)?;
 
-			// Use issue title as project if not explicitly provided
+			// Use repo/title as project if not explicitly provided
 			if resume_args.project.is_none() {
-				resume_args.project = Some(source.cached_issue.borrow().as_ref().unwrap().contents.title.clone());
+				let repo = source.repo_info.repo();
+				let title = &source.issue.contents.title;
+				resume_args.project = Some(format!("{repo}/{title}"));
 			}
 
 			// Build hierarchy for fully-qualified mode
@@ -397,18 +413,11 @@ fn get_current_blocker_cache_path() -> PathBuf {
 	v_utils::xdg_cache_file!(CURRENT_BLOCKER_ISSUE_CACHE)
 }
 
-impl super::source::BlockerSource for IssueSource {
+impl super::source::BlockerSource for BlockerIssueSource {
 	fn load(&self) -> Result<BlockerSequence> {
 		let content = std::fs::read_to_string(&self.virtual_issue_buffer_path)?;
-		let interpreted_issue = VirtualIssue::parse(&content, self.virtual_issue_buffer_path.clone())?;
-
-		// Clone the blockers before caching the issue
-		let blockers = interpreted_issue.contents.blockers.clone();
-
-		// Cache the parsed issue (unused now, but kept for potential future use)
-		*self.cached_issue.borrow_mut() = Some(interpreted_issue);
-
-		Ok(blockers)
+		let parsed = VirtualIssue::parse(&content, self.virtual_issue_buffer_path.clone())?;
+		Ok(parsed.contents.blockers)
 	}
 
 	fn display_name(&self) -> String {
@@ -456,7 +465,7 @@ fn get_current_blocker_description(fully_qualified: bool) -> Option<String> {
 	}
 
 	// Fall back to current issue
-	let source = IssueSource::current()?;
+	let source = BlockerIssueSource::current()?;
 	let blockers = source.load().ok()?;
 	let hierarchy = if fully_qualified { source.hierarchy() } else { vec![] };
 	blockers.current_with_context(&hierarchy)

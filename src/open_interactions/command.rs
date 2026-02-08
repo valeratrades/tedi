@@ -149,7 +149,7 @@ pub async fn open_command(settings: &LiveSettings, args: OpenArgs, offline: bool
 	let input = if open_at_blocker && args.url_or_pattern.is_none() {
 		// Get current blocker issue path if it exists
 		// --blocker requires it to exist; --blocker-set just opens fzf if not set
-		if let Some(source) = crate::blocker_interactions::integration::IssueSource::current() {
+		if let Some(source) = crate::blocker_interactions::integration::BlockerIssueSource::current() {
 			source.display_relative()
 		} else if args.blocker {
 			bail!("No blocker issue set. Use `todo blocker set <pattern>` first.")
