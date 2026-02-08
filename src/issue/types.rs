@@ -970,23 +970,25 @@ impl Issue /*{{{1*/ {
 			(vec![], rest)
 		};
 
+		// Strip trailing omitted marker if present (it appears after the issue marker)
+		let rest = {
+			let trimmed = rest.trim_end();
+			if let Some(marker_end) = trimmed.rfind("-->")
+				&& let Some(marker_start) = trimmed[..marker_end].rfind("<!--")
+			{
+				let inner = trimmed[marker_start + 4..marker_end].trim();
+				if inner.starts_with("omitted") && inner.contains("{{{") {
+					trimmed[..marker_start].trim_end()
+				} else {
+					trimmed
+				}
+			} else {
+				trimmed
+			}
+		};
+
 		// Parse issue marker from end of line
 		let (identity_info, title) = IssueMarker::parse_from_end(rest).ok_or_else(|| ParseError::missing_url_marker(ctx.named_source(), ctx.line_span(line_num)))?;
-
-		// Strip trailing omitted marker from title (it may appear inline before the issue marker)
-		let title = title.trim_end();
-		let title = if let Some(marker_end) = title.rfind("-->")
-			&& let Some(marker_start) = title[..marker_end].rfind("<!--")
-		{
-			let inner = title[marker_start + 4..marker_end].trim();
-			if inner.starts_with("omitted") && inner.contains("{{{") {
-				title[..marker_start].trim_end()
-			} else {
-				title
-			}
-		} else {
-			title
-		};
 
 		Ok(ParsedTitleLine {
 			title: title.to_string(),
@@ -1042,6 +1044,23 @@ impl Issue /*{{{1*/ {
 			CheckboxParseResult::Ok(state, rest) => (state, rest),
 			CheckboxParseResult::NotCheckbox => return ChildTitleParseResult::NotChildTitle,
 			CheckboxParseResult::InvalidContent(content) => return ChildTitleParseResult::InvalidCheckbox(content),
+		};
+
+		// Strip trailing omitted marker if present (it appears after the issue marker)
+		let rest = {
+			let trimmed = rest.trim_end();
+			if let Some(marker_end) = trimmed.rfind("-->")
+				&& let Some(marker_start) = trimmed[..marker_end].rfind("<!--")
+			{
+				let inner = trimmed[marker_start + 4..marker_end].trim();
+				if inner.starts_with("omitted") && inner.contains("{{{") {
+					trimmed[..marker_start].trim_end()
+				} else {
+					trimmed
+				}
+			} else {
+				trimmed
+			}
 		};
 
 		// Check if there's a valid issue marker at the end
@@ -1163,7 +1182,7 @@ impl Issue /*{{{1*/ {
 				};
 				let omitted_start = Marker::OmittedStart.encode();
 				out.push_str(&format!(
-					"{content_indent}- [{child_checked}] {child_labels_part}{} {omitted_start} {child_issue_marker}\n",
+					"{content_indent}- [{child_checked}] {child_labels_part}{} {child_issue_marker} {omitted_start}\n",
 					child.contents.title
 				));
 
@@ -1896,15 +1915,15 @@ mod tests {
 		let content = r#"- [ ] Parent issue <!-- @owner https://github.com/owner/repo/issues/1 -->
 	Body
 
-	- [x] Closed sub <!--omitted {{{always--> <!-- @owner https://github.com/owner/repo/issues/2 -->
+	- [x] Closed sub <!-- @owner https://github.com/owner/repo/issues/2 --> <!--omitted {{{always-->
 		closed body
 		<!--,}}}-->
 
-	- [-] Not planned sub <!--omitted {{{always--> <!-- @owner https://github.com/owner/repo/issues/3 -->
+	- [-] Not planned sub <!-- @owner https://github.com/owner/repo/issues/3 --> <!--omitted {{{always-->
 		not planned body
 		<!--,}}}-->
 
-	- [42] Duplicate sub <!--omitted {{{always--> <!-- @owner https://github.com/owner/repo/issues/4 -->
+	- [42] Duplicate sub <!-- @owner https://github.com/owner/repo/issues/4 --> <!--omitted {{{always-->
 		duplicate body
 		<!--,}}}-->
 "#;
@@ -1913,15 +1932,15 @@ mod tests {
 		- [ ] Parent issue <!-- @owner https://github.com/owner/repo/issues/1 -->
 			Body
 			
-			- [x] Closed sub <!--omitted {{{always--> <!-- @owner https://github.com/owner/repo/issues/2 -->
+			- [x] Closed sub <!-- @owner https://github.com/owner/repo/issues/2 --> <!--omitted {{{always-->
 				closed body
 				<!--,}}}-->
 			
-			- [-] Not planned sub <!--omitted {{{always--> <!-- @owner https://github.com/owner/repo/issues/3 -->
+			- [-] Not planned sub <!-- @owner https://github.com/owner/repo/issues/3 --> <!--omitted {{{always-->
 				not planned body
 				<!--,}}}-->
 			
-			- [42] Duplicate sub <!--omitted {{{always--> <!-- @owner https://github.com/owner/repo/issues/4 -->
+			- [42] Duplicate sub <!-- @owner https://github.com/owner/repo/issues/4 --> <!--omitted {{{always-->
 				duplicate body
 				<!--,}}}-->
 		");
