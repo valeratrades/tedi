@@ -474,7 +474,22 @@ async fn update_tracking_after_change() {
 	}
 
 	// Restart with new current blocker
-	if let Err(e) = super::clockify::restart_tracking_for_project(get_current_blocker_description, None).await {
-		tracing::warn!("failed to restart clockify tracking: {e}");
+	let Some(description) = get_current_blocker_description(false) else {
+		return;
+	};
+	let mut resume_args = super::clockify::ResumeArgs::default();
+	if let Some(source) = BlockerIssueSource::current() {
+		let repo = source.repo_info.repo();
+		let title = &source.issue.contents.title;
+		resume_args.project = Some(format!("{repo}/{title}"));
+	}
+	if let Err(e) = super::clockify::start_tracking_for_task(
+		|fully_qualified| get_current_blocker_description(fully_qualified).unwrap_or(description.clone()),
+		&resume_args,
+		None,
+	)
+	.await
+	{
+		eprintln!("Warning: Failed to start tracking for task: {e}");
 	}
 }

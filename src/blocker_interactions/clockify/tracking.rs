@@ -129,24 +129,6 @@ where
 	)
 	.await
 }
-/// Helper to restart tracking for a blocker sequence
-///
-/// `get_current_description` is a callback that returns the current blocker description
-/// given the fully_qualified setting.
-pub async fn restart_tracking_for_project<F>(get_current_description: F, workspace: Option<&str>) -> Result<()>
-where
-	F: FnOnce(bool) -> Option<String>, {
-	let fully_qualified = if let Some(ws) = workspace { get_workspace_fully_qualified_setting(ws)? } else { false };
-
-	if let Some(description) = get_current_description(fully_qualified) {
-		let default_resume_args = ResumeArgs::default();
-
-		if let Err(e) = start_tracking_for_task(|_| description.clone(), &default_resume_args, workspace).await {
-			eprintln!("Warning: Failed to start tracking for task: {e}");
-		}
-	}
-	Ok(())
-}
 static BLOCKER_STATE_FILENAME: &str = "blocker_state.txt";
 static WORKSPACE_SETTINGS_FILENAME: &str = "workspace_settings.json";
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
