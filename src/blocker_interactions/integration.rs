@@ -358,33 +358,23 @@ pub async fn main_integrated(command: super::io::Command, format: DisplayFormat,
 		}
 
 		Command::Resume(mut resume_args) => {
-			// Get current blocker description for tracking
-			let source = BlockerIssueSource::current().ok_or_else(|| eyre!("No blocker file set. Use `todo blocker set <pattern>` first."))?;
-			let blockers = source.load()?;
-
-			if blockers.current().is_none() {
-				bail!("No current blocker task found. Add one with 'todo blocker add <task>'");
-			}
+			let description = get_current_blocker_description(false).ok_or_else(|| eyre!("No current blocker task found. Add one with 'todo blocker add <task>'"))?;
 
 			// Enable tracking state
 			super::clockify::set_tracking_enabled(true)?;
 
-			// Use repo/title as project if not explicitly provided
+			// Use repo/title as project if not explicitly provided (only when not in urgent mode)
 			if resume_args.project.is_none() {
-				let repo = source.repo_info.repo();
-				let title = &source.issue.contents.title;
-				resume_args.project = Some(format!("{repo}/{title}"));
+				if let Some(source) = BlockerIssueSource::current() {
+					let repo = source.repo_info.repo();
+					let title = &source.issue.contents.title;
+					resume_args.project = Some(format!("{repo}/{title}"));
+				}
 			}
-
-			// Build hierarchy for fully-qualified mode
-			let hierarchy = source.hierarchy();
 
 			// Start tracking with current blocker description
 			super::clockify::start_tracking_for_task(
-				|fully_qualified| {
-					let h = if fully_qualified { hierarchy.clone() } else { vec![] };
-					blockers.current_with_context(&h).unwrap_or_default()
-				},
+				|fully_qualified| get_current_blocker_description(fully_qualified).unwrap_or(description.clone()),
 				&resume_args,
 				None,
 			)
