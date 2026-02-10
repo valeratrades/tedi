@@ -65,4 +65,6 @@ pub enum Command {
 	Resume(ResumeArgs),
 	/// Pause tracking time via Clockify
 	Halt(HaltArgs),
+	/// Show the current clockify project name (repo/title)
+	CurrentProject,
 }

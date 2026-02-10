@@ -363,13 +363,8 @@ pub async fn main_integrated(command: super::io::Command, format: DisplayFormat,
 			// Enable tracking state
 			super::clockify::set_tracking_enabled(true)?;
 
-			// Use repo/title as project if not explicitly provided (only when not in urgent mode)
 			if resume_args.project.is_none() {
-				if let Some(source) = BlockerIssueSource::current() {
-					let repo = source.repo_info.repo();
-					let title = &source.issue.contents.title;
-					resume_args.project = Some(format!("{repo}/{title}"));
-				}
+				resume_args.project = current_project();
 			}
 
 			// Start tracking with current blocker description
@@ -381,6 +376,11 @@ pub async fn main_integrated(command: super::io::Command, format: DisplayFormat,
 			.await?;
 
 			println!("Tracking resumed.");
+		}
+
+		Command::CurrentProject => {
+			let project = current_project().ok_or_else(|| eyre!("No blocker file set. Use `todo blocker set <pattern>` first."))?;
+			println!("{project}");
 		}
 
 		Command::Halt(halt_args) => {
@@ -442,6 +442,14 @@ fn resolve_issue_file(pattern: &str) -> Result<PathBuf> {
 	Local::fzf_issue(pattern, ExactMatchLevel::default())
 }
 
+/// Get the current clockify project name (repo/title) from the current blocker issue.
+fn current_project() -> Option<String> {
+	let source = BlockerIssueSource::current()?;
+	let repo = source.repo_info.repo();
+	let title = &source.issue.contents.title;
+	Some(format!("{repo}/{title}"))
+}
+
 /// Get the current blocker description, checking urgent first then falling back to issue.
 fn get_current_blocker_description(fully_qualified: bool) -> Option<String> {
 	// Check urgent file first
@@ -478,11 +486,7 @@ async fn update_tracking_after_change() {
 		return;
 	};
 	let mut resume_args = super::clockify::ResumeArgs::default();
-	if let Some(source) = BlockerIssueSource::current() {
-		let repo = source.repo_info.repo();
-		let title = &source.issue.contents.title;
-		resume_args.project = Some(format!("{repo}/{title}"));
-	}
+	resume_args.project = current_project();
 	if let Err(e) = super::clockify::start_tracking_for_task(
 		|fully_qualified| get_current_blocker_description(fully_qualified).unwrap_or(description.clone()),
 		&resume_args,
