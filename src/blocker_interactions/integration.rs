@@ -170,19 +170,22 @@ pub async fn main_integrated(command: super::io::Command, format: DisplayFormat,
 			if StandaloneSource::urgent().is_some() || is_urgent {
 				let urgent = StandaloneSource::urgent_or_create()?;
 
+				let description_before = get_current_blocker_description(false);
 				v_utils::io::file_open::open(urgent.path()).await?;
 
 				// Cleanup if empty after editing
 				urgent.cleanup_if_empty()?;
 
 				// Update tracking if enabled
-				update_tracking_after_change().await;
+				update_tracking_after_change(description_before).await;
 			} else {
 				let issue_source = if let Some(pat) = pattern {
 					BlockerIssueSource::build(resolve_issue_file(&pat)?)?
 				} else {
 					BlockerIssueSource::current().ok_or_else(|| eyre!("No issue set. Use `todo blocker set <pattern>` first."))?
 				};
+
+				let description_before = get_current_blocker_description(false);
 
 				// Use unified modify flow
 				let local_source = LocalIssueSource::<FsReader>::build_from_path(&issue_source.virtual_issue_buffer_path).await?;
@@ -196,7 +199,7 @@ pub async fn main_integrated(command: super::io::Command, format: DisplayFormat,
 				}
 
 				// Update tracking after change
-				update_tracking_after_change().await;
+				update_tracking_after_change(description_before).await;
 			}
 		}
 
@@ -261,6 +264,8 @@ pub async fn main_integrated(command: super::io::Command, format: DisplayFormat,
 		}
 
 		Command::Pop => {
+			let description_before = get_current_blocker_description(false);
+
 			// Check if there's an urgent file - pop from there first
 			if let Some(urgent) = StandaloneSource::urgent() {
 				let mut blockers = urgent.load()?;
@@ -275,7 +280,7 @@ pub async fn main_integrated(command: super::io::Command, format: DisplayFormat,
 					urgent.cleanup_if_empty()?;
 
 					// Update tracking after pop
-					update_tracking_after_change().await;
+					update_tracking_after_change(description_before).await;
 
 					// Show new current
 					if let Some(current) = blockers.current_with_context(&[]) {
@@ -307,7 +312,7 @@ pub async fn main_integrated(command: super::io::Command, format: DisplayFormat,
 			}
 
 			// Update tracking after pop
-			update_tracking_after_change().await;
+			update_tracking_after_change(description_before).await;
 
 			// Show new current blocker (reload to get updated state)
 			let blockers = issue_source.load()?;
@@ -319,6 +324,8 @@ pub async fn main_integrated(command: super::io::Command, format: DisplayFormat,
 		}
 
 		Command::Add { name, urgent: is_urgent } => {
+			let description_before = get_current_blocker_description(false);
+
 			if is_urgent {
 				// Add to global urgent.md
 				let urgent = StandaloneSource::urgent_or_create()?;
@@ -327,7 +334,7 @@ pub async fn main_integrated(command: super::io::Command, format: DisplayFormat,
 				urgent.save(&blockers)?;
 
 				// Update tracking after add
-				update_tracking_after_change().await;
+				update_tracking_after_change(description_before.clone()).await;
 
 				println!("Added to urgent: {name}");
 				if let Some(current) = blockers.current_with_context(&[]) {
@@ -347,7 +354,7 @@ pub async fn main_integrated(command: super::io::Command, format: DisplayFormat,
 				}
 
 				// Update tracking after add
-				update_tracking_after_change().await;
+				update_tracking_after_change(description_before).await;
 
 				// Show new current blocker (reload to get updated state)
 				let blockers = issue_source.load()?;
@@ -469,10 +476,15 @@ fn get_current_blocker_description(fully_qualified: bool) -> Option<String> {
 	blockers.current_with_context(&hierarchy)
 }
 
-/// Update clockify tracking after a blocker change (add/pop).
-/// Stops current tracking and starts new one with updated description.
-async fn update_tracking_after_change() {
+/// Update clockify tracking after a blocker change (add/pop/edit).
+/// Only restarts tracking if the current blocker description actually changed.
+async fn update_tracking_after_change(description_before: Option<String>) {
 	if !super::clockify::is_tracking_enabled() {
+		return;
+	}
+
+	let description_after = get_current_blocker_description(false);
+	if description_before == description_after {
 		return;
 	}
 
@@ -482,7 +494,7 @@ async fn update_tracking_after_change() {
 	}
 
 	// Restart with new current blocker
-	let Some(description) = get_current_blocker_description(false) else {
+	let Some(description) = description_after else {
 		return;
 	};
 	let mut resume_args = super::clockify::ResumeArgs::default();
