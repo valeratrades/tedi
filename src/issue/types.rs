@@ -1939,6 +1939,21 @@ mod tests {
 	}
 
 	#[test]
+	fn test_non_owned_issue_body_gets_extra_indent() {
+		// Set current user to someone different from the issue owner
+		crate::current_user::set("someone_else".to_string());
+
+		let content = "- [ ] Issue <!-- @owner https://github.com/owner/repo/issues/1 -->\n\t\tbody text\n";
+		let issue = unsafe_mock_parse_virtual(content);
+
+		// Body should have double indent (extra tab) because issue owner != current user
+		insta::assert_snapshot!(issue.serialize_virtual(), @"
+		- [ ] Issue <!-- @owner https://github.com/owner/repo/issues/1 -->
+				body text
+		");
+	}
+
+	#[test]
 	fn test_find_last_blocker_position_empty() {
 		let content = "- [ ] Issue <!-- @owner https://github.com/owner/repo/issues/1 -->\n\tBody\n";
 		let issue = unsafe_mock_parse_virtual(content);
