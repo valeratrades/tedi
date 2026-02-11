@@ -138,7 +138,7 @@ async fn test_blockers_added_during_edit_preserved() {
 }
 
 #[tokio::test]
-async fn test_blockers_with_headers_preserved() {
+async fn test_blockers_with_nesting_preserved() {
 	let ctx = TestContext::build("");
 
 	let vi = parse_virtual(
@@ -146,12 +146,11 @@ async fn test_blockers_with_headers_preserved() {
 		 \tlorem ipsum\n\
 		 \n\
 		 \t# Blockers\n\
-		 \t# phase 1\n\
-		 \t- task alpha\n\
-		 \t- task beta\n\
-		 \n\
-		 \t# phase 2\n\
-		 \t- task gamma\n",
+		 \t- phase 1\n\
+		 \t\t- task alpha\n\
+		 \t\t- task beta\n\
+		 \t- phase 2\n\
+		 \t\t- task gamma\n",
 	);
 
 	let issue = ctx.consensus(&vi, None).await;
@@ -165,8 +164,8 @@ async fn test_blockers_with_headers_preserved() {
 
 	let path = ctx.resolve_issue_path(&issue);
 	let final_content = read_issue_file(&path);
-	assert!(final_content.contains("# phase 1"), "phase 1 header lost");
-	assert!(final_content.contains("# phase 2"), "phase 2 header lost");
+	assert!(final_content.contains("phase 1"), "phase 1 lost");
+	assert!(final_content.contains("phase 2"), "phase 2 lost");
 	assert!(final_content.contains("task alpha"), "task alpha lost");
 	assert!(final_content.contains("task gamma"), "task gamma lost");
 }

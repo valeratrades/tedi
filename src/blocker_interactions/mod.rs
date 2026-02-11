@@ -16,8 +16,8 @@
 //! Urgent mode stores blockers in `issues/{owner}/urgent.md` - a simple blocker list
 //! without Github sync. Only one urgent file can exist at a time.
 //!
-//! Core types (HeaderLevel, Line, BlockerSequence, classify_line) are defined in the
-//! library crate (tedi::blocker_types) and re-exported here for convenience.
+//! Core types (BlockerItem, BlockerSequence) are defined in the
+//! library crate and re-exported here for convenience.
 
 /// Main entry point for blocker commands
 pub async fn main(args: BlockerArgs, offline: bool) -> Result<()> {

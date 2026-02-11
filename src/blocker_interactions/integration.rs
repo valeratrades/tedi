@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use color_eyre::eyre::{Result, bail, eyre};
 use tedi::{
-	DisplayFormat, Issue, LazyIssue, Marker, RepoInfo, VirtualIssue,
+	Issue, LazyIssue, Marker, RepoInfo, VirtualIssue,
 	local::{ExactMatchLevel, FsReader, Local, LocalIssueSource},
 };
 
@@ -100,7 +100,7 @@ impl StandaloneSource {
 		if let Some(parent) = self.path.parent() {
 			std::fs::create_dir_all(parent)?;
 		}
-		std::fs::write(&self.path, blockers.serialize(DisplayFormat::Headers))?;
+		std::fs::write(&self.path, blockers.serialize())?;
 		Ok(())
 	}
 
@@ -125,7 +125,7 @@ impl StandaloneSource {
 
 /// Main entry point for integrated blocker commands (works with issue files).
 /// This is the default mode for blocker commands.
-pub async fn main_integrated(command: super::io::Command, format: DisplayFormat, offline: bool) -> Result<()> {
+pub async fn main_integrated(command: super::io::Command, offline: bool) -> Result<()> {
 	use super::{io::Command, source::BlockerSource};
 	use crate::open_interactions::{Modifier, SyncOptions, modify_and_sync_issue};
 
@@ -209,7 +209,7 @@ pub async fn main_integrated(command: super::io::Command, format: DisplayFormat,
 				let blockers = urgent.load()?;
 				if !blockers.is_empty() {
 					println!("=== URGENT ===");
-					println!("{}", blockers.serialize(format));
+					println!("{}", blockers.serialize());
 					return Ok(());
 				}
 			}
@@ -221,7 +221,7 @@ pub async fn main_integrated(command: super::io::Command, format: DisplayFormat,
 				let marker = Marker::BlockersSection(tedi::Header::new(1, "Blockers"));
 				println!("No `{marker}` marker found in issue body.");
 			} else {
-				let output = blockers.serialize(format);
+				let output = blockers.serialize();
 				if output.is_empty() {
 					println!("Blockers section is empty.");
 				} else {
