@@ -181,7 +181,7 @@ mod core {
 				// Auto-resolved - sink to both sides
 				let mut resolved = local_merged;
 				<Issue as Sink<LocalFs>>::sink(&mut resolved, None).await?;
-				<Issue as Sink<Remote>>::sink(&mut resolved, None).await?;
+				<Issue as Sink<Remote>>::sink(&mut resolved, Some(&remote)).await?;
 				Ok((resolved, true))
 			}
 			false => {
