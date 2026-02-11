@@ -6,20 +6,16 @@
 
 use clap::{Args, Subcommand};
 use color_eyre::eyre::Result;
-use tedi::DisplayFormat;
 
 use super::clockify::{HaltArgs, ResumeArgs};
 
 pub async fn main(args: BlockerArgs, offline: bool) -> Result<()> {
-	super::integration::main_integrated(args.command, args.format, offline).await
+	super::integration::main_integrated(args.command, offline).await
 }
 #[derive(Args, Clone, Debug)]
 pub struct BlockerArgs {
 	#[command(subcommand)]
 	pub command: Command,
-	/// Output format for list command
-	#[arg(short, long, default_value = "nested")]
-	pub format: DisplayFormat,
 }
 
 #[derive(Clone, Debug, Subcommand)]

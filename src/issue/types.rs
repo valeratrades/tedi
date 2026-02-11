@@ -190,7 +190,7 @@ impl CommentIdentity /*{{{1*/ {
 
 use super::{
 	IssueMarker, Marker,
-	blocker::{BlockerSequence, classify_line, join_with_blockers},
+	blocker::{BlockerSequence, join_with_blockers},
 	error::{ParseContext, ParseError},
 };
 
@@ -1152,8 +1152,8 @@ impl Issue /*{{{1*/ {
 			}
 			let header = crate::Header::new(1, "Blockers");
 			out.push_str(&format!("{content_indent}{}\n", header.encode()));
-			for line in self.contents.blockers.lines() {
-				out.push_str(&format!("{content_indent}{}\n", line.to_raw()));
+			for line in self.contents.blockers.raw_lines() {
+				out.push_str(&format!("{content_indent}{line}\n"));
 			}
 		}
 
@@ -1269,8 +1269,8 @@ impl Issue /*{{{1*/ {
 			}
 			let header = crate::Header::new(1, "Blockers");
 			out.push_str(&format!("{content_indent}{}\n", header.encode()));
-			for line in self.contents.blockers.lines() {
-				out.push_str(&format!("{content_indent}{}\n", line.to_raw()));
+			for line in self.contents.blockers.raw_lines() {
+				out.push_str(&format!("{content_indent}{line}\n"));
 			}
 		}
 
@@ -1408,7 +1408,7 @@ impl VirtualIssue {
 
 		let mut comments = Vec::new();
 		let mut children = HashMap::new();
-		let mut blocker_lines = Vec::new();
+		let mut blocker_raw_lines: Vec<String> = Vec::new();
 		let mut current_comment_lines: Vec<String> = Vec::new();
 		let mut current_comment_meta: Option<CommentIdentity> = None;
 		let mut in_body = true;
@@ -1430,7 +1430,7 @@ impl VirtualIssue {
 			// Empty line handling
 			if line.is_empty() {
 				if in_blockers {
-					// Empty lines in blockers are ignored by classify_line
+					// Empty lines in blockers section are skipped
 				} else if current_comment_meta.is_some() {
 					current_comment_lines.push(String::new());
 				} else if in_body {
@@ -1467,7 +1467,7 @@ impl VirtualIssue {
 				continue;
 			}
 
-			// If in blockers section, parse as blocker lines
+			// If in blockers section, collect raw lines
 			// But stop at sub-issue lines (they end the blockers section)
 			if in_blockers {
 				// Check if this is a sub-issue line - if so, exit blockers mode and process it below
@@ -1483,22 +1483,14 @@ impl VirtualIssue {
 						}
 						ChildTitleParseResult::NotChildTitle => {
 							// Not a sub-issue, continue parsing as blocker
-							if let Some(line) = classify_line(content) {
-								tracing::debug!("[parse] blocker line: {content:?} -> {line:?}");
-								blocker_lines.push(line);
-							} else {
-								tracing::debug!("[parse] blocker line SKIPPED (classify_line returned None): {content:?}");
-							}
+							tracing::debug!("[parse] blocker line: {content:?}");
+							blocker_raw_lines.push(content.to_string());
 							continue;
 						}
 					}
 				} else {
-					if let Some(line) = classify_line(content) {
-						tracing::debug!("[parse] blocker line: {content:?} -> {line:?}");
-						blocker_lines.push(line);
-					} else {
-						tracing::debug!("[parse] blocker line SKIPPED (classify_line returned None): {content:?}");
-					}
+					tracing::debug!("[parse] blocker line: {content:?}");
+					blocker_raw_lines.push(content.to_string());
 					continue;
 				}
 			}
@@ -1649,7 +1641,7 @@ impl VirtualIssue {
 				labels: parsed.labels,
 				state: parsed.close_state,
 				comments,
-				blockers: BlockerSequence::from_lines(blocker_lines),
+				blockers: BlockerSequence::parse(&blocker_raw_lines.join("\n")),
 			},
 			children,
 		})
@@ -1977,14 +1969,14 @@ mod tests {
 	}
 
 	#[test]
-	fn test_find_last_blocker_position_with_headers() {
-		let content = "- [ ] Issue <!-- @owner https://github.com/owner/repo/issues/1 -->\n\tBody\n\n\t# Blockers\n\t# Phase 1\n\t- task a\n\t# Phase 2\n\t- task b\n";
+	fn test_find_last_blocker_position_with_nesting() {
+		let content = "- [ ] Issue <!-- @owner https://github.com/owner/repo/issues/1 -->\n\tBody\n\n\t# Blockers\n\t- Phase 1\n\t\t- task a\n\t- Phase 2\n\t\t- task b\n";
 		let issue = unsafe_mock_parse_virtual(content);
 		let pos = issue.find_last_blocker_position();
 		assert!(pos.is_some());
 		let (line, col) = pos.unwrap();
-		assert_eq!(line, 8); // Line 8: `\t- task b`
-		assert_eq!(col, 4);
+		assert_eq!(line, 8); // Line 8: `\t\t- task b`
+		assert_eq!(col, 5); // 2 tabs + "- " + first char = col 5
 	}
 
 	#[test]

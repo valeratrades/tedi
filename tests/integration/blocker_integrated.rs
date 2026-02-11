@@ -146,19 +146,19 @@ async fn test_blocker_add_urgent_without_blocker_file_set() {
 }
 
 #[tokio::test]
-async fn test_blocker_add_with_header_context() {
+async fn test_blocker_add_with_nested_context() {
 	let ctx = TestContext::build("");
 
-	// Create issue with blockers section containing headers
+	// Create issue with blockers section containing nested items
 	let vi = parse_virtual(
 		"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
 		 \tBody text.\n\
 		 \n\
 		 \t# Blockers\n\
-		 \t# Phase 1\n\
-		 \t- Setup task\n\
-		 \t# Phase 2\n\
-		 \t- Implementation task\n",
+		 \t- Phase 1\n\
+		 \t\t- Setup task\n\
+		 \t- Phase 2\n\
+		 \t\t- Implementation task\n",
 	);
 
 	// Set up: local issue file exists
@@ -177,7 +177,7 @@ async fn test_blocker_add_with_header_context() {
 	// The add command should succeed
 	assert!(out.status.success(), "blocker add should succeed. stderr: {}", out.stderr);
 
-	// Verify the blocker was added (should be under Phase 2, the last header with items)
+	// Verify the blocker was added (should be under Phase 2, the last section with children)
 	let content = read_issue_file(&issue_path);
 	assert!(content.contains("New sub-task"), "New blocker should be added. Got: {content}");
 }

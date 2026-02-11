@@ -4,18 +4,6 @@
 //! - `add`: Push a new blocker onto the stack
 //! - `pop`: Remove the last blocker from the stack
 //! - `current`: Get the current (last) blocker with its parent context
-//!
-//! # Hierarchy Model
-//!
-//! Blockers are organized in a tree structure where headers define sections.
-//! Each header level creates a nested scope that "owns" its contents:
-//! - H1 headers own everything until the next H1 (or end)
-//! - H2 headers own everything until the next H2/H1 (or end)
-//! - Items at the root level (before any header) belong to an implicit H1
-//!
-//! Two rendering modes are available:
-//! - `headers`: Traditional flat format with `# Header` lines
-//! - `nested`: Indented format showing hierarchy visually
 
 use tedi::{BlockerItem, BlockerSequence};
 
@@ -36,16 +24,16 @@ pub trait BlockerSequenceExt {
 
 impl BlockerSequenceExt for BlockerSequence {
 	fn current(&self) -> Option<&BlockerItem> {
-		last_item(self)
+		last_item_in_list(&self.items)
 	}
 
 	fn current_with_context(&self, ownership_hierarchy: &[String]) -> Option<String> {
 		let current = self.current()?;
 
-		// Get path of headers to the current item
-		let path = path_to_last(self);
+		// Get path of parent item texts to the current item
+		let path = path_to_last(&self.items);
 
-		// Build final output: ownership hierarchy + blocker headers + task
+		// Build final output: ownership hierarchy + blocker path + task
 		let mut parts: Vec<&str> = ownership_hierarchy.iter().map(|s| s.as_str()).collect();
 		parts.extend(path.iter().map(|s| s.as_str()));
 
@@ -60,100 +48,75 @@ impl BlockerSequenceExt for BlockerSequence {
 		let item = BlockerItem {
 			text: text.to_string(),
 			comments: Vec::new(),
+			children: Vec::new(),
 		};
 		// Add to the deepest current section
-		add_item_to_current(self, item);
+		add_item_to_current(&mut self.items, item);
 	}
 
 	fn pop(&mut self) -> Option<String> {
-		pop_last(self).map(|item| item.text)
+		pop_last(&mut self.items).map(|item| item.text)
 	}
 }
 
-/// Get the last item in the tree (depth-first, rightmost)
-fn last_item(seq: &BlockerSequence) -> Option<&BlockerItem> {
-	// Check children first (rightmost child's last item)
-	for child in seq.children.iter().rev() {
-		if let Some(item) = last_item(child) {
-			return Some(item);
-		}
+/// Get the last item in a list of items (depth-first, rightmost)
+fn last_item_in_list(items: &[BlockerItem]) -> Option<&BlockerItem> {
+	let last = items.last()?;
+	// Check if the last item has children — if so, recurse into them
+	if let Some(child_last) = last_item_in_list(&last.children) {
+		Some(child_last)
+	} else {
+		Some(last)
 	}
-	// Then check our own items
-	seq.items.last()
 }
 
-/// Get the path of headers leading to the last item
-fn path_to_last(seq: &BlockerSequence) -> Vec<String> {
+/// Get the path of parent item texts leading to the last item (not including the last item itself)
+fn path_to_last(items: &[BlockerItem]) -> Vec<String> {
 	let mut path = Vec::new();
-	path_to_last_inner(seq, &mut path);
+	path_to_last_inner(items, &mut path);
 	path
 }
 
-fn path_to_last_inner(seq: &BlockerSequence, path: &mut Vec<String>) {
-	// Check if any child has content
-	for child in seq.children.iter().rev() {
-		if !child.is_empty() {
-			if !seq.title.is_empty() {
-				path.push(seq.title.clone());
-			}
-			path_to_last_inner(child, path);
+fn path_to_last_inner(items: &[BlockerItem], path: &mut Vec<String>) {
+	let Some(last) = items.last() else {
+		return;
+	};
+
+	if !last.children.is_empty() {
+		// The last item has children — it's a parent on the path
+		path.push(last.text.clone());
+		path_to_last_inner(&last.children, path);
+	}
+	// If no children, this is the leaf (current item) — don't add to path
+}
+
+/// Pop the last item from the tree (depth-first, rightmost)
+fn pop_last(items: &mut Vec<BlockerItem>) -> Option<BlockerItem> {
+	let last = items.last_mut()?;
+	// Try children first
+	if let Some(popped) = pop_last(&mut last.children) {
+		return Some(popped);
+	}
+	// No children — pop ourselves
+	items.pop()
+}
+
+/// Add item to the deepest current section
+fn add_item_to_current(items: &mut Vec<BlockerItem>, item: BlockerItem) {
+	if let Some(last) = items.last_mut() {
+		if !last.children.is_empty() {
+			// Recurse into children
+			add_item_to_current(&mut last.children, item);
 			return;
 		}
+		// Add as sibling (same level as the last item)
 	}
-	// If we have items, add our title
-	if !seq.items.is_empty() && !seq.title.is_empty() {
-		path.push(seq.title.clone());
-	}
-}
-
-/// Pop the last item from the tree
-fn pop_last(seq: &mut BlockerSequence) -> Option<BlockerItem> {
-	// Try children first (rightmost)
-	for child in seq.children.iter_mut().rev() {
-		if let Some(item) = pop_last(child) {
-			return Some(item);
-		}
-	}
-	// Then our own items
-	seq.items.pop()
-}
-
-fn add_item_to_current(seq: &mut BlockerSequence, item: BlockerItem) {
-	// Find the deepest non-empty section and add there
-	// If all empty, add to root
-	fn add_to_deepest(seq: &mut BlockerSequence, item: BlockerItem) -> bool {
-		// Try children first (rightmost)
-		for child in seq.children.iter_mut().rev() {
-			if add_to_deepest(child, item.clone()) {
-				return true;
-			}
-		}
-		// If this sequence has items or is non-root, add here
-		if !seq.items.is_empty() || seq.level > 0 {
-			seq.items.push(item);
-			return true;
-		}
-		false
-	}
-
-	if !add_to_deepest(seq, item.clone()) {
-		// Nothing found, add to root
-		seq.items.push(item);
-	}
+	items.push(item);
 }
 
 #[cfg(test)]
 mod tests {
-	use tedi::DisplayFormat;
-
 	use super::*;
-
-	#[test]
-	fn test_parse_and_serialize() {
-		let content = "# Header\n- task 1\n\tcomment\n- task 2";
-		let seq = BlockerSequence::parse(content);
-		assert_eq!(seq.serialize(DisplayFormat::Headers), content);
-	}
 
 	#[test]
 	fn test_current() {
@@ -171,27 +134,27 @@ mod tests {
 
 	#[test]
 	fn test_current_with_context_no_hierarchy() {
-		let seq = BlockerSequence::parse("# Phase 1\n- task 1\n# Phase 2\n- task 2");
+		let seq = BlockerSequence::parse("- Phase 1\n\t- task 1\n- Phase 2\n\t- task 2");
 		assert_eq!(seq.current_with_context(&[]), Some("Phase 2: task 2".to_string()));
 	}
 
 	#[test]
 	fn test_current_with_context_with_hierarchy() {
-		let seq = BlockerSequence::parse("# Phase 1\n- task 1");
+		let seq = BlockerSequence::parse("- Phase 1\n\t- task 1");
 		let hierarchy = vec!["project".to_string()];
 		assert_eq!(seq.current_with_context(&hierarchy), Some("project: Phase 1: task 1".to_string()));
 	}
 
 	#[test]
 	fn test_current_with_context_multi_level_hierarchy() {
-		let seq = BlockerSequence::parse("# Section\n- task");
+		let seq = BlockerSequence::parse("- Section\n\t- task");
 		let hierarchy = vec!["workspace".to_string(), "project".to_string()];
 		assert_eq!(seq.current_with_context(&hierarchy), Some("workspace: project: Section: task".to_string()));
 	}
 
 	#[test]
-	fn test_nested_headers() {
-		let content = "# H1\n## H2\n- task under H2\n# Another H1\n- task under another H1";
+	fn test_nested_items() {
+		let content = "- H1\n\t- H2\n\t\t- task under H2\n- Another H1\n\t- task under another H1";
 		let seq = BlockerSequence::parse(content);
 
 		// Current should be "task under another H1" with path "Another H1"
@@ -200,7 +163,7 @@ mod tests {
 
 	#[test]
 	fn test_deeply_nested() {
-		let content = "# Level 1\n## Level 2\n### Level 3\n- deep task";
+		let content = "- Level 1\n\t- Level 2\n\t\t- Level 3\n\t\t\t- deep task";
 		let seq = BlockerSequence::parse(content);
 
 		assert_eq!(seq.current_with_context(&[]), Some("Level 1: Level 2: Level 3: deep task".to_string()));
@@ -210,15 +173,15 @@ mod tests {
 	fn test_add() {
 		let mut seq = BlockerSequence::parse("- task 1");
 		seq.add("task 2");
-		assert_eq!(seq.serialize(DisplayFormat::Headers), "- task 1\n- task 2");
+		assert_eq!(seq.serialize(), "- task 1\n- task 2");
 	}
 
 	#[test]
 	fn test_add_to_section() {
-		let mut seq = BlockerSequence::parse("# Section\n- task 1");
+		let mut seq = BlockerSequence::parse("- Section\n\t- task 1");
 		seq.add("task 2");
-		// Should add under the same section
-		assert_eq!(seq.serialize(DisplayFormat::Headers), "# Section\n- task 1\n- task 2");
+		// Should add under the same section (as sibling of task 1)
+		assert_eq!(seq.serialize(), "- Section\n\t- task 1\n\t- task 2");
 	}
 
 	#[test]
@@ -226,15 +189,15 @@ mod tests {
 		let mut seq = BlockerSequence::parse("- task 1\n- task 2");
 		let popped = seq.pop();
 		assert_eq!(popped, Some("task 2".to_string()));
-		assert_eq!(seq.serialize(DisplayFormat::Headers), "- task 1");
+		assert_eq!(seq.serialize(), "- task 1");
 	}
 
 	#[test]
 	fn test_pop_from_section() {
-		let mut seq = BlockerSequence::parse("# Section\n- task 1\n- task 2");
+		let mut seq = BlockerSequence::parse("- Section\n\t- task 1\n\t- task 2");
 		let popped = seq.pop();
 		assert_eq!(popped, Some("task 2".to_string()));
-		assert_eq!(seq.serialize(DisplayFormat::Headers), "# Section\n- task 1");
+		assert_eq!(seq.serialize(), "- Section\n\t- task 1");
 	}
 
 	#[test]
@@ -246,13 +209,13 @@ mod tests {
 
 	#[test]
 	fn test_serialize_roundtrip() {
-		let input = "# Header 1\n- task 1\n# Header 2\n- task 2";
+		let input = "- Header 1\n\t- task 1\n- Header 2\n\t- task 2";
 		let seq = BlockerSequence::parse(input);
-		insta::assert_snapshot!(seq.serialize(DisplayFormat::Headers), @"
-		# Header 1
-		- task 1
-		# Header 2
-		- task 2
+		insta::assert_snapshot!(seq.serialize(), @r"
+		- Header 1
+			- task 1
+		- Header 2
+			- task 2
 		");
 	}
 
@@ -263,60 +226,47 @@ mod tests {
 
 		let with_content = BlockerSequence::parse("- task");
 		assert!(!with_content.is_empty());
-
-		// Only comments - the tree won't have items because comments need items
-		let only_header = BlockerSequence::parse("# Just a header");
-		assert!(only_header.is_empty()); // Headers without items are empty
 	}
 
 	#[test]
-	fn test_serialize_nested() {
-		let seq = BlockerSequence::parse("# Section A\n- task 1\n## Subsection\n- task 2\n# Section B\n- task 3");
-
-		let nested = seq.serialize(DisplayFormat::Nested);
-		let expected = "Section A\n\t- task 1\n\tSubsection\n\t\t- task 2\nSection B\n\t- task 3";
-		assert_eq!(nested, expected);
-	}
-
-	#[test]
-	fn test_serialize_headers() {
-		let content = "# Section A\n- task 1\n## Subsection\n- task 2";
+	fn test_items_before_children() {
+		let content = "- root task\n- Section\n\t- section task";
 		let seq = BlockerSequence::parse(content);
-
-		let headers = seq.serialize(DisplayFormat::Headers);
-		assert_eq!(headers, content);
-	}
-
-	#[test]
-	fn test_items_before_first_header() {
-		let content = "- root task\n# Section\n- section task";
-		let seq = BlockerSequence::parse(content);
-
-		// Should serialize back correctly
-		assert_eq!(seq.serialize(DisplayFormat::Headers), content);
 
 		// Current should be the section task
 		assert_eq!(seq.current_with_context(&[]), Some("Section: section task".to_string()));
 	}
 
 	#[test]
-	fn test_multiple_h1_sections() {
-		let content = "# A\n- task a\n# B\n- task b\n# C\n- task c";
+	fn test_multiple_top_sections() {
+		let content = "- A\n\t- task a\n- B\n\t- task b\n- C\n\t- task c";
 		let seq = BlockerSequence::parse(content);
 
 		assert_eq!(seq.current_with_context(&[]), Some("C: task c".to_string()));
 
-		// Pop should remove from C
+		// Pop removes task c (last child of C)
 		let mut seq = seq;
+		seq.pop();
+		// C still exists as a leaf item
+		assert_eq!(seq.current_with_context(&[]), Some("C".to_string()));
+
+		// Pop again removes C itself
 		seq.pop();
 		assert_eq!(seq.current_with_context(&[]), Some("B: task b".to_string()));
 	}
 
 	#[test]
 	fn test_comments_preserved() {
-		let content = "# Section\n- task 1\n\tcomment 1\n\tcomment 2\n- task 2";
+		let content = "- task 1\n\tcomment 1\n\tcomment 2\n- task 2";
 		let seq = BlockerSequence::parse(content);
 
-		assert_eq!(seq.serialize(DisplayFormat::Headers), content);
+		assert_eq!(seq.serialize(), content);
+	}
+
+	#[test]
+	fn test_parse_and_serialize() {
+		let content = "- task 1\n\tcomment\n\t- nested\n- task 2";
+		let seq = BlockerSequence::parse(content);
+		assert_eq!(seq.serialize(), content);
 	}
 }
