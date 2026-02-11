@@ -154,7 +154,7 @@ impl BlockerSequence {
 							// treat as comment on the last child? No — the spec says
 							// "once we get a first nested blocker, there can be no comments at the same level"
 							// So we panic/warn. For robustness, let's just skip with a warning.
-							eprintln!("Warning: comment after nested blockers at indent level {child_indent}: {:?}", child_content);
+							eprintln!("Warning: comment after nested blockers at indent level {child_indent}: {child_content:?}");
 						}
 						item.comments.push(child_content.to_string());
 						*pos += 1;
@@ -165,7 +165,7 @@ impl BlockerSequence {
 			} else {
 				// Not a blocker item and not deeper — this is a comment line without a parent item.
 				// At root level this could be a bare comment. Just skip it with a warning.
-				eprintln!("Warning: orphan comment (no preceding blocker item): {:?}", content);
+				eprintln!("Warning: orphan comment (no preceding blocker item): {content:?}");
 				*pos += 1;
 			}
 		}
