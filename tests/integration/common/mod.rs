@@ -81,6 +81,7 @@ impl TestContext {
 
 		// Set overrides so all library calls use our temp dir
 		tedi::mocks::set_issues_dir(xdg.data_dir().join("issues"));
+		tedi::current_user::set(git::USER.to_string());
 
 		let ctx = Self {
 			xdg,

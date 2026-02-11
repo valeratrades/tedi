@@ -201,7 +201,7 @@ fn test_nested_issue_under_unsynced_parent_online() {
 	- [ ] child <!-- @mock_user https://github.com/o/r/issues/2 -->
 	//- /o/r/1_-_Parent_Issue/__main__.md
 	- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-			parent body
+		parent body
 	");
 
 	assert!(out.status.success(), "Should succeed syncing child under unsynced parent. stderr: {}", out.stderr);
@@ -226,11 +226,11 @@ async fn test_break_to_edit_allows_mid_execution_modification() {
 
 	let out = continuation.resume();
 
-	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().skip_meta(), &out), @r"
+	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().skip_meta(), &out), @"
 	//- /o/r/1_-_test_issue.md
 	- [ ] test issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-			original body
-			appended content
+		original body
+		appended content
 	");
 
 	assert!(out.status.success(), "stderr: {}", out.stderr);

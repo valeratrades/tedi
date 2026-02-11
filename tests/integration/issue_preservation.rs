@@ -265,10 +265,10 @@ async fn test_closing_nested_issue_creates_bak_file() {
 	}
 	//- /o/r/1_-_a/2_-_b.md.bak
 	- [x] b <!-- @mock_user https://github.com/o/r/issues/2 -->
-			nested body content
+		nested body content
 	//- /o/r/1_-_a/__main__.md
 	- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->
-			lorem ipsum
+		lorem ipsum
 	"#);
 
 	// With the new model, closed child is in a separate .bak file

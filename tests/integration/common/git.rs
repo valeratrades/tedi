@@ -59,7 +59,7 @@ const DEFAULT_REPO: &str = "repo";
 const DEFAULT_NUMBER: u64 = 1;
 const OWNER: &str = "o";
 const REPO: &str = "r";
-const USER: &str = "mock_user";
+pub(super) const USER: &str = "mock_user";
 /// Extension trait for git and issue setup operations.
 #[allow(async_fn_in_trait)]
 pub trait GitExt {

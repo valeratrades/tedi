@@ -138,7 +138,7 @@ async fn test_only_local_changed_pushes_local() {
 	}
 	//- /o/r/1_-_Test_Issue.md
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-			local changed body
+		local changed body
 	"#);
 }
 
@@ -314,11 +314,11 @@ async fn test_pull_with_divergence_runs_sync_before_editor() {
 	//- /o/__conflict.md
 	<<<<<<< HEAD
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-			local diverged body
+		local diverged body
 	||||||| [hash]
 	=======
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-			remote diverged body
+		remote diverged body
 	>>>>>>> remote-state
 	//- /o/r/.meta.json
 	{
@@ -339,7 +339,7 @@ async fn test_pull_with_divergence_runs_sync_before_editor() {
 	}
 	//- /o/r/1_-_Test_Issue.md
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-			local diverged body
+		local diverged body
 	"#)
 }
 
@@ -382,7 +382,7 @@ async fn test_closing_issue_syncs_state_change() {
 	}
 	//- /o/r/1_-_Test_Issue.md.bak
 	- [x] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-			body
+		body
 	"#);
 }
 
@@ -418,10 +418,10 @@ async fn test_duplicate_sub_issues_filtered_from_remote() {
 	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().skip_meta(), &out), @"
 	//- /o/r/1_-_Parent_Issue/2_-_Normal_Closed_Sub.md.bak
 	- [x] Normal Closed Sub <!-- @mock_user https://github.com/o/r/issues/2 -->
-			sub body
+		sub body
 	//- /o/r/1_-_Parent_Issue/__main__.md
 	- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-			parent body
+		parent body
 	");
 }
 
@@ -511,7 +511,7 @@ async fn test_reset_syncs_changes_after_editor() {
 	}
 	//- /o/r/1_-_Test_Issue.md.bak
 	- [x] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-			remote body
+		remote body
 	"#);
 }
 
@@ -547,14 +547,14 @@ async fn test_comment_shorthand_creates_comment() {
 	//- /o/__conflict.md
 	<<<<<<< HEAD
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-			issue body
+		issue body
 		
 		<!-- new comment -->
 			My new comment content
 	||||||| [hash]
 	=======
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-			issue body
+		issue body
 	>>>>>>> remote-state
 	//- /o/r/1_-_Test_Issue.md
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
@@ -620,28 +620,28 @@ async fn test_force_merge_preserves_both_sub_issues(#[case] args: &[&str], #[cas
 		insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().skip_meta(), &out), @"
 		//- /o/r/1_-_Parent_Issue/2_-_Local_Sub.md
 		- [ ] Local Sub <!-- @mock_user https://github.com/o/r/issues/2 -->
-				local sub body
+			local sub body
 		//- /o/r/1_-_Parent_Issue/3_-_Remote_Sub.md
 		- [ ] Remote Sub <!-- @mock_user https://github.com/o/r/issues/3 -->
-				remote sub body
+			remote sub body
 		//- /o/r/1_-_Parent_Issue/__main__.md
 		- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-				parent body
-				extra line from local
+			parent body
+			extra line from local
 		");
 	} else {
 		// --pull --force: remote wins conflicts, so "extra local line" should NOT be present
-		insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().skip_meta(), &out), @r#"
+		insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().skip_meta(), &out), @"
 		//- /o/r/1_-_Parent_Issue/2_-_Local_Sub.md
 		- [ ] Local Sub <!-- @mock_user https://github.com/o/r/issues/2 -->
-				local sub body
+			local sub body
 		//- /o/r/1_-_Parent_Issue/3_-_Remote_Sub.md
 		- [ ] Remote Sub <!-- @mock_user https://github.com/o/r/issues/3 -->
-				remote sub body
+			remote sub body
 		//- /o/r/1_-_Parent_Issue/__main__.md
 		- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-				parent body
-		"#);
+			parent body
+		");
 	}
 }
 
@@ -669,7 +669,7 @@ async fn test_undo_shorthand_aborts_sync() {
 	assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().skip_meta(), &out), @"
 	//- /o/r/1_-_Test_Issue.md
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-			issue body
+		issue body
 	");
 }
 
@@ -719,8 +719,8 @@ async fn test_consensus_sink_writes_meta_json_with_timestamps() {
 	}
 	//- /o/r/1_-_Test_Issue.md
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-			remote body
-			
-			---
+		remote body
+		
+		---
 	"#);
 }
