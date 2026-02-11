@@ -102,12 +102,12 @@ impl RemoteSource {
 	/// `Some(&[])` means the issue is known to be at root level.
 	///
 	/// Checks that `gh` executable is available.
-	pub fn build(link: IssueLink, lineage: Option<&[u64]>) -> Result<Self, RemoteError> {
+	pub fn build(link: IssueLink, lineage: Option<&[u64]>) -> Result<Self, Box<RemoteError>> {
 		if std::process::Command::new("gh").arg("--version").output().is_err() {
-			return Err(RemoteError::MissingExecutable {
+			return Err(Box::new(RemoteError::MissingExecutable {
 				executable: "gh",
 				operation: "GitHub operations",
-			});
+			}));
 		}
 		Ok(Self {
 			link,

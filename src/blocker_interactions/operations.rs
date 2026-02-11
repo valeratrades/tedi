@@ -103,13 +103,12 @@ fn pop_last(items: &mut Vec<BlockerItem>) -> Option<BlockerItem> {
 
 /// Add item to the deepest current section
 fn add_item_to_current(items: &mut Vec<BlockerItem>, item: BlockerItem) {
-	if let Some(last) = items.last_mut() {
-		if !last.children.is_empty() {
-			// Recurse into children
-			add_item_to_current(&mut last.children, item);
-			return;
-		}
-		// Add as sibling (same level as the last item)
+	if let Some(last) = items.last_mut()
+		&& !last.children.is_empty()
+	{
+		// Recurse into children
+		add_item_to_current(&mut last.children, item);
+		return;
 	}
 	items.push(item);
 }
