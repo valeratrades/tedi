@@ -497,8 +497,10 @@ async fn update_tracking_after_change(description_before: Option<String>) {
 	let Some(description) = description_after else {
 		return;
 	};
-	let mut resume_args = super::clockify::ResumeArgs::default();
-	resume_args.project = current_project();
+	let resume_args = super::clockify::ResumeArgs {
+		project: current_project(),
+		..Default::default()
+	};
 	if let Err(e) = super::clockify::start_tracking_for_task(
 		|fully_qualified| get_current_blocker_description(fully_qualified).unwrap_or(description.clone()),
 		&resume_args,
