@@ -374,7 +374,8 @@ impl GithubClient for RealGithubClient {
 			query($owner: String!, $repo: String!, $number: Int!) {
 				repository(owner: $owner, name: $repo) {
 					issue(number: $number) {
-						bodyUpdatedAt: updatedAt
+						lastEditedAt
+						createdAt
 						timelineItems(last: 100, itemTypes: [RENAMED_TITLE_EVENT, LABELED_EVENT, UNLABELED_EVENT, CLOSED_EVENT, REOPENED_EVENT]) {
 							nodes {
 								__typename
@@ -428,9 +429,14 @@ impl GithubClient for RealGithubClient {
 
 		let mut timestamps = GraphqlTimelineTimestamps::default();
 
-		// Extract body updated timestamp (description)
-		if let Some(body_updated_at) = response.pointer("/data/repository/issue/bodyUpdatedAt").and_then(|v| v.as_str()) {
-			timestamps.description = body_updated_at.parse().ok();
+		// Extract body edit timestamp (description).
+		// `lastEditedAt` is null if the body was never edited after creation, so fall back to `createdAt`.
+		let description_ts = response
+			.pointer("/data/repository/issue/lastEditedAt")
+			.and_then(|v| v.as_str())
+			.or_else(|| response.pointer("/data/repository/issue/createdAt").and_then(|v| v.as_str()));
+		if let Some(ts_str) = description_ts {
+			timestamps.description = ts_str.parse().ok();
 		}
 
 		// Process timeline items

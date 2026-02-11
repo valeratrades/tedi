@@ -388,14 +388,24 @@ impl Sink<Remote> for Issue {
 		// Sync content against old (if we have old state)
 		let diff = compute_node_diff(self, old);
 
-		if diff.body_changed {
+		// Compare full GitHub body (text + blockers), not just comments[0]
+		let body_changed = match old {
+			Some(old) => self.body() != old.body(),
+			None => false,
+		};
+		if body_changed {
 			let body = self.body();
 			println!("Updating issue #{issue_number} body...");
 			gh.update_issue_body(repo_info, issue_number, &body).await?;
 			changed = true;
 		}
 
-		if diff.state_changed {
+		// Compare at GitHub granularity (open vs closed), not local granularity (Closed vs NotPlanned)
+		let remote_state_changed = match old {
+			Some(old) => self.contents.state.to_github_state() != old.contents.state.to_github_state(),
+			None => false,
+		};
+		if remote_state_changed {
 			let state = self.contents.state.to_github_state();
 			println!("Updating issue #{issue_number} state to {state}...");
 			gh.update_issue_state(repo_info, issue_number, state).await?;
