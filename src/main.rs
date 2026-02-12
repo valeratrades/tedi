@@ -39,6 +39,7 @@ async fn main() {
 	// Set global GitHub client and current user for sink operations
 	if let Some(client) = github_client {
 		if let Ok(user) = client.fetch_authenticated_user().await {
+			tracing::info!("Authenticated as: {user}");
 			tedi::current_user::set(user);
 		}
 		tedi::github::client::set(client);
