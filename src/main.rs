@@ -40,9 +40,22 @@ async fn main() {
 	if let Some(client) = github_client {
 		if let Ok(user) = client.fetch_authenticated_user().await {
 			tracing::info!("Authenticated as: {user}");
+			// Cache for offline use
+			let cache_path = v_utils::xdg_cache_file!("authenticated_user.txt");
+			let _ = std::fs::write(&cache_path, &user);
 			tedi::current_user::set(user);
 		}
 		tedi::github::client::set(client);
+	} else {
+		// Offline or no client — load from cache
+		let cache_path = v_utils::xdg_cache_file!("authenticated_user.txt");
+		if let Ok(user) = std::fs::read_to_string(&cache_path) {
+			let user = user.trim().to_string();
+			if !user.is_empty() {
+				tracing::info!("Loaded cached user: {user}");
+				tedi::current_user::set(user);
+			}
+		}
 	}
 
 	// All the functions here can rely on config being correct.
