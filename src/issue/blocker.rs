@@ -77,13 +77,6 @@ pub struct BlockerSequence {
 	/// Transient state for `!s` marker. Not serialized, not compared.
 	pub set_state: Option<BlockerSetState>,
 }
-
-impl PartialEq for BlockerSequence {
-	fn eq(&self, other: &Self) -> bool {
-		self.items == other.items
-	}
-}
-
 impl BlockerSequence {
 	/// Parse raw text content into a BlockerSequence.
 	pub fn parse(content: &str) -> Self {
@@ -231,6 +224,12 @@ impl BlockerSequence {
 			collect_raw_lines(item, 0, &mut result);
 		}
 		result
+	}
+}
+
+impl PartialEq for BlockerSequence {
+	fn eq(&self, other: &Self) -> bool {
+		self.items == other.items
 	}
 }
 

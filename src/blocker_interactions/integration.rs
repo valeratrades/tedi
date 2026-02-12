@@ -46,14 +46,14 @@ impl BlockerIssueSource {
 
 	/// Get the currently selected blocker issue source
 	pub fn current() -> Option<Self> {
-		let cache_path = get_current_blocker_cache_path();
+		let cache_path = BlockerSequence::cache_path();
 		let path = std::fs::read_to_string(&cache_path).ok().map(|s| PathBuf::from(s.trim())).filter(|p| p.exists())?;
 		Some(Self::build(path).expect("failed to build BlockerIssueSource from cached path"))
 	}
 
 	/// Set this issue as the current blocker issue
 	pub fn set_current(&self) -> Result<()> {
-		let cache_path = get_current_blocker_cache_path();
+		let cache_path = BlockerSequence::cache_path();
 		std::fs::write(&cache_path, self.virtual_issue_buffer_path.to_string_lossy().as_bytes())?;
 		Ok(())
 	}
@@ -401,12 +401,6 @@ pub async fn main_integrated(command: super::io::Command, offline: bool) -> Resu
 	}
 
 	Ok(())
-}
-
-/// Get the path to the current blocker issue cache file
-#[deprecated(note = "use BlockerSequence::cache_path() directly")]
-fn get_current_blocker_cache_path() -> PathBuf {
-	BlockerSequence::cache_path()
 }
 
 impl super::source::BlockerSource for BlockerIssueSource {
