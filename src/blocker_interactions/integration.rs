@@ -402,12 +402,11 @@ pub async fn main_integrated(command: super::io::Command, offline: bool) -> Resu
 
 	Ok(())
 }
-/// Cache file for current blocker selection
-static CURRENT_BLOCKER_ISSUE_CACHE: &str = "current_blocker_issue.txt";
 
 /// Get the path to the current blocker issue cache file
+#[deprecated(note = "use BlockerSequence::cache_path() directly")]
 fn get_current_blocker_cache_path() -> PathBuf {
-	v_utils::xdg_cache_file!(CURRENT_BLOCKER_ISSUE_CACHE)
+	BlockerSequence::cache_path()
 }
 
 impl super::source::BlockerSource for BlockerIssueSource {

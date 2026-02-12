@@ -61,10 +61,27 @@ pub struct BlockerItem {
 	pub children: Vec<BlockerItem>,
 }
 
+/// Whether this blocker block has been marked as the active selection via `!s`.
+#[derive(Clone, Copy, Debug)]
+pub enum BlockerSetState {
+	/// Parsed `!s` but not yet persisted to cache.
+	Pending,
+	/// Successfully persisted to cache.
+	Applied,
+}
+
 /// A sequence of blocker items.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default)]
 pub struct BlockerSequence {
 	pub items: Vec<BlockerItem>,
+	/// Transient state for `!s` marker. Not serialized, not compared.
+	pub set_state: Option<BlockerSetState>,
+}
+
+impl PartialEq for BlockerSequence {
+	fn eq(&self, other: &Self) -> bool {
+		self.items == other.items
+	}
 }
 
 impl BlockerSequence {
@@ -78,7 +95,10 @@ impl BlockerSequence {
 	fn build_from_lines(lines: &[&str]) -> Self {
 		let mut root_items: Vec<BlockerItem> = Vec::new();
 		Self::parse_items_at_indent(lines, &mut 0, 0, &mut root_items);
-		Self { items: root_items }
+		Self {
+			items: root_items,
+			..Default::default()
+		}
 	}
 
 	/// Parse items at a given indent level, advancing `pos` through the lines.
@@ -174,6 +194,24 @@ impl BlockerSequence {
 	/// Check if the sequence has no blocker items
 	pub fn is_empty(&self) -> bool {
 		self.items.is_empty()
+	}
+
+	/// If `set_state` is `Pending`, write `issue_path` to the blocker cache and transition to `Applied`.
+	pub fn ensure_set(&mut self, issue_path: &std::path::Path) {
+		if matches!(self.set_state, Some(BlockerSetState::Pending)) {
+			let cache_path = Self::cache_path();
+			if let Err(e) = std::fs::write(&cache_path, issue_path.to_string_lossy().as_bytes()) {
+				tracing::warn!("failed to persist blocker selection: {e}");
+				return;
+			}
+			tracing::info!(path = %issue_path.display(), "blocker selection persisted via !s");
+			self.set_state = Some(BlockerSetState::Applied);
+		}
+	}
+
+	/// XDG cache path for the current blocker issue selection.
+	pub fn cache_path() -> std::path::PathBuf {
+		v_utils::xdg_cache_file!("current_blocker_issue.txt")
 	}
 
 	/// Serialize to text (indent-based format)

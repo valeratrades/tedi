@@ -77,6 +77,7 @@ impl Merge for Issue {
 
 		// Merge description (body + blockers)
 		if dominated_by(self_ts.description, other_ts.description) {
+			let blocker_set_state = self.contents.blockers.set_state;
 			// Body is the first comment
 			if let Some(other_body) = other.contents.comments.first() {
 				if let Some(self_body) = self.contents.comments.first_mut() {
@@ -86,6 +87,7 @@ impl Merge for Issue {
 				}
 			}
 			self.contents.blockers = other.contents.blockers.clone();
+			self.contents.blockers.set_state = blocker_set_state; // it's not invalid for remote to change local contents, even if we requested blocker set for them. It's possible that their values didn't actually change, while remote did. And then it's still reasonable to say that user semantically wanted _blockers section_ on this issue to be set; while not having had expressed opinions about contents.
 		}
 
 		// Merge state

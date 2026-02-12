@@ -1423,6 +1423,7 @@ impl VirtualIssue {
 		let mut current_comment_meta: Option<CommentIdentity> = None;
 		let mut in_body = true;
 		let mut in_blockers = false;
+		let mut select_blockers = false;
 		let mut current_line = line_num;
 
 		// Body is first comment (no marker)
@@ -1452,29 +1453,44 @@ impl VirtualIssue {
 			// Strip our indent level to get content
 			let content = line.strip_prefix(&child_indent).unwrap_or(line);
 
-			// Check for blockers marker
-			if matches!(Marker::decode(content), Some(Marker::BlockersSection(_))) {
-				// Flush current comment/body
-				if in_body {
-					in_body = false;
-					if !body_lines.is_empty() {
-						let body_text = body_lines.join("\n").trim().to_string();
+			// Check for `!s` (select blockers) as standalone line
+			if content.trim().eq_ignore_ascii_case("!s") {
+				select_blockers = true;
+				continue;
+			}
+
+			// Check for blockers marker (with optional `!s` suffix: `# Blockers !s`)
+			{
+				let (effective, has_select_suffix) = match content.trim_end().strip_suffix("!s").or_else(|| content.trim_end().strip_suffix("!S")) {
+					Some(before) => (before.trim_end(), true),
+					None => (content, false),
+				};
+				if matches!(Marker::decode(effective), Some(Marker::BlockersSection(_))) {
+					if has_select_suffix {
+						select_blockers = true;
+					}
+					// Flush current comment/body
+					if in_body {
+						in_body = false;
+						if !body_lines.is_empty() {
+							let body_text = body_lines.join("\n").trim().to_string();
+							comments.push(Comment {
+								identity: CommentIdentity::Body,
+								body: super::Events::parse(&body_text),
+							});
+						}
+					} else if let Some(identity) = current_comment_meta.take() {
+						let body_text = current_comment_lines.join("\n").trim().to_string();
 						comments.push(Comment {
-							identity: CommentIdentity::Body,
+							identity,
 							body: super::Events::parse(&body_text),
 						});
+						current_comment_lines.clear();
 					}
-				} else if let Some(identity) = current_comment_meta.take() {
-					let body_text = current_comment_lines.join("\n").trim().to_string();
-					comments.push(Comment {
-						identity,
-						body: super::Events::parse(&body_text),
-					});
-					current_comment_lines.clear();
+					in_blockers = true;
+					tracing::debug!("[parse] entering blockers section");
+					continue;
 				}
-				in_blockers = true;
-				tracing::debug!("[parse] entering blockers section");
-				continue;
 			}
 
 			// If in blockers section, collect raw lines
@@ -1651,7 +1667,13 @@ impl VirtualIssue {
 				labels: parsed.labels,
 				state: parsed.close_state,
 				comments,
-				blockers: BlockerSequence::parse(&blocker_raw_lines.join("\n")),
+				blockers: {
+					let mut seq = BlockerSequence::parse(&blocker_raw_lines.join("\n"));
+					if select_blockers {
+						seq.set_state = Some(crate::issue::BlockerSetState::Pending);
+					}
+					seq
+				},
 			},
 			children,
 		})
@@ -2071,6 +2093,45 @@ mod tests {
 
 		assert_eq!(issue.contents.title, reparsed.contents.title);
 		assert_eq!(issue.children.len(), reparsed.children.len());
+	}
+
+	#[test]
+	fn test_select_blockers_standalone_line() {
+		let content = "- [ ] Issue <!-- @owner https://github.com/owner/repo/issues/1 -->\n\tBody\n\n\t!s\n\t# Blockers\n\t- task 1\n\t- task 2\n";
+		let virtual_issue = VirtualIssue::parse(content, PathBuf::from("test.md")).unwrap();
+
+		assert!(matches!(virtual_issue.contents.blockers.set_state, Some(crate::issue::BlockerSetState::Pending)));
+		assert_eq!(virtual_issue.contents.blockers.items.len(), 2);
+
+		// `!s` must not appear in re-serialized output
+		let serialized = unsafe_mock_parse_virtual(content).serialize_virtual();
+		assert!(!serialized.contains("!s"));
+		assert!(serialized.contains("# Blockers"));
+	}
+
+	#[test]
+	fn test_select_blockers_suffix_on_header() {
+		let content = "- [ ] Issue <!-- @owner https://github.com/owner/repo/issues/1 -->\n\tBody\n\n\t# Blockers !s\n\t- one\n";
+		let virtual_issue = VirtualIssue::parse(content, PathBuf::from("test.md")).unwrap();
+
+		assert!(matches!(virtual_issue.contents.blockers.set_state, Some(crate::issue::BlockerSetState::Pending)));
+		assert_eq!(virtual_issue.contents.blockers.items[0].text, "one");
+	}
+
+	#[test]
+	fn test_select_blockers_not_set_by_default() {
+		let content = "- [ ] Issue <!-- @owner https://github.com/owner/repo/issues/1 -->\n\tBody\n\n\t# Blockers\n\t- task\n";
+		let virtual_issue = VirtualIssue::parse(content, PathBuf::from("test.md")).unwrap();
+
+		assert!(virtual_issue.contents.blockers.set_state.is_none());
+	}
+
+	#[test]
+	fn test_select_blockers_case_insensitive() {
+		let content = "- [ ] Issue <!-- @owner https://github.com/owner/repo/issues/1 -->\n\t!S\n\t# Blockers\n\t- task\n";
+		let virtual_issue = VirtualIssue::parse(content, PathBuf::from("test.md")).unwrap();
+
+		assert!(matches!(virtual_issue.contents.blockers.set_state, Some(crate::issue::BlockerSetState::Pending)));
 	}
 
 	#[test]
