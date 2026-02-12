@@ -8,27 +8,25 @@ pub mod remote;
 pub mod sink;
 
 pub mod current_user {
-	use std::cell::RefCell;
+	use std::sync::RwLock;
 
-	thread_local! {
-		static CURRENT_USER: RefCell<Option<String>> = const { RefCell::new(None) };
-	}
+	static CURRENT_USER: RwLock<Option<String>> = RwLock::new(None);
 
 	/// Set the current authenticated user for ownership checks.
 	/// Must be called before serializing issues.
 	pub fn set(user: String) {
-		CURRENT_USER.with(|u| *u.borrow_mut() = Some(user));
+		*CURRENT_USER.write().unwrap() = Some(user);
 	}
 
 	/// Get the current authenticated user.
 	/// Returns None if not set.
 	pub fn get() -> Option<String> {
-		CURRENT_USER.with(|u| u.borrow().clone())
+		CURRENT_USER.read().unwrap().clone()
 	}
 
 	/// Check if the given user is the current authenticated user.
 	pub fn is(user: &str) -> bool {
-		CURRENT_USER.with(|u| u.borrow().as_deref() == Some(user))
+		CURRENT_USER.read().unwrap().as_deref() == Some(user)
 	}
 }
 

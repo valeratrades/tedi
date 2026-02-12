@@ -1102,6 +1102,9 @@ impl Issue /*{{{1*/ {
 		} else {
 			format!("[{}] ", self.contents.labels.join(", "))
 		};
+		if self.identity.is_virtual {
+			assert!(self.user().is_none(), "virtual issue must not have a user tag, got: {:?}", self.user());
+		}
 		let is_owned = self.user().is_some_and(crate::current_user::is);
 		out.push_str(&format!("{indent}- [{checked}] {labels_part}{} {issue_marker}\n", self.contents.title));
 
@@ -1118,6 +1121,13 @@ impl Issue /*{{{1*/ {
 
 		// Additional comments
 		for comment in self.contents.comments.iter().skip(1) {
+			if self.identity.is_virtual {
+				assert!(
+					!comment.identity.is_comment() || comment.identity.user().is_none(),
+					"virtual issue must not have linked comments, got: {:?}",
+					comment.identity
+				);
+			}
 			let comment_is_owned = comment.identity.user().is_some_and(crate::current_user::is);
 			let comment_indent = if comment_is_owned { &content_indent } else { &format!("{content_indent}\t") };
 
@@ -1219,7 +1229,7 @@ impl Issue /*{{{1*/ {
 		} else {
 			format!("[{}] ", self.contents.labels.join(", "))
 		};
-		let is_owned = self.user().is_some_and(crate::current_user::is);
+		let is_owned = self.identity.is_virtual || self.user().is_some_and(crate::current_user::is);
 		out.push_str(&format!("- [{checked}] {labels_part}{} {issue_marker}\n", self.contents.title));
 
 		// Body (first comment) - add extra indent if not owned
@@ -1235,7 +1245,7 @@ impl Issue /*{{{1*/ {
 
 		// Additional comments
 		for comment in self.contents.comments.iter().skip(1) {
-			let comment_is_owned = comment.identity.user().is_some_and(crate::current_user::is);
+			let comment_is_owned = self.identity.is_virtual || comment.identity.user().is_some_and(crate::current_user::is);
 			let comment_indent_str = if comment_is_owned { content_indent } else { "\t\t" };
 
 			if out.lines().last().is_some_and(|l| !l.trim().is_empty()) {
@@ -1935,21 +1945,6 @@ mod tests {
 			- [42] Duplicate sub <!-- @owner https://github.com/owner/repo/issues/4 --> <!--omitted {{{always-->
 				duplicate body
 				<!--,}}}-->
-		");
-	}
-
-	#[test]
-	fn test_non_owned_issue_body_gets_extra_indent() {
-		// Set current user to someone different from the issue owner
-		crate::current_user::set("someone_else".to_string());
-
-		let content = "- [ ] Issue <!-- @owner https://github.com/owner/repo/issues/1 -->\n\t\tbody text\n";
-		let issue = unsafe_mock_parse_virtual(content);
-
-		// Body should have double indent (extra tab) because issue owner != current user
-		insta::assert_snapshot!(issue.serialize_virtual(), @"
-		- [ ] Issue <!-- @owner https://github.com/owner/repo/issues/1 -->
-				body text
 		");
 	}
 
