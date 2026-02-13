@@ -187,14 +187,6 @@ impl<'a> OpenBuilder<'a> {
 		self
 	}
 
-	/// Operates on the issue that is opened for the user in virtual format in a temp file.
-	/// Updates its **contents** (body) to the provided String and submits.
-	/// NB: don't submit the issue header at the top - just contents without any indentation.
-	pub fn edit_contents<T: AsRef<str>>(mut self, new_issue_body: T) -> Self {
-		self.edit_op = Some(EditOperation::ContentsOnly(new_issue_body.as_ref().to_string()));
-		self
-	}
-
 	/// Skip editor and pretend edit was made. Syncs the issue without user interaction.
 	pub fn ghost_edit(mut self) -> Self {
 		self.ghost_edit = true;
@@ -597,6 +589,7 @@ enum EditOperation {
 	/// Edit using a full VirtualIssue (converted to Issue at run time, writes serialize_virtual)
 	FullIssue(Box<tedi::VirtualIssue>),
 	/// Edit just the contents/body (preserves header, replaces body)
+	#[deprecated]
 	ContentsOnly(String),
 }
 

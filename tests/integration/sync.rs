@@ -90,11 +90,9 @@ async fn test_only_remote_changed_takes_remote_with_pull() {
 	// Must use --pull to fetch remote changes when local is unchanged
 	let out = ctx.open_issue(&consensus).args(&["--pull"]).run();
 
-	assert!(out.status.success(), "Should succeed with --pull when only remote changed. stderr: {}", out.stderr);
-	// Verify pre-open sync was triggered
 	assert!(
-		out.stdout.contains("Syncing") || out.stdout.contains("pre-open sync"),
-		"Expected sync activity message. stdout: {}, stderr: {}",
+		out.status.success() && (out.stdout.contains("Syncing") || out.stdout.contains("pre-open sync")),
+		"Should succeed with sync activity. stdout: {}, stderr: {}",
 		out.stdout,
 		out.stderr
 	);

@@ -24,11 +24,13 @@ async fn test_flat_format_preserved_when_no_sub_issues() {
 
 	assert!(out.status.success(), "Should succeed. stderr: {}", out.stderr);
 
-	// Flat file should still exist
-	assert!(ctx.flat_issue_path(("o", "r").into(), 1, "Parent Issue").exists(), "Flat format file should still exist");
-
-	// Directory format should NOT exist
-	assert!(!ctx.dir_issue_path(("o", "r").into(), 1, "Parent Issue").exists(), "Directory format should not be created");
+	// flat preserved, no directory created
+	let flat = ctx.flat_issue_path(("o", "r").into(), 1, "Parent Issue").exists();
+	let dir = ctx.dir_issue_path(("o", "r").into(), 1, "Parent Issue").exists();
+	insta::assert_snapshot!(format!("flat: {flat}\ndir: {dir}"), @"
+	flat: true
+	dir: false
+	");
 }
 
 #[tokio::test]
@@ -58,11 +60,13 @@ async fn test_old_flat_file_removed_when_sub_issues_appear() {
 
 	assert!(out.status.success(), "Should succeed. stderr: {}", out.stderr);
 
-	// Old flat file should be removed
-	assert!(!ctx.flat_issue_path(("o", "r").into(), 1, "Parent Issue").exists(), "Old flat format file should be removed");
-
-	// New directory format should exist
-	assert!(ctx.dir_issue_path(("o", "r").into(), 1, "Parent Issue").exists(), "Directory format file should be created");
+	// flat removed, directory created
+	let flat = ctx.flat_issue_path(("o", "r").into(), 1, "Parent Issue").exists();
+	let dir = ctx.dir_issue_path(("o", "r").into(), 1, "Parent Issue").exists();
+	insta::assert_snapshot!(format!("flat: {flat}\ndir: {dir}"), @"
+	flat: false
+	dir: true
+	");
 }
 
 #[tokio::test]
@@ -94,17 +98,15 @@ async fn test_old_placement_discarded_with_pull() {
 
 	assert!(out.status.success(), "Should succeed. stderr: {}", out.stderr);
 
-	// The critical assertion: old flat file must be gone
-	let flat_path = ctx.flat_issue_path(("o", "r").into(), 1, "Parent Issue");
-	assert!(!flat_path.exists(), "Old flat format file at {flat_path:?} should be removed when using --pull");
-
-	// New directory format should exist with the main file
-	let dir_path = ctx.dir_issue_path(("o", "r").into(), 1, "Parent Issue");
-	assert!(dir_path.exists(), "Directory format file at {dir_path:?} should be created");
-
-	// Sub-issue directory should exist
-	let sub_issue_dir = ctx.xdg.data_dir().join("issues/o/r/1_-_Parent_Issue");
-	assert!(sub_issue_dir.is_dir(), "Sub-issue directory should exist");
+	// flat removed, directory created, sub-issue dir exists
+	let flat = ctx.flat_issue_path(("o", "r").into(), 1, "Parent Issue").exists();
+	let dir = ctx.dir_issue_path(("o", "r").into(), 1, "Parent Issue").exists();
+	let sub_dir = ctx.xdg.data_dir().join("issues/o/r/1_-_Parent_Issue").is_dir();
+	insta::assert_snapshot!(format!("flat: {flat}\ndir: {dir}\nsub_dir: {sub_dir}"), @"
+	flat: false
+	dir: true
+	sub_dir: true
+	");
 }
 
 #[tokio::test]
@@ -126,12 +128,10 @@ async fn test_duplicate_removes_local_file() {
 	eprintln!("stdout: {}", out.stdout);
 	eprintln!("stderr: {}", out.stderr);
 
-	assert!(out.status.success(), "Should succeed when marking as duplicate. stderr: {}", out.stderr);
-
-	// Original file should be removed (duplicate self-eliminates)
 	assert!(
-		!ctx.flat_issue_path(("o", "r").into(), 1, "Some Issue").exists(),
-		"Issue file should be removed after marking as duplicate"
+		out.status.success() && !ctx.flat_issue_path(("o", "r").into(), 1, "Some Issue").exists(),
+		"Should succeed and remove issue file after marking as duplicate. stderr: {}",
+		out.stderr
 	);
 }
 
@@ -157,12 +157,9 @@ async fn test_duplicate_reference_to_existing_issue_succeeds() {
 	eprintln!("stdout: {}", out.stdout);
 	eprintln!("stderr: {}", out.stderr);
 
-	// Should succeed because issue #2 exists
-	assert!(out.status.success(), "Should succeed when marking as duplicate of existing issue. stderr: {}", out.stderr);
-
-	// Original file should be removed (duplicate handling)
 	assert!(
-		!ctx.flat_issue_path(("o", "r").into(), 1, "Some Issue").exists(),
-		"Issue file should be removed after successful duplicate marking"
+		out.status.success() && !ctx.flat_issue_path(("o", "r").into(), 1, "Some Issue").exists(),
+		"Should succeed and remove issue file after duplicate marking. stderr: {}",
+		out.stderr
 	);
 }

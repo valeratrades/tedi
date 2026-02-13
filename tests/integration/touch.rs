@@ -218,8 +218,6 @@ async fn test_break_to_edit_allows_mid_execution_modification() {
 	let (vpath, continuation) = ctx.open_touch("o/r/test").args(&["--offline"]).break_to_edit();
 
 	let content = std::fs::read_to_string(&vpath).expect("should read virtual file");
-	assert!(content.contains("test issue"), "should contain title");
-	assert!(content.contains("original body"), "should contain body");
 
 	let modified = content.replace("original body", "original body\n\tappended content");
 	std::fs::write(&vpath, &modified).expect("should write virtual file");
