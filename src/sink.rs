@@ -119,8 +119,8 @@ pub fn compute_node_diff(new: &Issue, old: Option<&Issue>) -> IssueDiff {
 	};
 
 	// Compare body (first comment)
-	let new_body = new.contents.comments.first().map(|c| c.body.render()).unwrap_or_default();
-	let old_body = old.contents.comments.first().map(|c| c.body.render()).unwrap_or_default();
+	let new_body = new.contents.comments.description();
+	let old_body = old.contents.comments.description();
 	diff.body_changed = new_body != old_body;
 
 	// Compare state

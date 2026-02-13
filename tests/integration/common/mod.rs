@@ -405,7 +405,7 @@ pub fn render_fixture(renderer: FixtureRenderer<'_>, output: &RunOutput) -> Stri
 	let result = renderer.always_show_filepath().render();
 
 	// will only see it if snapshot failed. //Q: how much overhead this has though?
-	let s = format!("\n\nBINARY FAILED\nstdout:\n{}\nstderr:\n{}", output.stdout, output.stderr);
+	let s = format!("\n\nBINARY FAILED\nstatus: {}\nstdout:\n{}\nstderr:\n{}", output.status, output.stdout, output.stderr);
 	eprintln!("{s}");
 
 	result

@@ -328,8 +328,8 @@ impl IssueTimestamps {
 		}
 
 		// Compare body (first comment) and blockers for description changes
-		let old_body = old.comments.first().map(|c| c.body.render()).unwrap_or_default();
-		let new_body = new.comments.first().map(|c| c.body.render()).unwrap_or_default();
+		let old_body = old.comments.description();
+		let new_body = new.comments.description();
 		if old_body != new_body || old.blockers != new.blockers {
 			self.description = Some(now);
 		}
@@ -710,20 +710,49 @@ impl From<&Issue> for IssueIndex {
 }
 
 /// A comment in the issue conversation (first one is always the issue body)
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, derive_more::Deref, PartialEq)]
 pub struct Comment {
 	/// Comment identity - body, linked to Github, or pending creation
 	pub identity: CommentIdentity,
 	/// The markdown body stored as parsed events for lossless roundtripping
+	#[deref]
 	pub body: super::Events,
 }
+#[derive(Clone, Debug, Default, derive_more::Deref, derive_more::DerefMut, PartialEq)]
+pub struct Comments(pub Vec<Comment>);
+impl Comments {
+	pub fn description(&self) -> String {
+		self.first().map(|c| c.render()).expect("`new` should've asserted that description comment was provided")
+	}
+
+	pub fn new(v: Vec<Comment>) -> Self {
+		assert!(
+			v.first().is_some_and(|c| matches!(c.identity, CommentIdentity::Body)),
+			"Trying to instantiate issue `Comments` without description"
+		);
+		{
+			// creation of pending comments intertwined with submitted ones is invalid, - they're linked //Q: should I use a linked list here?
+			let first_pending_id = v.iter().position(|c| c.identity.is_pending());
+			if let Some(id) = first_pending_id {
+				assert!(v.iter().rev().take(v.len() - id).all(|c| c.identity.is_pending()))
+			}
+		}
+		Self(v)
+	}
+}
+impl From<Vec<Comment>> for Comments {
+	fn from(value: Vec<Comment>) -> Self {
+		Self::new(value)
+	}
+}
+
 /// The full editable content of an issue.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct IssueContents {
 	pub title: String,
 	pub labels: Vec<String>,
 	pub state: CloseState,
-	pub comments: Vec<Comment>,
+	pub comments: Comments,
 	pub blockers: BlockerSequence,
 }
 /// Complete representation of an issue file
@@ -1140,7 +1169,7 @@ impl Issue /*{{{1*/ {
 					out.push_str(&format!("{content_indent}<!-- new comment -->\n"));
 				}
 				CommentIdentity::Created { user, id } => {
-					let url = self.url_str().unwrap_or("");
+					let url = self.url_str().expect("remote must be initialized");
 					out.push_str(&format!("{content_indent}<!-- @{user} {url}#issuecomment-{id} -->\n"));
 				}
 				CommentIdentity::Pending => {
@@ -1666,7 +1695,7 @@ impl VirtualIssue {
 				title: parsed.title,
 				labels: parsed.labels,
 				state: parsed.close_state,
-				comments,
+				comments: comments.into(),
 				blockers: {
 					let mut seq = BlockerSequence::parse(&blocker_raw_lines.join("\n"));
 					if select_blockers {

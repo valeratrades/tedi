@@ -276,13 +276,14 @@ async fn test_pull_fetches_before_editor() {
 	// --pull should fetch from Github before opening editor
 	let out = ctx.open_issue(&local).args(&["--pull"]).run();
 
-	eprintln!("stdout: {}", out.stdout);
-	eprintln!("stderr: {}", out.stderr);
-
-	assert!(out.status.success(), "Should succeed with --pull. stderr: {}", out.stderr);
-
 	// Should show fetch activity
 	assert!(out.stderr.contains("pre-open sync"), "Should show fetch/pull activity with --pull. stdout: {}", out.stderr);
+
+	assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().skip_meta(), &out), @"
+	//- /o/r/1_-_Test_Issue.md
+	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+		remote body from github
+	");
 }
 
 /// --pull with diverged state should trigger conflict resolution (or auto-resolve).
@@ -299,7 +300,7 @@ async fn test_pull_with_divergence_runs_sync_before_editor() {
 	let local = ctx.local(&local_vi, Some(Seed::new(100))).await;
 	ctx.remote(&remote_vi, Some(Seed::new(100)));
 
-	// --pull should attempt to sync/merge BEFORE editor opens
+	// --pull should attempt to sync/merge even BEFORE editor opens
 	let out = ctx.open_issue(&local).args(&["--pull"]).run();
 
 	// Ensure we detect the conflict even before the editor is opened for the user
