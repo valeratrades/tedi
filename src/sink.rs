@@ -235,7 +235,19 @@ mod tests {
 		let diff = compute_node_diff(&new, Some(&old));
 
 		assert!(diff.body_changed);
-		insta::assert_debug_snapshot!(diff, @"");
+		insta::assert_debug_snapshot!(diff, @"
+		IssueDiff {
+		    body_changed: true,
+		    state_changed: false,
+		    title_changed: false,
+		    labels_changed: false,
+		    comments_to_create: [],
+		    comments_to_update: [],
+		    comments_to_delete: [],
+		    children_to_create: [],
+		    children_to_delete: [],
+		}
+		");
 	}
 
 	#[test]
@@ -247,7 +259,19 @@ mod tests {
 		let diff = compute_node_diff(&new, Some(&old));
 
 		assert!(diff.state_changed);
-		insta::assert_debug_snapshot!(diff, @"");
+		insta::assert_debug_snapshot!(diff, @"
+		IssueDiff {
+		    body_changed: false,
+		    state_changed: true,
+		    title_changed: false,
+		    labels_changed: false,
+		    comments_to_create: [],
+		    comments_to_update: [],
+		    comments_to_delete: [],
+		    children_to_create: [],
+		    children_to_delete: [],
+		}
+		");
 	}
 
 	#[test]
@@ -261,7 +285,36 @@ mod tests {
 
 		let diff = compute_node_diff(&new, Some(&old));
 
-		insta::assert_debug_snapshot!(diff, @"");
+		insta::assert_debug_snapshot!(diff, @r#"
+		IssueDiff {
+		    body_changed: false,
+		    state_changed: false,
+		    title_changed: false,
+		    labels_changed: false,
+		    comments_to_create: [
+		        Comment {
+		            identity: Pending,
+		            body: Events(
+		                [
+		                    Start(
+		                        Paragraph,
+		                    ),
+		                    Text(
+		                        "new comment",
+		                    ),
+		                    End(
+		                        Paragraph,
+		                    ),
+		                ],
+		            ),
+		        },
+		    ],
+		    comments_to_update: [],
+		    comments_to_delete: [],
+		    children_to_create: [],
+		    children_to_delete: [],
+		}
+		"#);
 	}
 
 	#[test]
@@ -276,7 +329,21 @@ mod tests {
 		let diff = compute_node_diff(&new, Some(&old));
 
 		assert_eq!(diff.comments_to_delete, vec![123]);
-		insta::assert_debug_snapshot!(diff, @"");
+		insta::assert_debug_snapshot!(diff, @"
+		IssueDiff {
+		    body_changed: false,
+		    state_changed: false,
+		    title_changed: false,
+		    labels_changed: false,
+		    comments_to_create: [],
+		    comments_to_update: [],
+		    comments_to_delete: [
+		        123,
+		    ],
+		    children_to_create: [],
+		    children_to_delete: [],
+		}
+		");
 	}
 
 	#[test]
