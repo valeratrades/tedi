@@ -21,12 +21,11 @@ pub struct BlockerArgs {
 #[derive(Clone, Debug, Subcommand)]
 pub enum Command {
 	/// Append a blocker
-	/// # NB
-	/// adds one and only one blocker. The structure is **not** a tree for a reason:
-	/// - it forces prioritization (high leverage)
-	/// - solving top 1 thing can often unlock many smaller ones for free
 	Add {
 		name: String,
+		/// Nest as a child of the current deepest item
+		#[arg(short = 'n', long)]
+		nested: bool,
 		/// Mark as urgent (adds to owner-level urgent.md)
 		#[arg(short = 'u', long)]
 		urgent: bool,

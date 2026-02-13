@@ -299,6 +299,7 @@ mod types {
 		BlockerPop,
 		BlockerAdd {
 			text: String,
+			nest: bool,
 		},
 		/// Mock modifier that does nothing but reports file as modified. For testing.
 		MockGhostEdit,
@@ -358,9 +359,13 @@ mod types {
 						file_modified: true,
 					}
 				}
-				Modifier::BlockerAdd { text } => {
+				Modifier::BlockerAdd { text, nest } => {
 					use crate::blocker_interactions::BlockerSequenceExt;
-					issue.contents.blockers.add(text);
+					if *nest {
+						issue.contents.blockers.add_child(text);
+					} else {
+						issue.contents.blockers.add(text);
+					}
 					ModifyResult { output: None, file_modified: true }
 				}
 				Modifier::MockGhostEdit => ModifyResult { output: None, file_modified: true },

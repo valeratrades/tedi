@@ -18,6 +18,9 @@ pub trait BlockerSequenceExt {
 	/// Add a content line to the blocker sequence (at current position)
 	fn add(&mut self, text: &str);
 
+	/// Add a content line as a child of the current deepest item
+	fn add_child(&mut self, text: &str);
+
 	/// Remove the last content line from the blocker sequence.
 	fn pop(&mut self) -> Option<String>;
 }
@@ -52,6 +55,15 @@ impl BlockerSequenceExt for BlockerSequence {
 		};
 		// Add to the deepest current section
 		add_item_to_current(&mut self.items, item);
+	}
+
+	fn add_child(&mut self, text: &str) {
+		let item = BlockerItem {
+			text: text.to_string(),
+			comments: Vec::new(),
+			children: Vec::new(),
+		};
+		add_child_to_current(&mut self.items, item);
 	}
 
 	fn pop(&mut self) -> Option<String> {
@@ -111,6 +123,22 @@ fn add_item_to_current(items: &mut Vec<BlockerItem>, item: BlockerItem) {
 		return;
 	}
 	items.push(item);
+}
+
+/// Add item as a child of the deepest current item
+fn add_child_to_current(items: &mut Vec<BlockerItem>, item: BlockerItem) {
+	let Some(last) = items.last_mut() else {
+		// No items exist, just push at root
+		items.push(item);
+		return;
+	};
+	if !last.children.is_empty() {
+		// Recurse into children to find the deepest
+		add_child_to_current(&mut last.children, item);
+	} else {
+		// This is the deepest item — add as its child
+		last.children.push(item);
+	}
 }
 
 #[cfg(test)]
@@ -267,5 +295,45 @@ mod tests {
 		let content = "- task 1\n\tcomment\n\t- nested\n- task 2";
 		let seq = BlockerSequence::parse(content);
 		assert_eq!(seq.serialize(), content);
+	}
+
+	#[test]
+	fn test_add_child_flat() {
+		let mut seq = BlockerSequence::parse("- task 1");
+		seq.add_child("subtask");
+		insta::assert_snapshot!(seq.serialize(), @"
+		- task 1
+			- subtask
+		");
+	}
+
+	#[test]
+	fn test_add_child_to_section() {
+		let mut seq = BlockerSequence::parse("- Section\n\t- task 1");
+		seq.add_child("subtask of task 1");
+		insta::assert_snapshot!(seq.serialize(), @"
+		- Section
+			- task 1
+				- subtask of task 1
+		");
+	}
+
+	#[test]
+	fn test_add_child_empty() {
+		let mut seq = BlockerSequence::default();
+		seq.add_child("first");
+		insta::assert_snapshot!(seq.serialize(), @"- first");
+	}
+
+	#[test]
+	fn test_add_child_deeply_nested() {
+		let mut seq = BlockerSequence::parse("- L1\n\t- L2\n\t\t- L3");
+		seq.add_child("L4");
+		insta::assert_snapshot!(seq.serialize(), @"
+		- L1
+			- L2
+				- L3
+					- L4
+		");
 	}
 }

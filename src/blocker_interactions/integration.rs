@@ -323,17 +323,23 @@ pub async fn main_integrated(command: super::io::Command, offline: bool) -> Resu
 			}
 		}
 
-		Command::Add { name, urgent: is_urgent } => {
+		Command::Add {
+			name,
+			nested: nest,
+			urgent: is_urgent,
+		} => {
 			let description_before = get_current_blocker_description(false);
 
 			if is_urgent {
-				// Add to global urgent.md
 				let urgent = StandaloneSource::urgent_or_create()?;
 				let mut blockers = urgent.load()?;
-				blockers.add(&name);
+				if nest {
+					blockers.add_child(&name);
+				} else {
+					blockers.add(&name);
+				}
 				urgent.save(&blockers)?;
 
-				// Update tracking after add
 				update_tracking_after_change(description_before.clone()).await;
 
 				println!("Added to urgent: {name}");
@@ -343,20 +349,16 @@ pub async fn main_integrated(command: super::io::Command, offline: bool) -> Resu
 			} else {
 				let issue_source = BlockerIssueSource::current().ok_or_else(|| eyre!("No blocker file set. Use `todo blocker set <pattern>` first."))?;
 
-				// Use unified modify workflow
 				let local_source = LocalIssueSource::<FsReader>::build_from_path(&issue_source.virtual_issue_buffer_path).await?;
 				let issue = Issue::load(local_source).await?;
-				let result = modify_and_sync_issue(issue, offline, Modifier::BlockerAdd { text: name.clone() }, SyncOptions::default()).await?;
+				let result = modify_and_sync_issue(issue, offline, Modifier::BlockerAdd { text: name.clone(), nest }, SyncOptions::default()).await?;
 
-				// Output results
 				if let Some(output) = result.output {
 					println!("{output}");
 				}
 
-				// Update tracking after add
 				update_tracking_after_change(description_before).await;
 
-				// Show new current blocker (reload to get updated state)
 				let blockers = issue_source.load()?;
 				if let Some(new_current) = blockers.current_with_context(&[]) {
 					println!("Current: {new_current}");
