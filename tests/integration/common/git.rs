@@ -432,8 +432,8 @@ fn add_issue_recursive(state: &mut GitState, repo_info: tedi::RepoInfo, number: 
 	// Use the per-comment timestamps from IssueTimestamps if available
 	let comment_timestamps = timestamps.map(|ts| &ts.comments);
 	for (i, comment) in issue.contents.comments.iter().skip(1).enumerate() {
-		if let Some(id) = comment.identity.id() {
-			let comment_owner_login = comment.identity.user().expect("comment identity must have user - use @user format in test fixtures").to_string();
+		if let Some(id) = comment.id() {
+			let comment_owner_login = comment.user().expect("comment identity must have user - use @user format in test fixtures").to_string();
 			let comment_ts = comment_timestamps.and_then(|ts| ts.get(i).copied());
 			state.remote_comments.push(MockComment {
 				owner: owner.to_string(),

@@ -181,10 +181,7 @@ mod tests {
 			identity,
 			contents: IssueContents {
 				title: title.to_string(),
-				labels: vec![],
-				state: tedi::CloseState::Open,
-				comments: vec![],
-				blockers: Default::default(),
+				..Default::default()
 			},
 			children: HashMap::default(),
 		}
@@ -197,10 +194,7 @@ mod tests {
 			identity,
 			contents: IssueContents {
 				title: title.to_string(),
-				labels: vec![],
-				state: tedi::CloseState::Open,
-				comments: vec![],
-				blockers: Default::default(),
+				..Default::default()
 			},
 			children: HashMap::default(),
 		}

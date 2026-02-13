@@ -32,9 +32,9 @@ pub mod current_user {
 
 // Re-export all public types from issue module at crate root for convenience
 pub use issue::{
-	BlockerItem, BlockerSequence, BlockerSetState, CloseState, Comment, CommentIdentity, Events, HollowIssue, Issue, IssueContents, IssueError, IssueIdentity, IssueIndex, IssueLink,
-	IssueMarker, IssueSelector, IssueTimestamps, LazyIssue, LinkedIssueMeta, MAX_INDEX_DEPTH, MAX_LINEAGE_DEPTH, MAX_TITLE_LENGTH, Marker, OwnedCodeBlockKind, OwnedEvent, OwnedTag,
-	OwnedTagEnd, ParseError, RepoInfo, TitleInGitPathError, VirtualIssue, join_with_blockers, split_blockers,
+	BlockerItem, BlockerSequence, BlockerSetState, CloseState, Comment, CommentIdentity, Comments, Events, HollowIssue, Issue, IssueContents, IssueError, IssueIdentity, IssueIndex,
+	IssueLink, IssueMarker, IssueSelector, IssueTimestamps, LazyIssue, LinkedIssueMeta, MAX_INDEX_DEPTH, MAX_LINEAGE_DEPTH, MAX_TITLE_LENGTH, Marker, OwnedCodeBlockKind, OwnedEvent,
+	OwnedTag, OwnedTagEnd, ParseError, RepoInfo, TitleInGitPathError, VirtualIssue, join_with_blockers, split_blockers,
 };
 
 /// A header with a level and content.

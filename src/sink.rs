@@ -106,7 +106,7 @@ pub fn compute_node_diff(new: &Issue, old: Option<&Issue>) -> IssueDiff {
 		// No old state - everything is new (but issue itself is handled separately)
 		// Collect pending comments and children
 		for comment in new.contents.comments.iter().skip(1) {
-			if comment.identity.is_pending() {
+			if comment.is_pending() {
 				diff.comments_to_create.push(comment.clone());
 			}
 		}
@@ -133,8 +133,8 @@ pub fn compute_node_diff(new: &Issue, old: Option<&Issue>) -> IssueDiff {
 	diff.labels_changed = new.contents.labels != old.contents.labels;
 
 	// Compare comments (skip first which is body)
-	let old_comments: HashMap<u64, &Comment> = old.contents.comments.iter().skip(1).filter_map(|c| c.identity.id().map(|id| (id, c))).collect();
-	let new_comment_ids: HashSet<u64> = new.contents.comments.iter().skip(1).filter_map(|c| c.identity.id()).collect();
+	let old_comments: HashMap<u64, &Comment> = old.contents.comments.iter().skip(1).filter_map(|c| c.id().map(|id| (id, c))).collect();
+	let new_comment_ids: HashSet<u64> = new.contents.comments.iter().skip(1).filter_map(|c| c.id()).collect();
 
 	for comment in new.contents.comments.iter().skip(1) {
 		match &comment.identity {
@@ -190,7 +190,7 @@ pub fn compute_node_diff(new: &Issue, old: Option<&Issue>) -> IssueDiff {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::{BlockerSequence, CloseState, Events, IssueContents, IssueIdentity, IssueIndex, IssueLink, IssueTimestamps, RepoInfo};
+	use crate::{BlockerSequence, CloseState, Comments, Events, IssueContents, IssueIdentity, IssueIndex, IssueLink, IssueTimestamps, RepoInfo};
 
 	fn make_issue(title: &str, number: Option<u64>) -> Issue {
 		let parent_index = IssueIndex::repo_only(RepoInfo::new("o", "r"));
@@ -208,10 +208,10 @@ mod tests {
 				title: title.to_string(),
 				labels: vec![],
 				state: CloseState::Open,
-				comments: vec![Comment {
+				comments: Comments::new(vec![Comment {
 					identity: CommentIdentity::Body,
 					body: Events::parse("body"),
-				}],
+				}]),
 				blockers: BlockerSequence::default(),
 			},
 			children: HashMap::default(),

@@ -149,43 +149,17 @@ impl IssueLink /*{{{1*/ {
 
 /// Identity of a comment - either linked to Github or pending creation.
 /// Note: The first comment (issue body) is always `Body`, not `Linked` or `Pending`.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub enum CommentIdentity {
 	/// This is the issue body (first comment), not a separate Github comment
 	Body,
 	/// Comment exists on Github with this ID, created by given user
 	Created { user: String, id: u64 },
 	/// Comment is pending creation on Github (will be created in post-sync)
+	#[default]
 	Pending,
 }
 
-impl CommentIdentity /*{{{1*/ {
-	/// Get the comment ID if linked.
-	pub fn id(&self) -> Option<u64> {
-		match self {
-			Self::Created { id, .. } => Some(*id),
-			Self::Body | Self::Pending => None,
-		}
-	}
-
-	/// Get the user who created this comment if linked.
-	pub fn user(&self) -> Option<&str> {
-		match self {
-			Self::Created { user, .. } => Some(user),
-			Self::Body | Self::Pending => None,
-		}
-	}
-
-	/// Check if this is a Github comment (not the issue body).
-	pub fn is_comment(&self) -> bool {
-		!matches!(self, Self::Body)
-	}
-
-	/// Check if this comment is pending creation.
-	pub fn is_pending(&self) -> bool {
-		matches!(self, Self::Pending)
-	}
-}
 //,}}}1
 
 use super::{
@@ -710,7 +684,7 @@ impl From<&Issue> for IssueIndex {
 }
 
 /// A comment in the issue conversation (first one is always the issue body)
-#[derive(Clone, Debug, derive_more::Deref, PartialEq)]
+#[derive(Clone, Debug, Default, derive_more::Deref, PartialEq)]
 pub struct Comment {
 	/// Comment identity - body, linked to Github, or pending creation
 	pub identity: CommentIdentity,
@@ -718,7 +692,34 @@ pub struct Comment {
 	#[deref]
 	pub body: super::Events,
 }
-#[derive(Clone, Debug, Default, derive_more::Deref, derive_more::DerefMut, PartialEq)]
+impl Comment {
+	/// Get the comment ID if linked.
+	pub fn id(&self) -> Option<u64> {
+		match &self.identity {
+			CommentIdentity::Created { id, .. } => Some(*id),
+			CommentIdentity::Body | CommentIdentity::Pending => None,
+		}
+	}
+
+	/// Get the user who created this comment if linked.
+	pub fn user(&self) -> Option<&str> {
+		match &self.identity {
+			CommentIdentity::Created { user, .. } => Some(user),
+			CommentIdentity::Body | CommentIdentity::Pending => None,
+		}
+	}
+
+	/// Check if this is a Github comment (not the issue body).
+	pub fn is_comment(&self) -> bool {
+		!matches!(self.identity, CommentIdentity::Body)
+	}
+
+	/// Check if this comment is pending creation.
+	pub fn is_pending(&self) -> bool {
+		matches!(self.identity, CommentIdentity::Pending)
+	}
+}
+#[derive(Clone, Debug, derive_more::Deref, derive_more::DerefMut, PartialEq)]
 pub struct Comments(pub Vec<Comment>);
 impl Comments {
 	pub fn description(&self) -> String {
@@ -732,17 +733,28 @@ impl Comments {
 		);
 		{
 			// creation of pending comments intertwined with submitted ones is invalid, - they're linked //Q: should I use a linked list here?
-			let first_pending_id = v.iter().position(|c| c.identity.is_pending());
+			let first_pending_id = v.iter().position(|c| c.is_pending());
 			if let Some(id) = first_pending_id {
-				assert!(v.iter().rev().take(v.len() - id).all(|c| c.identity.is_pending()))
+				assert!(v.iter().rev().take(v.len() - id).all(|c| c.is_pending()))
 			}
 		}
 		Self(v)
 	}
 }
+impl Default for Comments {
+	fn default() -> Self {
+		Self(vec![Comment {
+			identity: CommentIdentity::Body,
+			..Default::default()
+		}])
+	}
+}
 impl From<Vec<Comment>> for Comments {
 	fn from(value: Vec<Comment>) -> Self {
-		Self::new(value)
+		match value.is_empty() {
+			true => Self::default(),
+			false => Self::new(value),
+		}
 	}
 }
 
@@ -1152,12 +1164,12 @@ impl Issue /*{{{1*/ {
 		for comment in self.contents.comments.iter().skip(1) {
 			if self.identity.is_virtual {
 				assert!(
-					!comment.identity.is_comment() || comment.identity.user().is_none(),
+					!comment.is_comment() || comment.user().is_none(),
 					"virtual issue must not have linked comments, got: {:?}",
 					comment.identity
 				);
 			}
-			let comment_is_owned = comment.identity.user().is_some_and(crate::current_user::is);
+			let comment_is_owned = comment.user().is_some_and(crate::current_user::is);
 			let comment_indent = if comment_is_owned { &content_indent } else { &format!("{content_indent}\t") };
 
 			if out.lines().last().is_some_and(|l| !l.trim().is_empty()) {
@@ -1274,7 +1286,7 @@ impl Issue /*{{{1*/ {
 
 		// Additional comments
 		for comment in self.contents.comments.iter().skip(1) {
-			let comment_is_owned = self.identity.is_virtual || comment.identity.user().is_some_and(crate::current_user::is);
+			let comment_is_owned = self.identity.is_virtual || comment.user().is_some_and(crate::current_user::is);
 			let comment_indent_str = if comment_is_owned { content_indent } else { "\t\t" };
 
 			if out.lines().last().is_some_and(|l| !l.trim().is_empty()) {

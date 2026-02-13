@@ -328,7 +328,7 @@ fn build_contents_from_github(issue: &GithubIssue, comments: &[GithubComment]) -
 		title: issue.title.clone(),
 		labels,
 		state: close_state,
-		comments: issue_comments,
+		comments: issue_comments.into(),
 		blockers,
 	}
 }
@@ -414,7 +414,7 @@ impl Sink<Remote> for Issue {
 
 		// Create pending comments sequentially (order matters)
 		for comment in self.contents.comments.iter_mut().skip(1) {
-			if comment.identity.is_pending() && !comment.body.is_empty() {
+			if comment.is_pending() && !comment.body.is_empty() {
 				let body_str = comment.body.render();
 				println!("Creating new comment on issue #{issue_number}...");
 				gh.create_comment(repo_info, issue_number, &body_str).await?;

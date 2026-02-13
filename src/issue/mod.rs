@@ -19,7 +19,7 @@ pub use marker::{IssueMarker, Marker};
 
 mod types;
 pub use types::{
-	CloseState, Comment, CommentIdentity, HollowIssue, Issue, IssueContents, IssueIdentity, IssueIndex, IssueLink, IssueSelector, IssueTimestamps, LazyIssue, LinkedIssueMeta,
+	CloseState, Comment, CommentIdentity, Comments, HollowIssue, Issue, IssueContents, IssueIdentity, IssueIndex, IssueLink, IssueSelector, IssueTimestamps, LazyIssue, LinkedIssueMeta,
 	MAX_INDEX_DEPTH, MAX_LINEAGE_DEPTH, MAX_TITLE_LENGTH, RepoInfo, VirtualIssue,
 };
 
