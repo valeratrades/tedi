@@ -177,8 +177,8 @@ mod tests {
 
 	#[tokio::test]
 	async fn test_parse_touch_path_errors() {
-		// Too few components (offline mode to avoid network)
-		assert!(parse_touch_path("owner/issue.md", None, true).await.is_err());
-		assert!(parse_touch_path("issue.md", None, true).await.is_err());
+		let err1 = parse_touch_path("owner/issue.md", None, true).await.unwrap_err();
+		let err2 = parse_touch_path("issue.md", None, true).await.unwrap_err();
+		insta::assert_snapshot!(format!("two_components: {err1}\none_component: {err2}"), @"");
 	}
 }

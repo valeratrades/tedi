@@ -339,11 +339,11 @@ mod tests {
 	fn test_split_blockers_with_marker() {
 		let text = "Description here\n\n# Blockers\n- task 1\n- task 2";
 		let (content, blockers) = split_blockers(text);
-		assert_eq!(content, "Description here\n");
-		assert!(!blockers.is_empty());
-		assert_eq!(blockers.items.len(), 2);
-		assert_eq!(blockers.items[0].text, "task 1");
-		assert_eq!(blockers.items[1].text, "task 2");
+		insta::assert_snapshot!(format!("content: {content:?}\nblockers: {}", blockers.serialize()), @r#"
+		content: "Description here\n"
+		blockers: - task 1
+		- task 2
+		"#);
 	}
 
 	#[test]
@@ -367,10 +367,15 @@ mod tests {
 		let original = "Body text\n\n# Blockers\n- task 1\n- task 2";
 		let (content, blockers) = split_blockers(original);
 		let rejoined = join_with_blockers(&content, &blockers);
-		// Re-split should give same results
 		let (content2, blockers2) = split_blockers(&rejoined);
-		assert_eq!(content, content2);
-		assert_eq!(blockers.items.len(), blockers2.items.len());
+		insta::assert_snapshot!(
+			format!("content: {content2:?}\nblockers: {}", blockers2.serialize()),
+			@r#"
+		content: "Body text\n"
+		blockers: - task 1
+		- task 2
+		"#
+		);
 	}
 
 	#[test]
@@ -387,9 +392,13 @@ mod tests {
 	#[test]
 	fn test_is_empty() {
 		let empty = BlockerSequence::default();
-		assert!(empty.is_empty());
-
 		let with_content = BlockerSequence::parse("- task");
-		assert!(!with_content.is_empty());
+		insta::assert_snapshot!(
+			format!("default: {}\nwith_content: {}", empty.is_empty(), with_content.is_empty()),
+			@"
+		default: true
+		with_content: false
+		"
+		);
 	}
 }

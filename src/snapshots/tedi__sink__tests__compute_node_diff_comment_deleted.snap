@@ -1,0 +1,17 @@
+---
+source: src/sink.rs
+expression: diff
+---
+IssueDiff {
+    body_changed: false,
+    state_changed: false,
+    title_changed: false,
+    labels_changed: false,
+    comments_to_create: [],
+    comments_to_update: [],
+    comments_to_delete: [
+        123,
+    ],
+    children_to_create: [],
+    children_to_delete: [],
+}

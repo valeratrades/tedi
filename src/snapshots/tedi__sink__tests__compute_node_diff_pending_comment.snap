@@ -1,0 +1,32 @@
+---
+source: src/sink.rs
+expression: diff
+---
+IssueDiff {
+    body_changed: false,
+    state_changed: false,
+    title_changed: false,
+    labels_changed: false,
+    comments_to_create: [
+        Comment {
+            identity: Pending,
+            body: Events(
+                [
+                    Start(
+                        Paragraph,
+                    ),
+                    Text(
+                        "new comment",
+                    ),
+                    End(
+                        Paragraph,
+                    ),
+                ],
+            ),
+        },
+    ],
+    comments_to_update: [],
+    comments_to_delete: [],
+    children_to_create: [],
+    children_to_delete: [],
+}

@@ -34,9 +34,12 @@ fn test_reset_with_subissue_edit() {
 	// --reset fetches remote and establishes consensus, then user edits
 	let out = ctx.open_url(("o", "r").into(), 1).args(&["--reset"]).edit(&edited).run();
 
-	assert!(out.status.success(), "Should succeed. stderr: {}", out.stderr);
-	assert!(!out.stderr.contains("Conflict"), "No conflict expected. stderr: {}", out.stderr);
-	assert!(!out.stdout.contains("Merging"), "No merge expected. stdout: {}", out.stdout);
+	assert!(
+		out.status.success() && !out.stderr.contains("Conflict") && !out.stdout.contains("Merging"),
+		"Should succeed without conflict or merge. stderr: {}, stdout: {}",
+		out.stderr,
+		out.stdout
+	);
 }
 
 /// After --reset on a simple issue, editing the body should succeed without conflict.
@@ -51,8 +54,11 @@ fn test_reset_with_body_edit() {
 
 	let out = ctx.open_url(("o", "r").into(), 1).args(&["--reset"]).edit(&edited).run();
 
-	assert!(out.status.success(), "Should succeed. stderr: {}", out.stderr);
-	assert!(!out.stderr.contains("Conflict"), "No conflict expected. stderr: {}", out.stderr);
+	assert!(
+		out.status.success() && !out.stderr.contains("Conflict"),
+		"Should succeed without conflict. stderr: {}",
+		out.stderr
+	);
 }
 
 /// Issue #46 bug scenario: --reset should discard local modifications to sub-issue files.
@@ -127,11 +133,10 @@ async fn test_reset_discards_local_subissue_modifications() {
 
 	let out = ctx.open_url(("o", "r").into(), 1).args(&["--reset"]).edit(&edited_after_reset).run();
 
-	assert!(out.status.success(), "Edit after reset failed. stderr: {}", out.stderr);
-	assert!(!out.stderr.contains("Conflict"), "No conflict expected. stderr: {}", out.stderr);
 	assert!(
-		!out.stdout.contains("Merging"),
-		"BUG: --reset should make consensus == remote, no merge needed. stdout: {}",
+		out.status.success() && !out.stderr.contains("Conflict") && !out.stdout.contains("Merging"),
+		"Should succeed without conflict or merge after reset. stderr: {}, stdout: {}",
+		out.stderr,
 		out.stdout
 	);
 }

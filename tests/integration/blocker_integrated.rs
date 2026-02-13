@@ -36,13 +36,17 @@ async fn test_blocker_add_in_integrated_mode() {
 	eprintln!("stdout: {}", out.stdout);
 	eprintln!("stderr: {}", out.stderr);
 
-	// The add command should succeed
 	assert!(out.status.success(), "blocker add should succeed in integrated mode. stderr: {}", out.stderr);
 
-	// Verify the blocker was added to the issue file
-	let content = read_issue_file(&issue_path);
-	assert!(content.contains("New task from CLI"), "New blocker should be added to issue file. Got: {content}");
-	assert!(content.contains("First task"), "Existing blockers should be preserved. Got: {content}");
+	// new blocker added, existing preserved
+	insta::assert_snapshot!(read_issue_file(&issue_path), @"
+	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+			Body text.
+		
+		# Blockers
+		- First task
+		- New task from CLI
+	");
 }
 
 #[tokio::test]
@@ -73,21 +77,17 @@ async fn test_blocker_pop_in_integrated_mode() {
 	eprintln!("stdout: {}", out.stdout);
 	eprintln!("stderr: {}", out.stderr);
 
-	// The pop command should succeed
 	assert!(out.status.success(), "blocker pop should succeed in integrated mode. stderr: {}", out.stderr);
 
-	// Should show what was popped
-	assert!(
-		out.stdout.contains("Popped") || out.stdout.contains("Third task"),
-		"Should show popped task. stdout: {}",
-		out.stdout
-	);
-
-	// Verify the blocker was removed from the issue file
-	let content = read_issue_file(&issue_path);
-	assert!(!content.contains("Third task"), "Third task should be removed. Got: {content}");
-	assert!(content.contains("First task"), "First task should remain. Got: {content}");
-	assert!(content.contains("Second task"), "Second task should remain. Got: {content}");
+	// Third task popped, First and Second remain
+	insta::assert_snapshot!(read_issue_file(&issue_path), @"
+	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+			Body text.
+		
+		# Blockers
+		- First task
+		- Second task
+	");
 }
 
 #[tokio::test]
@@ -110,13 +110,16 @@ async fn test_blocker_add_creates_blockers_section_if_missing() {
 	eprintln!("stdout: {}", out.stdout);
 	eprintln!("stderr: {}", out.stderr);
 
-	// The add command should succeed
 	assert!(out.status.success(), "blocker add should succeed even without existing blockers section. stderr: {}", out.stderr);
 
-	// Verify the blockers section was created with the new task
-	let content = read_issue_file(&issue_path);
-	assert!(content.contains("# Blockers"), "Blockers section should be created. Got: {content}");
-	assert!(content.contains("New task"), "New blocker should be added. Got: {content}");
+	// blockers section created with new task
+	insta::assert_snapshot!(read_issue_file(&issue_path), @"
+	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+			Body text without blockers section.
+		
+		# Blockers
+		- New task
+	");
 }
 
 #[tokio::test]
@@ -134,14 +137,11 @@ async fn test_blocker_add_urgent_without_blocker_file_set() {
 	eprintln!("stdout: {}", out.stdout);
 	eprintln!("stderr: {}", out.stderr);
 
-	// The add command should succeed without a blocker file set
-	assert!(out.status.success(), "blocker add --urgent should succeed without blocker file set. stderr: {}", out.stderr);
-
-	// Verify the blocker was added to an urgent file
 	assert!(
-		out.stdout.contains("Added to urgent") || out.stdout.contains("urgent"),
-		"Should confirm urgent add. stdout: {}",
-		out.stdout
+		out.status.success() && out.stdout.contains("urgent"),
+		"Should succeed and confirm urgent add. stdout: {}, stderr: {}",
+		out.stdout,
+		out.stderr
 	);
 }
 
@@ -174,10 +174,18 @@ async fn test_blocker_add_with_nested_context() {
 	eprintln!("stdout: {}", out.stdout);
 	eprintln!("stderr: {}", out.stderr);
 
-	// The add command should succeed
 	assert!(out.status.success(), "blocker add should succeed. stderr: {}", out.stderr);
 
-	// Verify the blocker was added (should be under Phase 2, the last section with children)
-	let content = read_issue_file(&issue_path);
-	assert!(content.contains("New sub-task"), "New blocker should be added. Got: {content}");
+	// new sub-task added under Phase 2
+	insta::assert_snapshot!(read_issue_file(&issue_path), @"
+	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+			Body text.
+		
+		# Blockers
+		- Phase 1
+			- Setup task
+		- Phase 2
+			- Implementation task
+			- New sub-task
+	");
 }

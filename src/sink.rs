@@ -235,7 +235,7 @@ mod tests {
 		let diff = compute_node_diff(&new, Some(&old));
 
 		assert!(diff.body_changed);
-		assert!(diff.has_changes());
+		insta::assert_debug_snapshot!(diff, @"");
 	}
 
 	#[test]
@@ -247,7 +247,7 @@ mod tests {
 		let diff = compute_node_diff(&new, Some(&old));
 
 		assert!(diff.state_changed);
-		assert!(diff.has_changes());
+		insta::assert_debug_snapshot!(diff, @"");
 	}
 
 	#[test]
@@ -261,8 +261,7 @@ mod tests {
 
 		let diff = compute_node_diff(&new, Some(&old));
 
-		assert_eq!(diff.comments_to_create.len(), 1);
-		assert!(diff.has_changes());
+		insta::assert_debug_snapshot!(diff, @"");
 	}
 
 	#[test]
@@ -277,7 +276,7 @@ mod tests {
 		let diff = compute_node_diff(&new, Some(&old));
 
 		assert_eq!(diff.comments_to_delete, vec![123]);
-		assert!(diff.has_changes());
+		insta::assert_debug_snapshot!(diff, @"");
 	}
 
 	#[test]

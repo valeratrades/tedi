@@ -1734,6 +1734,7 @@ impl From<Issue> for VirtualIssue {
 }
 
 /// Result of parsing a checkbox prefix.
+#[derive(Debug)]
 enum CheckboxParseResult<'a> {
 	/// Successfully parsed checkbox
 	Ok(CloseState, &'a str),
@@ -1854,122 +1855,146 @@ mod tests {
 
 	#[test]
 	fn test_close_state_from_checkbox() {
-		assert_eq!(CloseState::from_checkbox(" "), Some(CloseState::Open));
-		assert_eq!(CloseState::from_checkbox(""), Some(CloseState::Open));
-		assert_eq!(CloseState::from_checkbox("x"), Some(CloseState::Closed));
-		assert_eq!(CloseState::from_checkbox("X"), Some(CloseState::Closed));
-		assert_eq!(CloseState::from_checkbox("-"), Some(CloseState::NotPlanned));
-		assert_eq!(CloseState::from_checkbox("123"), Some(CloseState::Duplicate(123)));
-		assert_eq!(CloseState::from_checkbox("42"), Some(CloseState::Duplicate(42)));
-		assert_eq!(CloseState::from_checkbox("invalid"), None);
+		let cases = [" ", "", "x", "X", "-", "123", "42", "invalid"];
+		let results: Vec<_> = cases.iter().map(|c| format!("{c:?} => {:?}", CloseState::from_checkbox(c))).collect();
+		insta::assert_snapshot!(results.join("\n"), @r#"
+		" " => Some(Open)
+		"" => Some(Open)
+		"x" => Some(Closed)
+		"X" => Some(Closed)
+		"-" => Some(NotPlanned)
+		"123" => Some(Duplicate(123))
+		"42" => Some(Duplicate(42))
+		"invalid" => None
+		"#);
 	}
 
 	#[test]
 	fn test_close_state_to_checkbox() {
-		assert_eq!(CloseState::Open.to_checkbox(), " ");
-		assert_eq!(CloseState::Closed.to_checkbox(), "x");
-		assert_eq!(CloseState::NotPlanned.to_checkbox(), "-");
-		assert_eq!(CloseState::Duplicate(123).to_checkbox(), "123");
+		let cases = [CloseState::Open, CloseState::Closed, CloseState::NotPlanned, CloseState::Duplicate(123)];
+		let results: Vec<_> = cases.iter().map(|s| format!("{s:?} => {:?}", s.to_checkbox())).collect();
+		insta::assert_snapshot!(results.join("\n"), @r#"
+		Open => " "
+		Closed => "x"
+		NotPlanned => "-"
+		Duplicate(123) => "123"
+		"#);
 	}
 
 	#[test]
 	fn test_close_state_is_closed() {
-		assert!(!CloseState::Open.is_closed());
-		assert!(CloseState::Closed.is_closed());
-		assert!(CloseState::NotPlanned.is_closed());
-		assert!(CloseState::Duplicate(123).is_closed());
+		let cases = [CloseState::Open, CloseState::Closed, CloseState::NotPlanned, CloseState::Duplicate(123)];
+		let results: Vec<_> = cases.iter().map(|s| format!("{s:?} => {}", s.is_closed())).collect();
+		insta::assert_snapshot!(results.join("\n"), @"
+		Open => false
+		Closed => true
+		NotPlanned => true
+		Duplicate(123) => true
+		");
 	}
 
 	#[test]
 	fn test_close_state_should_remove() {
-		assert!(!CloseState::Open.should_remove());
-		assert!(!CloseState::Closed.should_remove());
-		assert!(!CloseState::NotPlanned.should_remove());
-		assert!(CloseState::Duplicate(123).should_remove());
+		let cases = [CloseState::Open, CloseState::Closed, CloseState::NotPlanned, CloseState::Duplicate(123)];
+		let results: Vec<_> = cases.iter().map(|s| format!("{s:?} => {}", s.should_remove())).collect();
+		insta::assert_snapshot!(results.join("\n"), @"
+		Open => false
+		Closed => false
+		NotPlanned => false
+		Duplicate(123) => true
+		");
 	}
 
 	#[test]
 	fn test_close_state_to_github_state() {
-		assert_eq!(CloseState::Open.to_github_state(), "open");
-		assert_eq!(CloseState::Closed.to_github_state(), "closed");
-		assert_eq!(CloseState::NotPlanned.to_github_state(), "closed");
-		assert_eq!(CloseState::Duplicate(123).to_github_state(), "closed");
+		let cases = [CloseState::Open, CloseState::Closed, CloseState::NotPlanned, CloseState::Duplicate(123)];
+		let results: Vec<_> = cases.iter().map(|s| format!("{s:?} => {}", s.to_github_state())).collect();
+		insta::assert_snapshot!(results.join("\n"), @"
+		Open => open
+		Closed => closed
+		NotPlanned => closed
+		Duplicate(123) => closed
+		");
 	}
 
 	#[test]
 	fn test_parse_checkbox_prefix() {
-		// Helper to extract (CloseState, rest) from Ok result
-		fn extract_ok(result: CheckboxParseResult) -> Option<(CloseState, String)> {
-			match result {
-				CheckboxParseResult::Ok(state, rest) => Some((state, rest.to_string())),
-				_ => None,
-			}
-		}
-
-		// Standard cases
-		assert_eq!(extract_ok(Issue::parse_checkbox_prefix_detailed("- [ ] rest")), Some((CloseState::Open, "rest".to_string())));
-		assert_eq!(extract_ok(Issue::parse_checkbox_prefix_detailed("- [x] rest")), Some((CloseState::Closed, "rest".to_string())));
-		assert_eq!(extract_ok(Issue::parse_checkbox_prefix_detailed("- [X] rest")), Some((CloseState::Closed, "rest".to_string())));
-
-		// New close types
-		assert_eq!(
-			extract_ok(Issue::parse_checkbox_prefix_detailed("- [-] rest")),
-			Some((CloseState::NotPlanned, "rest".to_string()))
-		);
-		assert_eq!(
-			extract_ok(Issue::parse_checkbox_prefix_detailed("- [123] rest")),
-			Some((CloseState::Duplicate(123), "rest".to_string()))
-		);
-		assert_eq!(
-			extract_ok(Issue::parse_checkbox_prefix_detailed("- [42] Title here")),
-			Some((CloseState::Duplicate(42), "Title here".to_string()))
-		);
-
-		// Not a checkbox line
-		assert!(matches!(Issue::parse_checkbox_prefix_detailed("no checkbox"), CheckboxParseResult::NotCheckbox));
-
-		// Invalid checkbox content
-		assert!(matches!(
-			Issue::parse_checkbox_prefix_detailed("- [invalid] rest"),
-			CheckboxParseResult::InvalidContent(s) if s == "invalid"
-		));
-		assert!(matches!(
-			Issue::parse_checkbox_prefix_detailed("- [abc] rest"),
-			CheckboxParseResult::InvalidContent(s) if s == "abc"
-		));
+		let cases = [
+			"- [ ] rest", "- [x] rest", "- [X] rest", "- [-] rest", "- [123] rest", "- [42] Title here", "no checkbox", "- [invalid] rest", "- [abc] rest",
+		];
+		let results: Vec<_> = cases.iter().map(|c| format!("{c:?} => {:?}", Issue::parse_checkbox_prefix_detailed(c))).collect();
+		insta::assert_snapshot!(results.join("\n"), @r#"
+		"- [ ] rest" => Ok(Open, "rest")
+		"- [x] rest" => Ok(Closed, "rest")
+		"- [X] rest" => Ok(Closed, "rest")
+		"- [-] rest" => Ok(NotPlanned, "rest")
+		"- [123] rest" => Ok(Duplicate(123), "rest")
+		"- [42] Title here" => Ok(Duplicate(42), "Title here")
+		"no checkbox" => NotCheckbox
+		"- [invalid] rest" => InvalidContent("invalid")
+		"- [abc] rest" => InvalidContent("abc")
+		"#);
 	}
 
 	#[test]
 	fn test_parse_invalid_checkbox_returns_error() {
-		// Invalid checkbox on root issue
-		let content = "- [abc] Invalid issue <!-- @owner https://github.com/owner/repo/issues/123 -->\n\tBody\n";
-		let result = VirtualIssue::parse(content, PathBuf::from("test.md"));
-		assert!(result.is_err());
-		assert!(result.unwrap_err().to_string().contains("invalid checkbox"));
+		let root_err = VirtualIssue::parse(
+			"- [abc] Invalid issue <!-- @owner https://github.com/owner/repo/issues/123 -->\n\tBody\n",
+			PathBuf::from("test.md"),
+		)
+		.unwrap_err();
+		let sub_err = VirtualIssue::parse(
+			"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->\n\tBody\n\n\t- [xyz] Bad sub <!--sub @owner https://github.com/owner/repo/issues/2 -->\n",
+			PathBuf::from("test.md"),
+		)
+		.unwrap_err();
+		insta::assert_snapshot!(format!("root: {root_err}\nsub: {sub_err}"), @"
+		root: tedi::parse::invalid_checkbox
 
-		// Invalid checkbox on sub-issue
-		let content = "- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->\n\tBody\n\n\t- [xyz] Bad sub <!--sub @owner https://github.com/owner/repo/issues/2 -->\n";
-		let result = VirtualIssue::parse(content, PathBuf::from("test.md"));
-		assert!(result.is_err());
-		assert!(result.unwrap_err().to_string().contains("invalid checkbox"));
+		  × invalid checkbox content: 'abc'
+		   ╭─[test.md:1:1]
+		 1 │ - [abc] Invalid issue <!-- @owner https://github.com/owner/repo/issues/123 -->
+		   · ───────────────────────────────────────┬──────────────────────────────────────
+		   ·                                        ╰── unrecognized checkbox value
+		 2 │     Body
+		   ╰────
+		  help: valid checkbox values are: ' ' (open), 'x' (closed), '-' (not
+		        planned), or a number like '123' (duplicate of issue #123)
+
+
+
+		sub: tedi::parse::invalid_checkbox
+
+		  × invalid checkbox content: 'xyz'
+		   ╭─[test.md:4:1]
+		 3 │ 
+		 4 │     - [xyz] Bad sub <!--sub @owner https://github.com/owner/repo/issues/2 -->
+		   · ──────────────────────────────────────┬──────────────────────────────────────
+		   ·                                       ╰── unrecognized checkbox value
+		   ╰────
+		  help: valid checkbox values are: ' ' (open), 'x' (closed), '-' (not
+		        planned), or a number like '123' (duplicate of issue #123)
+		");
 	}
 
 	#[test]
 	fn test_parse_and_serialize_not_planned() {
 		let content = "- [-] Not planned issue <!-- @owner https://github.com/owner/repo/issues/123 -->\n\tBody text\n";
-		let virtual_issue = VirtualIssue::parse(content, PathBuf::from("test.md")).unwrap();
-
-		assert_eq!(virtual_issue.contents.state, CloseState::NotPlanned);
-		assert_eq!(virtual_issue.contents.title, "Not planned issue");
+		let vi = VirtualIssue::parse(content, PathBuf::from("test.md")).unwrap();
+		insta::assert_snapshot!(format!("state: {:?}\ntitle: {}", vi.contents.state, vi.contents.title), @"
+		state: NotPlanned
+		title: Not planned issue
+		");
 	}
 
 	#[test]
 	fn test_parse_and_serialize_duplicate() {
 		let content = "- [456] Duplicate issue <!-- @owner https://github.com/owner/repo/issues/123 -->\n\tBody text\n";
-		let virtual_issue = VirtualIssue::parse(content, PathBuf::from("test.md")).unwrap();
-
-		assert_eq!(virtual_issue.contents.state, CloseState::Duplicate(456));
-		assert_eq!(virtual_issue.contents.title, "Duplicate issue");
+		let vi = VirtualIssue::parse(content, PathBuf::from("test.md")).unwrap();
+		insta::assert_snapshot!(format!("state: {:?}\ntitle: {}", vi.contents.state, vi.contents.title), @"
+		state: Duplicate(456)
+		title: Duplicate issue
+		");
 	}
 
 	#[test]
@@ -2022,50 +2047,32 @@ mod tests {
 	fn test_find_last_blocker_position_single_item() {
 		let content = "- [ ] Issue <!-- @owner https://github.com/owner/repo/issues/1 -->\n\tBody\n\n\t# Blockers\n\t- task 1\n";
 		let issue = unsafe_mock_parse_virtual(content);
-		let pos = issue.find_last_blocker_position();
-		assert!(pos.is_some());
-		let (line, col) = pos.unwrap();
-		assert_eq!(line, 5); // Line 5: `\t- task 1`
-		// Column 4: 1-indexed position of first char after `\t- ` (tab=1, dash=2, space=3, 't'=4)
-		assert_eq!(col, 4);
+		insta::assert_snapshot!(format!("{:?}", issue.find_last_blocker_position()), @"Some((5, 4))");
 	}
 
 	#[test]
 	fn test_find_last_blocker_position_multiple_items() {
 		let content = "- [ ] Issue <!-- @owner https://github.com/owner/repo/issues/1 -->\n\tBody\n\n\t# Blockers\n\t- task 1\n\t- task 2\n\t- task 3\n";
 		let issue = unsafe_mock_parse_virtual(content);
-		let pos = issue.find_last_blocker_position();
-		assert!(pos.is_some());
-		let (line, col) = pos.unwrap();
-		assert_eq!(line, 7); // Line 7: `\t- task 3`
-		assert_eq!(col, 4);
+		insta::assert_snapshot!(format!("{:?}", issue.find_last_blocker_position()), @"Some((7, 4))");
 	}
 
 	#[test]
 	fn test_find_last_blocker_position_with_nesting() {
 		let content = "- [ ] Issue <!-- @owner https://github.com/owner/repo/issues/1 -->\n\tBody\n\n\t# Blockers\n\t- Phase 1\n\t\t- task a\n\t- Phase 2\n\t\t- task b\n";
 		let issue = unsafe_mock_parse_virtual(content);
-		let pos = issue.find_last_blocker_position();
-		assert!(pos.is_some());
-		let (line, col) = pos.unwrap();
-		assert_eq!(line, 8); // Line 8: `\t\t- task b`
-		assert_eq!(col, 5); // 2 tabs + "- " + first char = col 5
+		insta::assert_snapshot!(format!("{:?}", issue.find_last_blocker_position()), @"Some((8, 5))");
 	}
 
 	#[test]
 	fn test_find_last_blocker_position_before_sub_issues() {
 		let content = "- [ ] Issue <!-- @owner https://github.com/owner/repo/issues/1 -->\n\tBody\n\n\t# Blockers\n\t- blocker task\n\n\t- [ ] Sub issue <!--sub @owner https://github.com/owner/repo/issues/2 -->\n";
 		let issue = unsafe_mock_parse_virtual(content);
-		let pos = issue.find_last_blocker_position();
-		assert!(pos.is_some());
-		let (line, col) = pos.unwrap();
-		assert_eq!(line, 5); // Line 5: `\t- blocker task`, not the sub-issue line
-		assert_eq!(col, 4);
+		insta::assert_snapshot!(format!("{:?}", issue.find_last_blocker_position()), @"Some((5, 4))");
 	}
 
 	#[test]
 	fn test_serialize_filesystem_no_children() {
-		// Issue with children
 		let content = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
 	Parent body
 
@@ -2077,12 +2084,11 @@ mod tests {
 "#;
 		let issue = unsafe_mock_parse_virtual(content);
 		assert_eq!(issue.children.len(), 2);
-
-		// Filesystem serialization should NOT include children
-		let fs_serialized = issue.serialize_filesystem();
-		assert!(!fs_serialized.contains("Child 1"));
-		assert!(!fs_serialized.contains("Child 2"));
-		assert!(fs_serialized.contains("Parent body"));
+		// filesystem serialization should NOT include children
+		insta::assert_snapshot!(issue.serialize_filesystem(), @"
+		- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
+				Parent body
+		");
 	}
 
 	#[test]
@@ -2094,28 +2100,32 @@ mod tests {
 		Child 1 body
 "#;
 		let issue = unsafe_mock_parse_virtual(content);
-
-		// Virtual serialization should include children
-		let virtual_serialized = issue.serialize_virtual();
-		assert!(virtual_serialized.contains("Parent body"));
-		assert!(virtual_serialized.contains("Child 1"));
-		assert!(virtual_serialized.contains("Child 1 body"));
+		insta::assert_snapshot!(issue.serialize_virtual(), @"
+		- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
+				Parent body
+			
+			- [ ] Child 1 <!-- @owner https://github.com/owner/repo/issues/2 -->
+					Child 1 body
+		");
 	}
 
 	#[test]
 	fn test_parse_virtual_includes_inline_children() {
-		// parse_virtual includes inline children (used for virtual file format)
 		let content = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
 	Parent body
 
 	- [ ] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
-		let virtual_issue = VirtualIssue::parse(content, PathBuf::from("test.md")).unwrap();
-		// parse_virtual preserves inline children
-		assert_eq!(virtual_issue.children.len(), 1);
-		assert_eq!(virtual_issue.contents.title, "Parent");
-		assert_eq!(virtual_issue[2].contents.title, "Child");
+		let vi = VirtualIssue::parse(content, PathBuf::from("test.md")).unwrap();
+		insta::assert_snapshot!(
+			format!("children: {}\nparent: {}\nchild: {}", vi.children.len(), vi.contents.title, vi[2].contents.title),
+			@"
+		children: 1
+		parent: Parent
+		child: Child
+		"
+		);
 	}
 
 	#[test]
@@ -2127,36 +2137,40 @@ mod tests {
 		Child body
 "#;
 		let issue = unsafe_mock_parse_virtual(content);
-
-		// Serialize to virtual, then deserialize back
 		let serialized = issue.serialize_virtual();
 		let reparsed = unsafe_mock_parse_virtual(&serialized);
-
-		assert_eq!(issue.contents.title, reparsed.contents.title);
-		assert_eq!(issue.children.len(), reparsed.children.len());
+		insta::assert_snapshot!(
+			format!("title: {}\nchildren: {}", reparsed.contents.title, reparsed.children.len()),
+			@"
+		title: Parent
+		children: 1
+		"
+		);
 	}
 
 	#[test]
 	fn test_select_blockers_standalone_line() {
 		let content = "- [ ] Issue <!-- @owner https://github.com/owner/repo/issues/1 -->\n\tBody\n\n\t!s\n\t# Blockers\n\t- task 1\n\t- task 2\n";
-		let virtual_issue = VirtualIssue::parse(content, PathBuf::from("test.md")).unwrap();
-
-		assert!(matches!(virtual_issue.contents.blockers.set_state, Some(crate::issue::BlockerSetState::Pending)));
-		assert_eq!(virtual_issue.contents.blockers.items.len(), 2);
-
-		// `!s` must not appear in re-serialized output
-		let serialized = unsafe_mock_parse_virtual(content).serialize_virtual();
-		assert!(!serialized.contains("!s"));
-		assert!(serialized.contains("# Blockers"));
+		let vi = VirtualIssue::parse(content, PathBuf::from("test.md")).unwrap();
+		assert!(matches!(vi.contents.blockers.set_state, Some(crate::issue::BlockerSetState::Pending)));
+		// !s must not appear in re-serialized output, blockers preserved
+		insta::assert_snapshot!(unsafe_mock_parse_virtual(content).serialize_virtual(), @"
+		- [ ] Issue <!-- @owner https://github.com/owner/repo/issues/1 -->
+				Body
+			
+			# Blockers
+			- task 1
+			- task 2
+		");
 	}
 
 	#[test]
 	fn test_select_blockers_suffix_on_header() {
 		let content = "- [ ] Issue <!-- @owner https://github.com/owner/repo/issues/1 -->\n\tBody\n\n\t# Blockers !s\n\t- one\n";
-		let virtual_issue = VirtualIssue::parse(content, PathBuf::from("test.md")).unwrap();
-
-		assert!(matches!(virtual_issue.contents.blockers.set_state, Some(crate::issue::BlockerSetState::Pending)));
-		assert_eq!(virtual_issue.contents.blockers.items[0].text, "one");
+		let vi = VirtualIssue::parse(content, PathBuf::from("test.md")).unwrap();
+		assert!(matches!(vi.contents.blockers.set_state, Some(crate::issue::BlockerSetState::Pending)));
+		// blocker text parsed correctly despite !s suffix on header
+		insta::assert_snapshot!(vi.contents.blockers.items[0].text, @"one");
 	}
 
 	#[test]
@@ -2185,41 +2199,34 @@ mod tests {
 	- task 2
 "#;
 		let issue = unsafe_mock_parse_virtual(content);
+		insta::assert_snapshot!(issue.serialize_github(), @"
+		This is the body text.
 
-		// GitHub serialization is just the body (with blockers)
-		let github = issue.serialize_github();
-
-		// Should NOT contain the title line or URL markers
-		assert!(!github.contains("- [ ]"));
-		assert!(!github.contains("<!--"));
-
-		// Should contain body and blockers
-		assert!(github.contains("This is the body text."));
-		assert!(github.contains("# Blockers"));
-		assert!(github.contains("- task 1"));
+		# Blockers
+		- task 1
+		- task 2
+		");
 	}
 
 	#[test]
 	fn test_parse_virtual_child_open_to_closed() {
-		// Start with parent + open child
 		let initial = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
 	Body
 
 	- [ ] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
-		let initial_virtual = VirtualIssue::parse(initial, PathBuf::from("test.md")).unwrap();
-		assert_eq!(initial_virtual[2].contents.state, CloseState::Open);
-
-		// Update with closed child
 		let updated = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
 	Body
 
 	- [x] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
-		let updated_virtual = VirtualIssue::parse(updated, PathBuf::from("test.md")).unwrap();
-		assert_eq!(updated_virtual[2].contents.state, CloseState::Closed, "Child should be Closed after update");
+		let initial_vi = VirtualIssue::parse(initial, PathBuf::from("test.md")).unwrap();
+		assert_eq!(initial_vi[2].contents.state, CloseState::Open);
+		let updated_vi = VirtualIssue::parse(updated, PathBuf::from("test.md")).unwrap();
+		// child should transition to Closed
+		insta::assert_snapshot!(format!("{:?}", updated_vi[2].contents.state), @"Closed");
 	}
 
 	#[test]
@@ -2230,17 +2237,17 @@ mod tests {
 	- [ ] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
-		let initial_virtual = VirtualIssue::parse(initial, PathBuf::from("test.md")).unwrap();
-		assert_eq!(initial_virtual[2].contents.state, CloseState::Open);
-
 		let updated = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
 	Body
 
 	- [-] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
-		let updated_virtual = VirtualIssue::parse(updated, PathBuf::from("test.md")).unwrap();
-		assert_eq!(updated_virtual[2].contents.state, CloseState::NotPlanned, "Child should be NotPlanned after update");
+		let initial_vi = VirtualIssue::parse(initial, PathBuf::from("test.md")).unwrap();
+		assert_eq!(initial_vi[2].contents.state, CloseState::Open);
+		let updated_vi = VirtualIssue::parse(updated, PathBuf::from("test.md")).unwrap();
+		// child should transition to NotPlanned
+		insta::assert_snapshot!(format!("{:?}", updated_vi[2].contents.state), @"NotPlanned");
 	}
 
 	#[test]
@@ -2251,17 +2258,17 @@ mod tests {
 	- [ ] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
-		let initial_virtual = VirtualIssue::parse(initial, PathBuf::from("test.md")).unwrap();
-		assert_eq!(initial_virtual[2].contents.state, CloseState::Open);
-
 		let updated = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
 	Body
 
 	- [99] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
-		let updated_virtual = VirtualIssue::parse(updated, PathBuf::from("test.md")).unwrap();
-		assert_eq!(updated_virtual[2].contents.state, CloseState::Duplicate(99), "Child should be Duplicate(99) after update");
+		let initial_vi = VirtualIssue::parse(initial, PathBuf::from("test.md")).unwrap();
+		assert_eq!(initial_vi[2].contents.state, CloseState::Open);
+		let updated_vi = VirtualIssue::parse(updated, PathBuf::from("test.md")).unwrap();
+		// child should transition to Duplicate(99)
+		insta::assert_snapshot!(format!("{:?}", updated_vi[2].contents.state), @"Duplicate(99)");
 	}
 
 	#[test]
@@ -2272,16 +2279,16 @@ mod tests {
 	- [x] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
-		let initial_virtual = VirtualIssue::parse(initial, PathBuf::from("test.md")).unwrap();
-		assert_eq!(initial_virtual[2].contents.state, CloseState::Closed);
-
 		let updated = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
 	Body
 
 	- [ ] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
-		let updated_virtual = VirtualIssue::parse(updated, PathBuf::from("test.md")).unwrap();
-		assert_eq!(updated_virtual[2].contents.state, CloseState::Open, "Child should be Open after update");
+		let initial_vi = VirtualIssue::parse(initial, PathBuf::from("test.md")).unwrap();
+		assert_eq!(initial_vi[2].contents.state, CloseState::Closed);
+		let updated_vi = VirtualIssue::parse(updated, PathBuf::from("test.md")).unwrap();
+		// child should transition to Open
+		insta::assert_snapshot!(format!("{:?}", updated_vi[2].contents.state), @"Open");
 	}
 }
