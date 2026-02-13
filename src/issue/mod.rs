@@ -7,7 +7,7 @@
 //! optional Github synchronization.
 
 mod blocker;
-pub use blocker::{BlockerItem, BlockerSequence, BlockerSetState, join_with_blockers, split_blockers};
+pub use blocker::{BlockerItem, BlockerSequence, BlockerSetState, Revolver, join_with_blockers, split_blockers};
 
 mod events;
 pub use events::{Events, OwnedCodeBlockKind, OwnedEvent, OwnedTag, OwnedTagEnd};

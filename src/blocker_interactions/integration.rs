@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use color_eyre::eyre::{Result, bail, eyre};
 use tedi::{
-	Issue, LazyIssue, Marker, RepoInfo, VirtualIssue,
+	Issue, LazyIssue, Marker, RepoInfo, Revolver, VirtualIssue,
 	local::{ExactMatchLevel, FsReader, Local, LocalIssueSource},
 };
 
@@ -46,15 +46,14 @@ impl BlockerIssueSource {
 
 	/// Get the currently selected blocker issue source
 	pub fn current() -> Option<Self> {
-		let cache_path = BlockerSequence::cache_path();
-		let path = std::fs::read_to_string(&cache_path).ok().map(|s| PathBuf::from(s.trim())).filter(|p| p.exists())?;
+		let revolver = Revolver::load()?;
+		let path = revolver.current_path()?.to_path_buf();
 		Some(Self::build(path).expect("failed to build BlockerIssueSource from cached path"))
 	}
 
-	/// Set this issue as the current blocker issue
+	/// Set this issue as the current blocker issue (single entry, clears revolver)
 	pub fn set_current(&self) -> Result<()> {
-		let cache_path = BlockerSequence::cache_path();
-		std::fs::write(&cache_path, self.virtual_issue_buffer_path.to_string_lossy().as_bytes())?;
+		Revolver::set(self.virtual_issue_buffer_path.clone())?;
 		Ok(())
 	}
 
@@ -158,6 +157,68 @@ pub async fn main_integrated(command: super::io::Command, offline: bool) -> Resu
 				println!("Current: {current}");
 			} else {
 				println!("Blockers section is empty.");
+			}
+		}
+
+		Command::SetMore { pattern } => {
+			let issue_path = resolve_issue_file(&pattern)?;
+			let source = BlockerIssueSource::build(issue_path.clone())?;
+			Revolver::add(issue_path)?;
+			println!("Added to rotation: {}", source.display_name());
+
+			// Show what's current (unchanged)
+			if let Some(current_source) = BlockerIssueSource::current() {
+				let blockers = current_source.load()?;
+				if let Some(current) = blockers.current_with_context(&[]) {
+					println!("Current: {current}");
+				}
+			}
+		}
+
+		Command::Toggle => match Revolver::toggle() {
+			Ok(path) => {
+				let source = BlockerIssueSource::build(path)?;
+				println!("Toggled to: {}", source.display_name());
+
+				let blockers = source.load()?;
+				if let Some(current) = blockers.current_with_context(&[]) {
+					println!("Current: {current}");
+				}
+			}
+			Err(msg) => {
+				bail!("{msg}");
+			}
+		},
+
+		Command::Revolver(sub) => {
+			use super::io::RevolverCommand;
+			match sub {
+				RevolverCommand::List => {
+					let Some(revolver) = Revolver::load() else {
+						println!("No revolver set. Use `todo blocker set <pattern>` first.");
+						return Ok(());
+					};
+					if revolver.entries.is_empty() {
+						println!("Revolver is empty.");
+						return Ok(());
+					}
+					let issues_dir = tedi::local::Local::issues_dir();
+					for (i, entry) in revolver.entries.iter().enumerate() {
+						let marker = if i == revolver.current_index { ">" } else { " " };
+						let display = entry
+							.strip_prefix(&issues_dir)
+							.map(|p| p.to_string_lossy().to_string())
+							.unwrap_or_else(|_| entry.to_string_lossy().to_string());
+						println!("{marker} {display}");
+					}
+				}
+				RevolverCommand::Open => {
+					let cache_path = BlockerSequence::cache_path();
+					if !cache_path.exists() {
+						bail!("No revolver set. Use `todo blocker set <pattern>` first.");
+					}
+					v_utils::io::file_open::open(&cache_path).await?;
+				}
 			}
 		}
 

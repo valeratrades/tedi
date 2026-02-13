@@ -11,6 +11,10 @@
 //! - Indent level (tabs) determines nesting depth
 //! - Once a nested blocker appears under an item, no more comments can follow at that level
 
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+
 use super::Marker;
 
 /// Split text at the blockers marker, returning (content_before, blockers).
@@ -190,10 +194,9 @@ impl BlockerSequence {
 	}
 
 	/// If `set_state` is `Pending`, write `issue_path` to the blocker cache and transition to `Applied`.
-	pub fn ensure_set(&mut self, issue_path: &std::path::Path) {
+	pub fn ensure_set(&mut self, issue_path: &Path) {
 		if matches!(self.set_state, Some(BlockerSetState::Pending)) {
-			let cache_path = Self::cache_path();
-			if let Err(e) = std::fs::write(&cache_path, issue_path.to_string_lossy().as_bytes()) {
+			if let Err(e) = Revolver::set(issue_path.to_path_buf()) {
 				tracing::warn!("failed to persist blocker selection: {e}");
 				return;
 			}
@@ -202,9 +205,9 @@ impl BlockerSequence {
 		}
 	}
 
-	/// XDG cache path for the current blocker issue selection.
-	pub fn cache_path() -> std::path::PathBuf {
-		v_utils::xdg_cache_file!("current_blocker_issue.txt")
+	/// XDG cache path for the blocker revolver state.
+	pub fn cache_path() -> PathBuf {
+		v_utils::xdg_cache_file!("blocker_revolver.json")
 	}
 
 	/// Serialize to text (indent-based format)
@@ -224,6 +227,111 @@ impl BlockerSequence {
 			collect_raw_lines(item, 0, &mut result);
 		}
 		result
+	}
+}
+
+/// Rotating list of blocker issue sources with a current-selection pointer.
+///
+/// Supports cycling between multiple active issues via `toggle`.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Revolver {
+	pub entries: Vec<PathBuf>,
+	pub current_index: usize,
+	pub previous: Option<PathBuf>,
+}
+
+impl Revolver {
+	fn cache_path() -> PathBuf {
+		BlockerSequence::cache_path()
+	}
+
+	/// Load revolver from cache. Returns None if no cache file exists.
+	pub fn load() -> Option<Self> {
+		let cache_path = Self::cache_path();
+		let content = std::fs::read_to_string(&cache_path).ok()?;
+		let mut revolver: Self = serde_json::from_str(&content).ok()?;
+		// Filter out dead paths
+		let was_current = revolver.entries.get(revolver.current_index).cloned();
+		revolver.entries.retain(|p| p.exists());
+		// Adjust index if entries were removed
+		if revolver.entries.is_empty() {
+			revolver.current_index = 0;
+		} else if let Some(was) = was_current {
+			// Try to keep pointing at the same entry
+			revolver.current_index = revolver.entries.iter().position(|p| p == &was).unwrap_or(0);
+		} else {
+			revolver.current_index = revolver.current_index.min(revolver.entries.len() - 1);
+		}
+		// Also clean dead previous
+		if let Some(ref prev) = revolver.previous {
+			if !prev.exists() {
+				revolver.previous = None;
+			}
+		}
+		Some(revolver)
+	}
+
+	fn save(&self) -> Result<(), std::io::Error> {
+		let cache_path = Self::cache_path();
+		if let Some(parent) = cache_path.parent() {
+			std::fs::create_dir_all(parent)?;
+		}
+		let content = serde_json::to_string_pretty(self).expect("Revolver serialization");
+		std::fs::write(&cache_path, content)
+	}
+
+	/// Current issue path, if any.
+	pub fn current_path(&self) -> Option<&Path> {
+		self.entries.get(self.current_index).map(|p| p.as_path())
+	}
+
+	/// Set a single entry (clears revolver). Preserves old current as `previous`.
+	pub fn set(path: PathBuf) -> Result<(), std::io::Error> {
+		let previous = Self::load().and_then(|r| r.current_path().map(|p| p.to_path_buf()));
+		let revolver = Self {
+			entries: vec![path],
+			current_index: 0,
+			previous,
+		};
+		revolver.save()
+	}
+
+	/// Add an entry to the revolver without changing current selection.
+	pub fn add(path: PathBuf) -> Result<(), std::io::Error> {
+		let mut revolver = Self::load().unwrap_or(Self {
+			entries: Vec::new(),
+			current_index: 0,
+			previous: None,
+		});
+		// Don't add duplicates
+		if !revolver.entries.contains(&path) {
+			revolver.entries.push(path);
+		}
+		revolver.save()
+	}
+
+	/// Advance to the next entry in the revolver.
+	/// Returns the new current path, or an error message.
+	pub fn toggle() -> Result<PathBuf, String> {
+		let mut revolver = Self::load().ok_or("No blocker set. Use `todo blocker set <pattern>` first.")?;
+		if revolver.entries.is_empty() {
+			return Err("No blocker set. Use `todo blocker set <pattern>` first.".into());
+		}
+		match revolver.entries.len() {
+			0 => unreachable!(),
+			1 => {
+				// Pull previous into revolver to make a 2-slot rotation
+				let prev = revolver.previous.take().ok_or("Nothing to toggle to. Use `set-more` to add issues to the rotation.")?;
+				revolver.entries.push(prev);
+				revolver.current_index = 1;
+			}
+			_ => {
+				revolver.current_index = (revolver.current_index + 1) % revolver.entries.len();
+			}
+		}
+		let current = revolver.entries[revolver.current_index].clone();
+		revolver.save().map_err(|e| format!("Failed to save revolver: {e}"))?;
+		Ok(current)
 	}
 }
 
@@ -400,5 +508,46 @@ mod tests {
 		with_content: false
 		"
 		);
+	}
+
+	#[test]
+	fn test_revolver_serde_roundtrip() {
+		let revolver = Revolver {
+			entries: vec![PathBuf::from("/a/b.md"), PathBuf::from("/c/d.md")],
+			current_index: 1,
+			previous: Some(PathBuf::from("/old.md")),
+		};
+		let json = serde_json::to_string_pretty(&revolver).unwrap();
+		let deserialized: Revolver = serde_json::from_str(&json).unwrap();
+		assert_eq!(deserialized.entries, revolver.entries);
+		assert_eq!(deserialized.current_index, revolver.current_index);
+		assert_eq!(deserialized.previous, revolver.previous);
+	}
+
+	#[test]
+	fn test_revolver_current_path() {
+		let revolver = Revolver {
+			entries: vec![PathBuf::from("/a.md"), PathBuf::from("/b.md")],
+			current_index: 0,
+			previous: None,
+		};
+		assert_eq!(revolver.current_path(), Some(Path::new("/a.md")));
+
+		let revolver2 = Revolver {
+			entries: vec![PathBuf::from("/a.md"), PathBuf::from("/b.md")],
+			current_index: 1,
+			previous: None,
+		};
+		assert_eq!(revolver2.current_path(), Some(Path::new("/b.md")));
+	}
+
+	#[test]
+	fn test_revolver_current_path_empty() {
+		let revolver = Revolver {
+			entries: vec![],
+			current_index: 0,
+			previous: None,
+		};
+		assert_eq!(revolver.current_path(), None);
 	}
 }

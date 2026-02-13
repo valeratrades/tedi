@@ -51,15 +51,33 @@ pub enum Command {
 		#[arg(short = 'u', long)]
 		urgent: bool,
 	},
-	/// Set the current issue for blocker operations
+	/// Set the current issue for blocker operations (clears revolver)
 	Set {
 		/// Pattern to match issue file
 		pattern: String,
 	},
+	/// Add an issue to the blocker rotation without changing current selection
+	SetMore {
+		/// Pattern to match issue file
+		pattern: String,
+	},
+	/// Step forward in the blocker rotation
+	Toggle,
+	/// Manage the blocker rotation
+	#[command(subcommand)]
+	Revolver(RevolverCommand),
 	/// Resume tracking time on the current blocker task via Clockify
 	Resume(ResumeArgs),
 	/// Pause tracking time via Clockify
 	Halt(HaltArgs),
 	/// Show the current clockify project name (repo/title)
 	CurrentProject,
+}
+
+#[derive(Clone, Debug, Subcommand)]
+pub enum RevolverCommand {
+	/// List entries in the blocker rotation
+	List,
+	/// Open the revolver cache file in $EDITOR
+	Open,
 }
