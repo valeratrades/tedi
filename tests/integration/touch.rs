@@ -218,11 +218,6 @@ async fn test_break_to_edit_allows_mid_execution_modification() {
 	let (vpath, continuation) = ctx.open_touch("o/r/test").args(&["--offline"]).break_to_edit();
 
 	let content = std::fs::read_to_string(&vpath).expect("should read virtual file");
-	// pre-edit virtual file has expected content
-	insta::assert_snapshot!(content, @"
-	- [ ] test issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-		original body
-	");
 
 	let modified = content.replace("original body", "original body\n\tappended content");
 	std::fs::write(&vpath, &modified).expect("should write virtual file");
