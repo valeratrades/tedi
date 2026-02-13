@@ -179,6 +179,18 @@ mod tests {
 	async fn test_parse_touch_path_errors() {
 		let err1 = parse_touch_path("owner/issue.md", None, true).await.unwrap_err();
 		let err2 = parse_touch_path("issue.md", None, true).await.unwrap_err();
-		insta::assert_snapshot!(format!("two_components: {err1}\none_component: {err2}"), @"");
+		insta::assert_snapshot!(format!("two_components: {err1}\none_component: {err2}"), @r#"
+		two_components: tedi::local::not_found
+
+		  × issue file Regex("owner/issue.md") not found
+		  help: Searched in: /home/v/.local/share/tedi/issues
+
+
+
+		one_component: tedi::local::not_found
+
+		  × issue file Regex("issue.md") not found
+		  help: Searched in: /home/v/.local/share/tedi/issues
+		"#);
 	}
 }

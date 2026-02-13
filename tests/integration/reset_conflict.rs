@@ -63,23 +63,14 @@ fn test_reset_with_body_edit() {
 
 /// Issue #46 bug scenario: --reset should discard local modifications to sub-issue files.
 ///
-/// When sub-issues have their own files (directory format), a previous edit to those
-/// files should NOT contaminate the consensus after --reset.
-///
-/// Scenario:
-/// 1. Fetch issue hierarchy (creates sub-issue files)
-/// 2. User modifies a sub-issue file (adds local content)
-/// 3. User runs --reset on the root issue
-/// 4. After reset, editing should not trigger false conflicts
-///
-/// The bug was that format_issue would embed LOCAL sub-issue content into consensus
-/// instead of the remote API content, causing consensus != remote.
+/// Local has diverged from remote (added content + blockers to parent sub-issue).
+/// After --reset, consensus should match remote exactly, so editing (marking child closed)
+/// should succeed without conflict or merge.
 #[tokio::test]
 async fn test_reset_discards_local_subissue_modifications() {
 	let ctx = TestContext::build("");
 
-	// 3-level hierarchy: grandparent -> parent -> child
-	// Parent gets its own directory because it has children
+	// Remote: clean 3-level hierarchy
 	let remote_vi = parse_virtual(
 		"- [ ] Grandparent <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
 		 \tgrandparent body\n\
@@ -90,37 +81,27 @@ async fn test_reset_discards_local_subissue_modifications() {
 		 \t\t- [ ] Child <!--sub @mock_user https://github.com/o/r/issues/3 -->\n\
 		 \t\t\tchild body\n",
 	);
-	let remote_state = ctx.remote(&remote_vi, None);
+	ctx.remote(&remote_vi, None);
 
-	// Step 1: Initial fetch to create local files
-	let out = ctx.open_url(("o", "r").into(), 1).run();
-	assert!(out.status.success(), "Initial fetch failed. stderr: {}", out.stderr);
-
-	// Step 2: User modifies the parent sub-issue (adds blockers)
-	// We need to get the parent issue from the remote state's children
-	let parent_issue = &remote_state[2]; // Issue #2 is the parent sub-issue
-
-	let modified_parent = parse_virtual(
-		"- [ ] Parent <!-- @mock_user https://github.com/o/r/issues/2 -->\n\
-		 \toriginal parent body\n\
-		 \tADDED LOCAL CONTENT\n\
+	// Local: same hierarchy but parent sub-issue has local modifications
+	let local_vi = parse_virtual(
+		"- [ ] Grandparent <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
+		 \tgrandparent body\n\
 		 \n\
-		 \t# Blockers\n\
-		 \t- local blocker\n\
+		 \t- [ ] Parent <!--sub @mock_user https://github.com/o/r/issues/2 -->\n\
+		 \t\toriginal parent body\n\
+		 \t\tADDED LOCAL CONTENT\n\
 		 \n\
-		 \t- [ ] Child <!--sub @mock_user https://github.com/o/r/issues/3 -->\n\
-		 \t\tchild body\n",
+		 \t\t# Blockers\n\
+		 \t\t- local blocker\n\
+		 \n\
+		 \t\t- [ ] Child <!--sub @mock_user https://github.com/o/r/issues/3 -->\n\
+		 \t\t\tchild body\n",
 	);
+	ctx.local(&local_vi, None).await;
 
-	// Open and edit the parent sub-issue
-	let out = ctx.open_issue(parent_issue).edit(&modified_parent).run();
-	assert!(out.status.success(), "Parent edit failed. stderr: {}", out.stderr);
-
-	// Step 3: --reset on grandparent should discard local modifications
-	// and establish consensus == remote
-
-	// Step 4: Edit after reset (mark child closed)
-	let edited_after_reset = parse_virtual(
+	// --reset should discard local modifications, then .edit marks child closed
+	let edited = parse_virtual(
 		"- [ ] Grandparent <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
 		 \tgrandparent body\n\
 		 \n\
@@ -131,7 +112,7 @@ async fn test_reset_discards_local_subissue_modifications() {
 		 \t\t\tchild body\n",
 	);
 
-	let out = ctx.open_url(("o", "r").into(), 1).args(&["--reset"]).edit(&edited_after_reset).run();
+	let out = ctx.open_url(("o", "r").into(), 1).args(&["--reset"]).edit(&edited).run();
 
 	assert!(
 		out.status.success() && !out.stderr.contains("Conflict") && !out.stdout.contains("Merging"),
