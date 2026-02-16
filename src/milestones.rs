@@ -303,6 +303,12 @@ async fn edit_milestone(settings: &LiveSettings, tf: Timeframe, offline: bool, m
 	// Collapse expanded issues back to bare links for storage
 	let new_description = collapse_to_links(&edited_content);
 
+	// Sync milestone assignments on GitHub: assign new issues, unassign removed ones
+	if !mock && !offline {
+		let collapsed_original = collapse_to_links(&original_description);
+		sync_milestone_assignments(settings, milestone_number, &collapsed_original, &new_description).await?;
+	}
+
 	if mock {
 		// In mock mode, write result back to the milestone file
 		let mock_milestone_path = std::env::var(concat!(env!("CARGO_PKG_NAME"), "_MOCK_MILESTONE")).unwrap();
@@ -553,6 +559,70 @@ async fn sync_blocker_changes(content: &str, offline: bool) -> Result<()> {
 		let modifier = Modifier::BlockerWrite { blockers: edited_blockers };
 		let sync_opts = SyncOptions::default();
 		modify_and_sync_issue(issue, offline, modifier, sync_opts).await?;
+	}
+
+	Ok(())
+}
+
+/// Extract all top-level issue links from collapsed milestone content.
+/// Only looks at non-indented lines (top-level refs).
+fn extract_issue_links(content: &str) -> Vec<IssueLink> {
+	content
+		.lines()
+		.filter_map(|line| {
+			if line.starts_with('\t') || line.trim().is_empty() {
+				return None;
+			}
+			parse_embedded_title_line(line).or_else(|| parse_shorthand_ref(line))
+		})
+		.collect()
+}
+
+/// Sync milestone assignments on GitHub.
+///
+/// Compares issue links in old vs new description, then:
+/// - Assigns newly added issues to the milestone
+/// - Unassigns removed issues from the milestone
+/// Only operates on issues in the same repo as the milestone.
+async fn sync_milestone_assignments(settings: &LiveSettings, milestone_number: u64, old_content: &str, new_content: &str) -> Result<()> {
+	use std::collections::HashSet;
+
+	let config = settings.config()?;
+	let milestones_config = config.milestones.as_ref().ok_or_else(|| eyre!("milestones config section is required"))?;
+	let (ms_owner, ms_repo) = parse_github_repo(&milestones_config.url)?;
+
+	let old_numbers: HashSet<u64> = extract_issue_links(old_content)
+		.iter()
+		.filter(|l| l.owner() == ms_owner && l.repo() == ms_repo)
+		.map(|l| l.number())
+		.collect();
+	let new_numbers: HashSet<u64> = extract_issue_links(new_content)
+		.iter()
+		.filter(|l| l.owner() == ms_owner && l.repo() == ms_repo)
+		.map(|l| l.number())
+		.collect();
+
+	let to_assign: Vec<u64> = new_numbers.difference(&old_numbers).copied().collect();
+	let to_unassign: Vec<u64> = old_numbers.difference(&new_numbers).copied().collect();
+
+	if to_assign.is_empty() && to_unassign.is_empty() {
+		return Ok(());
+	}
+
+	let client = tedi::github::client::get();
+	let repo = tedi::RepoInfo::new(&ms_owner, &ms_repo);
+
+	let mut futs = Vec::new();
+	for num in &to_assign {
+		println!("Assigning #{num} to milestone");
+		futs.push(client.set_issue_milestone(repo, *num, Some(milestone_number)));
+	}
+	for num in &to_unassign {
+		println!("Unassigning #{num} from milestone");
+		futs.push(client.set_issue_milestone(repo, *num, None));
+	}
+	for fut in futs {
+		fut.await?;
 	}
 
 	Ok(())

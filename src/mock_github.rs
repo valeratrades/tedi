@@ -702,6 +702,15 @@ impl GithubClient for MockGithubClient {
 		Ok(tedi::github::GraphqlTimelineTimestamps::default())
 	}
 
+	#[instrument(skip_all, fields(issue_number, ?milestone))]
+	async fn set_issue_milestone(&self, repo: RepoInfo, issue_number: u64, milestone: Option<u64>) -> Result<()> {
+		let owner = repo.owner();
+		let repo_name = repo.repo();
+		tracing::info!(target: "mock_github", owner, repo_name, issue_number, ?milestone, "set_issue_milestone");
+		self.log_call(&format!("set_issue_milestone({owner}, {repo_name}, {issue_number}, {milestone:?})"));
+		Ok(())
+	}
+
 	#[instrument(skip_all)]
 	async fn repo_exists(&self, repo: RepoInfo) -> Result<bool> {
 		let owner = repo.owner();

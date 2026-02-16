@@ -62,6 +62,10 @@ pub trait GithubClient: Send + Sync {
 	/// Note: Comment timestamps should be extracted from GithubComment's created_at/updated_at fields.
 	async fn fetch_timeline_timestamps(&self, repo: RepoInfo, issue_number: u64) -> Result<GraphqlTimelineTimestamps>;
 
+	/// Set or clear the milestone on an issue.
+	/// Pass `Some(number)` to assign, `None` to unassign.
+	async fn set_issue_milestone(&self, repo: RepoInfo, issue_number: u64, milestone: Option<u64>) -> Result<()>;
+
 	/// Check if a repository exists and is accessible (we have at least read access)
 	async fn repo_exists(&self, repo: RepoInfo) -> Result<bool>;
 }
@@ -259,6 +263,12 @@ impl GithubClient for RealGithubClient {
 	async fn update_issue_state(&self, repo: RepoInfo, issue_number: u64, state: &str) -> Result<()> {
 		let url = format!("https://api.github.com/repos/{}/{}/issues/{issue_number}", repo.owner(), repo.repo());
 		self.patch_json(&url, &serde_json::json!({ "state": state }), "Failed to update issue state").await
+	}
+
+	async fn set_issue_milestone(&self, repo: RepoInfo, issue_number: u64, milestone: Option<u64>) -> Result<()> {
+		let url = format!("https://api.github.com/repos/{}/{}/issues/{issue_number}", repo.owner(), repo.repo());
+		let json = serde_json::json!({ "milestone": milestone });
+		self.patch_json(&url, &json, "Failed to set issue milestone").await
 	}
 
 	async fn update_comment(&self, repo: RepoInfo, comment_id: u64, body: &str) -> Result<()> {
