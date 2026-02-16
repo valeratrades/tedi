@@ -27,7 +27,21 @@ const GLOBAL_FLAGS: &[&str] = &["--offline", "--mock", "-v", "--verbose", "-q", 
 const ENV_GITHUB_TOKEN: &str = concat!(env!("CARGO_PKG_NAME"), "__GITHUB_TOKEN");
 const ENV_MOCK_STATE: &str = concat!(env!("CARGO_PKG_NAME"), "_MOCK_STATE");
 const ENV_MOCK_PIPE: &str = concat!(env!("CARGO_PKG_NAME"), "_MOCK_PIPE");
-pub mod git;
+
+/// Base timestamp: 2001-09-11 12:00:00 UTC (midday).
+const BASE_TIMESTAMP_SECS: i64 = 1000209600;
+/// 12 hours in seconds - the range for randomization.
+const HALF_DAY_SECS: i64 = 12 * 60 * 60;
+/// Default owner for test issues without a link
+const DEFAULT_OWNER: &str = "owner";
+/// Default repo for test issues without a link
+const DEFAULT_REPO: &str = "repo";
+/// Default issue number for test issues without a link
+const DEFAULT_NUMBER: u64 = 1;
+const OWNER: &str = "o";
+const REPO: &str = "r";
+pub const USER: &str = "mock_user";
+
 /// Compile the binary before running any tests
 pub fn ensure_binary_compiled() {
 	BINARY_COMPILED.get_or_init(|| {
@@ -38,6 +52,24 @@ pub fn ensure_binary_compiled() {
 		}
 	});
 }
+
+/// Seed for deterministic timestamp generation. Must be in range -100..=100.
+#[derive(Clone, Copy, Debug, derive_more::Deref, derive_more::DerefMut, derive_more::Display, Eq, derive_more::Into, PartialEq)]
+pub struct Seed(i64);
+
+impl Seed {
+	pub fn new(value: i64) -> Self {
+		assert!((-100..=100).contains(&value), "seed must be in range -100..=100, got {value}");
+		Self(value)
+	}
+}
+
+impl From<i8> for Seed {
+	fn from(value: i8) -> Self {
+		Self(value as i64)
+	}
+}
+
 /// Unified test context for integration tests.
 ///
 /// Combines functionality from the old `TodoTestContext` and `SyncTestContext`.
@@ -71,8 +103,6 @@ impl TestContext {
 	/// "#);
 	/// ```
 	pub fn build(fixture_str: &str) -> Self {
-		use git::GitExt;
-
 		let fixture = Fixture::parse(fixture_str);
 		let xdg = Xdg::new(fixture.write_to_tempdir(), env!("CARGO_PKG_NAME"));
 
@@ -81,7 +111,7 @@ impl TestContext {
 
 		// Set overrides so all library calls use our temp dir
 		tedi::mocks::set_issues_dir(xdg.data_dir().join("issues"));
-		tedi::current_user::set(git::USER.to_string());
+		tedi::current_user::set(USER.to_string());
 
 		let ctx = Self {
 			xdg,
@@ -102,9 +132,6 @@ impl TestContext {
 	///
 	/// Used in cases where we don't have to simulate additional user input. If you're testing `open` command, you probably want to run it through [open builder](Self::open)
 	pub fn run(&self, args: &[&str]) -> RunOutput {
-		//if !args.contains("--mock") {
-		//	args = ["--mock"].join(args);
-		//}
 		let mut cmd = Command::new(get_binary_path());
 		cmd.args(args);
 		cmd.env("__IS_INTEGRATION_TEST", "1");
@@ -163,6 +190,171 @@ impl TestContext {
 	/// The issue parameter should be a serde_json::Value representing the mock state.
 	fn setup_mock_state(&self, state: &serde_json::Value) {
 		std::fs::write(&self.mock_state_path, serde_json::to_string_pretty(state).unwrap()).unwrap();
+	}
+
+	/// Initialize git in the issues directory.
+	pub fn init_git(&self) -> Git {
+		let git = Git::init(self.xdg.data_dir().join("issues"));
+		// Use diff3 conflict style for consistent snapshots across environments
+		git.run(&["config", "merge.conflictStyle", "diff3"]).expect("git config merge.conflictStyle failed");
+		git
+	}
+
+	/// Set up mock Github API from VirtualIssue. Uses defaults: owner="o", repo="r", user="mock_user".
+	/// Handles sub-issues automatically.
+	/// Panics if same (owner, repo, number) is submitted twice.
+	///
+	/// If `seed` is provided, timestamps are generated from it for the mock response.
+	pub fn remote(&self, issue: &tedi::VirtualIssue, seed: Option<Seed>) -> Issue {
+		let issue = with_timestamps(issue, seed, self.is_virtual_repo);
+		let (owner, repo, number) = extract_issue_coords(&issue);
+
+		with_state(self, |state| {
+			// add_issue_recursive handles its own dedup tracking in remote_issue_ids
+			assert!(
+				!state.remote_issue_ids.contains(&(owner.clone(), repo.clone(), number)),
+				"remote() called twice for same issue: {owner}/{repo}#{number}"
+			);
+			add_issue_recursive(state, tedi::RepoInfo::new(&owner, &repo), number, None, &issue, issue.identity.as_linked().map(|m| &m.timestamps));
+		});
+
+		self.rebuild_mock_state();
+		issue
+	}
+
+	/// Write issue to local filesystem (uncommitted). Uses defaults: owner="o", repo="r", user="mock_user".
+	///
+	/// If `seed` is provided, timestamps are generated from it and written to `.meta.json`.
+	pub async fn local(&self, issue: &tedi::VirtualIssue, seed: Option<Seed>) -> Issue {
+		let mut issue = with_timestamps(issue, seed, self.is_virtual_repo);
+		let (owner, repo, number) = extract_issue_coords(&issue);
+		with_state(self, |state| assert!(state.local_issues.insert((owner, repo, number)), "local() called twice for same issue"));
+		self.sink_local(&mut issue, seed).await;
+		issue
+	}
+
+	/// Write issue and commit to git as consensus state. Uses defaults: owner="o", repo="r", user="mock_user".
+	/// Panics if same (owner, repo, number) is submitted twice.
+	///
+	/// If `seed` is provided, timestamps are generated from it and written to `.meta.json`.
+	pub async fn consensus(&self, issue: &tedi::VirtualIssue, seed: Option<Seed>) -> Issue {
+		let mut issue = with_timestamps(issue, seed, self.is_virtual_repo);
+		let (owner, repo, number) = extract_issue_coords(&issue);
+		with_state(self, |state| {
+			assert!(state.consensus_issues.insert((owner, repo, number)), "consensus() called twice for same issue")
+		});
+		self.init_git();
+		self.sink_local(&mut issue, seed).await;
+		<Issue as Sink<Consensus>>::sink(&mut issue, None).await.expect("consensus sink failed");
+		issue
+	}
+
+	/// Set the issues directory override for `Local::issues_dir()`.
+	///
+	/// Uses the thread_local mock mechanism to isolate test filesystem state.
+	/// This is preferred over `set_xdg_env` as it doesn't modify global process env vars.
+	pub(crate) fn set_issues_dir_override(&self) {
+		tedi::mocks::set_issues_dir(self.xdg.data_dir().join("issues"));
+	}
+
+	async fn sink_local(&self, issue: &mut Issue, seed: Option<Seed>) {
+		self.set_issues_dir_override();
+		<Issue as Sink<LocalFs>>::sink(issue, None).await.expect("local sink failed");
+		if let Some(seed) = seed {
+			let (owner, repo, number) = extract_issue_coords(issue);
+			let timestamps = timestamps_from_seed(seed);
+			let meta = IssueMeta {
+				user: Some(USER.to_string()),
+				timestamps,
+			};
+			Local::save_issue_meta(tedi::RepoInfo::new(&owner, &repo), number, &meta).expect("save_issue_meta failed");
+		}
+	}
+
+	fn rebuild_mock_state(&self) {
+		with_state(self, |state| {
+			let issues: Vec<serde_json::Value> = state
+				.remote_issues
+				.iter()
+				.map(|i| {
+					let mut json = serde_json::json!({
+						"owner": i.owner,
+						"repo": i.repo,
+						"number": i.number,
+						"title": i.title,
+						"body": i.body,
+						"state": i.state,
+						"owner_login": i.owner_login
+					});
+					if let Some(reason) = &i.state_reason {
+						json["state_reason"] = serde_json::Value::String(reason.clone());
+					}
+					// Add timestamps if provided
+					if let Some(ts) = &i.timestamps {
+						if let Some(t) = ts.title {
+							json["title_timestamp"] = serde_json::Value::String(t.to_string());
+						}
+						if let Some(t) = ts.description {
+							json["description_timestamp"] = serde_json::Value::String(t.to_string());
+						}
+						if let Some(t) = ts.labels {
+							json["labels_timestamp"] = serde_json::Value::String(t.to_string());
+						}
+						if let Some(t) = ts.state {
+							json["state_timestamp"] = serde_json::Value::String(t.to_string());
+						}
+					}
+					json
+				})
+				.collect();
+
+			// Group sub-issue relations by (owner, repo, parent)
+			let mut sub_issues_map: std::collections::HashMap<(String, String, u64), Vec<u64>> = std::collections::HashMap::new();
+			for rel in &state.remote_sub_issues {
+				sub_issues_map.entry((rel.owner.clone(), rel.repo.clone(), rel.parent)).or_default().push(rel.child);
+			}
+
+			let sub_issues: Vec<serde_json::Value> = sub_issues_map
+				.into_iter()
+				.map(|((owner, repo, parent), children)| {
+					serde_json::json!({
+						"owner": owner,
+						"repo": repo,
+						"parent": parent,
+						"children": children
+					})
+				})
+				.collect();
+
+			let comments: Vec<serde_json::Value> = state
+				.remote_comments
+				.iter()
+				.map(|c| {
+					// Use provided timestamp or default to base timestamp
+					let ts = c.timestamp.unwrap_or_else(|| jiff::Timestamp::from_second(BASE_TIMESTAMP_SECS).unwrap());
+					serde_json::json!({
+						"owner": c.owner,
+						"repo": c.repo,
+						"issue_number": c.issue_number,
+						"comment_id": c.comment_id,
+						"body": c.body,
+						"owner_login": c.owner_login,
+						"created_at": ts.to_string(),
+						"updated_at": ts.to_string()
+					})
+				})
+				.collect();
+
+			let mut mock_state = serde_json::json!({ "issues": issues });
+			if !sub_issues.is_empty() {
+				mock_state["sub_issues"] = serde_json::Value::Array(sub_issues);
+			}
+			if !comments.is_empty() {
+				mock_state["comments"] = serde_json::Value::Array(comments);
+			}
+
+			self.setup_mock_state(&mock_state);
+		});
 	}
 }
 
@@ -341,7 +533,7 @@ impl<'a> OpenBuilder<'a> {
 
 				// Edit the file while "editor is open" if requested
 				if let Some(EditOperation::FullIssue(virtual_issue)) = &edit_op {
-					let issue = git::with_timestamps(virtual_issue, None, is_virtual);
+					let issue = with_timestamps(virtual_issue, None, is_virtual);
 					let vpath = tedi::local::Local::virtual_edit_path(&issue);
 					let content = issue.serialize_virtual();
 					eprintln!("[test:OpenBuilder] submitting user input // writing to {vpath:?}:\n{content}");
@@ -511,6 +703,36 @@ pub mod are_you_sure {
 		std::fs::write(path, content).expect("failed to write file");
 	}
 }
+/// Generate timestamps from a seed value.
+///
+/// Seed must be in range -100..=100. Each timestamp field gets:
+/// 1. A pseudo-random offset in ±12h range (deterministic per seed+index)
+/// 2. A deterministic offset based on seed: -100 → -12h, 0 → 0, +100 → +12h
+///
+/// This means same seed produces same timestamps, but different fields have different
+/// random-looking values. Higher seed = newer timestamps = wins in merge conflicts.
+///
+/// Index mapping for fields:
+/// - title: -2
+/// - description: -1
+/// - labels: 0
+/// - comments: 1 (aggregate timestamp for "most recent comment")
+pub fn timestamps_from_seed(seed: Seed) -> IssueTimestamps {
+	IssueTimestamps {
+		title: Some(timestamp_for_field(seed, -2)),
+		description: Some(timestamp_for_field(seed, -1)),
+		labels: Some(timestamp_for_field(seed, 0)),
+		state: Some(timestamp_for_field(seed, 1)),
+		comments: vec![],
+	}
+}
+/// Set timestamps on an issue and all its children.
+pub fn set_timestamps(issue: &mut Issue, seed: Seed) {
+	let timestamps = timestamps_from_seed(seed);
+	for (_, node) in issue.iter_mut() {
+		node.identity.mut_linked_issue_meta().unwrap().timestamps = timestamps.clone();
+	}
+}
 /// What target the OpenBuilder opens.
 enum BuilderTarget<'a> {
 	/// Open by issue reference (derives path from issue)
@@ -524,11 +746,23 @@ enum BuilderTarget<'a> {
 mod snapshot;
 
 use std::{
+	cell::RefCell,
+	collections::HashSet,
 	io::{Read, Write},
 	os::fd::AsRawFd,
 	path::{Path, PathBuf},
 	process::{Command, ExitStatus},
 	sync::OnceLock,
+};
+
+use tedi::{
+	Issue, IssueTimestamps,
+	local::{Consensus, IssueMeta, Local, LocalFs},
+	sink::Sink,
+};
+use v_fixtures::{
+	Fixture, FixtureRenderer,
+	fs_standards::{git::Git, xdg::Xdg},
 };
 
 /// Set a file descriptor to non-blocking mode.
@@ -556,8 +790,6 @@ pub(crate) fn drain_pipe<R: Read>(pipe: &mut R, buf: &mut Vec<u8>) {
 }
 
 pub use snapshot::FixtureIssuesExt;
-use tedi::Issue;
-use v_fixtures::{Fixture, FixtureRenderer, fs_standards::xdg::Xdg};
 
 static BINARY_COMPILED: OnceLock<()> = OnceLock::new();
 
@@ -605,4 +837,209 @@ fn find_virtual_edit_file(base: &Path) -> Option<PathBuf> {
 
 	walk(base, &mut best);
 	best.map(|(p, _)| p)
+}
+
+// --- Git/issue setup helpers (formerly in git.rs) ---
+
+/// Convert VirtualIssue to Issue by building HollowIssue with timestamps from seed.
+/// Uses defaults: owner="o", repo="r", user="mock_user".
+pub(crate) fn with_timestamps(virtual_issue: &tedi::VirtualIssue, seed: Option<Seed>, is_virtual: bool) -> Issue {
+	let timestamps = seed.map(timestamps_from_seed).unwrap_or_default();
+	let hollow = build_hollow_from_virtual(virtual_issue, &timestamps);
+	let parent_idx = tedi::IssueIndex::repo_only((OWNER, REPO).into());
+	Issue::from_combined(hollow, virtual_issue.clone(), parent_idx, is_virtual).expect("test hollow must match virtual")
+}
+
+/// Generate a timestamp for a specific field index.
+///
+/// Combines pseudo-random scatter (from seed+index) with deterministic offset (from seed).
+fn timestamp_for_field(seed: Seed, field_index: i64) -> jiff::Timestamp {
+	// Pseudo-random scatter: hash seed+index to get a value in ±12h range
+	let random_offset = pseudo_random_offset(seed, field_index);
+
+	// Deterministic offset: seed maps linearly to ±12h
+	// -100 → -12h, 0 → 0, +100 → +12h
+	let deterministic_offset = (*seed * HALF_DAY_SECS) / 100;
+
+	let total_offset = random_offset + deterministic_offset;
+	jiff::Timestamp::from_second(BASE_TIMESTAMP_SECS + total_offset).expect("valid timestamp")
+}
+
+/// Simple pseudo-random number generator seeded by seed+index.
+/// Returns a value in range [-HALF_DAY_SECS, +HALF_DAY_SECS].
+fn pseudo_random_offset(seed: Seed, index: i64) -> i64 {
+	// Combine seed and index into a single value, then hash it
+	let combined = (*seed as u64).wrapping_mul(31).wrapping_add(index as u64);
+	// Simple xorshift-style mixing
+	let mut x = combined;
+	x ^= x << 13;
+	x ^= x >> 7;
+	x ^= x << 17;
+	// Map to [-HALF_DAY_SECS, +HALF_DAY_SECS]
+	let normalized = (x % (2 * HALF_DAY_SECS as u64 + 1)) as i64;
+	normalized - HALF_DAY_SECS
+}
+
+thread_local! {
+	static GIT_STATE: RefCell<std::collections::HashMap<usize, GitState>> = RefCell::new(std::collections::HashMap::new());
+}
+
+fn get_ctx_id(ctx: &TestContext) -> usize {
+	ctx as *const TestContext as usize
+}
+
+fn with_state<F, R>(ctx: &TestContext, f: F) -> R
+where
+	F: FnOnce(&mut GitState) -> R, {
+	GIT_STATE.with(|state| {
+		let mut map = state.borrow_mut();
+		let id = get_ctx_id(ctx);
+		let entry = map.entry(id).or_default();
+		f(entry)
+	})
+}
+
+/// Recursively build HollowIssue tree from VirtualIssue, setting up remote with timestamps.
+fn build_hollow_from_virtual(virtual_issue: &tedi::VirtualIssue, timestamps: &IssueTimestamps) -> tedi::HollowIssue {
+	let remote = match &virtual_issue.selector {
+		tedi::IssueSelector::GitId(n) => {
+			let link = tedi::IssueLink::parse(&format!("https://github.com/{OWNER}/{REPO}/issues/{n}")).unwrap();
+			Some(Box::new(tedi::LinkedIssueMeta::new(Some(USER.to_string()), link, timestamps.clone())))
+		}
+		tedi::IssueSelector::Title(_) | tedi::IssueSelector::Regex(_) => None,
+	};
+
+	let children = virtual_issue
+		.children
+		.iter()
+		.map(|(selector, child)| {
+			let child_hollow = build_hollow_from_virtual(child, timestamps);
+			(*selector, child_hollow)
+		})
+		.collect();
+
+	tedi::HollowIssue::new(remote, children)
+}
+
+/// Extract owner, repo, number from an Issue's identity, with defaults.
+/// Uses `issue.identity.link()` from the library, with test-specific fallback defaults
+/// for unlinked issues (owner="owner", repo="repo", number=1).
+fn extract_issue_coords(issue: &Issue) -> (String, String, u64) {
+	if let Some(link) = issue.identity.link() {
+		(link.owner().to_string(), link.repo().to_string(), link.number())
+	} else {
+		(DEFAULT_OWNER.to_string(), DEFAULT_REPO.to_string(), DEFAULT_NUMBER)
+	}
+}
+
+/// Recursively add an issue and all its children to the mock state.
+/// Transforms library `Issue` types into mock JSON state for the test mock server.
+fn add_issue_recursive(state: &mut GitState, repo_info: tedi::RepoInfo, number: u64, parent_number: Option<u64>, issue: &Issue, timestamps: Option<&IssueTimestamps>) {
+	let owner = repo_info.owner();
+	let repo = repo_info.repo();
+	let key = (owner.to_string(), repo.to_string(), number);
+
+	if state.remote_issue_ids.contains(&key) {
+		panic!("remote() would add duplicate issue: {owner}/{repo}#{number}");
+	}
+	state.remote_issue_ids.insert(key);
+
+	// Add the issue itself
+	let issue_owner_login = issue.user().expect("issue identity must have user - use @user format in test fixtures").to_string();
+	state.remote_issues.push(MockIssue {
+		owner: owner.to_string(),
+		repo: repo.to_string(),
+		number,
+		title: issue.contents.title.clone(),
+		body: issue.body(),
+		state: issue.contents.state.to_github_state().to_string(),
+		state_reason: issue.contents.state.to_github_state_reason().map(|s| s.to_string()),
+		owner_login: issue_owner_login,
+		timestamps: timestamps.cloned(),
+	});
+
+	// Add sub-issue relation if this is a child
+	if let Some(parent) = parent_number {
+		state.remote_sub_issues.push(SubIssueRelation {
+			owner: owner.to_string(),
+			repo: repo.to_string(),
+			parent,
+			child: number,
+		});
+	}
+
+	// Extract comments (skip first which is the body)
+	// Use the per-comment timestamps from IssueTimestamps if available
+	let comment_timestamps = timestamps.map(|ts| &ts.comments);
+	for (i, comment) in issue.contents.comments.iter().skip(1).enumerate() {
+		if let Some(id) = comment.id() {
+			let comment_owner_login = comment.user().expect("comment identity must have user - use @user format in test fixtures").to_string();
+			let comment_ts = comment_timestamps.and_then(|ts| ts.get(i).copied());
+			state.remote_comments.push(MockComment {
+				owner: owner.to_string(),
+				repo: repo.to_string(),
+				issue_number: number,
+				comment_id: id,
+				body: comment.body.render(),
+				owner_login: comment_owner_login,
+				timestamp: comment_ts,
+			});
+		}
+	}
+
+	// Recursively add children (they inherit the same timestamps)
+	for child in issue.children.values() {
+		let child_number = child.git_id().expect("child issue must have number for remote mock state");
+		add_issue_recursive(state, repo_info, child_number, Some(number), child, timestamps);
+	}
+}
+
+/// State tracking for additive operations
+#[derive(Default)]
+struct GitState {
+	/// Track which (owner, repo, number) have been used for local files
+	local_issues: HashSet<(String, String, u64)>,
+	/// Track which (owner, repo, number) have been used for consensus commits
+	consensus_issues: HashSet<(String, String, u64)>,
+	/// Accumulated mock remote state
+	remote_issues: Vec<MockIssue>,
+	remote_sub_issues: Vec<SubIssueRelation>,
+	remote_comments: Vec<MockComment>,
+	/// Track which (owner, repo, number) have been added to remote
+	remote_issue_ids: HashSet<(String, String, u64)>,
+}
+
+/// Intermediate type for building mock JSON state. Stores owner/repo per-entry
+/// because the mock JSON format requires them (unlike library types where they're implicit).
+struct MockIssue {
+	owner: String,
+	repo: String,
+	number: u64,
+	title: String,
+	body: String,
+	state: String,
+	state_reason: Option<String>,
+	owner_login: String,
+	/// Timestamps for this issue (if provided via seed)
+	timestamps: Option<IssueTimestamps>,
+}
+
+/// Intermediate type for building mock JSON state. Stores owner/repo/issue_number per-entry
+/// because the mock JSON format requires them (unlike library types where they're implicit).
+struct MockComment {
+	owner: String,
+	repo: String,
+	issue_number: u64,
+	comment_id: u64,
+	body: String,
+	owner_login: String,
+	/// Timestamp for this comment (if provided via seed)
+	timestamp: Option<jiff::Timestamp>,
+}
+
+struct SubIssueRelation {
+	owner: String,
+	repo: String,
+	parent: u64,
+	child: u64,
 }

@@ -5,11 +5,7 @@
 
 use std::{io::Write, path::PathBuf, process::Command};
 
-use crate::common::{
-	RunOutput, TestContext, drain_pipe, get_binary_path,
-	git::{GitExt, Seed},
-	parse_virtual, set_nonblocking,
-};
+use crate::common::{RunOutput, Seed, TestContext, drain_pipe, get_binary_path, parse_virtual, set_nonblocking};
 
 const ENV_MOCK_MILESTONE: &str = concat!(env!("CARGO_PKG_NAME"), "_MOCK_MILESTONE");
 const ENV_MOCK_PIPE: &str = concat!(env!("CARGO_PKG_NAME"), "_MOCK_PIPE");

@@ -7,7 +7,7 @@
 //! Also tests that old file placements are automatically cleaned up when the
 //! format changes (e.g., when an issue gains sub-issues).
 
-use crate::common::{TestContext, are_you_sure::UnsafePathExt, git::GitExt, parse_virtual};
+use crate::common::{TestContext, are_you_sure::UnsafePathExt, parse_virtual};
 
 #[tokio::test]
 async fn test_flat_format_preserved_when_no_sub_issues() {

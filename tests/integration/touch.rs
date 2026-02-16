@@ -5,7 +5,7 @@
 use v_fixtures::FixtureRenderer;
 
 use crate::{
-	common::{FixtureIssuesExt, TestContext, git::GitExt, parse_virtual},
+	common::{FixtureIssuesExt, TestContext, parse_virtual},
 	render_fixture,
 };
 

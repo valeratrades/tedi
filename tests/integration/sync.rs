@@ -26,9 +26,8 @@ use rstest::rstest;
 use v_fixtures::FixtureRenderer;
 
 use crate::common::{
-	FixtureIssuesExt, TestContext,
+	FixtureIssuesExt, Seed, TestContext,
 	are_you_sure::{UnsafePathExt, read_issue_file, write_to_path},
-	git::{GitExt as _, Seed},
 	parse_virtual, render_fixture,
 };
 

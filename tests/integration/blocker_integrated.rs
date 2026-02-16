@@ -6,7 +6,6 @@
 use crate::common::{
 	TestContext,
 	are_you_sure::{UnsafePathExt, read_issue_file},
-	git::GitExt,
 	parse_virtual,
 };
 
