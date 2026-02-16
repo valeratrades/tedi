@@ -16,8 +16,8 @@ use crate::{Header, IssueIdentity, IssueLink};
 /// - Virtual: `<!-- virtual -->`
 #[derive(Clone, Debug, PartialEq)]
 pub enum IssueMarker {
-	/// Linked to GitHub: `<!-- @user url -->`
-	Linked { user: String, link: IssueLink },
+	/// Linked to GitHub: `<!-- @user url -->` or `<!-- url -->` (user unknown)
+	Linked { user: Option<String>, link: IssueLink },
 	/// Pending creation on GitHub (will be created on first sync)
 	Pending,
 	/// Virtual (local-only, never syncs to GitHub)
@@ -45,15 +45,20 @@ impl IssueMarker {
 			return Self::Virtual;
 		}
 
-		// Linked format: `@user url`
+		// Linked format: `@user url` or just `url`
 		if let Some(rest) = s.strip_prefix('@')
 			&& let Some(space_idx) = rest.find(' ')
 		{
 			let user = rest[..space_idx].to_string();
 			let url = rest[space_idx + 1..].trim();
 			if let Some(link) = IssueLink::parse(url) {
-				return Self::Linked { user, link };
+				return Self::Linked { user: Some(user), link };
 			}
+		}
+
+		// Try bare URL (no user prefix)
+		if let Some(link) = IssueLink::parse(s) {
+			return Self::Linked { user: None, link };
 		}
 
 		// Default to pending for unrecognized
@@ -108,7 +113,8 @@ impl IssueMarker {
 	/// Encode the issue marker to HTML comment inner content.
 	pub fn encode(&self) -> String {
 		match self {
-			Self::Linked { user, link } => format!("@{user} {}", link.as_str()),
+			Self::Linked { user: Some(user), link } => format!("@{user} {}", link.as_str()),
+			Self::Linked { user: None, link } => link.as_str().to_string(),
 			Self::Pending => "pending".to_string(),
 			Self::Virtual => "virtual".to_string(),
 		}
@@ -135,7 +141,7 @@ impl From<&IssueIdentity> for IssueMarker {
 		if let Some(meta) = identity.as_linked() {
 			IssueMarker::Linked {
 				user: meta.user.clone(),
-				link: meta.link.clone(),
+				link: meta.link().clone(),
 			}
 		} else if identity.is_virtual {
 			IssueMarker::Virtual
@@ -267,7 +273,7 @@ mod tests {
 	#[test]
 	fn test_issue_marker_decode_linked() {
 		let marker = IssueMarker::decode("@owner https://github.com/owner/repo/issues/123");
-		assert!(matches!(marker, IssueMarker::Linked { user, link } if user == "owner" && link.number() == 123));
+		assert!(matches!(marker, IssueMarker::Linked { user: Some(ref user), ref link } if user == "owner" && link.number() == 123));
 	}
 
 	#[test]
@@ -291,14 +297,24 @@ mod tests {
 		assert_eq!(IssueMarker::Virtual.encode(), "virtual");
 
 		let link = IssueLink::parse("https://github.com/owner/repo/issues/123").unwrap();
-		let linked = IssueMarker::Linked { user: "owner".to_string(), link };
+		let linked = IssueMarker::Linked {
+			user: Some("owner".to_string()),
+			link,
+		};
 		assert_eq!(linked.encode(), "@owner https://github.com/owner/repo/issues/123");
 	}
 
 	#[test]
 	fn test_issue_marker_roundtrip() {
 		let link = IssueLink::parse("https://github.com/owner/repo/issues/123").unwrap();
-		let markers = vec![IssueMarker::Pending, IssueMarker::Virtual, IssueMarker::Linked { user: "owner".to_string(), link }];
+		let markers = vec![
+			IssueMarker::Pending,
+			IssueMarker::Virtual,
+			IssueMarker::Linked {
+				user: Some("owner".to_string()),
+				link,
+			},
+		];
 
 		for marker in markers {
 			let encoded = marker.encode();
@@ -402,7 +418,7 @@ mod tests {
 			Marker::Issue(IssueMarker::Pending),
 			Marker::Issue(IssueMarker::Virtual),
 			Marker::Issue(IssueMarker::Linked {
-				user: "owner".to_string(),
+				user: Some("owner".to_string()),
 				link: link.clone(),
 			}),
 			Marker::Comment {
@@ -443,12 +459,12 @@ mod tests {
 		assert_eq!(title, "My title");
 
 		let (marker, title) = IssueMarker::parse_from_end("My title <!-- @owner https://github.com/owner/repo/issues/123 -->").unwrap();
-		assert!(matches!(marker, IssueMarker::Linked { user, .. } if user == "owner"));
+		assert!(matches!(marker, IssueMarker::Linked { user: Some(ref user), .. } if user == "owner"));
 		assert_eq!(title, "My title");
 
 		// Legacy sub prefix
 		let (marker, title) = IssueMarker::parse_from_end("My title <!--sub @owner https://github.com/owner/repo/issues/123 -->").unwrap();
-		assert!(matches!(marker, IssueMarker::Linked { user, .. } if user == "owner"));
+		assert!(matches!(marker, IssueMarker::Linked { user: Some(ref user), .. } if user == "owner"));
 		assert_eq!(title, "My title");
 
 		// No marker

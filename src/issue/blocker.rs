@@ -193,21 +193,17 @@ impl BlockerSequence {
 		self.items.is_empty()
 	}
 
-	/// If `set_state` is `Pending`, write `issue_path` to the blocker cache and transition to `Applied`.
+	/// If `set_state` is `Pending`, find the issue in the milestone cache and set `current_index`.
+	/// Transitions to `Applied` on success.
 	pub fn ensure_set(&mut self, issue_path: &Path) {
 		if matches!(self.set_state, Some(BlockerSetState::Pending)) {
-			if let Err(e) = Revolver::set(issue_path.to_path_buf()) {
+			if let Err(e) = MilestoneBlockerCache::set_by_path(issue_path) {
 				tracing::warn!("failed to persist blocker selection: {e}");
 				return;
 			}
 			tracing::info!(path = %issue_path.display(), "blocker selection persisted via !s");
 			self.set_state = Some(BlockerSetState::Applied);
 		}
-	}
-
-	/// XDG cache path for the blocker revolver state.
-	pub fn cache_path() -> PathBuf {
-		v_utils::xdg_cache_file!("blocker_revolver.json")
 	}
 
 	/// Serialize to text (indent-based format)
@@ -230,108 +226,142 @@ impl BlockerSequence {
 	}
 }
 
-/// Rotating list of blocker issue sources with a current-selection pointer.
+/// Milestone-derived blocker cache. Replaces the old `Revolver` (rotating list of paths).
 ///
-/// Supports cycling between multiple active issues via `toggle`.
+/// The working set of issues is derived from a milestone description (default `1d`).
+/// `current_index` selects which embedded issue is "current" for blocker operations.
+/// The cached `milestone_description` is refreshed on `milestones edit` or `milestones healthcheck`.
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct Revolver {
-	pub entries: Vec<PathBuf>,
+pub struct MilestoneBlockerCache {
 	pub current_index: usize,
-	pub previous: Option<PathBuf>,
+	pub milestone_description: String,
 }
 
-impl Revolver {
+impl MilestoneBlockerCache {
 	fn cache_path() -> PathBuf {
-		BlockerSequence::cache_path()
+		v_utils::xdg_cache_file!("milestone_blockers.json")
 	}
 
-	/// Load revolver from cache. Returns None if no cache file exists.
+	/// Load cache from disk. Returns None if no cache file exists.
 	pub fn load() -> Option<Self> {
 		let cache_path = Self::cache_path();
 		let content = std::fs::read_to_string(&cache_path).ok()?;
-		let mut revolver: Self = serde_json::from_str(&content).ok()?;
-		// Filter out dead paths
-		let was_current = revolver.entries.get(revolver.current_index).cloned();
-		revolver.entries.retain(|p| p.exists());
-		// Adjust index if entries were removed
-		if revolver.entries.is_empty() {
-			revolver.current_index = 0;
-		} else if let Some(was) = was_current {
-			// Try to keep pointing at the same entry
-			revolver.current_index = revolver.entries.iter().position(|p| p == &was).unwrap_or(0);
+		let mut cache: Self = serde_json::from_str(&content).ok()?;
+		// Clamp index to valid range
+		let count = cache.embedded_links().len();
+		if count > 0 {
+			cache.current_index = cache.current_index.min(count - 1);
 		} else {
-			revolver.current_index = revolver.current_index.min(revolver.entries.len() - 1);
+			cache.current_index = 0;
 		}
-		// Also clean dead previous
-		if let Some(ref prev) = revolver.previous {
-			if !prev.exists() {
-				revolver.previous = None;
-			}
-		}
-		Some(revolver)
+		Some(cache)
 	}
 
-	fn save(&self) -> Result<(), std::io::Error> {
+	pub fn save(&self) -> Result<(), std::io::Error> {
 		let cache_path = Self::cache_path();
 		if let Some(parent) = cache_path.parent() {
 			std::fs::create_dir_all(parent)?;
 		}
-		let content = serde_json::to_string_pretty(self).expect("Revolver serialization");
+		let content = serde_json::to_string_pretty(self).expect("MilestoneBlockerCache serialization");
 		std::fs::write(&cache_path, content)
 	}
 
-	/// Current issue path, if any.
-	pub fn current_path(&self) -> Option<&Path> {
-		self.entries.get(self.current_index).map(|p| p.as_path())
+	/// Get all embedded issue links from the cached milestone description.
+	pub fn embedded_links(&self) -> Vec<super::IssueLink> {
+		super::milestone_embed::find_embedded_issues(&self.milestone_description).into_iter().map(|r| r.link).collect()
 	}
 
-	/// Set a single entry (clears revolver). Preserves old current as `previous`.
-	pub fn set(path: PathBuf) -> Result<(), std::io::Error> {
-		let previous = Self::load().and_then(|r| r.current_path().map(|p| p.to_path_buf()));
-		let revolver = Self {
-			entries: vec![path],
-			current_index: 0,
-			previous,
+	/// Get the currently selected issue link, if any.
+	pub fn current_link(&self) -> Option<super::IssueLink> {
+		let links = self.embedded_links();
+		links.into_iter().nth(self.current_index)
+	}
+
+	/// Resolve an IssueLink to a local filesystem path.
+	/// Uses synchronous filesystem operations (no network).
+	pub fn resolve_link_to_path(link: &super::IssueLink) -> Option<PathBuf> {
+		use crate::local::{FsReader, Local};
+		Local::find_by_number(link.repo_info(), link.number(), FsReader)
+	}
+
+	/// Get the current issue's local path, if resolvable.
+	pub fn current_path(&self) -> Option<PathBuf> {
+		let link = self.current_link()?;
+		Self::resolve_link_to_path(&link)
+	}
+
+	/// Set the current index to point to the issue matching the given path.
+	/// Called by `!s` flow when editing an individual issue file.
+	pub fn set_by_path(issue_path: &Path) -> Result<(), std::io::Error> {
+		let Some(mut cache) = Self::load() else {
+			tracing::warn!("no milestone blocker cache exists; !s has no effect");
+			return Ok(());
 		};
-		revolver.save()
+
+		let links = cache.embedded_links();
+		let found = links
+			.iter()
+			.enumerate()
+			.find(|(_, link)| Self::resolve_link_to_path(link).map(|p| p == issue_path).unwrap_or(false));
+
+		match found {
+			Some((idx, _)) => {
+				cache.current_index = idx;
+				cache.save()
+			}
+			None => {
+				tracing::warn!(
+					path = %issue_path.display(),
+					"issue not found in milestone cache; !s ignored"
+				);
+				Ok(())
+			}
+		}
 	}
 
-	/// Add an entry to the revolver without changing current selection.
-	pub fn add(path: PathBuf) -> Result<(), std::io::Error> {
-		let mut revolver = Self::load().unwrap_or(Self {
-			entries: Vec::new(),
+	/// Advance to the next embedded issue. Returns the new current link.
+	pub fn toggle() -> Result<super::IssueLink, String> {
+		let mut cache = Self::load().ok_or("No milestone blocker cache. Run `todo milestones edit` first.")?;
+		let links = cache.embedded_links();
+		if links.is_empty() {
+			return Err("No issues in milestone. Add issues to the milestone first.".into());
+		}
+		if links.len() == 1 {
+			return Err("Only one issue in milestone. Nothing to toggle to.".into());
+		}
+		cache.current_index = (cache.current_index + 1) % links.len();
+		let link = links[cache.current_index].clone();
+		cache.save().map_err(|e| format!("Failed to save milestone cache: {e}"))?;
+		Ok(link)
+	}
+
+	/// Write/update the cache from a milestone description.
+	/// Preserves `current_index` if the previously-selected issue still exists.
+	pub fn update_from_description(description: &str) -> Result<(), std::io::Error> {
+		let old = Self::load();
+		let old_link = old.as_ref().and_then(|c| c.current_link());
+		let old_index = old.as_ref().map(|c| c.current_index).unwrap_or(0);
+
+		let mut cache = MilestoneBlockerCache {
 			current_index: 0,
-			previous: None,
-		});
-		// Don't add duplicates
-		if !revolver.entries.contains(&path) {
-			revolver.entries.push(path);
-		}
-		revolver.save()
-	}
+			milestone_description: description.to_string(),
+		};
 
-	/// Advance to the next entry in the revolver.
-	/// Returns the new current path, or an error message.
-	pub fn toggle() -> Result<PathBuf, String> {
-		let mut revolver = Self::load().ok_or("No blocker set. Use `todo blocker set <pattern>` first.")?;
-		if revolver.entries.is_empty() {
-			return Err("No blocker set. Use `todo blocker set <pattern>` first.".into());
-		}
-		match revolver.entries.len() {
-			0 => unreachable!(),
-			1 => {
-				// Pull previous into revolver to make a 2-slot rotation
-				let prev = revolver.previous.take().ok_or("Nothing to toggle to. Use `set-more` to add issues to the rotation.")?;
-				revolver.entries.push(prev);
-				revolver.current_index = 1;
+		// Try to keep pointing at the same issue
+		let new_links = cache.embedded_links();
+		if let Some(old_link) = old_link {
+			if let Some(pos) = new_links
+				.iter()
+				.position(|l| l.number() == old_link.number() && l.owner() == old_link.owner() && l.repo() == old_link.repo())
+			{
+				cache.current_index = pos;
 			}
-			_ => {
-				revolver.current_index = (revolver.current_index + 1) % revolver.entries.len();
-			}
+			// If old issue gone, index stays at 0
+		} else if !new_links.is_empty() {
+			cache.current_index = old_index.min(new_links.len() - 1);
 		}
-		let current = revolver.entries[revolver.current_index].clone();
-		revolver.save().map_err(|e| format!("Failed to save revolver: {e}"))?;
-		Ok(current)
+
+		cache.save()
 	}
 }
 
@@ -511,43 +541,47 @@ mod tests {
 	}
 
 	#[test]
-	fn test_revolver_serde_roundtrip() {
-		let revolver = Revolver {
-			entries: vec![PathBuf::from("/a/b.md"), PathBuf::from("/c/d.md")],
+	fn test_milestone_cache_serde_roundtrip() {
+		let cache = MilestoneBlockerCache {
 			current_index: 1,
-			previous: Some(PathBuf::from("/old.md")),
+			milestone_description: "# Sprint\n- [ ] Issue A <!-- @user https://github.com/o/r/issues/1 -->".to_string(),
 		};
-		let json = serde_json::to_string_pretty(&revolver).unwrap();
-		let deserialized: Revolver = serde_json::from_str(&json).unwrap();
-		assert_eq!(deserialized.entries, revolver.entries);
-		assert_eq!(deserialized.current_index, revolver.current_index);
-		assert_eq!(deserialized.previous, revolver.previous);
+		let json = serde_json::to_string_pretty(&cache).unwrap();
+		let deserialized: MilestoneBlockerCache = serde_json::from_str(&json).unwrap();
+		assert_eq!(deserialized.current_index, cache.current_index);
+		assert_eq!(deserialized.milestone_description, cache.milestone_description);
 	}
 
 	#[test]
-	fn test_revolver_current_path() {
-		let revolver = Revolver {
-			entries: vec![PathBuf::from("/a.md"), PathBuf::from("/b.md")],
+	fn test_milestone_cache_embedded_links() {
+		let cache = MilestoneBlockerCache {
 			current_index: 0,
-			previous: None,
+			milestone_description:
+				"# Sprint\n\n- [ ] Issue A <!-- @user https://github.com/o/r/issues/1 -->\n\t# Blockers\n\t- task\n\n- [ ] Issue B <!-- @user https://github.com/o/r/issues/2 -->".to_string(),
 		};
-		assert_eq!(revolver.current_path(), Some(Path::new("/a.md")));
-
-		let revolver2 = Revolver {
-			entries: vec![PathBuf::from("/a.md"), PathBuf::from("/b.md")],
-			current_index: 1,
-			previous: None,
-		};
-		assert_eq!(revolver2.current_path(), Some(Path::new("/b.md")));
+		let links = cache.embedded_links();
+		assert_eq!(links.len(), 2);
+		assert_eq!(links[0].number(), 1);
+		assert_eq!(links[1].number(), 2);
 	}
 
 	#[test]
-	fn test_revolver_current_path_empty() {
-		let revolver = Revolver {
-			entries: vec![],
-			current_index: 0,
-			previous: None,
+	fn test_milestone_cache_current_link() {
+		let cache = MilestoneBlockerCache {
+			current_index: 1,
+			milestone_description: "- [ ] A <!-- @u https://github.com/o/r/issues/1 -->\n\n- [ ] B <!-- @u https://github.com/o/r/issues/2 -->".to_string(),
 		};
-		assert_eq!(revolver.current_path(), None);
+		let link = cache.current_link().unwrap();
+		assert_eq!(link.number(), 2);
+	}
+
+	#[test]
+	fn test_milestone_cache_empty_description() {
+		let cache = MilestoneBlockerCache {
+			current_index: 0,
+			milestone_description: "# Sprint\nNo issues yet".to_string(),
+		};
+		assert!(cache.embedded_links().is_empty());
+		assert!(cache.current_link().is_none());
 	}
 }

@@ -14,6 +14,13 @@ pub struct AppConfig {
 pub struct Milestones {
 	/// Github repo URL for milestones (e.g., "https://github.com/owner/repo" or "owner/repo")
 	pub url: String,
+	/// Which milestone timeframe to source blockers from (default: "1d")
+	pub blocker_timeframe: Option<String>,
+}
+impl Milestones {
+	pub fn blocker_tf(&self) -> &str {
+		self.blocker_timeframe.as_deref().unwrap_or("1d")
+	}
 }
 
 #[derive(Clone, Debug, v_macros::MyConfigPrimitives, smart_default::SmartDefault)]

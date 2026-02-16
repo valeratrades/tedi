@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use color_eyre::eyre::{Result, bail, eyre};
 use tedi::{
-	Issue, LazyIssue, Marker, RepoInfo, Revolver, VirtualIssue,
+	Issue, LazyIssue, Marker, MilestoneBlockerCache, RepoInfo, VirtualIssue,
 	local::{ExactMatchLevel, FsReader, Local, LocalIssueSource},
 };
 
@@ -44,17 +44,11 @@ impl BlockerIssueSource {
 		})
 	}
 
-	/// Get the currently selected blocker issue source
+	/// Get the currently selected blocker issue source, derived from milestone cache.
 	pub fn current() -> Option<Self> {
-		let revolver = Revolver::load()?;
-		let path = revolver.current_path()?.to_path_buf();
-		Some(Self::build(path).expect("failed to build BlockerIssueSource from cached path"))
-	}
-
-	/// Set this issue as the current blocker issue (single entry, clears revolver)
-	pub fn set_current(&self) -> Result<()> {
-		Revolver::set(self.virtual_issue_buffer_path.clone())?;
-		Ok(())
+		let cache = MilestoneBlockerCache::load()?;
+		let path = cache.current_path()?;
+		Some(Self::build(path).expect("failed to build BlockerIssueSource from milestone-cached link"))
 	}
 
 	/// Get relative path for display
@@ -129,54 +123,9 @@ pub async fn main_integrated(command: super::io::Command, offline: bool) -> Resu
 	use crate::open_interactions::{Modifier, SyncOptions, modify_and_sync_issue};
 
 	match command {
-		Command::Set { pattern } => {
-			// Check if there's an urgent file - can't switch away until it's empty
-			if let Some(urgent) = StandaloneSource::urgent() {
-				let blockers = urgent.load()?;
-				if !blockers.is_empty() {
-					eprintln!("Cannot switch project while urgent tasks exist. Complete urgent tasks first.");
-					eprintln!("  {}", urgent.path().display());
-					if let Some(current) = blockers.current_with_context(&[]) {
-						eprintln!("  Current urgent: {current}");
-					}
-					return Ok(());
-				}
-			}
-
-			let issue_path = resolve_issue_file(&pattern)?;
-			let source = BlockerIssueSource::build(issue_path)?;
-			source.set_current()?;
-			println!("Set blockers to: {}", source.display_name());
-
-			// Load and show current blocker
-			let blockers = source.load()?;
-			if blockers.is_empty() {
-				let marker = Marker::BlockersSection(tedi::Header::new(1, "Blockers"));
-				println!("No `{marker}` marker found in issue body.");
-			} else if let Some(current) = blockers.current_with_context(&[]) {
-				println!("Current: {current}");
-			} else {
-				println!("Blockers section is empty.");
-			}
-		}
-
-		Command::SetMore { pattern } => {
-			let issue_path = resolve_issue_file(&pattern)?;
-			let source = BlockerIssueSource::build(issue_path.clone())?;
-			Revolver::add(issue_path)?;
-			println!("Added to rotation: {}", source.display_name());
-
-			// Show what's current (unchanged)
-			if let Some(current_source) = BlockerIssueSource::current() {
-				let blockers = current_source.load()?;
-				if let Some(current) = blockers.current_with_context(&[]) {
-					println!("Current: {current}");
-				}
-			}
-		}
-
-		Command::Toggle => match Revolver::toggle() {
-			Ok(path) => {
+		Command::Toggle => match MilestoneBlockerCache::toggle() {
+			Ok(link) => {
+				let path = MilestoneBlockerCache::resolve_link_to_path(&link).ok_or_else(|| eyre!("Could not find local file for {}/{}/#{}", link.owner(), link.repo(), link.number()))?;
 				let source = BlockerIssueSource::build(path)?;
 				println!("Toggled to: {}", source.display_name());
 
@@ -194,30 +143,32 @@ pub async fn main_integrated(command: super::io::Command, offline: bool) -> Resu
 			use super::io::RevolverCommand;
 			match sub {
 				RevolverCommand::List => {
-					let Some(revolver) = Revolver::load() else {
-						println!("No revolver set. Use `todo blocker set <pattern>` first.");
+					let Some(cache) = MilestoneBlockerCache::load() else {
+						println!("No milestone blocker cache. Run `todo milestones edit` first.");
 						return Ok(());
 					};
-					if revolver.entries.is_empty() {
-						println!("Revolver is empty.");
+					let links = cache.embedded_links();
+					if links.is_empty() {
+						println!("No issues in milestone.");
 						return Ok(());
 					}
-					let issues_dir = tedi::local::Local::issues_dir();
-					for (i, entry) in revolver.entries.iter().enumerate() {
-						let marker = if i == revolver.current_index { ">" } else { " " };
-						let display = entry
-							.strip_prefix(&issues_dir)
-							.map(|p| p.to_string_lossy().to_string())
-							.unwrap_or_else(|_| entry.to_string_lossy().to_string());
+					for (i, link) in links.iter().enumerate() {
+						let marker = if i == cache.current_index { ">" } else { " " };
+						let display = MilestoneBlockerCache::resolve_link_to_path(link)
+							.and_then(|p| p.strip_prefix(tedi::local::Local::issues_dir()).ok().map(|rel| rel.to_string_lossy().to_string()))
+							.unwrap_or_else(|| format!("{}/{}#{}", link.owner(), link.repo(), link.number()));
 						println!("{marker} {display}");
 					}
 				}
 				RevolverCommand::Open => {
-					let cache_path = BlockerSequence::cache_path();
-					if !cache_path.exists() {
-						bail!("No revolver set. Use `todo blocker set <pattern>` first.");
-					}
-					v_utils::io::file_open::open(&cache_path).await?;
+					// Open the milestone description for editing
+					let Some(cache) = MilestoneBlockerCache::load() else {
+						bail!("No milestone blocker cache. Run `todo milestones edit` first.");
+					};
+					// Write to temp file and open
+					let tmp_path = std::path::PathBuf::from("/tmp/milestone_blockers.md");
+					std::fs::write(&tmp_path, &cache.milestone_description)?;
+					v_utils::io::file_open::open(&tmp_path).await?;
 				}
 			}
 		}
@@ -243,7 +194,7 @@ pub async fn main_integrated(command: super::io::Command, offline: bool) -> Resu
 				let issue_source = if let Some(pat) = pattern {
 					BlockerIssueSource::build(resolve_issue_file(&pat)?)?
 				} else {
-					BlockerIssueSource::current().ok_or_else(|| eyre!("No issue set. Use `todo blocker set <pattern>` first."))?
+					BlockerIssueSource::current().ok_or_else(|| eyre!("No issue set. Run `todo milestones edit` to set up milestone."))?
 				};
 
 				let description_before = get_current_blocker_description(false);
@@ -253,9 +204,9 @@ pub async fn main_integrated(command: super::io::Command, offline: bool) -> Resu
 				let issue = Issue::load(local_source).await?;
 				modify_and_sync_issue(issue, offline, Modifier::Editor { open_at_blocker: false }, SyncOptions::default()).await?;
 
-				// If set_after flag is set, update the current blocker issue
+				// If set_after flag is set, point milestone cache at this issue
 				if set_after {
-					issue_source.set_current()?;
+					MilestoneBlockerCache::set_by_path(&issue_source.virtual_issue_buffer_path)?;
 					println!("Set blockers to: {}", issue_source.display_name());
 				}
 
@@ -275,7 +226,7 @@ pub async fn main_integrated(command: super::io::Command, offline: bool) -> Resu
 				}
 			}
 
-			let source = BlockerIssueSource::current().ok_or_else(|| eyre!("No blocker file set. Use `todo blocker set <pattern>` first."))?;
+			let source = BlockerIssueSource::current().ok_or_else(|| eyre!("No blocker source. Run `todo milestones edit` to set up milestone."))?;
 			let blockers = source.load()?;
 
 			if blockers.is_empty() {
@@ -307,7 +258,7 @@ pub async fn main_integrated(command: super::io::Command, offline: bool) -> Resu
 				}
 			}
 
-			let source = BlockerIssueSource::current().ok_or_else(|| eyre!("No blocker file set. Use `todo blocker set <pattern>` first."))?;
+			let source = BlockerIssueSource::current().ok_or_else(|| eyre!("No blocker source. Run `todo milestones edit` to set up milestone."))?;
 			let blockers = source.load()?;
 
 			if !blockers.is_empty() {
@@ -353,7 +304,7 @@ pub async fn main_integrated(command: super::io::Command, offline: bool) -> Resu
 				}
 			}
 
-			let issue_source = BlockerIssueSource::current().ok_or_else(|| eyre!("No blocker file set. Use `todo blocker set <pattern>` first."))?;
+			let issue_source = BlockerIssueSource::current().ok_or_else(|| eyre!("No blocker source. Run `todo milestones edit` to set up milestone."))?;
 
 			// Check if blockers section exists before attempting pop
 			let blockers = issue_source.load()?;
@@ -408,7 +359,7 @@ pub async fn main_integrated(command: super::io::Command, offline: bool) -> Resu
 					println!("Current (urgent): {current}");
 				}
 			} else {
-				let issue_source = BlockerIssueSource::current().ok_or_else(|| eyre!("No blocker file set. Use `todo blocker set <pattern>` first."))?;
+				let issue_source = BlockerIssueSource::current().ok_or_else(|| eyre!("No blocker source. Run `todo milestones edit` to set up milestone."))?;
 
 				let local_source = LocalIssueSource::<FsReader>::build_from_path(&issue_source.virtual_issue_buffer_path).await?;
 				let issue = Issue::load(local_source).await?;
@@ -449,7 +400,7 @@ pub async fn main_integrated(command: super::io::Command, offline: bool) -> Resu
 		}
 
 		Command::CurrentProject => {
-			let project = current_project().ok_or_else(|| eyre!("No blocker file set. Use `todo blocker set <pattern>` first."))?;
+			let project = current_project().ok_or_else(|| eyre!("No blocker source. Run `todo milestones edit` to set up milestone."))?;
 			println!("{project}");
 		}
 

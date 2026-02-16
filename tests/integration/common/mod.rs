@@ -340,24 +340,12 @@ impl<'a> OpenBuilder<'a> {
 				std::thread::sleep(std::time::Duration::from_millis(100));
 
 				// Edit the file while "editor is open" if requested
-				match &edit_op {
-					Some(EditOperation::FullIssue(virtual_issue)) => {
-						let issue = git::with_timestamps(virtual_issue, None, is_virtual);
-						let vpath = tedi::local::Local::virtual_edit_path(&issue);
-						let content = issue.serialize_virtual();
-						eprintln!("[test:OpenBuilder] submitting user input // writing to {vpath:?}:\n{content}");
-						std::fs::write(&vpath, content).unwrap();
-					}
-					Some(EditOperation::ContentsOnly(new_body)) => {
-						// Find the virtual edit file, read it, replace body, write back
-						let virtual_edit_base = PathBuf::from("/tmp").join(env!("CARGO_PKG_NAME"));
-						if let Some(vpath) = find_virtual_edit_file(&virtual_edit_base) {
-							let content = std::fs::read_to_string(&vpath).unwrap();
-							let new_content = replace_issue_body(&content, new_body);
-							std::fs::write(&vpath, new_content).unwrap();
-						}
-					}
-					None => {}
+				if let Some(EditOperation::FullIssue(virtual_issue)) = &edit_op {
+					let issue = git::with_timestamps(virtual_issue, None, is_virtual);
+					let vpath = tedi::local::Local::virtual_edit_path(&issue);
+					let content = issue.serialize_virtual();
+					eprintln!("[test:OpenBuilder] submitting user input // writing to {vpath:?}:\n{content}");
+					std::fs::write(&vpath, content).unwrap();
 				}
 
 				// Try to signal the pipe (use nix O_NONBLOCK to avoid blocking)
@@ -588,9 +576,6 @@ fn get_binary_path() -> PathBuf {
 enum EditOperation {
 	/// Edit using a full VirtualIssue (converted to Issue at run time, writes serialize_virtual)
 	FullIssue(Box<tedi::VirtualIssue>),
-	/// Edit just the contents/body (preserves header, replaces body)
-	#[deprecated]
-	ContentsOnly(String),
 }
 
 /// Find the most recently modified .md file under the virtual edit base path.
@@ -620,30 +605,4 @@ fn find_virtual_edit_file(base: &Path) -> Option<PathBuf> {
 
 	walk(base, &mut best);
 	best.map(|(p, _)| p)
-}
-
-/// Replace the body content in a virtual-format issue file.
-/// Keeps the title line (first line starting with `- [`), replaces everything after it.
-fn replace_issue_body(content: &str, new_body: &str) -> String {
-	let mut lines = content.lines();
-
-	// Keep the title line
-	let title_line = lines.next().expect("content should not be empty");
-
-	// Build new content: title line + indented new body
-	let mut result = String::from(title_line);
-	result.push('\n');
-
-	// Indent the new body content (virtual format uses single tab indent for body)
-	for line in new_body.lines() {
-		if line.is_empty() {
-			result.push('\n');
-		} else {
-			result.push('\t');
-			result.push_str(line);
-			result.push('\n');
-		}
-	}
-
-	result
 }

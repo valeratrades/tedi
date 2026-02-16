@@ -4,7 +4,7 @@ use std::path::Path;
 
 use clap::Args;
 use tedi::{
-	Issue, IssueIndex, IssueLink, IssueSelector, LazyIssue, RepoInfo, github,
+	Issue, IssueIndex, IssueLink, LazyIssue, RepoInfo, github,
 	local::{Consensus, ExactMatchLevel, FsReader, Local, LocalFs, LocalIssueSource, LocalPath},
 	remote::RemoteSource,
 	sink::Sink,
@@ -212,12 +212,7 @@ pub async fn open_command(settings: &LiveSettings, args: OpenArgs, offline: bool
 		let (owner, repo, issue_number) = github::parse_github_issue_url(input)?;
 
 		// Check if we already have this issue locally
-		let index = IssueIndex::root(RepoInfo::new(&owner, &repo), IssueSelector::GitId(issue_number));
-		let existing_path = LocalPath::from(index)
-			.resolve_parent(FsReader)
-			.ok()
-			.and_then(|resolved| resolved.search().ok())
-			.map(|resolved| resolved.path());
+		let existing_path = Local::find_by_number(RepoInfo::new(&owner, &repo), issue_number, FsReader);
 
 		let issue = if let Some(path) = existing_path {
 			// File exists locally - proceed with unified sync (like --pull)

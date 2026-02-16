@@ -7,7 +7,10 @@
 //! optional Github synchronization.
 
 mod blocker;
-pub use blocker::{BlockerItem, BlockerSequence, BlockerSetState, Revolver, join_with_blockers, split_blockers};
+pub use blocker::{BlockerItem, BlockerSequence, BlockerSetState, MilestoneBlockerCache, join_with_blockers, split_blockers};
+
+pub mod milestone_embed;
+pub use milestone_embed::{EmbeddedIssueRef, find_embedded_issues, parse_blockers_from_embedded, parse_embedded_title_line, parse_shorthand_ref, serialize_blockers_view};
 
 mod events;
 pub use events::{Events, OwnedCodeBlockKind, OwnedEvent, OwnedTag, OwnedTagEnd};

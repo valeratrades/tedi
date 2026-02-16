@@ -3,8 +3,6 @@
 //! These tests verify that `blocker add` and `blocker pop` work correctly
 //! when operating on issue files (integrated mode) rather than standalone blocker files.
 
-use std::path::Path;
-
 use crate::common::{
 	TestContext,
 	are_you_sure::{UnsafePathExt, read_issue_file},
@@ -12,15 +10,20 @@ use crate::common::{
 	parse_virtual,
 };
 
-fn revolver_json(issue_path: &Path) -> String {
-	revolver_json_multi(&[issue_path], 0, None)
-}
-
-fn revolver_json_multi(entries: &[&Path], current_index: usize, previous: Option<&Path>) -> String {
+/// Build a MilestoneBlockerCache JSON from embedded issue title lines.
+/// `titles` is a list of `(title, user, url)` tuples.
+fn milestone_cache_json(titles: &[(&str, &str, &str)], current_index: usize) -> String {
+	let description: String = titles
+		.iter()
+		.enumerate()
+		.map(|(i, (title, user, url))| {
+			let sep = if i + 1 < titles.len() { "\n\n" } else { "" };
+			format!("- [ ] {title} <!-- @{user} {url} -->{sep}")
+		})
+		.collect();
 	serde_json::json!({
-		"entries": entries,
 		"current_index": current_index,
-		"previous": previous
+		"milestone_description": description
 	})
 	.to_string()
 }
@@ -42,8 +45,11 @@ async fn test_blocker_add_in_integrated_mode() {
 	let issue = ctx.local(&vi, None).await;
 	let issue_path = ctx.resolve_issue_path(&issue);
 
-	// Set this issue as the current blocker issue
-	ctx.xdg.write_cache("blocker_revolver.json", &revolver_json(&issue_path));
+	// Set this issue as the current blocker issue via milestone cache
+	ctx.xdg.write_cache(
+		"milestone_blockers.json",
+		&milestone_cache_json(&[("Test Issue", "mock_user", "https://github.com/o/r/issues/1")], 0),
+	);
 
 	// Run blocker add in integrated mode (no --individual-files flag)
 	let out = ctx.run(&["--offline", "blocker", "add", "New task from CLI"]);
@@ -83,8 +89,11 @@ async fn test_blocker_pop_in_integrated_mode() {
 	let issue = ctx.local(&vi, None).await;
 	let issue_path = ctx.resolve_issue_path(&issue);
 
-	// Set this issue as the current blocker issue
-	ctx.xdg.write_cache("blocker_revolver.json", &revolver_json(&issue_path));
+	// Set this issue as the current blocker issue via milestone cache
+	ctx.xdg.write_cache(
+		"milestone_blockers.json",
+		&milestone_cache_json(&[("Test Issue", "mock_user", "https://github.com/o/r/issues/1")], 0),
+	);
 
 	// Run blocker pop in integrated mode (no --individual-files flag)
 	let out = ctx.run(&["--offline", "blocker", "pop"]);
@@ -116,8 +125,11 @@ async fn test_blocker_add_creates_blockers_section_if_missing() {
 	let issue = ctx.local(&vi, None).await;
 	let issue_path = ctx.resolve_issue_path(&issue);
 
-	// Set this issue as the current blocker issue
-	ctx.xdg.write_cache("blocker_revolver.json", &revolver_json(&issue_path));
+	// Set this issue as the current blocker issue via milestone cache
+	ctx.xdg.write_cache(
+		"milestone_blockers.json",
+		&milestone_cache_json(&[("Test Issue", "mock_user", "https://github.com/o/r/issues/1")], 0),
+	);
 
 	// Run blocker add in integrated mode
 	let out = ctx.run(&["--offline", "blocker", "add", "New task"]);
@@ -180,8 +192,11 @@ async fn test_blocker_add_with_nested_context() {
 	let issue = ctx.local(&vi, None).await;
 	let issue_path = ctx.resolve_issue_path(&issue);
 
-	// Set this issue as the current blocker issue
-	ctx.xdg.write_cache("blocker_revolver.json", &revolver_json(&issue_path));
+	// Set this issue as the current blocker issue via milestone cache
+	ctx.xdg.write_cache(
+		"milestone_blockers.json",
+		&milestone_cache_json(&[("Test Issue", "mock_user", "https://github.com/o/r/issues/1")], 0),
+	);
 
 	// Run blocker add in integrated mode
 	let out = ctx.run(&["--offline", "blocker", "add", "New sub-task"]);
@@ -223,11 +238,20 @@ async fn test_blocker_toggle_cycles_between_entries() {
 
 	let issue1 = ctx.local(&vi1, None).await;
 	let issue2 = ctx.local(&vi2, None).await;
-	let path1 = ctx.resolve_issue_path(&issue1);
-	let path2 = ctx.resolve_issue_path(&issue2);
+	let _path1 = ctx.resolve_issue_path(&issue1);
+	let _path2 = ctx.resolve_issue_path(&issue2);
 
-	// Set up revolver with two entries, pointing at first
-	ctx.xdg.write_cache("blocker_revolver.json", &revolver_json_multi(&[&path1, &path2], 0, None));
+	// Set up milestone cache with two embedded issues, pointing at first
+	ctx.xdg.write_cache(
+		"milestone_blockers.json",
+		&milestone_cache_json(
+			&[
+				("Issue A", "mock_user", "https://github.com/o/r/issues/1"),
+				("Issue B", "mock_user", "https://github.com/o/r/issues/2"),
+			],
+			0,
+		),
+	);
 
 	// Current should show task A
 	let out = ctx.run(&["--offline", "blocker", "current"]);
@@ -255,7 +279,7 @@ async fn test_blocker_toggle_cycles_between_entries() {
 }
 
 #[tokio::test]
-async fn test_blocker_toggle_single_entry_pulls_previous() {
+async fn test_blocker_toggle_with_three_entries_cycles() {
 	let ctx = TestContext::build("");
 
 	let vi1 = parse_virtual(
@@ -268,34 +292,50 @@ async fn test_blocker_toggle_single_entry_pulls_previous() {
 		 \t# Blockers\n\
 		 \t- task B\n",
 	);
-
-	let issue1 = ctx.local(&vi1, None).await;
-	let issue2 = ctx.local(&vi2, None).await;
-	let path1 = ctx.resolve_issue_path(&issue1);
-	let path2 = ctx.resolve_issue_path(&issue2);
-
-	// Single entry with previous set (simulates: was on B, did `set` to A)
-	ctx.xdg.write_cache("blocker_revolver.json", &revolver_json_multi(&[&path1], 0, Some(&path2)));
-
-	// Toggle should pull previous (B) into revolver and switch to it
-	let out = ctx.run(&["--offline", "blocker", "toggle"]);
-	assert!(out.status.success(), "toggle should succeed. stderr: {}", out.stderr);
-	assert!(
-		out.stdout.contains("Issue B") || out.stdout.contains("task B"),
-		"toggle should switch to B. stdout: {}",
-		out.stdout
+	let vi3 = parse_virtual(
+		"- [ ] Issue C <!-- @mock_user https://github.com/o/r/issues/3 -->\n\
+		 \t# Blockers\n\
+		 \t- task C\n",
 	);
 
-	// Now we have a 2-slot revolver, toggle back to A
-	let out = ctx.run(&["--offline", "blocker", "toggle"]);
-	assert!(out.status.success(), "second toggle should succeed. stderr: {}", out.stderr);
+	ctx.local(&vi1, None).await;
+	ctx.local(&vi2, None).await;
+	ctx.local(&vi3, None).await;
 
+	// Set up milestone cache with three embedded issues, pointing at first
+	ctx.xdg.write_cache(
+		"milestone_blockers.json",
+		&milestone_cache_json(
+			&[
+				("Issue A", "mock_user", "https://github.com/o/r/issues/1"),
+				("Issue B", "mock_user", "https://github.com/o/r/issues/2"),
+				("Issue C", "mock_user", "https://github.com/o/r/issues/3"),
+			],
+			0,
+		),
+	);
+
+	// Toggle A→B
+	let out = ctx.run(&["--offline", "blocker", "toggle"]);
+	assert!(out.status.success(), "toggle should succeed. stderr: {}", out.stderr);
 	let out = ctx.run(&["--offline", "blocker", "current"]);
-	assert!(out.stdout.contains("task A"), "After second toggle, should be back to A. stdout: {}", out.stdout);
+	assert!(out.stdout.contains("task B"), "After first toggle, should be B. stdout: {}", out.stdout);
+
+	// Toggle B→C
+	let out = ctx.run(&["--offline", "blocker", "toggle"]);
+	assert!(out.status.success());
+	let out = ctx.run(&["--offline", "blocker", "current"]);
+	assert!(out.stdout.contains("task C"), "After second toggle, should be C. stdout: {}", out.stdout);
+
+	// Toggle C→A (wrap)
+	let out = ctx.run(&["--offline", "blocker", "toggle"]);
+	assert!(out.status.success());
+	let out = ctx.run(&["--offline", "blocker", "current"]);
+	assert!(out.stdout.contains("task A"), "After third toggle, should wrap to A. stdout: {}", out.stdout);
 }
 
 #[tokio::test]
-async fn test_blocker_toggle_single_entry_no_previous_errors() {
+async fn test_blocker_toggle_single_entry_errors() {
 	let ctx = TestContext::build("");
 
 	let vi = parse_virtual(
@@ -304,16 +344,18 @@ async fn test_blocker_toggle_single_entry_no_previous_errors() {
 		 \t- task A\n",
 	);
 
-	let issue = ctx.local(&vi, None).await;
-	let path = ctx.resolve_issue_path(&issue);
+	ctx.local(&vi, None).await;
 
-	// Single entry, no previous
-	ctx.xdg.write_cache("blocker_revolver.json", &revolver_json(&path));
+	// Single entry in milestone cache
+	ctx.xdg.write_cache(
+		"milestone_blockers.json",
+		&milestone_cache_json(&[("Issue A", "mock_user", "https://github.com/o/r/issues/1")], 0),
+	);
 
-	// Toggle should fail
+	// Toggle should fail with single entry
 	let out = ctx.run(&["--offline", "blocker", "toggle"]);
-	assert!(!out.status.success(), "toggle with no previous should fail. stdout: {}", out.stdout);
-	assert!(out.stderr.contains("set-more"), "error should mention set-more. stderr: {}", out.stderr);
+	assert!(!out.status.success(), "toggle with single entry should fail. stdout: {}", out.stdout);
+	assert!(out.stderr.contains("Only one issue"), "error should mention single issue. stderr: {}", out.stderr);
 }
 
 #[tokio::test]
@@ -337,7 +379,16 @@ async fn test_blocker_add_works_after_toggle() {
 	let path2 = ctx.resolve_issue_path(&issue2);
 
 	// Start on A, toggle to B
-	ctx.xdg.write_cache("blocker_revolver.json", &revolver_json_multi(&[&path1, &path2], 0, None));
+	ctx.xdg.write_cache(
+		"milestone_blockers.json",
+		&milestone_cache_json(
+			&[
+				("Issue A", "mock_user", "https://github.com/o/r/issues/1"),
+				("Issue B", "mock_user", "https://github.com/o/r/issues/2"),
+			],
+			0,
+		),
+	);
 	ctx.run(&["--offline", "blocker", "toggle"]);
 
 	// Add a blocker - should go into Issue B (the now-current one)

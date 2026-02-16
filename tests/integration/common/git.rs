@@ -208,7 +208,7 @@ fn build_hollow_from_virtual(virtual_issue: &tedi::VirtualIssue, timestamps: &Is
 	let remote = match &virtual_issue.selector {
 		tedi::IssueSelector::GitId(n) => {
 			let link = tedi::IssueLink::parse(&format!("https://github.com/{OWNER}/{REPO}/issues/{n}")).unwrap();
-			Some(Box::new(tedi::LinkedIssueMeta::new(USER.to_string(), link, timestamps.clone())))
+			Some(Box::new(tedi::LinkedIssueMeta::new(Some(USER.to_string()), link, timestamps.clone())))
 		}
 		tedi::IssueSelector::Title(_) | tedi::IssueSelector::Regex(_) => None,
 	};

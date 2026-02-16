@@ -336,18 +336,30 @@ impl IssueTimestamps {
 
 /// Metadata for an issue linked to Github.
 /// Parent chain is stored in `IssueIdentity.parent_index`.
-#[derive(Clone, Debug, PartialEq, derive_new::new)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct LinkedIssueMeta {
-	/// User who created the issue
-	pub user: String,
+	/// User who created the issue. None = unknown (treated as ourselves).
+	pub user: Option<String>,
 	/// Link to the issue on Github
 	//TODO: I'm pretty sure we can remove this field and just construct it from context when needed
-	pub link: IssueLink,
+	link: IssueLink,
 	/// Timestamps of last changes to individual fields.
 	/// Used for sync conflict resolution.
 	pub timestamps: IssueTimestamps,
 }
 impl LinkedIssueMeta {
+	pub fn new(user: Option<String>, link: IssueLink, timestamps: IssueTimestamps) -> Self {
+		if user.is_none() {
+			tracing::warn!("LinkedIssueMeta created without user");
+		}
+		Self { user, link, timestamps }
+	}
+
+	/// Get the link.
+	pub fn link(&self) -> &IssueLink {
+		&self.link
+	}
+
 	/// Get the repository owner from the link.
 	pub fn owner(&self) -> &str {
 		self.link.owner()
@@ -379,7 +391,7 @@ pub struct IssueIdentity {
 impl IssueIdentity {
 	/// Create a new linked Github issue identity.
 	/// If `parent_index` is None, derives repo_only from the link.
-	pub fn new_linked(parent_index: Option<IssueIndex>, user: String, link: IssueLink, timestamps: IssueTimestamps) -> Self {
+	pub fn new_linked(parent_index: Option<IssueIndex>, user: Option<String>, link: IssueLink, timestamps: IssueTimestamps) -> Self {
 		let parent_index = parent_index.unwrap_or_else(|| {
 			let repo_info = link.repo_info();
 			IssueIndex::repo_only(repo_info)
@@ -387,7 +399,7 @@ impl IssueIdentity {
 		Self {
 			parent_index,
 			is_virtual: false,
-			remote: Some(Box::new(LinkedIssueMeta { user, link, timestamps })),
+			remote: Some(Box::new(LinkedIssueMeta::new(user, link, timestamps))),
 		}
 	}
 
@@ -445,9 +457,19 @@ impl IssueIdentity {
 		self.link().map(|l| l.as_str())
 	}
 
-	/// Get the user who created this issue if linked.
+	/// Get the user who created this issue if linked and known.
 	pub fn user(&self) -> Option<&str> {
-		self.as_linked().map(|m| m.user.as_str())
+		self.as_linked().and_then(|m| m.user.as_deref())
+	}
+
+	/// Check if this issue is owned by the current user.
+	/// True if: virtual, or linked with unknown user (None), or linked with matching user.
+	pub fn is_owned(&self) -> bool {
+		self.is_virtual
+			|| match self.as_linked() {
+				None => false,
+				Some(meta) => meta.user.as_ref().is_none_or(|u| crate::current_user::is(u)),
+			}
 	}
 
 	/// Get the timestamps if linked.
@@ -968,7 +990,7 @@ impl Issue /*{{{1*/ {
 
 			// Build child's parent_index
 			let child_parent_idx = if let Some(meta) = &identity.remote {
-				parent_idx.child(IssueSelector::GitId(meta.link.number()))
+				parent_idx.child(IssueSelector::GitId(meta.number()))
 			} else {
 				parent_idx
 			};
@@ -1146,7 +1168,7 @@ impl Issue /*{{{1*/ {
 		if self.identity.is_virtual {
 			assert!(self.user().is_none(), "virtual issue must not have a user tag, got: {:?}", self.user());
 		}
-		let is_owned = self.user().is_some_and(crate::current_user::is);
+		let is_owned = self.identity.is_owned();
 		out.push_str(&format!("{indent}- [{checked}] {labels_part}{} {issue_marker}\n", self.contents.title));
 
 		// Body (first comment) - add extra indent if not owned
@@ -1169,7 +1191,7 @@ impl Issue /*{{{1*/ {
 					comment.identity
 				);
 			}
-			let comment_is_owned = comment.user().is_some_and(crate::current_user::is);
+			let comment_is_owned = comment.user().is_none() || comment.user().is_some_and(crate::current_user::is);
 			let comment_indent = if comment_is_owned { &content_indent } else { &format!("{content_indent}\t") };
 
 			if out.lines().last().is_some_and(|l| !l.trim().is_empty()) {
@@ -1270,7 +1292,7 @@ impl Issue /*{{{1*/ {
 		} else {
 			format!("[{}] ", self.contents.labels.join(", "))
 		};
-		let is_owned = self.identity.is_virtual || self.user().is_some_and(crate::current_user::is);
+		let is_owned = self.identity.is_owned();
 		out.push_str(&format!("- [{checked}] {labels_part}{} {issue_marker}\n", self.contents.title));
 
 		// Body (first comment) - add extra indent if not owned
@@ -1286,7 +1308,7 @@ impl Issue /*{{{1*/ {
 
 		// Additional comments
 		for comment in self.contents.comments.iter().skip(1) {
-			let comment_is_owned = self.identity.is_virtual || comment.user().is_some_and(crate::current_user::is);
+			let comment_is_owned = comment.user().is_none() || comment.user().is_some_and(crate::current_user::is);
 			let comment_indent_str = if comment_is_owned { content_indent } else { "\t\t" };
 
 			if out.lines().last().is_some_and(|l| !l.trim().is_empty()) {
@@ -1845,7 +1867,7 @@ mod tests {
 		let remote = match &v.selector {
 			IssueSelector::GitId(n) => {
 				let link = IssueLink::parse(&format!("https://github.com/owner/repo/issues/{n}")).unwrap();
-				Some(Box::new(LinkedIssueMeta::new("owner".to_string(), link, IssueTimestamps::default())))
+				Some(Box::new(LinkedIssueMeta::new(None, link, IssueTimestamps::default())))
 			}
 			IssueSelector::Title(_) | IssueSelector::Regex(_) => None,
 		};
@@ -1938,13 +1960,9 @@ mod tests {
 
 	#[test]
 	fn test_parse_invalid_checkbox_returns_error() {
-		let root_err = VirtualIssue::parse(
-			"- [abc] Invalid issue <!-- @owner https://github.com/owner/repo/issues/123 -->\n\tBody\n",
-			PathBuf::from("test.md"),
-		)
-		.unwrap_err();
+		let root_err = VirtualIssue::parse("- [abc] Invalid issue <!-- https://github.com/owner/repo/issues/123 -->\n\tBody\n", PathBuf::from("test.md")).unwrap_err();
 		let sub_err = VirtualIssue::parse(
-			"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->\n\tBody\n\n\t- [xyz] Bad sub <!--sub @owner https://github.com/owner/repo/issues/2 -->\n",
+			"- [ ] Parent <!-- https://github.com/owner/repo/issues/1 -->\n\tBody\n\n\t- [xyz] Bad sub <!--sub https://github.com/owner/repo/issues/2 -->\n",
 			PathBuf::from("test.md"),
 		)
 		.unwrap_err();
@@ -1953,9 +1971,9 @@ mod tests {
 
 		  × invalid checkbox content: 'abc'
 		   ╭─[test.md:1:1]
-		 1 │ - [abc] Invalid issue <!-- @owner https://github.com/owner/repo/issues/123 -->
-		   · ───────────────────────────────────────┬──────────────────────────────────────
-		   ·                                        ╰── unrecognized checkbox value
+		 1 │ - [abc] Invalid issue <!-- https://github.com/owner/repo/issues/123 -->
+		   · ───────────────────────────────────┬───────────────────────────────────
+		   ·                                    ╰── unrecognized checkbox value
 		 2 │     Body
 		   ╰────
 		  help: valid checkbox values are: ' ' (open), 'x' (closed), '-' (not
@@ -1968,9 +1986,9 @@ mod tests {
 		  × invalid checkbox content: 'xyz'
 		   ╭─[test.md:4:1]
 		 3 │ 
-		 4 │     - [xyz] Bad sub <!--sub @owner https://github.com/owner/repo/issues/2 -->
-		   · ──────────────────────────────────────┬──────────────────────────────────────
-		   ·                                       ╰── unrecognized checkbox value
+		 4 │     - [xyz] Bad sub <!--sub https://github.com/owner/repo/issues/2 -->
+		   · ───────────────────────────────────┬──────────────────────────────────
+		   ·                                    ╰── unrecognized checkbox value
 		   ╰────
 		  help: valid checkbox values are: ' ' (open), 'x' (closed), '-' (not
 		        planned), or a number like '123' (duplicate of issue #123)
@@ -1979,7 +1997,7 @@ mod tests {
 
 	#[test]
 	fn test_parse_and_serialize_not_planned() {
-		let content = "- [-] Not planned issue <!-- @owner https://github.com/owner/repo/issues/123 -->\n\tBody text\n";
+		let content = "- [-] Not planned issue <!-- https://github.com/owner/repo/issues/123 -->\n\tBody text\n";
 		let vi = VirtualIssue::parse(content, PathBuf::from("test.md")).unwrap();
 		insta::assert_snapshot!(format!("state: {:?}\ntitle: {}", vi.contents.state, vi.contents.title), @"
 		state: NotPlanned
@@ -1989,7 +2007,7 @@ mod tests {
 
 	#[test]
 	fn test_parse_and_serialize_duplicate() {
-		let content = "- [456] Duplicate issue <!-- @owner https://github.com/owner/repo/issues/123 -->\n\tBody text\n";
+		let content = "- [456] Duplicate issue <!-- https://github.com/owner/repo/issues/123 -->\n\tBody text\n";
 		let vi = VirtualIssue::parse(content, PathBuf::from("test.md")).unwrap();
 		insta::assert_snapshot!(format!("state: {:?}\ntitle: {}", vi.contents.state, vi.contents.title), @"
 		state: Duplicate(456)
@@ -1999,38 +2017,35 @@ mod tests {
 
 	#[test]
 	fn test_parse_sub_issue_close_types() {
-		// Set current user so content is serialized without extra indent
-		crate::current_user::set("owner".to_string());
-
-		let content = r#"- [ ] Parent issue <!-- @owner https://github.com/owner/repo/issues/1 -->
+		let content = r#"- [ ] Parent issue <!-- https://github.com/owner/repo/issues/1 -->
 	Body
 
-	- [x] Closed sub <!-- @owner https://github.com/owner/repo/issues/2 --> <!--omitted {{{always-->
+	- [x] Closed sub <!-- https://github.com/owner/repo/issues/2 --> <!--omitted {{{always-->
 		closed body
 		<!--,}}}-->
 
-	- [-] Not planned sub <!-- @owner https://github.com/owner/repo/issues/3 --> <!--omitted {{{always-->
+	- [-] Not planned sub <!-- https://github.com/owner/repo/issues/3 --> <!--omitted {{{always-->
 		not planned body
 		<!--,}}}-->
 
-	- [42] Duplicate sub <!-- @owner https://github.com/owner/repo/issues/4 --> <!--omitted {{{always-->
+	- [42] Duplicate sub <!-- https://github.com/owner/repo/issues/4 --> <!--omitted {{{always-->
 		duplicate body
 		<!--,}}}-->
 "#;
 		let issue = unsafe_mock_parse_virtual(content);
 		insta::assert_snapshot!(issue.serialize_virtual(), @"
-		- [ ] Parent issue <!-- @owner https://github.com/owner/repo/issues/1 -->
+		- [ ] Parent issue <!-- https://github.com/owner/repo/issues/1 -->
 			Body
 			
-			- [x] Closed sub <!-- @owner https://github.com/owner/repo/issues/2 --> <!--omitted {{{always-->
+			- [x] Closed sub <!-- https://github.com/owner/repo/issues/2 --> <!--omitted {{{always-->
 				closed body
 				<!--,}}}-->
 			
-			- [-] Not planned sub <!-- @owner https://github.com/owner/repo/issues/3 --> <!--omitted {{{always-->
+			- [-] Not planned sub <!-- https://github.com/owner/repo/issues/3 --> <!--omitted {{{always-->
 				not planned body
 				<!--,}}}-->
 			
-			- [42] Duplicate sub <!-- @owner https://github.com/owner/repo/issues/4 --> <!--omitted {{{always-->
+			- [42] Duplicate sub <!-- https://github.com/owner/repo/issues/4 --> <!--omitted {{{always-->
 				duplicate body
 				<!--,}}}-->
 		");
@@ -2038,83 +2053,84 @@ mod tests {
 
 	#[test]
 	fn test_find_last_blocker_position_empty() {
-		let content = "- [ ] Issue <!-- @owner https://github.com/owner/repo/issues/1 -->\n\tBody\n";
+		let content = "- [ ] Issue <!-- https://github.com/owner/repo/issues/1 -->\n\tBody\n";
 		let issue = unsafe_mock_parse_virtual(content);
 		assert!(issue.find_last_blocker_position().is_none());
 	}
 
 	#[test]
 	fn test_find_last_blocker_position_single_item() {
-		let content = "- [ ] Issue <!-- @owner https://github.com/owner/repo/issues/1 -->\n\tBody\n\n\t# Blockers\n\t- task 1\n";
+		let content = "- [ ] Issue <!-- https://github.com/owner/repo/issues/1 -->\n\tBody\n\n\t# Blockers\n\t- task 1\n";
 		let issue = unsafe_mock_parse_virtual(content);
 		insta::assert_snapshot!(format!("{:?}", issue.find_last_blocker_position()), @"Some((5, 4))");
 	}
 
 	#[test]
 	fn test_find_last_blocker_position_multiple_items() {
-		let content = "- [ ] Issue <!-- @owner https://github.com/owner/repo/issues/1 -->\n\tBody\n\n\t# Blockers\n\t- task 1\n\t- task 2\n\t- task 3\n";
+		let content = "- [ ] Issue <!-- https://github.com/owner/repo/issues/1 -->\n\tBody\n\n\t# Blockers\n\t- task 1\n\t- task 2\n\t- task 3\n";
 		let issue = unsafe_mock_parse_virtual(content);
 		insta::assert_snapshot!(format!("{:?}", issue.find_last_blocker_position()), @"Some((7, 4))");
 	}
 
 	#[test]
 	fn test_find_last_blocker_position_with_nesting() {
-		let content = "- [ ] Issue <!-- @owner https://github.com/owner/repo/issues/1 -->\n\tBody\n\n\t# Blockers\n\t- Phase 1\n\t\t- task a\n\t- Phase 2\n\t\t- task b\n";
+		let content = "- [ ] Issue <!-- https://github.com/owner/repo/issues/1 -->\n\tBody\n\n\t# Blockers\n\t- Phase 1\n\t\t- task a\n\t- Phase 2\n\t\t- task b\n";
 		let issue = unsafe_mock_parse_virtual(content);
 		insta::assert_snapshot!(format!("{:?}", issue.find_last_blocker_position()), @"Some((8, 5))");
 	}
 
 	#[test]
 	fn test_find_last_blocker_position_before_sub_issues() {
-		let content = "- [ ] Issue <!-- @owner https://github.com/owner/repo/issues/1 -->\n\tBody\n\n\t# Blockers\n\t- blocker task\n\n\t- [ ] Sub issue <!--sub @owner https://github.com/owner/repo/issues/2 -->\n";
+		let content =
+			"- [ ] Issue <!-- https://github.com/owner/repo/issues/1 -->\n\tBody\n\n\t# Blockers\n\t- blocker task\n\n\t- [ ] Sub issue <!--sub https://github.com/owner/repo/issues/2 -->\n";
 		let issue = unsafe_mock_parse_virtual(content);
 		insta::assert_snapshot!(format!("{:?}", issue.find_last_blocker_position()), @"Some((5, 4))");
 	}
 
 	#[test]
 	fn test_serialize_filesystem_no_children() {
-		let content = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
+		let content = r#"- [ ] Parent <!-- https://github.com/owner/repo/issues/1 -->
 	Parent body
 
-	- [ ] Child 1 <!--sub @owner https://github.com/owner/repo/issues/2 -->
+	- [ ] Child 1 <!--sub https://github.com/owner/repo/issues/2 -->
 		Child 1 body
 
-	- [ ] Child 2 <!--sub @owner https://github.com/owner/repo/issues/3 -->
+	- [ ] Child 2 <!--sub https://github.com/owner/repo/issues/3 -->
 		Child 2 body
 "#;
 		let issue = unsafe_mock_parse_virtual(content);
 		assert_eq!(issue.children.len(), 2);
 		// filesystem serialization should NOT include children
 		insta::assert_snapshot!(issue.serialize_filesystem(), @"
-		- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
-				Parent body
+		- [ ] Parent <!-- https://github.com/owner/repo/issues/1 -->
+			Parent body
 		");
 	}
 
 	#[test]
 	fn test_serialize_virtual_includes_children() {
-		let content = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
+		let content = r#"- [ ] Parent <!-- https://github.com/owner/repo/issues/1 -->
 	Parent body
 
-	- [ ] Child 1 <!--sub @owner https://github.com/owner/repo/issues/2 -->
+	- [ ] Child 1 <!--sub https://github.com/owner/repo/issues/2 -->
 		Child 1 body
 "#;
 		let issue = unsafe_mock_parse_virtual(content);
 		insta::assert_snapshot!(issue.serialize_virtual(), @"
-		- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
-				Parent body
+		- [ ] Parent <!-- https://github.com/owner/repo/issues/1 -->
+			Parent body
 			
-			- [ ] Child 1 <!-- @owner https://github.com/owner/repo/issues/2 -->
-					Child 1 body
+			- [ ] Child 1 <!-- https://github.com/owner/repo/issues/2 -->
+				Child 1 body
 		");
 	}
 
 	#[test]
 	fn test_parse_virtual_includes_inline_children() {
-		let content = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
+		let content = r#"- [ ] Parent <!-- https://github.com/owner/repo/issues/1 -->
 	Parent body
 
-	- [ ] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
+	- [ ] Child <!--sub https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
 		let vi = VirtualIssue::parse(content, PathBuf::from("test.md")).unwrap();
@@ -2130,10 +2146,10 @@ mod tests {
 
 	#[test]
 	fn test_virtual_roundtrip() {
-		let content = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
+		let content = r#"- [ ] Parent <!-- https://github.com/owner/repo/issues/1 -->
 	Parent body
 
-	- [ ] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
+	- [ ] Child <!--sub https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
 		let issue = unsafe_mock_parse_virtual(content);
@@ -2150,13 +2166,13 @@ mod tests {
 
 	#[test]
 	fn test_select_blockers_standalone_line() {
-		let content = "- [ ] Issue <!-- @owner https://github.com/owner/repo/issues/1 -->\n\tBody\n\n\t!s\n\t# Blockers\n\t- task 1\n\t- task 2\n";
+		let content = "- [ ] Issue <!-- https://github.com/owner/repo/issues/1 -->\n\tBody\n\n\t!s\n\t# Blockers\n\t- task 1\n\t- task 2\n";
 		let vi = VirtualIssue::parse(content, PathBuf::from("test.md")).unwrap();
 		assert!(matches!(vi.contents.blockers.set_state, Some(crate::issue::BlockerSetState::Pending)));
 		// !s must not appear in re-serialized output, blockers preserved
 		insta::assert_snapshot!(unsafe_mock_parse_virtual(content).serialize_virtual(), @"
-		- [ ] Issue <!-- @owner https://github.com/owner/repo/issues/1 -->
-				Body
+		- [ ] Issue <!-- https://github.com/owner/repo/issues/1 -->
+			Body
 			
 			# Blockers
 			- task 1
@@ -2166,7 +2182,7 @@ mod tests {
 
 	#[test]
 	fn test_select_blockers_suffix_on_header() {
-		let content = "- [ ] Issue <!-- @owner https://github.com/owner/repo/issues/1 -->\n\tBody\n\n\t# Blockers !s\n\t- one\n";
+		let content = "- [ ] Issue <!-- https://github.com/owner/repo/issues/1 -->\n\tBody\n\n\t# Blockers !s\n\t- one\n";
 		let vi = VirtualIssue::parse(content, PathBuf::from("test.md")).unwrap();
 		assert!(matches!(vi.contents.blockers.set_state, Some(crate::issue::BlockerSetState::Pending)));
 		// blocker text parsed correctly despite !s suffix on header
@@ -2175,7 +2191,7 @@ mod tests {
 
 	#[test]
 	fn test_select_blockers_not_set_by_default() {
-		let content = "- [ ] Issue <!-- @owner https://github.com/owner/repo/issues/1 -->\n\tBody\n\n\t# Blockers\n\t- task\n";
+		let content = "- [ ] Issue <!-- https://github.com/owner/repo/issues/1 -->\n\tBody\n\n\t# Blockers\n\t- task\n";
 		let virtual_issue = VirtualIssue::parse(content, PathBuf::from("test.md")).unwrap();
 
 		assert!(virtual_issue.contents.blockers.set_state.is_none());
@@ -2183,7 +2199,7 @@ mod tests {
 
 	#[test]
 	fn test_select_blockers_case_insensitive() {
-		let content = "- [ ] Issue <!-- @owner https://github.com/owner/repo/issues/1 -->\n\t!S\n\t# Blockers\n\t- task\n";
+		let content = "- [ ] Issue <!-- https://github.com/owner/repo/issues/1 -->\n\t!S\n\t# Blockers\n\t- task\n";
 		let virtual_issue = VirtualIssue::parse(content, PathBuf::from("test.md")).unwrap();
 
 		assert!(matches!(virtual_issue.contents.blockers.set_state, Some(crate::issue::BlockerSetState::Pending)));
@@ -2191,7 +2207,7 @@ mod tests {
 
 	#[test]
 	fn test_serialize_github_body_only() {
-		let content = r#"- [ ] Issue <!-- @owner https://github.com/owner/repo/issues/1 -->
+		let content = r#"- [ ] Issue <!-- https://github.com/owner/repo/issues/1 -->
 	This is the body text.
 
 	# Blockers
@@ -2210,16 +2226,16 @@ mod tests {
 
 	#[test]
 	fn test_parse_virtual_child_open_to_closed() {
-		let initial = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
+		let initial = r#"- [ ] Parent <!-- https://github.com/owner/repo/issues/1 -->
 	Body
 
-	- [ ] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
+	- [ ] Child <!--sub https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
-		let updated = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
+		let updated = r#"- [ ] Parent <!-- https://github.com/owner/repo/issues/1 -->
 	Body
 
-	- [x] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
+	- [x] Child <!--sub https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
 		let initial_vi = VirtualIssue::parse(initial, PathBuf::from("test.md")).unwrap();
@@ -2231,16 +2247,16 @@ mod tests {
 
 	#[test]
 	fn test_parse_virtual_child_open_to_not_planned() {
-		let initial = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
+		let initial = r#"- [ ] Parent <!-- https://github.com/owner/repo/issues/1 -->
 	Body
 
-	- [ ] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
+	- [ ] Child <!--sub https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
-		let updated = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
+		let updated = r#"- [ ] Parent <!-- https://github.com/owner/repo/issues/1 -->
 	Body
 
-	- [-] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
+	- [-] Child <!--sub https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
 		let initial_vi = VirtualIssue::parse(initial, PathBuf::from("test.md")).unwrap();
@@ -2252,16 +2268,16 @@ mod tests {
 
 	#[test]
 	fn test_parse_virtual_child_open_to_duplicate() {
-		let initial = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
+		let initial = r#"- [ ] Parent <!-- https://github.com/owner/repo/issues/1 -->
 	Body
 
-	- [ ] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
+	- [ ] Child <!--sub https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
-		let updated = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
+		let updated = r#"- [ ] Parent <!-- https://github.com/owner/repo/issues/1 -->
 	Body
 
-	- [99] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
+	- [99] Child <!--sub https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
 		let initial_vi = VirtualIssue::parse(initial, PathBuf::from("test.md")).unwrap();
@@ -2273,16 +2289,16 @@ mod tests {
 
 	#[test]
 	fn test_parse_virtual_child_closed_to_open() {
-		let initial = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
+		let initial = r#"- [ ] Parent <!-- https://github.com/owner/repo/issues/1 -->
 	Body
 
-	- [x] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
+	- [x] Child <!--sub https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
-		let updated = r#"- [ ] Parent <!-- @owner https://github.com/owner/repo/issues/1 -->
+		let updated = r#"- [ ] Parent <!-- https://github.com/owner/repo/issues/1 -->
 	Body
 
-	- [ ] Child <!--sub @owner https://github.com/owner/repo/issues/2 -->
+	- [ ] Child <!--sub https://github.com/owner/repo/issues/2 -->
 		Child body
 "#;
 		let initial_vi = VirtualIssue::parse(initial, PathBuf::from("test.md")).unwrap();

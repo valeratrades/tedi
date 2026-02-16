@@ -290,6 +290,37 @@ impl Local {
 		None
 	}
 
+	/// Find a root-level issue file by its number, scanning the entire project dir tree with `fd`.
+	///
+	/// Returns the path to the issue's `.md` file:
+	/// - For flat issues: `{number}_-_{title}.md` (or `.md.bak`)
+	/// - For directory issues: `{number}_-_{title}/__main__.md` (or `.md.bak`)
+	///
+	/// Panics if multiple matches are found (ambiguous state).
+	pub fn find_by_number(repo_info: RepoInfo, number: u64, _key: FsReader) -> Option<PathBuf> {
+		let project_dir = Self::project_dir(repo_info);
+		if !project_dir.exists() {
+			return None;
+		}
+		let pattern = format!("^{number}_-_");
+		let output = std::process::Command::new("fd")
+			.args(["--regex", &pattern, "--max-depth", "1"])
+			.current_dir(&project_dir)
+			.output()
+			.expect("fd is not installed");
+		assert!(output.status.success(), "fd failed: {}", String::from_utf8_lossy(&output.stderr));
+		let stdout = String::from_utf8(output.stdout).expect("fd output is not utf-8");
+		let entries: Vec<&str> = stdout.lines().filter(|l: &&str| !l.is_empty()).collect();
+		match entries.len() {
+			0 => None,
+			1 => {
+				let entry_path = project_dir.join(entries[0]);
+				if entry_path.is_dir() { Self::main_file_in_dir(&entry_path) } else { Some(entry_path) }
+			}
+			_ => panic!("ambiguous: multiple entries match issue #{number} in {}: {entries:?}", project_dir.display()),
+		}
+	}
+
 	/// Parse an IssueSelector from a filename or directory name.
 	/// Format: `{number}_-_{title}[.md[.bak]]` or just `{title}[.md[.bak]]` for pending issues.
 	///
@@ -610,7 +641,7 @@ impl Local {
 		// Build this node's remote from project_meta
 		let remote = if let Some(IssueSelector::GitId(n)) = idx.index().last() {
 			let issue_meta = project_meta.issues.get(n);
-			let user = issue_meta.and_then(|m| m.user.clone()).unwrap_or_default();
+			let user = issue_meta.and_then(|m| m.user.clone());
 			let timestamps = issue_meta.map(|m| m.timestamps.clone()).unwrap_or_default();
 			let link = crate::IssueLink::parse(&format!("https://github.com/{}/{}/issues/{n}", repo_info.owner(), repo_info.repo())).expect("constructed link must be valid");
 			Some(Box::new(crate::LinkedIssueMeta::new(user, link, timestamps)))
@@ -1235,7 +1266,7 @@ impl<R: LocalReader> crate::LazyIssue<LocalIssueSource<R>> for Issue {
 					let meta = Local::load_project_meta_from_reader(repo_info, &source.reader).issues.remove(&n);
 					let link = IssueLink::parse(&format!("https://github.com/{}/{}/issues/{n}", repo_info.owner(), repo_info.repo())).expect("constructed URL must be valid");
 					Some(Box::new(LinkedIssueMeta::new(
-						meta.as_ref().and_then(|m| m.user.clone()).unwrap_or_default(),
+						meta.as_ref().and_then(|m| m.user.clone()),
 						link,
 						meta.map(|m| m.timestamps).unwrap_or_default(),
 					)))

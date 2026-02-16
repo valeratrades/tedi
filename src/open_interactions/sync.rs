@@ -301,6 +301,11 @@ mod types {
 			text: String,
 			nest: bool,
 		},
+		/// Replace the issue's entire blocker sequence.
+		/// Used by milestone editing to sync blocker changes back to individual issues.
+		BlockerWrite {
+			blockers: tedi::BlockerSequence,
+		},
 		/// Mock modifier that does nothing but reports file as modified. For testing.
 		MockGhostEdit,
 	}
@@ -367,6 +372,11 @@ mod types {
 						issue.contents.blockers.add(text);
 					}
 					ModifyResult { output: None, file_modified: true }
+				}
+				Modifier::BlockerWrite { blockers } => {
+					let file_modified = issue.contents.blockers != *blockers;
+					issue.contents.blockers = blockers.clone();
+					ModifyResult { output: None, file_modified }
 				}
 				Modifier::MockGhostEdit => ModifyResult { output: None, file_modified: true },
 			};

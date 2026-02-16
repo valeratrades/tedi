@@ -549,7 +549,7 @@ async fn test_comment_shorthand_creates_comment() {
 		issue body
 		
 		<!-- new comment -->
-			My new comment content
+		My new comment content
 	||||||| [hash]
 	=======
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
