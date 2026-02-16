@@ -23,7 +23,7 @@ async fn main() {
 	let settings = exit_on_error(config::LiveSettings::new(cli.settings_flags.clone(), Duration::from_secs(3)));
 
 	// Commands that require GitHub client (when not offline)
-	let needs_github = matches!(cli.command, Commands::Open(_) | Commands::Blocker(_)) && !cli.offline;
+	let needs_github = matches!(cli.command, Commands::Open(_) | Commands::Blocker(_) | Commands::Milestones(_)) && !cli.offline;
 
 	let github_client: Option<tedi::github::BoxedGithubClient> = if cli.mock.is_some() {
 		Some(std::sync::Arc::new(mock_github::MockGithubClient::new("mock_user")))
