@@ -266,9 +266,23 @@ impl MilestoneBlockerCache {
 		std::fs::write(&cache_path, content)
 	}
 
-	/// Get all embedded issue links from the cached milestone description.
+	/// Get all issue links from the cached milestone description.
+	///
+	/// Recognizes all supported formats: expanded title lines, shorthand refs (`o/r#123`),
+	/// and bare issue URLs.
 	pub fn embedded_links(&self) -> Vec<super::IssueLink> {
-		super::milestone_embed::find_embedded_issues(&self.milestone_description).into_iter().map(|r| r.link).collect()
+		let mut links = Vec::new();
+		for line in self.milestone_description.lines() {
+			if line.starts_with('\t') || line.trim().is_empty() {
+				continue;
+			}
+			if let Some(link) = super::milestone_embed::parse_embedded_title_line(line) {
+				links.push(link);
+			} else if let Some(link) = super::milestone_embed::parse_shorthand_ref(line) {
+				links.push(link);
+			}
+		}
+		links
 	}
 
 	/// Get the currently selected issue link, if any.

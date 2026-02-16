@@ -2,7 +2,7 @@ use clap::{Args, Subcommand};
 use jiff::Timestamp;
 use reqwest::Client;
 use tedi::{
-	Issue, IssueLink, LazyIssue, MilestoneBlockerCache, find_embedded_issues,
+	Issue, IssueLink, LazyIssue, MilestoneBlockerCache, collapse_to_links, find_embedded_issues,
 	local::{FsReader, Local, LocalIssueSource},
 	parse_blockers_from_embedded, parse_embedded_title_line, parse_shorthand_ref, serialize_blockers_view,
 };
@@ -283,6 +283,7 @@ async fn edit_milestone(settings: &LiveSettings, tf: Timeframe, offline: bool, m
 	let tmp_dir = tempfile::tempdir()?;
 	let tmp_path = tmp_dir.path().join(format!("milestone_{tf}.md"));
 	fs::write(&tmp_path, &expanded_description)?;
+	eprintln!("[milestone] tmp_path: {}", tmp_path.display());
 
 	// Open in editor
 	crate::utils::open_file(&tmp_path, None).await?;
@@ -297,7 +298,10 @@ async fn edit_milestone(settings: &LiveSettings, tf: Timeframe, offline: bool, m
 	}
 
 	// Sync blocker changes back to individual issue files
-	let new_description = sync_blocker_changes(&edited_content, offline).await?;
+	sync_blocker_changes(&edited_content, offline).await?;
+
+	// Collapse expanded issues back to bare links for storage
+	let new_description = collapse_to_links(&edited_content);
 
 	if mock {
 		// In mock mode, write result back to the milestone file
@@ -426,49 +430,78 @@ async fn load_local_issue(link: &IssueLink) -> Result<Issue> {
 }
 
 /// Expand shorthand refs and refresh all embedded issue sections from local state.
+///
+/// Preserves the indentation prefix of the original line on the expanded view.
 async fn expand_and_refresh(content: &str) -> Result<String> {
+	fn is_indented(line: &str) -> bool {
+		line.starts_with('\t') || line.starts_with(' ')
+	}
+
+	/// Extract the leading whitespace prefix from a line.
+	fn indent_prefix(line: &str) -> &str {
+		let trimmed = line.trim_start();
+		&line[..line.len() - trimmed.len()]
+	}
+
+	/// Prepend `prefix` to each line of `text`.
+	fn indent_block(text: &str, prefix: &str) -> String {
+		if prefix.is_empty() {
+			return text.to_string();
+		}
+		text.lines()
+			.map(|line| if line.is_empty() { line.to_string() } else { format!("{prefix}{line}") })
+			.collect::<Vec<_>>()
+			.join("\n")
+	}
+
 	let lines: Vec<&str> = content.lines().collect();
 	let mut result_lines: Vec<String> = Vec::new();
 	let mut i = 0;
 
 	while i < lines.len() {
-		// Check for shorthand ref: `owner/repo#123`
+		// Check for shorthand ref or bare URL: `owner/repo#123` or `https://...`
 		if let Some(link) = parse_shorthand_ref(lines[i]) {
+			let prefix = indent_prefix(lines[i]);
+			let ref_line = i;
+			i += 1;
+			// Skip any indented content trailing the ref (leftover from previous expanded state)
+			while i < lines.len() && (is_indented(lines[i]) || lines[i].trim().is_empty()) {
+				if lines[i].trim().is_empty() && (i + 1 >= lines.len() || (!is_indented(lines[i + 1]) && !lines[i + 1].trim().is_empty())) {
+					break;
+				}
+				i += 1;
+			}
 			match load_local_issue(&link).await {
 				Ok(issue) => {
-					result_lines.push(serialize_blockers_view(&issue));
-					i += 1;
-					continue;
+					result_lines.push(indent_block(&serialize_blockers_view(&issue), prefix));
 				}
 				Err(e) => {
-					eprintln!("Warning: failed to expand {}: {e}", lines[i].trim());
-					result_lines.push(lines[i].to_string());
-					i += 1;
-					continue;
+					eprintln!("Warning: failed to expand {}: {e}", lines[ref_line].trim());
+					result_lines.push(lines[ref_line].to_string());
 				}
 			}
+			continue;
 		}
 
 		// Check for embedded issue title line — refresh from local
 		if let Some(link) = parse_embedded_title_line(lines[i]) {
-			// Skip the old embedded content
+			let prefix = indent_prefix(lines[i]);
 			let old_start = i;
 			i += 1;
-			while i < lines.len() && (lines[i].starts_with('\t') || lines[i].trim().is_empty()) {
-				if lines[i].trim().is_empty() && (i + 1 >= lines.len() || (!lines[i + 1].starts_with('\t') && !lines[i + 1].trim().is_empty())) {
+			// Skip the old embedded content
+			while i < lines.len() && (is_indented(lines[i]) || lines[i].trim().is_empty()) {
+				if lines[i].trim().is_empty() && (i + 1 >= lines.len() || (!is_indented(lines[i + 1]) && !lines[i + 1].trim().is_empty())) {
 					break;
 				}
 				i += 1;
 			}
 
-			// Refresh from local
 			match load_local_issue(&link).await {
 				Ok(issue) => {
-					result_lines.push(serialize_blockers_view(&issue));
+					result_lines.push(indent_block(&serialize_blockers_view(&issue), prefix));
 				}
 				Err(e) => {
 					eprintln!("Warning: failed to refresh {}/{}/#{}: {e}", link.owner(), link.repo(), link.number());
-					// Keep old content
 					for line in &lines[old_start..i] {
 						result_lines.push(line.to_string());
 					}
@@ -486,14 +519,10 @@ async fn expand_and_refresh(content: &str) -> Result<String> {
 }
 
 /// Parse blocker changes from edited milestone content and sync back to issue files.
-/// Returns the content to be stored as the milestone description (re-serialized from fresh state).
-async fn sync_blocker_changes(content: &str, offline: bool) -> Result<String> {
+async fn sync_blocker_changes(content: &str, offline: bool) -> Result<()> {
 	use crate::open_interactions::{Modifier, SyncOptions, modify_and_sync_issue};
 
 	let embedded = find_embedded_issues(content);
-	if embedded.is_empty() {
-		return Ok(content.to_string());
-	}
 
 	let lines: Vec<&str> = content.lines().collect();
 
@@ -526,190 +555,5 @@ async fn sync_blocker_changes(content: &str, offline: bool) -> Result<String> {
 		modify_and_sync_issue(issue, offline, modifier, sync_opts).await?;
 	}
 
-	// Re-expand from fresh local state so the stored description reflects the synced state
-	expand_and_refresh(content).await
-}
-
-#[cfg(test)]
-mod tests {
-	use tedi::{BlockerSequence, IssueLink};
-
-	#[test]
-	fn test_parse_shorthand_ref() {
-		use tedi::parse_shorthand_ref;
-		let link = parse_shorthand_ref("owner/repo#123").unwrap();
-		assert_eq!(link.owner(), "owner");
-		assert_eq!(link.repo(), "repo");
-		assert_eq!(link.number(), 123);
-
-		// With whitespace
-		let link = parse_shorthand_ref("  owner/repo#456  ").unwrap();
-		assert_eq!(link.number(), 456);
-
-		// Invalid
-		assert!(parse_shorthand_ref("not-a-ref").is_none());
-		assert!(parse_shorthand_ref("#123").is_none());
-		assert!(parse_shorthand_ref("repo#123").is_none());
-		assert!(parse_shorthand_ref("a/b/c#123").is_none());
-		assert!(parse_shorthand_ref("owner/repo#abc").is_none());
-	}
-
-	#[test]
-	fn test_parse_embedded_title_line() {
-		use tedi::parse_embedded_title_line;
-		let line = "- [ ] My Issue <!-- @user https://github.com/owner/repo/issues/42 -->";
-		let link = parse_embedded_title_line(line).unwrap();
-		assert_eq!(link.owner(), "owner");
-		assert_eq!(link.repo(), "repo");
-		assert_eq!(link.number(), 42);
-
-		// Closed issue
-		let line = "- [x] Done Issue <!-- @user https://github.com/owner/repo/issues/99 -->";
-		let link = parse_embedded_title_line(line).unwrap();
-		assert_eq!(link.number(), 99);
-
-		// Not an embedded issue
-		assert!(parse_embedded_title_line("just text").is_none());
-		assert!(parse_embedded_title_line("- [ ] No marker").is_none());
-		assert!(parse_embedded_title_line("- [ ] Pending <!-- pending -->").is_none());
-	}
-
-	#[test]
-	fn test_find_embedded_issues() {
-		use tedi::find_embedded_issues;
-		let content = "\
-# Sprint Goals
-Some description
-
-- [ ] My Issue <!-- @user https://github.com/owner/repo/issues/42 -->
-\t# Blockers
-\t- task 1
-\t- task 2
-
-More text here
-
-- [x] Done <!-- @user https://github.com/owner/repo/issues/99 -->";
-
-		let refs = find_embedded_issues(content);
-		assert_eq!(refs.len(), 2);
-		assert_eq!(refs[0].link.number(), 42);
-		assert_eq!(refs[0].line_start, 3);
-		assert_eq!(refs[0].line_end, 7);
-		assert_eq!(refs[1].link.number(), 99);
-		assert_eq!(refs[1].line_start, 10);
-	}
-
-	#[test]
-	fn test_parse_blockers_from_embedded() {
-		use tedi::parse_blockers_from_embedded;
-		let section = "\
-- [ ] My Issue <!-- @user https://github.com/owner/repo/issues/42 -->
-\t# Blockers
-\t- task 1
-\t- task 2";
-
-		let blockers = parse_blockers_from_embedded(section);
-		assert_eq!(blockers.items.len(), 2);
-		assert_eq!(blockers.items[0].text, "task 1");
-		assert_eq!(blockers.items[1].text, "task 2");
-		assert!(blockers.set_state.is_none());
-	}
-
-	#[test]
-	fn test_parse_blockers_from_embedded_with_select() {
-		use tedi::parse_blockers_from_embedded;
-		let section = "\
-- [ ] My Issue <!-- @user https://github.com/owner/repo/issues/42 -->
-\t# Blockers !s
-\t- task 1";
-
-		let blockers = parse_blockers_from_embedded(section);
-		assert_eq!(blockers.items.len(), 1);
-		assert!(blockers.set_state.is_some());
-	}
-
-	#[test]
-	fn test_parse_blockers_from_embedded_no_blockers() {
-		use tedi::parse_blockers_from_embedded;
-		let section = "- [ ] My Issue <!-- @user https://github.com/owner/repo/issues/42 -->";
-		let blockers = parse_blockers_from_embedded(section);
-		assert!(blockers.is_empty());
-	}
-
-	#[test]
-	fn test_serialize_blockers_view_roundtrip() {
-		use tedi::{Issue, parse_blockers_from_embedded, serialize_blockers_view};
-
-		let link = IssueLink::parse("https://github.com/owner/repo/issues/42").unwrap();
-		let identity = tedi::IssueIdentity::new_linked(None, None, link, tedi::IssueTimestamps::default());
-		let blockers = BlockerSequence::parse("- task 1\n- task 2");
-		let issue = Issue {
-			identity,
-			contents: tedi::IssueContents {
-				title: "My Issue".to_string(),
-				blockers,
-				..Default::default()
-			},
-			children: std::collections::HashMap::new(),
-		};
-
-		let serialized = serialize_blockers_view(&issue);
-		insta::assert_snapshot!(serialized, @"
-		- [ ] My Issue <!-- https://github.com/owner/repo/issues/42 -->
-			# Blockers
-			- task 1
-			- task 2
-		");
-
-		// Parse it back
-		let parsed_blockers = parse_blockers_from_embedded(&serialized);
-		assert_eq!(parsed_blockers.items.len(), 2);
-		assert_eq!(parsed_blockers.items[0].text, "task 1");
-		assert_eq!(parsed_blockers.items[1].text, "task 2");
-	}
-
-	#[test]
-	fn test_serialize_blockers_view_no_blockers() {
-		use tedi::{Issue, serialize_blockers_view};
-
-		let link = IssueLink::parse("https://github.com/owner/repo/issues/42").unwrap();
-		let identity = tedi::IssueIdentity::new_linked(None, None, link, tedi::IssueTimestamps::default());
-		let issue = Issue {
-			identity,
-			contents: tedi::IssueContents {
-				title: "No Blockers".to_string(),
-				..Default::default()
-			},
-			children: std::collections::HashMap::new(),
-		};
-
-		let serialized = serialize_blockers_view(&issue);
-		insta::assert_snapshot!(serialized, @"- [ ] No Blockers <!-- https://github.com/owner/repo/issues/42 -->");
-	}
-
-	#[test]
-	fn test_serialize_blockers_view_with_labels() {
-		use tedi::{Issue, serialize_blockers_view};
-
-		let link = IssueLink::parse("https://github.com/owner/repo/issues/42").unwrap();
-		let identity = tedi::IssueIdentity::new_linked(None, None, link, tedi::IssueTimestamps::default());
-		let blockers = BlockerSequence::parse("- do thing");
-		let issue = Issue {
-			identity,
-			contents: tedi::IssueContents {
-				title: "Labeled".to_string(),
-				labels: vec!["bug".to_string(), "urgent".to_string()],
-				blockers,
-				..Default::default()
-			},
-			children: std::collections::HashMap::new(),
-		};
-
-		let serialized = serialize_blockers_view(&issue);
-		insta::assert_snapshot!(serialized, @"
-		- [ ] [bug, urgent] Labeled <!-- https://github.com/owner/repo/issues/42 -->
-			# Blockers
-			- do thing
-		");
-	}
+	Ok(())
 }

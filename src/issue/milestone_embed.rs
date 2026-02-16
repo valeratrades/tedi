@@ -39,7 +39,8 @@ pub fn parse_shorthand_ref(line: &str) -> Option<IssueLink> {
 		return None;
 	}
 
-	parse_shorthand_word(content)
+	// Try shorthand `owner/repo#123`, then bare URL `https://github.com/owner/repo/issues/123`
+	parse_shorthand_word(content).or_else(|| IssueLink::parse(content))
 }
 
 /// Check if a line is an embedded issue title line (has a checkbox + issue marker).
@@ -56,6 +57,11 @@ pub fn parse_embedded_title_line(line: &str) -> Option<IssueLink> {
 		_ => None,
 	}
 }
+/// Whether a line is indented (starts with whitespace).
+fn is_indented(line: &str) -> bool {
+	line.starts_with('\t') || line.starts_with(' ')
+}
+
 /// Find all embedded issue sections in the milestone content.
 /// An embedded issue is a title line (with checkbox + marker) followed by
 /// indented content (blockers section etc) until the next non-indented line.
@@ -69,12 +75,10 @@ pub fn find_embedded_issues(content: &str) -> Vec<EmbeddedIssueRef> {
 			let line_start = i;
 			i += 1;
 			// Consume indented lines that belong to this issue
-			while i < lines.len() && (lines[i].starts_with('\t') || lines[i].trim().is_empty()) {
-				// Empty lines within the section are included, but stop at two consecutive empty lines
-				// or at a non-indented line
+			while i < lines.len() && (is_indented(lines[i]) || lines[i].trim().is_empty()) {
 				if lines[i].trim().is_empty() {
 					// Look ahead: if next line is also empty or not indented, stop
-					if i + 1 >= lines.len() || (!lines[i + 1].starts_with('\t') && !lines[i + 1].trim().is_empty()) {
+					if i + 1 >= lines.len() || (!is_indented(lines[i + 1]) && !lines[i + 1].trim().is_empty()) {
 						break;
 					}
 				}
@@ -88,6 +92,54 @@ pub fn find_embedded_issues(content: &str) -> Vec<EmbeddedIssueRef> {
 
 	refs
 }
+/// Collapse all expanded embedded issues and shorthand refs back to bare issue URLs.
+///
+/// This is the inverse of `expand_and_refresh`: it converts the local editing format
+/// back to the storage format suitable for pushing to GitHub.
+pub fn collapse_to_links(content: &str) -> String {
+	let lines: Vec<&str> = content.lines().collect();
+	let mut result_lines: Vec<String> = Vec::new();
+	let mut i = 0;
+
+	while i < lines.len() {
+		// Expanded embedded issue: title line with marker + indented content
+		if let Some(link) = parse_embedded_title_line(lines[i]) {
+			let prefix = &lines[i][..lines[i].len() - lines[i].trim_start().len()];
+			result_lines.push(format!("{prefix}{}", link.url()));
+			i += 1;
+			// Skip indented content belonging to this issue
+			while i < lines.len() && (is_indented(lines[i]) || lines[i].trim().is_empty()) {
+				if lines[i].trim().is_empty() && (i + 1 >= lines.len() || (!is_indented(lines[i + 1]) && !lines[i + 1].trim().is_empty())) {
+					break;
+				}
+				i += 1;
+			}
+			continue;
+		}
+
+		// Shorthand ref or bare URL: normalize to full URL
+		if let Some(link) = parse_shorthand_ref(lines[i]) {
+			let prefix = &lines[i][..lines[i].len() - lines[i].trim_start().len()];
+			result_lines.push(format!("{prefix}{}", link.url()));
+			i += 1;
+			// Skip any trailing indented content (leftover from previous expanded state)
+			while i < lines.len() && (is_indented(lines[i]) || lines[i].trim().is_empty()) {
+				if lines[i].trim().is_empty() && (i + 1 >= lines.len() || (!is_indented(lines[i + 1]) && !lines[i + 1].trim().is_empty())) {
+					break;
+				}
+				i += 1;
+			}
+			continue;
+		}
+
+		// Regular line — keep as-is
+		result_lines.push(lines[i].to_string());
+		i += 1;
+	}
+
+	result_lines.join("\n")
+}
+
 /// Serialize an issue as title line + blockers only (for milestone embedding).
 pub fn serialize_blockers_view(issue: &Issue) -> String {
 	let mut out = String::new();
@@ -122,11 +174,11 @@ pub fn parse_blockers_from_embedded(section: &str) -> super::BlockerSequence {
 		return super::BlockerSequence::default();
 	}
 
-	// Find the blockers header (at indent level 1 = one tab)
+	// Find the blockers header (at one level of indent — tab or spaces)
 	let mut blockers_start = None;
 	let mut select_blockers = false;
 	for (idx, line) in lines.iter().enumerate().skip(1) {
-		let content = line.strip_prefix('\t').unwrap_or(line);
+		let content = line.trim_start();
 		// Check for !s suffix
 		let (effective, has_select) = match content.trim_end().strip_suffix("!s").or_else(|| content.trim_end().strip_suffix("!S")) {
 			Some(before) => (before.trim_end(), true),
@@ -149,11 +201,11 @@ pub fn parse_blockers_from_embedded(section: &str) -> super::BlockerSequence {
 		return super::BlockerSequence::default();
 	};
 
-	// Collect blocker lines (strip one tab of indent)
+	// Collect blocker lines (strip one level of indent — tab or spaces)
 	let blocker_lines: Vec<String> = lines[start..]
 		.iter()
 		.filter(|l| !l.trim().is_empty())
-		.map(|l| l.strip_prefix('\t').unwrap_or(l).to_string())
+		.map(|l| l.strip_prefix('\t').unwrap_or_else(|| l.trim_start()).to_string())
 		.collect();
 
 	let mut seq = super::BlockerSequence::parse(&blocker_lines.join("\n"));
@@ -214,6 +266,12 @@ mod tests {
 		let link = parse_shorthand_ref("  - [ ] owner/repo#80").unwrap();
 		assert_eq!(link.number(), 80);
 
+		// Bare issue URL
+		let link = parse_shorthand_ref("https://github.com/owner/repo/issues/99").unwrap();
+		assert_eq!(link.owner(), "owner");
+		assert_eq!(link.repo(), "repo");
+		assert_eq!(link.number(), 99);
+
 		// Invalid: extra words after ref
 		assert!(parse_shorthand_ref("- [ ] valeratrades/tedi#80 extra").is_none());
 		// Invalid: title + ref (not a shorthand line)
@@ -225,6 +283,43 @@ mod tests {
 		assert!(parse_shorthand_ref("repo#123").is_none());
 		assert!(parse_shorthand_ref("a/b/c#123").is_none());
 		assert!(parse_shorthand_ref("owner/repo#abc").is_none());
+	}
+
+	#[test]
+	fn test_collapse_to_links() {
+		// Expanded embedded issue → bare URL
+		let content = "\
+# Sprint
+- [ ] My Issue <!-- @user https://github.com/owner/repo/issues/42 -->
+\t# Blockers
+\t- task 1
+
+Footer";
+		insta::assert_snapshot!(collapse_to_links(content), @r"
+		# Sprint
+		https://github.com/owner/repo/issues/42
+
+		Footer
+		");
+
+		// Shorthand ref → bare URL
+		assert_eq!(collapse_to_links("o/r#10"), "https://github.com/o/r/issues/10");
+
+		// Bare URL passes through
+		assert_eq!(collapse_to_links("https://github.com/o/r/issues/10"), "https://github.com/o/r/issues/10");
+
+		// Regular text passes through
+		assert_eq!(collapse_to_links("just some text"), "just some text");
+
+		// Indented embedded issue preserves indent
+		let indented = "- [ ] parent\n  - [ ] Child <!-- @user https://github.com/o/r/issues/5 -->\n\t\t# Blockers\n\t\t- task";
+		insta::assert_snapshot!(collapse_to_links(indented), @r"
+		- [ ] parent
+		  https://github.com/o/r/issues/5
+		");
+
+		// Indented shorthand ref preserves indent
+		assert_eq!(collapse_to_links("  o/r#10"), "  https://github.com/o/r/issues/10");
 	}
 
 	#[test]
