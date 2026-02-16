@@ -35,7 +35,7 @@ pub enum MilestonesCommands {
 	Healthcheck,
 }
 
-pub async fn milestones_command(settings: &LiveSettings, args: MilestonesArgs) -> Result<()> {
+pub async fn milestones_command(settings: &LiveSettings, args: MilestonesArgs, mock: Option<crate::MockType>) -> Result<()> {
 	match args.command {
 		MilestonesCommands::Get { tf } => {
 			let retrieved_milestones = request_milestones(settings).await?;
@@ -43,7 +43,7 @@ pub async fn milestones_command(settings: &LiveSettings, args: MilestonesArgs) -
 			println!("{milestone}");
 			Ok(())
 		}
-		MilestonesCommands::Edit { tf, offline } => edit_milestone(settings, tf, offline).await,
+		MilestonesCommands::Edit { tf, offline } => edit_milestone(settings, tf, offline, mock.is_some()).await,
 		MilestonesCommands::Healthcheck => healthcheck(settings).await,
 	}
 }
@@ -255,38 +255,40 @@ fn cache_blocker_milestone(settings: &LiveSettings, milestones: &[Milestone]) {
 	}
 }
 
-async fn edit_milestone(settings: &LiveSettings, tf: Timeframe, offline: bool) -> Result<()> {
-	use std::{fs, path::Path};
+async fn edit_milestone(settings: &LiveSettings, tf: Timeframe, offline: bool, mock: bool) -> Result<()> {
+	use std::fs;
 
-	let retrieved_milestones = request_milestones(settings).await?;
-
-	// Find the milestone matching the timeframe
-	let milestone = retrieved_milestones.iter().find(|m| m.title == tf.to_string()).ok_or_else(|| {
-		let existing = retrieved_milestones.iter().map(|m| m.title.clone()).collect::<Vec<_>>();
-		eyre!("Milestone '{tf}' not found. Existing milestones: {existing:?}")
-	})?;
-
-	let original_description = milestone.description.clone().unwrap_or_default();
-	let milestone_number = milestone.number;
-
-	// Check if milestone is outdated (due_on in the past)
-	let is_outdated = milestone.due_on.map(|d| d < Timestamp::now()).unwrap_or(true); //IGNORED_ERROR: no due date = treat as outdated
+	let (original_description, milestone_number, is_outdated) = if mock {
+		// In mock mode, read milestone content from env-specified file
+		let mock_milestone_path =
+			std::env::var(concat!(env!("CARGO_PKG_NAME"), "_MOCK_MILESTONE")).map_err(|_| eyre!("mock mode requires {}_MOCK_MILESTONE env var", env!("CARGO_PKG_NAME")))?;
+		let content = fs::read_to_string(&mock_milestone_path)?;
+		(content, 0, false)
+	} else {
+		let retrieved_milestones = request_milestones(settings).await?;
+		let milestone = retrieved_milestones.iter().find(|m| m.title == tf.to_string()).ok_or_else(|| {
+			let existing = retrieved_milestones.iter().map(|m| m.title.clone()).collect::<Vec<_>>();
+			eyre!("Milestone '{tf}' not found. Existing milestones: {existing:?}")
+		})?;
+		let desc = milestone.description.clone().unwrap_or_default();
+		let num = milestone.number;
+		let outdated = milestone.due_on.map(|d| d < Timestamp::now()).unwrap_or(true);
+		(desc, num, outdated)
+	};
 
 	// Expand shorthand refs and refresh embedded issues before editing
 	let expanded_description = expand_and_refresh(&original_description).await?;
 
 	// Write to temp file
-	let tmp_path = format!("/tmp/milestone_{tf}.md");
+	let tmp_dir = tempfile::tempdir()?;
+	let tmp_path = tmp_dir.path().join(format!("milestone_{tf}.md"));
 	fs::write(&tmp_path, &expanded_description)?;
 
 	// Open in editor
-	v_utils::io::file_open::open(Path::new(&tmp_path)).await?;
+	crate::utils::open_file(&tmp_path, None).await?;
 
 	// Read back
 	let edited_content = fs::read_to_string(&tmp_path)?;
-
-	// Clean up temp file
-	let _ = fs::remove_file(&tmp_path);
 
 	// Check if changed (compare against expanded, not original — expansion itself is not a user edit)
 	if edited_content == expanded_description {
@@ -296,6 +298,14 @@ async fn edit_milestone(settings: &LiveSettings, tf: Timeframe, offline: bool) -
 
 	// Sync blocker changes back to individual issue files
 	let new_description = sync_blocker_changes(&edited_content, offline).await?;
+
+	if mock {
+		// In mock mode, write result back to the milestone file
+		let mock_milestone_path = std::env::var(concat!(env!("CARGO_PKG_NAME"), "_MOCK_MILESTONE")).unwrap();
+		fs::write(&mock_milestone_path, &new_description)?;
+		println!("Updated milestone '{tf}'");
+		return Ok(());
+	}
 
 	// Update the blocker cache if this is the blocker timeframe milestone
 	let config = settings.config()?;

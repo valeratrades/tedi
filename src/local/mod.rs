@@ -290,7 +290,7 @@ impl Local {
 		None
 	}
 
-	/// Find a root-level issue file by its number, scanning the entire project dir tree with `fd`.
+	/// Find an issue file by its number, scanning the entire project dir tree with `fd`.
 	///
 	/// Returns the path to the issue's `.md` file:
 	/// - For flat issues: `{number}_-_{title}.md` (or `.md.bak`)
@@ -304,7 +304,7 @@ impl Local {
 		}
 		let pattern = format!("^{number}_-_");
 		let output = std::process::Command::new("fd")
-			.args(["--regex", &pattern, "--max-depth", "1"])
+			.args(["--regex", &pattern])
 			.current_dir(&project_dir)
 			.output()
 			.expect("fd is not installed");

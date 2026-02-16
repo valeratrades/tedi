@@ -532,7 +532,7 @@ use std::{
 };
 
 /// Set a file descriptor to non-blocking mode.
-fn set_nonblocking<F: AsRawFd>(f: &F) {
+pub(crate) fn set_nonblocking<F: AsRawFd>(f: &F) {
 	//SAFETY: don't care if log is overwritten
 	unsafe {
 		let fd = f.as_raw_fd();
@@ -542,7 +542,7 @@ fn set_nonblocking<F: AsRawFd>(f: &F) {
 }
 
 /// Drain available data from a non-blocking pipe into a buffer.
-fn drain_pipe<R: Read>(pipe: &mut R, buf: &mut Vec<u8>) {
+pub(crate) fn drain_pipe<R: Read>(pipe: &mut R, buf: &mut Vec<u8>) {
 	let mut tmp = [0u8; 4096];
 	//LOOP: we're just draining, so if fs is functioning, we will see the `Ok(0)`
 	loop {
@@ -561,7 +561,7 @@ use v_fixtures::{Fixture, FixtureRenderer, fs_standards::xdg::Xdg};
 
 static BINARY_COMPILED: OnceLock<()> = OnceLock::new();
 
-fn get_binary_path() -> PathBuf {
+pub(crate) fn get_binary_path() -> PathBuf {
 	ensure_binary_compiled();
 
 	let mut path = std::env::current_exe().unwrap();

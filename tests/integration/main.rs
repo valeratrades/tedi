@@ -12,6 +12,7 @@ pub use common::*;
 mod blocker_integrated;
 mod file_naming;
 mod issue_preservation;
+mod milestones;
 mod reset_conflict;
 mod sync;
 mod touch;

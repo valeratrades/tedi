@@ -42,30 +42,6 @@ pub fn parse_shorthand_ref(line: &str) -> Option<IssueLink> {
 	parse_shorthand_word(content)
 }
 
-/// Try to parse a single word as `owner/repo#number`.
-fn parse_shorthand_word(word: &str) -> Option<IssueLink> {
-	let hash_pos = word.find('#')?;
-	let before = &word[..hash_pos];
-	let after = &word[hash_pos + 1..];
-
-	// Must have exactly one `/` in the before part
-	let slash_pos = before.find('/')?;
-	if before[slash_pos + 1..].contains('/') {
-		return None;
-	}
-
-	let owner = &before[..slash_pos];
-	let repo = &before[slash_pos + 1..];
-	let number: u64 = after.parse().ok()?;
-
-	if owner.is_empty() || repo.is_empty() {
-		return None;
-	}
-
-	let url = format!("https://github.com/{owner}/{repo}/issues/{number}");
-	IssueLink::parse(&url)
-}
-
 /// Check if a line is an embedded issue title line (has a checkbox + issue marker).
 /// Returns the IssueLink if found.
 pub fn parse_embedded_title_line(line: &str) -> Option<IssueLink> {
@@ -80,7 +56,6 @@ pub fn parse_embedded_title_line(line: &str) -> Option<IssueLink> {
 		_ => None,
 	}
 }
-
 /// Find all embedded issue sections in the milestone content.
 /// An embedded issue is a title line (with checkbox + marker) followed by
 /// indented content (blockers section etc) until the next non-indented line.
@@ -113,7 +88,6 @@ pub fn find_embedded_issues(content: &str) -> Vec<EmbeddedIssueRef> {
 
 	refs
 }
-
 /// Serialize an issue as title line + blockers only (for milestone embedding).
 pub fn serialize_blockers_view(issue: &Issue) -> String {
 	let mut out = String::new();
@@ -140,7 +114,6 @@ pub fn serialize_blockers_view(issue: &Issue) -> String {
 
 	out
 }
-
 /// Parse blockers from an embedded issue section in milestone content.
 /// The section is: title line, then optionally a `# Blockers` header + blocker lines.
 pub fn parse_blockers_from_embedded(section: &str) -> super::BlockerSequence {
@@ -188,6 +161,29 @@ pub fn parse_blockers_from_embedded(section: &str) -> super::BlockerSequence {
 		seq.set_state = Some(super::BlockerSetState::Pending);
 	}
 	seq
+}
+/// Try to parse a single word as `owner/repo#number`.
+fn parse_shorthand_word(word: &str) -> Option<IssueLink> {
+	let hash_pos = word.find('#')?;
+	let before = &word[..hash_pos];
+	let after = &word[hash_pos + 1..];
+
+	// Must have exactly one `/` in the before part
+	let slash_pos = before.find('/')?;
+	if before[slash_pos + 1..].contains('/') {
+		return None;
+	}
+
+	let owner = &before[..slash_pos];
+	let repo = &before[slash_pos + 1..];
+	let number: u64 = after.parse().ok()?;
+
+	if owner.is_empty() || repo.is_empty() {
+		return None;
+	}
+
+	let url = format!("https://github.com/{owner}/{repo}/issues/{number}");
+	IssueLink::parse(&url)
 }
 
 #[cfg(test)]
