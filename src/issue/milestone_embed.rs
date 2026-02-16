@@ -57,11 +57,6 @@ pub fn parse_embedded_title_line(line: &str) -> Option<IssueLink> {
 		_ => None,
 	}
 }
-/// Whether a line is indented (starts with whitespace).
-fn is_indented(line: &str) -> bool {
-	line.starts_with('\t') || line.starts_with(' ')
-}
-
 /// Find all embedded issue sections in the milestone content.
 /// An embedded issue is a title line (with checkbox + marker) followed by
 /// indented content (blockers section etc) until the next non-indented line.
@@ -73,12 +68,13 @@ pub fn find_embedded_issues(content: &str) -> Vec<EmbeddedIssueRef> {
 	while i < lines.len() {
 		if let Some(link) = parse_embedded_title_line(lines[i]) {
 			let line_start = i;
+			let title_depth = indent_depth(lines[i]);
 			i += 1;
-			// Consume indented lines that belong to this issue
-			while i < lines.len() && (is_indented(lines[i]) || lines[i].trim().is_empty()) {
+			// Consume lines that are strictly more indented than the title line
+			while i < lines.len() && (is_child_of(lines[i], title_depth) || lines[i].trim().is_empty()) {
 				if lines[i].trim().is_empty() {
-					// Look ahead: if next line is also empty or not indented, stop
-					if i + 1 >= lines.len() || (!is_indented(lines[i + 1]) && !lines[i + 1].trim().is_empty()) {
+					// Look ahead: if next line is not a child, stop
+					if i + 1 >= lines.len() || !is_child_of(lines[i + 1], title_depth) {
 						break;
 					}
 				}
@@ -104,12 +100,13 @@ pub fn collapse_to_links(content: &str) -> String {
 	while i < lines.len() {
 		// Expanded embedded issue: title line with marker + indented content
 		if let Some(link) = parse_embedded_title_line(lines[i]) {
-			let prefix = &lines[i][..lines[i].len() - lines[i].trim_start().len()];
+			let title_depth = indent_depth(lines[i]);
+			let prefix = &lines[i][..title_depth];
 			result_lines.push(format!("{prefix}{}", link.url()));
 			i += 1;
-			// Skip indented content belonging to this issue
-			while i < lines.len() && (is_indented(lines[i]) || lines[i].trim().is_empty()) {
-				if lines[i].trim().is_empty() && (i + 1 >= lines.len() || (!is_indented(lines[i + 1]) && !lines[i + 1].trim().is_empty())) {
+			// Skip child content (strictly more indented than title line)
+			while i < lines.len() && (is_child_of(lines[i], title_depth) || lines[i].trim().is_empty()) {
+				if lines[i].trim().is_empty() && (i + 1 >= lines.len() || !is_child_of(lines[i + 1], title_depth)) {
 					break;
 				}
 				i += 1;
@@ -119,12 +116,13 @@ pub fn collapse_to_links(content: &str) -> String {
 
 		// Shorthand ref or bare URL: normalize to full URL
 		if let Some(link) = parse_shorthand_ref(lines[i]) {
-			let prefix = &lines[i][..lines[i].len() - lines[i].trim_start().len()];
+			let ref_depth = indent_depth(lines[i]);
+			let prefix = &lines[i][..ref_depth];
 			result_lines.push(format!("{prefix}{}", link.url()));
 			i += 1;
-			// Skip any trailing indented content (leftover from previous expanded state)
-			while i < lines.len() && (is_indented(lines[i]) || lines[i].trim().is_empty()) {
-				if lines[i].trim().is_empty() && (i + 1 >= lines.len() || (!is_indented(lines[i + 1]) && !lines[i + 1].trim().is_empty())) {
+			// Skip child content (strictly more indented than ref line)
+			while i < lines.len() && (is_child_of(lines[i], ref_depth) || lines[i].trim().is_empty()) {
+				if lines[i].trim().is_empty() && (i + 1 >= lines.len() || !is_child_of(lines[i + 1], ref_depth)) {
 					break;
 				}
 				i += 1;
@@ -139,7 +137,6 @@ pub fn collapse_to_links(content: &str) -> String {
 
 	result_lines.join("\n")
 }
-
 /// Serialize an issue as title line + blockers only (for milestone embedding).
 pub fn serialize_blockers_view(issue: &Issue) -> String {
 	let mut out = String::new();
@@ -214,6 +211,17 @@ pub fn parse_blockers_from_embedded(section: &str) -> super::BlockerSequence {
 	}
 	seq
 }
+/// Number of leading whitespace characters (bytes) on a line.
+fn indent_depth(line: &str) -> usize {
+	line.len() - line.trim_start().len()
+}
+
+/// Whether a line is a child of a line at `parent_depth` indent.
+/// True if the line's indent is strictly greater than `parent_depth`.
+fn is_child_of(line: &str, parent_depth: usize) -> bool {
+	indent_depth(line) > parent_depth
+}
+
 /// Try to parse a single word as `owner/repo#number`.
 fn parse_shorthand_word(word: &str) -> Option<IssueLink> {
 	let hash_pos = word.find('#')?;
@@ -311,11 +319,12 @@ Footer";
 		// Regular text passes through
 		assert_eq!(collapse_to_links("just some text"), "just some text");
 
-		// Indented embedded issue preserves indent
-		let indented = "- [ ] parent\n  - [ ] Child <!-- @user https://github.com/o/r/issues/5 -->\n\t\t# Blockers\n\t\t- task";
-		insta::assert_snapshot!(collapse_to_links(indented), @r"
+		// Indented embedded issue preserves indent, sibling content preserved
+		let indented = "- [ ] parent\n  - [ ] Child <!-- @user https://github.com/o/r/issues/5 -->\n  \t# Blockers\n  \t- task\n  sibling line";
+		insta::assert_snapshot!(collapse_to_links(indented), @"
 		- [ ] parent
 		  https://github.com/o/r/issues/5
+		  sibling line
 		");
 
 		// Indented shorthand ref preserves indent

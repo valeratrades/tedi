@@ -433,14 +433,12 @@ async fn load_local_issue(link: &IssueLink) -> Result<Issue> {
 ///
 /// Preserves the indentation prefix of the original line on the expanded view.
 async fn expand_and_refresh(content: &str) -> Result<String> {
-	fn is_indented(line: &str) -> bool {
-		line.starts_with('\t') || line.starts_with(' ')
+	fn indent_depth(line: &str) -> usize {
+		line.len() - line.trim_start().len()
 	}
 
-	/// Extract the leading whitespace prefix from a line.
-	fn indent_prefix(line: &str) -> &str {
-		let trimmed = line.trim_start();
-		&line[..line.len() - trimmed.len()]
+	fn is_child_of(line: &str, parent_depth: usize) -> bool {
+		indent_depth(line) > parent_depth
 	}
 
 	/// Prepend `prefix` to each line of `text`.
@@ -461,12 +459,13 @@ async fn expand_and_refresh(content: &str) -> Result<String> {
 	while i < lines.len() {
 		// Check for shorthand ref or bare URL: `owner/repo#123` or `https://...`
 		if let Some(link) = parse_shorthand_ref(lines[i]) {
-			let prefix = indent_prefix(lines[i]);
+			let ref_depth = indent_depth(lines[i]);
+			let prefix = &lines[i][..ref_depth];
 			let ref_line = i;
 			i += 1;
-			// Skip any indented content trailing the ref (leftover from previous expanded state)
-			while i < lines.len() && (is_indented(lines[i]) || lines[i].trim().is_empty()) {
-				if lines[i].trim().is_empty() && (i + 1 >= lines.len() || (!is_indented(lines[i + 1]) && !lines[i + 1].trim().is_empty())) {
+			// Skip child content (strictly more indented than ref line)
+			while i < lines.len() && (is_child_of(lines[i], ref_depth) || lines[i].trim().is_empty()) {
+				if lines[i].trim().is_empty() && (i + 1 >= lines.len() || !is_child_of(lines[i + 1], ref_depth)) {
 					break;
 				}
 				i += 1;
@@ -485,12 +484,13 @@ async fn expand_and_refresh(content: &str) -> Result<String> {
 
 		// Check for embedded issue title line — refresh from local
 		if let Some(link) = parse_embedded_title_line(lines[i]) {
-			let prefix = indent_prefix(lines[i]);
+			let title_depth = indent_depth(lines[i]);
+			let prefix = &lines[i][..title_depth];
 			let old_start = i;
 			i += 1;
-			// Skip the old embedded content
-			while i < lines.len() && (is_indented(lines[i]) || lines[i].trim().is_empty()) {
-				if lines[i].trim().is_empty() && (i + 1 >= lines.len() || (!is_indented(lines[i + 1]) && !lines[i + 1].trim().is_empty())) {
+			// Skip child content (strictly more indented than title line)
+			while i < lines.len() && (is_child_of(lines[i], title_depth) || lines[i].trim().is_empty()) {
+				if lines[i].trim().is_empty() && (i + 1 >= lines.len() || !is_child_of(lines[i + 1], title_depth)) {
 					break;
 				}
 				i += 1;
