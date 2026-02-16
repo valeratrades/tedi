@@ -222,25 +222,38 @@ fn is_child_of(line: &str, parent_depth: usize) -> bool {
 	indent_depth(line) > parent_depth
 }
 
-/// Try to parse a single word as `owner/repo#number`.
+/// Try to parse a single word as `owner/repo#number` or `repo#number`.
+///
+/// When no owner is specified (`repo#number`), uses the current authenticated
+/// user as the default owner.
 fn parse_shorthand_word(word: &str) -> Option<IssueLink> {
 	let hash_pos = word.find('#')?;
 	let before = &word[..hash_pos];
 	let after = &word[hash_pos + 1..];
-
-	// Must have exactly one `/` in the before part
-	let slash_pos = before.find('/')?;
-	if before[slash_pos + 1..].contains('/') {
-		return None;
-	}
-
-	let owner = &before[..slash_pos];
-	let repo = &before[slash_pos + 1..];
 	let number: u64 = after.parse().ok()?;
 
-	if owner.is_empty() || repo.is_empty() {
-		return None;
-	}
+	let (owner, repo) = match before.find('/') {
+		Some(slash_pos) => {
+			// `owner/repo#number` — must have exactly one `/`
+			if before[slash_pos + 1..].contains('/') {
+				return None;
+			}
+			let owner = &before[..slash_pos];
+			let repo = &before[slash_pos + 1..];
+			if owner.is_empty() || repo.is_empty() {
+				return None;
+			}
+			(owner.to_string(), repo.to_string())
+		}
+		None => {
+			// `repo#number` — use current_user as default owner
+			if before.is_empty() {
+				return None;
+			}
+			let owner = crate::current_user::get()?;
+			(owner, before.to_string())
+		}
+	};
 
 	let url = format!("https://github.com/{owner}/{repo}/issues/{number}");
 	IssueLink::parse(&url)
@@ -285,10 +298,26 @@ mod tests {
 		// Invalid: title + ref (not a shorthand line)
 		assert!(parse_shorthand_ref("- [ ] My Title valeratrades/tedi#80").is_none());
 
+		// Short form: repo#number (uses current_user as default owner)
+		crate::current_user::set("myowner".to_string());
+		let link = parse_shorthand_ref("repo#123").unwrap();
+		assert_eq!(link.owner(), "myowner");
+		assert_eq!(link.repo(), "repo");
+		assert_eq!(link.number(), 123);
+
+		let link = parse_shorthand_ref("- tedi#42").unwrap();
+		assert_eq!(link.owner(), "myowner");
+		assert_eq!(link.repo(), "tedi");
+		assert_eq!(link.number(), 42);
+
+		let link = parse_shorthand_ref("- [ ] tedi#7").unwrap();
+		assert_eq!(link.owner(), "myowner");
+		assert_eq!(link.repo(), "tedi");
+		assert_eq!(link.number(), 7);
+
 		// Invalid basics
 		assert!(parse_shorthand_ref("not-a-ref").is_none());
 		assert!(parse_shorthand_ref("#123").is_none());
-		assert!(parse_shorthand_ref("repo#123").is_none());
 		assert!(parse_shorthand_ref("a/b/c#123").is_none());
 		assert!(parse_shorthand_ref("owner/repo#abc").is_none());
 	}
