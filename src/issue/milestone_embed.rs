@@ -17,7 +17,7 @@ impl MilestoneDoc {
 		let parser = Parser::new_ext(content, parser_options());
 		let events: Vec<Event<'_>> = parser.collect();
 		let mut pos = 0;
-		let sections = parse_sections(&events, &mut pos, None);
+		let sections = parse_sections(&events, &mut pos, None, 0);
 		Self { sections }
 	}
 
@@ -74,7 +74,7 @@ impl MilestoneDoc {
 	fn to_events(&self) -> Vec<OwnedEvent> {
 		let mut events = Vec::new();
 		for section in &self.sections {
-			section_to_events(section, &mut events);
+			section_to_events(section, 0, &mut events);
 		}
 		events
 	}
@@ -162,40 +162,15 @@ enum MilestoneSection {
 	List(MilestoneList),
 }
 
-/// A list of elements (items and empty-line separators).
+/// A list of items.
 struct MilestoneList {
-	elements: Vec<ListElement>,
-}
-impl MilestoneList {
-	fn items(&self) -> impl Iterator<Item = &MilestoneItem> {
-		self.elements.iter().filter_map(|e| match e {
-			ListElement::Item(item) => Some(item),
-			ListElement::EmptyLine => None,
-		})
-	}
-
-	fn items_mut(&mut self) -> impl Iterator<Item = &mut MilestoneItem> {
-		self.elements.iter_mut().filter_map(|e| match e {
-			ListElement::Item(item) => Some(item),
-			ListElement::EmptyLine => None,
-		})
-	}
-}
-
-/// An element in a list: either an item or an empty line (preserving user's spacing).
-enum ListElement {
-	Item(MilestoneItem),
-	/// Represents a blank line between items (loose list spacing).
-	EmptyLine,
+	items: Vec<MilestoneItem>,
 }
 
 /// A single list item.
 struct MilestoneItem {
 	/// `None` = no checkbox, `Some(false)` = `[ ]`, `Some(true)` = `[x]`
 	checked: Option<bool>,
-	/// Whether this item's inline content was wrapped in a paragraph by pulldown_cmark
-	/// (indicates a loose list). Preserved for roundtrip fidelity.
-	loose: bool,
 	/// Semantic interpretation of this item's inline text.
 	content: ItemContent,
 	/// Nested content under this item (sub-lists, headings, etc.).
@@ -222,7 +197,8 @@ fn parser_options() -> Options {
 
 /// Parse sections from the event stream until we hit `stop_at` or end of events.
 /// `stop_at` is used for nested parsing inside list items — stops at `End(Item)`.
-fn parse_sections(events: &[Event<'_>], pos: &mut usize, stop_at: Option<TagEnd>) -> Vec<MilestoneSection> {
+/// `depth` tracks list nesting (0 = not yet inside any list).
+fn parse_sections(events: &[Event<'_>], pos: &mut usize, stop_at: Option<TagEnd>, depth: usize) -> Vec<MilestoneSection> {
 	let mut sections = Vec::new();
 	let mut free_events: Vec<OwnedEvent> = Vec::new();
 
@@ -240,7 +216,7 @@ fn parse_sections(events: &[Event<'_>], pos: &mut usize, stop_at: Option<TagEnd>
 				if !free_events.is_empty() {
 					sections.push(MilestoneSection::FreeContent(std::mem::take(&mut free_events)));
 				}
-				sections.push(MilestoneSection::List(parse_list(events, pos)));
+				sections.push(MilestoneSection::List(parse_list(events, pos, depth)));
 			}
 			_ => {
 				free_events.push(OwnedEvent::from_event(events[*pos].clone()));
@@ -257,12 +233,13 @@ fn parse_sections(events: &[Event<'_>], pos: &mut usize, stop_at: Option<TagEnd>
 }
 
 /// Parse a `List` from the event stream. Expects `pos` to point at `Start(List(_))`.
-fn parse_list(events: &[Event<'_>], pos: &mut usize) -> MilestoneList {
+/// `depth` is the nesting level (1 = top-level list, 2+ = nested).
+fn parse_list(events: &[Event<'_>], pos: &mut usize, depth: usize) -> MilestoneList {
 	debug_assert!(matches!(&events[*pos], Event::Start(Tag::List(_))));
+	let depth = depth + 1;
 	*pos += 1; // consume Start(List)
 
-	let mut elements = Vec::new();
-	let mut saw_loose = false;
+	let mut items = Vec::new();
 
 	while *pos < events.len() {
 		match &events[*pos] {
@@ -271,11 +248,7 @@ fn parse_list(events: &[Event<'_>], pos: &mut usize) -> MilestoneList {
 				break;
 			}
 			Event::Start(Tag::Item) => {
-				let item = parse_item(events, pos);
-				if item.loose {
-					saw_loose = true;
-				}
-				elements.push(ListElement::Item(item));
+				items.push(parse_item(events, pos, depth));
 			}
 			_ => {
 				// Unexpected event inside list, skip
@@ -284,26 +257,12 @@ fn parse_list(events: &[Event<'_>], pos: &mut usize) -> MilestoneList {
 		}
 	}
 
-	// If any item was loose (paragraph-wrapped), insert EmptyLines between all items
-	// to preserve the user's loose list spacing.
-	if saw_loose && elements.len() > 1 {
-		let mut spaced = Vec::with_capacity(elements.len() * 2 - 1);
-		let mut first = true;
-		for elem in elements {
-			if !first {
-				spaced.push(ListElement::EmptyLine);
-			}
-			first = false;
-			spaced.push(elem);
-		}
-		elements = spaced;
-	}
-
-	MilestoneList { elements }
+	MilestoneList { items }
 }
 
 /// Parse a single list `Item`. Expects `pos` to point at `Start(Item)`.
-fn parse_item(events: &[Event<'_>], pos: &mut usize) -> MilestoneItem {
+/// `depth` is the list nesting level this item belongs to.
+fn parse_item(events: &[Event<'_>], pos: &mut usize, depth: usize) -> MilestoneItem {
 	debug_assert!(matches!(&events[*pos], Event::Start(Tag::Item)));
 	*pos += 1; // consume Start(Item)
 
@@ -317,9 +276,9 @@ fn parse_item(events: &[Event<'_>], pos: &mut usize) -> MilestoneItem {
 	};
 
 	// Collect inline events (the item's own text content).
-	// Track whether pulldown_cmark wrapped inline content in Paragraph (loose list).
+	// Strip paragraph wrappers that pulldown_cmark adds for loose lists — we control
+	// looseness ourselves based on depth.
 	let mut inline_events: Vec<OwnedEvent> = Vec::new();
-	let mut loose = false;
 	let mut in_paragraph = false;
 
 	// Consume inline content: everything before child blocks or End(Item)
@@ -328,7 +287,6 @@ fn parse_item(events: &[Event<'_>], pos: &mut usize) -> MilestoneItem {
 			Event::End(TagEnd::Item) => break,
 			Event::Start(Tag::List(_)) | Event::Start(Tag::Heading { .. }) => break,
 			Event::Start(Tag::Paragraph) => {
-				loose = true;
 				in_paragraph = true;
 				*pos += 1;
 			}
@@ -351,14 +309,14 @@ fn parse_item(events: &[Event<'_>], pos: &mut usize) -> MilestoneItem {
 
 	// Collect children (sub-lists, headings, etc.) until End(Item)
 	let mut children = softbreak_children;
-	children.extend(parse_sections(events, pos, Some(TagEnd::Item)));
+	children.extend(parse_sections(events, pos, Some(TagEnd::Item), depth));
 
 	// Consume End(Item)
 	if matches!(events.get(*pos), Some(Event::End(TagEnd::Item))) {
 		*pos += 1;
 	}
 
-	MilestoneItem { checked, loose, content, children }
+	MilestoneItem { checked, content, children }
 }
 
 /// Split inline events at a SoftBreak if the part after it is a bare URL or shorthand ref.
@@ -373,13 +331,10 @@ fn split_inline_at_ref_softbreak(events: Vec<OwnedEvent>) -> (ItemContent, Vec<M
 			let content = classify_inline_events(head);
 			let child_item = MilestoneItem {
 				checked: None,
-				loose: false,
 				content: tail_classified,
 				children: Vec::new(),
 			};
-			let child_list = MilestoneList {
-				elements: vec![ListElement::Item(child_item)],
-			};
+			let child_list = MilestoneList { items: vec![child_item] };
 			return (content, vec![MilestoneSection::List(child_list)]);
 		}
 	}
@@ -479,7 +434,7 @@ fn parse_shorthand_word(word: &str) -> Option<ItemContent> {
 
 fn resolve_section(section: &mut MilestoneSection, parent_context: Option<&str>) {
 	if let MilestoneSection::List(list) = section {
-		for item in list.items_mut() {
+		for item in list.items.iter_mut() {
 			// Determine what context this item provides to its children
 			let my_context = match &item.content {
 				ItemContent::Text(events) => {
@@ -529,7 +484,7 @@ fn collect_links_from_section(section: &MilestoneSection, links: &mut Vec<IssueL
 	match section {
 		MilestoneSection::FreeContent(_) => {}
 		MilestoneSection::List(list) =>
-			for item in list.items() {
+			for item in list.items.iter() {
 				if let Some(link) = item_issue_link(item) {
 					links.push(link);
 				}
@@ -542,7 +497,7 @@ fn collect_links_from_section(section: &MilestoneSection, links: &mut Vec<IssueL
 
 fn collect_embedded_from_section(section: &MilestoneSection, result: &mut Vec<(IssueLink, String)>) {
 	if let MilestoneSection::List(list) = section {
-		for item in list.items() {
+		for item in list.items.iter() {
 			if let ItemContent::EmbeddedIssue {
 				marker: IssueMarker::Linked { link, .. },
 				..
@@ -560,7 +515,7 @@ fn collect_embedded_from_section(section: &MilestoneSection, result: &mut Vec<(I
 
 fn expand_section(section: &mut MilestoneSection, expansions: &std::collections::HashMap<u64, String>) {
 	if let MilestoneSection::List(list) = section {
-		for item in list.items_mut() {
+		for item in list.items.iter_mut() {
 			if let Some(link) = item_issue_link(item)
 				&& let Some(view) = expansions.get(&link.number())
 			{
@@ -568,7 +523,7 @@ fn expand_section(section: &mut MilestoneSection, expansions: &std::collections:
 				let expanded_doc = MilestoneDoc::parse(view);
 				// The view should be a single list with one item
 				if let Some(MilestoneSection::List(expanded_list)) = expanded_doc.sections.into_iter().next()
-					&& let Some(ListElement::Item(expanded_item)) = expanded_list.elements.into_iter().next()
+					&& let Some(expanded_item) = expanded_list.items.into_iter().next()
 				{
 					item.checked = expanded_item.checked;
 					item.content = expanded_item.content;
@@ -585,7 +540,7 @@ fn expand_section(section: &mut MilestoneSection, expansions: &std::collections:
 
 fn collapse_section(section: &mut MilestoneSection) {
 	if let MilestoneSection::List(list) = section {
-		for item in list.items_mut() {
+		for item in list.items.iter_mut() {
 			match &item.content {
 				ItemContent::EmbeddedIssue {
 					marker: IssueMarker::Linked { link, .. },
@@ -643,36 +598,36 @@ fn item_issue_link(item: &MilestoneItem) -> Option<IssueLink> {
 fn cmark_options() -> pulldown_cmark_to_cmark::Options<'static> {
 	pulldown_cmark_to_cmark::Options {
 		list_token: '-',
+		newlines_after_headline: 1,
 		..Default::default()
 	}
 }
 
-fn section_to_events(section: &MilestoneSection, events: &mut Vec<OwnedEvent>) {
+/// `depth` tracks list nesting: 0 = not inside a list, 1 = top-level list, 2+ = nested.
+fn section_to_events(section: &MilestoneSection, depth: usize, events: &mut Vec<OwnedEvent>) {
 	match section {
 		MilestoneSection::FreeContent(owned) => {
 			events.extend(owned.iter().cloned());
 		}
 		MilestoneSection::List(list) => {
-			list_to_events(list, events);
+			list_to_events(list, depth, events);
 		}
 	}
 }
 
-fn list_to_events(list: &MilestoneList, events: &mut Vec<OwnedEvent>) {
-	// Determine if the list is loose (has EmptyLine elements).
-	let is_loose = list.elements.iter().any(|e| matches!(e, ListElement::EmptyLine));
+fn list_to_events(list: &MilestoneList, depth: usize, events: &mut Vec<OwnedEvent>) {
+	let depth = depth + 1;
+	// Top-level lists (depth 1) are always loose; nested lists are always tight.
+	let is_loose = depth == 1;
 
 	events.push(OwnedEvent::Start(OwnedTag::List(None)));
-	for element in &list.elements {
-		match element {
-			ListElement::Item(item) => item_to_events(item, is_loose, events),
-			ListElement::EmptyLine => {} // Loose-ness is handled by paragraph wrappers
-		}
+	for item in &list.items {
+		item_to_events(item, is_loose, depth, events);
 	}
 	events.push(OwnedEvent::End(OwnedTagEnd::List(false)));
 }
 
-fn item_to_events(item: &MilestoneItem, list_is_loose: bool, events: &mut Vec<OwnedEvent>) {
+fn item_to_events(item: &MilestoneItem, is_loose: bool, depth: usize, events: &mut Vec<OwnedEvent>) {
 	events.push(OwnedEvent::Start(OwnedTag::Item));
 
 	if let Some(checked) = item.checked {
@@ -681,10 +636,9 @@ fn item_to_events(item: &MilestoneItem, list_is_loose: bool, events: &mut Vec<Ow
 
 	let inline_events = item_content_to_events(&item.content);
 	if !inline_events.is_empty() {
-		// Paragraph wrapper is needed when:
-		// 1. The item has children (otherwise cmark merges inline content with child blocks)
-		// 2. The list is loose (blank lines between items → paragraph spacing)
-		if !item.children.is_empty() || item.loose || list_is_loose {
+		// Paragraph wrapper needed when list is loose OR item has children
+		// (cmark requires it to separate inline content from child blocks).
+		if is_loose || !item.children.is_empty() {
 			events.push(OwnedEvent::Start(OwnedTag::Paragraph));
 			events.extend(inline_events);
 			events.push(OwnedEvent::End(OwnedTagEnd::Paragraph));
@@ -695,7 +649,7 @@ fn item_to_events(item: &MilestoneItem, list_is_loose: bool, events: &mut Vec<Ow
 
 	// Emit children
 	for child in &item.children {
-		section_to_events(child, events);
+		section_to_events(child, depth, events);
 	}
 
 	events.push(OwnedEvent::End(OwnedTagEnd::Item));
@@ -730,7 +684,9 @@ fn serialize_item_to_section_text(item: &MilestoneItem) -> String {
 	// Build events for just this item as if it were a standalone document with one list
 	let mut events = Vec::new();
 	events.push(OwnedEvent::Start(OwnedTag::List(None)));
-	item_to_events(item, false, &mut events);
+	// depth=1: this is a top-level embedded item, but we serialize it tight (no paragraph wrapping)
+	// so blockers don't get extra spacing
+	item_to_events(item, false, 1, &mut events);
 	events.push(OwnedEvent::End(OwnedTagEnd::List(false)));
 
 	let borrowed: Vec<Event<'_>> = events.iter().map(|e| e.to_event()).collect();
@@ -763,7 +719,6 @@ mod tests {
 		let doc = MilestoneDoc::parse(content);
 		insta::assert_snapshot!(doc.serialize(), @"
 		# Sprint Goals
-
 		Some description
 
 		- [ ] discretionary_engine
@@ -780,7 +735,9 @@ mod tests {
 		let doc = MilestoneDoc::parse(content);
 		insta::assert_snapshot!(doc.serialize(), @r"
 		- [ ] owner/repo#123
+
 		- [ ] tedi#42
+
 		- [ ] \#77
 		");
 	}
@@ -793,7 +750,6 @@ mod tests {
 		- [ ] My Issue <!-- @user https://github.com/owner/repo/issues/42 -->
 		  
 		  # Blockers
-		  
 		  - task 1
 		");
 	}
@@ -862,7 +818,6 @@ mod tests {
 		doc.collapse_to_links();
 		insta::assert_snapshot!(doc.serialize(), @"
 		# Sprint
-
 		- https://github.com/owner/repo/issues/42
 
 		Footer
@@ -875,10 +830,10 @@ mod tests {
 		let doc = MilestoneDoc::parse(content);
 		insta::assert_snapshot!(doc.serialize(), @"
 		# Sprint Goals
-
 		Some description
 
 		- [ ] owner/repo#42
+
 		- [ ] My Issue <!-- @user https://github.com/owner/repo/issues/99 -->
 
 		Footer text
@@ -1008,10 +963,10 @@ mod tests {
 		let doc = MilestoneDoc::parse(content);
 		insta::assert_snapshot!(doc.serialize(), @"
 		# Header
-
 		Paragraph text
 
 		- item 1
+
 		- item 2
 
 		More text
@@ -1024,7 +979,9 @@ mod tests {
 		let doc = MilestoneDoc::parse(content);
 		insta::assert_snapshot!(doc.serialize(), @"
 		- item 1
+
 		- item 2
+
 		- item 3
 		");
 	}
@@ -1043,30 +1000,14 @@ mod tests {
 	}
 
 	#[test]
-	fn test_loose_list_has_empty_lines() {
+	fn test_list_item_count() {
 		let content = "- item 1\n\n- item 2\n";
 		let doc = MilestoneDoc::parse(content);
 		let list = match &doc.sections[0] {
 			MilestoneSection::List(l) => l,
 			_ => panic!("expected list"),
 		};
-		assert_eq!(list.elements.len(), 3);
-		assert!(matches!(&list.elements[0], ListElement::Item(_)));
-		assert!(matches!(&list.elements[1], ListElement::EmptyLine));
-		assert!(matches!(&list.elements[2], ListElement::Item(_)));
-	}
-
-	#[test]
-	fn test_tight_list_no_empty_lines() {
-		let content = "- item 1\n- item 2\n";
-		let doc = MilestoneDoc::parse(content);
-		let list = match &doc.sections[0] {
-			MilestoneSection::List(l) => l,
-			_ => panic!("expected list"),
-		};
-		assert_eq!(list.elements.len(), 2);
-		assert!(matches!(&list.elements[0], ListElement::Item(_)));
-		assert!(matches!(&list.elements[1], ListElement::Item(_)));
+		assert_eq!(list.items.len(), 2);
 	}
 
 	#[test]
@@ -1088,7 +1029,6 @@ mod tests {
 		- [ ] My Issue <!-- @user https://github.com/owner/repo/issues/42 -->
 		  
 		  # Blockers
-		  
 		  - task 1
 		");
 	}
