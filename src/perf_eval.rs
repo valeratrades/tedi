@@ -96,8 +96,8 @@ pub async fn main(_settings: &LiveSettings, args: PerfEvalArgs) -> Result<()> {
 		bail!("No screenshots found in {}", date_dir.display());
 	}
 
-	// Sort by modification time (newest first)
-	entries_with_time.sort_by(|a, b| b.1.cmp(&a.1));
+	// sort newest first
+	entries_with_time.sort_by_key(|b| std::cmp::Reverse(b.1));
 
 	// Get the most recent timestamp
 	let most_recent_time = entries_with_time[0].1;
