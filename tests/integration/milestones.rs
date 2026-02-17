@@ -10,6 +10,8 @@ use crate::common::{RunOutput, Seed, TestContext, drain_pipe, get_binary_path, p
 const ENV_MOCK_MILESTONE: &str = concat!(env!("CARGO_PKG_NAME"), "_MOCK_MILESTONE");
 const ENV_MOCK_PIPE: &str = concat!(env!("CARGO_PKG_NAME"), "_MOCK_PIPE");
 
+type EditFn = Box<dyn FnOnce(&std::path::Path)>;
+
 impl TestContext {
 	/// Run `milestones edit` in mock mode against a milestone file.
 	///
@@ -22,10 +24,10 @@ impl TestContext {
 
 	/// Run `milestones edit --offline` in mock mode, modifying the temp file before signaling the pipe.
 	fn milestone_edit_with_changes(&self, milestone_content: &str, edit_fn: impl FnOnce(&std::path::Path) + 'static) -> (RunOutput, String) {
-		self.milestone_edit_impl(milestone_content, &["--mock", "--offline", "milestones", "edit", "1d"], Some(Box::new(edit_fn)))
+		self.milestone_edit_impl(milestone_content, &["--mock", "--offline", "milestones", "edit", "1d"], Some(Box::new(edit_fn) as EditFn))
 	}
 
-	fn milestone_edit_impl(&self, milestone_content: &str, args: &[&str], edit_fn: Option<Box<dyn FnOnce(&std::path::Path)>>) -> (RunOutput, String) {
+	fn milestone_edit_impl(&self, milestone_content: &str, args: &[&str], edit_fn: Option<EditFn>) -> (RunOutput, String) {
 		self.set_issues_dir_override();
 		let milestone_path = self.xdg.inner.root.join("mock_milestone.md");
 		std::fs::write(&milestone_path, milestone_content).unwrap();
@@ -63,10 +65,11 @@ impl TestContext {
 				let stderr_so_far = String::from_utf8_lossy(&stderr_buf);
 
 				// Apply edit once the binary has written the tmp file and is waiting on pipe
-				if edit_fn.is_some() && stderr_so_far.contains("Waiting for signal on pipe") {
-					if let Some(tmp_path) = parse_tmp_path(&stderr_so_far) {
-						(edit_fn.take().unwrap())(&tmp_path);
-					}
+				if edit_fn.is_some()
+					&& stderr_so_far.contains("Waiting for signal on pipe")
+					&& let Some(tmp_path) = parse_tmp_path(&stderr_so_far)
+				{
+					(edit_fn.take().unwrap())(&tmp_path);
 				}
 
 				// Signal the pipe (no-edit case signals immediately; edit case signals after editing)

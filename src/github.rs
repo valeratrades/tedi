@@ -531,7 +531,7 @@ pub mod client {
 
 /// Parse a Github issue URL and extract owner, repo, and issue number.
 /// Supports formats like:
-/// - https://github.com/owner/repo/issues/123
+/// - <https://github.com/owner/repo/issues/123>
 /// - github.com/owner/repo/issues/123
 /// - git@github.com:owner/repo (returns repo info, issue number parsing will fail)
 /// - ssh://git@github.com/owner/repo.git (returns repo info, issue number parsing will fail)

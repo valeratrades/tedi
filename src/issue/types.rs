@@ -1429,7 +1429,7 @@ impl Issue /*{{{1*/ {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, derive_new::new)]
-/// Hollow Issue container, - used for [parsing virtual repr](Issue::parse_virtual)
+/// Hollow Issue container, - used for parsing virtual repr
 ///
 /// Stripped of all info parsable from virtual
 pub struct HollowIssue {
