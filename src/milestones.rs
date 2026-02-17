@@ -39,8 +39,9 @@ pub async fn milestones_command(settings: &LiveSettings, args: MilestonesArgs, m
 	match args.command {
 		MilestonesCommands::Get { tf } => {
 			let retrieved_milestones = request_milestones(settings).await?;
-			let milestone = get_milestone(tf, &retrieved_milestones)?;
-			println!("{milestone}");
+			let raw = get_milestone(tf, &retrieved_milestones)?;
+			let expanded = expand_and_refresh(&raw).await?;
+			println!("{expanded}");
 			Ok(())
 		}
 		MilestonesCommands::Edit { tf, offline } => edit_milestone(settings, tf, offline, mock.is_some()).await,

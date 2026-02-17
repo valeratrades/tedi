@@ -18,7 +18,9 @@ impl MilestoneDoc {
 		let events: Vec<Event<'_>> = parser.collect();
 		let mut pos = 0;
 		let sections = parse_sections(&events, &mut pos, None, 0);
-		Self { sections }
+		let mut doc = Self { sections };
+		doc.normalize_lists();
+		doc
 	}
 
 	/// Resolve bare `#N` refs using their parent list item's text as repo context.
@@ -54,6 +56,7 @@ impl MilestoneDoc {
 		for section in &mut self.sections {
 			expand_section(section, expansions);
 		}
+		self.normalize_lists();
 	}
 
 	/// Collapse all embedded issues and shorthand refs to bare URLs for storage.
@@ -61,37 +64,24 @@ impl MilestoneDoc {
 		for section in &mut self.sections {
 			collapse_section(section);
 		}
+		self.normalize_lists();
+	}
+
+	fn normalize_lists(&mut self) {
+		for section in &mut self.sections {
+			if let MilestoneSection::List(list) = section {
+				if list.normalize_item_types() {
+					let kind = if list.is_checkbox_list() { "checkbox (- [..])" } else { "plain (- )" };
+					eprintln!("warning: mixed list item types detected; normalized to {kind} (determined by first element)");
+				}
+			}
+		}
 	}
 
 	pub fn serialize(&self) -> String {
 		let mut output = String::new();
 		for section in &self.sections {
-			match section {
-				MilestoneSection::FreeContent(owned) => {
-					if !output.is_empty() {
-						ensure_blank_line(&mut output);
-					}
-					output.push_str(&render_events_to_cmark(owned));
-				}
-				MilestoneSection::List(list) => {
-					// Serialize each top-level item independently, joined with
-					// blank lines. pulldown_cmark_to_cmark fails to insert blank
-					// lines between loose items that have children, so we handle
-					// inter-item spacing ourselves.
-					for (i, item) in list.items.iter().enumerate() {
-						if i > 0 {
-							ensure_blank_line(&mut output);
-						} else if !output.is_empty() && !output.ends_with('\n') {
-							output.push('\n');
-						}
-						let mut events = Vec::new();
-						events.push(OwnedEvent::Start(OwnedTag::List(None)));
-						item_to_events(item, 1, &mut events);
-						events.push(OwnedEvent::End(OwnedTagEnd::List(false)));
-						output.push_str(&render_events_to_cmark(&events));
-					}
-				}
-			}
+			serialize_section(section, &mut output);
 		}
 		output
 	}
@@ -183,11 +173,36 @@ enum MilestoneSection {
 struct MilestoneList {
 	items: Vec<MilestoneItem>,
 }
+impl MilestoneList {
+	/// Whether this list uses checkboxes, determined by the first item.
+	fn is_checkbox_list(&self) -> bool {
+		self.items.first().is_some_and(|item| item.checked.is_some())
+	}
+
+	/// Normalize all items to match the list type of the first item.
+	/// Returns `true` if any items were changed.
+	fn normalize_item_types(&mut self) -> bool {
+		let is_checkbox = self.is_checkbox_list();
+		let mut changed = false;
+		for item in &mut self.items {
+			if is_checkbox && item.checked.is_none() {
+				item.checked = Some(CheckBox(" ".into()));
+				changed = true;
+			} else if !is_checkbox && item.checked.is_some() {
+				item.checked = None;
+				changed = true;
+			}
+		}
+		changed
+	}
+}
+
+/// Raw checkbox contents — just the string between `[` and `]`.
+struct CheckBox(String);
 
 /// A single list item.
 struct MilestoneItem {
-	/// `None` = no checkbox, `Some(false)` = `[ ]`, `Some(true)` = `[x]`
-	checked: Option<bool>,
+	checked: Option<CheckBox>,
 	/// Semantic interpretation of this item's inline text.
 	content: ItemContent,
 	/// Nested content under this item (sub-lists, headings, etc.).
@@ -283,9 +298,16 @@ fn parse_item(events: &[Event<'_>], pos: &mut usize, depth: usize) -> MilestoneI
 	debug_assert!(matches!(&events[*pos], Event::Start(Tag::Item)));
 	*pos += 1; // consume Start(Item)
 
-	// Collect TaskListMarker if present
+	// Collect TaskListMarker if present.
+	// In loose lists, pulldown_cmark emits: Start(Item), Start(Paragraph), TaskListMarker
+	// In tight lists: Start(Item), TaskListMarker
+	// So we need to peek past an optional Start(Paragraph).
+	let starts_with_paragraph = matches!(events.get(*pos), Some(Event::Start(Tag::Paragraph)));
+	if starts_with_paragraph {
+		*pos += 1;
+	}
 	let checked = if let Some(Event::TaskListMarker(c)) = events.get(*pos) {
-		let c = *c;
+		let c = CheckBox(if *c { "x" } else { " " }.into());
 		*pos += 1;
 		Some(c)
 	} else {
@@ -296,7 +318,7 @@ fn parse_item(events: &[Event<'_>], pos: &mut usize, depth: usize) -> MilestoneI
 	// Strip paragraph wrappers that pulldown_cmark adds for loose lists — we control
 	// looseness ourselves based on depth.
 	let mut inline_events: Vec<OwnedEvent> = Vec::new();
-	let mut in_paragraph = false;
+	let mut in_paragraph = starts_with_paragraph;
 
 	// Consume inline content: everything before child blocks or End(Item)
 	while *pos < events.len() {
@@ -318,6 +340,9 @@ fn parse_item(events: &[Event<'_>], pos: &mut usize, depth: usize) -> MilestoneI
 		}
 	}
 
+	// Detect escaped checkboxes: pulldown_cmark turns `\[.\]` into Text("[.") + Text("] rest").
+	let checked = checked.or_else(|| try_extract_escaped_checkbox(&mut inline_events));
+
 	// Split inline events at SoftBreak if the tail is a bare URL or shorthand ref.
 	// This handles the case where a category item has a URL continuation:
 	//   `- discretionary_engine\n  https://github.com/.../issues/77`
@@ -334,6 +359,31 @@ fn parse_item(events: &[Event<'_>], pos: &mut usize, depth: usize) -> MilestoneI
 	}
 
 	MilestoneItem { checked, content, children }
+}
+
+/// Detect `\[<inner>\] ` at the start of inline events.
+/// pulldown_cmark turns `\[.\]` into `Text("[.")` + `Text("] rest")`.
+/// Extracts the checkbox and removes it from events, leaving only the trailing text.
+fn try_extract_escaped_checkbox(events: &mut Vec<OwnedEvent>) -> Option<CheckBox> {
+	if events.len() < 2 {
+		return None;
+	}
+	let (OwnedEvent::Text(first), OwnedEvent::Text(second)) = (&events[0], &events[1]) else {
+		return None;
+	};
+	let inner = first.strip_prefix('[')?;
+	let rest = second.strip_prefix(']')?;
+	if !rest.is_empty() && !rest.starts_with(' ') {
+		return None;
+	}
+	let checkbox = CheckBox(inner.to_string());
+	let rest = rest.strip_prefix(' ').unwrap_or(rest).to_string();
+	events.remove(0);
+	events.remove(0);
+	if !rest.is_empty() {
+		events.insert(0, OwnedEvent::Text(rest));
+	}
+	Some(checkbox)
 }
 
 /// Split inline events at a SoftBreak if the part after it is a bare URL or shorthand ref.
@@ -636,38 +686,46 @@ fn cmark_options() -> pulldown_cmark_to_cmark::Options<'static> {
 	}
 }
 
-/// `depth` tracks list nesting: 0 = not inside a list, 1 = top-level list, 2+ = nested.
-fn section_to_events(section: &MilestoneSection, depth: usize, events: &mut Vec<OwnedEvent>) {
+fn serialize_section(section: &MilestoneSection, output: &mut String) {
 	match section {
 		MilestoneSection::FreeContent(owned) => {
-			events.extend(owned.iter().cloned());
+			if !output.is_empty() {
+				ensure_blank_line(output);
+			}
+			output.push_str(&render_events_to_cmark(owned));
 		}
 		MilestoneSection::List(list) => {
-			list_to_events(list, depth, events);
+			let loose = list.is_checkbox_list();
+			for (i, item) in list.items.iter().enumerate() {
+				if i > 0 && loose {
+					ensure_blank_line(output);
+				} else if !output.is_empty() && !output.ends_with('\n') {
+					output.push('\n');
+				}
+				serialize_item(item, output);
+			}
 		}
 	}
 }
 
-fn list_to_events(list: &MilestoneList, depth: usize, events: &mut Vec<OwnedEvent>) {
-	let depth = depth + 1;
+fn serialize_item(item: &MilestoneItem, output: &mut String) {
+	let mut events = Vec::new();
 	events.push(OwnedEvent::Start(OwnedTag::List(None)));
-	for item in &list.items {
-		item_to_events(item, depth, events);
-	}
-	events.push(OwnedEvent::End(OwnedTagEnd::List(false)));
-}
-
-fn item_to_events(item: &MilestoneItem, depth: usize, events: &mut Vec<OwnedEvent>) {
 	events.push(OwnedEvent::Start(OwnedTag::Item));
 
-	if let Some(checked) = item.checked {
-		events.push(OwnedEvent::TaskListMarker(checked));
+	if let Some(CheckBox(ref inner)) = item.checked {
+		match inner.as_str() {
+			" " => events.push(OwnedEvent::TaskListMarker(false)),
+			"x" => events.push(OwnedEvent::TaskListMarker(true)),
+			_ => {
+				// Emit with backslash before `]` so cmark produces `\[<inner>\]`
+				events.push(OwnedEvent::Text(format!("[{inner}\\] ")));
+			}
+		}
 	}
 
 	let inline_events = item_content_to_events(&item.content);
 	if !inline_events.is_empty() && !item.children.is_empty() {
-		// Paragraph wrapper needed to structurally separate inline content from
-		// child blocks. newlines_after_paragraph=1 ensures no blank line gap.
 		events.push(OwnedEvent::Start(OwnedTag::Paragraph));
 		events.extend(inline_events);
 		events.push(OwnedEvent::End(OwnedTagEnd::Paragraph));
@@ -675,12 +733,30 @@ fn item_to_events(item: &MilestoneItem, depth: usize, events: &mut Vec<OwnedEven
 		events.extend(inline_events);
 	}
 
-	// Emit children
-	for child in &item.children {
-		section_to_events(child, depth, events);
-	}
-
+	// Render inline part + item/list wrappers
 	events.push(OwnedEvent::End(OwnedTagEnd::Item));
+	events.push(OwnedEvent::End(OwnedTagEnd::List(false)));
+	output.push_str(&render_events_to_cmark(&events));
+
+	// Render children recursively with proper indentation
+	if !item.children.is_empty() {
+		let mut child_output = String::new();
+		for child in &item.children {
+			serialize_section(child, &mut child_output);
+		}
+		// Indent children under this item
+		for line in child_output.lines() {
+			output.push('\n');
+			if !line.is_empty() {
+				output.push_str("  ");
+				output.push_str(line);
+			}
+		}
+		// Preserve trailing newline
+		if child_output.ends_with('\n') {
+			output.push('\n');
+		}
+	}
 }
 
 fn item_content_to_events(content: &ItemContent) -> Vec<OwnedEvent> {
@@ -709,17 +785,8 @@ fn item_content_to_events(content: &ItemContent) -> Vec<OwnedEvent> {
 /// Serialize a single item (with children) into its section text.
 /// Used for `parse_blockers_from_embedded`.
 fn serialize_item_to_section_text(item: &MilestoneItem) -> String {
-	// Build events for just this item as if it were a standalone document with one list
-	let mut events = Vec::new();
-	events.push(OwnedEvent::Start(OwnedTag::List(None)));
-	// depth=1: this is a top-level embedded item, but we serialize it tight (no paragraph wrapping)
-	// so blockers don't get extra spacing
-	item_to_events(item, 1, &mut events);
-	events.push(OwnedEvent::End(OwnedTagEnd::List(false)));
-
-	let borrowed: Vec<Event<'_>> = events.iter().map(|e| e.to_event()).collect();
 	let mut output = String::new();
-	pulldown_cmark_to_cmark::cmark_with_options(borrowed.into_iter(), &mut output, cmark_options()).expect("markdown rendering should not fail");
+	serialize_item(item, &mut output);
 	output
 }
 
@@ -984,7 +1051,6 @@ mod tests {
 		# Header
 		Paragraph text
 		- item 1
-
 		- item 2
 
 		More text
@@ -997,9 +1063,7 @@ mod tests {
 		let doc = MilestoneDoc::parse(content);
 		insta::assert_snapshot!(doc.serialize(), @"
 		- item 1
-
 		- item 2
-
 		- item 3
 		");
 	}
@@ -1010,9 +1074,7 @@ mod tests {
 		let doc = MilestoneDoc::parse(content);
 		insta::assert_snapshot!(doc.serialize(), @"
 		- item 1
-
 		- item 2
-
 		- item 3
 		");
 	}
@@ -1076,5 +1138,214 @@ mod tests {
 		let blockers = parse_blockers_from_embedded(&embedded[0].1);
 		assert_eq!(blockers.items.len(), 1);
 		assert_eq!(blockers.items[0].text, "todo");
+	}
+
+	/// In loose lists (blank lines between items or inside items), pulldown_cmark
+	/// emits Start(Paragraph) before TaskListMarker. We must handle this ordering.
+	#[test]
+	fn test_stored_form_loose_checkbox_list() {
+		let stored = "- [ ] OpenClaw\n  text\n\n  # Blockers\n  - wait\n- [ ] Second\n";
+		let doc = MilestoneDoc::parse(stored);
+		insta::assert_snapshot!(doc.serialize(), @"
+		- [ ] OpenClaw
+		  text
+		  # Blockers
+		  - wait
+
+		- [ ] Second
+		");
+	}
+
+	#[test]
+	fn test_collapsed_list_expanded_gets_spacing() {
+		// Simulates what happens after collapse → re-expand:
+		// the stored form has bare URLs (plain list), then expand_with replaces them
+		// with checkbox items. Serialize should detect the expanded list as checkbox.
+		let collapsed = "\
+- https://github.com/owner/repo/issues/42
+- https://github.com/owner/repo/issues/43
+";
+		let mut doc = MilestoneDoc::parse(collapsed);
+
+		// Simulate expand_with by manually replacing items
+		let mut expansions = std::collections::HashMap::new();
+		expansions.insert(42, "- [ ] Issue One <!-- @user https://github.com/owner/repo/issues/42 -->\n\t# Blockers\n\t- task 1".to_string());
+		expansions.insert(43, "- [ ] Issue Two <!-- @user https://github.com/owner/repo/issues/43 -->".to_string());
+		doc.expand_with(&expansions);
+
+		insta::assert_snapshot!(doc.serialize(), @r#"
+		- [ ] Issue One <!-- @user https://github.com/owner/repo/issues/42 -->
+		  # Blockers
+		  - task 1
+
+		- [ ] Issue Two <!-- @user https://github.com/owner/repo/issues/43 -->
+		"#);
+	}
+
+	/// Simulates the full edit flow: stored collapsed form → expand → serialize.
+	/// Non-issue items (like "OpenClaw" with blockers) should be kept and the
+	/// list should get blank lines between items since the list contains checkboxes.
+	#[test]
+	fn test_expand_with_mixed_issue_and_text_items() {
+		// Stored form: first item is checkbox text, rest are bare URLs
+		let stored = "\
+# important today
+- [ ] OpenClaw
+  # Blockers
+  - wait on Vincent
+- https://github.com/valeratrades/discretionary_engine/issues/77
+- https://github.com/valeratrades/discretionary_engine/issues/78
+";
+		let mut doc = MilestoneDoc::parse(stored);
+
+		let mut expansions = std::collections::HashMap::new();
+		expansions.insert(
+			77,
+			"- [ ] v2_interface <!-- @valeratrades https://github.com/valeratrades/discretionary_engine/issues/77 -->\n\t# Blockers\n\t- new protocols".to_string(),
+		);
+		expansions.insert(78, "- [ ] risk <!-- @valeratrades https://github.com/valeratrades/discretionary_engine/issues/78 -->".to_string());
+		doc.expand_with(&expansions);
+
+		insta::assert_snapshot!(doc.serialize(), @r#"
+		# important today
+		- [ ] OpenClaw
+		  # Blockers
+		  - wait on Vincent
+
+		- [ ] v2_interface <!-- @valeratrades https://github.com/valeratrades/discretionary_engine/issues/77 -->
+		  # Blockers
+		  - new protocols
+
+		- [ ] risk <!-- @valeratrades https://github.com/valeratrades/discretionary_engine/issues/78 -->
+		"#);
+	}
+
+	/// When ALL stored items are bare URLs, the list starts as "plain" (no checkbox).
+	/// After expand_with, items gain checkboxes but is_checkbox_list checks live state.
+	#[test]
+	fn test_expand_all_bare_urls() {
+		let stored = "\
+# important today
+- https://github.com/owner/repo/issues/1
+- https://github.com/owner/repo/issues/2
+- https://github.com/owner/repo/issues/3
+";
+		let mut doc = MilestoneDoc::parse(stored);
+
+		let mut expansions = std::collections::HashMap::new();
+		expansions.insert(1, "- [ ] First <!-- @user https://github.com/owner/repo/issues/1 -->\n\t# Blockers\n\t- task A".to_string());
+		expansions.insert(2, "- [ ] Second <!-- @user https://github.com/owner/repo/issues/2 -->".to_string());
+		expansions.insert(3, "- [x] Third <!-- @user https://github.com/owner/repo/issues/3 -->".to_string());
+		doc.expand_with(&expansions);
+
+		insta::assert_snapshot!(doc.serialize(), @"
+		# important today
+		- [ ] First <!-- @user https://github.com/owner/repo/issues/1 -->
+		  # Blockers
+		  - task A
+
+		- [ ] Second <!-- @user https://github.com/owner/repo/issues/2 -->
+
+		- [x] Third <!-- @user https://github.com/owner/repo/issues/3 -->
+		");
+	}
+
+	#[test]
+	fn test_checkbox_list_after_heading() {
+		let content = "\
+# important today
+- [ ] OpenClaw
+  have relevant stuff in tg/general. Also would include probably buying the VPS, as it needs to be able to work fully autonomously
+  # Blockers
+  - wait on Vincent to set up the server
+- [ ] discretionary_engine
+  - [ ] v2_interface <!-- @valeratrades https://github.com/valeratrades/discretionary_engine/issues/77 -->
+    # Blockers
+    - new protocols attach options
+    - define the exact new target interface
+    - start drawing it on the whiteboard
+    - update current `strategy/main.rs` to interpret protocols itself
+- [ ] discretionary_engine
+  - [ ] strategy
+    - \\[.\\] communication layer
+      - move clap interface into \\_strategy, alongside `dummy_market.rs` for only protocol
+      - take exact string, send over redis, be able to interpret it again
+      <!--x-->
+
+      - get dummy market suggesting orders correctly //NB: no execution yet, - don't rush the implementation
+    - [ ] allow defining `percent_controlled` for any protocol
+    - [ ] update the standard for clear delineation between opening new pos and updating an existing one
+      - on \\_strategy:
+        adj
+        can provide all the same arguments (except for target assets, - changing them requires a new position), but now absolutely all support starting with a minus. So can do `adj \"shorts_basket_trade\" -f \"-dm\"`, and it will remove the `dm` followup protocol.
+        Q: that on earth do I do about basket trades then?
+        new
+      - main entrypoint:
+        new (with --quality instead of size)
+      - define in terms of target delta change for \\_strategy, and expand on total def space for main entrypoint
+  - [ ] risk
+    - [ ] update the logic for %controlled on followup algos -> integrate `adjust-pos` into the main loop (require id provision)
+    - [ ] transition to distinctly different datatypes for AggrBook and External
+    - [ ] fix: limit chase is failing to update consistently as the price moves up
+    - \\[.\\] rm_engine (XXX: might be outdated):
+      - [ ] make stop_loss_proximity layer reasonable
+        plug fix: just nuke certainty
+      - [ ] some mechanic to check how much bias our suggestions actually had historically; warn if outside of some certainty\\*val range
+      - [ ] integrate diffusion testing
+        backtests could also be a thing, but don't like lack of consistency for which layers get backtests run on them.
+";
+		let doc = MilestoneDoc::parse(content);
+		insta::assert_snapshot!(doc.serialize(), @r#"
+		# important today
+		- [ ] OpenClaw
+		  have relevant stuff in tg/general. Also would include probably buying the VPS, as it needs to be able to work fully autonomously
+		  # Blockers
+		  - wait on Vincent to set up the server
+
+		- [ ] discretionary_engine
+		  - [ ] v2_interface <!-- @valeratrades https://github.com/valeratrades/discretionary_engine/issues/77 -->
+		    # Blockers
+		    - new protocols attach options
+		    - define the exact new target interface
+		    - start drawing it on the whiteboard
+		    - update current `strategy/main.rs` to interpret protocols itself
+
+		- [ ] discretionary_engine
+		  - [ ] strategy
+		    - \[.\] communication layer
+		      - move clap interface into \_strategy, alongside `dummy_market.rs` for only protocol
+		      - take exact string, send over redis, be able to interpret it again
+
+		      <!--x-->
+		      - get dummy market suggesting orders correctly //NB: no execution yet, - don't rush the implementation
+
+		    - [ ] allow defining `percent_controlled` for any protocol
+
+		    - [ ] update the standard for clear delineation between opening new pos and updating an existing one
+		      - on \_strategy:
+		        adj
+		        can provide all the same arguments (except for target assets, - changing them requires a new position), but now absolutely all support starting with a minus. So can do `adj "shorts_basket_trade" -f "-dm"`, and it will remove the `dm` followup protocol.
+		        Q: that on earth do I do about basket trades then?
+		        new
+		      - main entrypoint:
+		        new (with --quality instead of size)
+		      - define in terms of target delta change for \_strategy, and expand on total def space for main entrypoint
+
+		  - [ ] risk
+		    - [ ] update the logic for %controlled on followup algos -> integrate `adjust-pos` into the main loop (require id provision)
+
+		    - [ ] transition to distinctly different datatypes for AggrBook and External
+
+		    - [ ] fix: limit chase is failing to update consistently as the price moves up
+
+		    - \[.\] rm_engine (XXX: might be outdated):
+		      - [ ] make stop_loss_proximity layer reasonable
+		        plug fix: just nuke certainty
+
+		      - [ ] some mechanic to check how much bias our suggestions actually had historically; warn if outside of some certainty\*val range
+
+		      - [ ] integrate diffusion testing
+		        backtests could also be a thing, but don't like lack of consistency for which layers get backtests run on them.
+		"#);
 	}
 }
