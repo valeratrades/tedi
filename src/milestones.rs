@@ -2,9 +2,9 @@ use clap::{Args, Subcommand};
 use jiff::Timestamp;
 use reqwest::Client;
 use tedi::{
-	Issue, IssueLink, LazyIssue, MilestoneBlockerCache, collapse_to_links, find_embedded_issues,
+	Issue, IssueLink, LazyIssue, MilestoneBlockerCache, MilestoneDoc,
 	local::{FsReader, Local, LocalIssueSource},
-	parse_blockers_from_embedded, parse_embedded_title_line, parse_shorthand_ref, serialize_blockers_view,
+	parse_blockers_from_embedded, serialize_blockers_view,
 };
 use v_utils::prelude::*;
 
@@ -301,12 +301,18 @@ async fn edit_milestone(settings: &LiveSettings, tf: Timeframe, offline: bool, m
 	sync_blocker_changes(&edited_content, offline).await?;
 
 	// Collapse expanded issues back to bare links for storage
-	let new_description = collapse_to_links(&edited_content);
+	let mut edited_doc = MilestoneDoc::parse(&edited_content);
+	edited_doc.collapse_to_links();
+	let new_description = edited_doc.serialize();
 
 	// Sync milestone assignments on GitHub: assign new issues, unassign removed ones
 	if !mock && !offline {
-		let collapsed_original = collapse_to_links(&original_description);
-		sync_milestone_assignments(settings, milestone_number, &collapsed_original, &new_description).await?;
+		let mut orig_doc = MilestoneDoc::parse(&original_description);
+		orig_doc.resolve_bare_refs();
+		let old_links = orig_doc.issue_links();
+		let new_doc = MilestoneDoc::parse(&new_description);
+		let new_links = new_doc.issue_links();
+		sync_milestone_assignments(settings, milestone_number, &old_links, &new_links).await?;
 	}
 
 	if mock {
@@ -437,114 +443,51 @@ async fn load_local_issue(link: &IssueLink) -> Result<Issue> {
 
 /// Expand shorthand refs and refresh all embedded issue sections from local state.
 ///
-/// Preserves the indentation prefix of the original line on the expanded view.
+/// Parses the content into a MilestoneDoc, resolves bare refs, then for each
+/// issue ref (shorthand, bare URL, or embedded), loads the local issue and
+/// replaces the item with a fresh `serialize_blockers_view` expansion.
 async fn expand_and_refresh(content: &str) -> Result<String> {
-	fn indent_depth(line: &str) -> usize {
-		line.len() - line.trim_start().len()
-	}
+	let mut doc = MilestoneDoc::parse(content);
+	doc.resolve_bare_refs();
 
-	fn is_child_of(line: &str, parent_depth: usize) -> bool {
-		indent_depth(line) > parent_depth
-	}
+	// Collect all issue links with their resolved info, then load and expand
+	let links = doc.issue_links();
+	let mut expansions: std::collections::HashMap<u64, String> = std::collections::HashMap::new();
 
-	/// Prepend `prefix` to each line of `text`.
-	fn indent_block(text: &str, prefix: &str) -> String {
-		if prefix.is_empty() {
-			return text.to_string();
-		}
-		text.lines()
-			.map(|line| if line.is_empty() { line.to_string() } else { format!("{prefix}{line}") })
-			.collect::<Vec<_>>()
-			.join("\n")
-	}
-
-	let lines: Vec<&str> = content.lines().collect();
-	let mut result_lines: Vec<String> = Vec::new();
-	let mut i = 0;
-
-	while i < lines.len() {
-		// Check for shorthand ref or bare URL: `owner/repo#123` or `https://...`
-		if let Some(link) = parse_shorthand_ref(lines[i]) {
-			let ref_depth = indent_depth(lines[i]);
-			let prefix = &lines[i][..ref_depth];
-			let ref_line = i;
-			i += 1;
-			// Skip child content (strictly more indented than ref line)
-			while i < lines.len() && (is_child_of(lines[i], ref_depth) || lines[i].trim().is_empty()) {
-				if lines[i].trim().is_empty() && (i + 1 >= lines.len() || !is_child_of(lines[i + 1], ref_depth)) {
-					break;
-				}
-				i += 1;
-			}
-			match load_local_issue(&link).await {
-				Ok(issue) => {
-					result_lines.push(indent_block(&serialize_blockers_view(&issue), prefix));
-				}
-				Err(e) => {
-					eprintln!("Warning: failed to expand {}: {e}", lines[ref_line].trim());
-					result_lines.push(lines[ref_line].to_string());
-				}
-			}
+	for link in &links {
+		if expansions.contains_key(&link.number()) {
 			continue;
 		}
-
-		// Check for embedded issue title line — refresh from local
-		if let Some(link) = parse_embedded_title_line(lines[i]) {
-			let title_depth = indent_depth(lines[i]);
-			let prefix = &lines[i][..title_depth];
-			let old_start = i;
-			i += 1;
-			// Skip child content (strictly more indented than title line)
-			while i < lines.len() && (is_child_of(lines[i], title_depth) || lines[i].trim().is_empty()) {
-				if lines[i].trim().is_empty() && (i + 1 >= lines.len() || !is_child_of(lines[i + 1], title_depth)) {
-					break;
-				}
-				i += 1;
+		match load_local_issue(link).await {
+			Ok(issue) => {
+				let view = serialize_blockers_view(&issue);
+				expansions.insert(link.number(), view);
 			}
-
-			match load_local_issue(&link).await {
-				Ok(issue) => {
-					result_lines.push(indent_block(&serialize_blockers_view(&issue), prefix));
-				}
-				Err(e) => {
-					eprintln!("Warning: failed to refresh {}/{}/#{}: {e}", link.owner(), link.repo(), link.number());
-					for line in &lines[old_start..i] {
-						result_lines.push(line.to_string());
-					}
-				}
+			Err(e) => {
+				eprintln!("Warning: failed to expand {}/{}/#{}: {e}", link.owner(), link.repo(), link.number());
 			}
-			continue;
 		}
-
-		// Regular line — keep as-is
-		result_lines.push(lines[i].to_string());
-		i += 1;
 	}
 
-	Ok(result_lines.join("\n"))
+	doc.expand_with(&expansions);
+	Ok(doc.serialize())
 }
 
 /// Parse blocker changes from edited milestone content and sync back to issue files.
 async fn sync_blocker_changes(content: &str, offline: bool) -> Result<()> {
 	use crate::open_interactions::{Modifier, SyncOptions, modify_and_sync_issue};
 
-	let embedded = find_embedded_issues(content);
+	let doc = MilestoneDoc::parse(content);
 
-	let lines: Vec<&str> = content.lines().collect();
-
-	for eref in &embedded {
-		// Extract the embedded section text
-		let section_lines: Vec<&str> = lines[eref.line_start..eref.line_end].to_vec();
-		let section_text = section_lines.join("\n");
-
+	for (link, section_text) in doc.embedded_issues() {
 		// Parse blockers from the embedded section
 		let edited_blockers = parse_blockers_from_embedded(&section_text);
 
 		// Load the real issue from local fs
-		let issue = match load_local_issue(&eref.link).await {
+		let issue = match load_local_issue(&link).await {
 			Ok(issue) => issue,
 			Err(e) => {
-				eprintln!("Warning: failed to load {}/{}/#{} for sync: {e}", eref.link.owner(), eref.link.repo(), eref.link.number());
+				eprintln!("Warning: failed to load {}/{}/#{} for sync: {e}", link.owner(), link.repo(), link.number());
 				continue;
 			}
 		};
@@ -554,7 +497,7 @@ async fn sync_blocker_changes(content: &str, offline: bool) -> Result<()> {
 			continue;
 		}
 
-		println!("Syncing blocker changes for {}/{}#{}", eref.link.owner(), eref.link.repo(), eref.link.number());
+		println!("Syncing blocker changes for {}/{}#{}", link.owner(), link.repo(), link.number());
 
 		let modifier = Modifier::BlockerWrite { blockers: edited_blockers };
 		let sync_opts = SyncOptions::default();
@@ -564,43 +507,21 @@ async fn sync_blocker_changes(content: &str, offline: bool) -> Result<()> {
 	Ok(())
 }
 
-/// Extract all top-level issue links from collapsed milestone content.
-/// Only looks at non-indented lines (top-level refs).
-fn extract_issue_links(content: &str) -> Vec<IssueLink> {
-	content
-		.lines()
-		.filter_map(|line| {
-			if line.starts_with('\t') || line.trim().is_empty() {
-				return None;
-			}
-			parse_embedded_title_line(line).or_else(|| parse_shorthand_ref(line))
-		})
-		.collect()
-}
-
 /// Sync milestone assignments on GitHub.
 ///
 /// Compares issue links in old vs new description, then:
 /// - Assigns newly added issues to the milestone
 /// - Unassigns removed issues from the milestone
 /// Only operates on issues in the same repo as the milestone.
-async fn sync_milestone_assignments(settings: &LiveSettings, milestone_number: u64, old_content: &str, new_content: &str) -> Result<()> {
+async fn sync_milestone_assignments(settings: &LiveSettings, milestone_number: u64, old_links: &[IssueLink], new_links: &[IssueLink]) -> Result<()> {
 	use std::collections::HashSet;
 
 	let config = settings.config()?;
 	let milestones_config = config.milestones.as_ref().ok_or_else(|| eyre!("milestones config section is required"))?;
 	let (ms_owner, ms_repo) = parse_github_repo(&milestones_config.url)?;
 
-	let old_numbers: HashSet<u64> = extract_issue_links(old_content)
-		.iter()
-		.filter(|l| l.owner() == ms_owner && l.repo() == ms_repo)
-		.map(|l| l.number())
-		.collect();
-	let new_numbers: HashSet<u64> = extract_issue_links(new_content)
-		.iter()
-		.filter(|l| l.owner() == ms_owner && l.repo() == ms_repo)
-		.map(|l| l.number())
-		.collect();
+	let old_numbers: HashSet<u64> = old_links.iter().filter(|l| l.owner() == ms_owner && l.repo() == ms_repo).map(|l| l.number()).collect();
+	let new_numbers: HashSet<u64> = new_links.iter().filter(|l| l.owner() == ms_owner && l.repo() == ms_repo).map(|l| l.number()).collect();
 
 	let to_assign: Vec<u64> = new_numbers.difference(&old_numbers).copied().collect();
 	let to_unassign: Vec<u64> = old_numbers.difference(&new_numbers).copied().collect();

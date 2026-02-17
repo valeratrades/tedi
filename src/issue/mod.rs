@@ -9,7 +9,7 @@
 mod blocker;
 pub mod milestone_embed;
 pub use blocker::{BlockerItem, BlockerSequence, BlockerSetState, MilestoneBlockerCache, join_with_blockers, split_blockers};
-pub use milestone_embed::{EmbeddedIssueRef, collapse_to_links, find_embedded_issues, parse_blockers_from_embedded, parse_embedded_title_line, parse_shorthand_ref, serialize_blockers_view};
+pub use milestone_embed::{MilestoneDoc, parse_blockers_from_embedded, serialize_blockers_view};
 
 mod events;
 pub use events::{Events, OwnedCodeBlockKind, OwnedEvent, OwnedTag, OwnedTagEnd};

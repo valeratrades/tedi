@@ -271,18 +271,9 @@ impl MilestoneBlockerCache {
 	/// Recognizes all supported formats: expanded title lines, shorthand refs (`o/r#123`),
 	/// and bare issue URLs.
 	pub fn embedded_links(&self) -> Vec<super::IssueLink> {
-		let mut links = Vec::new();
-		for line in self.milestone_description.lines() {
-			if line.starts_with('\t') || line.trim().is_empty() {
-				continue;
-			}
-			if let Some(link) = super::milestone_embed::parse_embedded_title_line(line) {
-				links.push(link);
-			} else if let Some(link) = super::milestone_embed::parse_shorthand_ref(line) {
-				links.push(link);
-			}
-		}
-		links
+		let mut doc = super::MilestoneDoc::parse(&self.milestone_description);
+		doc.resolve_bare_refs();
+		doc.issue_links()
 	}
 
 	/// Get the currently selected issue link, if any.
