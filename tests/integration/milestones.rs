@@ -130,10 +130,17 @@ async fn test_expand_shorthand_ref() {
 	);
 	ctx.local(&vi, Some(Seed::new(0))).await;
 
-	let (out, _result) = ctx.milestone_edit_no_changes("# Sprint\n\n- o/r#10\n\nFooter");
+	let (out, result) = ctx.milestone_edit_no_changes("# Sprint\n\n- o/r#10\n\nFooter");
 
 	assert!(out.status.success(), "stderr: {}", out.stderr);
 	assert!(out.stdout.contains("No changes"), "expected 'No changes' in stdout: {}", out.stdout);
+	insta::assert_snapshot!(result, @"
+	# Sprint
+
+	- o/r#10
+
+	Footer
+	");
 }
 
 /// Child issue (nested under a parent dir) can be found and expanded.
@@ -152,10 +159,11 @@ async fn test_expand_child_issue() {
 	ctx.local(&parent_vi, Some(Seed::new(0))).await;
 
 	// The milestone references the child issue
-	let (out, _result) = ctx.milestone_edit_no_changes("- o/r#2");
+	let (out, result) = ctx.milestone_edit_no_changes("- o/r#2");
 
 	assert!(out.status.success(), "stderr: {}", out.stderr);
 	assert!(out.stdout.contains("No changes"), "expected 'No changes', got stdout: {}\nstderr: {}", out.stdout, out.stderr);
+	insta::assert_snapshot!(result, @"- o/r#2");
 }
 
 /// Adding blockers to an issue that has none should sync them to the issue file.
@@ -178,16 +186,17 @@ async fn test_milestone_edit_adds_blockers() {
 	assert!(out.status.success(), "milestones edit should succeed. stderr: {}", out.stderr);
 
 	// The milestone description should be collapsed to a bare link in a list
-	assert_eq!(
-		result_milestone.trim(),
-		"- https://github.com/o/r/issues/50",
-		"milestone should be collapsed to bare link:\n{result_milestone}"
-	);
+	insta::assert_snapshot!(result_milestone, @"- https://github.com/o/r/issues/50");
 
 	// The issue file should now have the blockers
 	ctx.set_issues_dir_override();
 	let issue_path = tedi::local::Local::find_by_number(tedi::RepoInfo::new("o", "r"), 50, tedi::local::FsReader).expect("issue #50 should still exist");
 	let issue_content = read_issue_file(&issue_path);
-	assert!(issue_content.contains("# Blockers"), "issue file should contain blockers section:\n{issue_content}");
-	assert!(issue_content.contains("- todo"), "issue file should contain the 'todo' blocker:\n{issue_content}");
+	insta::assert_snapshot!(issue_content, @"
+	- [ ] Empty Issue <!-- @mock_user https://github.com/o/r/issues/50 -->
+		just a body
+		
+		# Blockers
+		- todo
+	");
 }
