@@ -64,19 +64,36 @@ impl MilestoneDoc {
 	}
 
 	pub fn serialize(&self) -> String {
-		let events = self.to_events();
-		let borrowed: Vec<Event<'_>> = events.iter().map(|e| e.to_event()).collect();
 		let mut output = String::new();
-		pulldown_cmark_to_cmark::cmark_with_options(borrowed.into_iter(), &mut output, cmark_options()).expect("markdown rendering should not fail");
-		output
-	}
-
-	fn to_events(&self) -> Vec<OwnedEvent> {
-		let mut events = Vec::new();
 		for section in &self.sections {
-			section_to_events(section, 0, &mut events);
+			match section {
+				MilestoneSection::FreeContent(owned) => {
+					if !output.is_empty() {
+						ensure_blank_line(&mut output);
+					}
+					output.push_str(&render_events_to_cmark(owned));
+				}
+				MilestoneSection::List(list) => {
+					// Serialize each top-level item independently, joined with
+					// blank lines. pulldown_cmark_to_cmark fails to insert blank
+					// lines between loose items that have children, so we handle
+					// inter-item spacing ourselves.
+					for (i, item) in list.items.iter().enumerate() {
+						if i > 0 {
+							ensure_blank_line(&mut output);
+						} else if !output.is_empty() && !output.ends_with('\n') {
+							output.push('\n');
+						}
+						let mut events = Vec::new();
+						events.push(OwnedEvent::Start(OwnedTag::List(None)));
+						item_to_events(item, 1, &mut events);
+						events.push(OwnedEvent::End(OwnedTagEnd::List(false)));
+						output.push_str(&render_events_to_cmark(&events));
+					}
+				}
+			}
 		}
-		events
+		output
 	}
 }
 
@@ -595,10 +612,26 @@ fn item_issue_link(item: &MilestoneItem) -> Option<IssueLink> {
 
 // ─── Serialization ───────────────────────────────────────────────────────────
 
+/// Ensure `output` ends with `\n\n` (a blank line separator).
+fn ensure_blank_line(output: &mut String) {
+	let trailing_newlines = output.bytes().rev().take_while(|&b| b == b'\n').count();
+	for _ in trailing_newlines..2 {
+		output.push('\n');
+	}
+}
+
+fn render_events_to_cmark(events: &[OwnedEvent]) -> String {
+	let borrowed: Vec<Event<'_>> = events.iter().map(|e| e.to_event()).collect();
+	let mut output = String::new();
+	pulldown_cmark_to_cmark::cmark_with_options(borrowed.into_iter(), &mut output, cmark_options()).expect("markdown rendering should not fail");
+	output
+}
+
 fn cmark_options() -> pulldown_cmark_to_cmark::Options<'static> {
 	pulldown_cmark_to_cmark::Options {
 		list_token: '-',
 		newlines_after_headline: 1,
+		newlines_after_paragraph: 1,
 		..Default::default()
 	}
 }
@@ -617,17 +650,14 @@ fn section_to_events(section: &MilestoneSection, depth: usize, events: &mut Vec<
 
 fn list_to_events(list: &MilestoneList, depth: usize, events: &mut Vec<OwnedEvent>) {
 	let depth = depth + 1;
-	// Top-level lists (depth 1) are always loose; nested lists are always tight.
-	let is_loose = depth == 1;
-
 	events.push(OwnedEvent::Start(OwnedTag::List(None)));
 	for item in &list.items {
-		item_to_events(item, is_loose, depth, events);
+		item_to_events(item, depth, events);
 	}
 	events.push(OwnedEvent::End(OwnedTagEnd::List(false)));
 }
 
-fn item_to_events(item: &MilestoneItem, is_loose: bool, depth: usize, events: &mut Vec<OwnedEvent>) {
+fn item_to_events(item: &MilestoneItem, depth: usize, events: &mut Vec<OwnedEvent>) {
 	events.push(OwnedEvent::Start(OwnedTag::Item));
 
 	if let Some(checked) = item.checked {
@@ -635,16 +665,14 @@ fn item_to_events(item: &MilestoneItem, is_loose: bool, depth: usize, events: &m
 	}
 
 	let inline_events = item_content_to_events(&item.content);
-	if !inline_events.is_empty() {
-		// Paragraph wrapper needed when list is loose OR item has children
-		// (cmark requires it to separate inline content from child blocks).
-		if is_loose || !item.children.is_empty() {
-			events.push(OwnedEvent::Start(OwnedTag::Paragraph));
-			events.extend(inline_events);
-			events.push(OwnedEvent::End(OwnedTagEnd::Paragraph));
-		} else {
-			events.extend(inline_events);
-		}
+	if !inline_events.is_empty() && !item.children.is_empty() {
+		// Paragraph wrapper needed to structurally separate inline content from
+		// child blocks. newlines_after_paragraph=1 ensures no blank line gap.
+		events.push(OwnedEvent::Start(OwnedTag::Paragraph));
+		events.extend(inline_events);
+		events.push(OwnedEvent::End(OwnedTagEnd::Paragraph));
+	} else {
+		events.extend(inline_events);
 	}
 
 	// Emit children
@@ -686,7 +714,7 @@ fn serialize_item_to_section_text(item: &MilestoneItem) -> String {
 	events.push(OwnedEvent::Start(OwnedTag::List(None)));
 	// depth=1: this is a top-level embedded item, but we serialize it tight (no paragraph wrapping)
 	// so blockers don't get extra spacing
-	item_to_events(item, false, 1, &mut events);
+	item_to_events(item, 1, &mut events);
 	events.push(OwnedEvent::End(OwnedTagEnd::List(false)));
 
 	let borrowed: Vec<Event<'_>> = events.iter().map(|e| e.to_event()).collect();
@@ -720,9 +748,7 @@ mod tests {
 		insta::assert_snapshot!(doc.serialize(), @"
 		# Sprint Goals
 		Some description
-
 		- [ ] discretionary_engine
-		  
 		  - [ ] owner/repo#42
 
 		Footer text
@@ -748,7 +774,6 @@ mod tests {
 		let doc = MilestoneDoc::parse(content);
 		insta::assert_snapshot!(doc.serialize(), @"
 		- [ ] My Issue <!-- @user https://github.com/owner/repo/issues/42 -->
-		  
 		  # Blockers
 		  - task 1
 		");
@@ -769,7 +794,6 @@ mod tests {
 		doc.resolve_bare_refs();
 		insta::assert_snapshot!(doc.serialize(), @"
 		- [ ] discretionary_engine
-		  
 		  - [ ] myowner/discretionary_engine#77
 		");
 	}
@@ -781,7 +805,6 @@ mod tests {
 		doc.resolve_bare_refs();
 		insta::assert_snapshot!(doc.serialize(), @"
 		- valeratrades/tedi
-		  
 		  - valeratrades/tedi#80
 		");
 	}
@@ -794,9 +817,7 @@ mod tests {
 		doc.resolve_bare_refs();
 		insta::assert_snapshot!(doc.serialize(), @"
 		- discretionary_engine
-		  
 		  - tedi
-		    
 		    - [ ] myowner/tedi#80
 		");
 	}
@@ -831,7 +852,6 @@ mod tests {
 		insta::assert_snapshot!(doc.serialize(), @"
 		# Sprint Goals
 		Some description
-
 		- [ ] owner/repo#42
 
 		- [ ] My Issue <!-- @user https://github.com/owner/repo/issues/99 -->
@@ -952,7 +972,6 @@ mod tests {
 		let doc = MilestoneDoc::parse(content);
 		insta::assert_snapshot!(doc.serialize(), @r"
 		- valeratrades/tedi
-		  
 		  - \#80
 		");
 	}
@@ -964,7 +983,6 @@ mod tests {
 		insta::assert_snapshot!(doc.serialize(), @"
 		# Header
 		Paragraph text
-
 		- item 1
 
 		- item 2
@@ -1000,6 +1018,22 @@ mod tests {
 	}
 
 	#[test]
+	fn test_top_level_items_with_children_padded() {
+		let content = "- [ ] OpenClaw\n\t# Blockers\n\t- wait on Vincent\n- [ ] discretionary_engine\n\t# Blockers\n\t- new protocols\n\t- define interface\n";
+		let doc = MilestoneDoc::parse(content);
+		insta::assert_snapshot!(doc.serialize(), @"
+		- [ ] OpenClaw
+		  # Blockers
+		  - wait on Vincent
+
+		- [ ] discretionary_engine
+		  # Blockers
+		  - new protocols
+		  - define interface
+		");
+	}
+
+	#[test]
 	fn test_list_item_count() {
 		let content = "- item 1\n\n- item 2\n";
 		let doc = MilestoneDoc::parse(content);
@@ -1027,7 +1061,6 @@ mod tests {
 		assert_eq!(embedded[0].0.number(), 42);
 		insta::assert_snapshot!(embedded[0].1, @"
 		- [ ] My Issue <!-- @user https://github.com/owner/repo/issues/42 -->
-		  
 		  # Blockers
 		  - task 1
 		");
