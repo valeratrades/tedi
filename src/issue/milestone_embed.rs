@@ -12,7 +12,148 @@ use super::{Issue, IssueLink, IssueMarker, OwnedEvent, OwnedTag, OwnedTagEnd};
 pub struct MilestoneDoc {
 	sections: Vec<MilestoneSection>,
 }
+impl MilestoneDoc {
+	pub fn parse(content: &str) -> Self {
+		let parser = Parser::new_ext(content, parser_options());
+		let events: Vec<Event<'_>> = parser.collect();
+		let mut pos = 0;
+		let sections = parse_sections(&events, &mut pos, None);
+		Self { sections }
+	}
 
+	/// Resolve bare `#N` refs using their parent list item's text as repo context.
+	pub fn resolve_bare_refs(&mut self) {
+		for section in &mut self.sections {
+			resolve_section(section, None);
+		}
+	}
+
+	/// Collect all issue links from the document.
+	pub fn issue_links(&self) -> Vec<IssueLink> {
+		let mut links = Vec::new();
+		for section in &self.sections {
+			collect_links_from_section(section, &mut links);
+		}
+		links
+	}
+
+	/// Iterate over items that are embedded issues (have title + linked marker).
+	/// Returns the `IssueLink` and the serialized section text (title + children).
+	pub fn embedded_issues(&self) -> Vec<(IssueLink, String)> {
+		let mut result = Vec::new();
+		for section in &self.sections {
+			collect_embedded_from_section(section, &mut result);
+		}
+		result
+	}
+
+	/// Expand issue refs in-place using pre-loaded serialized views.
+	/// `expansions` maps issue number → serialized blocker view (from `serialize_blockers_view`).
+	/// Items with no matching expansion are left unchanged.
+	pub fn expand_with(&mut self, expansions: &std::collections::HashMap<u64, String>) {
+		for section in &mut self.sections {
+			expand_section(section, expansions);
+		}
+	}
+
+	/// Collapse all embedded issues and shorthand refs to bare URLs for storage.
+	pub fn collapse_to_links(&mut self) {
+		for section in &mut self.sections {
+			collapse_section(section);
+		}
+	}
+
+	pub fn serialize(&self) -> String {
+		let events = self.to_events();
+		let borrowed: Vec<Event<'_>> = events.iter().map(|e| e.to_event()).collect();
+		let mut output = String::new();
+		pulldown_cmark_to_cmark::cmark_with_options(borrowed.into_iter(), &mut output, cmark_options()).expect("markdown rendering should not fail");
+		output
+	}
+
+	fn to_events(&self) -> Vec<OwnedEvent> {
+		let mut events = Vec::new();
+		for section in &self.sections {
+			section_to_events(section, &mut events);
+		}
+		events
+	}
+}
+
+/// Serialize an issue as title line + blockers only (for milestone embedding).
+pub fn serialize_blockers_view(issue: &Issue) -> String {
+	let mut out = String::new();
+
+	// Title line with issue marker
+	let checked = issue.contents.state.to_checkbox();
+	let issue_marker = IssueMarker::from(&issue.identity);
+	let labels_part = if issue.contents.labels.is_empty() {
+		String::new()
+	} else {
+		format!("[{}] ", issue.contents.labels.join(", "))
+	};
+	out.push_str(&format!("- [{checked}] {labels_part}{} {issue_marker}", issue.contents.title));
+
+	// Blockers section
+	if !issue.contents.blockers.is_empty() {
+		out.push('\n');
+		let header = crate::Header::new(1, "Blockers");
+		out.push_str(&format!("\t{}", header.encode()));
+		for line in issue.contents.blockers.raw_lines() {
+			out.push_str(&format!("\n\t{line}"));
+		}
+	}
+
+	out
+}
+/// Parse blockers from an embedded issue section in milestone content.
+/// The section is: title line, then optionally a `# Blockers` header + blocker lines.
+pub fn parse_blockers_from_embedded(section: &str) -> super::BlockerSequence {
+	let lines: Vec<&str> = section.lines().collect();
+	if lines.len() < 2 {
+		return super::BlockerSequence::default();
+	}
+
+	// Find the blockers header (at one level of indent — tab or spaces)
+	let mut blockers_start = None;
+	let mut select_blockers = false;
+	for (idx, line) in lines.iter().enumerate().skip(1) {
+		let content = line.trim_start();
+		// Check for !s suffix
+		let (effective, has_select) = match content.trim_end().strip_suffix("!s").or_else(|| content.trim_end().strip_suffix("!S")) {
+			Some(before) => (before.trim_end(), true),
+			None => (content, false),
+		};
+		if matches!(super::Marker::decode(effective), Some(super::Marker::BlockersSection(_))) {
+			blockers_start = Some(idx + 1);
+			if has_select {
+				select_blockers = true;
+			}
+			break;
+		}
+		// Standalone `!s`
+		if content.trim().eq_ignore_ascii_case("!s") {
+			select_blockers = true;
+		}
+	}
+
+	let Some(start) = blockers_start else {
+		return super::BlockerSequence::default();
+	};
+
+	// Collect blocker lines (strip one level of indent — tab or spaces)
+	let blocker_lines: Vec<String> = lines[start..]
+		.iter()
+		.filter(|l| !l.trim().is_empty())
+		.map(|l| l.strip_prefix('\t').unwrap_or_else(|| l.trim_start()).to_string())
+		.collect();
+
+	let mut seq = super::BlockerSequence::parse(&blocker_lines.join("\n"));
+	if select_blockers {
+		seq.set_state = Some(super::BlockerSetState::Pending);
+	}
+	seq
+}
 /// A section is either free-form markdown content, a list, or a bare issue ref.
 enum MilestoneSection {
 	/// Non-list content (headings, paragraphs, code blocks, etc.).
@@ -55,16 +196,6 @@ enum ItemContent {
 
 fn parser_options() -> Options {
 	Options::ENABLE_TASKLISTS | Options::ENABLE_STRIKETHROUGH
-}
-
-impl MilestoneDoc {
-	pub fn parse(content: &str) -> Self {
-		let parser = Parser::new_ext(content, parser_options());
-		let events: Vec<Event<'_>> = parser.collect();
-		let mut pos = 0;
-		let sections = parse_sections(&events, &mut pos, None);
-		Self { sections }
-	}
 }
 
 /// Parse sections from the event stream until we hit `stop_at` or end of events.
@@ -327,50 +458,6 @@ fn parse_shorthand_word(word: &str) -> Option<ItemContent> {
 
 // ─── Operations ──────────────────────────────────────────────────────────────
 
-impl MilestoneDoc {
-	/// Resolve bare `#N` refs using their parent list item's text as repo context.
-	pub fn resolve_bare_refs(&mut self) {
-		for section in &mut self.sections {
-			resolve_section(section, None);
-		}
-	}
-
-	/// Collect all issue links from the document.
-	pub fn issue_links(&self) -> Vec<IssueLink> {
-		let mut links = Vec::new();
-		for section in &self.sections {
-			collect_links_from_section(section, &mut links);
-		}
-		links
-	}
-
-	/// Iterate over items that are embedded issues (have title + linked marker).
-	/// Returns the `IssueLink` and the serialized section text (title + children).
-	pub fn embedded_issues(&self) -> Vec<(IssueLink, String)> {
-		let mut result = Vec::new();
-		for section in &self.sections {
-			collect_embedded_from_section(section, &mut result);
-		}
-		result
-	}
-
-	/// Expand issue refs in-place using pre-loaded serialized views.
-	/// `expansions` maps issue number → serialized blocker view (from `serialize_blockers_view`).
-	/// Items with no matching expansion are left unchanged.
-	pub fn expand_with(&mut self, expansions: &std::collections::HashMap<u64, String>) {
-		for section in &mut self.sections {
-			expand_section(section, expansions);
-		}
-	}
-
-	/// Collapse all embedded issues and shorthand refs to bare URLs for storage.
-	pub fn collapse_to_links(&mut self) {
-		for section in &mut self.sections {
-			collapse_section(section);
-		}
-	}
-}
-
 fn resolve_section(section: &mut MilestoneSection, parent_context: Option<&str>) {
 	// Resolve bare issue refs at section level
 	if let MilestoneSection::BareIssueRef(ItemContent::ShorthandRef { owner, repo, .. }) = section {
@@ -592,24 +679,6 @@ fn cmark_options() -> pulldown_cmark_to_cmark::Options<'static> {
 	}
 }
 
-impl MilestoneDoc {
-	pub fn serialize(&self) -> String {
-		let events = self.to_events();
-		let borrowed: Vec<Event<'_>> = events.iter().map(|e| e.to_event()).collect();
-		let mut output = String::new();
-		pulldown_cmark_to_cmark::cmark_with_options(borrowed.into_iter(), &mut output, cmark_options()).expect("markdown rendering should not fail");
-		output
-	}
-
-	fn to_events(&self) -> Vec<OwnedEvent> {
-		let mut events = Vec::new();
-		for section in &self.sections {
-			section_to_events(section, &mut events);
-		}
-		events
-	}
-}
-
 fn section_to_events(section: &MilestoneSection, events: &mut Vec<OwnedEvent>) {
 	match section {
 		MilestoneSection::FreeContent(owned) => {
@@ -704,82 +773,6 @@ fn events_to_plain_text(events: &[OwnedEvent]) -> String {
 }
 
 // ─── Standalone functions (kept for direct use) ──────────────────────────────
-
-/// Serialize an issue as title line + blockers only (for milestone embedding).
-pub fn serialize_blockers_view(issue: &Issue) -> String {
-	let mut out = String::new();
-
-	// Title line with issue marker
-	let checked = issue.contents.state.to_checkbox();
-	let issue_marker = IssueMarker::from(&issue.identity);
-	let labels_part = if issue.contents.labels.is_empty() {
-		String::new()
-	} else {
-		format!("[{}] ", issue.contents.labels.join(", "))
-	};
-	out.push_str(&format!("- [{checked}] {labels_part}{} {issue_marker}", issue.contents.title));
-
-	// Blockers section
-	if !issue.contents.blockers.is_empty() {
-		out.push('\n');
-		let header = crate::Header::new(1, "Blockers");
-		out.push_str(&format!("\t{}", header.encode()));
-		for line in issue.contents.blockers.raw_lines() {
-			out.push_str(&format!("\n\t{line}"));
-		}
-	}
-
-	out
-}
-
-/// Parse blockers from an embedded issue section in milestone content.
-/// The section is: title line, then optionally a `# Blockers` header + blocker lines.
-pub fn parse_blockers_from_embedded(section: &str) -> super::BlockerSequence {
-	let lines: Vec<&str> = section.lines().collect();
-	if lines.len() < 2 {
-		return super::BlockerSequence::default();
-	}
-
-	// Find the blockers header (at one level of indent — tab or spaces)
-	let mut blockers_start = None;
-	let mut select_blockers = false;
-	for (idx, line) in lines.iter().enumerate().skip(1) {
-		let content = line.trim_start();
-		// Check for !s suffix
-		let (effective, has_select) = match content.trim_end().strip_suffix("!s").or_else(|| content.trim_end().strip_suffix("!S")) {
-			Some(before) => (before.trim_end(), true),
-			None => (content, false),
-		};
-		if matches!(super::Marker::decode(effective), Some(super::Marker::BlockersSection(_))) {
-			blockers_start = Some(idx + 1);
-			if has_select {
-				select_blockers = true;
-			}
-			break;
-		}
-		// Standalone `!s`
-		if content.trim().eq_ignore_ascii_case("!s") {
-			select_blockers = true;
-		}
-	}
-
-	let Some(start) = blockers_start else {
-		return super::BlockerSequence::default();
-	};
-
-	// Collect blocker lines (strip one level of indent — tab or spaces)
-	let blocker_lines: Vec<String> = lines[start..]
-		.iter()
-		.filter(|l| !l.trim().is_empty())
-		.map(|l| l.strip_prefix('\t').unwrap_or_else(|| l.trim_start()).to_string())
-		.collect();
-
-	let mut seq = super::BlockerSequence::parse(&blocker_lines.join("\n"));
-	if select_blockers {
-		seq.set_state = Some(super::BlockerSetState::Pending);
-	}
-	seq
-}
 
 #[cfg(test)]
 mod tests {
