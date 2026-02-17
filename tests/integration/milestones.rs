@@ -130,7 +130,7 @@ async fn test_expand_shorthand_ref() {
 	);
 	ctx.local(&vi, Some(Seed::new(0))).await;
 
-	let (out, _result) = ctx.milestone_edit_no_changes("# Sprint\n\no/r#10\n\nFooter");
+	let (out, _result) = ctx.milestone_edit_no_changes("# Sprint\n\n- o/r#10\n\nFooter");
 
 	assert!(out.status.success(), "stderr: {}", out.stderr);
 	assert!(out.stdout.contains("No changes"), "expected 'No changes' in stdout: {}", out.stdout);
@@ -152,7 +152,7 @@ async fn test_expand_child_issue() {
 	ctx.local(&parent_vi, Some(Seed::new(0))).await;
 
 	// The milestone references the child issue
-	let (out, _result) = ctx.milestone_edit_no_changes("o/r#2");
+	let (out, _result) = ctx.milestone_edit_no_changes("- o/r#2");
 
 	assert!(out.status.success(), "stderr: {}", out.stderr);
 	assert!(out.stdout.contains("No changes"), "expected 'No changes', got stdout: {}\nstderr: {}", out.stdout, out.stderr);
@@ -169,7 +169,7 @@ async fn test_milestone_edit_adds_blockers() {
 	let vi = parse_virtual("- [ ] Empty Issue <!-- @mock_user https://github.com/o/r/issues/50 -->\n\tjust a body\n");
 	ctx.local(&vi, Some(Seed::new(0))).await;
 
-	let (out, result_milestone) = ctx.milestone_edit_with_changes("o/r#50", |tmp_path| {
+	let (out, result_milestone) = ctx.milestone_edit_with_changes("- o/r#50", |tmp_path| {
 		let content = std::fs::read_to_string(tmp_path).unwrap();
 		let new_content = content.trim_end().to_string() + "\n\t# Blockers\n\t- todo\n";
 		std::fs::write(tmp_path, new_content).unwrap();
@@ -177,10 +177,10 @@ async fn test_milestone_edit_adds_blockers() {
 
 	assert!(out.status.success(), "milestones edit should succeed. stderr: {}", out.stderr);
 
-	// The milestone description should be collapsed to a bare link
+	// The milestone description should be collapsed to a bare link in a list
 	assert_eq!(
 		result_milestone.trim(),
-		"https://github.com/o/r/issues/50",
+		"- https://github.com/o/r/issues/50",
 		"milestone should be collapsed to bare link:\n{result_milestone}"
 	);
 

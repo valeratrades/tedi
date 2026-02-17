@@ -154,26 +154,49 @@ pub fn parse_blockers_from_embedded(section: &str) -> super::BlockerSequence {
 	}
 	seq
 }
-/// A section is either free-form markdown content, a list, or a bare issue ref.
+/// A section is either free-form markdown content or a list.
 enum MilestoneSection {
 	/// Non-list content (headings, paragraphs, code blocks, etc.).
 	FreeContent(Vec<OwnedEvent>),
 	/// A bullet/task list, possibly nested.
 	List(MilestoneList),
-	/// A bare issue ref that appears as a standalone paragraph (not inside a list).
-	/// e.g. `o/r#50` or `https://github.com/o/r/issues/50` on its own line.
-	BareIssueRef(ItemContent),
 }
 
-/// A list of items.
+/// A list of elements (items and empty-line separators).
 struct MilestoneList {
-	items: Vec<MilestoneItem>,
+	elements: Vec<ListElement>,
+}
+
+/// An element in a list: either an item or an empty line (preserving user's spacing).
+enum ListElement {
+	Item(MilestoneItem),
+	/// Represents a blank line between items (loose list spacing).
+	EmptyLine,
+}
+
+impl MilestoneList {
+	fn items(&self) -> impl Iterator<Item = &MilestoneItem> {
+		self.elements.iter().filter_map(|e| match e {
+			ListElement::Item(item) => Some(item),
+			ListElement::EmptyLine => None,
+		})
+	}
+
+	fn items_mut(&mut self) -> impl Iterator<Item = &mut MilestoneItem> {
+		self.elements.iter_mut().filter_map(|e| match e {
+			ListElement::Item(item) => Some(item),
+			ListElement::EmptyLine => None,
+		})
+	}
 }
 
 /// A single list item.
 struct MilestoneItem {
 	/// `None` = no checkbox, `Some(false)` = `[ ]`, `Some(true)` = `[x]`
 	checked: Option<bool>,
+	/// Whether this item's inline content was wrapped in a paragraph by pulldown_cmark
+	/// (indicates a loose list). Preserved for roundtrip fidelity.
+	loose: bool,
 	/// Semantic interpretation of this item's inline text.
 	content: ItemContent,
 	/// Nested content under this item (sub-lists, headings, etc.).
@@ -216,7 +239,7 @@ fn parse_sections(events: &[Event<'_>], pos: &mut usize, stop_at: Option<TagEnd>
 			Event::Start(Tag::List(_)) => {
 				// Flush accumulated free content
 				if !free_events.is_empty() {
-					flush_free_events(&mut free_events, &mut sections);
+					sections.push(MilestoneSection::FreeContent(std::mem::take(&mut free_events)));
 				}
 				sections.push(MilestoneSection::List(parse_list(events, pos)));
 			}
@@ -228,63 +251,10 @@ fn parse_sections(events: &[Event<'_>], pos: &mut usize, stop_at: Option<TagEnd>
 	}
 
 	if !free_events.is_empty() {
-		flush_free_events(&mut free_events, &mut sections);
+		sections.push(MilestoneSection::FreeContent(free_events));
 	}
 
 	sections
-}
-
-/// Flush accumulated free events, detecting bare issue ref paragraphs.
-/// A bare issue ref is a paragraph whose only text content is a single word matching
-/// a shorthand ref or bare URL pattern.
-fn flush_free_events(free_events: &mut Vec<OwnedEvent>, sections: &mut Vec<MilestoneSection>) {
-	// Scan for paragraphs that are bare issue refs.
-	// Split free_events into runs: (events-before-para, para-events, events-after-para)
-	// If a paragraph is a bare issue ref, emit it as BareIssueRef.
-	let remaining = std::mem::take(free_events);
-	let mut buf: Vec<OwnedEvent> = Vec::new();
-
-	let mut i = 0;
-	while i < remaining.len() {
-		if matches!(&remaining[i], OwnedEvent::Start(OwnedTag::Paragraph)) {
-			// Find the matching End(Paragraph)
-			let para_start = i;
-			i += 1;
-			while i < remaining.len() && !matches!(&remaining[i], OwnedEvent::End(OwnedTagEnd::Paragraph)) {
-				i += 1;
-			}
-			let para_end = i; // index of End(Paragraph), or remaining.len()
-			if i < remaining.len() {
-				i += 1; // consume End(Paragraph)
-			}
-
-			// Extract the inner events (between Start and End)
-			let inner: Vec<OwnedEvent> = remaining[para_start + 1..para_end].to_vec();
-
-			// Try to classify as a bare issue ref
-			let classified = classify_inline_events(inner.clone());
-			match classified {
-				ItemContent::ShorthandRef { .. } | ItemContent::BareUrl(_) => {
-					// Flush any accumulated non-ref content
-					if !buf.is_empty() {
-						sections.push(MilestoneSection::FreeContent(std::mem::take(&mut buf)));
-					}
-					sections.push(MilestoneSection::BareIssueRef(classified));
-				}
-				_ => {
-					// Not a ref — keep as regular paragraph
-					buf.extend(remaining[para_start..i].iter().cloned());
-				}
-			}
-		} else {
-			buf.push(remaining[i].clone());
-			i += 1;
-		}
-	}
-
-	if !buf.is_empty() {
-		sections.push(MilestoneSection::FreeContent(buf));
-	}
 }
 
 /// Parse a `List` from the event stream. Expects `pos` to point at `Start(List(_))`.
@@ -292,7 +262,8 @@ fn parse_list(events: &[Event<'_>], pos: &mut usize) -> MilestoneList {
 	debug_assert!(matches!(&events[*pos], Event::Start(Tag::List(_))));
 	*pos += 1; // consume Start(List)
 
-	let mut items = Vec::new();
+	let mut elements = Vec::new();
+	let mut saw_loose = false;
 
 	while *pos < events.len() {
 		match &events[*pos] {
@@ -301,7 +272,11 @@ fn parse_list(events: &[Event<'_>], pos: &mut usize) -> MilestoneList {
 				break;
 			}
 			Event::Start(Tag::Item) => {
-				items.push(parse_item(events, pos));
+				let item = parse_item(events, pos);
+				if item.loose {
+					saw_loose = true;
+				}
+				elements.push(ListElement::Item(item));
 			}
 			_ => {
 				// Unexpected event inside list, skip
@@ -310,7 +285,22 @@ fn parse_list(events: &[Event<'_>], pos: &mut usize) -> MilestoneList {
 		}
 	}
 
-	MilestoneList { items }
+	// If any item was loose (paragraph-wrapped), insert EmptyLines between all items
+	// to preserve the user's loose list spacing.
+	if saw_loose && elements.len() > 1 {
+		let mut spaced = Vec::with_capacity(elements.len() * 2 - 1);
+		let mut first = true;
+		for elem in elements {
+			if !first {
+				spaced.push(ListElement::EmptyLine);
+			}
+			first = false;
+			spaced.push(elem);
+		}
+		elements = spaced;
+	}
+
+	MilestoneList { elements }
 }
 
 /// Parse a single list `Item`. Expects `pos` to point at `Start(Item)`.
@@ -328,10 +318,9 @@ fn parse_item(events: &[Event<'_>], pos: &mut usize) -> MilestoneItem {
 	};
 
 	// Collect inline events (the item's own text content).
-	// These are events before any nested Start(List) or Start(Heading) or End(Item).
-	// pulldown_cmark wraps inline content in Start(Paragraph)..End(Paragraph), so we
-	// consume that wrapper transparently.
+	// Track whether pulldown_cmark wrapped inline content in Paragraph (loose list).
 	let mut inline_events: Vec<OwnedEvent> = Vec::new();
+	let mut loose = false;
 	let mut in_paragraph = false;
 
 	// Consume inline content: everything before child blocks or End(Item)
@@ -340,6 +329,7 @@ fn parse_item(events: &[Event<'_>], pos: &mut usize) -> MilestoneItem {
 			Event::End(TagEnd::Item) => break,
 			Event::Start(Tag::List(_)) | Event::Start(Tag::Heading { .. }) => break,
 			Event::Start(Tag::Paragraph) => {
+				loose = true;
 				in_paragraph = true;
 				*pos += 1;
 			}
@@ -369,11 +359,11 @@ fn parse_item(events: &[Event<'_>], pos: &mut usize) -> MilestoneItem {
 		*pos += 1;
 	}
 
-	MilestoneItem { checked, content, children }
+	MilestoneItem { checked, loose, content, children }
 }
 
 /// Split inline events at a SoftBreak if the part after it is a bare URL or shorthand ref.
-/// Returns (item_content, child_sections) where child_sections contains a BareIssueRef if split occurred.
+/// Returns (item_content, child_sections) where child_sections contains a single-item List if split occurred.
 fn split_inline_at_ref_softbreak(events: Vec<OwnedEvent>) -> (ItemContent, Vec<MilestoneSection>) {
 	// Find the last SoftBreak
 	if let Some(break_pos) = events.iter().rposition(|e| matches!(e, OwnedEvent::SoftBreak)) {
@@ -382,7 +372,16 @@ fn split_inline_at_ref_softbreak(events: Vec<OwnedEvent>) -> (ItemContent, Vec<M
 		if matches!(tail_classified, ItemContent::ShorthandRef { .. } | ItemContent::BareUrl(_)) {
 			let head = events[..break_pos].to_vec();
 			let content = classify_inline_events(head);
-			return (content, vec![MilestoneSection::BareIssueRef(tail_classified)]);
+			let child_item = MilestoneItem {
+				checked: None,
+				loose: false,
+				content: tail_classified,
+				children: Vec::new(),
+			};
+			let child_list = MilestoneList {
+				elements: vec![ListElement::Item(child_item)],
+			};
+			return (content, vec![MilestoneSection::List(child_list)]);
 		}
 	}
 	(classify_inline_events(events), Vec::new())
@@ -480,26 +479,8 @@ fn parse_shorthand_word(word: &str) -> Option<ItemContent> {
 // ─── Operations ──────────────────────────────────────────────────────────────
 
 fn resolve_section(section: &mut MilestoneSection, parent_context: Option<&str>) {
-	// Resolve bare issue refs at section level
-	if let MilestoneSection::BareIssueRef(ItemContent::ShorthandRef { owner, repo, .. }) = section {
-		if repo.is_none()
-			&& let Some(ctx) = parent_context
-		{
-			let (resolved_owner, resolved_repo) = parse_repo_context(ctx);
-			*owner = Some(resolved_owner);
-			*repo = Some(resolved_repo);
-		}
-		if owner.is_none()
-			&& repo.is_some()
-			&& let Some(user) = crate::current_user::get()
-		{
-			*owner = Some(user);
-		}
-		return;
-	}
-
 	if let MilestoneSection::List(list) = section {
-		for item in &mut list.items {
+		for item in list.items_mut() {
 			// Determine what context this item provides to its children
 			let my_context = match &item.content {
 				ItemContent::Text(events) => {
@@ -548,12 +529,8 @@ fn parse_repo_context(text: &str) -> (String, String) {
 fn collect_links_from_section(section: &MilestoneSection, links: &mut Vec<IssueLink>) {
 	match section {
 		MilestoneSection::FreeContent(_) => {}
-		MilestoneSection::BareIssueRef(content) =>
-			if let Some(link) = content_issue_link(content) {
-				links.push(link);
-			},
 		MilestoneSection::List(list) =>
-			for item in &list.items {
+			for item in list.items() {
 				if let Some(link) = item_issue_link(item) {
 					links.push(link);
 				}
@@ -566,7 +543,7 @@ fn collect_links_from_section(section: &MilestoneSection, links: &mut Vec<IssueL
 
 fn collect_embedded_from_section(section: &MilestoneSection, result: &mut Vec<(IssueLink, String)>) {
 	if let MilestoneSection::List(list) = section {
-		for item in &list.items {
+		for item in list.items() {
 			if let ItemContent::EmbeddedIssue {
 				marker: IssueMarker::Linked { link, .. },
 				..
@@ -583,21 +560,8 @@ fn collect_embedded_from_section(section: &MilestoneSection, result: &mut Vec<(I
 }
 
 fn expand_section(section: &mut MilestoneSection, expansions: &std::collections::HashMap<u64, String>) {
-	// Expand bare issue refs: replace the BareIssueRef section with a List containing the expanded item
-	if let MilestoneSection::BareIssueRef(content) = section {
-		if let Some(link) = content_issue_link(content)
-			&& let Some(view) = expansions.get(&link.number())
-		{
-			let expanded_doc = MilestoneDoc::parse(view);
-			if let Some(expanded_section) = expanded_doc.sections.into_iter().next() {
-				*section = expanded_section;
-			}
-		}
-		return;
-	}
-
 	if let MilestoneSection::List(list) = section {
-		for item in &mut list.items {
+		for item in list.items_mut() {
 			if let Some(link) = item_issue_link(item)
 				&& let Some(view) = expansions.get(&link.number())
 			{
@@ -605,7 +569,7 @@ fn expand_section(section: &mut MilestoneSection, expansions: &std::collections:
 				let expanded_doc = MilestoneDoc::parse(view);
 				// The view should be a single list with one item
 				if let Some(MilestoneSection::List(expanded_list)) = expanded_doc.sections.into_iter().next()
-					&& let Some(expanded_item) = expanded_list.items.into_iter().next()
+					&& let Some(ListElement::Item(expanded_item)) = expanded_list.elements.into_iter().next()
 				{
 					item.checked = expanded_item.checked;
 					item.content = expanded_item.content;
@@ -621,16 +585,8 @@ fn expand_section(section: &mut MilestoneSection, expansions: &std::collections:
 }
 
 fn collapse_section(section: &mut MilestoneSection) {
-	// Collapse bare issue refs to bare URLs
-	if let MilestoneSection::BareIssueRef(content) = section {
-		if let Some(link) = content_issue_link(content) {
-			*content = ItemContent::BareUrl(link);
-		}
-		return;
-	}
-
 	if let MilestoneSection::List(list) = section {
-		for item in &mut list.items {
+		for item in list.items_mut() {
 			match &item.content {
 				ItemContent::EmbeddedIssue {
 					marker: IssueMarker::Linked { link, .. },
@@ -657,14 +613,6 @@ fn collapse_section(section: &mut MilestoneSection) {
 			for child in &mut item.children {
 				collapse_section(child);
 			}
-		}
-
-		// A single-item list where the sole item is a bare URL with no checkbox
-		// and no children should be promoted to a BareIssueRef (matching the
-		// original bare-text format like `o/r#50`).
-		if list.items.len() == 1 && list.items[0].checked.is_none() && list.items[0].children.is_empty() && matches!(&list.items[0].content, ItemContent::BareUrl(_)) {
-			let content = std::mem::replace(&mut list.items[0].content, ItemContent::Text(Vec::new()));
-			*section = MilestoneSection::BareIssueRef(content);
 		}
 	}
 }
@@ -706,21 +654,26 @@ fn section_to_events(section: &MilestoneSection, events: &mut Vec<OwnedEvent>) {
 			events.extend(owned.iter().cloned());
 		}
 		MilestoneSection::List(list) => {
-			events.push(OwnedEvent::Start(OwnedTag::List(None)));
-			for item in &list.items {
-				item_to_events(item, events);
-			}
-			events.push(OwnedEvent::End(OwnedTagEnd::List(false)));
-		}
-		MilestoneSection::BareIssueRef(content) => {
-			events.push(OwnedEvent::Start(OwnedTag::Paragraph));
-			events.extend(item_content_to_events(content));
-			events.push(OwnedEvent::End(OwnedTagEnd::Paragraph));
+			list_to_events(list, events);
 		}
 	}
 }
 
-fn item_to_events(item: &MilestoneItem, events: &mut Vec<OwnedEvent>) {
+fn list_to_events(list: &MilestoneList, events: &mut Vec<OwnedEvent>) {
+	// Determine if the list is loose (has EmptyLine elements).
+	let is_loose = list.elements.iter().any(|e| matches!(e, ListElement::EmptyLine));
+
+	events.push(OwnedEvent::Start(OwnedTag::List(None)));
+	for element in &list.elements {
+		match element {
+			ListElement::Item(item) => item_to_events(item, is_loose, events),
+			ListElement::EmptyLine => {} // Loose-ness is handled by paragraph wrappers
+		}
+	}
+	events.push(OwnedEvent::End(OwnedTagEnd::List(false)));
+}
+
+fn item_to_events(item: &MilestoneItem, list_is_loose: bool, events: &mut Vec<OwnedEvent>) {
 	events.push(OwnedEvent::Start(OwnedTag::Item));
 
 	if let Some(checked) = item.checked {
@@ -729,15 +682,15 @@ fn item_to_events(item: &MilestoneItem, events: &mut Vec<OwnedEvent>) {
 
 	let inline_events = item_content_to_events(&item.content);
 	if !inline_events.is_empty() {
-		// Items with children need a paragraph wrapper around inline content
-		// so that pulldown_cmark_to_cmark inserts proper spacing before child blocks.
-		// Items without children skip it for tight-list style.
-		if item.children.is_empty() {
-			events.extend(inline_events);
-		} else {
+		// Paragraph wrapper is needed when:
+		// 1. The item has children (otherwise cmark merges inline content with child blocks)
+		// 2. The list is loose (blank lines between items → paragraph spacing)
+		if !item.children.is_empty() || item.loose || list_is_loose {
 			events.push(OwnedEvent::Start(OwnedTag::Paragraph));
 			events.extend(inline_events);
 			events.push(OwnedEvent::End(OwnedTagEnd::Paragraph));
+		} else {
+			events.extend(inline_events);
 		}
 	}
 
@@ -778,7 +731,7 @@ fn serialize_item_to_section_text(item: &MilestoneItem) -> String {
 	// Build events for just this item as if it were a standalone document with one list
 	let mut events = Vec::new();
 	events.push(OwnedEvent::Start(OwnedTag::List(None)));
-	item_to_events(item, &mut events);
+	item_to_events(item, false, &mut events);
 	events.push(OwnedEvent::End(OwnedTagEnd::List(false)));
 
 	let borrowed: Vec<Event<'_>> = events.iter().map(|e| e.to_event()).collect();
@@ -818,10 +771,11 @@ mod tests {
 		});
 		assert!(list.is_some());
 		let list = list.unwrap();
-		assert_eq!(list.items.len(), 1);
-		assert_eq!(list.items[0].checked, Some(false));
+		let items: Vec<_> = list.items().collect();
+		assert_eq!(items.len(), 1);
+		assert_eq!(items[0].checked, Some(false));
 		// Should have 1 child (the owner/repo#42 item)
-		assert_eq!(list.items[0].children.len(), 1);
+		assert_eq!(items[0].children.len(), 1);
 	}
 
 	#[test]
@@ -834,16 +788,17 @@ mod tests {
 			MilestoneSection::List(l) => l,
 			_ => panic!("expected list"),
 		};
+		let items: Vec<_> = list.items().collect();
 
 		// owner/repo#123
-		assert!(matches!(&list.items[0].content, ItemContent::ShorthandRef { owner: Some(o), repo: Some(r), number: 123 } if o == "owner" && r == "repo"));
+		assert!(matches!(&items[0].content, ItemContent::ShorthandRef { owner: Some(o), repo: Some(r), number: 123 } if o == "owner" && r == "repo"));
 
 		// tedi#42
-		assert!(matches!(&list.items[1].content, ItemContent::ShorthandRef { owner: None, repo: Some(r), number: 42 } if r == "tedi"));
+		assert!(matches!(&items[1].content, ItemContent::ShorthandRef { owner: None, repo: Some(r), number: 42 } if r == "tedi"));
 
 		// #77
 		assert!(matches!(
-			&list.items[2].content,
+			&items[2].content,
 			ItemContent::ShorthandRef {
 				owner: None,
 				repo: None,
@@ -860,17 +815,18 @@ mod tests {
 			MilestoneSection::List(l) => l,
 			_ => panic!("expected list"),
 		};
+		let items: Vec<_> = list.items().collect();
 
 		assert!(matches!(
-			&list.items[0].content,
+			&items[0].content,
 			ItemContent::EmbeddedIssue {
 				marker: IssueMarker::Linked { .. },
 				..
 			}
 		));
-		assert_eq!(list.items[0].checked, Some(false));
+		assert_eq!(items[0].checked, Some(false));
 		// Should have children (heading + blocker list)
-		assert!(!list.items[0].children.is_empty());
+		assert!(!items[0].children.is_empty());
 	}
 
 	#[test]
@@ -881,8 +837,9 @@ mod tests {
 			MilestoneSection::List(l) => l,
 			_ => panic!("expected list"),
 		};
+		let items: Vec<_> = list.items().collect();
 
-		assert!(matches!(&list.items[0].content, ItemContent::BareUrl(link) if link.number() == 99));
+		assert!(matches!(&items[0].content, ItemContent::BareUrl(link) if link.number() == 99));
 	}
 
 	#[test]
@@ -897,14 +854,16 @@ mod tests {
 			MilestoneSection::List(l) => l,
 			_ => panic!("expected list"),
 		};
+		let items: Vec<_> = list.items().collect();
 
 		// Check the child item was resolved
-		let child_list = match &list.items[0].children[0] {
+		let child_list = match &items[0].children[0] {
 			MilestoneSection::List(l) => l,
 			_ => panic!("expected child list"),
 		};
+		let child_items: Vec<_> = child_list.items().collect();
 		assert!(matches!(
-			&child_list.items[0].content,
+			&child_items[0].content,
 			ItemContent::ShorthandRef { owner: Some(o), repo: Some(r), number: 77 }
 			if o == "myowner" && r == "discretionary_engine"
 		));
@@ -920,13 +879,15 @@ mod tests {
 			MilestoneSection::List(l) => l,
 			_ => panic!("expected list"),
 		};
+		let items: Vec<_> = list.items().collect();
 
-		let child_list = match &list.items[0].children[0] {
+		let child_list = match &items[0].children[0] {
 			MilestoneSection::List(l) => l,
 			_ => panic!("expected child list"),
 		};
+		let child_items: Vec<_> = child_list.items().collect();
 		assert!(matches!(
-			&child_list.items[0].content,
+			&child_items[0].content,
 			ItemContent::ShorthandRef { owner: Some(o), repo: Some(r), number: 80 }
 			if o == "valeratrades" && r == "tedi"
 		));
@@ -945,18 +906,21 @@ mod tests {
 			MilestoneSection::List(l) => l,
 			_ => panic!("expected list"),
 		};
-		let mid_list = match &list.items[0].children[0] {
+		let items: Vec<_> = list.items().collect();
+		let mid_list = match &items[0].children[0] {
 			MilestoneSection::List(l) => l,
 			_ => panic!("expected child list"),
 		};
-		let inner_list = match &mid_list.items[0].children[0] {
+		let mid_items: Vec<_> = mid_list.items().collect();
+		let inner_list = match &mid_items[0].children[0] {
 			MilestoneSection::List(l) => l,
 			_ => panic!("expected inner list"),
 		};
+		let inner_items: Vec<_> = inner_list.items().collect();
 
 		// Should resolve against "tedi" (immediate parent), not "discretionary_engine"
 		assert!(matches!(
-			&inner_list.items[0].content,
+			&inner_items[0].content,
 			ItemContent::ShorthandRef { owner: Some(o), repo: Some(r), number: 80 }
 			if o == "myowner" && r == "tedi"
 		));
@@ -1120,9 +1084,10 @@ mod tests {
 			MilestoneSection::List(l) => l,
 			_ => panic!("expected list"),
 		};
+		let items: Vec<_> = list.items().collect();
 		// No checkbox
-		assert_eq!(list.items[0].checked, None);
-		assert!(matches!(&list.items[0].content, ItemContent::Text(_)));
+		assert_eq!(items[0].checked, None);
+		assert!(matches!(&items[0].content, ItemContent::Text(_)));
 	}
 
 	#[test]
@@ -1134,5 +1099,95 @@ mod tests {
 		let has_list = doc.sections.iter().any(|s| matches!(s, MilestoneSection::List(_)));
 		assert!(has_free);
 		assert!(has_list);
+	}
+
+	#[test]
+	fn test_tight_list_roundtrip() {
+		let content = "- item 1\n- item 2\n- item 3\n";
+		let doc = MilestoneDoc::parse(content);
+		let serialized = doc.serialize();
+		insta::assert_snapshot!(serialized, @"
+		- item 1
+		- item 2
+		- item 3
+		");
+	}
+
+	#[test]
+	fn test_loose_list_roundtrip() {
+		let content = "- item 1\n\n- item 2\n\n- item 3\n";
+		let doc = MilestoneDoc::parse(content);
+		let serialized = doc.serialize();
+		insta::assert_snapshot!(serialized, @"
+		- item 1
+
+		- item 2
+
+		- item 3
+		");
+	}
+
+	#[test]
+	fn test_loose_list_has_empty_lines() {
+		let content = "- item 1\n\n- item 2\n";
+		let doc = MilestoneDoc::parse(content);
+		let list = match &doc.sections[0] {
+			MilestoneSection::List(l) => l,
+			_ => panic!("expected list"),
+		};
+		// Should have Item, EmptyLine, Item
+		assert_eq!(list.elements.len(), 3);
+		assert!(matches!(&list.elements[0], ListElement::Item(_)));
+		assert!(matches!(&list.elements[1], ListElement::EmptyLine));
+		assert!(matches!(&list.elements[2], ListElement::Item(_)));
+	}
+
+	#[test]
+	fn test_tight_list_no_empty_lines() {
+		let content = "- item 1\n- item 2\n";
+		let doc = MilestoneDoc::parse(content);
+		let list = match &doc.sections[0] {
+			MilestoneSection::List(l) => l,
+			_ => panic!("expected list"),
+		};
+		// Should have only Items, no EmptyLines
+		assert_eq!(list.elements.len(), 2);
+		assert!(matches!(&list.elements[0], ListElement::Item(_)));
+		assert!(matches!(&list.elements[1], ListElement::Item(_)));
+	}
+
+	#[test]
+	fn test_expand_serialize_roundtrip() {
+		// Simulate the expand flow: parse a blocker view, serialize it via MilestoneDoc
+		let view = "- [ ] Empty Issue <!-- @user https://github.com/o/r/issues/50 -->";
+		let mut doc = MilestoneDoc::parse(view);
+		doc.resolve_bare_refs();
+		let serialized = doc.serialize();
+		insta::assert_snapshot!(serialized, @"- [ ] Empty Issue <!-- @user https://github.com/o/r/issues/50 -->");
+	}
+
+	#[test]
+	fn test_embedded_issue_with_blockers_detected() {
+		let content = "- [ ] My Issue <!-- @user https://github.com/owner/repo/issues/42 -->\n\t# Blockers\n\t- task 1\n";
+		let doc = MilestoneDoc::parse(content);
+		let embedded = doc.embedded_issues();
+		assert_eq!(embedded.len(), 1, "should find 1 embedded issue, got {}", embedded.len());
+		assert_eq!(embedded[0].0.number(), 42);
+	}
+
+	#[test]
+	fn test_embedded_issues_after_edit_simulation() {
+		// Simulate what happens in the milestone edit flow:
+		// 1. Expanded view with no blockers
+		let expanded = "- [ ] Empty Issue <!-- @mock_user https://github.com/o/r/issues/50 -->";
+		// 2. User adds blockers
+		let edited = format!("{expanded}\n\t# Blockers\n\t- todo\n");
+		// 3. sync_blocker_changes parses and finds embedded issues
+		let doc = MilestoneDoc::parse(&edited);
+		let embedded = doc.embedded_issues();
+		assert_eq!(embedded.len(), 1, "should find 1 embedded issue, got {}: sections={}", embedded.len(), doc.sections.len());
+		let blockers = parse_blockers_from_embedded(&embedded[0].1);
+		assert_eq!(blockers.items.len(), 1);
+		assert_eq!(blockers.items[0].text, "todo");
 	}
 }
