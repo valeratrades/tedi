@@ -354,10 +354,15 @@ fn parse_item(events: &[Event<'_>], pos: &mut usize) -> MilestoneItem {
 		}
 	}
 
-	let content = classify_inline_events(inline_events);
+	// Split inline events at SoftBreak if the tail is a bare URL or shorthand ref.
+	// This handles the case where a category item has a URL continuation:
+	//   `- discretionary_engine\n  https://github.com/.../issues/77`
+	// pulldown_cmark emits [Text("discretionary_engine"), SoftBreak, Text("https://...")]
+	let (content, softbreak_children) = split_inline_at_ref_softbreak(inline_events);
 
 	// Collect children (sub-lists, headings, etc.) until End(Item)
-	let children = parse_sections(events, pos, Some(TagEnd::Item));
+	let mut children = softbreak_children;
+	children.extend(parse_sections(events, pos, Some(TagEnd::Item)));
 
 	// Consume End(Item)
 	if matches!(events.get(*pos), Some(Event::End(TagEnd::Item))) {
@@ -365,6 +370,22 @@ fn parse_item(events: &[Event<'_>], pos: &mut usize) -> MilestoneItem {
 	}
 
 	MilestoneItem { checked, content, children }
+}
+
+/// Split inline events at a SoftBreak if the part after it is a bare URL or shorthand ref.
+/// Returns (item_content, child_sections) where child_sections contains a BareIssueRef if split occurred.
+fn split_inline_at_ref_softbreak(events: Vec<OwnedEvent>) -> (ItemContent, Vec<MilestoneSection>) {
+	// Find the last SoftBreak
+	if let Some(break_pos) = events.iter().rposition(|e| matches!(e, OwnedEvent::SoftBreak)) {
+		let tail = &events[break_pos + 1..];
+		let tail_classified = classify_inline_events(tail.to_vec());
+		if matches!(tail_classified, ItemContent::ShorthandRef { .. } | ItemContent::BareUrl(_)) {
+			let head = events[..break_pos].to_vec();
+			let content = classify_inline_events(head);
+			return (content, vec![MilestoneSection::BareIssueRef(tail_classified)]);
+		}
+	}
+	(classify_inline_events(events), Vec::new())
 }
 
 /// Classify the inline events of a list item into an `ItemContent`.
@@ -706,12 +727,18 @@ fn item_to_events(item: &MilestoneItem, events: &mut Vec<OwnedEvent>) {
 		events.push(OwnedEvent::TaskListMarker(checked));
 	}
 
-	// Emit inline content
 	let inline_events = item_content_to_events(&item.content);
 	if !inline_events.is_empty() {
-		events.push(OwnedEvent::Start(OwnedTag::Paragraph));
-		events.extend(inline_events);
-		events.push(OwnedEvent::End(OwnedTagEnd::Paragraph));
+		// Items with children need a paragraph wrapper around inline content
+		// so that pulldown_cmark_to_cmark inserts proper spacing before child blocks.
+		// Items without children skip it for tight-list style.
+		if item.children.is_empty() {
+			events.extend(inline_events);
+		} else {
+			events.push(OwnedEvent::Start(OwnedTag::Paragraph));
+			events.extend(inline_events);
+			events.push(OwnedEvent::End(OwnedTagEnd::Paragraph));
+		}
 	}
 
 	// Emit children
