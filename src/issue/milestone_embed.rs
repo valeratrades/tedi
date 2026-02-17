@@ -166,14 +166,6 @@ enum MilestoneSection {
 struct MilestoneList {
 	elements: Vec<ListElement>,
 }
-
-/// An element in a list: either an item or an empty line (preserving user's spacing).
-enum ListElement {
-	Item(MilestoneItem),
-	/// Represents a blank line between items (loose list spacing).
-	EmptyLine,
-}
-
 impl MilestoneList {
 	fn items(&self) -> impl Iterator<Item = &MilestoneItem> {
 		self.elements.iter().filter_map(|e| match e {
@@ -188,6 +180,13 @@ impl MilestoneList {
 			ListElement::EmptyLine => None,
 		})
 	}
+}
+
+/// An element in a list: either an item or an empty line (preserving user's spacing).
+enum ListElement {
+	Item(MilestoneItem),
+	/// Represents a blank line between items (loose list spacing).
+	EmptyLine,
 }
 
 /// A single list item.
@@ -759,114 +758,64 @@ mod tests {
 	use super::*;
 
 	#[test]
-	fn test_parse_basic_structure() {
+	fn test_parse_serialize_basic_structure() {
 		let content = "# Sprint Goals\nSome description\n\n- [ ] discretionary_engine\n    - [ ] owner/repo#42\n\nFooter text\n";
 		let doc = MilestoneDoc::parse(content);
-		// Should have: FreeContent (heading + paragraph), List, FreeContent (footer)
-		assert!(doc.sections.len() >= 2);
-		// List should have 1 top-level item
-		let list = doc.sections.iter().find_map(|s| match s {
-			MilestoneSection::List(l) => Some(l),
-			_ => None,
-		});
-		assert!(list.is_some());
-		let list = list.unwrap();
-		let items: Vec<_> = list.items().collect();
-		assert_eq!(items.len(), 1);
-		assert_eq!(items[0].checked, Some(false));
-		// Should have 1 child (the owner/repo#42 item)
-		assert_eq!(items[0].children.len(), 1);
+		insta::assert_snapshot!(doc.serialize(), @"
+		# Sprint Goals
+
+		Some description
+
+		- [ ] discretionary_engine
+		  
+		  - [ ] owner/repo#42
+
+		Footer text
+		");
 	}
 
 	#[test]
 	fn test_parse_shorthand_refs() {
-		crate::current_user::set("myowner".to_string());
-
 		let content = "- [ ] owner/repo#123\n- [ ] tedi#42\n- [ ] #77\n";
 		let doc = MilestoneDoc::parse(content);
-		let list = match &doc.sections[0] {
-			MilestoneSection::List(l) => l,
-			_ => panic!("expected list"),
-		};
-		let items: Vec<_> = list.items().collect();
-
-		// owner/repo#123
-		assert!(matches!(&items[0].content, ItemContent::ShorthandRef { owner: Some(o), repo: Some(r), number: 123 } if o == "owner" && r == "repo"));
-
-		// tedi#42
-		assert!(matches!(&items[1].content, ItemContent::ShorthandRef { owner: None, repo: Some(r), number: 42 } if r == "tedi"));
-
-		// #77
-		assert!(matches!(
-			&items[2].content,
-			ItemContent::ShorthandRef {
-				owner: None,
-				repo: None,
-				number: 77
-			}
-		));
+		insta::assert_snapshot!(doc.serialize(), @r"
+		- [ ] owner/repo#123
+		- [ ] tedi#42
+		- [ ] \#77
+		");
 	}
 
 	#[test]
 	fn test_parse_embedded_issue() {
 		let content = "- [ ] My Issue <!-- @user https://github.com/owner/repo/issues/42 -->\n\t# Blockers\n\t- task 1\n";
 		let doc = MilestoneDoc::parse(content);
-		let list = match &doc.sections[0] {
-			MilestoneSection::List(l) => l,
-			_ => panic!("expected list"),
-		};
-		let items: Vec<_> = list.items().collect();
-
-		assert!(matches!(
-			&items[0].content,
-			ItemContent::EmbeddedIssue {
-				marker: IssueMarker::Linked { .. },
-				..
-			}
-		));
-		assert_eq!(items[0].checked, Some(false));
-		// Should have children (heading + blocker list)
-		assert!(!items[0].children.is_empty());
+		insta::assert_snapshot!(doc.serialize(), @"
+		- [ ] My Issue <!-- @user https://github.com/owner/repo/issues/42 -->
+		  
+		  # Blockers
+		  
+		  - task 1
+		");
 	}
 
 	#[test]
 	fn test_parse_bare_url() {
 		let content = "- https://github.com/owner/repo/issues/99\n";
 		let doc = MilestoneDoc::parse(content);
-		let list = match &doc.sections[0] {
-			MilestoneSection::List(l) => l,
-			_ => panic!("expected list"),
-		};
-		let items: Vec<_> = list.items().collect();
-
-		assert!(matches!(&items[0].content, ItemContent::BareUrl(link) if link.number() == 99));
+		insta::assert_snapshot!(doc.serialize(), @"- https://github.com/owner/repo/issues/99");
 	}
 
 	#[test]
 	fn test_resolve_bare_refs_single_word_parent() {
 		crate::current_user::set("myowner".to_string());
-
 		let content = "- [ ] discretionary_engine\n    - [ ] #77\n";
 		let mut doc = MilestoneDoc::parse(content);
 		doc.resolve_bare_refs();
-
-		let list = match &doc.sections[0] {
-			MilestoneSection::List(l) => l,
-			_ => panic!("expected list"),
-		};
-		let items: Vec<_> = list.items().collect();
-
-		// Check the child item was resolved
-		let child_list = match &items[0].children[0] {
-			MilestoneSection::List(l) => l,
-			_ => panic!("expected child list"),
-		};
-		let child_items: Vec<_> = child_list.items().collect();
-		assert!(matches!(
-			&child_items[0].content,
-			ItemContent::ShorthandRef { owner: Some(o), repo: Some(r), number: 77 }
-			if o == "myowner" && r == "discretionary_engine"
-		));
+		insta::assert_snapshot!(doc.serialize(), @"
+		- [ ] discretionary_engine
+		  
+		  - [ ] myowner/discretionary_engine#77
+		");
 	}
 
 	#[test]
@@ -874,69 +823,36 @@ mod tests {
 		let content = "- valeratrades/tedi\n    - #80\n";
 		let mut doc = MilestoneDoc::parse(content);
 		doc.resolve_bare_refs();
-
-		let list = match &doc.sections[0] {
-			MilestoneSection::List(l) => l,
-			_ => panic!("expected list"),
-		};
-		let items: Vec<_> = list.items().collect();
-
-		let child_list = match &items[0].children[0] {
-			MilestoneSection::List(l) => l,
-			_ => panic!("expected child list"),
-		};
-		let child_items: Vec<_> = child_list.items().collect();
-		assert!(matches!(
-			&child_items[0].content,
-			ItemContent::ShorthandRef { owner: Some(o), repo: Some(r), number: 80 }
-			if o == "valeratrades" && r == "tedi"
-		));
+		insta::assert_snapshot!(doc.serialize(), @"
+		- valeratrades/tedi
+		  
+		  - valeratrades/tedi#80
+		");
 	}
 
 	#[test]
 	fn test_resolve_bare_refs_multilevel_takes_immediate_parent() {
 		crate::current_user::set("myowner".to_string());
-
 		let content = "- discretionary_engine\n    - tedi\n        - [ ] #80\n";
 		let mut doc = MilestoneDoc::parse(content);
 		doc.resolve_bare_refs();
-
-		// Navigate to the innermost item
-		let list = match &doc.sections[0] {
-			MilestoneSection::List(l) => l,
-			_ => panic!("expected list"),
-		};
-		let items: Vec<_> = list.items().collect();
-		let mid_list = match &items[0].children[0] {
-			MilestoneSection::List(l) => l,
-			_ => panic!("expected child list"),
-		};
-		let mid_items: Vec<_> = mid_list.items().collect();
-		let inner_list = match &mid_items[0].children[0] {
-			MilestoneSection::List(l) => l,
-			_ => panic!("expected inner list"),
-		};
-		let inner_items: Vec<_> = inner_list.items().collect();
-
-		// Should resolve against "tedi" (immediate parent), not "discretionary_engine"
-		assert!(matches!(
-			&inner_items[0].content,
-			ItemContent::ShorthandRef { owner: Some(o), repo: Some(r), number: 80 }
-			if o == "myowner" && r == "tedi"
-		));
+		insta::assert_snapshot!(doc.serialize(), @"
+		- discretionary_engine
+		  
+		  - tedi
+		    
+		    - [ ] myowner/tedi#80
+		");
 	}
 
 	#[test]
 	fn test_issue_links() {
 		crate::current_user::set("myowner".to_string());
-
 		let content = "- [ ] owner/repo#42\n- [ ] My Issue <!-- @user https://github.com/owner/repo/issues/99 -->\n";
 		let mut doc = MilestoneDoc::parse(content);
 		doc.resolve_bare_refs();
-		let links = doc.issue_links();
-		assert_eq!(links.len(), 2);
-		assert_eq!(links[0].number(), 42);
-		assert_eq!(links[1].number(), 99);
+		let links: Vec<_> = doc.issue_links().iter().map(|l| l.number()).collect();
+		assert_eq!(links, [42, 99]);
 	}
 
 	#[test]
@@ -944,29 +860,33 @@ mod tests {
 		let content = "# Sprint\n\n- [ ] My Issue <!-- @user https://github.com/owner/repo/issues/42 -->\n\t# Blockers\n\t- task 1\n\nFooter\n";
 		let mut doc = MilestoneDoc::parse(content);
 		doc.collapse_to_links();
-		let serialized = doc.serialize();
-		assert!(serialized.contains("https://github.com/owner/repo/issues/42"));
-		// Should NOT contain the marker or blockers
-		assert!(!serialized.contains("<!-- @user"));
-		assert!(!serialized.contains("Blockers"));
-		assert!(!serialized.contains("task 1"));
-		// Should contain the free text
-		assert!(serialized.contains("Sprint"));
-		assert!(serialized.contains("Footer"));
+		insta::assert_snapshot!(doc.serialize(), @"
+		# Sprint
+
+		- https://github.com/owner/repo/issues/42
+
+		Footer
+		");
 	}
 
 	#[test]
-	fn test_serialize_roundtrip_structure() {
+	fn test_serialize_roundtrip() {
 		let content = "# Sprint Goals\n\nSome description\n\n- [ ] owner/repo#42\n- [ ] My Issue <!-- @user https://github.com/owner/repo/issues/99 -->\n\nFooter text\n";
 		let doc = MilestoneDoc::parse(content);
-		let serialized = doc.serialize();
-		// Re-parse and verify structure is preserved
-		let doc2 = MilestoneDoc::parse(&serialized);
-		assert_eq!(doc.issue_links().len(), doc2.issue_links().len());
+		insta::assert_snapshot!(doc.serialize(), @"
+		# Sprint Goals
+
+		Some description
+
+		- [ ] owner/repo#42
+		- [ ] My Issue <!-- @user https://github.com/owner/repo/issues/99 -->
+
+		Footer text
+		");
 	}
 
 	#[test]
-	fn test_serialize_blockers_view_roundtrip() {
+	fn test_serialize_blockers_view() {
 		use super::super::{BlockerSequence, IssueContents, IssueIdentity, IssueTimestamps};
 
 		let link = IssueLink::parse("https://github.com/owner/repo/issues/42").unwrap();
@@ -1011,9 +931,7 @@ mod tests {
 			},
 			children: std::collections::HashMap::new(),
 		};
-
-		let serialized = serialize_blockers_view(&issue);
-		insta::assert_snapshot!(serialized, @"- [ ] No Blockers <!-- https://github.com/owner/repo/issues/42 -->");
+		insta::assert_snapshot!(serialize_blockers_view(&issue), @"- [ ] No Blockers <!-- https://github.com/owner/repo/issues/42 -->");
 	}
 
 	#[test]
@@ -1033,9 +951,7 @@ mod tests {
 			},
 			children: std::collections::HashMap::new(),
 		};
-
-		let serialized = serialize_blockers_view(&issue);
-		insta::assert_snapshot!(serialized, @"
+		insta::assert_snapshot!(serialize_blockers_view(&issue), @"
 		- [ ] [bug, urgent] Labeled <!-- https://github.com/owner/repo/issues/42 -->
 			# Blockers
 			- do thing
@@ -1072,41 +988,41 @@ mod tests {
 	#[test]
 	fn test_parse_blockers_from_embedded_no_blockers() {
 		let section = "- [ ] My Issue <!-- @user https://github.com/owner/repo/issues/42 -->";
-		let blockers = parse_blockers_from_embedded(section);
-		assert!(blockers.is_empty());
+		assert!(parse_blockers_from_embedded(section).is_empty());
 	}
 
 	#[test]
 	fn test_no_checkbox_items() {
 		let content = "- valeratrades/tedi\n    - #80\n";
 		let doc = MilestoneDoc::parse(content);
-		let list = match &doc.sections[0] {
-			MilestoneSection::List(l) => l,
-			_ => panic!("expected list"),
-		};
-		let items: Vec<_> = list.items().collect();
-		// No checkbox
-		assert_eq!(items[0].checked, None);
-		assert!(matches!(&items[0].content, ItemContent::Text(_)));
+		insta::assert_snapshot!(doc.serialize(), @r"
+		- valeratrades/tedi
+		  
+		  - \#80
+		");
 	}
 
 	#[test]
 	fn test_mixed_content() {
 		let content = "# Header\n\nParagraph text\n\n- item 1\n- item 2\n\nMore text\n";
 		let doc = MilestoneDoc::parse(content);
-		// Should have FreeContent, List, FreeContent
-		let has_free = doc.sections.iter().any(|s| matches!(s, MilestoneSection::FreeContent(_)));
-		let has_list = doc.sections.iter().any(|s| matches!(s, MilestoneSection::List(_)));
-		assert!(has_free);
-		assert!(has_list);
+		insta::assert_snapshot!(doc.serialize(), @"
+		# Header
+
+		Paragraph text
+
+		- item 1
+		- item 2
+
+		More text
+		");
 	}
 
 	#[test]
 	fn test_tight_list_roundtrip() {
 		let content = "- item 1\n- item 2\n- item 3\n";
 		let doc = MilestoneDoc::parse(content);
-		let serialized = doc.serialize();
-		insta::assert_snapshot!(serialized, @"
+		insta::assert_snapshot!(doc.serialize(), @"
 		- item 1
 		- item 2
 		- item 3
@@ -1117,8 +1033,7 @@ mod tests {
 	fn test_loose_list_roundtrip() {
 		let content = "- item 1\n\n- item 2\n\n- item 3\n";
 		let doc = MilestoneDoc::parse(content);
-		let serialized = doc.serialize();
-		insta::assert_snapshot!(serialized, @"
+		insta::assert_snapshot!(doc.serialize(), @"
 		- item 1
 
 		- item 2
@@ -1135,7 +1050,6 @@ mod tests {
 			MilestoneSection::List(l) => l,
 			_ => panic!("expected list"),
 		};
-		// Should have Item, EmptyLine, Item
 		assert_eq!(list.elements.len(), 3);
 		assert!(matches!(&list.elements[0], ListElement::Item(_)));
 		assert!(matches!(&list.elements[1], ListElement::EmptyLine));
@@ -1150,7 +1064,6 @@ mod tests {
 			MilestoneSection::List(l) => l,
 			_ => panic!("expected list"),
 		};
-		// Should have only Items, no EmptyLines
 		assert_eq!(list.elements.len(), 2);
 		assert!(matches!(&list.elements[0], ListElement::Item(_)));
 		assert!(matches!(&list.elements[1], ListElement::Item(_)));
@@ -1158,34 +1071,35 @@ mod tests {
 
 	#[test]
 	fn test_expand_serialize_roundtrip() {
-		// Simulate the expand flow: parse a blocker view, serialize it via MilestoneDoc
 		let view = "- [ ] Empty Issue <!-- @user https://github.com/o/r/issues/50 -->";
 		let mut doc = MilestoneDoc::parse(view);
 		doc.resolve_bare_refs();
-		let serialized = doc.serialize();
-		insta::assert_snapshot!(serialized, @"- [ ] Empty Issue <!-- @user https://github.com/o/r/issues/50 -->");
+		insta::assert_snapshot!(doc.serialize(), @"- [ ] Empty Issue <!-- @user https://github.com/o/r/issues/50 -->");
 	}
 
 	#[test]
-	fn test_embedded_issue_with_blockers_detected() {
+	fn test_embedded_issues_detected() {
 		let content = "- [ ] My Issue <!-- @user https://github.com/owner/repo/issues/42 -->\n\t# Blockers\n\t- task 1\n";
 		let doc = MilestoneDoc::parse(content);
 		let embedded = doc.embedded_issues();
-		assert_eq!(embedded.len(), 1, "should find 1 embedded issue, got {}", embedded.len());
+		assert_eq!(embedded.len(), 1);
 		assert_eq!(embedded[0].0.number(), 42);
+		insta::assert_snapshot!(embedded[0].1, @"
+		- [ ] My Issue <!-- @user https://github.com/owner/repo/issues/42 -->
+		  
+		  # Blockers
+		  
+		  - task 1
+		");
 	}
 
 	#[test]
 	fn test_embedded_issues_after_edit_simulation() {
-		// Simulate what happens in the milestone edit flow:
-		// 1. Expanded view with no blockers
 		let expanded = "- [ ] Empty Issue <!-- @mock_user https://github.com/o/r/issues/50 -->";
-		// 2. User adds blockers
 		let edited = format!("{expanded}\n\t# Blockers\n\t- todo\n");
-		// 3. sync_blocker_changes parses and finds embedded issues
 		let doc = MilestoneDoc::parse(&edited);
 		let embedded = doc.embedded_issues();
-		assert_eq!(embedded.len(), 1, "should find 1 embedded issue, got {}: sections={}", embedded.len(), doc.sections.len());
+		assert_eq!(embedded.len(), 1);
 		let blockers = parse_blockers_from_embedded(&embedded[0].1);
 		assert_eq!(blockers.items.len(), 1);
 		assert_eq!(blockers.items[0].text, "todo");
