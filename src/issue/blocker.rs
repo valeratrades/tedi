@@ -42,7 +42,7 @@ pub fn join_with_blockers(body_events: &[OwnedEvent], blockers: &BlockerSequence
 	//NB: DO NOT CHANGE Output Type
 	let mut events = body_events.to_vec();
 	if blockers.is_empty() {
-		return Events(events);
+		return events.into();
 	}
 	// Blockers header
 	events.push(OwnedEvent::Start(OwnedTag::Heading {
@@ -54,7 +54,7 @@ pub fn join_with_blockers(body_events: &[OwnedEvent], blockers: &BlockerSequence
 	events.push(OwnedEvent::Text("Blockers".to_string()));
 	events.push(OwnedEvent::End(OwnedTagEnd::Heading(pulldown_cmark::HeadingLevel::H1)));
 	events.extend(blockers.to_events());
-	Events(events)
+	events.into()
 }
 
 /// A single blocker item with optional comments and nested sub-blockers.
@@ -217,7 +217,7 @@ impl BlockerSequence {
 			item_to_events(item, &mut events);
 		}
 		events.push(OwnedEvent::End(OwnedTagEnd::List(false)));
-		Events(events)
+		events.into()
 	}
 }
 

@@ -4,7 +4,7 @@
 //! This module parses them into a `MilestoneDoc` AST via pulldown_cmark, enabling
 //! structured operations like parent-context resolution for bare `#123` refs.
 
-use super::{Events, Issue, IssueLink, IssueMarker, OwnedEvent, OwnedTag, OwnedTagEnd, events::parser_options};
+use super::{Events, Issue, IssueLink, IssueMarker, OwnedEvent, OwnedTag, OwnedTagEnd};
 
 /// A parsed milestone document: a sequence of top-level sections.
 pub struct MilestoneDoc {
@@ -12,10 +12,7 @@ pub struct MilestoneDoc {
 }
 impl MilestoneDoc {
 	pub fn parse(content: &str) -> Self {
-		use pulldown_cmark::Parser;
-		let parser = Parser::new_ext(content, parser_options());
-		let mut events: Vec<OwnedEvent> = parser.map(OwnedEvent::from_event).collect();
-		super::events::detect_escaped_checkboxes(&mut events);
+		let events = Events::parse(content);
 		let mut pos = 0;
 		let sections = parse_sections(&events, &mut pos, None, 0);
 		let mut doc = Self { sections };
@@ -130,7 +127,7 @@ pub fn serialize_blockers_view(issue: &Issue) -> String {
 	events.push(OwnedEvent::End(OwnedTagEnd::Item));
 	events.push(OwnedEvent::End(OwnedTagEnd::List(false)));
 
-	Events(events).into()
+	Events::from(events).into()
 }
 /// Parse blockers from an embedded issue section in milestone content.
 /// The section is: title line, then optionally a `# Blockers` header + blocker lines.
@@ -661,7 +658,7 @@ fn serialize_section(section: &MilestoneSection, output: &mut String) {
 			if !output.is_empty() {
 				ensure_blank_line(output);
 			}
-			let s: String = Events(owned.clone()).into();
+			let s: String = Events::from(owned.clone()).into();
 			output.push_str(&s);
 		}
 		MilestoneSection::List(list) => {
@@ -698,7 +695,7 @@ fn serialize_item(item: &MilestoneItem, output: &mut String) {
 	// Render inline part + item/list wrappers
 	events.push(OwnedEvent::End(OwnedTagEnd::Item));
 	events.push(OwnedEvent::End(OwnedTagEnd::List(false)));
-	let s: String = Events(events).into();
+	let s: String = Events::from(events).into();
 	output.push_str(&s);
 
 	// Render children recursively with proper indentation

@@ -326,7 +326,7 @@ impl IssueTimestamps {
 
 		// Update timestamps for changed comments
 		for (i, (old_c, new_c)) in old_comments.iter().zip(&new_comments).enumerate() {
-			if old_c.body.render() != new_c.body.render() {
+			if old_c.body.to_string() != new_c.body.to_string() {
 				self.comments[i] = now;
 			}
 		}
@@ -745,7 +745,7 @@ impl Comment {
 pub struct Comments(pub Vec<Comment>);
 impl Comments {
 	pub fn description(&self) -> String {
-		self.first().map(|c| c.render()).expect("`new` should've asserted that description comment was provided")
+		self.first().map(|c| c.body.to_string()).expect("`new` should've asserted that description comment was provided")
 	}
 
 	pub fn new(v: Vec<Comment>) -> Self {
@@ -952,7 +952,7 @@ impl Issue /*{{{1*/ {
 	/// This is what should be synced to Github as the issue body.
 	pub fn body(&self) -> super::Events {
 		//NB: DO NOT CHANGE Output Type
-		let mut events: Vec<super::OwnedEvent> = self.contents.comments.first().map(|c| c.body.0.clone()).unwrap_or_default();
+		let mut events: Vec<super::OwnedEvent> = self.contents.comments.first().map(|c| c.body.to_vec()).unwrap_or_default();
 		if !self.contents.blockers.is_empty() {
 			events.push(super::OwnedEvent::Start(super::OwnedTag::Heading {
 				level: pulldown_cmark::HeadingLevel::H1,
@@ -964,7 +964,7 @@ impl Issue /*{{{1*/ {
 			events.push(super::OwnedEvent::End(super::OwnedTagEnd::Heading(pulldown_cmark::HeadingLevel::H1)));
 			events.extend(self.contents.blockers.to_events());
 		}
-		super::Events(events)
+		events.into()
 	}
 
 	/// Combine a HollowIssue (identity/metadata) with a VirtualIssue (parsed content) into a full Issue.
@@ -1098,11 +1098,11 @@ impl Issue /*{{{1*/ {
 		if let Some(body_comment) = self.contents.comments.first() {
 			if !body_comment.body.is_empty() {
 				if is_owned {
-					events.extend(body_comment.body.0.iter().cloned());
+					events.extend(body_comment.body.iter().cloned());
 				} else {
 					events.push(OwnedEvent::Start(OwnedTag::List(None)));
 					events.push(OwnedEvent::Start(OwnedTag::Item));
-					events.extend(body_comment.body.0.iter().cloned());
+					events.extend(body_comment.body.iter().cloned());
 					events.push(OwnedEvent::End(OwnedTagEnd::Item));
 					events.push(OwnedEvent::End(OwnedTagEnd::List(false)));
 				}
@@ -1133,11 +1133,11 @@ impl Issue /*{{{1*/ {
 			// Comment body — same owned/unowned wrapping logic
 			if !comment.body.is_empty() {
 				if comment_is_owned {
-					events.extend(comment.body.0.iter().cloned());
+					events.extend(comment.body.iter().cloned());
 				} else {
 					events.push(OwnedEvent::Start(OwnedTag::List(None)));
 					events.push(OwnedEvent::Start(OwnedTag::Item));
-					events.extend(comment.body.0.iter().cloned());
+					events.extend(comment.body.iter().cloned());
 					events.push(OwnedEvent::End(OwnedTagEnd::Item));
 					events.push(OwnedEvent::End(OwnedTagEnd::List(false)));
 				}
@@ -1193,7 +1193,7 @@ impl Issue /*{{{1*/ {
 
 		events.push(OwnedEvent::End(OwnedTagEnd::Item));
 		events.push(OwnedEvent::End(OwnedTagEnd::List(false)));
-		super::Events(events)
+		events.into()
 	}
 
 	/// Serialize for filesystem storage (single node, no children).
@@ -1313,18 +1313,8 @@ impl VirtualIssue {
 	/// Unlike `Issue::parse_virtual`, this doesn't need a `HollowIssue` - it purely parses content.
 	/// Use `Issue::from_combined` to merge with identity info from a `HollowIssue`.
 	pub fn parse(content: &str, path: PathBuf) -> Result<Self, ParseError> {
-		use super::{
-			OwnedEvent,
-			events::{detect_escaped_checkboxes, parser_options},
-		};
-
 		let ctx = ParseContext::new(content.to_owned(), path);
-
-		// Parse through pulldown_cmark and walk the event stream
-		let parser = pulldown_cmark::Parser::new_ext(content, parser_options());
-		let mut events: Vec<OwnedEvent> = parser.map(OwnedEvent::from_event).collect();
-		detect_escaped_checkboxes(&mut events);
-
+		let events = super::Events::parse(content);
 		Self::parse_from_events(&events, &ctx)
 	}
 
@@ -1434,12 +1424,12 @@ impl VirtualIssue {
 				*in_body = false;
 				comments.push(Comment {
 					identity: CommentIdentity::Body,
-					body: super::Events(std::mem::take(body_events)),
+					body: std::mem::take(body_events).into(),
 				});
 			} else if let Some(identity) = current_comment_meta.take() {
 				comments.push(Comment {
 					identity,
-					body: super::Events(std::mem::take(current_comment_events)),
+					body: std::mem::take(current_comment_events).into(),
 				});
 			}
 		};
@@ -1627,7 +1617,7 @@ impl VirtualIssue {
 			BlockerSequence::default()
 		} else {
 			// Render blocker events to string and parse with BlockerSequence::parse
-			let blocker_text: String = super::Events(blocker_events).into();
+			let blocker_text: String = super::Events::from(blocker_events).into();
 			BlockerSequence::parse(&blocker_text)
 		};
 

@@ -415,7 +415,7 @@ impl Sink<Remote> for Issue {
 		// Create pending comments sequentially (order matters)
 		for comment in self.contents.comments.iter_mut().skip(1) {
 			if comment.is_pending() && !comment.body.is_empty() {
-				let body_str = comment.body.render();
+				let body_str = comment.body.to_string();
 				println!("Creating new comment on issue #{issue_number}...");
 				gh.create_comment(repo_info, issue_number, &body_str).await?;
 				changed = true;
@@ -429,7 +429,7 @@ impl Sink<Remote> for Issue {
 			{
 				continue;
 			}
-			let body_str = comment.body.render();
+			let body_str = comment.body.to_string();
 			println!("Updating comment {comment_id}...");
 			gh.update_comment(repo_info, *comment_id, &body_str).await?;
 			changed = true;

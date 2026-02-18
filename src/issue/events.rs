@@ -320,79 +320,86 @@ impl OwnedCodeBlockKind {
 pub struct Events(Vec<OwnedEvent>);
 
 impl Events {
-	/// Create a new empty events sequence.
-	#[deprecated(note = "use default() instead")]
-	pub fn new() -> Self {
-		Self(Vec::new())
-	}
-
 	/// Parse markdown content into events.
+	///
+	/// Handles checkbox coercion inline: pulldown_cmark turns `\[.\]` into
+	/// `Text("[.")` + `Text("] rest")` — we detect this pattern inside list items
+	/// and replace with `CheckBox(inner)` + optional `Text(rest)`.
 	pub fn parse(content: &str) -> Self {
-		use pulldown_cmark::{Options, Parser};
-		let options = Options::ENABLE_TASKLISTS | Options::ENABLE_STRIKETHROUGH;
-		let parser = Parser::new_ext(content, options);
-		let mut events: Vec<OwnedEvent> = parser.map(OwnedEvent::from_event).collect();
-		detect_escaped_checkboxes(&mut events);
-		Self(events)
-	}
+		use pulldown_cmark::Parser;
+		let parser = Parser::new_ext(content, parser_options());
+		let raw: Vec<OwnedEvent> = parser.map(OwnedEvent::from_event).collect();
 
-	/// Render events back to markdown.
-	/// Note: This may not produce identical output to the original due to markdown normalization.
-	#[deprecated(note = "literally just *")]
-	pub fn render(&self) -> String {
-		render_events(&self.0)
-	}
-
-	/// Check if the events sequence is empty.
-	#[deprecated(note = "literally just *")]
-	pub fn is_empty(&self) -> bool {
-		self.0.is_empty()
-	}
-
-	/// Get the number of events.
-	#[deprecated(note = "literally just *")]
-	pub fn len(&self) -> usize {
-		self.0.len()
-	}
-
-	/// Get a reference to the underlying events.
-	#[deprecated(note = "literally just *")]
-	pub fn events(&self) -> &[OwnedEvent] {
-		&self.0
-	}
-
-	/// Get a mutable reference to the underlying events.
-	#[deprecated(note = "literally just *")]
-	pub fn events_mut(&mut self) -> &mut Vec<OwnedEvent> {
-		&mut self.0
-	}
-
-	/// Extract plain text from events (for display/comparison purposes).
-	#[deprecated(note = "looked through tests using it, - not warranted. Instead just call String::from(this) and don't litter with helper methods")]
-	pub fn plain_text(&self) -> String {
-		let mut text = String::new();
-		for event in &self.0 {
-			match event {
-				OwnedEvent::Text(t) => text.push_str(t),
-				OwnedEvent::Code(c) => text.push_str(c),
-				OwnedEvent::SoftBreak | OwnedEvent::HardBreak => text.push(' '),
-				_ => {}
+		// Single pass: detect escaped-checkbox patterns and coerce them.
+		// After Start(Item) [+ optional Start(Paragraph)], detect:
+		//   2-event: Text("[<inner>") + Text("] <rest>")
+		//   4-event: Text("[") + Text(<inner>) + Text("]") + Text(" <rest>")
+		// Replace with CheckBox(inner) + optional Text(rest).
+		let mut events = Vec::with_capacity(raw.len());
+		let mut i = 0;
+		while i < raw.len() {
+			if !matches!(&raw[i], OwnedEvent::Start(OwnedTag::Item)) {
+				events.push(raw[i].clone());
+				i += 1;
+				continue;
 			}
-		}
-		text
-	}
+			// Push Start(Item)
+			events.push(raw[i].clone());
+			i += 1;
 
-	/// Create Events from inline content (no paragraph wrapper).
-	#[deprecated(note = "doesn't deserve a helper")]
-	pub fn from_inline_text(text: &str) -> Self {
-		if text.is_empty() {
-			return Self::default();
+			// Skip optional Start(Paragraph)
+			let had_paragraph = i < raw.len() && matches!(&raw[i], OwnedEvent::Start(OwnedTag::Paragraph));
+			if had_paragraph {
+				events.push(raw[i].clone());
+				i += 1;
+			}
+
+			// Already a CheckBox (from TaskListMarker) — skip coercion
+			if i < raw.len() && matches!(&raw[i], OwnedEvent::CheckBox(_)) {
+				continue;
+			}
+
+			// Try 4-event pattern: Text("[") + Text(<inner>) + Text("]") + Text(" <rest>")
+			if i + 3 < raw.len() {
+				if let (OwnedEvent::Text(open), OwnedEvent::Text(inner), OwnedEvent::Text(close), OwnedEvent::Text(rest)) = (&raw[i], &raw[i + 1], &raw[i + 2], &raw[i + 3]) {
+					if open == "[" && close == "]" && (rest.is_empty() || rest.starts_with(' ')) {
+						events.push(OwnedEvent::CheckBox(inner.clone()));
+						let rest = rest.strip_prefix(' ').unwrap_or(rest);
+						if !rest.is_empty() {
+							events.push(OwnedEvent::Text(rest.to_string()));
+						}
+						i += 4;
+						continue;
+					}
+				}
+			}
+
+			// Try 2-event pattern: Text("[<inner>") + Text("] <rest>")
+			if i + 1 < raw.len() {
+				if let (OwnedEvent::Text(first), OwnedEvent::Text(second)) = (&raw[i], &raw[i + 1]) {
+					if let Some(inner) = first.strip_prefix('[') {
+						if let Some(rest) = second.strip_prefix(']') {
+							if rest.is_empty() || rest.starts_with(' ') {
+								events.push(OwnedEvent::CheckBox(inner.to_string()));
+								let rest = rest.strip_prefix(' ').unwrap_or(rest);
+								if !rest.is_empty() {
+									events.push(OwnedEvent::Text(rest.to_string()));
+								}
+								i += 2;
+								continue;
+							}
+						}
+					}
+				}
+			}
+			// No pattern matched — continue normally
 		}
-		Self(vec![OwnedEvent::Text(text.to_string())])
+
+		Self(events)
 	}
 }
 
-pub(crate) fn parser_options() -> pulldown_cmark::Options {
+fn parser_options() -> pulldown_cmark::Options {
 	pulldown_cmark::Options::ENABLE_TASKLISTS | pulldown_cmark::Options::ENABLE_STRIKETHROUGH
 }
 
@@ -402,54 +409,6 @@ pub(crate) fn cmark_options() -> pulldown_cmark_to_cmark::Options<'static> {
 		newlines_after_headline: 1,
 		newlines_after_paragraph: 1,
 		..Default::default()
-	}
-}
-
-/// Scan for escaped-checkbox patterns in the event stream and replace with `CheckBox`.
-///
-/// pulldown_cmark turns `\[.\]` into `Text("[.")` + `Text("] rest")`.
-/// Inside list items (after `Start(Item)`, optionally `Start(Paragraph)`),
-/// detect this pattern and replace with `CheckBox(inner)` + optional `Text(rest)`.
-pub(crate) fn detect_escaped_checkboxes(events: &mut Vec<OwnedEvent>) {
-	let mut i = 0;
-	while i < events.len() {
-		// Look for Start(Item), then optionally Start(Paragraph), then Text("[...")
-		if !matches!(&events[i], OwnedEvent::Start(OwnedTag::Item)) {
-			i += 1;
-			continue;
-		}
-		i += 1; // past Start(Item)
-
-		// Skip optional Start(Paragraph)
-		if i < events.len() && matches!(&events[i], OwnedEvent::Start(OwnedTag::Paragraph)) {
-			i += 1;
-		}
-
-		// Skip if already a CheckBox (from TaskListMarker)
-		if i < events.len() && matches!(&events[i], OwnedEvent::CheckBox(_)) {
-			i += 1;
-			continue;
-		}
-
-		// Check for Text("[<inner>") + Text("] <rest>")
-		if i + 1 < events.len() {
-			let (OwnedEvent::Text(first), OwnedEvent::Text(second)) = (&events[i], &events[i + 1]) else {
-				continue;
-			};
-			let Some(inner) = first.strip_prefix('[') else { continue };
-			let Some(rest) = second.strip_prefix(']') else { continue };
-			if !rest.is_empty() && !rest.starts_with(' ') {
-				continue;
-			}
-			let checkbox = OwnedEvent::CheckBox(inner.to_string());
-			let rest = rest.strip_prefix(' ').unwrap_or(rest).to_string();
-			events.remove(i);
-			events.remove(i);
-			events.insert(i, checkbox);
-			if !rest.is_empty() {
-				events.insert(i + 1, OwnedEvent::Text(rest));
-			}
-		}
 	}
 }
 
@@ -540,13 +499,19 @@ fn render_events(events: &[OwnedEvent]) -> String {
 
 impl From<Events> for String {
 	fn from(events: Events) -> Self {
-		render_events(&events.0)
+		render_events(&events)
 	}
 }
 
 impl fmt::Display for Events {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		write!(f, "{}", render_events(&self.0))
+		write!(f, "{}", render_events(self))
+	}
+}
+
+impl From<Vec<OwnedEvent>> for Events {
+	fn from(events: Vec<OwnedEvent>) -> Self {
+		Self(events)
 	}
 }
 
@@ -570,32 +535,25 @@ mod tests {
 	fn test_parse_simple_text() {
 		let events = Events::parse("Hello world");
 		assert!(!events.is_empty());
-		assert_eq!(events.plain_text(), "Hello world");
+		let rendered: String = events.into();
+		assert!(rendered.contains("Hello world"));
 	}
 
 	#[test]
 	fn test_parse_with_formatting() {
 		let events = Events::parse("Hello **bold** and `code`");
-		let plain = events.plain_text();
-		assert!(plain.contains("Hello"));
-		assert!(plain.contains("bold"));
-		assert!(plain.contains("code"));
+		let rendered: String = events.into();
+		assert!(rendered.contains("Hello"));
+		assert!(rendered.contains("bold"));
+		assert!(rendered.contains("code"));
 	}
 
 	#[test]
 	fn test_roundtrip_simple() {
 		let original = "Simple paragraph.";
 		let events = Events::parse(original);
-		let rendered = events.render();
-		// The rendered output should contain the same text
+		let rendered: String = events.into();
 		assert!(rendered.contains("Simple paragraph"));
-	}
-
-	#[test]
-	fn test_from_inline_text() {
-		let events = Events::from_inline_text("Test");
-		assert_eq!(events.len(), 1); // Just Text
-		assert_eq!(events.plain_text(), "Test");
 	}
 
 	#[test]

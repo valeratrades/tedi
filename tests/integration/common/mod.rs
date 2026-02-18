@@ -980,7 +980,7 @@ fn add_issue_recursive(state: &mut GitState, repo_info: tedi::RepoInfo, number: 
 				repo: repo.to_string(),
 				issue_number: number,
 				comment_id: id,
-				body: comment.body.render(),
+				body: comment.body.to_string(),
 				owner_login: comment_owner_login,
 				timestamp: comment_ts,
 			});

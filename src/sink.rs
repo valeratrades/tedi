@@ -147,7 +147,7 @@ pub fn compute_node_diff(new: &Issue, old: Option<&Issue>) -> IssueDiff {
 			CommentIdentity::Created { id, .. } => {
 				if let Some(old_comment) = old_comments.get(id) {
 					// Existing comment - check if body changed
-					if comment.body.render() != old_comment.body.render() {
+					if comment.body.to_string() != old_comment.body.to_string() {
 						diff.comments_to_update.push((*id, comment.clone()));
 					}
 				}
