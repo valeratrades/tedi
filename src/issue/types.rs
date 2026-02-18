@@ -164,7 +164,7 @@ pub enum CommentIdentity {
 
 use super::{
 	IssueMarker, Marker,
-	blocker::{BlockerSequence, join_with_blockers},
+	blocker::BlockerSequence,
 	error::{ParseContext, ParseError},
 };
 
@@ -948,11 +948,23 @@ impl Issue /*{{{1*/ {
 		self.identity.repo_info()
 	}
 
-	/// Get the full issue body including blockers section.
+	/// Get the full issue body including blockers section as events.
 	/// This is what should be synced to Github as the issue body.
-	pub fn body(&self) -> String {
-		let base_body = self.contents.comments.first().map(|c| c.body.render()).unwrap_or_default();
-		join_with_blockers(&base_body, &self.contents.blockers)
+	pub fn body(&self) -> super::Events {
+		//NB: DO NOT CHANGE Output Type
+		let mut events: Vec<super::OwnedEvent> = self.contents.comments.first().map(|c| c.body.0.clone()).unwrap_or_default();
+		if !self.contents.blockers.is_empty() {
+			events.push(super::OwnedEvent::Start(super::OwnedTag::Heading {
+				level: pulldown_cmark::HeadingLevel::H1,
+				id: None,
+				classes: Vec::new(),
+				attrs: Vec::new(),
+			}));
+			events.push(super::OwnedEvent::Text("Blockers".to_string()));
+			events.push(super::OwnedEvent::End(super::OwnedTagEnd::Heading(pulldown_cmark::HeadingLevel::H1)));
+			events.extend(self.contents.blockers.to_events());
+		}
+		super::Events(events)
 	}
 
 	/// Combine a HollowIssue (identity/metadata) with a VirtualIssue (parsed content) into a full Issue.
@@ -1006,61 +1018,6 @@ impl Issue /*{{{1*/ {
 		})
 	}
 
-	/// Parse title line: `- [ ] [label1, label2] Title <!--url-->` or `- [ ] Title !n`
-	/// Also supports `- [-]` for not-planned and `- [123]` for duplicates.
-	fn parse_title_line(line: &str, line_num: usize, ctx: &ParseContext) -> Result<ParsedTitleLine, ParseError> {
-		// Parse checkbox: `- [CONTENT] `
-		let (close_state, rest) = match Self::parse_checkbox_prefix_detailed(line) {
-			CheckboxParseResult::Ok(state, rest) => (state, rest),
-			CheckboxParseResult::NotCheckbox => {
-				return Err(ParseError::invalid_title(ctx.named_source(), ctx.line_span(line_num), format!("got: {line:?}")));
-			}
-			CheckboxParseResult::InvalidContent(content) => {
-				return Err(ParseError::invalid_checkbox(ctx.named_source(), ctx.line_span(line_num), content));
-			}
-		};
-
-		// Check for labels: [label1, label2] at the start
-		let (labels, rest) = if rest.starts_with('[') {
-			if let Some(bracket_end) = rest.find("] ") {
-				let labels_str = &rest[1..bracket_end];
-				let labels: Vec<String> = labels_str.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
-				(labels, &rest[bracket_end + 2..])
-			} else {
-				(vec![], rest)
-			}
-		} else {
-			(vec![], rest)
-		};
-
-		// Strip trailing omitted marker if present (it appears after the issue marker)
-		let rest = {
-			let trimmed = rest.trim_end();
-			if let Some(marker_end) = trimmed.rfind("-->")
-				&& let Some(marker_start) = trimmed[..marker_end].rfind("<!--")
-			{
-				let inner = trimmed[marker_start + 4..marker_end].trim();
-				if inner.starts_with("omitted") && inner.contains("{{{") {
-					trimmed[..marker_start].trim_end()
-				} else {
-					trimmed
-				}
-			} else {
-				trimmed
-			}
-		};
-
-		// Parse issue marker from end of line
-		let (identity_info, title) = IssueMarker::parse_from_end(rest).ok_or_else(|| ParseError::missing_url_marker(ctx.named_source(), ctx.line_span(line_num)))?;
-
-		Ok(ParsedTitleLine {
-			title: title.to_string(),
-			identity_info,
-			close_state,
-			labels,
-		})
-	}
-
 	/// Parse `@user url#issuecomment-id` format into CommentIdentity.
 	/// Returns Pending if parsing fails.
 	fn parse_comment_identity(s: &str) -> CommentIdentity {
@@ -1080,66 +1037,6 @@ impl Issue /*{{{1*/ {
 		CommentIdentity::Pending
 	}
 
-	/// Parse checkbox prefix: `- [CONTENT] ` and return result.
-	fn parse_checkbox_prefix_detailed(line: &str) -> CheckboxParseResult<'_> {
-		// Match `- [` prefix
-		let Some(rest) = line.strip_prefix("- [") else {
-			return CheckboxParseResult::NotCheckbox;
-		};
-
-		// Find closing `] `
-		let Some(bracket_end) = rest.find("] ") else {
-			return CheckboxParseResult::NotCheckbox;
-		};
-
-		let checkbox_content = &rest[..bracket_end];
-		let rest = &rest[bracket_end + 2..];
-
-		match CloseState::from_checkbox(checkbox_content) {
-			Some(close_state) => CheckboxParseResult::Ok(close_state, rest),
-			None => CheckboxParseResult::InvalidContent(checkbox_content.to_string()),
-		}
-	}
-
-	/// Parse child/sub-issue title line with detailed result.
-	fn parse_child_title_line_detailed(line: &str) -> ChildTitleParseResult {
-		let (_, rest) = match Self::parse_checkbox_prefix_detailed(line) {
-			CheckboxParseResult::Ok(state, rest) => (state, rest),
-			CheckboxParseResult::NotCheckbox => return ChildTitleParseResult::NotChildTitle,
-			CheckboxParseResult::InvalidContent(content) => return ChildTitleParseResult::InvalidCheckbox(content),
-		};
-
-		// Strip trailing omitted marker if present (it appears after the issue marker)
-		let rest = {
-			let trimmed = rest.trim_end();
-			if let Some(marker_end) = trimmed.rfind("-->")
-				&& let Some(marker_start) = trimmed[..marker_end].rfind("<!--")
-			{
-				let inner = trimmed[marker_start + 4..marker_end].trim();
-				if inner.starts_with("omitted") && inner.contains("{{{") {
-					trimmed[..marker_start].trim_end()
-				} else {
-					trimmed
-				}
-			} else {
-				trimmed
-			}
-		};
-
-		// Check if there's a valid issue marker at the end
-		if let Some((_, title)) = IssueMarker::parse_from_end(rest) {
-			if title.is_empty() { ChildTitleParseResult::NotChildTitle } else { ChildTitleParseResult::Ok }
-		} else {
-			// No marker - could be a new pending child being added (bare title)
-			let title = rest.trim();
-			if !title.is_empty() {
-				ChildTitleParseResult::Ok
-			} else {
-				ChildTitleParseResult::NotChildTitle
-			}
-		}
-	}
-
 	//==========================================================================
 	// Serialization Methods
 	//==========================================================================
@@ -1147,37 +1044,67 @@ impl Issue /*{{{1*/ {
 	/// Serialize for virtual file representation (human-readable, full tree).
 	/// Creates a complete markdown file with all children recursively embedded.
 	/// Used for temp files in /tmp where user views/edits the full issue tree.
-	pub fn serialize_virtual(&self) -> String {
-		self.serialize_virtual_at_depth(0)
+	pub fn serialize_virtual(&self) -> super::Events {
+		//NB: DO NOT CHANGE Output Type
+		self.serialize_virtual_at_depth(0, true)
 	}
 
-	/// Internal: serialize virtual representation at given depth
-	fn serialize_virtual_at_depth(&self, depth: usize) -> String {
-		let indent = "\t".repeat(depth);
-		let content_indent = "\t".repeat(depth + 1);
-		let mut out = String::new();
+	/// Internal: serialize virtual representation as a cmark event stream.
+	///
+	/// Produces: `List(None) > Item > [CheckBox, Text(title), InlineHtml(marker), body events, comment events, blockers, children...] > End(Item) > End(List)`
+	fn serialize_virtual_at_depth(&self, depth: usize, include_children: bool) -> super::Events {
+		//NB: DO NOT CHANGE Output Type
+		use super::{OwnedEvent, OwnedTag, OwnedTagEnd};
 
-		// Title line with issue marker
+		if self.identity.is_virtual {
+			assert!(self.user().is_none(), "virtual issue must not have a user tag, got: {:?}", self.user());
+		}
+
+		let mut events = Vec::new();
+		events.push(OwnedEvent::Start(OwnedTag::List(None)));
+		events.push(OwnedEvent::Start(OwnedTag::Item));
+
+		// CheckBox
 		let checked = self.contents.state.to_checkbox();
+
+		// Labels + title + marker
 		let issue_marker = IssueMarker::from(&self.identity);
 		let labels_part = if self.contents.labels.is_empty() {
 			String::new()
 		} else {
 			format!("[{}] ", self.contents.labels.join(", "))
 		};
-		if self.identity.is_virtual {
-			assert!(self.user().is_none(), "virtual issue must not have a user tag, got: {:?}", self.user());
-		}
-		let is_owned = self.identity.is_owned();
-		out.push_str(&format!("{indent}- [{checked}] {labels_part}{} {issue_marker}\n", self.contents.title));
 
-		// Body (first comment) - add extra indent if not owned
+		let is_owned = self.identity.is_owned();
+		let has_body_or_children = self.contents.comments.first().is_some_and(|c| !c.body.is_empty())
+			|| self.contents.comments.len() > 1
+			|| !self.contents.blockers.is_empty()
+			|| (include_children && !self.children.is_empty());
+
+		// Wrap title line in paragraph if there is body/children content after it,
+		// so cmark renders them as separate blocks
+		if has_body_or_children {
+			events.push(OwnedEvent::Start(OwnedTag::Paragraph));
+		}
+		events.push(OwnedEvent::CheckBox(checked));
+		events.push(OwnedEvent::Text(format!("{labels_part}{} ", self.contents.title)));
+		events.push(OwnedEvent::InlineHtml(format!("<!-- {} -->", issue_marker.encode())));
+		if has_body_or_children {
+			events.push(OwnedEvent::End(OwnedTagEnd::Paragraph));
+		}
+
+		// Body (first comment) — extend events directly
+		// For unowned issues, wrap body in a nested list to get extra indentation
 		if let Some(body_comment) = self.contents.comments.first() {
-			let comment_indent = if is_owned { &content_indent } else { &format!("{content_indent}\t") };
 			if !body_comment.body.is_empty() {
-				let body_rendered = body_comment.body.render();
-				for line in body_rendered.lines() {
-					out.push_str(&format!("{comment_indent}{line}\n"));
+				if is_owned {
+					events.extend(body_comment.body.0.iter().cloned());
+				} else {
+					events.push(OwnedEvent::Start(OwnedTag::List(None)));
+					events.push(OwnedEvent::Start(OwnedTag::Item));
+					events.extend(body_comment.body.0.iter().cloned());
+					events.push(OwnedEvent::End(OwnedTagEnd::Item));
+					events.push(OwnedEvent::End(OwnedTagEnd::List(false)));
 				}
 			}
 		}
@@ -1192,171 +1119,95 @@ impl Issue /*{{{1*/ {
 				);
 			}
 			let comment_is_owned = comment.user().is_none() || comment.user().is_some_and(crate::current_user::is);
-			let comment_indent = if comment_is_owned { &content_indent } else { &format!("{content_indent}\t") };
 
-			if out.lines().last().is_some_and(|l| !l.trim().is_empty()) {
-				out.push_str(&format!("{content_indent}\n"));
-			}
-
-			match &comment.identity {
-				CommentIdentity::Body => {
-					out.push_str(&format!("{content_indent}<!-- new comment -->\n"));
-				}
+			// Comment separator marker
+			let marker_html = match &comment.identity {
+				CommentIdentity::Body | CommentIdentity::Pending => Marker::NewComment.encode(),
 				CommentIdentity::Created { user, id } => {
 					let url = self.url_str().expect("remote must be initialized");
-					out.push_str(&format!("{content_indent}<!-- @{user} {url}#issuecomment-{id} -->\n"));
+					format!("<!-- @{user} {url}#issuecomment-{id} -->")
 				}
-				CommentIdentity::Pending => {
-					out.push_str(&format!("{content_indent}<!-- new comment -->\n"));
-				}
-			}
+			};
+			events.push(OwnedEvent::Html(format!("{marker_html}\n")));
+
+			// Comment body — same owned/unowned wrapping logic
 			if !comment.body.is_empty() {
-				let comment_rendered = comment.body.render();
-				for line in comment_rendered.lines() {
-					out.push_str(&format!("{comment_indent}{line}\n"));
+				if comment_is_owned {
+					events.extend(comment.body.0.iter().cloned());
+				} else {
+					events.push(OwnedEvent::Start(OwnedTag::List(None)));
+					events.push(OwnedEvent::Start(OwnedTag::Item));
+					events.extend(comment.body.0.iter().cloned());
+					events.push(OwnedEvent::End(OwnedTagEnd::Item));
+					events.push(OwnedEvent::End(OwnedTagEnd::List(false)));
 				}
 			}
 		}
 
 		// Blockers section
 		if !self.contents.blockers.is_empty() {
-			if out.lines().last().is_some_and(|l| !l.trim().is_empty()) {
-				out.push_str(&format!("{content_indent}\n"));
-			}
-			let header = crate::Header::new(1, "Blockers");
-			out.push_str(&format!("{content_indent}{}\n", header.encode()));
-			for line in self.contents.blockers.raw_lines() {
-				out.push_str(&format!("{content_indent}{line}\n"));
-			}
+			events.push(OwnedEvent::Start(OwnedTag::Heading {
+				level: pulldown_cmark::HeadingLevel::H1,
+				id: None,
+				classes: Vec::new(),
+				attrs: Vec::new(),
+			}));
+			events.push(OwnedEvent::Text("Blockers".to_string()));
+			events.push(OwnedEvent::End(OwnedTagEnd::Heading(pulldown_cmark::HeadingLevel::H1)));
+			events.extend(self.contents.blockers.to_events());
 		}
 
-		// Children - recursively serialize full tree
-		// Closed children wrap their content in vim fold markers
-		// Sort: open issues first by selector, then closed issues by selector
-		let (mut open, mut closed): (Vec<_>, Vec<_>) = self.children.iter().partition(|(_, child)| !child.contents.state.is_closed());
-		open.sort_by_key(|(sel, _)| *sel);
-		closed.sort_by_key(|(sel, _)| *sel);
-		let sorted_children = open.into_iter().chain(closed);
-		for (_, child) in sorted_children {
-			if out.lines().last().is_some_and(|l| !l.trim().is_empty()) {
-				out.push_str(&format!("{content_indent}\n"));
-			}
+		// Children — sort: open first by selector, then closed by selector
+		if include_children {
+			let (mut open, mut closed): (Vec<_>, Vec<_>) = self.children.iter().partition(|(_, child)| !child.contents.state.is_closed());
+			open.sort_by_key(|(sel, _)| *sel);
+			closed.sort_by_key(|(sel, _)| *sel);
+			let sorted_children = open.into_iter().chain(closed);
 
-			// For closed children, we need to wrap the body in vim folds
-			// But still recurse for the full structure
-			if child.contents.state.is_closed() {
-				// Output child title line with omitted marker before issue marker
-				let child_checked = child.contents.state.to_checkbox();
-				let child_issue_marker = IssueMarker::from(&child.identity);
-				let child_labels_part = if child.contents.labels.is_empty() {
-					String::new()
+			for (_, child) in sorted_children {
+				if child.contents.state.is_closed() {
+					// Closed child: emit title line with omitted marker, then child body wrapped in vim folds
+					let child_events = child.serialize_virtual_at_depth(depth + 1, true);
+					let omitted_start = Marker::OmittedStart.encode();
+					let omitted_end = Marker::OmittedEnd.encode();
+
+					let mut injected = false;
+					for ev in child_events.iter() {
+						events.push(ev.clone());
+						// Inject OmittedStart right after the InlineHtml marker (first InlineHtml in the child)
+						if !injected {
+							if let OwnedEvent::InlineHtml(_) = ev {
+								events.push(OwnedEvent::Text(format!(" {omitted_start}")));
+								injected = true;
+							}
+						}
+					}
+					// Insert OmittedEnd before the final End(Item) > End(List)
+					let len = events.len();
+					events.insert(len - 2, OwnedEvent::Html(format!("{omitted_end}\n")));
 				} else {
-					format!("[{}] ", child.contents.labels.join(", "))
-				};
-				let omitted_start = Marker::OmittedStart.encode();
-				out.push_str(&format!(
-					"{content_indent}- [{child_checked}] {child_labels_part}{} {child_issue_marker} {omitted_start}\n",
-					child.contents.title
-				));
-
-				// Child body and nested content (without title line - we already output it)
-				let child_serialized = child.serialize_virtual_at_depth(depth + 1);
-				// Skip the first line (title) since we already output it with vim fold handling
-				for line in child_serialized.lines().skip(1) {
-					out.push_str(&format!("{line}\n"));
+					events.extend(child.serialize_virtual_at_depth(depth + 1, true));
 				}
-
-				// Vim fold end
-				let child_content_indent = "\t".repeat(depth + 2);
-				out.push_str(&format!("{child_content_indent}{}\n", Marker::OmittedEnd.encode()));
-			} else {
-				out.push_str(&child.serialize_virtual_at_depth(depth + 1));
 			}
 		}
 
-		out
+		events.push(OwnedEvent::End(OwnedTagEnd::Item));
+		events.push(OwnedEvent::End(OwnedTagEnd::List(false)));
+		super::Events(events)
 	}
 
 	/// Serialize for filesystem storage (single node, no children).
 	/// Children are stored in separate files within the parent's directory.
-	/// Parsing is done via `Local::parse_single_node` in the local module.
-	#[deprecated(note = "should be calling `serialize_virtual_at_depth`; which itself gets a flag for inclusion of children. And then this function becomes a one-liner calling it.")]
-	pub fn serialize_filesystem(&self) -> String {
-		let content_indent = "\t";
-		let mut out = String::new();
-
-		// Title line (always at root level for filesystem representation)
-		let checked = self.contents.state.to_checkbox();
-		let issue_marker = IssueMarker::from(&self.identity);
-		let labels_part = if self.contents.labels.is_empty() {
-			String::new()
-		} else {
-			format!("[{}] ", self.contents.labels.join(", "))
-		};
-		let is_owned = self.identity.is_owned();
-		out.push_str(&format!("- [{checked}] {labels_part}{} {issue_marker}\n", self.contents.title));
-
-		// Body (first comment) - add extra indent if not owned
-		if let Some(body_comment) = self.contents.comments.first() {
-			let comment_indent = if is_owned { content_indent } else { "\t\t" };
-			if !body_comment.body.is_empty() {
-				let body_rendered = body_comment.body.render();
-				for line in body_rendered.lines() {
-					out.push_str(&format!("{comment_indent}{line}\n"));
-				}
-			}
-		}
-
-		// Additional comments
-		for comment in self.contents.comments.iter().skip(1) {
-			let comment_is_owned = comment.user().is_none() || comment.user().is_some_and(crate::current_user::is);
-			let comment_indent_str = if comment_is_owned { content_indent } else { "\t\t" };
-
-			if out.lines().last().is_some_and(|l| !l.trim().is_empty()) {
-				out.push_str(&format!("{content_indent}\n"));
-			}
-
-			match &comment.identity {
-				CommentIdentity::Body => {
-					out.push_str(&format!("{content_indent}<!-- new comment -->\n"));
-				}
-				CommentIdentity::Created { user, id } => {
-					let url = self.url_str().unwrap_or("");
-					out.push_str(&format!("{content_indent}<!-- @{user} {url}#issuecomment-{id} -->\n"));
-				}
-				CommentIdentity::Pending => {
-					out.push_str(&format!("{content_indent}<!-- new comment -->\n"));
-				}
-			}
-			if !comment.body.is_empty() {
-				let comment_rendered = comment.body.render();
-				for line in comment_rendered.lines() {
-					out.push_str(&format!("{comment_indent_str}{line}\n"));
-				}
-			}
-		}
-
-		// Blockers section
-		if !self.contents.blockers.is_empty() {
-			if out.lines().last().is_some_and(|l| !l.trim().is_empty()) {
-				out.push_str(&format!("{content_indent}\n"));
-			}
-			let header = crate::Header::new(1, "Blockers");
-			out.push_str(&format!("{content_indent}{}\n", header.encode()));
-			for line in self.contents.blockers.raw_lines() {
-				out.push_str(&format!("{content_indent}{line}\n"));
-			}
-		}
-
-		// NO children - they are stored as separate files
-
-		out
+	pub fn serialize_filesystem(&self) -> super::Events {
+		//NB: DO NOT CHANGE Output Type
+		self.serialize_virtual_at_depth(0, false)
 	}
 
 	/// Serialize for GitHub API (markdown body only, no local markers).
 	/// This is what gets sent to GitHub as the issue body.
 	/// Always outputs markdown format regardless of local file extension.
-	pub fn serialize_github(&self) -> String {
+	pub fn render_github(&self) -> super::Events {
+		//NB: DO NOT CHANGE Output Type
 		// GitHub body is: body text + blockers section (if any)
 		// No title line, no URL markers, no comments - just the body content
 		self.body()
@@ -1374,7 +1225,7 @@ impl Issue /*{{{1*/ {
 		}
 
 		// Serialize and find the last blocker item line
-		let serialized = self.serialize_virtual();
+		let serialized: String = self.serialize_virtual().into();
 		let lines: Vec<&str> = serialized.lines().collect();
 
 		// Find where blockers section starts
@@ -1462,277 +1313,333 @@ impl VirtualIssue {
 	/// Unlike `Issue::parse_virtual`, this doesn't need a `HollowIssue` - it purely parses content.
 	/// Use `Issue::from_combined` to merge with identity info from a `HollowIssue`.
 	pub fn parse(content: &str, path: PathBuf) -> Result<Self, ParseError> {
+		use super::{
+			OwnedEvent,
+			events::{detect_escaped_checkboxes, parser_options},
+		};
+
 		let ctx = ParseContext::new(content.to_owned(), path);
-		let mut lines = content.lines().peekable();
-		Self::parse_virtual_at_depth(&mut lines, 0, 1, &ctx)
+
+		// Parse through pulldown_cmark and walk the event stream
+		let parser = pulldown_cmark::Parser::new_ext(content, parser_options());
+		let mut events: Vec<OwnedEvent> = parser.map(OwnedEvent::from_event).collect();
+		detect_escaped_checkboxes(&mut events);
+
+		Self::parse_from_events(&events, &ctx)
 	}
 
-	/// Parse virtual representation at given nesting depth.
-	fn parse_virtual_at_depth(lines: &mut std::iter::Peekable<std::str::Lines>, depth: usize, line_num: usize, ctx: &ParseContext) -> Result<Self, ParseError> {
-		let indent = "\t".repeat(depth);
-		let child_indent = "\t".repeat(depth + 1);
+	/// Parse a VirtualIssue from a cmark event stream.
+	///
+	/// Expects: `Start(List) > Start(Item) > ... > End(Item) > End(List)`
+	/// The item contains: CheckBox, title text, InlineHtml marker, body events,
+	/// comment markers (Html), blocker heading+list, child issue lists.
+	fn parse_from_events(events: &[super::OwnedEvent], ctx: &ParseContext) -> Result<Self, ParseError> {
+		use super::{OwnedEvent, OwnedTag, OwnedTagEnd};
 
-		// Parse title line: `- [ ] [label1, label2] Title <!--url-->` or `- [ ] Title <!--immutable url-->`
-		let first_line = lines.next().ok_or_else(ParseError::empty_file)?;
-		let title_content = first_line
-			.strip_prefix(&indent)
-			.ok_or_else(|| ParseError::bad_indentation(ctx.named_source(), ctx.line_span(line_num), depth))?;
-		let parsed = Issue::parse_title_line(title_content, line_num, ctx)?;
-		let selector = parsed.identity_info.selector(&parsed.title);
+		let mut pos = 0;
 
-		let mut comments = Vec::new();
+		// Skip to first Start(Item) inside the top-level List
+		while pos < events.len() && !matches!(&events[pos], OwnedEvent::Start(OwnedTag::Item)) {
+			pos += 1;
+		}
+		if pos >= events.len() {
+			return Err(ParseError::empty_file());
+		}
+		pos += 1; // past Start(Item)
+
+		// Skip optional Start(Paragraph) around the title line
+		let title_has_paragraph = matches!(events.get(pos), Some(OwnedEvent::Start(OwnedTag::Paragraph)));
+		if title_has_paragraph {
+			pos += 1;
+		}
+
+		// --- Parse title inline content: CheckBox, Text(labels+title), InlineHtml(marker) ---
+		let close_state = match &events[pos] {
+			OwnedEvent::CheckBox(inner) => {
+				pos += 1;
+				CloseState::from_checkbox(inner).unwrap_or(CloseState::Open)
+			}
+			_ => return Err(ParseError::invalid_title(ctx.named_source(), ctx.line_span(1), "missing checkbox".into())),
+		};
+
+		// Collect text before the issue marker InlineHtml
+		let mut title_text = String::new();
+		while pos < events.len() {
+			match &events[pos] {
+				OwnedEvent::InlineHtml(_) => break,
+				OwnedEvent::Text(t) => {
+					title_text.push_str(t);
+					pos += 1;
+				}
+				OwnedEvent::Code(c) => {
+					title_text.push('`');
+					title_text.push_str(c);
+					title_text.push('`');
+					pos += 1;
+				}
+				_ => break,
+			}
+		}
+
+		// Parse the InlineHtml marker
+		let identity_info = match &events[pos] {
+			OwnedEvent::InlineHtml(html) => {
+				// marker was already handled in parse_from_events title section
+				let (marker, _) = IssueMarker::parse_from_end(&format!("x {html}")).ok_or_else(|| ParseError::missing_url_marker(ctx.named_source(), ctx.line_span(1)))?;
+				pos += 1;
+				marker
+			}
+			_ => return Err(ParseError::missing_url_marker(ctx.named_source(), ctx.line_span(1))),
+		};
+
+		// Close title paragraph if present
+		if title_has_paragraph && matches!(events.get(pos), Some(OwnedEvent::End(OwnedTagEnd::Paragraph))) {
+			pos += 1;
+		}
+
+		// Parse labels from title text
+		let title_text = title_text.trim_end();
+		let (labels, title) = if title_text.starts_with('[') {
+			if let Some(bracket_end) = title_text.find("] ") {
+				let labels_str = &title_text[1..bracket_end];
+				let labels: Vec<String> = labels_str.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+				(labels, title_text[bracket_end + 2..].to_string())
+			} else {
+				(vec![], title_text.to_string())
+			}
+		} else {
+			(vec![], title_text.to_string())
+		};
+
+		let selector = identity_info.selector(&title);
+
+		// --- Walk remaining events inside this Item to collect body, comments, blockers, children ---
+		let mut comments: Vec<Comment> = Vec::new();
 		let mut children = HashMap::new();
-		let mut blocker_raw_lines: Vec<String> = Vec::new();
-		let mut current_comment_lines: Vec<String> = Vec::new();
+		let mut body_events: Vec<OwnedEvent> = Vec::new();
+		let mut current_comment_events: Vec<OwnedEvent> = Vec::new();
 		let mut current_comment_meta: Option<CommentIdentity> = None;
+		let mut blocker_events: Vec<OwnedEvent> = Vec::new();
 		let mut in_body = true;
 		let mut in_blockers = false;
 		let mut select_blockers = false;
-		let mut current_line = line_num;
 
-		// Body is first comment (no marker)
-		let mut body_lines: Vec<String> = Vec::new();
-
-		while let Some(&line) = lines.peek() {
-			// Check if this line belongs to us (has our indent level or deeper)
-			if !line.is_empty() && !line.starts_with(&indent) {
-				break; // Less indented = parent's content
+		// Helper: flush current body/comment events into the comments list
+		let flush = |in_body: &mut bool,
+		             current_comment_meta: &mut Option<CommentIdentity>,
+		             body_events: &mut Vec<OwnedEvent>,
+		             current_comment_events: &mut Vec<OwnedEvent>,
+		             comments: &mut Vec<Comment>| {
+			if *in_body {
+				*in_body = false;
+				comments.push(Comment {
+					identity: CommentIdentity::Body,
+					body: super::Events(std::mem::take(body_events)),
+				});
+			} else if let Some(identity) = current_comment_meta.take() {
+				comments.push(Comment {
+					identity,
+					body: super::Events(std::mem::take(current_comment_events)),
+				});
 			}
+		};
 
-			let line = lines.next().unwrap();
-			current_line += 1;
+		while pos < events.len() {
+			match &events[pos] {
+				// End of this item — we're done
+				OwnedEvent::End(OwnedTagEnd::Item) => break,
 
-			// Empty line handling
-			if line.is_empty() {
-				if in_blockers {
-					// Empty lines in blockers section are skipped
-				} else if current_comment_meta.is_some() {
-					current_comment_lines.push(String::new());
-				} else if in_body {
-					body_lines.push(String::new());
-				}
-				continue;
-			}
+				// Html block: comment markers, omitted markers, or `!s`/`!c`
+				OwnedEvent::Html(html) => {
+					let trimmed = html.trim();
 
-			// Strip our indent level to get content
-			let content = line.strip_prefix(&child_indent).unwrap_or(line);
-
-			// Check for `!s` (select blockers) as standalone line
-			if content.trim().eq_ignore_ascii_case("!s") {
-				select_blockers = true;
-				continue;
-			}
-
-			// Check for blockers marker (with optional `!s` suffix: `# Blockers !s`)
-			{
-				let (effective, has_select_suffix) = match content.trim_end().strip_suffix("!s").or_else(|| content.trim_end().strip_suffix("!S")) {
-					Some(before) => (before.trim_end(), true),
-					None => (content, false),
-				};
-				if matches!(Marker::decode(effective), Some(Marker::BlockersSection(_))) {
-					if has_select_suffix {
-						select_blockers = true;
+					// vim fold markers — skip
+					if trimmed.starts_with("<!--omitted") && trimmed.contains("{{{") {
+						pos += 1;
+						continue;
 					}
-					// Flush current comment/body
-					if in_body {
-						in_body = false;
-						if !body_lines.is_empty() {
-							let body_text = body_lines.join("\n").trim().to_string();
-							comments.push(Comment {
-								identity: CommentIdentity::Body,
-								body: super::Events::parse(&body_text),
-							});
-						}
-					} else if let Some(identity) = current_comment_meta.take() {
-						let body_text = current_comment_lines.join("\n").trim().to_string();
-						comments.push(Comment {
-							identity,
-							body: super::Events::parse(&body_text),
-						});
-						current_comment_lines.clear();
+					if trimmed.starts_with("<!--,}}}") {
+						pos += 1;
+						continue;
 					}
-					in_blockers = true;
-					tracing::debug!("[parse] entering blockers section");
-					continue;
-				}
-			}
 
-			// If in blockers section, collect raw lines
-			// But stop at sub-issue lines (they end the blockers section)
-			if in_blockers {
-				// Check if this is a sub-issue line - if so, exit blockers mode and process it below
-				if content.starts_with("- [") {
-					match Issue::parse_child_title_line_detailed(content) {
-						ChildTitleParseResult::Ok => {
-							in_blockers = false;
-							tracing::debug!("[parse] exiting blockers section due to sub-issue: {content:?}");
-							// Fall through to sub-issue processing below
+					// Comment separator: `<!-- @user url#issuecomment-id -->` or `<!-- new comment -->`
+					if trimmed.starts_with("<!--") && trimmed.ends_with("-->") {
+						let inner = trimmed.strip_prefix("<!--").unwrap().strip_suffix("-->").unwrap().trim();
+
+						if inner == "new comment" || inner.eq_ignore_ascii_case("!c") {
+							flush(&mut in_body, &mut current_comment_meta, &mut body_events, &mut current_comment_events, &mut comments);
+							current_comment_meta = Some(CommentIdentity::Pending);
+							pos += 1;
+							continue;
 						}
-						ChildTitleParseResult::InvalidCheckbox(invalid_content) => {
-							return Err(ParseError::invalid_checkbox(ctx.named_source(), ctx.line_span(current_line), invalid_content));
-						}
-						ChildTitleParseResult::NotChildTitle => {
-							// Not a sub-issue, continue parsing as blocker
-							tracing::debug!("[parse] blocker line: {content:?}");
-							blocker_raw_lines.push(content.to_string());
+						if inner.contains("#issuecomment-") {
+							flush(&mut in_body, &mut current_comment_meta, &mut body_events, &mut current_comment_events, &mut comments);
+							current_comment_meta = Some(Issue::parse_comment_identity(inner));
+							pos += 1;
 							continue;
 						}
 					}
-				} else {
-					tracing::debug!("[parse] blocker line: {content:?}");
-					blocker_raw_lines.push(content.to_string());
-					continue;
-				}
-			}
 
-			// Check for comment marker (including !c shorthand)
-			let is_new_comment_shorthand = content.trim().eq_ignore_ascii_case("!c");
-			if is_new_comment_shorthand || (content.starts_with("<!--") && content.contains("-->")) {
-				let inner = content.strip_prefix("<!--").and_then(|s| s.split("-->").next()).unwrap_or("").trim();
-
-				// vim fold markers are just visual wrappers, not comment separators - skip without flushing
-				if inner.starts_with("omitted") && inner.contains("{{{") {
-					continue;
-				}
-				if inner.starts_with(",}}}") {
-					continue;
-				}
-
-				// Flush previous (only for actual comment markers, not fold markers)
-				if in_body {
-					in_body = false;
-					let body_text = body_lines.join("\n").trim().to_string();
-					comments.push(Comment {
-						identity: CommentIdentity::Body,
-						body: super::Events::parse(&body_text),
-					});
-				} else if let Some(identity) = current_comment_meta.take() {
-					let body_text = current_comment_lines.join("\n").trim().to_string();
-					comments.push(Comment {
-						identity,
-						body: super::Events::parse(&body_text),
-					});
-					current_comment_lines.clear();
-				}
-
-				// Handle !c shorthand
-				if is_new_comment_shorthand {
-					current_comment_meta = Some(CommentIdentity::Pending);
-					continue;
-				}
-
-				if inner == "new comment" {
-					current_comment_meta = Some(CommentIdentity::Pending);
-				} else if inner.contains("#issuecomment-") {
-					let identity = Issue::parse_comment_identity(inner);
-					current_comment_meta = Some(identity);
-				}
-				continue;
-			}
-
-			// Check for sub-issue line: `- [x] Title <!--sub url-->` or `- [ ] Title` (new)
-			if content.starts_with("- [") {
-				let is_child_title = match Issue::parse_child_title_line_detailed(content) {
-					ChildTitleParseResult::Ok => true,
-					ChildTitleParseResult::InvalidCheckbox(invalid_content) => {
-						return Err(ParseError::invalid_checkbox(ctx.named_source(), ctx.line_span(current_line), invalid_content));
-					}
-					ChildTitleParseResult::NotChildTitle => false,
-				};
-
-				if !is_child_title {
-					// Not a sub-issue line, treat as regular content
-					let content_line = content.strip_prefix('\t').unwrap_or(content);
-					if in_body {
-						body_lines.push(content_line.to_string());
+					// Fallthrough: treat as body/comment content
+					if in_blockers {
+						blocker_events.push(events[pos].clone());
+					} else if in_body {
+						body_events.push(events[pos].clone());
 					} else if current_comment_meta.is_some() {
-						current_comment_lines.push(content_line.to_string());
+						current_comment_events.push(events[pos].clone());
 					}
-					continue;
+					pos += 1;
 				}
 
-				// Flush current
-				if in_body {
-					in_body = false;
-					let body_text = body_lines.join("\n").trim().to_string();
-					comments.push(Comment {
-						identity: CommentIdentity::Body,
-						body: super::Events::parse(&body_text),
-					});
-				} else if let Some(identity) = current_comment_meta.take() {
-					let body_text = current_comment_lines.join("\n").trim().to_string();
-					comments.push(Comment {
-						identity,
-						body: super::Events::parse(&body_text),
-					});
-					current_comment_lines.clear();
-				}
-
-				// Collect all lines belonging to this child (at depth+1 and deeper)
-				let child_content_indent = "\t".repeat(depth + 2);
-				let mut child_lines: Vec<String> = vec![content.to_string()]; // Start with the title line (without parent indent)
-
-				while let Some(&next_line) = lines.peek() {
-					if next_line.is_empty() {
-						// Preserve empty lines
-						let _ = lines.next();
-						child_lines.push(String::new());
-					} else if next_line.starts_with(&child_content_indent) {
-						let _ = lines.next();
-						// Strip one level of indent (the child's content indent) to normalize for recursive parsing
-						let stripped = next_line.strip_prefix(&child_indent).unwrap_or(next_line);
-						child_lines.push(stripped.to_string());
+				// Text "!s" or "!c" as standalone paragraph
+				OwnedEvent::Start(OwnedTag::Paragraph)
+					if matches!(events.get(pos + 1), Some(OwnedEvent::Text(t)) if t.trim().eq_ignore_ascii_case("!s") || t.trim().eq_ignore_ascii_case("!c"))
+						&& matches!(events.get(pos + 2), Some(OwnedEvent::End(OwnedTagEnd::Paragraph))) =>
+				{
+					let text = match &events[pos + 1] {
+						OwnedEvent::Text(t) => t.trim().to_ascii_lowercase(),
+						_ => unreachable!(),
+					};
+					if text == "!s" {
+						select_blockers = true;
 					} else {
-						// Not a child content line - break
-						break;
+						flush(&mut in_body, &mut current_comment_meta, &mut body_events, &mut current_comment_events, &mut comments);
+						current_comment_meta = Some(CommentIdentity::Pending);
+					}
+					pos += 3; // skip Start(Paragraph), Text, End(Paragraph)
+				}
+
+				// Heading: check for "# Blockers" (with optional !s suffix)
+				OwnedEvent::Start(OwnedTag::Heading {
+					level: pulldown_cmark::HeadingLevel::H1,
+					..
+				}) => {
+					// Collect heading text
+					let heading_start = pos;
+					pos += 1; // past Start(Heading)
+					let mut heading_text = String::new();
+					while pos < events.len() && !matches!(&events[pos], OwnedEvent::End(OwnedTagEnd::Heading(pulldown_cmark::HeadingLevel::H1))) {
+						if let OwnedEvent::Text(t) = &events[pos] {
+							heading_text.push_str(t);
+						}
+						pos += 1;
+					}
+					pos += 1; // past End(Heading)
+
+					let heading_trimmed = heading_text.trim();
+					let (effective, has_select_suffix) = match heading_trimmed.strip_suffix("!s").or_else(|| heading_trimmed.strip_suffix("!S")) {
+						Some(before) => (before.trim(), true),
+						None => (heading_trimmed, false),
+					};
+
+					if effective.eq_ignore_ascii_case("blockers") {
+						if has_select_suffix {
+							select_blockers = true;
+						}
+						flush(&mut in_body, &mut current_comment_meta, &mut body_events, &mut current_comment_events, &mut comments);
+						in_blockers = true;
+					} else {
+						// Not a blockers heading, treat as body/comment content
+						let heading_events = &events[heading_start..pos];
+						if in_body {
+							body_events.extend(heading_events.iter().cloned());
+						} else if current_comment_meta.is_some() {
+							current_comment_events.extend(heading_events.iter().cloned());
+						}
 					}
 				}
 
-				// Trim trailing empty lines
-				while child_lines.last().is_some_and(|l| l.is_empty()) {
-					child_lines.pop();
+				// List: could be blockers list or child issues list
+				OwnedEvent::Start(OwnedTag::List(_)) => {
+					// Peek inside to determine what kind of list this is
+					let has_checkbox = Self::list_has_checkbox(&events[pos..]);
+
+					if has_checkbox {
+						// Child issues list — parse each item as a child VirtualIssue
+						// Collect the full list as a sub-slice and parse each Item
+						let list_end = Self::find_matching_end_list(events, pos);
+						let list_events = &events[pos..list_end];
+
+						// Flush body/comment before children
+						flush(&mut in_body, &mut current_comment_meta, &mut body_events, &mut current_comment_events, &mut comments);
+
+						// Walk items within this list
+						let mut inner_pos = 1; // skip Start(List)
+						while inner_pos < list_events.len() {
+							if matches!(&list_events[inner_pos], OwnedEvent::Start(OwnedTag::Item)) {
+								// Find the matching End(Item)
+								let item_start = inner_pos;
+								let item_end = Self::find_matching_end_item(list_events, inner_pos);
+
+								// Wrap this item in a List for recursive parsing
+								let mut child_events = vec![OwnedEvent::Start(OwnedTag::List(None))];
+								child_events.extend(list_events[item_start..item_end].iter().cloned());
+								child_events.push(OwnedEvent::End(OwnedTagEnd::List(false)));
+
+								let child = Self::parse_from_events(&child_events, ctx)?;
+								children.insert(child.selector, child);
+
+								inner_pos = item_end;
+							} else {
+								inner_pos += 1;
+							}
+						}
+
+						pos = list_end;
+					} else if in_blockers {
+						// Blocker list — collect events for BlockerSequence parsing
+						let list_end = Self::find_matching_end_list(events, pos);
+						blocker_events.extend(events[pos..list_end].iter().cloned());
+						pos = list_end;
+					} else {
+						// Regular list in body/comment content
+						let list_end = Self::find_matching_end_list(events, pos);
+						let list_slice = &events[pos..list_end];
+						if in_body {
+							body_events.extend(list_slice.iter().cloned());
+						} else if current_comment_meta.is_some() {
+							current_comment_events.extend(list_slice.iter().cloned());
+						}
+						pos = list_end;
+					}
 				}
 
-				let child_content = child_lines.join("\n");
-				let mut child_lines_iter = child_content.lines().peekable();
-				let child = Self::parse_virtual_at_depth(&mut child_lines_iter, 0, current_line, ctx)?;
-				children.insert(child.selector, child);
-				continue;
-			}
-
-			// Regular content line (doesn't start with "- [")
-			let content_line = content.strip_prefix('\t').unwrap_or(content); // Extra indent for immutable
-			if in_body {
-				body_lines.push(content_line.to_string());
-			} else if current_comment_meta.is_some() {
-				current_comment_lines.push(content_line.to_string());
+				// Any other event: body or comment content
+				_ => {
+					if in_blockers {
+						blocker_events.push(events[pos].clone());
+					} else if in_body {
+						body_events.push(events[pos].clone());
+					} else if current_comment_meta.is_some() {
+						current_comment_events.push(events[pos].clone());
+					}
+					pos += 1;
+				}
 			}
 		}
 
-		// Flush final
-		if in_body {
-			let body_text = body_lines.join("\n").trim().to_string();
-			comments.push(Comment {
-				identity: CommentIdentity::Body,
-				body: super::Events::parse(&body_text),
-			});
-		} else if let Some(identity) = current_comment_meta.take() {
-			let body_text = current_comment_lines.join("\n").trim().to_string();
-			comments.push(Comment {
-				identity,
-				body: super::Events::parse(&body_text),
-			});
-		}
+		// Flush final body/comment
+		flush(&mut in_body, &mut current_comment_meta, &mut body_events, &mut current_comment_events, &mut comments);
+
+		// Parse blockers from collected events
+		let blockers = if blocker_events.is_empty() {
+			BlockerSequence::default()
+		} else {
+			// Render blocker events to string and parse with BlockerSequence::parse
+			let blocker_text: String = super::Events(blocker_events).into();
+			BlockerSequence::parse(&blocker_text)
+		};
 
 		Ok(VirtualIssue {
 			selector,
 			contents: IssueContents {
-				title: parsed.title,
-				labels: parsed.labels,
-				state: parsed.close_state,
+				title,
+				labels,
+				state: close_state,
 				comments: comments.into(),
 				blockers: {
-					let mut seq = BlockerSequence::parse(&blocker_raw_lines.join("\n"));
+					let mut seq = blockers;
 					if select_blockers {
 						seq.set_state = Some(crate::issue::BlockerSetState::Pending);
 					}
@@ -1741,6 +1648,64 @@ impl VirtualIssue {
 			},
 			children,
 		})
+	}
+
+	/// Check if a list (starting at `Start(List(...))`) contains any CheckBox items.
+	fn list_has_checkbox(events: &[super::OwnedEvent]) -> bool {
+		use super::{OwnedEvent, OwnedTag, OwnedTagEnd};
+		let mut depth = 0;
+		for ev in events {
+			match ev {
+				OwnedEvent::Start(OwnedTag::List(_)) => depth += 1,
+				OwnedEvent::End(OwnedTagEnd::List(_)) => {
+					depth -= 1;
+					if depth == 0 {
+						break;
+					}
+				}
+				OwnedEvent::CheckBox(_) if depth == 1 => return true,
+				_ => {}
+			}
+		}
+		false
+	}
+
+	/// Find the position after the matching `End(List)` for a `Start(List)` at `start`.
+	fn find_matching_end_list(events: &[super::OwnedEvent], start: usize) -> usize {
+		use super::{OwnedEvent, OwnedTag, OwnedTagEnd};
+		let mut depth = 0;
+		for i in start..events.len() {
+			match &events[i] {
+				OwnedEvent::Start(OwnedTag::List(_)) => depth += 1,
+				OwnedEvent::End(OwnedTagEnd::List(_)) => {
+					depth -= 1;
+					if depth == 0 {
+						return i + 1;
+					}
+				}
+				_ => {}
+			}
+		}
+		events.len()
+	}
+
+	/// Find the position after the matching `End(Item)` for a `Start(Item)` at `start`.
+	fn find_matching_end_item(events: &[super::OwnedEvent], start: usize) -> usize {
+		use super::{OwnedEvent, OwnedTag, OwnedTagEnd};
+		let mut depth = 0;
+		for i in start..events.len() {
+			match &events[i] {
+				OwnedEvent::Start(OwnedTag::Item) => depth += 1,
+				OwnedEvent::End(OwnedTagEnd::Item) => {
+					depth -= 1;
+					if depth == 0 {
+						return i + 1;
+					}
+				}
+				_ => {}
+			}
+		}
+		events.len()
 	}
 }
 
@@ -1756,41 +1721,12 @@ impl From<Issue> for VirtualIssue {
 	}
 }
 
-/// Result of parsing a checkbox prefix.
-#[derive(Debug)]
-enum CheckboxParseResult<'a> {
-	/// Successfully parsed checkbox
-	Ok(CloseState, &'a str),
-	/// Not a checkbox line (doesn't start with `- [`)
-	NotCheckbox,
-	/// Has checkbox syntax but invalid content (like `[abc]`)
-	InvalidContent(String),
-}
-
-/// Result of parsing a child title line.
-enum ChildTitleParseResult {
-	/// Successfully parsed child/sub-issue
-	Ok,
-	/// Not a child title line
-	NotChildTitle,
-	/// Has checkbox syntax but invalid content (like `[abc]`)
-	InvalidCheckbox(String),
-}
 //,}}}1
 
 impl PartialEq for IssueIdentity {
 	fn eq(&self, other: &IssueIdentity) -> bool {
 		self.parent_index == other.parent_index
 	}
-}
-
-/// Parsed title line components (internal helper)
-struct ParsedTitleLine {
-	title: String,
-	/// Identity info parsed from the title line
-	identity_info: IssueMarker,
-	close_state: CloseState,
-	labels: Vec<String>,
 }
 
 //,}}}1
@@ -1938,25 +1874,6 @@ mod tests {
 		NotPlanned => closed
 		Duplicate(123) => closed
 		");
-	}
-
-	#[test]
-	fn test_parse_checkbox_prefix() {
-		let cases = [
-			"- [ ] rest", "- [x] rest", "- [X] rest", "- [-] rest", "- [123] rest", "- [42] Title here", "no checkbox", "- [invalid] rest", "- [abc] rest",
-		];
-		let results: Vec<_> = cases.iter().map(|c| format!("{c:?} => {:?}", Issue::parse_checkbox_prefix_detailed(c))).collect();
-		insta::assert_snapshot!(results.join("\n"), @r#"
-		"- [ ] rest" => Ok(Open, "rest")
-		"- [x] rest" => Ok(Closed, "rest")
-		"- [X] rest" => Ok(Closed, "rest")
-		"- [-] rest" => Ok(NotPlanned, "rest")
-		"- [123] rest" => Ok(Duplicate(123), "rest")
-		"- [42] Title here" => Ok(Duplicate(42), "Title here")
-		"no checkbox" => NotCheckbox
-		"- [invalid] rest" => InvalidContent("invalid")
-		"- [abc] rest" => InvalidContent("abc")
-		"#);
 	}
 
 	#[test]
@@ -2154,7 +2071,7 @@ mod tests {
 		Child body
 "#;
 		let issue = unsafe_mock_parse_virtual(content);
-		let serialized = issue.serialize_virtual();
+		let serialized: String = issue.serialize_virtual().into();
 		let reparsed = unsafe_mock_parse_virtual(&serialized);
 		insta::assert_snapshot!(
 			format!("title: {}\nchildren: {}", reparsed.contents.title, reparsed.children.len()),
@@ -2216,7 +2133,8 @@ mod tests {
 	- task 2
 "#;
 		let issue = unsafe_mock_parse_virtual(content);
-		insta::assert_snapshot!(issue.serialize_github(), @"
+		let github_body: String = issue.render_github().into();
+		insta::assert_snapshot!(github_body, @"
 		This is the body text.
 
 		# Blockers

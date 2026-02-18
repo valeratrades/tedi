@@ -4,10 +4,7 @@
 //! This module parses them into a `MilestoneDoc` AST via pulldown_cmark, enabling
 //! structured operations like parent-context resolution for bare `#123` refs.
 
-use super::{
-	Issue, IssueLink, IssueMarker, OwnedEvent, OwnedTag, OwnedTagEnd,
-	events::{parser_options, render_events},
-};
+use super::{Events, Issue, IssueLink, IssueMarker, OwnedEvent, OwnedTag, OwnedTagEnd, events::parser_options};
 
 /// A parsed milestone document: a sequence of top-level sections.
 pub struct MilestoneDoc {
@@ -92,9 +89,6 @@ impl MilestoneDoc {
 
 /// Serialize an issue as title line + blockers only (for milestone embedding).
 pub fn serialize_blockers_view(issue: &Issue) -> String {
-	let mut out = String::new();
-
-	// Title line with issue marker
 	let checked = issue.contents.state.to_checkbox();
 	let issue_marker = IssueMarker::from(&issue.identity);
 	let labels_part = if issue.contents.labels.is_empty() {
@@ -102,19 +96,41 @@ pub fn serialize_blockers_view(issue: &Issue) -> String {
 	} else {
 		format!("[{}] ", issue.contents.labels.join(", "))
 	};
-	out.push_str(&format!("- [{checked}] {labels_part}{} {issue_marker}", issue.contents.title));
 
-	// Blockers section
+	// Build events: a single list item with inline title + optional blocker children
+	let mut events = Vec::new();
+	events.push(OwnedEvent::Start(OwnedTag::List(None)));
+	events.push(OwnedEvent::Start(OwnedTag::Item));
+
+	// Checkbox + title + marker as inline content
+	events.push(OwnedEvent::CheckBox(checked));
+	events.push(OwnedEvent::Text(format!("{labels_part}{} ", issue.contents.title)));
+	events.push(OwnedEvent::InlineHtml(format!("<!-- {} -->", issue_marker.encode())));
+
+	// Blockers section as children
 	if !issue.contents.blockers.is_empty() {
-		out.push('\n');
+		// Wrap inline in paragraph since we have children
+		// (need to rebuild: insert Paragraph start/end around inline content)
+		let inline_start = 2; // after Start(List), Start(Item)
+		events.insert(inline_start, OwnedEvent::Start(OwnedTag::Paragraph));
+		events.push(OwnedEvent::End(OwnedTagEnd::Paragraph));
+
 		let header = crate::Header::new(1, "Blockers");
-		out.push_str(&format!("\t{}", header.encode()));
-		for line in issue.contents.blockers.raw_lines() {
-			out.push_str(&format!("\n\t{line}"));
-		}
+		events.push(OwnedEvent::Start(OwnedTag::Heading {
+			level: pulldown_cmark::HeadingLevel::H1,
+			id: None,
+			classes: Vec::new(),
+			attrs: Vec::new(),
+		}));
+		events.push(OwnedEvent::Text(header.content.clone()));
+		events.push(OwnedEvent::End(OwnedTagEnd::Heading(pulldown_cmark::HeadingLevel::H1)));
+		events.extend(issue.contents.blockers.to_events());
 	}
 
-	out
+	events.push(OwnedEvent::End(OwnedTagEnd::Item));
+	events.push(OwnedEvent::End(OwnedTagEnd::List(false)));
+
+	Events(events).into()
 }
 /// Parse blockers from an embedded issue section in milestone content.
 /// The section is: title line, then optionally a `# Blockers` header + blocker lines.
@@ -151,11 +167,11 @@ pub fn parse_blockers_from_embedded(section: &str) -> super::BlockerSequence {
 		return super::BlockerSequence::default();
 	};
 
-	// Collect blocker lines (strip one level of indent — tab or spaces)
+	// Collect blocker lines (strip one level of indent — tab or 2 spaces)
 	let blocker_lines: Vec<String> = lines[start..]
 		.iter()
 		.filter(|l| !l.trim().is_empty())
-		.map(|l| l.strip_prefix('\t').unwrap_or_else(|| l.trim_start()).to_string())
+		.map(|l| l.strip_prefix('\t').or_else(|| l.strip_prefix("  ")).unwrap_or(l).to_string())
 		.collect();
 
 	let mut seq = super::BlockerSequence::parse(&blocker_lines.join("\n"));
@@ -645,7 +661,8 @@ fn serialize_section(section: &MilestoneSection, output: &mut String) {
 			if !output.is_empty() {
 				ensure_blank_line(output);
 			}
-			output.push_str(&render_events(owned));
+			let s: String = Events(owned.clone()).into();
+			output.push_str(&s);
 		}
 		MilestoneSection::List(list) => {
 			let loose = list.is_checkbox_list();
@@ -681,7 +698,8 @@ fn serialize_item(item: &MilestoneItem, output: &mut String) {
 	// Render inline part + item/list wrappers
 	events.push(OwnedEvent::End(OwnedTagEnd::Item));
 	events.push(OwnedEvent::End(OwnedTagEnd::List(false)));
-	output.push_str(&render_events(&events));
+	let s: String = Events(events).into();
+	output.push_str(&s);
 
 	// Render children recursively with proper indentation
 	if !item.children.is_empty() {

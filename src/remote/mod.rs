@@ -356,7 +356,7 @@ impl Sink<Remote> for Issue {
 		// If this is a pending (local) issue, create it first
 		if self.is_local() {
 			let title = &self.contents.title;
-			let body = self.body();
+			let body: String = self.body().into();
 			let closed = self.contents.state.is_closed();
 			let parent_index = self.identity.parent_index;
 
@@ -394,7 +394,7 @@ impl Sink<Remote> for Issue {
 			None => false,
 		};
 		if body_changed {
-			let body = self.body();
+			let body: String = self.body().into();
 			println!("Updating issue #{issue_number} body...");
 			gh.update_issue_body(repo_info, issue_number, &body).await?;
 			changed = true;

@@ -90,14 +90,15 @@ fn sink_issue_node<R: LocalReader>(new: &Issue, maybe_old: Option<&Issue>, reade
 	debug!(issue_file_path = %issue_file_path.display(), "computed target path");
 
 	// Write content if changed
-	let content = new.serialize_filesystem(); //DEPENDS: relies on `serialize_filesystem` including `title`, `close_state`, `git_id`
+	let content_events = new.serialize_filesystem(); //DEPENDS: relies on `serialize_filesystem` including `title`, `close_state`, `git_id`
 	let node_changed = match maybe_old {
-		Some(old_issue) => content != old_issue.serialize_filesystem() || format_changed, // we check for `format_changed` instead of checking for exact match of children, because we start individual sinks for each of the mismatched children later
+		Some(old_issue) => content_events != old_issue.serialize_filesystem() || format_changed, // we check for `format_changed` instead of checking for exact match of children, because we start individual sinks for each of the mismatched children later
 		None => true,
 	};
 	let mut any_written = false;
 	if node_changed {
 		//DEPENDS: with current logic, `issue_file_path` must be computed before cleanup happens. Otherwise it can't guarantee to be able to resolve parent from fs state.
+		let content: String = content_events.into();
 		std::fs::create_dir_all(issue_file_path.parent().unwrap())?;
 		std::fs::write(&issue_file_path, &content)?;
 		any_written = true;

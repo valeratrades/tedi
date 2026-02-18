@@ -8,14 +8,14 @@
 //! Blockers use indent-based nesting:
 //! - Lines starting with `- ` are blocker items
 //! - All other non-empty lines are comments (attached to the preceding item)
-//! - Indent level (tabs) determines nesting depth
+//! - Indent level (2 spaces) determines nesting depth
 //! - Once a nested blocker appears under an item, no more comments can follow at that level
 
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use super::Marker;
+use super::{Events, Marker, OwnedEvent, OwnedTag, OwnedTagEnd};
 
 /// Split text at the blockers marker, returning (content_before, blockers).
 /// If no blockers marker is found, returns the original text and an empty BlockerSequence.
@@ -36,25 +36,25 @@ pub fn split_blockers(text: &str) -> (String, BlockerSequence) {
 	}
 }
 
-/// Join text with blockers, appending the blockers section with proper spacing.
-/// If blockers is empty, returns the original text unchanged.
-pub fn join_with_blockers(text: &str, blockers: &BlockerSequence) -> String {
+/// Join body events with blockers, appending the blockers section.
+/// If blockers is empty, returns the body events unchanged.
+pub fn join_with_blockers(body_events: &[OwnedEvent], blockers: &BlockerSequence) -> Events {
+	//NB: DO NOT CHANGE Output Type
+	let mut events = body_events.to_vec();
 	if blockers.is_empty() {
-		return text.to_string();
+		return Events(events);
 	}
-
-	let mut result = text.trim_end().to_string();
-
-	// Add blank line before blockers marker if there's content
-	if !result.is_empty() {
-		result.push_str("\n\n");
-	}
-
-	// Add blockers marker and content
-	result.push_str("# Blockers\n");
-	result.push_str(&blockers.serialize());
-
-	result
+	// Blockers header
+	events.push(OwnedEvent::Start(OwnedTag::Heading {
+		level: pulldown_cmark::HeadingLevel::H1,
+		id: None,
+		classes: Vec::new(),
+		attrs: Vec::new(),
+	}));
+	events.push(OwnedEvent::Text("Blockers".to_string()));
+	events.push(OwnedEvent::End(OwnedTagEnd::Heading(pulldown_cmark::HeadingLevel::H1)));
+	events.extend(blockers.to_events());
+	Events(events)
 }
 
 /// A single blocker item with optional comments and nested sub-blockers.
@@ -99,9 +99,9 @@ impl BlockerSequence {
 	}
 
 	/// Parse items at a given indent level, advancing `pos` through the lines.
-	/// `indent` is the number of tabs expected for items at this level.
+	/// `indent` is the number of 2-space units expected for items at this level.
 	fn parse_items_at_indent(lines: &[&str], pos: &mut usize, indent: usize, items: &mut Vec<BlockerItem>) {
-		let indent_str = "\t".repeat(indent);
+		let indent_str = "  ".repeat(indent);
 
 		while *pos < lines.len() {
 			let line = lines[*pos];
@@ -118,8 +118,8 @@ impl BlockerSequence {
 				break;
 			};
 
-			// If the content starts with another tab, it's deeper than us
-			if content.starts_with('\t') {
+			// If the content starts with more indentation, it's deeper than us
+			if content.starts_with("  ") {
 				// This belongs to a deeper level — but we don't have a parent item to attach to
 				// at this point, so just break (shouldn't happen with well-formed input)
 				break;
@@ -136,7 +136,7 @@ impl BlockerSequence {
 
 				// Collect comments and children at the next indent level
 				let child_indent = indent + 1;
-				let child_indent_str = "\t".repeat(child_indent);
+				let child_indent_str = "  ".repeat(child_indent);
 
 				while *pos < lines.len() {
 					let next_line = lines[*pos];
@@ -154,7 +154,7 @@ impl BlockerSequence {
 					};
 
 					// If deeper than child level, it belongs to deeper nesting
-					if child_content.starts_with('\t') {
+					if child_content.starts_with("  ") {
 						// Deeper than immediate child — break, let recursive call handle it
 						break;
 					}
@@ -206,23 +206,24 @@ impl BlockerSequence {
 		}
 	}
 
-	/// Serialize to text (indent-based format)
-	pub fn serialize(&self) -> String {
-		let mut lines = Vec::new();
-		for item in &self.items {
-			serialize_item(item, 0, &mut lines);
+	/// Build cmark event stream representing this blocker sequence as a list.
+	pub fn to_events(&self) -> Events {
+		if self.items.is_empty() {
+			return Events::default();
 		}
-		lines.join("\n")
+		let mut events = Vec::new();
+		events.push(OwnedEvent::Start(OwnedTag::List(None)));
+		for item in &self.items {
+			item_to_events(item, &mut events);
+		}
+		events.push(OwnedEvent::End(OwnedTagEnd::List(false)));
+		Events(events)
 	}
+}
 
-	/// Get all lines in order (for iteration).
-	/// Returns (indent_level, line_content) pairs serialized as raw text.
-	pub fn raw_lines(&self) -> Vec<String> {
-		let mut result = Vec::new();
-		for item in &self.items {
-			collect_raw_lines(item, 0, &mut result);
-		}
-		result
+impl From<&BlockerSequence> for String {
+	fn from(seq: &BlockerSequence) -> Self {
+		seq.to_events().into()
 	}
 }
 
@@ -376,28 +377,22 @@ impl PartialEq for BlockerSequence {
 	}
 }
 
-/// Serialize a single item at the given indent depth.
-fn serialize_item(item: &BlockerItem, indent: usize, lines: &mut Vec<String>) {
-	let indent_str = "\t".repeat(indent);
-	lines.push(format!("{indent_str}- {}", item.text));
+/// Build events for a single blocker item (including comments and children).
+fn item_to_events(item: &BlockerItem, events: &mut Vec<OwnedEvent>) {
+	events.push(OwnedEvent::Start(OwnedTag::Item));
+	events.push(OwnedEvent::Text(item.text.clone()));
 	for comment in &item.comments {
-		lines.push(format!("{indent_str}\t{comment}"));
+		events.push(OwnedEvent::SoftBreak);
+		events.push(OwnedEvent::Text(comment.clone()));
 	}
-	for child in &item.children {
-		serialize_item(child, indent + 1, lines);
+	if !item.children.is_empty() {
+		events.push(OwnedEvent::Start(OwnedTag::List(None)));
+		for child in &item.children {
+			item_to_events(child, events);
+		}
+		events.push(OwnedEvent::End(OwnedTagEnd::List(false)));
 	}
-}
-
-/// Collect raw lines for a single item.
-fn collect_raw_lines(item: &BlockerItem, indent: usize, result: &mut Vec<String>) {
-	let indent_str = "\t".repeat(indent);
-	result.push(format!("{indent_str}- {}", item.text));
-	for comment in &item.comments {
-		result.push(format!("{indent_str}\t{comment}"));
-	}
-	for child in &item.children {
-		collect_raw_lines(child, indent + 1, result);
-	}
+	events.push(OwnedEvent::End(OwnedTagEnd::Item));
 }
 
 #[cfg(test)]
@@ -414,7 +409,7 @@ mod tests {
 
 	#[test]
 	fn test_parse_items_with_comments() {
-		let content = "- task 1\n\tcomment on task 1\n\tanother comment\n- task 2";
+		let content = "- task 1\n  comment on task 1\n  another comment\n- task 2";
 		let seq = BlockerSequence::parse(content);
 		assert_eq!(seq.items.len(), 2);
 		assert_eq!(seq.items[0].text, "task 1");
@@ -425,7 +420,7 @@ mod tests {
 
 	#[test]
 	fn test_parse_nested_items() {
-		let content = "- parent\n\t- child 1\n\t- child 2";
+		let content = "- parent\n  - child 1\n  - child 2";
 		let seq = BlockerSequence::parse(content);
 		assert_eq!(seq.items.len(), 1);
 		assert_eq!(seq.items[0].text, "parent");
@@ -436,7 +431,7 @@ mod tests {
 
 	#[test]
 	fn test_parse_comments_then_children() {
-		let content = "- parent\n\tcomment\n\t- child";
+		let content = "- parent\n  comment\n  - child";
 		let seq = BlockerSequence::parse(content);
 		assert_eq!(seq.items.len(), 1);
 		assert_eq!(seq.items[0].comments, vec!["comment"]);
@@ -446,7 +441,7 @@ mod tests {
 
 	#[test]
 	fn test_parse_deeply_nested() {
-		let content = "- level 0\n\t- level 1\n\t\t- level 2\n\t\t\t- level 3";
+		let content = "- level 0\n  - level 1\n    - level 2\n      - level 3";
 		let seq = BlockerSequence::parse(content);
 		assert_eq!(seq.items[0].text, "level 0");
 		assert_eq!(seq.items[0].children[0].text, "level 1");
@@ -456,18 +451,22 @@ mod tests {
 
 	#[test]
 	fn test_serialize_roundtrip() {
-		let content = "- task 1\n\tcomment\n\t- child\n- task 2";
+		let content = "- task 1\n  comment\n  - child\n- task 2";
 		let seq = BlockerSequence::parse(content);
-		let serialized = seq.serialize();
-		assert_eq!(serialized, content);
+		let serialized = String::from(&seq);
+		// Roundtrip: parse back and compare structure
+		let reparsed = BlockerSequence::parse(&serialized);
+		assert_eq!(seq, reparsed);
 	}
 
 	#[test]
 	fn test_serialize_nested_roundtrip() {
-		let content = "- parent\n\tcomment on parent\n\t- child 1\n\t\tcomment on child\n\t- child 2\n- sibling";
+		let content = "- parent\n  comment on parent\n  - child 1\n    comment on child\n  - child 2\n- sibling";
 		let seq = BlockerSequence::parse(content);
-		let serialized = seq.serialize();
-		assert_eq!(serialized, content);
+		let serialized = String::from(&seq);
+		// Roundtrip: parse back and compare structure
+		let reparsed = BlockerSequence::parse(&serialized);
+		assert_eq!(seq, reparsed);
 	}
 
 	#[test]
@@ -482,7 +481,7 @@ mod tests {
 	fn test_split_blockers_with_marker() {
 		let text = "Description here\n\n# Blockers\n- task 1\n- task 2";
 		let (content, blockers) = split_blockers(text);
-		insta::assert_snapshot!(format!("content: {content:?}\nblockers: {}", blockers.serialize()), @r#"
+		insta::assert_snapshot!(format!("content: {content:?}\nblockers: {}", String::from(&blockers)), @r#"
 		content: "Description here\n"
 		blockers: - task 1
 		- task 2
@@ -491,33 +490,30 @@ mod tests {
 
 	#[test]
 	fn test_join_with_blockers_empty() {
-		let text = "Some content";
+		let body = Events::parse("Some content");
 		let blockers = BlockerSequence::default();
-		let result = join_with_blockers(text, &blockers);
-		assert_eq!(result, text);
+		let result: String = join_with_blockers(&body, &blockers).into();
+		insta::assert_snapshot!(result, @"Some content");
 	}
 
 	#[test]
 	fn test_join_with_blockers_non_empty() {
-		let text = "Description";
+		let body = Events::parse("Description");
 		let blockers = BlockerSequence::parse("- task 1\n- task 2");
-		let result = join_with_blockers(text, &blockers);
-		assert_eq!(result, "Description\n\n# Blockers\n- task 1\n- task 2");
+		let result: String = join_with_blockers(&body, &blockers).into();
+		insta::assert_snapshot!(result, @"");
 	}
 
 	#[test]
 	fn test_split_join_roundtrip() {
 		let original = "Body text\n\n# Blockers\n- task 1\n- task 2";
 		let (content, blockers) = split_blockers(original);
-		let rejoined = join_with_blockers(&content, &blockers);
+		let body_events = Events::parse(&content);
+		let rejoined: String = join_with_blockers(&body_events, &blockers).into();
 		let (content2, blockers2) = split_blockers(&rejoined);
 		insta::assert_snapshot!(
-			format!("content: {content2:?}\nblockers: {}", blockers2.serialize()),
-			@r#"
-		content: "Body text\n"
-		blockers: - task 1
-		- task 2
-		"#
+			format!("content: {content2:?}\nblockers: {}", String::from(&blockers2)),
+			@""
 		);
 	}
 
@@ -525,7 +521,7 @@ mod tests {
 	fn test_blocker_sequence_strips_empty_lines() {
 		let content = "\n\n- task 1\n- task 2\n\n\n";
 		let seq = BlockerSequence::parse(content);
-		let serialized = seq.serialize();
+		let serialized = String::from(&seq);
 		insta::assert_snapshot!(serialized, @r"
   - task 1
   - task 2

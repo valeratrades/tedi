@@ -316,11 +316,12 @@ impl OwnedCodeBlockKind {
 
 /// A sequence of owned markdown events.
 /// This is the primary type for storing markdown content.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, derive_more::Deref, derive_more::DerefMut, derive_more::IntoIterator)]
 pub struct Events(pub Vec<OwnedEvent>);
 
 impl Events {
 	/// Create a new empty events sequence.
+	#[deprecated(note = "use default() instead")]
 	pub fn new() -> Self {
 		Self(Vec::new())
 	}
@@ -337,31 +338,37 @@ impl Events {
 
 	/// Render events back to markdown.
 	/// Note: This may not produce identical output to the original due to markdown normalization.
+	#[deprecated(note = "literally just *")]
 	pub fn render(&self) -> String {
 		render_events(&self.0)
 	}
 
 	/// Check if the events sequence is empty.
+	#[deprecated(note = "literally just *")]
 	pub fn is_empty(&self) -> bool {
 		self.0.is_empty()
 	}
 
 	/// Get the number of events.
+	#[deprecated(note = "literally just *")]
 	pub fn len(&self) -> usize {
 		self.0.len()
 	}
 
 	/// Get a reference to the underlying events.
+	#[deprecated(note = "literally just *")]
 	pub fn events(&self) -> &[OwnedEvent] {
 		&self.0
 	}
 
 	/// Get a mutable reference to the underlying events.
+	#[deprecated(note = "literally just *")]
 	pub fn events_mut(&mut self) -> &mut Vec<OwnedEvent> {
 		&mut self.0
 	}
 
 	/// Extract plain text from events (for display/comparison purposes).
+	#[deprecated(note = "looked through tests using it, - not warranted. Instead just call String::from(this) and don't litter with helper methods")]
 	pub fn plain_text(&self) -> String {
 		let mut text = String::new();
 		for event in &self.0 {
@@ -376,9 +383,9 @@ impl Events {
 	}
 
 	/// Create Events from a simple string (wraps in paragraph).
-	pub fn from_plain_text(text: &str) -> Self {
+	pub fn wrap_text_in_paragraph(text: &str) -> Self {
 		if text.is_empty() {
-			return Self::new();
+			return Self::default();
 		}
 		Self(vec![
 			OwnedEvent::Start(OwnedTag::Paragraph),
@@ -388,9 +395,10 @@ impl Events {
 	}
 
 	/// Create Events from inline content (no paragraph wrapper).
+	#[deprecated(note = "doesn't deserve a helper")]
 	pub fn from_inline_text(text: &str) -> Self {
 		if text.is_empty() {
-			return Self::new();
+			return Self::default();
 		}
 		Self(vec![OwnedEvent::Text(text.to_string())])
 	}
@@ -535,16 +543,22 @@ pub(crate) fn prepare_for_render(events: &[OwnedEvent]) -> Vec<Event<'_>> {
 }
 
 /// Render a slice of `OwnedEvent`s to markdown using the shared cmark options.
-pub(crate) fn render_events(events: &[OwnedEvent]) -> String {
+fn render_events(events: &[OwnedEvent]) -> String {
 	let prepared = prepare_for_render(events);
 	let mut output = String::new();
 	pulldown_cmark_to_cmark::cmark_with_options(prepared.into_iter(), &mut output, cmark_options()).expect("markdown rendering should not fail");
 	output
 }
 
+impl From<Events> for String {
+	fn from(events: Events) -> Self {
+		render_events(&events.0)
+	}
+}
+
 impl fmt::Display for Events {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		write!(f, "{}", self.render())
+		write!(f, "{}", render_events(&self.0))
 	}
 }
 
@@ -591,7 +605,7 @@ mod tests {
 
 	#[test]
 	fn test_from_plain_text() {
-		let events = Events::from_plain_text("Test");
+		let events = Events::wrap_text_in_paragraph("Test");
 		assert_eq!(events.len(), 3); // Start(Paragraph), Text, End(Paragraph)
 		assert_eq!(events.plain_text(), "Test");
 	}
@@ -605,7 +619,7 @@ mod tests {
 
 	#[test]
 	fn test_empty() {
-		let events = Events::new();
+		let events = Events::default();
 		assert!(events.is_empty());
 		assert_eq!(events.len(), 0);
 	}

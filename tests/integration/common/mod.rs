@@ -535,9 +535,9 @@ impl<'a> OpenBuilder<'a> {
 				if let Some(EditOperation::FullIssue(virtual_issue)) = &edit_op {
 					let issue = with_timestamps(virtual_issue, None, is_virtual);
 					let vpath = tedi::local::Local::virtual_edit_path(&issue);
-					let content = issue.serialize_virtual();
+					let content: String = issue.serialize_virtual().into();
 					eprintln!("[test:OpenBuilder] submitting user input // writing to {vpath:?}:\n{content}");
-					std::fs::write(&vpath, content).unwrap();
+					std::fs::write(&vpath, &content).unwrap();
 				}
 
 				// Try to signal the pipe (use nix O_NONBLOCK to avoid blocking)
@@ -951,7 +951,7 @@ fn add_issue_recursive(state: &mut GitState, repo_info: tedi::RepoInfo, number: 
 		repo: repo.to_string(),
 		number,
 		title: issue.contents.title.clone(),
-		body: issue.body(),
+		body: issue.body().into(),
 		state: issue.contents.state.to_github_state().to_string(),
 		state_reason: issue.contents.state.to_github_state_reason().map(|s| s.to_string()),
 		owner_login: issue_owner_login,
