@@ -316,7 +316,7 @@ impl OwnedCodeBlockKind {
 
 /// A sequence of owned markdown events.
 /// This is the primary type for storing markdown content.
-#[derive(Clone, Debug, Default, PartialEq, derive_more::Deref, derive_more::DerefMut, derive_more::IntoIterator)]
+#[derive(Clone, Debug, Default, derive_more::Deref, derive_more::IntoIterator, PartialEq)]
 pub struct Events(pub Vec<OwnedEvent>);
 
 impl Events {
@@ -380,18 +380,6 @@ impl Events {
 			}
 		}
 		text
-	}
-
-	/// Create Events from a simple string (wraps in paragraph).
-	pub fn wrap_text_in_paragraph(text: &str) -> Self {
-		if text.is_empty() {
-			return Self::default();
-		}
-		Self(vec![
-			OwnedEvent::Start(OwnedTag::Paragraph),
-			OwnedEvent::Text(text.to_string()),
-			OwnedEvent::End(OwnedTagEnd::Paragraph),
-		])
 	}
 
 	/// Create Events from inline content (no paragraph wrapper).
@@ -601,13 +589,6 @@ mod tests {
 		let rendered = events.render();
 		// The rendered output should contain the same text
 		assert!(rendered.contains("Simple paragraph"));
-	}
-
-	#[test]
-	fn test_from_plain_text() {
-		let events = Events::wrap_text_in_paragraph("Test");
-		assert_eq!(events.len(), 3); // Start(Paragraph), Text, End(Paragraph)
-		assert_eq!(events.plain_text(), "Test");
 	}
 
 	#[test]
