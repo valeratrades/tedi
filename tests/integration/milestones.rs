@@ -194,9 +194,8 @@ async fn test_milestone_edit_adds_blockers() {
 	let issue_content = read_issue_file(&issue_path);
 	insta::assert_snapshot!(issue_content, @"
 	- [ ] Empty Issue <!-- @mock_user https://github.com/o/r/issues/50 -->
-		just a body
-		
-		# Blockers
-		- todo
+	  just a body
+	  # Blockers
+	  - todo
 	");
 }

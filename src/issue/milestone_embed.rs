@@ -905,9 +905,9 @@ mod tests {
 		let serialized = serialize_blockers_view(&issue);
 		insta::assert_snapshot!(serialized, @"
 		- [ ] My Issue <!-- https://github.com/owner/repo/issues/42 -->
-			# Blockers
-			- task 1
-			- task 2
+		  # Blockers
+		  - task 1
+		  - task 2
 		");
 
 		// Parse it back
@@ -951,10 +951,10 @@ mod tests {
 			},
 			children: std::collections::HashMap::new(),
 		};
-		insta::assert_snapshot!(serialize_blockers_view(&issue), @"
-		- [ ] [bug, urgent] Labeled <!-- https://github.com/owner/repo/issues/42 -->
-			# Blockers
-			- do thing
+		insta::assert_snapshot!(serialize_blockers_view(&issue), @r"
+		- [ ] \[bug, urgent] Labeled <!-- https://github.com/owner/repo/issues/42 -->
+		  # Blockers
+		  - do thing
 		");
 	}
 

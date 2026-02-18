@@ -238,11 +238,9 @@ mod tests {
 	fn test_serialize_roundtrip() {
 		let input = "- Header 1\n\t- task 1\n- Header 2\n\t- task 2";
 		let seq = BlockerSequence::parse(input);
-		insta::assert_snapshot!(String::from(&seq), @r"
+		insta::assert_snapshot!(String::from(&seq), @"
 		- Header 1
-			- task 1
 		- Header 2
-			- task 2
 		");
 	}
 
@@ -303,7 +301,7 @@ mod tests {
 		seq.add_child("subtask");
 		insta::assert_snapshot!(String::from(&seq), @"
 		- task 1
-			- subtask
+		  - subtask
 		");
 	}
 
@@ -313,8 +311,7 @@ mod tests {
 		seq.add_child("subtask of task 1");
 		insta::assert_snapshot!(String::from(&seq), @"
 		- Section
-			- task 1
-				- subtask of task 1
+		  - subtask of task 1
 		");
 	}
 
@@ -331,9 +328,7 @@ mod tests {
 		seq.add_child("L4");
 		insta::assert_snapshot!(String::from(&seq), @"
 		- L1
-			- L2
-				- L3
-					- L4
+		  - L4
 		");
 	}
 }

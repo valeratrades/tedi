@@ -21,11 +21,10 @@ async fn test_comments_with_ids_sync_correctly() {
 
 	// Issue with a comment that has an ID
 	let vi = parse_virtual(
-		"- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
-		 \tbody text\n\
-		 \n\
-		 \t<!-- @mock_user https://github.com/o/r/issues/1#issuecomment-12345 -->\n\
-		 \tThis is my comment\n",
+		"- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n\
+		 \x20 body text\n\n\
+		 \x20 <!-- @mock_user https://github.com/o/r/issues/1#issuecomment-12345 -->\n\
+		 \x20 This is my comment\n",
 	);
 
 	let issue = ctx.consensus(&vi, None).await;
@@ -44,14 +43,12 @@ async fn test_nested_issues_preserved_through_sync() {
 	let ctx = TestContext::build("");
 
 	let vi = parse_virtual(
-		"- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
-		 \tlorem ipsum\n\
-		 \n\
-		 \t- [ ] b <!-- @mock_user https://github.com/o/r/issues/2 -->\n\
-		 \t\tnested body b\n\
-		 \n\
-		 \t- [ ] c <!-- @mock_user https://github.com/o/r/issues/3 -->\n\
-		 \t\tnested body c\n",
+		"- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n\
+		 \x20 lorem ipsum\n\n\
+		 \x20 - [ ] b <!-- @mock_user https://github.com/o/r/issues/2 -->\n\n\
+		 \x20   nested body b\n\n\
+		 \x20 - [ ] c <!-- @mock_user https://github.com/o/r/issues/3 -->\n\n\
+		 \x20   nested body c\n",
 	);
 
 	let issue = ctx.consensus(&vi, None).await;
@@ -81,12 +78,11 @@ async fn test_blockers_preserved_through_sync() {
 	let ctx = TestContext::build("");
 
 	let vi = parse_virtual(
-		"- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
-		 \tlorem ipsum\n\
-		 \n\
-		 \t# Blockers\n\
-		 \t- first blocker\n\
-		 \t- second blocker\n",
+		"- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n\
+		 \x20 lorem ipsum\n\n\
+		 \x20 # Blockers\n\
+		 \x20 - first blocker\n\
+		 \x20 - second blocker\n",
 	);
 
 	let issue = ctx.consensus(&vi, None).await;
@@ -110,18 +106,17 @@ async fn test_blockers_added_during_edit_preserved() {
 	let ctx = TestContext::build("");
 
 	// Initial state: no blockers
-	let initial_vi = parse_virtual("- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tlorem ipsum\n");
+	let initial_vi = parse_virtual("- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n  lorem ipsum\n");
 
 	let initial_issue = ctx.consensus(&initial_vi, None).await;
 	ctx.remote(&initial_vi, None);
 
 	// User adds blockers during edit
 	let edited_issue = parse_virtual(
-		"- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
-		 \tlorem ipsum\n\
-		 \n\
-		 \t# Blockers\n\
-		 \t- new blocker added\n",
+		"- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n\
+		 \x20 lorem ipsum\n\n\
+		 \x20 # Blockers\n\
+		 \x20 - new blocker added\n",
 	);
 
 	let out = ctx.open_issue(&initial_issue).edit(&edited_issue).run();
@@ -141,15 +136,14 @@ async fn test_blockers_with_nesting_preserved() {
 	let ctx = TestContext::build("");
 
 	let vi = parse_virtual(
-		"- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
-		 \tlorem ipsum\n\
-		 \n\
-		 \t# Blockers\n\
-		 \t- phase 1\n\
-		 \t\t- task alpha\n\
-		 \t\t- task beta\n\
-		 \t- phase 2\n\
-		 \t\t- task gamma\n",
+		"- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n\
+		 \x20 lorem ipsum\n\n\
+		 \x20 # Blockers\n\
+		 \x20 - phase 1\n\
+		 \x20   - task alpha\n\
+		 \x20   - task beta\n\
+		 \x20 - phase 2\n\
+		 \x20   - task gamma\n",
 	);
 
 	let issue = ctx.consensus(&vi, None).await;
@@ -174,15 +168,13 @@ async fn test_nested_issues_and_blockers_together() {
 	let ctx = TestContext::build("");
 
 	let vi = parse_virtual(
-		"- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
-		 \tlorem ipsum\n\
-		 \n\
-		 \t# Blockers\n\
-		 \t- blocker one\n\
-		 \t- blocker two\n\
-		 \n\
-		 \t- [ ] b <!--sub @mock_user https://github.com/o/r/issues/2 -->\n\
-		 \t\tnested body\n",
+		"- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n\
+		 \x20 lorem ipsum\n\n\
+		 \x20 # Blockers\n\
+		 \x20 - blocker one\n\
+		 \x20 - blocker two\n\n\
+		 \x20 - [ ] b <!--sub @mock_user https://github.com/o/r/issues/2 -->\n\n\
+		 \x20   nested body\n",
 	);
 
 	let issue = ctx.consensus(&vi, None).await;
@@ -212,11 +204,10 @@ async fn test_closing_nested_issue_creates_bak_file() {
 
 	// Start with open nested issue
 	let initial_vi = parse_virtual(
-		"- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
-		 \tlorem ipsum\n\
-		 \n\
-		 \t- [ ] b <!-- @mock_user https://github.com/o/r/issues/2 -->\n\
-		 \t\tnested body content\n",
+		"- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n\
+		 \x20 lorem ipsum\n\n\
+		 \x20 - [ ] b <!-- @mock_user https://github.com/o/r/issues/2 -->\n\n\
+		 \x20   nested body content\n",
 	);
 
 	let initial_issue = ctx.consensus(&initial_vi, None).await;
@@ -254,7 +245,7 @@ async fn test_closing_nested_issue_creates_bak_file() {
 	      "user": "mock_user",
 	      "timestamps": {
 	        "title": null,
-	        "description": null,
+	        "description": "2026-02-18T19:10:59.632756273Z",
 	        "labels": null,
 	        [REDACTED - non-deterministic timestamp]
 	        "comments": []
@@ -264,10 +255,11 @@ async fn test_closing_nested_issue_creates_bak_file() {
 	}
 	//- /o/r/1_-_a/2_-_b.md.bak
 	- [x] b <!-- @mock_user https://github.com/o/r/issues/2 -->
-		nested body content
+	   <!--omitted {{{always-->
+	  nested body content<!--,}}}-->
 	//- /o/r/1_-_a/__main__.md
 	- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->
-		lorem ipsum
+	  lorem ipsum
 	"#);
 
 	// With the new model, closed child is in a separate .bak file

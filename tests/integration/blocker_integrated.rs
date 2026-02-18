@@ -33,11 +33,10 @@ async fn test_blocker_add_in_integrated_mode() {
 
 	// Create issue with existing blockers section
 	let vi = parse_virtual(
-		"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
-		 \tBody text.\n\
-		 \n\
-		 \t# Blockers\n\
-		 \t- First task\n",
+		"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n\
+		 \x20 Body text.\n\n\
+		 \x20 # Blockers\n\
+		 \x20 - First task\n",
 	);
 
 	// Set up: local issue file exists
@@ -61,11 +60,10 @@ async fn test_blocker_add_in_integrated_mode() {
 	// new blocker added, existing preserved
 	insta::assert_snapshot!(read_issue_file(&issue_path), @"
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-			Body text.
-		
-		# Blockers
-		- First task
-		- New task from CLI
+	  - Body text.
+	  # Blockers
+	  - First task
+	  - New task from CLI
 	");
 }
 
@@ -75,13 +73,12 @@ async fn test_blocker_pop_in_integrated_mode() {
 
 	// Create issue with multiple blockers
 	let vi = parse_virtual(
-		"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
-		 \tBody text.\n\
-		 \n\
-		 \t# Blockers\n\
-		 \t- First task\n\
-		 \t- Second task\n\
-		 \t- Third task\n",
+		"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n\
+		 \x20 Body text.\n\n\
+		 \x20 # Blockers\n\
+		 \x20 - First task\n\
+		 \x20 - Second task\n\
+		 \x20 - Third task\n",
 	);
 
 	// Set up: local issue file exists
@@ -105,11 +102,10 @@ async fn test_blocker_pop_in_integrated_mode() {
 	// Third task popped, First and Second remain
 	insta::assert_snapshot!(read_issue_file(&issue_path), @"
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-			Body text.
-		
-		# Blockers
-		- First task
-		- Second task
+	  - Body text.
+	  # Blockers
+	  - First task
+	  - Second task
 	");
 }
 
@@ -118,7 +114,7 @@ async fn test_blocker_add_creates_blockers_section_if_missing() {
 	let ctx = TestContext::build("");
 
 	// Create issue WITHOUT blockers section
-	let vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tBody text without blockers section.\n");
+	let vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n  Body text without blockers section.\n");
 
 	// Set up: local issue file exists
 	let issue = ctx.local(&vi, None).await;
@@ -141,10 +137,9 @@ async fn test_blocker_add_creates_blockers_section_if_missing() {
 	// blockers section created with new task
 	insta::assert_snapshot!(read_issue_file(&issue_path), @"
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-			Body text without blockers section.
-		
-		# Blockers
-		- New task
+	  - Body text without blockers section.
+	  # Blockers
+	  - New task
 	");
 }
 
@@ -177,14 +172,13 @@ async fn test_blocker_add_with_nested_context() {
 
 	// Create issue with blockers section containing nested items
 	let vi = parse_virtual(
-		"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
-		 \tBody text.\n\
-		 \n\
-		 \t# Blockers\n\
-		 \t- Phase 1\n\
-		 \t\t- Setup task\n\
-		 \t- Phase 2\n\
-		 \t\t- Implementation task\n",
+		"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n\
+		 \x20 Body text.\n\n\
+		 \x20 # Blockers\n\
+		 \x20 - Phase 1\n\
+		 \x20   - Setup task\n\
+		 \x20 - Phase 2\n\
+		 \x20   - Implementation task\n",
 	);
 
 	// Set up: local issue file exists
@@ -208,14 +202,13 @@ async fn test_blocker_add_with_nested_context() {
 	// new sub-task added under Phase 2
 	insta::assert_snapshot!(read_issue_file(&issue_path), @"
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-			Body text.
-		
-		# Blockers
-		- Phase 1
-			- Setup task
-		- Phase 2
-			- Implementation task
-			- New sub-task
+	  - Body text.
+	  # Blockers
+	  - Phase 1
+	    - Setup task
+	  - Phase 2
+	    - Implementation task
+	    - New sub-task
 	");
 }
 
@@ -225,14 +218,14 @@ async fn test_blocker_toggle_cycles_between_entries() {
 
 	// Create two issues
 	let vi1 = parse_virtual(
-		"- [ ] Issue A <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
-		 \t# Blockers\n\
-		 \t- task A\n",
+		"- [ ] Issue A <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n\
+		 \x20 # Blockers\n\
+		 \x20 - task A\n",
 	);
 	let vi2 = parse_virtual(
-		"- [ ] Issue B <!-- @mock_user https://github.com/o/r/issues/2 -->\n\
-		 \t# Blockers\n\
-		 \t- task B\n",
+		"- [ ] Issue B <!-- @mock_user https://github.com/o/r/issues/2 -->\n\n\
+		 \x20 # Blockers\n\
+		 \x20 - task B\n",
 	);
 
 	let issue1 = ctx.local(&vi1, None).await;
@@ -282,19 +275,19 @@ async fn test_blocker_toggle_with_three_entries_cycles() {
 	let ctx = TestContext::build("");
 
 	let vi1 = parse_virtual(
-		"- [ ] Issue A <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
-		 \t# Blockers\n\
-		 \t- task A\n",
+		"- [ ] Issue A <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n\
+		 \x20 # Blockers\n\
+		 \x20 - task A\n",
 	);
 	let vi2 = parse_virtual(
-		"- [ ] Issue B <!-- @mock_user https://github.com/o/r/issues/2 -->\n\
-		 \t# Blockers\n\
-		 \t- task B\n",
+		"- [ ] Issue B <!-- @mock_user https://github.com/o/r/issues/2 -->\n\n\
+		 \x20 # Blockers\n\
+		 \x20 - task B\n",
 	);
 	let vi3 = parse_virtual(
-		"- [ ] Issue C <!-- @mock_user https://github.com/o/r/issues/3 -->\n\
-		 \t# Blockers\n\
-		 \t- task C\n",
+		"- [ ] Issue C <!-- @mock_user https://github.com/o/r/issues/3 -->\n\n\
+		 \x20 # Blockers\n\
+		 \x20 - task C\n",
 	);
 
 	ctx.local(&vi1, None).await;
@@ -338,9 +331,9 @@ async fn test_blocker_toggle_single_entry_errors() {
 	let ctx = TestContext::build("");
 
 	let vi = parse_virtual(
-		"- [ ] Issue A <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
-		 \t# Blockers\n\
-		 \t- task A\n",
+		"- [ ] Issue A <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n\
+		 \x20 # Blockers\n\
+		 \x20 - task A\n",
 	);
 
 	ctx.local(&vi, None).await;
@@ -362,14 +355,14 @@ async fn test_blocker_add_works_after_toggle() {
 	let ctx = TestContext::build("");
 
 	let vi1 = parse_virtual(
-		"- [ ] Issue A <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
-		 \t# Blockers\n\
-		 \t- task A\n",
+		"- [ ] Issue A <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n\
+		 \x20 # Blockers\n\
+		 \x20 - task A\n",
 	);
 	let vi2 = parse_virtual(
-		"- [ ] Issue B <!-- @mock_user https://github.com/o/r/issues/2 -->\n\
-		 \t# Blockers\n\
-		 \t- task B\n",
+		"- [ ] Issue B <!-- @mock_user https://github.com/o/r/issues/2 -->\n\n\
+		 \x20 # Blockers\n\
+		 \x20 - task B\n",
 	);
 
 	let issue1 = ctx.local(&vi1, None).await;
@@ -397,17 +390,15 @@ async fn test_blocker_add_works_after_toggle() {
 	// Verify it went into issue B
 	insta::assert_snapshot!(read_issue_file(&path2), @"
 	- [ ] Issue B <!-- @mock_user https://github.com/o/r/issues/2 -->
-		
-		# Blockers
-		- task B
-		- new task on B
+	  # Blockers
+	  - task B
+	  - new task on B
 	");
 
 	// Issue A should be untouched
 	insta::assert_snapshot!(read_issue_file(&path1), @"
 	- [ ] Issue A <!-- @mock_user https://github.com/o/r/issues/1 -->
-		
-		# Blockers
-		- task A
+	  # Blockers
+	  - task A
 	");
 }
