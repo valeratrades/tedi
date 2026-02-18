@@ -24,7 +24,10 @@ pub enum OwnedEvent {
 	SoftBreak,
 	HardBreak,
 	Rule,
-	TaskListMarker(bool),
+	/// Checkbox: raw contents between `[` and `]`.
+	/// Standard: `" "` (unchecked), `"x"` (checked).
+	/// Custom: anything else (e.g. `"."` for partial).
+	CheckBox(String),
 }
 
 impl OwnedEvent {
@@ -43,7 +46,7 @@ impl OwnedEvent {
 			Event::SoftBreak => OwnedEvent::SoftBreak,
 			Event::HardBreak => OwnedEvent::HardBreak,
 			Event::Rule => OwnedEvent::Rule,
-			Event::TaskListMarker(checked) => OwnedEvent::TaskListMarker(checked),
+			Event::TaskListMarker(checked) => OwnedEvent::CheckBox(if checked { "x" } else { " " }.into()),
 		}
 	}
 
@@ -62,7 +65,11 @@ impl OwnedEvent {
 			OwnedEvent::SoftBreak => Event::SoftBreak,
 			OwnedEvent::HardBreak => Event::HardBreak,
 			OwnedEvent::Rule => Event::Rule,
-			OwnedEvent::TaskListMarker(checked) => Event::TaskListMarker(*checked),
+			OwnedEvent::CheckBox(inner) => match inner.as_str() {
+				" " => Event::TaskListMarker(false),
+				"x" => Event::TaskListMarker(true),
+				_ => panic!("CheckBox(\"{inner}\") cannot be converted to Event directly; use prepare_for_render()"),
+			},
 		}
 	}
 }
@@ -323,19 +330,15 @@ impl Events {
 		use pulldown_cmark::{Options, Parser};
 		let options = Options::ENABLE_TASKLISTS | Options::ENABLE_STRIKETHROUGH;
 		let parser = Parser::new_ext(content, options);
-		let events: Vec<OwnedEvent> = parser.map(OwnedEvent::from_event).collect();
+		let mut events: Vec<OwnedEvent> = parser.map(OwnedEvent::from_event).collect();
+		detect_escaped_checkboxes(&mut events);
 		Self(events)
 	}
 
 	/// Render events back to markdown.
 	/// Note: This may not produce identical output to the original due to markdown normalization.
 	pub fn render(&self) -> String {
-		use pulldown_cmark_to_cmark::cmark;
-		let events = self.0.iter().map(|e| e.to_event());
-		let mut output = String::new();
-		// Use pulldown-cmark-to-cmark for proper markdown output
-		cmark(events, &mut output).expect("markdown rendering should not fail");
-		output
+		render_events(&self.0)
 	}
 
 	/// Check if the events sequence is empty.
@@ -391,6 +394,152 @@ impl Events {
 		}
 		Self(vec![OwnedEvent::Text(text.to_string())])
 	}
+}
+
+pub(crate) fn parser_options() -> pulldown_cmark::Options {
+	pulldown_cmark::Options::ENABLE_TASKLISTS | pulldown_cmark::Options::ENABLE_STRIKETHROUGH
+}
+
+pub(crate) fn cmark_options() -> pulldown_cmark_to_cmark::Options<'static> {
+	pulldown_cmark_to_cmark::Options {
+		list_token: '-',
+		newlines_after_headline: 1,
+		newlines_after_paragraph: 1,
+		..Default::default()
+	}
+}
+
+/// Scan for escaped-checkbox patterns in the event stream and replace with `CheckBox`.
+///
+/// pulldown_cmark turns `\[.\]` into `Text("[.")` + `Text("] rest")`.
+/// Inside list items (after `Start(Item)`, optionally `Start(Paragraph)`),
+/// detect this pattern and replace with `CheckBox(inner)` + optional `Text(rest)`.
+pub(crate) fn detect_escaped_checkboxes(events: &mut Vec<OwnedEvent>) {
+	let mut i = 0;
+	while i < events.len() {
+		// Look for Start(Item), then optionally Start(Paragraph), then Text("[...")
+		if !matches!(&events[i], OwnedEvent::Start(OwnedTag::Item)) {
+			i += 1;
+			continue;
+		}
+		i += 1; // past Start(Item)
+
+		// Skip optional Start(Paragraph)
+		if i < events.len() && matches!(&events[i], OwnedEvent::Start(OwnedTag::Paragraph)) {
+			i += 1;
+		}
+
+		// Skip if already a CheckBox (from TaskListMarker)
+		if i < events.len() && matches!(&events[i], OwnedEvent::CheckBox(_)) {
+			i += 1;
+			continue;
+		}
+
+		// Check for Text("[<inner>") + Text("] <rest>")
+		if i + 1 < events.len() {
+			let (OwnedEvent::Text(first), OwnedEvent::Text(second)) = (&events[i], &events[i + 1]) else {
+				continue;
+			};
+			let Some(inner) = first.strip_prefix('[') else { continue };
+			let Some(rest) = second.strip_prefix(']') else { continue };
+			if !rest.is_empty() && !rest.starts_with(' ') {
+				continue;
+			}
+			let checkbox = OwnedEvent::CheckBox(inner.to_string());
+			let rest = rest.strip_prefix(' ').unwrap_or(rest).to_string();
+			events.remove(i);
+			events.remove(i);
+			events.insert(i, checkbox);
+			if !rest.is_empty() {
+				events.insert(i + 1, OwnedEvent::Text(rest));
+			}
+		}
+	}
+}
+
+/// Convert `&[OwnedEvent]` to `Vec<Event>` ready for `pulldown_cmark_to_cmark`.
+///
+/// Handles:
+/// 1. `CheckBox(" ")`/`CheckBox("x")` → `TaskListMarker`
+/// 2. Custom `CheckBox` → escaped `Text("[<inner>\] ")`
+/// 3. Loose-list spacing: inserts `Html("\n")` between items in lists that contain checkboxes
+pub(crate) fn prepare_for_render(events: &[OwnedEvent]) -> Vec<Event<'_>> {
+	let mut out = Vec::with_capacity(events.len());
+
+	// First, identify which list ranges contain checkboxes (for loose spacing).
+	// Track list start positions on a stack.
+	struct ListInfo {
+		start_idx: usize,
+		has_checkbox: bool,
+	}
+	let mut list_stack: Vec<ListInfo> = Vec::new();
+	let mut checkbox_lists: Vec<(usize, usize)> = Vec::new(); // (start, end) indices of lists with checkboxes
+
+	for (i, ev) in events.iter().enumerate() {
+		match ev {
+			OwnedEvent::Start(OwnedTag::List(_)) => {
+				list_stack.push(ListInfo { start_idx: i, has_checkbox: false });
+			}
+			OwnedEvent::CheckBox(_) =>
+				if let Some(info) = list_stack.last_mut() {
+					info.has_checkbox = true;
+				},
+			OwnedEvent::End(OwnedTagEnd::List(_)) =>
+				if let Some(info) = list_stack.pop() {
+					if info.has_checkbox {
+						checkbox_lists.push((info.start_idx, i));
+					}
+				},
+			_ => {}
+		}
+	}
+
+	// Build a set of Item end indices where we should insert Html("\n") for loose spacing.
+	// For each checkbox list, find End(Item) positions (except the last item).
+	let mut loose_item_ends: std::collections::HashSet<usize> = std::collections::HashSet::new();
+	for (list_start, list_end) in &checkbox_lists {
+		let mut depth = 0;
+		let mut item_ends = Vec::new();
+		for (i, ev) in events[*list_start..=*list_end].iter().enumerate() {
+			let abs_i = list_start + i;
+			match ev {
+				OwnedEvent::Start(OwnedTag::List(_)) => depth += 1,
+				OwnedEvent::End(OwnedTagEnd::List(_)) => depth -= 1,
+				OwnedEvent::End(OwnedTagEnd::Item) if depth == 1 => item_ends.push(abs_i),
+				_ => {}
+			}
+		}
+		// Insert loose spacing after all item ends except the last
+		if item_ends.len() > 1 {
+			for &idx in &item_ends[..item_ends.len() - 1] {
+				loose_item_ends.insert(idx);
+			}
+		}
+	}
+
+	for (i, ev) in events.iter().enumerate() {
+		match ev {
+			OwnedEvent::CheckBox(inner) => match inner.as_str() {
+				" " => out.push(Event::TaskListMarker(false)),
+				"x" => out.push(Event::TaskListMarker(true)),
+				_ => out.push(Event::Text(format!("[{inner}\\] ").into())),
+			},
+			_ => out.push(ev.to_event()),
+		}
+		if loose_item_ends.contains(&i) {
+			out.push(Event::Html("\n".into()));
+		}
+	}
+
+	out
+}
+
+/// Render a slice of `OwnedEvent`s to markdown using the shared cmark options.
+pub(crate) fn render_events(events: &[OwnedEvent]) -> String {
+	let prepared = prepare_for_render(events);
+	let mut output = String::new();
+	pulldown_cmark_to_cmark::cmark_with_options(prepared.into_iter(), &mut output, cmark_options()).expect("markdown rendering should not fail");
+	output
 }
 
 impl fmt::Display for Events {
