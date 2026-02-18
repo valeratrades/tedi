@@ -14,19 +14,27 @@ fn test_reset_with_subissue_edit() {
 
 	// Remote has parent with one open sub-issue
 	let remote_vi = parse_virtual(
-		"- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n\
-		 \x20 parent body\n\n\
-		 \x20 - [ ] Sub Issue <!--sub @mock_user https://github.com/o/r/issues/2 -->\n\n\
-		 \x20   sub body\n",
+		r#"- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+
+  parent body
+
+  - [ ] Sub Issue <!--sub @mock_user https://github.com/o/r/issues/2 -->
+
+    sub body
+"#,
 	);
 	ctx.remote(&remote_vi, None);
 
 	// User edits: mark sub-issue as closed
 	let edited = parse_virtual(
-		"- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n\
-		 \x20 parent body\n\n\
-		 \x20 - [x] Sub Issue <!--sub @mock_user https://github.com/o/r/issues/2 -->\n\n\
-		 \x20   sub body\n",
+		r#"- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+
+  parent body
+
+  - [x] Sub Issue <!--sub @mock_user https://github.com/o/r/issues/2 -->
+
+    sub body
+"#,
 	);
 
 	// --reset fetches remote and establishes consensus, then user edits
@@ -45,10 +53,20 @@ fn test_reset_with_subissue_edit() {
 fn test_reset_with_body_edit() {
 	let ctx = TestContext::build("");
 
-	let remote_vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n  original body\n");
+	let remote_vi = parse_virtual(
+		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+
+  original body
+"#,
+	);
 	ctx.remote(&remote_vi, None);
 
-	let edited = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n  modified body\n");
+	let edited = parse_virtual(
+		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+
+  modified body
+"#,
+	);
 
 	let out = ctx.open_url(("o", "r").into(), 1).args(&["--reset"]).edit(&edited).run();
 
@@ -70,37 +88,56 @@ async fn test_reset_discards_local_subissue_modifications() {
 
 	// Remote: clean 3-level hierarchy
 	let remote_vi = parse_virtual(
-		"- [ ] Grandparent <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n\
-		 \x20 grandparent body\n\n\
-		 \x20 - [ ] Parent <!--sub @mock_user https://github.com/o/r/issues/2 -->\n\n\
-		 \x20   original parent body\n\n\
-		 \x20   - [ ] Child <!--sub @mock_user https://github.com/o/r/issues/3 -->\n\n\
-		 \x20     child body\n",
+		r#"- [ ] Grandparent <!-- @mock_user https://github.com/o/r/issues/1 -->
+
+  grandparent body
+
+  - [ ] Parent <!--sub @mock_user https://github.com/o/r/issues/2 -->
+
+    original parent body
+
+    - [ ] Child <!--sub @mock_user https://github.com/o/r/issues/3 -->
+
+      child body
+"#,
 	);
 	ctx.remote(&remote_vi, None);
 
 	// Local: same hierarchy but parent sub-issue has local modifications
 	let local_vi = parse_virtual(
-		"- [ ] Grandparent <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n\
-		 \x20 grandparent body\n\n\
-		 \x20 - [ ] Parent <!--sub @mock_user https://github.com/o/r/issues/2 -->\n\n\
-		 \x20   original parent body\n\
-		 \x20   ADDED LOCAL CONTENT\n\n\
-		 \x20   # Blockers\n\
-		 \x20   - local blocker\n\n\
-		 \x20   - [ ] Child <!--sub @mock_user https://github.com/o/r/issues/3 -->\n\n\
-		 \x20     child body\n",
+		r#"- [ ] Grandparent <!-- @mock_user https://github.com/o/r/issues/1 -->
+
+  grandparent body
+
+  - [ ] Parent <!--sub @mock_user https://github.com/o/r/issues/2 -->
+
+    original parent body
+    ADDED LOCAL CONTENT
+
+    # Blockers
+    - local blocker
+
+    - [ ] Child <!--sub @mock_user https://github.com/o/r/issues/3 -->
+
+      child body
+"#,
 	);
 	ctx.local(&local_vi, None).await;
 
 	// --reset should discard local modifications, then .edit marks child closed
 	let edited = parse_virtual(
-		"- [ ] Grandparent <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n\
-		 \x20 grandparent body\n\n\
-		 \x20 - [ ] Parent <!--sub @mock_user https://github.com/o/r/issues/2 -->\n\n\
-		 \x20   original parent body\n\n\
-		 \x20   - [x] Child <!--sub @mock_user https://github.com/o/r/issues/3 -->\n\n\
-		 \x20     child body\n",
+		r#"- [ ] Grandparent <!-- @mock_user https://github.com/o/r/issues/1 -->
+
+  grandparent body
+
+  - [ ] Parent <!--sub @mock_user https://github.com/o/r/issues/2 -->
+
+    original parent body
+
+    - [x] Child <!--sub @mock_user https://github.com/o/r/issues/3 -->
+
+      child body
+"#,
 	);
 
 	let out = ctx.open_url(("o", "r").into(), 1).args(&["--reset"]).edit(&edited).run();

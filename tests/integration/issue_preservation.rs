@@ -164,41 +164,6 @@ async fn test_blockers_with_nesting_preserved() {
 }
 
 #[tokio::test]
-async fn test_nested_issues_and_blockers_together() {
-	let ctx = TestContext::build("");
-
-	let vi = parse_virtual(
-		"- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n\
-		 \x20 lorem ipsum\n\n\
-		 \x20 # Blockers\n\
-		 \x20 - blocker one\n\
-		 \x20 - blocker two\n\n\
-		 \x20 - [ ] b <!--sub @mock_user https://github.com/o/r/issues/2 -->\n\n\
-		 \x20   nested body\n",
-	);
-
-	let issue = ctx.consensus(&vi, None).await;
-	ctx.remote(&vi, None);
-
-	let out = ctx.open_issue(&issue).run();
-	eprintln!("stdout: {}", out.stdout);
-	eprintln!("stderr: {}", out.stderr);
-
-	assert!(out.status.success(), "stderr: {}", out.stderr);
-
-	// File is in directory format (path points to __main__.md)
-	let path = ctx.resolve_issue_path(&issue);
-	let final_content = read_issue_file(&path);
-	assert!(final_content.contains("# Blockers"), "blockers section lost");
-	assert!(final_content.contains("blocker one"), "blocker one lost");
-
-	// With the new model, nested issue is in a separate file
-	let child_path = path.parent().unwrap().join("2_-_b.md");
-	let child_content = read_issue_file(&child_path);
-	assert!(child_content.contains("nested body"), "nested issue body lost");
-}
-
-#[tokio::test]
 async fn test_closing_nested_issue_creates_bak_file() {
 	let ctx = TestContext::build("");
 

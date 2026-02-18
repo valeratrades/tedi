@@ -153,7 +153,7 @@ mod tests {
 
 	#[test]
 	fn test_current_skips_comments() {
-		let seq = BlockerSequence::parse("- task 1\n\tcomment\n- task 2\n\tanother comment");
+		let seq = BlockerSequence::parse("- task 1\n  comment\n- task 2\n  another comment");
 		assert_eq!(seq.current().map(|i| i.text.as_str()), Some("task 2"));
 		// Comments should be attached to the item
 		assert_eq!(seq.current().map(|i| i.comments.len()), Some(1));
@@ -161,27 +161,27 @@ mod tests {
 
 	#[test]
 	fn test_current_with_context_no_hierarchy() {
-		let seq = BlockerSequence::parse("- Phase 1\n\t- task 1\n- Phase 2\n\t- task 2");
+		let seq = BlockerSequence::parse("- Phase 1\n  - task 1\n- Phase 2\n  - task 2");
 		assert_eq!(seq.current_with_context(&[]), Some("Phase 2: task 2".to_string()));
 	}
 
 	#[test]
 	fn test_current_with_context_with_hierarchy() {
-		let seq = BlockerSequence::parse("- Phase 1\n\t- task 1");
+		let seq = BlockerSequence::parse("- Phase 1\n  - task 1");
 		let hierarchy = vec!["project".to_string()];
 		assert_eq!(seq.current_with_context(&hierarchy), Some("project: Phase 1: task 1".to_string()));
 	}
 
 	#[test]
 	fn test_current_with_context_multi_level_hierarchy() {
-		let seq = BlockerSequence::parse("- Section\n\t- task");
+		let seq = BlockerSequence::parse("- Section\n  - task");
 		let hierarchy = vec!["workspace".to_string(), "project".to_string()];
 		assert_eq!(seq.current_with_context(&hierarchy), Some("workspace: project: Section: task".to_string()));
 	}
 
 	#[test]
 	fn test_nested_items() {
-		let content = "- H1\n\t- H2\n\t\t- task under H2\n- Another H1\n\t- task under another H1";
+		let content = "- H1\n  - H2\n    - task under H2\n- Another H1\n  - task under another H1";
 		let seq = BlockerSequence::parse(content);
 
 		// Current should be "task under another H1" with path "Another H1"
@@ -190,7 +190,7 @@ mod tests {
 
 	#[test]
 	fn test_deeply_nested() {
-		let content = "- Level 1\n\t- Level 2\n\t\t- Level 3\n\t\t\t- deep task";
+		let content = "- Level 1\n  - Level 2\n    - Level 3\n      - deep task";
 		let seq = BlockerSequence::parse(content);
 
 		assert_eq!(seq.current_with_context(&[]), Some("Level 1: Level 2: Level 3: deep task".to_string()));
@@ -205,10 +205,10 @@ mod tests {
 
 	#[test]
 	fn test_add_to_section() {
-		let mut seq = BlockerSequence::parse("- Section\n\t- task 1");
+		let mut seq = BlockerSequence::parse("- Section\n  - task 1");
 		seq.add("task 2");
 		// Should add under the same section (as sibling of task 1)
-		assert_eq!(String::from(&seq), "- Section\n\t- task 1\n\t- task 2");
+		assert_eq!(String::from(&seq), "- Section\n  - task 1\n  - task 2");
 	}
 
 	#[test]
@@ -221,10 +221,10 @@ mod tests {
 
 	#[test]
 	fn test_pop_from_section() {
-		let mut seq = BlockerSequence::parse("- Section\n\t- task 1\n\t- task 2");
+		let mut seq = BlockerSequence::parse("- Section\n  - task 1\n  - task 2");
 		let popped = seq.pop();
 		assert_eq!(popped, Some("task 2".to_string()));
-		assert_eq!(String::from(&seq), "- Section\n\t- task 1");
+		assert_eq!(String::from(&seq), "- Section\n  - task 1");
 	}
 
 	#[test]
@@ -236,11 +236,13 @@ mod tests {
 
 	#[test]
 	fn test_serialize_roundtrip() {
-		let input = "- Header 1\n\t- task 1\n- Header 2\n\t- task 2";
+		let input = "- Header 1\n  - task 1\n- Header 2\n  - task 2";
 		let seq = BlockerSequence::parse(input);
 		insta::assert_snapshot!(String::from(&seq), @"
 		- Header 1
+		  - task 1
 		- Header 2
+		  - task 2
 		");
 	}
 
@@ -255,7 +257,7 @@ mod tests {
 
 	#[test]
 	fn test_items_before_children() {
-		let content = "- root task\n- Section\n\t- section task";
+		let content = "- root task\n- Section\n  - section task";
 		let seq = BlockerSequence::parse(content);
 
 		// Current should be the section task
@@ -264,7 +266,7 @@ mod tests {
 
 	#[test]
 	fn test_multiple_top_sections() {
-		let content = "- A\n\t- task a\n- B\n\t- task b\n- C\n\t- task c";
+		let content = "- A\n  - task a\n- B\n  - task b\n- C\n  - task c";
 		let seq = BlockerSequence::parse(content);
 
 		assert_eq!(seq.current_with_context(&[]), Some("C: task c".to_string()));
@@ -282,7 +284,7 @@ mod tests {
 
 	#[test]
 	fn test_comments_preserved() {
-		let content = "- task 1\n\tcomment 1\n\tcomment 2\n- task 2";
+		let content = "- task 1\n  comment 1\n  comment 2\n- task 2";
 		let seq = BlockerSequence::parse(content);
 
 		assert_eq!(String::from(&seq), content);
@@ -290,7 +292,7 @@ mod tests {
 
 	#[test]
 	fn test_parse_and_serialize() {
-		let content = "- task 1\n\tcomment\n\t- nested\n- task 2";
+		let content = "- task 1\n  comment\n  - nested\n- task 2";
 		let seq = BlockerSequence::parse(content);
 		assert_eq!(String::from(&seq), content);
 	}
@@ -307,11 +309,12 @@ mod tests {
 
 	#[test]
 	fn test_add_child_to_section() {
-		let mut seq = BlockerSequence::parse("- Section\n\t- task 1");
+		let mut seq = BlockerSequence::parse("- Section\n  - task 1");
 		seq.add_child("subtask of task 1");
 		insta::assert_snapshot!(String::from(&seq), @"
 		- Section
-		  - subtask of task 1
+		  - task 1
+		    - subtask of task 1
 		");
 	}
 
@@ -324,11 +327,13 @@ mod tests {
 
 	#[test]
 	fn test_add_child_deeply_nested() {
-		let mut seq = BlockerSequence::parse("- L1\n\t- L2\n\t\t- L3");
+		let mut seq = BlockerSequence::parse("- L1\n  - L2\n    - L3");
 		seq.add_child("L4");
 		insta::assert_snapshot!(String::from(&seq), @"
 		- L1
-		  - L4
+		  - L2
+		    - L3
+		      - L4
 		");
 	}
 }

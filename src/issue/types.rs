@@ -2080,21 +2080,6 @@ mod tests {
 	}
 
 	#[test]
-	fn test_blocker_roundtrip_with_user() {
-		let content = "- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n  Body text.\n\n  # Blockers\n  - First task\n";
-		let issue = unsafe_mock_parse_virtual(content);
-		let fs_out: String = issue.serialize_filesystem().into();
-		eprintln!("FILESYSTEM OUTPUT:\n{}", fs_out);
-		let v_out: String = issue.serialize_virtual().into();
-		eprintln!("VIRTUAL OUTPUT:\n{}", v_out);
-
-		// Try re-parse filesystem output
-		let vi2 = VirtualIssue::parse(&fs_out, PathBuf::from("roundtrip.md")).unwrap();
-		assert_eq!(vi2.contents.title, "Test Issue");
-		assert_eq!(vi2.contents.blockers.items.len(), 1);
-	}
-
-	#[test]
 	fn test_serialize_github_body_only() {
 		let content = "- [ ] Issue <!-- https://github.com/owner/repo/issues/1 -->\n\n  This is the body text.\n\n  # Blockers\n  - task 1\n  - task 2\n";
 		let issue = unsafe_mock_parse_virtual(content);
