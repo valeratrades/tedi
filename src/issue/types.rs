@@ -1280,6 +1280,7 @@ impl Issue /*{{{1*/ {
 	/// Serialize for filesystem storage (single node, no children).
 	/// Children are stored in separate files within the parent's directory.
 	/// Parsing is done via `Local::parse_single_node` in the local module.
+	#[deprecated(note = "should be calling `serialize_virtual_at_depth`; which itself gets a flag for inclusion of children. And then this function becomes a one-liner calling it.")]
 	pub fn serialize_filesystem(&self) -> String {
 		let content_indent = "\t";
 		let mut out = String::new();
