@@ -89,7 +89,7 @@ impl MilestoneDoc {
 
 /// Serialize an issue as title line + blockers only (for milestone embedding).
 pub fn serialize_blockers_view(issue: &Issue) -> String {
-	let checked = issue.contents.state.to_checkbox();
+	let checkbox_contents = issue.contents.state.to_checkbox_contents();
 	let issue_marker = IssueMarker::from(&issue.identity);
 	let labels_part = if issue.contents.labels.is_empty() {
 		String::new()
@@ -103,7 +103,7 @@ pub fn serialize_blockers_view(issue: &Issue) -> String {
 	events.push(OwnedEvent::Start(OwnedTag::Item));
 
 	// Checkbox + title + marker as inline content
-	events.push(OwnedEvent::CheckBox(checked));
+	events.push(OwnedEvent::CheckBox(checkbox_contents));
 	events.push(OwnedEvent::Text(format!("{labels_part}{} ", issue.contents.title)));
 	events.push(OwnedEvent::InlineHtml(format!("<!-- {} -->", issue_marker.encode())));
 

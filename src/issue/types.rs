@@ -253,7 +253,7 @@ impl CloseState /*{{{1*/ {
 	}
 
 	/// Convert to checkbox character(s) for serialization
-	pub fn to_checkbox(&self) -> String {
+	pub fn to_checkbox_contents(&self) -> String {
 		match self {
 			CloseState::Open => " ".to_string(),
 			CloseState::Closed => "x".to_string(),
@@ -1065,7 +1065,7 @@ impl Issue /*{{{1*/ {
 		events.push(OwnedEvent::Start(OwnedTag::Item));
 
 		// CheckBox
-		let checked = self.contents.state.to_checkbox();
+		let checkbox_contents = self.contents.state.to_checkbox_contents();
 
 		// Labels + title + marker
 		let issue_marker = IssueMarker::from(&self.identity);
@@ -1086,7 +1086,7 @@ impl Issue /*{{{1*/ {
 		if has_body_or_children {
 			events.push(OwnedEvent::Start(OwnedTag::Paragraph));
 		}
-		events.push(OwnedEvent::CheckBox(checked));
+		events.push(OwnedEvent::CheckBox(checkbox_contents));
 		events.push(OwnedEvent::Text(format!("{labels_part}{} ", self.contents.title)));
 		events.push(OwnedEvent::InlineHtml(format!("<!-- {} -->", issue_marker.encode())));
 		if has_body_or_children {
@@ -1831,7 +1831,7 @@ mod tests {
 	#[test]
 	fn test_close_state_to_checkbox() {
 		let cases = [CloseState::Open, CloseState::Closed, CloseState::NotPlanned, CloseState::Duplicate(123)];
-		let results: Vec<_> = cases.iter().map(|s| format!("{s:?} => {:?}", s.to_checkbox())).collect();
+		let results: Vec<_> = cases.iter().map(|s| format!("{s:?} => {:?}", s.to_checkbox_contents())).collect();
 		insta::assert_snapshot!(results.join("\n"), @r#"
 		Open => " "
 		Closed => "x"
