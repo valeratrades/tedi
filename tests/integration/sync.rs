@@ -43,9 +43,24 @@ impl DivergedBodiesFixture {
 	async fn new(consensus_seed: i64, local_seed: i64, remote_seed: i64) -> Self {
 		let ctx = TestContext::build("");
 
-		let consensus_vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n  consensus body\n");
-		let local_vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n  local body\n");
-		let remote_vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n  remote changed body\n");
+		let consensus_vi = parse_virtual(
+			r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+
+  consensus body
+"#,
+		);
+		let local_vi = parse_virtual(
+			r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+
+  local body
+"#,
+		);
+		let remote_vi = parse_virtual(
+			r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+
+  remote changed body
+"#,
+		);
 
 		ctx.consensus(&consensus_vi, Some(Seed::new(consensus_seed))).await;
 		let local = ctx.local(&local_vi, Some(Seed::new(local_seed))).await;
@@ -78,8 +93,18 @@ async fn test_both_diverged_merge_winner(#[case] consensus_seed: i64, #[case] lo
 async fn test_only_remote_changed_takes_remote_with_pull() {
 	let ctx = TestContext::build("");
 
-	let consensus_vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n  consensus body\n");
-	let remote_vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n  remote changed body\n");
+	let consensus_vi = parse_virtual(
+		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+
+  consensus body
+"#,
+	);
+	let remote_vi = parse_virtual(
+		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+
+  remote changed body
+"#,
+	);
 
 	// Local matches consensus (no uncommitted changes), remote changed
 	// Seeds: consensus=-45, remote=90 (remote much newer, guarantees dominance)
@@ -101,8 +126,18 @@ async fn test_only_remote_changed_takes_remote_with_pull() {
 async fn test_only_local_changed_pushes_local() {
 	let ctx = TestContext::build("");
 
-	let consensus_vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n  consensus body\n");
-	let local_vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n  local changed body\n");
+	let consensus_vi = parse_virtual(
+		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+
+  consensus body
+"#,
+	);
+	let local_vi = parse_virtual(
+		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+
+  local changed body
+"#,
+	);
 
 	// Local changed, remote still matches consensus
 	// Seeds: consensus=-25, local=85, remote=-25 (local much newer than unchanged remote)
@@ -143,9 +178,24 @@ async fn test_only_local_changed_pushes_local() {
 async fn test_reset_with_local_source_skips_sync() {
 	let ctx = TestContext::build("");
 
-	let consensus_vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n  consensus body\n");
-	let local_vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n  local body\n");
-	let remote_vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n  remote changed body\n");
+	let consensus_vi = parse_virtual(
+		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+
+  consensus body
+"#,
+	);
+	let local_vi = parse_virtual(
+		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+
+  local body
+"#,
+	);
+	let remote_vi = parse_virtual(
+		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+
+  remote changed body
+"#,
+	);
 
 	// --reset uses local as source, so timestamps don't affect result
 	// Seeds: consensus=-30, local=20, remote=25
@@ -174,7 +224,12 @@ async fn test_reset_with_local_source_skips_sync() {
 async fn test_url_open_creates_local_file_from_remote() {
 	let ctx = TestContext::build("");
 
-	let remote_vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n  remote body content\n");
+	let remote_vi = parse_virtual(
+		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+
+  remote body content
+"#,
+	);
 	// Seed: 15 (arbitrary, no comparison needed)
 	ctx.remote(&remote_vi, Some(Seed::new(15)));
 
@@ -201,8 +256,18 @@ async fn test_url_open_creates_local_file_from_remote() {
 async fn test_reset_with_remote_url_nukes_local_state() {
 	let ctx = TestContext::build("");
 
-	let local_vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n  local body that should be nuked\n");
-	let remote_vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n  remote body wins\n");
+	let local_vi = parse_virtual(
+		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+
+  local body that should be nuked
+"#,
+	);
+	let remote_vi = parse_virtual(
+		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+
+  remote body wins
+"#,
+	);
 
 	// --reset overrides everything, but remote is the source when opening via URL
 	// Seeds: consensus=-40, remote=80 (remote much newer)
@@ -229,9 +294,24 @@ async fn test_reset_with_remote_url_nukes_local_state() {
 async fn test_reset_with_remote_url_skips_merge_on_divergence() {
 	let ctx = TestContext::build("");
 
-	let consensus_vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n  consensus body\n");
-	let local_vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n  local diverged body\n");
-	let remote_vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n  remote diverged body\n");
+	let consensus_vi = parse_virtual(
+		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+
+  consensus body
+"#,
+	);
+	let local_vi = parse_virtual(
+		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+
+  local diverged body
+"#,
+	);
+	let remote_vi = parse_virtual(
+		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+
+  remote diverged body
+"#,
+	);
 
 	// Both diverged, but --reset via URL should skip merge and use remote
 	// Seeds: consensus=-60, local=30, remote=35
@@ -262,8 +342,18 @@ async fn test_reset_with_remote_url_skips_merge_on_divergence() {
 async fn test_pull_fetches_before_editor() {
 	let ctx = TestContext::build("");
 
-	let local_vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n  local body\n");
-	let remote_vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n  remote body from github\n");
+	let local_vi = parse_virtual(
+		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+
+  local body
+"#,
+	);
+	let remote_vi = parse_virtual(
+		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+
+  remote body from github
+"#,
+	);
 
 	// Local unchanged from consensus, remote changed
 	// Seeds: consensus=-20, remote=70
@@ -288,9 +378,24 @@ async fn test_pull_fetches_before_editor() {
 async fn test_pull_with_divergence_runs_sync_before_editor() {
 	let ctx = TestContext::build("");
 
-	let consensus_vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n  consensus body\n");
-	let local_vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n  local diverged body\n");
-	let remote_vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n  remote diverged body\n");
+	let consensus_vi = parse_virtual(
+		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+
+  consensus body
+"#,
+	);
+	let local_vi = parse_virtual(
+		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+
+  local diverged body
+"#,
+	);
+	let remote_vi = parse_virtual(
+		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+
+  remote diverged body
+"#,
+	);
 
 	// Both local and remote changed since consensus
 	ctx.consensus(&consensus_vi, Some(Seed::new(-100))).await;
@@ -346,7 +451,12 @@ async fn test_pull_with_divergence_runs_sync_before_editor() {
 async fn test_closing_issue_syncs_state_change() {
 	let ctx = TestContext::build("");
 
-	let open_vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n  body\n");
+	let open_vi = parse_virtual(
+		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+
+  body
+"#,
+	);
 	// Local = consensus = remote initially
 	// Seeds: consensus=5, remote=5 (same seed = same base time)
 	let open_issue = ctx.consensus(&open_vi, Some(Seed::new(5))).await;
@@ -403,12 +513,18 @@ async fn test_duplicate_sub_issues_filtered_from_remote() {
 
 	// Create parent with children for remote - normal closed and duplicate sub-issues
 	let parent_vi = parse_virtual(
-		"- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n\
-		 \x20 parent body\n\n\
-		 \x20 - [x] Normal Closed Sub <!--sub @mock_user https://github.com/o/r/issues/2 -->\n\n\
-		 \x20   sub body\n\n\
-		 \x20 - [2] Duplicate Sub <!--sub @mock_user https://github.com/o/r/issues/3 -->\n\n\
-		 \x20   duplicate body\n",
+		r#"- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+
+  parent body
+
+  - [x] Normal Closed Sub <!--sub @mock_user https://github.com/o/r/issues/2 -->
+
+    sub body
+
+  - [2] Duplicate Sub <!--sub @mock_user https://github.com/o/r/issues/3 -->
+
+    duplicate body
+"#,
 	);
 
 	// Seed: -10 (arbitrary)
@@ -442,7 +558,12 @@ async fn test_duplicate_sub_issues_filtered_from_remote() {
 async fn test_open_unchanged_succeeds() {
 	let ctx = TestContext::build("");
 
-	let vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n  issue body\n");
+	let vi = parse_virtual(
+		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+
+  issue body
+"#,
+	);
 	// Seed: 10 (arbitrary)
 	let issue = ctx.remote(&vi, Some(Seed::new(10)));
 
@@ -466,7 +587,12 @@ async fn test_open_unchanged_succeeds() {
 async fn test_open_by_number_unchanged_succeeds() {
 	let ctx = TestContext::build("");
 
-	let vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n  issue body\n");
+	let vi = parse_virtual(
+		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+
+  issue body
+"#,
+	);
 	ctx.remote(&vi, None);
 
 	// First open via URL with --reset
@@ -490,7 +616,12 @@ async fn test_open_by_number_unchanged_succeeds() {
 async fn test_reset_syncs_changes_after_editor() {
 	let ctx = TestContext::build("");
 
-	let remote_vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n  remote body\n");
+	let remote_vi = parse_virtual(
+		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+
+  remote body
+"#,
+	);
 	ctx.remote(&remote_vi, None);
 
 	// emulate user closing the issue after
@@ -541,13 +672,24 @@ async fn test_comment_shorthand_creates_comment() {
 	let ctx = TestContext::build("");
 
 	// Start with an issue that has no comments
-	let vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n  issue body\n");
+	let vi = parse_virtual(
+		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+
+  issue body
+"#,
+	);
 	let issue = ctx.consensus(&vi, None).await;
 	ctx.remote(&vi, None);
 
 	// Simulate user adding `!c` followed by comment content
 	// After expansion, the file should have `<!-- new comment -->` marker
-	let edited_content = "- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n  issue body\n\n  !c\n  My new comment content\n";
+	let edited_content = r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+
+  issue body
+
+  !c
+  My new comment content
+"#;
 
 	// Write the edited content (simulating what user typed in editor)
 	let issue_path = ctx.resolve_issue_path(&issue);
@@ -601,25 +743,35 @@ async fn test_force_merge_preserves_both_sub_issues(#[case] args: &[&str], #[cas
 
 	// Local: parent with local-only sub-issue and modified description
 	let local_vi = parse_virtual(
-		"- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n\
-		 \x20 parent body\n\
-		 \x20 extra line from local\n\n\
-		 \x20 - [ ] Local Sub <!--sub @mock_user https://github.com/o/r/issues/2 -->\n\n\
-		 \x20   local sub body\n",
+		r#"- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+
+  parent body
+  extra line from local
+
+  - [ ] Local Sub <!--sub @mock_user https://github.com/o/r/issues/2 -->
+
+    local sub body
+"#,
 	);
 
 	// Remote: parent with remote-only sub-issue (no extra description line)
 	let remote_vi = parse_virtual(
-		"- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n\
-		 \x20 parent body\n\n\
-		 \x20 - [ ] Remote Sub <!--sub @mock_user https://github.com/o/r/issues/3 -->\n\n\
-		 \x20   remote sub body\n",
+		r#"- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+
+  parent body
+
+  - [ ] Remote Sub <!--sub @mock_user https://github.com/o/r/issues/3 -->
+
+    remote sub body
+"#,
 	);
 
 	// Consensus: original state (no sub-issues, original description)
 	let consensus_vi = parse_virtual(
-		"- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n\
-		 \x20 parent body\n",
+		r#"- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+
+  parent body
+"#,
 	);
 
 	ctx.consensus(&consensus_vi, Some(Seed::new(-100))).await;
@@ -670,7 +822,12 @@ async fn test_force_merge_preserves_both_sub_issues(#[case] args: &[&str], #[cas
 async fn test_undo_shorthand_aborts_sync() {
 	let ctx = TestContext::build("");
 
-	let vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n  issue body\n");
+	let vi = parse_virtual(
+		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+
+  issue body
+"#,
+	);
 	let issue = ctx.consensus(&vi, None).await;
 	ctx.remote(&vi, None);
 
@@ -699,11 +856,14 @@ async fn test_consensus_sink_writes_meta_json_with_timestamps() {
 
 	// Set up a remote issue with a comment (will have timestamps from mock)
 	let remote_vi = parse_virtual(
-		"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n\
-		 \x20 remote body\n\n\
-		 \x20 ---\n\
-		 \x20 <!-- comment 1001 @commenter -->\n\
-		 \x20 A test comment\n",
+		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+
+  remote body
+
+  ---
+  <!-- comment 1001 @commenter -->
+  A test comment
+"#,
 	);
 	ctx.remote(&remote_vi, None);
 

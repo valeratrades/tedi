@@ -33,10 +33,13 @@ async fn test_blocker_add_in_integrated_mode() {
 
 	// Create issue with existing blockers section
 	let vi = parse_virtual(
-		"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n\
-		 \x20 Body text.\n\n\
-		 \x20 # Blockers\n\
-		 \x20 - First task\n",
+		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+
+  Body text.
+
+  # Blockers
+  - First task
+"#,
 	);
 
 	// Set up: local issue file exists
@@ -73,12 +76,15 @@ async fn test_blocker_pop_in_integrated_mode() {
 
 	// Create issue with multiple blockers
 	let vi = parse_virtual(
-		"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n\
-		 \x20 Body text.\n\n\
-		 \x20 # Blockers\n\
-		 \x20 - First task\n\
-		 \x20 - Second task\n\
-		 \x20 - Third task\n",
+		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+
+  Body text.
+
+  # Blockers
+  - First task
+  - Second task
+  - Third task
+"#,
 	);
 
 	// Set up: local issue file exists
@@ -114,7 +120,12 @@ async fn test_blocker_add_creates_blockers_section_if_missing() {
 	let ctx = TestContext::build("");
 
 	// Create issue WITHOUT blockers section
-	let vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n  Body text without blockers section.\n");
+	let vi = parse_virtual(
+		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+
+  Body text without blockers section.
+"#,
+	);
 
 	// Set up: local issue file exists
 	let issue = ctx.local(&vi, None).await;
@@ -172,13 +183,16 @@ async fn test_blocker_add_with_nested_context() {
 
 	// Create issue with blockers section containing nested items
 	let vi = parse_virtual(
-		"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n\
-		 \x20 Body text.\n\n\
-		 \x20 # Blockers\n\
-		 \x20 - Phase 1\n\
-		 \x20   - Setup task\n\
-		 \x20 - Phase 2\n\
-		 \x20   - Implementation task\n",
+		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+
+  Body text.
+
+  # Blockers
+  - Phase 1
+    - Setup task
+  - Phase 2
+    - Implementation task
+"#,
 	);
 
 	// Set up: local issue file exists
@@ -218,14 +232,18 @@ async fn test_blocker_toggle_cycles_between_entries() {
 
 	// Create two issues
 	let vi1 = parse_virtual(
-		"- [ ] Issue A <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n\
-		 \x20 # Blockers\n\
-		 \x20 - task A\n",
+		r#"- [ ] Issue A <!-- @mock_user https://github.com/o/r/issues/1 -->
+
+  # Blockers
+  - task A
+"#,
 	);
 	let vi2 = parse_virtual(
-		"- [ ] Issue B <!-- @mock_user https://github.com/o/r/issues/2 -->\n\n\
-		 \x20 # Blockers\n\
-		 \x20 - task B\n",
+		r#"- [ ] Issue B <!-- @mock_user https://github.com/o/r/issues/2 -->
+
+  # Blockers
+  - task B
+"#,
 	);
 
 	let issue1 = ctx.local(&vi1, None).await;
@@ -275,19 +293,25 @@ async fn test_blocker_toggle_with_three_entries_cycles() {
 	let ctx = TestContext::build("");
 
 	let vi1 = parse_virtual(
-		"- [ ] Issue A <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n\
-		 \x20 # Blockers\n\
-		 \x20 - task A\n",
+		r#"- [ ] Issue A <!-- @mock_user https://github.com/o/r/issues/1 -->
+
+  # Blockers
+  - task A
+"#,
 	);
 	let vi2 = parse_virtual(
-		"- [ ] Issue B <!-- @mock_user https://github.com/o/r/issues/2 -->\n\n\
-		 \x20 # Blockers\n\
-		 \x20 - task B\n",
+		r#"- [ ] Issue B <!-- @mock_user https://github.com/o/r/issues/2 -->
+
+  # Blockers
+  - task B
+"#,
 	);
 	let vi3 = parse_virtual(
-		"- [ ] Issue C <!-- @mock_user https://github.com/o/r/issues/3 -->\n\n\
-		 \x20 # Blockers\n\
-		 \x20 - task C\n",
+		r#"- [ ] Issue C <!-- @mock_user https://github.com/o/r/issues/3 -->
+
+  # Blockers
+  - task C
+"#,
 	);
 
 	ctx.local(&vi1, None).await;
@@ -331,9 +355,11 @@ async fn test_blocker_toggle_single_entry_errors() {
 	let ctx = TestContext::build("");
 
 	let vi = parse_virtual(
-		"- [ ] Issue A <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n\
-		 \x20 # Blockers\n\
-		 \x20 - task A\n",
+		r#"- [ ] Issue A <!-- @mock_user https://github.com/o/r/issues/1 -->
+
+  # Blockers
+  - task A
+"#,
 	);
 
 	ctx.local(&vi, None).await;
@@ -355,14 +381,18 @@ async fn test_blocker_add_works_after_toggle() {
 	let ctx = TestContext::build("");
 
 	let vi1 = parse_virtual(
-		"- [ ] Issue A <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n\
-		 \x20 # Blockers\n\
-		 \x20 - task A\n",
+		r#"- [ ] Issue A <!-- @mock_user https://github.com/o/r/issues/1 -->
+
+  # Blockers
+  - task A
+"#,
 	);
 	let vi2 = parse_virtual(
-		"- [ ] Issue B <!-- @mock_user https://github.com/o/r/issues/2 -->\n\n\
-		 \x20 # Blockers\n\
-		 \x20 - task B\n",
+		r#"- [ ] Issue B <!-- @mock_user https://github.com/o/r/issues/2 -->
+
+  # Blockers
+  - task B
+"#,
 	);
 
 	let issue1 = ctx.local(&vi1, None).await;
