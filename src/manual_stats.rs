@@ -50,6 +50,9 @@ pub async fn update_or_open(settings: &crate::config::LiveSettings, args: Manual
 				return Ok(());
 			}
 		},
+		ManualSubcommands::Relative(rel_args) => {
+			return print_relative(settings, args.days_back, rel_args.n);
+		}
 		ManualSubcommands::Ev(_) | ManualSubcommands::CounterStep(_) => {}
 	}
 
@@ -133,6 +136,8 @@ pub enum ManualSubcommands {
 	/// Full hours since last update
 	LastEvUpdateHours(LastEvUpdateArgs),
 	CounterStep(CounterStepArgs),
+	/// Compare today's ev against previous days (youtube-style ranking)
+	Relative(RelativeArgs),
 }
 #[derive(Args)]
 pub struct EvArgs {
@@ -182,6 +187,13 @@ pub struct CounterStepArgs {
 	#[arg(long)]
 	pub dev_runs: bool,
 }
+#[derive(Args)]
+pub struct RelativeArgs {
+	/// Number of days to compare against (including today)
+	#[arg(default_value = "10")]
+	pub n: usize,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 /// Unless specified otherwise, all times are in minutes
 pub struct Day {
@@ -373,6 +385,36 @@ impl Day {
 static PBS_FILENAME: &str = ".pbs.json";
 
 use crate::MANUAL_PATH_APPENDIX;
+
+fn print_relative(settings: &crate::config::LiveSettings, days_back: usize, n: usize) -> Result<()> {
+	ensure!(n >= 2, "n must be at least 2 to have something to compare against");
+
+	let mut entries: Vec<(String, i32)> = Vec::with_capacity(n);
+	for i in days_back..days_back + n {
+		let date = utils::format_date(i, settings);
+		let ev = Day::load(&date).map(|d| d.ev).unwrap_or(0);
+		entries.push((date, ev));
+	}
+
+	let today_date = &entries[0].0;
+	let today_ev = entries[0].1;
+
+	let mut sorted: Vec<(usize, &str, i32)> = entries.iter().enumerate().map(|(i, (d, ev))| (i, d.as_str(), *ev)).collect();
+	sorted.sort_by(|a, b| b.2.cmp(&a.2));
+
+	let rank = sorted.iter().position(|e| e.0 == 0).unwrap() + 1;
+	let beaten = n - rank;
+	let pct = (beaten as f64 / (n - 1) as f64 * 100.0) as u32;
+
+	println!("ev {today_ev} ({today_date}) — better than {pct}% of last {n} days (rank {rank}/{n})");
+	println!();
+	for (pos, (original_idx, date, ev)) in sorted.iter().enumerate() {
+		let marker = if *original_idx == 0 { " <--" } else { "" };
+		println!("  {:>2}. {:>4}  {}{}", pos + 1, ev, date, marker);
+	}
+
+	Ok(())
+}
 
 fn process_manual_updates<T: AsRef<Path>>(path: T, settings: &crate::config::LiveSettings) -> Result<()> {
 	if !path.as_ref().exists() {
