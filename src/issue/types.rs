@@ -10,6 +10,8 @@ use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
+use super::events::indent_into;
+
 /// Maximum title length enforced by Github.
 pub const MAX_TITLE_LENGTH: usize = 256;
 
@@ -1044,30 +1046,27 @@ impl Issue /*{{{1*/ {
 	/// Serialize for virtual file representation (human-readable, full tree).
 	/// Creates a complete markdown file with all children recursively embedded.
 	/// Used for temp files in /tmp where user views/edits the full issue tree.
-	pub fn serialize_virtual(&self) -> super::Events {
-		//NB: DO NOT CHANGE Output Type
+	pub fn serialize_virtual(&self) -> String {
 		self.serialize_virtual_at_depth(0, true)
 	}
 
-	/// Internal: serialize virtual representation as a cmark event stream.
+	/// Internal: serialize virtual representation using milestone-style rendering.
 	///
-	/// Produces: `List(None) > Item > [CheckBox, Text(title), InlineHtml(marker), body events, comment events, blockers, children...] > End(Item) > End(List)`
-	fn serialize_virtual_at_depth(&self, depth: usize, include_children: bool) -> super::Events {
-		//NB: DO NOT CHANGE Output Type
+	/// Renders title line via cmark as a standalone list item, then renders body/comments/blockers/children
+	/// separately and indents them under the title. This matches how `milestone_embed::serialize_item` works,
+	/// avoiding cmark's paragraph spacing that would insert blank lines between title and body.
+	fn serialize_virtual_at_depth(&self, depth: usize, include_children: bool) -> String {
 		use super::{OwnedEvent, OwnedTag, OwnedTagEnd};
 
 		if self.identity.is_virtual {
 			assert!(self.user().is_none(), "virtual issue must not have a user tag, got: {:?}", self.user());
 		}
 
-		let mut events = Vec::new();
-		events.push(OwnedEvent::Start(OwnedTag::List(None)));
-		events.push(OwnedEvent::Start(OwnedTag::Item));
+		let content_indent = "  ".repeat(depth + 1);
+		let mut out = String::new();
 
-		// CheckBox
+		// === Title line: render via cmark as standalone list item ===
 		let checkbox_contents = self.contents.state.to_checkbox_contents();
-
-		// Labels + title + marker
 		let issue_marker = IssueMarker::from(&self.identity);
 		let labels_part = if self.contents.labels.is_empty() {
 			String::new()
@@ -1075,41 +1074,44 @@ impl Issue /*{{{1*/ {
 			format!("[{}] ", self.contents.labels.join(", "))
 		};
 
+		let title_str: String = super::Events::from(vec![
+			OwnedEvent::Start(OwnedTag::List(None)),
+			OwnedEvent::Start(OwnedTag::Item),
+			OwnedEvent::CheckBox(checkbox_contents),
+			OwnedEvent::Text(format!("{labels_part}{} ", self.contents.title)),
+			OwnedEvent::InlineHtml(format!("<!-- {} -->", issue_marker.encode())),
+			OwnedEvent::End(OwnedTagEnd::Item),
+			OwnedEvent::End(OwnedTagEnd::List(false)),
+		])
+		.into();
+
+		// Indent the title line to the correct depth
+		let depth_indent = "  ".repeat(depth);
+		for line in title_str.lines() {
+			out.push_str(&depth_indent);
+			out.push_str(line);
+			out.push('\n');
+		}
+
 		let is_owned = self.identity.is_owned();
-		let has_body_or_children = self.contents.comments.first().is_some_and(|c| !c.body.is_empty())
-			|| self.contents.comments.len() > 1
-			|| !self.contents.blockers.is_empty()
-			|| (include_children && !self.children.is_empty());
 
-		// Wrap title line in paragraph if there is body/children content after it,
-		// so cmark renders them as separate blocks
-		if has_body_or_children {
-			events.push(OwnedEvent::Start(OwnedTag::Paragraph));
-		}
-		events.push(OwnedEvent::CheckBox(checkbox_contents));
-		events.push(OwnedEvent::Text(format!("{labels_part}{} ", self.contents.title)));
-		events.push(OwnedEvent::InlineHtml(format!("<!-- {} -->", issue_marker.encode())));
-		if has_body_or_children {
-			events.push(OwnedEvent::End(OwnedTagEnd::Paragraph));
-		}
+		// Helper: render content below title, indented under the item
+		let mut content = String::new();
 
-		// Body (first comment) — extend events directly
-		// For unowned issues, wrap body in a nested list to get extra indentation
+		// === Body (first comment) ===
 		if let Some(body_comment) = self.contents.comments.first() {
 			if !body_comment.body.is_empty() {
-				if is_owned {
-					events.extend(body_comment.body.iter().cloned());
+				let body_str: String = super::Events::from(body_comment.body.to_vec()).into();
+				if !is_owned {
+					// Extra indent for unowned issues
+					indent_into(&mut content, &body_str, "  ");
 				} else {
-					events.push(OwnedEvent::Start(OwnedTag::List(None)));
-					events.push(OwnedEvent::Start(OwnedTag::Item));
-					events.extend(body_comment.body.iter().cloned());
-					events.push(OwnedEvent::End(OwnedTagEnd::Item));
-					events.push(OwnedEvent::End(OwnedTagEnd::List(false)));
+					content.push_str(&body_str);
 				}
 			}
 		}
 
-		// Additional comments
+		// === Additional comments ===
 		for comment in self.contents.comments.iter().skip(1) {
 			if self.identity.is_virtual {
 				assert!(
@@ -1120,6 +1122,11 @@ impl Issue /*{{{1*/ {
 			}
 			let comment_is_owned = comment.user().is_none() || comment.user().is_some_and(crate::current_user::is);
 
+			// Blank line before comment separator
+			if content.lines().last().is_some_and(|l| !l.trim().is_empty()) {
+				content.push('\n');
+			}
+
 			// Comment separator marker
 			let marker_html = match &comment.identity {
 				CommentIdentity::Body | CommentIdentity::Pending => Marker::NewComment.encode(),
@@ -1128,36 +1135,42 @@ impl Issue /*{{{1*/ {
 					format!("<!-- @{user} {url}#issuecomment-{id} -->")
 				}
 			};
-			events.push(OwnedEvent::Html(format!("{marker_html}\n")));
+			content.push_str(&marker_html);
+			content.push('\n');
 
-			// Comment body — same owned/unowned wrapping logic
+			// Comment body
 			if !comment.body.is_empty() {
-				if comment_is_owned {
-					events.extend(comment.body.iter().cloned());
+				let body_str: String = super::Events::from(comment.body.to_vec()).into();
+				if !comment_is_owned {
+					indent_into(&mut content, &body_str, "  ");
 				} else {
-					events.push(OwnedEvent::Start(OwnedTag::List(None)));
-					events.push(OwnedEvent::Start(OwnedTag::Item));
-					events.extend(comment.body.iter().cloned());
-					events.push(OwnedEvent::End(OwnedTagEnd::Item));
-					events.push(OwnedEvent::End(OwnedTagEnd::List(false)));
+					content.push_str(&body_str);
 				}
 			}
 		}
 
-		// Blockers section
+		// === Blockers section ===
 		if !self.contents.blockers.is_empty() {
-			events.push(OwnedEvent::Start(OwnedTag::Heading {
-				level: pulldown_cmark::HeadingLevel::H1,
-				id: None,
-				classes: Vec::new(),
-				attrs: Vec::new(),
-			}));
-			events.push(OwnedEvent::Text("Blockers".to_string()));
-			events.push(OwnedEvent::End(OwnedTagEnd::Heading(pulldown_cmark::HeadingLevel::H1)));
-			events.extend(self.contents.blockers.to_events());
+			if content.lines().last().is_some_and(|l| !l.trim().is_empty()) {
+				content.push('\n');
+			}
+			let header = crate::Header::new(1, "Blockers");
+			content.push_str(&header.encode());
+			content.push('\n');
+			let blockers_str: String = super::Events::from(self.contents.blockers.to_events().to_vec()).into();
+			content.push_str(&blockers_str);
 		}
 
-		// Children — sort: open first by selector, then closed by selector
+		// Blank line between title and content (makes pulldown_cmark treat as loose list item,
+		// which is required for idempotent round-tripping: without it, re-parse produces
+		// SoftBreak instead of Paragraph, changing the next serialize output).
+		if !content.is_empty() {
+			out.push_str(&content_indent);
+			out.push('\n');
+			indent_into(&mut out, &content, &content_indent);
+		}
+
+		// === Children — sort: open first by selector, then closed by selector ===
 		if include_children {
 			let (mut open, mut closed): (Vec<_>, Vec<_>) = self.children.iter().partition(|(_, child)| !child.contents.state.is_closed());
 			open.sort_by_key(|(sel, _)| *sel);
@@ -1165,41 +1178,44 @@ impl Issue /*{{{1*/ {
 			let sorted_children = open.into_iter().chain(closed);
 
 			for (_, child) in sorted_children {
+				if out.lines().last().is_some_and(|l| !l.trim().is_empty()) {
+					out.push_str(&content_indent);
+					out.push('\n');
+				}
+
 				if child.contents.state.is_closed() {
-					// Closed child: emit title line with omitted marker, then child body wrapped in vim folds
-					let child_events = child.serialize_virtual_at_depth(depth + 1, true);
+					let child_str: String = child.serialize_virtual_at_depth(depth + 1, true).into();
 					let omitted_start = Marker::OmittedStart.encode();
 					let omitted_end = Marker::OmittedEnd.encode();
+					let child_content_indent = "  ".repeat(depth + 2);
 
-					let mut injected = false;
-					for ev in child_events.iter() {
-						events.push(ev.clone());
-						// Inject OmittedStart right after the InlineHtml marker (first InlineHtml in the child)
-						if !injected {
-							if let OwnedEvent::InlineHtml(_) = ev {
-								events.push(OwnedEvent::Text(format!(" {omitted_start}")));
-								injected = true;
-							}
-						}
+					let mut lines = child_str.lines();
+					// First line is the title — inject omitted marker
+					if let Some(title_line) = lines.next() {
+						out.push_str(&format!("{title_line} {omitted_start}\n"));
 					}
-					// Insert OmittedEnd before the final End(Item) > End(List)
-					let len = events.len();
-					events.insert(len - 2, OwnedEvent::Html(format!("{omitted_end}\n")));
+					// Remaining lines are body content
+					for line in lines {
+						out.push_str(line);
+						out.push('\n');
+					}
+					// Vim fold end
+					out.push_str(&child_content_indent);
+					out.push_str(&omitted_end);
+					out.push('\n');
 				} else {
-					events.extend(child.serialize_virtual_at_depth(depth + 1, true));
+					let child_str: String = child.serialize_virtual_at_depth(depth + 1, true).into();
+					out.push_str(&child_str);
 				}
 			}
 		}
 
-		events.push(OwnedEvent::End(OwnedTagEnd::Item));
-		events.push(OwnedEvent::End(OwnedTagEnd::List(false)));
-		events.into()
+		out
 	}
 
 	/// Serialize for filesystem storage (single node, no children).
 	/// Children are stored in separate files within the parent's directory.
-	pub fn serialize_filesystem(&self) -> super::Events {
-		//NB: DO NOT CHANGE Output Type
+	pub fn serialize_filesystem(&self) -> String {
 		self.serialize_virtual_at_depth(0, false)
 	}
 
@@ -1225,7 +1241,7 @@ impl Issue /*{{{1*/ {
 		}
 
 		// Serialize and find the last blocker item line
-		let serialized: String = self.serialize_virtual().into();
+		let serialized = self.serialize_virtual();
 		let lines: Vec<&str> = serialized.lines().collect();
 
 		// Find where blockers section starts
@@ -1931,20 +1947,31 @@ mod tests {
 		// snapshot has trailing spaces on lines between closed children
 		insta::assert_snapshot!(issue.serialize_virtual(), @r"
 		- [ ] Parent issue <!-- https://github.com/owner/repo/issues/1 -->
+		  
 		  Body
+		  
 		  - [x] Closed sub <!-- https://github.com/owner/repo/issues/2 --> <!--omitted {{{always-->
+		    
 		     <!--omitted {{{always-->
+		    
 		    closed body
-		    <!--,}}}-->
 		    
+		    <!--,}}}-->
+		  
 		  - \[-\] Not planned sub <!-- https://github.com/owner/repo/issues/3 --> <!--omitted {{{always-->
-		     <!--omitted {{{always-->
-		    not planned body
-		    <!--,}}}-->
 		    
-		  - \[42\] Duplicate sub <!-- https://github.com/owner/repo/issues/4 --> <!--omitted {{{always-->
 		     <!--omitted {{{always-->
+		    
+		    not planned body
+		    
+		    <!--,}}}-->
+		  
+		  - \[42\] Duplicate sub <!-- https://github.com/owner/repo/issues/4 --> <!--omitted {{{always-->
+		    
+		     <!--omitted {{{always-->
+		    
 		    duplicate body
+		    
 		    <!--,}}}-->
 		");
 	}
@@ -1960,21 +1987,21 @@ mod tests {
 	fn test_find_last_blocker_position_single_item() {
 		let content = "- [ ] Issue <!-- https://github.com/owner/repo/issues/1 -->\n\n  Body\n\n  # Blockers\n  - task 1\n";
 		let issue = unsafe_mock_parse_virtual(content);
-		insta::assert_snapshot!(format!("{:?}", issue.find_last_blocker_position()), @"Some((4, 5))");
+		insta::assert_snapshot!(format!("{:?}", issue.find_last_blocker_position()), @"Some((5, 5))");
 	}
 
 	#[test]
 	fn test_find_last_blocker_position_multiple_items() {
 		let content = "- [ ] Issue <!-- https://github.com/owner/repo/issues/1 -->\n\n  Body\n\n  # Blockers\n  - task 1\n  - task 2\n  - task 3\n";
 		let issue = unsafe_mock_parse_virtual(content);
-		insta::assert_snapshot!(format!("{:?}", issue.find_last_blocker_position()), @"Some((6, 5))");
+		insta::assert_snapshot!(format!("{:?}", issue.find_last_blocker_position()), @"Some((7, 5))");
 	}
 
 	#[test]
 	fn test_find_last_blocker_position_with_nesting() {
 		let content = "- [ ] Issue <!-- https://github.com/owner/repo/issues/1 -->\n\n  Body\n\n  # Blockers\n  - Phase 1\n    - task a\n  - Phase 2\n    - task b\n";
 		let issue = unsafe_mock_parse_virtual(content);
-		insta::assert_snapshot!(format!("{:?}", issue.find_last_blocker_position()), @"Some((7, 7))");
+		insta::assert_snapshot!(format!("{:?}", issue.find_last_blocker_position()), @"Some((8, 7))");
 	}
 
 	#[test]
@@ -1993,6 +2020,7 @@ mod tests {
 		// filesystem serialization should NOT include children
 		insta::assert_snapshot!(issue.serialize_filesystem(), @"
 		- [ ] Parent <!-- https://github.com/owner/repo/issues/1 -->
+		  
 		  Parent body
 		");
 	}
@@ -2004,8 +2032,11 @@ mod tests {
 		let issue = unsafe_mock_parse_virtual(content);
 		insta::assert_snapshot!(issue.serialize_virtual(), @"
 		- [ ] Parent <!-- https://github.com/owner/repo/issues/1 -->
+		  
 		  Parent body
+		  
 		  - [ ] Child 1 <!-- https://github.com/owner/repo/issues/2 -->
+		    
 		    Child 1 body
 		");
 	}
@@ -2028,7 +2059,7 @@ mod tests {
 	fn test_virtual_roundtrip() {
 		let content = "- [ ] Parent <!-- https://github.com/owner/repo/issues/1 -->\n\n  Parent body\n\n  - [ ] Child <!--sub https://github.com/owner/repo/issues/2 -->\n\n    Child body\n";
 		let issue = unsafe_mock_parse_virtual(content);
-		let serialized: String = issue.serialize_virtual().into();
+		let serialized = issue.serialize_virtual();
 		let reparsed = unsafe_mock_parse_virtual(&serialized);
 		insta::assert_snapshot!(
 			format!("title: {}\nchildren: {}", reparsed.contents.title, reparsed.children.len()),
@@ -2047,6 +2078,7 @@ mod tests {
 		// !s must not appear in re-serialized output, blockers preserved
 		insta::assert_snapshot!(unsafe_mock_parse_virtual(content).serialize_virtual(), @"
 		- [ ] Issue <!-- https://github.com/owner/repo/issues/1 -->
+		  
 		  Body
 		  # Blockers
 		  - task 1
@@ -2086,6 +2118,7 @@ mod tests {
 		let github_body: String = issue.render_github().into();
 		insta::assert_snapshot!(github_body, @"
 		This is the body text.
+
 		# Blockers
 		- task 1
 		- task 2
@@ -2134,5 +2167,31 @@ mod tests {
 		let updated_vi = VirtualIssue::parse(updated, PathBuf::from("test.md")).unwrap();
 		// child should transition to Open
 		insta::assert_snapshot!(format!("{:?}", updated_vi[2].contents.state), @"Open");
+	}
+
+	#[test]
+	fn test_serialize_roundtrip_idempotent() {
+		crate::current_user::set("mock_user".to_string());
+		let input = "- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n  original body\n";
+		let issue = unsafe_mock_parse_virtual(input);
+		let s1 = issue.serialize_virtual();
+		let issue2 = unsafe_mock_parse_virtual(&s1);
+		let s2 = issue2.serialize_virtual();
+		assert_eq!(s1, s2, "serialize_virtual must be idempotent");
+	}
+
+	#[test]
+	fn test_parse_nested_subissues() {
+		let input = "- [ ] Grandparent <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n  grandparent body\n\n  - [ ] Parent <!--sub @mock_user https://github.com/o/r/issues/2 -->\n\n    original parent body\n\n    - [ ] Child <!--sub @mock_user https://github.com/o/r/issues/3 -->\n\n      child body\n";
+		let vi = VirtualIssue::parse(input, PathBuf::from("test.md")).unwrap();
+		eprintln!("parsed: title={}, children={}", vi.contents.title, vi.children.len());
+	}
+
+	#[test]
+	fn test_parse_blockers_and_child_at_same_indent() {
+		let input = "- [ ] Parent <!-- https://github.com/owner/repo/issues/2 -->\n  \n  body\n  \n  # Blockers\n  - local blocker\n  \n  - [ ] Child <!--sub https://github.com/owner/repo/issues/3 -->\n    \n    child body\n";
+		let vi = VirtualIssue::parse(input, PathBuf::from("test.md")).unwrap();
+		assert_eq!(vi.contents.blockers.items.len(), 1, "should have 1 blocker");
+		assert_eq!(vi.children.len(), 1, "should have 1 child");
 	}
 }

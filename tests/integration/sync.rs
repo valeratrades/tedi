@@ -170,6 +170,7 @@ async fn test_only_local_changed_pushes_local() {
 	}
 	//- /o/r/1_-_Test_Issue.md
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+	  
 	  local changed body
 	"#);
 }
@@ -369,6 +370,7 @@ async fn test_pull_fetches_before_editor() {
 	assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().skip_meta(), &out), @"
 	//- /o/r/1_-_Test_Issue.md
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+	  
 	  remote body from github
 	");
 }
@@ -422,6 +424,7 @@ async fn test_pull_with_divergence_runs_sync_before_editor() {
 	||||||| [hash]
 	=======
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+	  
 	  remote diverged body
 	>>>>>>> remote-state
 	//- /o/r/.meta.json
@@ -443,6 +446,7 @@ async fn test_pull_with_divergence_runs_sync_before_editor() {
 	}
 	//- /o/r/1_-_Test_Issue.md
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+	  
 	  local diverged body
 	"#)
 }
@@ -472,18 +476,8 @@ async fn test_closing_issue_syncs_state_change() {
 	let result_str = render_fixture(FixtureRenderer::try_new(&ctx).unwrap().redact_timestamps(&[12]), &out);
 
 	insta::assert_snapshot!(result_str, @r#"
-	//- /o/__conflict.md
-	<<<<<<< HEAD
-	- [x] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-	  
-	  body
-	||||||| [hash]
-	=======
-	- [x] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-	  body
-	>>>>>>> remote-state
 	//- /o/r/.meta.json
-	        [REDACTED - non-deterministic timestamp]
+	{
 	  "virtual_project": false,
 	  "next_virtual_issue_number": 0,
 	  "issues": {
@@ -493,14 +487,15 @@ async fn test_closing_issue_syncs_state_change() {
 	        "title": "2001-09-11T09:15:20Z",
 	        "description": "2001-09-11T04:30:34Z",
 	        "labels": "2001-09-11T06:38:10Z",
-	        "state": "2001-09-11T19:10:04Z",
+	        [REDACTED - non-deterministic timestamp]
 	        "comments": []
 	      }
 	    }
 	  }
 	}
-	//- /o/r/1_-_Test_Issue.md
-	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+	//- /o/r/1_-_Test_Issue.md.bak
+	- [x] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+	  
 	  body
 	"#);
 }
@@ -541,9 +536,11 @@ async fn test_duplicate_sub_issues_filtered_from_remote() {
 	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().skip_meta(), &out), @"
 	//- /o/r/1_-_Parent_Issue/2_-_Normal_Closed_Sub.md.bak
 	- [x] Normal Closed Sub <!-- @mock_user https://github.com/o/r/issues/2 -->
+	  
 	  sub body
 	//- /o/r/1_-_Parent_Issue/__main__.md
 	- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+	  
 	  parent body
 	");
 }
@@ -630,18 +627,8 @@ async fn test_reset_syncs_changes_after_editor() {
 	let out = ctx.open_url(("o", "r").into(), 1).args(&["--reset"]).edit(&modified_issue).run();
 
 	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().redact_timestamps(&[12]), &out), @r#"
-	//- /o/__conflict.md
-	<<<<<<< HEAD
-	- [x] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-	  
-	  remote body
-	||||||| [hash]
-	=======
-	- [x] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-	  remote body
-	>>>>>>> remote-state
 	//- /o/r/.meta.json
-	        [REDACTED - non-deterministic timestamp]
+	{
 	  "virtual_project": false,
 	  "next_virtual_issue_number": 0,
 	  "issues": {
@@ -651,14 +638,15 @@ async fn test_reset_syncs_changes_after_editor() {
 	        "title": null,
 	        "description": null,
 	        "labels": null,
-	        "state": null,
+	        [REDACTED - non-deterministic timestamp]
 	        "comments": []
 	      }
 	    }
 	  }
 	}
-	//- /o/r/1_-_Test_Issue.md
-	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+	//- /o/r/1_-_Test_Issue.md.bak
+	- [x] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+	  
 	  remote body
 	"#);
 }
@@ -706,12 +694,15 @@ async fn test_comment_shorthand_creates_comment() {
 	//- /o/__conflict.md
 	<<<<<<< HEAD
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+	  
 	  issue body
+	  
 	  !c
 	  My new comment content
 	||||||| [hash]
 	=======
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+	  
 	  issue body
 	>>>>>>> remote-state
 	//- /o/r/1_-_Test_Issue.md
@@ -791,6 +782,7 @@ async fn test_force_merge_preserves_both_sub_issues(#[case] args: &[&str], #[cas
 		  local sub body
 		//- /o/r/1_-_Parent_Issue/3_-_Remote_Sub.md
 		- [ ] Remote Sub <!-- @mock_user https://github.com/o/r/issues/3 -->
+		  
 		  remote sub body
 		//- /o/r/1_-_Parent_Issue/__main__.md
 		- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
@@ -807,9 +799,11 @@ async fn test_force_merge_preserves_both_sub_issues(#[case] args: &[&str], #[cas
 		  local sub body
 		//- /o/r/1_-_Parent_Issue/3_-_Remote_Sub.md
 		- [ ] Remote Sub <!-- @mock_user https://github.com/o/r/issues/3 -->
+		  
 		  remote sub body
 		//- /o/r/1_-_Parent_Issue/__main__.md
 		- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+		  
 		  parent body
 		");
 	}
@@ -844,6 +838,7 @@ async fn test_undo_shorthand_aborts_sync() {
 	assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().skip_meta(), &out), @"
 	//- /o/r/1_-_Test_Issue.md
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+	  
 	  issue body
 	");
 }
@@ -896,7 +891,11 @@ async fn test_consensus_sink_writes_meta_json_with_timestamps() {
 	}
 	//- /o/r/1_-_Test_Issue.md
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-	  ## remote body
+	  
+	  remote body
+	  
+	  ---
+	  
 	  <!-- comment 1001 @commenter -->
 	  
 	  A test comment

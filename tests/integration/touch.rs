@@ -202,6 +202,7 @@ fn test_nested_issue_under_unsynced_parent_online() {
 	//- /o/r/1_-_Parent_Issue/__main__.md
 	- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
 	  
+	  
 	  parent body
 	");
 

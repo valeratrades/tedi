@@ -63,7 +63,9 @@ async fn test_blocker_add_in_integrated_mode() {
 	// new blocker added, existing preserved
 	insta::assert_snapshot!(read_issue_file(&issue_path), @"
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-	  - Body text.
+	  
+	    Body text.
+	  
 	  # Blockers
 	  - First task
 	  - New task from CLI
@@ -108,7 +110,9 @@ async fn test_blocker_pop_in_integrated_mode() {
 	// Third task popped, First and Second remain
 	insta::assert_snapshot!(read_issue_file(&issue_path), @"
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-	  - Body text.
+	  
+	    Body text.
+	  
 	  # Blockers
 	  - First task
 	  - Second task
@@ -148,7 +152,9 @@ async fn test_blocker_add_creates_blockers_section_if_missing() {
 	// blockers section created with new task
 	insta::assert_snapshot!(read_issue_file(&issue_path), @"
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-	  - Body text without blockers section.
+	  
+	    Body text without blockers section.
+	  
 	  # Blockers
 	  - New task
 	");
@@ -216,7 +222,9 @@ async fn test_blocker_add_with_nested_context() {
 	// new sub-task added under Phase 2
 	insta::assert_snapshot!(read_issue_file(&issue_path), @"
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-	  - Body text.
+	  
+	    Body text.
+	  
 	  # Blockers
 	  - Phase 1
 	    - Setup task
@@ -420,6 +428,7 @@ async fn test_blocker_add_works_after_toggle() {
 	// Verify it went into issue B
 	insta::assert_snapshot!(read_issue_file(&path2), @"
 	- [ ] Issue B <!-- @mock_user https://github.com/o/r/issues/2 -->
+	  
 	  # Blockers
 	  - task B
 	  - new task on B
@@ -428,6 +437,7 @@ async fn test_blocker_add_works_after_toggle() {
 	// Issue A should be untouched
 	insta::assert_snapshot!(read_issue_file(&path1), @"
 	- [ ] Issue A <!-- @mock_user https://github.com/o/r/issues/1 -->
+	  
 	  # Blockers
 	  - task A
 	");

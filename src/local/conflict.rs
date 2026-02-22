@@ -174,7 +174,7 @@ pub fn initiate_conflict_merge(repo_info: RepoInfo, issue_number: u64, local_iss
 	let current_branch = String::from_utf8_lossy(&branch_output.stdout).trim().to_string();
 
 	// Write local state to conflict file (virtual format)
-	let local_virtual: String = local_issue.serialize_virtual().into();
+	let local_virtual = local_issue.serialize_virtual();
 	std::fs::write(&conflict_file, &local_virtual)?;
 
 	// Stage and commit local state
@@ -228,7 +228,7 @@ pub fn initiate_conflict_merge(repo_info: RepoInfo, issue_number: u64, local_iss
 	}
 
 	// Write remote state to conflict file (virtual format)
-	let remote_virtual: String = remote_issue.serialize_virtual().into();
+	let remote_virtual = remote_issue.serialize_virtual();
 	std::fs::write(&conflict_file, &remote_virtual)?;
 
 	// Stage and commit remote state

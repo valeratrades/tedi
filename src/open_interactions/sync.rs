@@ -318,7 +318,7 @@ mod types {
 
 			let result = match self {
 				Modifier::Editor { open_at_blocker } => {
-					let content: String = issue.serialize_virtual().into();
+					let content = issue.serialize_virtual();
 					std::fs::write(&vpath, &content)?;
 
 					let mtime_before = std::fs::metadata(&vpath)?.modified()?;

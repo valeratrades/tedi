@@ -4,7 +4,7 @@
 //! This module parses them into a `MilestoneDoc` AST via pulldown_cmark, enabling
 //! structured operations like parent-context resolution for bare `#123` refs.
 
-use super::{Events, Issue, IssueLink, IssueMarker, OwnedEvent, OwnedTag, OwnedTagEnd};
+use super::{Events, Issue, IssueLink, IssueMarker, OwnedEvent, OwnedTag, OwnedTagEnd, events::indent_into};
 
 /// A parsed milestone document: a sequence of top-level sections.
 pub struct MilestoneDoc {
@@ -700,20 +700,12 @@ fn serialize_item(item: &MilestoneItem, output: &mut String) {
 
 	// Render children recursively with proper indentation
 	if !item.children.is_empty() {
+		output.push('\n');
 		let mut child_output = String::new();
 		for child in &item.children {
 			serialize_section(child, &mut child_output);
 		}
-		// Indent children under this item
-		for line in child_output.lines() {
-			output.push('\n');
-			output.push_str("  ");
-			output.push_str(line);
-		}
-		// Preserve trailing newline
-		if child_output.ends_with('\n') {
-			output.push('\n');
-		}
+		indent_into(output, &child_output, "  ");
 	}
 }
 

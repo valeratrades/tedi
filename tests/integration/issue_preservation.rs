@@ -217,7 +217,7 @@ async fn test_closing_nested_issue_creates_bak_file() {
 
 	assert!(out.status.success(), "stderr: {}", out.stderr);
 
-	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().redact_timestamps(&[22]), &out), @r#"
+	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().redact_timestamps(&[20, 22]), &out), @r#"
 	//- /o/r/.meta.json
 	{
 	  "virtual_project": false,
@@ -237,7 +237,7 @@ async fn test_closing_nested_issue_creates_bak_file() {
 	      "user": "mock_user",
 	      "timestamps": {
 	        "title": null,
-	        "description": "2026-02-18T19:10:59.632756273Z",
+	        [REDACTED - non-deterministic timestamp]
 	        "labels": null,
 	        [REDACTED - non-deterministic timestamp]
 	        "comments": []
@@ -247,10 +247,14 @@ async fn test_closing_nested_issue_creates_bak_file() {
 	}
 	//- /o/r/1_-_a/2_-_b.md.bak
 	- [x] b <!-- @mock_user https://github.com/o/r/issues/2 -->
+	  
 	   <!--omitted {{{always-->
-	  nested body content<!--,}}}-->
+	  
+	  nested body content
+	  
 	//- /o/r/1_-_a/__main__.md
 	- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->
+	  
 	  lorem ipsum
 	"#);
 
