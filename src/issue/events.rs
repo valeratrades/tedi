@@ -316,7 +316,7 @@ impl OwnedCodeBlockKind {
 
 /// A sequence of owned markdown events.
 /// This is the primary type for storing markdown content.
-#[derive(Clone, Debug, Default, derive_more::Deref, derive_more::IntoIterator)]
+#[derive(Clone, Debug, Default, PartialEq, derive_more::Deref, derive_more::IntoIterator)]
 pub struct Events(Vec<OwnedEvent>);
 impl Events {
 	/// Parse markdown content into events.
@@ -394,22 +394,74 @@ impl Events {
 			// No pattern matched — continue normally
 		}
 
+		// Normalize loose list items to tight: strip Paragraph wrappers inside Items,
+		// replace End(Paragraph)+Start(Paragraph) boundaries with SoftBreak.
+		// This ensures loose and tight lists produce identical event structure.
+		let events = normalize_list_items_tight(events);
+
 		Self(split_blockers_from_checkboxes(events))
 	}
 }
 
-/// Compare by rendered markdown, not by event structure.
+/// Normalize the first paragraph in each loose list item to match tight structure.
 ///
-/// Different sources (tight vs loose list items, standalone text) produce structurally
-/// different events for the same content (e.g. with/without Paragraph wrappers).
-/// Comparing rendered output makes merge/sync ignore these irrelevant structural differences.
-impl PartialEq for Events {
-	fn eq(&self, other: &Self) -> bool {
-		if self.0 == other.0 {
-			return true;
-		}
-		render_events(&self.0) == render_events(&other.0)
+/// In loose lists, pulldown_cmark wraps the title in a paragraph:
+///   `Start(Item), Start(P₁), CheckBox/Text, End(P₁), Start(P₂), body, End(P₂), ...`
+/// Tight items have no paragraph wrapper on the title:
+///   `Start(Item), CheckBox/Text, SoftBreak, body text, ...`
+///
+/// This pass strips `Start(P₁)` and converts the `End(P₁)` boundary to `SoftBreak`
+/// (when followed by more content). All subsequent paragraphs are preserved —
+/// they provide block-level structure around elements like `Rule`, code blocks, etc.
+fn normalize_list_items_tight(events: Vec<OwnedEvent>) -> Vec<OwnedEvent> {
+	// Per-item state:
+	//   Pending — haven't seen first Start(P) yet
+	//   InFirst — inside stripped first paragraph, waiting for its End(P)
+	//   Done    — first paragraph handled, pass everything through
+	#[derive(Clone, Copy)]
+	enum State {
+		Pending,
+		InFirst,
+		Done,
 	}
+
+	let mut out = Vec::with_capacity(events.len());
+	let mut stack: Vec<State> = Vec::new();
+
+	let mut i = 0;
+	while i < events.len() {
+		match &events[i] {
+			OwnedEvent::Start(OwnedTag::Item) => {
+				stack.push(State::Pending);
+				out.push(events[i].clone());
+				i += 1;
+			}
+			OwnedEvent::End(OwnedTagEnd::Item) => {
+				stack.pop();
+				out.push(events[i].clone());
+				i += 1;
+			}
+			// First Start(Paragraph) in a pending item → strip it
+			OwnedEvent::Start(OwnedTag::Paragraph) if matches!(stack.last(), Some(State::Pending)) => {
+				*stack.last_mut().unwrap() = State::InFirst;
+				i += 1; // strip Start(P₁)
+			}
+			// End(Paragraph) closing the first (stripped) paragraph
+			OwnedEvent::End(OwnedTagEnd::Paragraph) if matches!(stack.last(), Some(State::InFirst)) => {
+				*stack.last_mut().unwrap() = State::Done;
+				if matches!(events.get(i + 1), Some(OwnedEvent::Start(OwnedTag::Paragraph))) {
+					// Followed by body paragraph → SoftBreak to bridge title and body
+					out.push(OwnedEvent::SoftBreak);
+				}
+				i += 1; // strip End(P₁)
+			}
+			_ => {
+				out.push(events[i].clone());
+				i += 1;
+			}
+		}
+	}
+	out
 }
 
 /// Split a list after a `# Blockers` heading at the point where checkbox items begin.
@@ -581,9 +633,6 @@ fn item_has_checkbox(item_events: &[OwnedEvent]) -> bool {
 	if matches!(item_events.get(i), Some(OwnedEvent::Start(OwnedTag::Item))) {
 		i += 1;
 	}
-	if matches!(item_events.get(i), Some(OwnedEvent::Start(OwnedTag::Paragraph))) {
-		i += 1;
-	}
 	matches!(item_events.get(i), Some(OwnedEvent::CheckBox(_)))
 }
 
@@ -682,6 +731,53 @@ pub(super) fn indent_into(out: &mut String, content: &str, prefix: &str) {
 		out.push_str(line);
 		out.push('\n');
 	}
+}
+
+/// Wrap runs of inline events in `Start(Paragraph)` / `End(Paragraph)`.
+///
+/// Events stored from inside list items have paragraph wrappers stripped (by normalization).
+/// When rendering these events as standalone markdown (e.g., GitHub body), inline content
+/// needs paragraph wrappers for proper block-level separation from subsequent elements.
+pub(super) fn wrap_inline_in_paragraphs(events: Vec<OwnedEvent>) -> Vec<OwnedEvent> {
+	if events.is_empty() {
+		return events;
+	}
+	let mut out = Vec::with_capacity(events.len() + 2);
+	let mut in_inline = false;
+
+	for ev in events {
+		let is_inline = matches!(
+			&ev,
+			OwnedEvent::Text(_)
+				| OwnedEvent::Code(_)
+				| OwnedEvent::InlineHtml(_)
+				| OwnedEvent::InlineMath(_)
+				| OwnedEvent::SoftBreak
+				| OwnedEvent::HardBreak
+				| OwnedEvent::Start(OwnedTag::Emphasis)
+				| OwnedEvent::End(OwnedTagEnd::Emphasis)
+				| OwnedEvent::Start(OwnedTag::Strong)
+				| OwnedEvent::End(OwnedTagEnd::Strong)
+				| OwnedEvent::Start(OwnedTag::Strikethrough)
+				| OwnedEvent::End(OwnedTagEnd::Strikethrough)
+				| OwnedEvent::Start(OwnedTag::Link { .. })
+				| OwnedEvent::End(OwnedTagEnd::Link)
+				| OwnedEvent::Start(OwnedTag::Image { .. })
+				| OwnedEvent::End(OwnedTagEnd::Image)
+		);
+		if is_inline && !in_inline {
+			out.push(OwnedEvent::Start(OwnedTag::Paragraph));
+			in_inline = true;
+		} else if !is_inline && in_inline {
+			out.push(OwnedEvent::End(OwnedTagEnd::Paragraph));
+			in_inline = false;
+		}
+		out.push(ev);
+	}
+	if in_inline {
+		out.push(OwnedEvent::End(OwnedTagEnd::Paragraph));
+	}
+	out
 }
 
 /// Render a slice of `OwnedEvent`s to markdown using the shared cmark options.
@@ -806,6 +902,13 @@ mod tests {
 		- [ ] item
 		  body text
 		");
+	}
+
+	#[test]
+	fn rule_inside_list_item_survives_normalization() {
+		let loose = "- item\n\n  body\n\n  ---\n\n  after rule\n";
+		let rendered: String = Events::parse(loose).into();
+		assert!(rendered.contains("---"), "Rule must survive normalization");
 	}
 
 	#[test]

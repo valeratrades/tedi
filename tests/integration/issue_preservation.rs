@@ -220,11 +220,9 @@ async fn test_closing_nested_issue_creates_bak_file() {
 	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().skip_meta(), &out), @"
 	//- /o/r/1_-_a/2_-_b.md.bak
 	- [x] b <!-- @mock_user https://github.com/o/r/issues/2 -->
-	   
 	  nested body content
 	//- /o/r/1_-_a/__main__.md
 	- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->
-	  
 	  lorem ipsum
 	");
 

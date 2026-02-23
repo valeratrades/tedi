@@ -336,6 +336,10 @@ fn parse_item(events: &[OwnedEvent], pos: &mut usize, depth: usize) -> Milestone
 			OwnedEvent::End(OwnedTagEnd::Item) => break,
 			OwnedEvent::Start(OwnedTag::List(_)) | OwnedEvent::Start(OwnedTag::Heading { .. }) => break,
 			OwnedEvent::Start(OwnedTag::Paragraph) => {
+				// Also strip preceding SoftBreak (normalization artifact between title and body)
+				if matches!(inline_events.last(), Some(OwnedEvent::SoftBreak)) {
+					inline_events.pop();
+				}
 				in_paragraph = true;
 				*pos += 1;
 			}

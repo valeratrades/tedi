@@ -12,7 +12,6 @@ use v_fixtures::FixtureRenderer;
 use crate::{
 	FixtureIssuesExt as _,
 	common::{TestContext, are_you_sure::UnsafePathExt, parse_virtual},
-	render_fixture,
 };
 
 #[tokio::test]
@@ -150,7 +149,10 @@ async fn test_duplicate_reference_to_existing_issue_succeeds() {
 	let original_issue = ctx.consensus(&original, None).await; // takes care of sinking local too
 	ctx.remote(&original, None);
 
-	insta::assert_snapshot!(FixtureRenderer::try_new(&ctx).unwrap().skip_meta().render(), r"", @"");
+	insta::assert_snapshot!(FixtureRenderer::try_new(&ctx).unwrap().skip_meta().render(), r"", @"
+	- [ ] Some Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+	  body
+	");
 
 	let dup_target = parse_virtual("- [ ] New Duplicate <!-- @mock_user https://github.com/o/r/issues/2 -->\n\tduplicate's body\n");
 	ctx.remote(&dup_target, None);

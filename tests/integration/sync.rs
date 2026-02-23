@@ -45,19 +45,16 @@ impl DivergedBodiesFixture {
 
 		let consensus_vi = parse_virtual(
 			r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-
   consensus body
 "#,
 		);
 		let local_vi = parse_virtual(
 			r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-
   local body
 "#,
 		);
 		let remote_vi = parse_virtual(
 			r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-
   remote changed body
 "#,
 		);
@@ -95,13 +92,11 @@ async fn test_only_remote_changed_takes_remote_with_pull() {
 
 	let consensus_vi = parse_virtual(
 		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-
   consensus body
 "#,
 	);
 	let remote_vi = parse_virtual(
 		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-
   remote changed body
 "#,
 	);
@@ -128,13 +123,11 @@ async fn test_only_local_changed_pushes_local() {
 
 	let consensus_vi = parse_virtual(
 		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-
   consensus body
 "#,
 	);
 	let local_vi = parse_virtual(
 		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-
   local changed body
 "#,
 	);
@@ -180,19 +173,16 @@ async fn test_reset_with_local_source_skips_sync() {
 
 	let consensus_vi = parse_virtual(
 		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-
   consensus body
 "#,
 	);
 	let local_vi = parse_virtual(
 		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-
   local body
 "#,
 	);
 	let remote_vi = parse_virtual(
 		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-
   remote changed body
 "#,
 	);
@@ -226,7 +216,6 @@ async fn test_url_open_creates_local_file_from_remote() {
 
 	let remote_vi = parse_virtual(
 		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-
   remote body content
 "#,
 	);
@@ -296,19 +285,16 @@ async fn test_reset_with_remote_url_skips_merge_on_divergence() {
 
 	let consensus_vi = parse_virtual(
 		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-
   consensus body
 "#,
 	);
 	let local_vi = parse_virtual(
 		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-
   local diverged body
 "#,
 	);
 	let remote_vi = parse_virtual(
 		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-
   remote diverged body
 "#,
 	);
@@ -344,13 +330,11 @@ async fn test_pull_fetches_before_editor() {
 
 	let local_vi = parse_virtual(
 		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-
   local body
 "#,
 	);
 	let remote_vi = parse_virtual(
 		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-
   remote body from github
 "#,
 	);
@@ -686,7 +670,9 @@ async fn test_comment_shorthand_creates_comment() {
 	<<<<<<< HEAD
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
 	  issue body
-	  !c
+	  
+	  <!-- new comment -->
+	  
 	  My new comment content
 	||||||| [hash]
 	=======
@@ -872,9 +858,8 @@ async fn test_consensus_sink_writes_meta_json_with_timestamps() {
 	}
 	//- /o/r/1_-_Test_Issue.md
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-	  ## remote body
-	  <!-- comment 1001 @commenter -->
-	  
+	  remote body
+	  \---<!-- comment 1001 @commenter -->
 	  A test comment
 	"#);
 }

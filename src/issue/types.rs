@@ -10,7 +10,7 @@ use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-use super::events::indent_into;
+use super::events::{indent_into, wrap_inline_in_paragraphs};
 
 /// Maximum title length enforced by Github.
 pub const MAX_TITLE_LENGTH: usize = 256;
@@ -1348,12 +1348,6 @@ impl VirtualIssue {
 		}
 		pos += 1; // past Start(Item)
 
-		// Skip optional Start(Paragraph) around the title line
-		let title_has_paragraph = matches!(events.get(pos), Some(OwnedEvent::Start(OwnedTag::Paragraph)));
-		if title_has_paragraph {
-			pos += 1;
-		}
-
 		// --- Parse title inline content: CheckBox, Text(labels+title), InlineHtml(marker) ---
 		let close_state = match &events[pos] {
 			OwnedEvent::CheckBox(inner) => {
@@ -1394,23 +1388,26 @@ impl VirtualIssue {
 			_ => return Err(ParseError::missing_url_marker(ctx.named_source(), ctx.line_span(1))),
 		};
 
-		// Skip inline omitted markers that follow the issue marker on the title line
-		while let Some(OwnedEvent::InlineHtml(html)) = events.get(pos) {
-			let trimmed = html.trim();
-			if (trimmed.starts_with("<!--omitted") && trimmed.contains("{{{")) || trimmed.starts_with("<!--,}}}") {
-				pos += 1;
-			} else {
-				break;
+		// Skip inline omitted markers (and intervening whitespace) that follow the issue marker on the title line
+		loop {
+			match events.get(pos) {
+				Some(OwnedEvent::InlineHtml(html)) => {
+					let trimmed = html.trim();
+					if (trimmed.starts_with("<!--omitted") && trimmed.contains("{{{")) || trimmed.starts_with("<!--,}}}") {
+						pos += 1;
+					} else {
+						break;
+					}
+				}
+				Some(OwnedEvent::Text(t)) if t.trim().is_empty() => {
+					pos += 1; // whitespace between marker and omitted marker
+				}
+				_ => break,
 			}
 		}
 
-		// Close title paragraph if present (loose list items)
-		if title_has_paragraph && matches!(events.get(pos), Some(OwnedEvent::End(OwnedTagEnd::Paragraph))) {
-			pos += 1;
-		}
-
-		// Skip SoftBreak after title in tight list items (title flows directly into body)
-		if !title_has_paragraph && matches!(events.get(pos), Some(OwnedEvent::SoftBreak)) {
+		// Skip SoftBreak after title (title flows directly into body in tight items)
+		if matches!(events.get(pos), Some(OwnedEvent::SoftBreak)) {
 			pos += 1;
 		}
 
@@ -1441,7 +1438,9 @@ impl VirtualIssue {
 		let mut in_blockers = false;
 		let mut select_blockers = false;
 
-		// Helper: flush current body/comment events into the comments list
+		// Helper: flush current body/comment events into the comments list.
+		// Events are wrapped in paragraphs so they match the structure produced
+		// by standalone parsing (e.g., remote body from GitHub).
 		let flush = |in_body: &mut bool,
 		             current_comment_meta: &mut Option<CommentIdentity>,
 		             body_events: &mut Vec<OwnedEvent>,
@@ -1451,12 +1450,12 @@ impl VirtualIssue {
 				*in_body = false;
 				comments.push(Comment {
 					identity: CommentIdentity::Body,
-					body: std::mem::take(body_events).into(),
+					body: wrap_inline_in_paragraphs(std::mem::take(body_events)).into(),
 				});
 			} else if let Some(identity) = current_comment_meta.take() {
 				comments.push(Comment {
 					identity,
-					body: std::mem::take(current_comment_events).into(),
+					body: wrap_inline_in_paragraphs(std::mem::take(current_comment_events)).into(),
 				});
 			}
 		};
@@ -1472,6 +1471,12 @@ impl VirtualIssue {
 					continue;
 				}
 				OwnedEvent::InlineHtml(html) if html.trim().starts_with("<!--,}}}") => {
+					pos += 1;
+					continue;
+				}
+
+				// HtmlBlock wrappers — skip (the inner Html event is handled below)
+				OwnedEvent::Start(OwnedTag::HtmlBlock) | OwnedEvent::End(OwnedTagEnd::HtmlBlock) => {
 					pos += 1;
 					continue;
 				}
@@ -1519,7 +1524,7 @@ impl VirtualIssue {
 					pos += 1;
 				}
 
-				// Text "!s" or "!c" as standalone paragraph
+				// "!s" or "!c" as standalone paragraph (loose items preserve paragraphs)
 				OwnedEvent::Start(OwnedTag::Paragraph)
 					if matches!(events.get(pos + 1), Some(OwnedEvent::Text(t)) if t.trim().eq_ignore_ascii_case("!s") || t.trim().eq_ignore_ascii_case("!c"))
 						&& matches!(events.get(pos + 2), Some(OwnedEvent::End(OwnedTagEnd::Paragraph))) =>
@@ -1535,6 +1540,27 @@ impl VirtualIssue {
 						current_comment_meta = Some(CommentIdentity::Pending);
 					}
 					pos += 3; // skip Start(Paragraph), Text, End(Paragraph)
+				}
+
+				// "!s" or "!c" as bare text (tight items have no paragraph wrappers)
+				OwnedEvent::Text(t) if t.trim().eq_ignore_ascii_case("!s") || t.trim().eq_ignore_ascii_case("!c") => {
+					// Remove trailing SoftBreak from accumulated events (normalization artifact)
+					if in_body {
+						if matches!(body_events.last(), Some(OwnedEvent::SoftBreak)) {
+							body_events.pop();
+						}
+					} else if current_comment_meta.is_some() {
+						if matches!(current_comment_events.last(), Some(OwnedEvent::SoftBreak)) {
+							current_comment_events.pop();
+						}
+					}
+					if t.trim().eq_ignore_ascii_case("!s") {
+						select_blockers = true;
+					} else {
+						flush(&mut in_body, &mut current_comment_meta, &mut body_events, &mut current_comment_events, &mut comments);
+						current_comment_meta = Some(CommentIdentity::Pending);
+					}
+					pos += 1;
 				}
 
 				// Heading: check for "# Blockers" (with optional !s suffix)
@@ -1970,17 +1996,14 @@ mod tests {
 		  Body
 		  
 		  - [x] Closed sub <!-- https://github.com/owner/repo/issues/2 --> <!--omitted {{{always-->
-		     
 		    closed body
 		    <!--,}}}-->
 		  
 		  - \[-\] Not planned sub <!-- https://github.com/owner/repo/issues/3 --> <!--omitted {{{always-->
-		     
 		    not planned body
 		    <!--,}}}-->
 		  
 		  - \[42\] Duplicate sub <!-- https://github.com/owner/repo/issues/4 --> <!--omitted {{{always-->
-		     
 		    duplicate body
 		    <!--,}}}-->
 		");
