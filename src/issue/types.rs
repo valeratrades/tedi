@@ -1161,12 +1161,7 @@ impl Issue /*{{{1*/ {
 			content.push_str(&blockers_str);
 		}
 
-		// Blank line between title and content (makes pulldown_cmark treat as loose list item,
-		// which is required for idempotent round-tripping: without it, re-parse produces
-		// SoftBreak instead of Paragraph, changing the next serialize output).
 		if !content.is_empty() {
-			out.push_str(&content_indent);
-			out.push('\n');
 			indent_into(&mut out, &content, &content_indent);
 		}
 
@@ -1399,8 +1394,23 @@ impl VirtualIssue {
 			_ => return Err(ParseError::missing_url_marker(ctx.named_source(), ctx.line_span(1))),
 		};
 
-		// Close title paragraph if present
+		// Skip inline omitted markers that follow the issue marker on the title line
+		while let Some(OwnedEvent::InlineHtml(html)) = events.get(pos) {
+			let trimmed = html.trim();
+			if (trimmed.starts_with("<!--omitted") && trimmed.contains("{{{")) || trimmed.starts_with("<!--,}}}") {
+				pos += 1;
+			} else {
+				break;
+			}
+		}
+
+		// Close title paragraph if present (loose list items)
 		if title_has_paragraph && matches!(events.get(pos), Some(OwnedEvent::End(OwnedTagEnd::Paragraph))) {
+			pos += 1;
+		}
+
+		// Skip SoftBreak after title in tight list items (title flows directly into body)
+		if !title_has_paragraph && matches!(events.get(pos), Some(OwnedEvent::SoftBreak)) {
 			pos += 1;
 		}
 
@@ -1455,6 +1465,16 @@ impl VirtualIssue {
 			match &events[pos] {
 				// End of this item — we're done
 				OwnedEvent::End(OwnedTagEnd::Item) => break,
+
+				// Inline vim fold markers — skip (these appear on the title line)
+				OwnedEvent::InlineHtml(html) if html.trim().starts_with("<!--omitted") && html.contains("{{{") => {
+					pos += 1;
+					continue;
+				}
+				OwnedEvent::InlineHtml(html) if html.trim().starts_with("<!--,}}}") => {
+					pos += 1;
+					continue;
+				}
 
 				// Html block: comment markers, omitted markers, or `!s`/`!c`
 				OwnedEvent::Html(html) => {
@@ -1947,31 +1967,21 @@ mod tests {
 		// snapshot has trailing spaces on lines between closed children
 		insta::assert_snapshot!(issue.serialize_virtual(), @r"
 		- [ ] Parent issue <!-- https://github.com/owner/repo/issues/1 -->
-		  
 		  Body
 		  
 		  - [x] Closed sub <!-- https://github.com/owner/repo/issues/2 --> <!--omitted {{{always-->
-		    
-		     <!--omitted {{{always-->
-		    
+		     
 		    closed body
-		    
 		    <!--,}}}-->
 		  
 		  - \[-\] Not planned sub <!-- https://github.com/owner/repo/issues/3 --> <!--omitted {{{always-->
-		    
-		     <!--omitted {{{always-->
-		    
+		     
 		    not planned body
-		    
 		    <!--,}}}-->
 		  
 		  - \[42\] Duplicate sub <!-- https://github.com/owner/repo/issues/4 --> <!--omitted {{{always-->
-		    
-		     <!--omitted {{{always-->
-		    
+		     
 		    duplicate body
-		    
 		    <!--,}}}-->
 		");
 	}
@@ -1987,21 +1997,21 @@ mod tests {
 	fn test_find_last_blocker_position_single_item() {
 		let content = "- [ ] Issue <!-- https://github.com/owner/repo/issues/1 -->\n\n  Body\n\n  # Blockers\n  - task 1\n";
 		let issue = unsafe_mock_parse_virtual(content);
-		insta::assert_snapshot!(format!("{:?}", issue.find_last_blocker_position()), @"Some((5, 5))");
+		insta::assert_snapshot!(format!("{:?}", issue.find_last_blocker_position()), @"Some((4, 5))");
 	}
 
 	#[test]
 	fn test_find_last_blocker_position_multiple_items() {
 		let content = "- [ ] Issue <!-- https://github.com/owner/repo/issues/1 -->\n\n  Body\n\n  # Blockers\n  - task 1\n  - task 2\n  - task 3\n";
 		let issue = unsafe_mock_parse_virtual(content);
-		insta::assert_snapshot!(format!("{:?}", issue.find_last_blocker_position()), @"Some((7, 5))");
+		insta::assert_snapshot!(format!("{:?}", issue.find_last_blocker_position()), @"Some((6, 5))");
 	}
 
 	#[test]
 	fn test_find_last_blocker_position_with_nesting() {
 		let content = "- [ ] Issue <!-- https://github.com/owner/repo/issues/1 -->\n\n  Body\n\n  # Blockers\n  - Phase 1\n    - task a\n  - Phase 2\n    - task b\n";
 		let issue = unsafe_mock_parse_virtual(content);
-		insta::assert_snapshot!(format!("{:?}", issue.find_last_blocker_position()), @"Some((8, 7))");
+		insta::assert_snapshot!(format!("{:?}", issue.find_last_blocker_position()), @"Some((7, 7))");
 	}
 
 	#[test]
@@ -2020,7 +2030,6 @@ mod tests {
 		// filesystem serialization should NOT include children
 		insta::assert_snapshot!(issue.serialize_filesystem(), @"
 		- [ ] Parent <!-- https://github.com/owner/repo/issues/1 -->
-		  
 		  Parent body
 		");
 	}
@@ -2032,11 +2041,9 @@ mod tests {
 		let issue = unsafe_mock_parse_virtual(content);
 		insta::assert_snapshot!(issue.serialize_virtual(), @"
 		- [ ] Parent <!-- https://github.com/owner/repo/issues/1 -->
-		  
 		  Parent body
 		  
 		  - [ ] Child 1 <!-- https://github.com/owner/repo/issues/2 -->
-		    
 		    Child 1 body
 		");
 	}
@@ -2078,7 +2085,6 @@ mod tests {
 		// !s must not appear in re-serialized output, blockers preserved
 		insta::assert_snapshot!(unsafe_mock_parse_virtual(content).serialize_virtual(), @"
 		- [ ] Issue <!-- https://github.com/owner/repo/issues/1 -->
-		  
 		  Body
 		  # Blockers
 		  - task 1
@@ -2118,7 +2124,6 @@ mod tests {
 		let github_body: String = issue.render_github().into();
 		insta::assert_snapshot!(github_body, @"
 		This is the body text.
-
 		# Blockers
 		- task 1
 		- task 2

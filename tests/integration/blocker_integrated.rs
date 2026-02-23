@@ -29,7 +29,7 @@ fn milestone_cache_json(titles: &[(&str, &str, &str)], current_index: usize) -> 
 
 #[tokio::test]
 async fn test_blocker_add_in_integrated_mode() {
-	let ctx = TestContext::build("");
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 
 	// Create issue with existing blockers section
 	let vi = parse_virtual(
@@ -63,7 +63,6 @@ async fn test_blocker_add_in_integrated_mode() {
 	// new blocker added, existing preserved
 	insta::assert_snapshot!(read_issue_file(&issue_path), @"
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-	  
 	    Body text.
 	  
 	  # Blockers
@@ -74,7 +73,7 @@ async fn test_blocker_add_in_integrated_mode() {
 
 #[tokio::test]
 async fn test_blocker_pop_in_integrated_mode() {
-	let ctx = TestContext::build("");
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 
 	// Create issue with multiple blockers
 	let vi = parse_virtual(
@@ -110,7 +109,6 @@ async fn test_blocker_pop_in_integrated_mode() {
 	// Third task popped, First and Second remain
 	insta::assert_snapshot!(read_issue_file(&issue_path), @"
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-	  
 	    Body text.
 	  
 	  # Blockers
@@ -121,7 +119,7 @@ async fn test_blocker_pop_in_integrated_mode() {
 
 #[tokio::test]
 async fn test_blocker_add_creates_blockers_section_if_missing() {
-	let ctx = TestContext::build("");
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 
 	// Create issue WITHOUT blockers section
 	let vi = parse_virtual(
@@ -152,7 +150,6 @@ async fn test_blocker_add_creates_blockers_section_if_missing() {
 	// blockers section created with new task
 	insta::assert_snapshot!(read_issue_file(&issue_path), @"
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-	  
 	    Body text without blockers section.
 	  
 	  # Blockers
@@ -165,7 +162,7 @@ async fn test_blocker_add_urgent_without_blocker_file_set() {
 	// Regression test: `blocker add --urgent` should work even without a blocker file set.
 	// The urgent file is owner-independent and doesn't need blocker file context.
 	// Previously this errored with "No blocker file set. Use `todo blocker set <pattern>` first."
-	let ctx = TestContext::build("");
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 
 	// NO blocker file set - this is the key part of the test
 
@@ -185,7 +182,7 @@ async fn test_blocker_add_urgent_without_blocker_file_set() {
 
 #[tokio::test]
 async fn test_blocker_add_with_nested_context() {
-	let ctx = TestContext::build("");
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 
 	// Create issue with blockers section containing nested items
 	let vi = parse_virtual(
@@ -222,7 +219,6 @@ async fn test_blocker_add_with_nested_context() {
 	// new sub-task added under Phase 2
 	insta::assert_snapshot!(read_issue_file(&issue_path), @"
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-	  
 	    Body text.
 	  
 	  # Blockers
@@ -236,7 +232,7 @@ async fn test_blocker_add_with_nested_context() {
 
 #[tokio::test]
 async fn test_blocker_toggle_cycles_between_entries() {
-	let ctx = TestContext::build("");
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 
 	// Create two issues
 	let vi1 = parse_virtual(
@@ -298,7 +294,7 @@ async fn test_blocker_toggle_cycles_between_entries() {
 
 #[tokio::test]
 async fn test_blocker_toggle_with_three_entries_cycles() {
-	let ctx = TestContext::build("");
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 
 	let vi1 = parse_virtual(
 		r#"- [ ] Issue A <!-- @mock_user https://github.com/o/r/issues/1 -->
@@ -360,7 +356,7 @@ async fn test_blocker_toggle_with_three_entries_cycles() {
 
 #[tokio::test]
 async fn test_blocker_toggle_single_entry_errors() {
-	let ctx = TestContext::build("");
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 
 	let vi = parse_virtual(
 		r#"- [ ] Issue A <!-- @mock_user https://github.com/o/r/issues/1 -->
@@ -386,7 +382,7 @@ async fn test_blocker_toggle_single_entry_errors() {
 
 #[tokio::test]
 async fn test_blocker_add_works_after_toggle() {
-	let ctx = TestContext::build("");
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 
 	let vi1 = parse_virtual(
 		r#"- [ ] Issue A <!-- @mock_user https://github.com/o/r/issues/1 -->
@@ -428,7 +424,6 @@ async fn test_blocker_add_works_after_toggle() {
 	// Verify it went into issue B
 	insta::assert_snapshot!(read_issue_file(&path2), @"
 	- [ ] Issue B <!-- @mock_user https://github.com/o/r/issues/2 -->
-	  
 	  # Blockers
 	  - task B
 	  - new task on B
@@ -437,7 +432,6 @@ async fn test_blocker_add_works_after_toggle() {
 	// Issue A should be untouched
 	insta::assert_snapshot!(read_issue_file(&path1), @"
 	- [ ] Issue A <!-- @mock_user https://github.com/o/r/issues/1 -->
-	  
 	  # Blockers
 	  - task A
 	");

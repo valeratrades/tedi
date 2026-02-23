@@ -96,13 +96,18 @@ impl TestContext {
 	/// # Example
 	///
 	/// ```ignore
-	/// let ctx = TestContext::build(r#"
+	/// let ctx = TestContext::build_with_preexisting_state_unsafe(r#"
 	///     //- /data/blockers/test.md
 	///     # Project
 	///     - task 1
 	/// "#);
 	/// ```
-	pub fn build(fixture_str: &str) -> Self {
+	pub fn build() -> Self {
+		Self::build_with_preexisting_state_unsafe("")
+	}
+
+	/// when using this, it's very easy to mismatch the input from what the latest version of actual Issue parsing/rendering would have had encoded. Prefer using Issue-based methods for setting state, like [local](Self::local), [remote](Self::remote), [context](Self::consensus)
+	pub fn build_with_preexisting_state_unsafe(fixture_str: &str) -> Self {
 		let fixture = Fixture::parse(fixture_str);
 		let xdg = Xdg::new(fixture.write_to_tempdir(), env!("CARGO_PKG_NAME"));
 

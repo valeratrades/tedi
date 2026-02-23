@@ -16,7 +16,7 @@ use crate::{
 /// No conflict should occur because consensus == remote after reset.
 #[test]
 fn test_reset_with_subissue_edit() {
-	let ctx = TestContext::build("");
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 
 	// Remote has parent with one open sub-issue
 	let remote_vi = parse_virtual(
@@ -57,7 +57,7 @@ fn test_reset_with_subissue_edit() {
 /// After --reset on a simple issue, editing the body should succeed without conflict.
 #[test]
 fn test_reset_with_body_edit() {
-	let ctx = TestContext::build("");
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 
 	let remote_vi = parse_virtual(
 		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
@@ -90,7 +90,7 @@ fn test_reset_with_body_edit() {
 /// should succeed without conflict or merge.
 #[tokio::test]
 async fn test_reset_discards_local_subissue_modifications() {
-	let ctx = TestContext::build("");
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 
 	// Remote: clean 3-level hierarchy
 	let remote_vi = parse_virtual(
@@ -151,11 +151,8 @@ async fn test_reset_discards_local_subissue_modifications() {
 	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().skip_meta(), &out), @"
 	//- /o/r/1_-_Grandparent/2_-_Parent/3_-_Child.md.bak
 	- [x] Child <!-- @mock_user https://github.com/o/r/issues/3 -->
-	  
-	   <!--omitted {{{always-->
-	  
+	   
 	  child body
-	  
 	//- /o/r/1_-_Grandparent/2_-_Parent/__main__.md
 	- [ ] Parent <!-- @mock_user https://github.com/o/r/issues/2 -->
 	  

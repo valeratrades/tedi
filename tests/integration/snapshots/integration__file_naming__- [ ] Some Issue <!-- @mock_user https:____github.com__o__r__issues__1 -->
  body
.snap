@@ -1,0 +1,5 @@
+---
+source: tests/integration/file_naming.rs
+expression: "r\"\""
+---
+

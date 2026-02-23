@@ -503,7 +503,6 @@ mod tests {
 		let result: String = join_with_blockers(&body, &blockers).into();
 		insta::assert_snapshot!(result, @"
 		Description
-
 		# Blockers
 		- task 1
 		- task 2
@@ -520,7 +519,7 @@ mod tests {
 		insta::assert_snapshot!(
 			format!("content: {content2:?}\nblockers: {}", String::from(&blockers2)),
 			@r#"
-		content: "Body text\n"
+		content: "Body text"
 		blockers: - task 1
 		- task 2
 		"#

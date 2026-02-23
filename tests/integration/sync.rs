@@ -41,7 +41,7 @@ struct DivergedBodiesFixture {
 
 impl DivergedBodiesFixture {
 	async fn new(consensus_seed: i64, local_seed: i64, remote_seed: i64) -> Self {
-		let ctx = TestContext::build("");
+		let ctx = TestContext::build_with_preexisting_state_unsafe("");
 
 		let consensus_vi = parse_virtual(
 			r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
@@ -91,7 +91,7 @@ async fn test_both_diverged_merge_winner(#[case] consensus_seed: i64, #[case] lo
 /// we only pull remote changes if --pull is specified.
 #[tokio::test]
 async fn test_only_remote_changed_takes_remote_with_pull() {
-	let ctx = TestContext::build("");
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 
 	let consensus_vi = parse_virtual(
 		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
@@ -124,7 +124,7 @@ async fn test_only_remote_changed_takes_remote_with_pull() {
 
 #[tokio::test]
 async fn test_only_local_changed_pushes_local() {
-	let ctx = TestContext::build("");
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 
 	let consensus_vi = parse_virtual(
 		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
@@ -170,14 +170,13 @@ async fn test_only_local_changed_pushes_local() {
 	}
 	//- /o/r/1_-_Test_Issue.md
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-	  
 	  local changed body
 	"#);
 }
 
 #[tokio::test]
 async fn test_reset_with_local_source_skips_sync() {
-	let ctx = TestContext::build("");
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 
 	let consensus_vi = parse_virtual(
 		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
@@ -223,7 +222,7 @@ async fn test_reset_with_local_source_skips_sync() {
 /// Opening via URL when no local file exists should create the file from remote.
 #[tokio::test]
 async fn test_url_open_creates_local_file_from_remote() {
-	let ctx = TestContext::build("");
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 
 	let remote_vi = parse_virtual(
 		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
@@ -255,7 +254,7 @@ async fn test_url_open_creates_local_file_from_remote() {
 /// No merge conflicts, no prompts - just nuke and replace.
 #[tokio::test]
 async fn test_reset_with_remote_url_nukes_local_state() {
-	let ctx = TestContext::build("");
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 
 	let local_vi = parse_virtual(
 		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
@@ -293,7 +292,7 @@ async fn test_reset_with_remote_url_nukes_local_state() {
 /// When opening via URL with --reset and there's divergence, should NOT trigger merge conflict.
 #[tokio::test]
 async fn test_reset_with_remote_url_skips_merge_on_divergence() {
-	let ctx = TestContext::build("");
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 
 	let consensus_vi = parse_virtual(
 		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
@@ -341,7 +340,7 @@ async fn test_reset_with_remote_url_skips_merge_on_divergence() {
 /// This test verifies the fetch actually happens by checking stdout for fetch message.
 #[tokio::test]
 async fn test_pull_fetches_before_editor() {
-	let ctx = TestContext::build("");
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 
 	let local_vi = parse_virtual(
 		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
@@ -370,7 +369,6 @@ async fn test_pull_fetches_before_editor() {
 	assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().skip_meta(), &out), @"
 	//- /o/r/1_-_Test_Issue.md
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-	  
 	  remote body from github
 	");
 }
@@ -378,7 +376,7 @@ async fn test_pull_fetches_before_editor() {
 /// --pull with diverged state should trigger conflict resolution (or auto-resolve).
 #[tokio::test]
 async fn test_pull_with_divergence_runs_sync_before_editor() {
-	let ctx = TestContext::build("");
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 
 	let consensus_vi = parse_virtual(
 		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
@@ -419,12 +417,10 @@ async fn test_pull_with_divergence_runs_sync_before_editor() {
 	//- /o/__conflict.md
 	<<<<<<< HEAD
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-	  
 	  local diverged body
 	||||||| [hash]
 	=======
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-	  
 	  remote diverged body
 	>>>>>>> remote-state
 	//- /o/r/.meta.json
@@ -446,14 +442,13 @@ async fn test_pull_with_divergence_runs_sync_before_editor() {
 	}
 	//- /o/r/1_-_Test_Issue.md
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-	  
 	  local diverged body
 	"#)
 }
 
 #[tokio::test]
 async fn test_closing_issue_syncs_state_change() {
-	let ctx = TestContext::build("");
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 
 	let open_vi = parse_virtual(
 		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
@@ -495,7 +490,6 @@ async fn test_closing_issue_syncs_state_change() {
 	}
 	//- /o/r/1_-_Test_Issue.md.bak
 	- [x] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-	  
 	  body
 	"#);
 }
@@ -504,7 +498,7 @@ async fn test_closing_issue_syncs_state_change() {
 /// Github marks these with state_reason="duplicate" - they should be filtered out entirely.
 #[tokio::test]
 async fn test_duplicate_sub_issues_filtered_from_remote() {
-	let ctx = TestContext::build("");
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 
 	// Create parent with children for remote - normal closed and duplicate sub-issues
 	let parent_vi = parse_virtual(
@@ -536,11 +530,9 @@ async fn test_duplicate_sub_issues_filtered_from_remote() {
 	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().skip_meta(), &out), @"
 	//- /o/r/1_-_Parent_Issue/2_-_Normal_Closed_Sub.md.bak
 	- [x] Normal Closed Sub <!-- @mock_user https://github.com/o/r/issues/2 -->
-	  
 	  sub body
 	//- /o/r/1_-_Parent_Issue/__main__.md
 	- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-	  
 	  parent body
 	");
 }
@@ -553,7 +545,7 @@ async fn test_duplicate_sub_issues_filtered_from_remote() {
 /// The second open should succeed, not fail with "Failed to commit remote state".
 #[tokio::test]
 async fn test_open_unchanged_succeeds() {
-	let ctx = TestContext::build("");
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 
 	let vi = parse_virtual(
 		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
@@ -582,7 +574,7 @@ async fn test_open_unchanged_succeeds() {
 /// 4. Git commit fails because there's nothing to commit
 #[tokio::test]
 async fn test_open_by_number_unchanged_succeeds() {
-	let ctx = TestContext::build("");
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 
 	let vi = parse_virtual(
 		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
@@ -611,7 +603,7 @@ async fn test_open_by_number_unchanged_succeeds() {
 /// Reproduces the issue where changes made after --reset don't sync.
 #[tokio::test]
 async fn test_reset_syncs_changes_after_editor() {
-	let ctx = TestContext::build("");
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 
 	let remote_vi = parse_virtual(
 		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
@@ -646,7 +638,6 @@ async fn test_reset_syncs_changes_after_editor() {
 	}
 	//- /o/r/1_-_Test_Issue.md.bak
 	- [x] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-	  
 	  remote body
 	"#);
 }
@@ -657,7 +648,7 @@ async fn test_reset_syncs_changes_after_editor() {
 /// 2. Result in a new comment being created on Github
 #[tokio::test]
 async fn test_comment_shorthand_creates_comment() {
-	let ctx = TestContext::build("");
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 
 	// Start with an issue that has no comments
 	let vi = parse_virtual(
@@ -694,15 +685,12 @@ async fn test_comment_shorthand_creates_comment() {
 	//- /o/__conflict.md
 	<<<<<<< HEAD
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-	  
 	  issue body
-	  
 	  !c
 	  My new comment content
 	||||||| [hash]
 	=======
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-	  
 	  issue body
 	>>>>>>> remote-state
 	//- /o/r/1_-_Test_Issue.md
@@ -730,7 +718,7 @@ async fn test_comment_shorthand_creates_comment() {
 #[case::prefer_remote(&["--pull", "--force"], false)]
 #[tokio::test]
 async fn test_force_merge_preserves_both_sub_issues(#[case] args: &[&str], #[case] expect_local_description: bool) {
-	let ctx = TestContext::build("");
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 
 	// Local: parent with local-only sub-issue and modified description
 	let local_vi = parse_virtual(
@@ -778,15 +766,12 @@ async fn test_force_merge_preserves_both_sub_issues(#[case] args: &[&str], #[cas
 		insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().skip_meta(), &out), @"
 		//- /o/r/1_-_Parent_Issue/2_-_Local_Sub.md
 		- [ ] Local Sub <!-- @mock_user https://github.com/o/r/issues/2 -->
-		  
 		  local sub body
 		//- /o/r/1_-_Parent_Issue/3_-_Remote_Sub.md
 		- [ ] Remote Sub <!-- @mock_user https://github.com/o/r/issues/3 -->
-		  
 		  remote sub body
 		//- /o/r/1_-_Parent_Issue/__main__.md
 		- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-		  
 		  parent body
 		  extra line from local
 		");
@@ -795,15 +780,12 @@ async fn test_force_merge_preserves_both_sub_issues(#[case] args: &[&str], #[cas
 		insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().skip_meta(), &out), @"
 		//- /o/r/1_-_Parent_Issue/2_-_Local_Sub.md
 		- [ ] Local Sub <!-- @mock_user https://github.com/o/r/issues/2 -->
-		  
 		  local sub body
 		//- /o/r/1_-_Parent_Issue/3_-_Remote_Sub.md
 		- [ ] Remote Sub <!-- @mock_user https://github.com/o/r/issues/3 -->
-		  
 		  remote sub body
 		//- /o/r/1_-_Parent_Issue/__main__.md
 		- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-		  
 		  parent body
 		");
 	}
@@ -814,7 +796,7 @@ async fn test_force_merge_preserves_both_sub_issues(#[case] args: &[&str], #[cas
 /// The filesystem state should remain identical to the initial state.
 #[tokio::test]
 async fn test_undo_shorthand_aborts_sync() {
-	let ctx = TestContext::build("");
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 
 	let vi = parse_virtual(
 		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
@@ -838,7 +820,6 @@ async fn test_undo_shorthand_aborts_sync() {
 	assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().skip_meta(), &out), @"
 	//- /o/r/1_-_Test_Issue.md
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-	  
 	  issue body
 	");
 }
@@ -847,7 +828,7 @@ async fn test_undo_shorthand_aborts_sync() {
 /// This is critical for the merge algorithm to work - timestamps determine which side wins.
 #[tokio::test]
 async fn test_consensus_sink_writes_meta_json_with_timestamps() {
-	let ctx = TestContext::build("");
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 
 	// Set up a remote issue with a comment (will have timestamps from mock)
 	let remote_vi = parse_virtual(
@@ -891,11 +872,7 @@ async fn test_consensus_sink_writes_meta_json_with_timestamps() {
 	}
 	//- /o/r/1_-_Test_Issue.md
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-	  
-	  remote body
-	  
-	  ---
-	  
+	  ## remote body
 	  <!-- comment 1001 @commenter -->
 	  
 	  A test comment

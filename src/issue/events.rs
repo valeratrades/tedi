@@ -316,9 +316,8 @@ impl OwnedCodeBlockKind {
 
 /// A sequence of owned markdown events.
 /// This is the primary type for storing markdown content.
-#[derive(Clone, Debug, Default, derive_more::Deref, derive_more::IntoIterator, PartialEq)]
+#[derive(Clone, Debug, Default, derive_more::Deref, derive_more::IntoIterator)]
 pub struct Events(Vec<OwnedEvent>);
-
 impl Events {
 	/// Parse markdown content into events.
 	///
@@ -396,6 +395,20 @@ impl Events {
 		}
 
 		Self(split_blockers_from_checkboxes(events))
+	}
+}
+
+/// Compare by rendered markdown, not by event structure.
+///
+/// Different sources (tight vs loose list items, standalone text) produce structurally
+/// different events for the same content (e.g. with/without Paragraph wrappers).
+/// Comparing rendered output makes merge/sync ignore these irrelevant structural differences.
+impl PartialEq for Events {
+	fn eq(&self, other: &Self) -> bool {
+		if self.0 == other.0 {
+			return true;
+		}
+		render_events(&self.0) == render_events(&other.0)
 	}
 }
 
@@ -582,7 +595,7 @@ pub(crate) fn cmark_options() -> pulldown_cmark_to_cmark::Options<'static> {
 	pulldown_cmark_to_cmark::Options {
 		list_token: '-',
 		newlines_after_headline: 1,
-		newlines_after_paragraph: 2,
+		newlines_after_paragraph: 1,
 		..Default::default()
 	}
 }
@@ -593,11 +606,10 @@ pub(crate) fn cmark_options() -> pulldown_cmark_to_cmark::Options<'static> {
 /// 1. `CheckBox(" ")`/`CheckBox("x")` → `TaskListMarker`
 /// 2. Custom `CheckBox` → escaped `Text("[<inner>\] ")`
 /// 3. Loose-list spacing: inserts `Html("\n")` between items in lists that contain checkboxes
-/// 4. Strips first paragraph wrapper inside list items (prevents extra blank line before body)
 pub(crate) fn prepare_for_render(events: &[OwnedEvent]) -> Vec<Event<'_>> {
 	let mut out = Vec::with_capacity(events.len());
 
-	// Pre-compute: identify checkbox list ranges (for loose inter-item spacing).
+	// Identify which list ranges contain checkboxes (for loose inter-item spacing).
 	struct ListInfo {
 		start_idx: usize,
 		has_checkbox: bool,
@@ -605,65 +617,26 @@ pub(crate) fn prepare_for_render(events: &[OwnedEvent]) -> Vec<Event<'_>> {
 	let mut list_stack: Vec<ListInfo> = Vec::new();
 	let mut checkbox_lists: Vec<(usize, usize)> = Vec::new();
 
-	// Strip the first paragraph wrapper inside each list item.
-	// Loose lists get Start(Paragraph)..End(Paragraph) around the first line,
-	// which causes an extra blank line before body content due to newlines_after_paragraph.
-	// We skip Start(Paragraph) entirely. For End(Paragraph), if more content follows in the
-	// item we replace it with Html("\n") (just a newline, no paragraph spacing); if it's the
-	// last thing before End(Item) we skip it entirely.
-	let mut skip_indices: std::collections::HashSet<usize> = std::collections::HashSet::new();
-	let mut newline_indices: std::collections::HashSet<usize> = std::collections::HashSet::new();
-	let mut after_item_start = false;
-
 	for (i, ev) in events.iter().enumerate() {
 		match ev {
 			OwnedEvent::Start(OwnedTag::List(_)) => {
 				list_stack.push(ListInfo { start_idx: i, has_checkbox: false });
-				after_item_start = false;
 			}
 			OwnedEvent::CheckBox(_) =>
 				if let Some(info) = list_stack.last_mut() {
 					info.has_checkbox = true;
 				},
-			OwnedEvent::End(OwnedTagEnd::List(_)) => {
+			OwnedEvent::End(OwnedTagEnd::List(_)) =>
 				if let Some(info) = list_stack.pop() {
 					if info.has_checkbox {
 						checkbox_lists.push((info.start_idx, i));
 					}
-				}
-				after_item_start = false;
-			}
-			OwnedEvent::Start(OwnedTag::Item) => {
-				after_item_start = true;
-			}
-			OwnedEvent::Start(OwnedTag::Paragraph) if after_item_start && !list_stack.is_empty() => {
-				skip_indices.insert(i);
-				for (j, ev2) in events[i + 1..].iter().enumerate() {
-					if matches!(ev2, OwnedEvent::End(OwnedTagEnd::Paragraph)) {
-						let end_idx = i + 1 + j;
-						if matches!(events.get(end_idx + 1), Some(OwnedEvent::End(OwnedTagEnd::Item))) {
-							skip_indices.insert(end_idx);
-						} else {
-							newline_indices.insert(end_idx);
-						}
-						break;
-					}
-					if matches!(ev2, OwnedEvent::Start(OwnedTag::Paragraph | OwnedTag::List(_) | OwnedTag::Heading { .. })) {
-						break;
-					}
-				}
-				after_item_start = false;
-			}
-			OwnedEvent::End(OwnedTagEnd::Item) => {
-				after_item_start = false;
-			}
-			_ => {
-				after_item_start = false;
-			}
+				},
+			_ => {}
 		}
 	}
 
-	// Build loose inter-item spacing indices
+	// Build a set of Item end indices where we should insert Html("\n") for loose spacing.
 	let mut loose_item_ends: std::collections::HashSet<usize> = std::collections::HashSet::new();
 	for (list_start, list_end) in &checkbox_lists {
 		let mut depth = 0;
@@ -685,13 +658,6 @@ pub(crate) fn prepare_for_render(events: &[OwnedEvent]) -> Vec<Event<'_>> {
 	}
 
 	for (i, ev) in events.iter().enumerate() {
-		if skip_indices.contains(&i) {
-			continue;
-		}
-		if newline_indices.contains(&i) {
-			out.push(Event::Html("\n".into()));
-			continue;
-		}
 		match ev {
 			OwnedEvent::CheckBox(inner) => match inner.as_str() {
 				" " => out.push(Event::TaskListMarker(false)),

@@ -13,7 +13,7 @@ use crate::{
 #[test]
 fn test_parent_virtual_creates_virtual_project() {
 	// Empty context - no existing repos
-	let ctx = TestContext::build("");
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 
 	// Touch with --parent=virtual should create a virtual project
 	let out = ctx.open_touch("newowner/newrepo/my-issue").args(&["--parent=virtual"]).ghost_edit().run();
@@ -36,7 +36,7 @@ fn test_parent_virtual_creates_virtual_project() {
 /// Test that --parent (without value, defaults to default) errors when repo doesn't exist on GitHub.
 #[test]
 fn test_parent_default_errors_for_nonexistent_github_repo() {
-	let ctx = TestContext::build("");
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 
 	// Touch with --parent for a repo that doesn't exist on GitHub
 	let out = ctx.open_touch("nonexistent/repo/issue").args(&["--parent"]).run();
