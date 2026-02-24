@@ -225,10 +225,8 @@ struct MilestoneItem {
 
 /// Semantic interpretation of a list item's inline text.
 enum ItemContent {
-	/// Shorthand ref: `owner/repo#N`, `repo#N`, or bare `#N`.
-	ShorthandRef { owner: Option<String>, repo: Option<String>, number: u64 },
-	/// A bare URL: `https://github.com/owner/repo/issues/N`
-	BareUrl(IssueLink),
+	/// A bare issue reference (URL or shorthand).
+	Ref(super::issue_ref::IssueRef),
 	/// Embedded issue with title + marker: `Title <!-- @user url -->`
 	EmbeddedIssue { prefix_events: Vec<OwnedEvent>, marker: IssueMarker },
 	/// Plain text (category headers like `discretionary_engine`, `valeratrades/tedi`, or anything else).
@@ -379,7 +377,7 @@ fn split_inline_at_ref_softbreak(events: Vec<OwnedEvent>) -> (ItemContent, Vec<M
 	if let Some(break_pos) = events.iter().rposition(|e| matches!(e, OwnedEvent::SoftBreak)) {
 		let tail = &events[break_pos + 1..];
 		let tail_classified = classify_inline_events(tail.to_vec());
-		if matches!(tail_classified, ItemContent::ShorthandRef { .. } | ItemContent::BareUrl(_)) {
+		if matches!(tail_classified, ItemContent::Ref(_)) {
 			let head = events[..break_pos].to_vec();
 			let content = classify_inline_events(head);
 			let child_item = MilestoneItem {
@@ -428,59 +426,13 @@ fn classify_inline_events(events: Vec<OwnedEvent>) -> ItemContent {
 
 	// Case 2: Single word, no spaces → might be shorthand ref or bare URL
 	if !trimmed.is_empty() && !trimmed.contains(' ') {
-		// Try bare URL first
-		if let Some(link) = IssueLink::parse(trimmed) {
-			return ItemContent::BareUrl(link);
-		}
-
-		// Try shorthand: `owner/repo#N`, `repo#N`, or `#N`
-		if let Some(shorthand) = parse_shorthand_word(trimmed) {
-			return shorthand;
+		if let Some(issue_ref) = super::issue_ref::IssueRef::parse_word(trimmed) {
+			return ItemContent::Ref(issue_ref);
 		}
 	}
 
 	// Case 3: plain text
 	ItemContent::Text(events)
-}
-
-/// Try to parse a single word as `owner/repo#N`, `repo#N`, or `#N`.
-fn parse_shorthand_word(word: &str) -> Option<ItemContent> {
-	let hash_pos = word.find('#')?;
-	let before = &word[..hash_pos];
-	let after = &word[hash_pos + 1..];
-	let number: u64 = after.parse().ok()?;
-
-	match before.find('/') {
-		Some(slash_pos) => {
-			// `owner/repo#number`
-			if before[slash_pos + 1..].contains('/') {
-				return None;
-			}
-			let owner = &before[..slash_pos];
-			let repo = &before[slash_pos + 1..];
-			if owner.is_empty() || repo.is_empty() {
-				return None;
-			}
-			Some(ItemContent::ShorthandRef {
-				owner: Some(owner.to_string()),
-				repo: Some(repo.to_string()),
-				number,
-			})
-		}
-		None => {
-			if before.is_empty() {
-				// Bare `#number` — needs parent context to resolve
-				Some(ItemContent::ShorthandRef { owner: None, repo: None, number })
-			} else {
-				// `repo#number`
-				Some(ItemContent::ShorthandRef {
-					owner: None,
-					repo: Some(before.to_string()),
-					number,
-				})
-			}
-		}
-	}
 }
 
 // ─── Operations ──────────────────────────────────────────────────────────────
@@ -498,20 +450,10 @@ fn resolve_section(section: &mut MilestoneSection, parent_context: Option<&str>)
 				_ => None,
 			};
 
-			// Resolve this item if it's a bare `#N`
-			if let ItemContent::ShorthandRef { owner, repo, .. } = &mut item.content {
-				if repo.is_none()
-					&& let Some(ctx) = parent_context
-				{
-					let (resolved_owner, resolved_repo) = parse_repo_context(ctx);
-					*owner = Some(resolved_owner);
-					*repo = Some(resolved_repo);
-				}
-				if owner.is_none()
-					&& repo.is_some()
-					&& let Some(user) = crate::current_user::get()
-				{
-					*owner = Some(user);
+			// Resolve this item if it's a ref with missing owner/repo
+			if let ItemContent::Ref(issue_ref) = &mut item.content {
+				if let Some(ctx) = parent_context {
+					issue_ref.resolve_with_context(ctx);
 				}
 			}
 
@@ -521,15 +463,6 @@ fn resolve_section(section: &mut MilestoneSection, parent_context: Option<&str>)
 				resolve_section(child, child_ctx);
 			}
 		}
-	}
-}
-
-fn parse_repo_context(text: &str) -> (String, String) {
-	if let Some(slash) = text.find('/') {
-		(text[..slash].to_string(), text[slash + 1..].to_string())
-	} else {
-		let owner = crate::current_user::get().unwrap_or_else(|| panic!("current_user must be set to resolve bare repo context '{text}'"));
-		(owner, text.to_string())
 	}
 }
 
@@ -594,28 +527,18 @@ fn expand_section(section: &mut MilestoneSection, expansions: &std::collections:
 fn collapse_section(section: &mut MilestoneSection) {
 	if let MilestoneSection::List(list) = section {
 		for item in list.items.iter_mut() {
-			match &item.content {
+			let link = match &item.content {
 				ItemContent::EmbeddedIssue {
 					marker: IssueMarker::Linked { link, .. },
 					..
-				} => {
-					item.content = ItemContent::BareUrl(link.clone());
-					item.checkbox = None;
-					item.children.clear();
-				}
-				ItemContent::ShorthandRef {
-					owner: Some(o),
-					repo: Some(r),
-					number,
-				} => {
-					let url = format!("https://github.com/{o}/{r}/issues/{number}");
-					if let Some(link) = IssueLink::parse(&url) {
-						item.content = ItemContent::BareUrl(link);
-						item.checkbox = None;
-						item.children.clear();
-					}
-				}
-				_ => {}
+				} => Some(link.clone()),
+				ItemContent::Ref(issue_ref) => issue_ref.to_issue_link(),
+				_ => None,
+			};
+			if let Some(link) = link {
+				item.content = ItemContent::Ref(super::issue_ref::IssueRef::Url(link));
+				item.checkbox = None;
+				item.children.clear();
 			}
 			for child in &mut item.children {
 				collapse_section(child);
@@ -627,13 +550,7 @@ fn collapse_section(section: &mut MilestoneSection) {
 /// Extract the IssueLink from an item, if it represents an issue ref.
 fn content_issue_link(content: &ItemContent) -> Option<IssueLink> {
 	match content {
-		ItemContent::ShorthandRef { owner, repo, number } => {
-			let o = owner.as_ref()?;
-			let r = repo.as_ref()?;
-			let url = format!("https://github.com/{o}/{r}/issues/{number}");
-			IssueLink::parse(&url)
-		}
-		ItemContent::BareUrl(link) => Some(link.clone()),
+		ItemContent::Ref(issue_ref) => issue_ref.to_issue_link(),
 		ItemContent::EmbeddedIssue { marker, .. } => match marker {
 			IssueMarker::Linked { link, .. } => Some(link.clone()),
 			_ => None,
@@ -715,17 +632,8 @@ fn serialize_item(item: &MilestoneItem, output: &mut String) {
 
 fn item_content_to_events(content: &ItemContent) -> Vec<OwnedEvent> {
 	match content {
-		ItemContent::ShorthandRef { owner, repo, number } => {
-			let text = match (owner, repo) {
-				(Some(o), Some(r)) => format!("{o}/{r}#{number}"),
-				(None, Some(r)) => format!("{r}#{number}"),
-				(None, None) => format!("#{number}"),
-				(Some(_), None) => unreachable!("owner set without repo"),
-			};
-			vec![OwnedEvent::Text(text)]
-		}
-		ItemContent::BareUrl(link) => {
-			vec![OwnedEvent::Text(link.as_str().to_string())]
+		ItemContent::Ref(issue_ref) => {
+			vec![OwnedEvent::Text(issue_ref.to_string())]
 		}
 		ItemContent::EmbeddedIssue { prefix_events, marker } => {
 			let mut events: Vec<OwnedEvent> = prefix_events.clone();

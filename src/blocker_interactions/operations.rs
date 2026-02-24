@@ -5,7 +5,7 @@
 //! - `pop`: Remove the last blocker from the stack
 //! - `current`: Get the current (last) blocker with its parent context
 
-use tedi::{BlockerItem, BlockerSequence};
+use tedi::{BlockerItem, BlockerSequence, IssueRef};
 
 /// Extension trait for BlockerSequence with additional operations
 pub trait BlockerSequenceExt {
@@ -14,6 +14,10 @@ pub trait BlockerSequenceExt {
 
 	/// Get the current blocker with context prepended (joined by ": ").
 	fn current_with_context(&self, ownership_hierarchy: &[String]) -> Option<String>;
+
+	/// Walk the path from root to the current (deepest) blocker item,
+	/// returning the deepest ancestor (or leaf) that is an issue ref.
+	fn current_issue_ref(&self) -> Option<IssueRef>;
 
 	/// Add a content line to the blocker sequence (at current position)
 	fn add(&mut self, text: &str);
@@ -47,6 +51,10 @@ impl BlockerSequenceExt for BlockerSequence {
 		}
 	}
 
+	fn current_issue_ref(&self) -> Option<IssueRef> {
+		deepest_issue_ref_on_path(&self.items)
+	}
+
 	fn add(&mut self, text: &str) {
 		let item = BlockerItem {
 			text: text.to_string(),
@@ -69,6 +77,17 @@ impl BlockerSequenceExt for BlockerSequence {
 	fn pop(&mut self) -> Option<String> {
 		pop_last(&mut self.items).map(|item| item.text)
 	}
+}
+
+/// Walk the path to the current (deepest) item, returning the deepest issue ref found.
+fn deepest_issue_ref_on_path(items: &[BlockerItem]) -> Option<IssueRef> {
+	let last = items.last()?;
+	let mine = last.issue_ref();
+	if last.children.is_empty() {
+		return mine;
+	}
+	// Recurse into children; deepest wins, fall back to ours
+	deepest_issue_ref_on_path(&last.children).or(mine)
 }
 
 /// Get the last item in a list of items (depth-first, rightmost)

@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use color_eyre::eyre::{Result, bail, eyre};
 use tedi::{
-	Issue, LazyIssue, Marker, MilestoneBlockerCache, RepoInfo, VirtualIssue,
+	Issue, IssueLink, LazyIssue, Marker, MilestoneBlockerCache, RepoInfo, VirtualIssue,
 	local::{ExactMatchLevel, FsReader, Local, LocalIssueSource},
 };
 
@@ -164,8 +164,8 @@ pub async fn main_integrated(command: super::io::Command, offline: bool) -> Resu
 				// Cleanup if empty after editing
 				urgent.cleanup_if_empty()?;
 
-				// Update tracking if enabled
-				update_tracking_after_change(description_before).await;
+				// Post-update
+				post_update(description_before, true).await?;
 			} else {
 				let issue_source = if let Some(pat) = pattern {
 					BlockerIssueSource::build(resolve_issue_file(&pat)?)?
@@ -186,8 +186,8 @@ pub async fn main_integrated(command: super::io::Command, offline: bool) -> Resu
 					println!("Set blockers to: {}", issue_source.display_name());
 				}
 
-				// Update tracking after change
-				update_tracking_after_change(description_before).await;
+				// Post-update
+				post_update(description_before, false).await?;
 			}
 		}
 
@@ -270,8 +270,8 @@ pub async fn main_integrated(command: super::io::Command, offline: bool) -> Resu
 
 					urgent.cleanup_if_empty()?;
 
-					// Update tracking after pop
-					update_tracking_after_change(description_before).await;
+					// Post-update
+					post_update(description_before, true).await?;
 
 					// Show new current
 					if let Some(current) = blockers.current_with_context(&[]) {
@@ -302,8 +302,8 @@ pub async fn main_integrated(command: super::io::Command, offline: bool) -> Resu
 				println!("{output}");
 			}
 
-			// Update tracking after pop
-			update_tracking_after_change(description_before).await;
+			// Post-update
+			post_update(description_before, false).await?;
 
 			// Show new current blocker (reload to get updated state)
 			let blockers = issue_source.load()?;
@@ -331,7 +331,7 @@ pub async fn main_integrated(command: super::io::Command, offline: bool) -> Resu
 				}
 				urgent.save(&blockers)?;
 
-				update_tracking_after_change(description_before.clone()).await;
+				post_update(description_before.clone(), true).await?;
 
 				println!("Added to urgent: {name}");
 				if let Some(current) = blockers.current_with_context(&[]) {
@@ -348,7 +348,7 @@ pub async fn main_integrated(command: super::io::Command, offline: bool) -> Resu
 					println!("{output}");
 				}
 
-				update_tracking_after_change(description_before).await;
+				post_update(description_before, false).await?;
 
 				let blockers = issue_source.load()?;
 				if let Some(new_current) = blockers.current_with_context(&[]) {
@@ -462,9 +462,79 @@ fn get_current_blocker_description(fully_qualified: bool) -> Option<String> {
 	blockers.current_with_context(&hierarchy)
 }
 
+/// Post-update step after any blocker mutation.
+///
+/// 1. If the current blocker references an issue, follow that ref (set milestone cache to it).
+///    Recurses until no more refs are found, with cycle detection.
+/// 2. Otherwise, update clockify tracking.
+///
+/// `is_urgent`: if true, error out when a blocker references an issue (urgent can't reference).
+async fn post_update(description_before: Option<String>, is_urgent: bool) -> Result<()> {
+	follow_blocker_refs(is_urgent, Vec::new())?;
+	update_clockify_tracking(description_before).await;
+	Ok(())
+}
+
+/// Follow issue refs in the current blocker chain.
+///
+/// Walks the current blocker's ancestor path for issue refs. If one is found,
+/// sets the milestone cache to that issue and recurses. The `visited` list
+/// prevents infinite loops — if we'd revisit a link, we error with the cycle.
+fn follow_blocker_refs(is_urgent: bool, mut visited: Vec<IssueLink>) -> Result<()> {
+	let issue_ref = if is_urgent {
+		let urgent = StandaloneSource::urgent();
+		let Some(urgent) = urgent else { return Ok(()) };
+		let blockers = urgent.load()?;
+		blockers.current_issue_ref()
+	} else {
+		let Some(source) = BlockerIssueSource::current() else { return Ok(()) };
+		let blockers = source.load()?;
+		let mut r = blockers.current_issue_ref();
+		// Resolve bare refs using the parent issue's repo as context
+		if let Some(ref mut issue_ref) = r {
+			let ctx = format!("{}/{}", source.repo_info.owner(), source.repo_info.repo());
+			issue_ref.resolve_with_context(&ctx);
+		}
+		r
+	};
+
+	let Some(issue_ref) = issue_ref else { return Ok(()) };
+
+	if is_urgent {
+		bail!("Urgent blockers cannot reference issues (found: {issue_ref})");
+	}
+
+	let Some(link) = issue_ref.to_issue_link() else {
+		// Unresolved ref (bare #N without context) — nothing to follow
+		return Ok(());
+	};
+
+	// Cycle detection
+	if visited.iter().any(|v| v.number() == link.number() && v.owner() == link.owner() && v.repo() == link.repo()) {
+		let cycle: Vec<String> = visited.iter().map(|l| format!("{}/{}#{}", l.owner(), l.repo(), l.number())).collect();
+		bail!("Blocker reference cycle detected: {} → {}", cycle.join(" → "), issue_ref);
+	}
+
+	let Some(path) = MilestoneBlockerCache::resolve_link_to_path(&link) else {
+		// Referenced issue not found locally — nothing to follow
+		return Ok(());
+	};
+
+	// Add current link to visited before following
+	if let Some(current_link) = MilestoneBlockerCache::load().and_then(|c| c.current_link()) {
+		visited.push(current_link);
+	}
+
+	MilestoneBlockerCache::set_by_path(&path)?;
+	println!("Followed blocker ref → {}", BlockerIssueSource::build(path)?.display_name());
+
+	// Recurse — the new current issue's blocker might also be a ref
+	follow_blocker_refs(false, visited)
+}
+
 /// Update clockify tracking after a blocker change (add/pop/edit).
 /// Only restarts tracking if the current blocker description actually changed.
-async fn update_tracking_after_change(description_before: Option<String>) {
+async fn update_clockify_tracking(description_before: Option<String>) {
 	if !super::clockify::is_tracking_enabled() {
 		return;
 	}

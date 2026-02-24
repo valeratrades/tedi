@@ -64,6 +64,16 @@ pub struct BlockerItem {
 	pub comments: Vec<String>,
 	pub children: Vec<BlockerItem>,
 }
+impl BlockerItem {
+	/// Try to parse this item's text as an issue reference.
+	pub fn issue_ref(&self) -> Option<super::issue_ref::IssueRef> {
+		let trimmed = self.text.trim();
+		if trimmed.is_empty() || trimmed.contains(' ') {
+			return None;
+		}
+		super::issue_ref::IssueRef::parse_word(trimmed)
+	}
+}
 
 /// Whether this blocker block has been marked as the active selection via `!s`.
 #[derive(Clone, Copy, Debug)]

@@ -7,6 +7,8 @@
 //! optional Github synchronization.
 
 mod blocker;
+pub(crate) mod issue_ref;
+pub use issue_ref::IssueRef;
 pub mod milestone_embed;
 pub use blocker::{BlockerItem, BlockerSequence, BlockerSetState, MilestoneBlockerCache, join_with_blockers, split_blockers};
 pub use milestone_embed::{MilestoneDoc, parse_blockers_from_embedded, serialize_blockers_view};
