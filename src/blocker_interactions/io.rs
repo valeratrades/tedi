@@ -51,11 +51,11 @@ pub enum Command {
 		#[arg(short = 'u', long)]
 		urgent: bool,
 	},
-	/// Step forward in the milestone issue rotation
-	Toggle,
-	/// Manage the milestone-derived issue rotation
+	/// Navigate the milestone issue rotation.
+	///
+	/// No `prev` command — re-arrange the milestone instead, so active tasks naturally float up.
 	#[command(subcommand)]
-	Revolver(RevolverCommand),
+	Move(MoveCommand),
 	/// Resume tracking time on the current blocker task via Clockify
 	Resume(ResumeArgs),
 	/// Pause tracking time via Clockify
@@ -65,9 +65,11 @@ pub enum Command {
 }
 
 #[derive(Clone, Debug, Subcommand)]
-pub enum RevolverCommand {
-	/// List issues in the milestone-derived rotation
-	List,
-	/// Open the cached milestone description in $EDITOR
-	Open,
+pub enum MoveCommand {
+	/// Move to the next issue in the rotation (circular)
+	Up,
+	/// Move to the previous issue in the rotation (circular)
+	Down,
+	/// Jump to the first issue matching a pattern (case-insensitive substring on display path)
+	To { pattern: String },
 }

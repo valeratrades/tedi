@@ -231,7 +231,7 @@ async fn test_blocker_add_with_nested_context() {
 }
 
 #[tokio::test]
-async fn test_blocker_toggle_cycles_between_entries() {
+async fn test_blocker_move_up_cycles_between_entries() {
 	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 
 	// Create two issues
@@ -269,31 +269,31 @@ async fn test_blocker_toggle_cycles_between_entries() {
 
 	// Current should show task A
 	let out = ctx.run(&["--offline", "blocker", "current"]);
-	assert!(out.stdout.contains("task A"), "Before toggle, current should be task A. stdout: {}", out.stdout);
+	assert!(out.stdout.contains("task A"), "Before move, current should be task A. stdout: {}", out.stdout);
 
-	// Toggle should switch to issue B
-	let out = ctx.run(&["--offline", "blocker", "toggle"]);
-	assert!(out.status.success(), "toggle should succeed. stderr: {}", out.stderr);
+	// Move up should switch to issue B
+	let out = ctx.run(&["--offline", "blocker", "move", "up"]);
+	assert!(out.status.success(), "move up should succeed. stderr: {}", out.stderr);
 	assert!(
 		out.stdout.contains("Issue B") || out.stdout.contains("task B"),
-		"toggle should switch to B. stdout: {}",
+		"move up should switch to B. stdout: {}",
 		out.stdout
 	);
 
 	// Current should now show task B
 	let out = ctx.run(&["--offline", "blocker", "current"]);
-	assert!(out.stdout.contains("task B"), "After toggle, current should be task B. stdout: {}", out.stdout);
+	assert!(out.stdout.contains("task B"), "After move up, current should be task B. stdout: {}", out.stdout);
 
-	// Toggle again should wrap back to issue A
-	let out = ctx.run(&["--offline", "blocker", "toggle"]);
-	assert!(out.status.success(), "second toggle should succeed. stderr: {}", out.stderr);
+	// Move up again should wrap back to issue A
+	let out = ctx.run(&["--offline", "blocker", "move", "up"]);
+	assert!(out.status.success(), "second move up should succeed. stderr: {}", out.stderr);
 
 	let out = ctx.run(&["--offline", "blocker", "current"]);
-	assert!(out.stdout.contains("task A"), "After second toggle, should be back to task A. stdout: {}", out.stdout);
+	assert!(out.stdout.contains("task A"), "After second move up, should be back to task A. stdout: {}", out.stdout);
 }
 
 #[tokio::test]
-async fn test_blocker_toggle_with_three_entries_cycles() {
+async fn test_blocker_move_up_with_three_entries_cycles() {
 	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 
 	let vi1 = parse_virtual(
@@ -335,27 +335,27 @@ async fn test_blocker_toggle_with_three_entries_cycles() {
 		),
 	);
 
-	// Toggle A→B
-	let out = ctx.run(&["--offline", "blocker", "toggle"]);
-	assert!(out.status.success(), "toggle should succeed. stderr: {}", out.stderr);
+	// Move up A→B
+	let out = ctx.run(&["--offline", "blocker", "move", "up"]);
+	assert!(out.status.success(), "move up should succeed. stderr: {}", out.stderr);
 	let out = ctx.run(&["--offline", "blocker", "current"]);
-	assert!(out.stdout.contains("task B"), "After first toggle, should be B. stdout: {}", out.stdout);
+	assert!(out.stdout.contains("task B"), "After first move up, should be B. stdout: {}", out.stdout);
 
-	// Toggle B→C
-	let out = ctx.run(&["--offline", "blocker", "toggle"]);
+	// Move up B→C
+	let out = ctx.run(&["--offline", "blocker", "move", "up"]);
 	assert!(out.status.success());
 	let out = ctx.run(&["--offline", "blocker", "current"]);
-	assert!(out.stdout.contains("task C"), "After second toggle, should be C. stdout: {}", out.stdout);
+	assert!(out.stdout.contains("task C"), "After second move up, should be C. stdout: {}", out.stdout);
 
-	// Toggle C→A (wrap)
-	let out = ctx.run(&["--offline", "blocker", "toggle"]);
+	// Move up C→A (wrap)
+	let out = ctx.run(&["--offline", "blocker", "move", "up"]);
 	assert!(out.status.success());
 	let out = ctx.run(&["--offline", "blocker", "current"]);
-	assert!(out.stdout.contains("task A"), "After third toggle, should wrap to A. stdout: {}", out.stdout);
+	assert!(out.stdout.contains("task A"), "After third move up, should wrap to A. stdout: {}", out.stdout);
 }
 
 #[tokio::test]
-async fn test_blocker_toggle_single_entry_errors() {
+async fn test_blocker_move_single_entry_errors() {
 	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 
 	let vi = parse_virtual(
@@ -374,14 +374,14 @@ async fn test_blocker_toggle_single_entry_errors() {
 		&milestone_cache_json(&[("Issue A", "mock_user", "https://github.com/o/r/issues/1")], 0),
 	);
 
-	// Toggle should fail with single entry
-	let out = ctx.run(&["--offline", "blocker", "toggle"]);
-	assert!(!out.status.success(), "toggle with single entry should fail. stdout: {}", out.stdout);
+	// Move up should fail with single entry
+	let out = ctx.run(&["--offline", "blocker", "move", "up"]);
+	assert!(!out.status.success(), "move with single entry should fail. stdout: {}", out.stdout);
 	assert!(out.stderr.contains("Only one issue"), "error should mention single issue. stderr: {}", out.stderr);
 }
 
 #[tokio::test]
-async fn test_blocker_add_works_after_toggle() {
+async fn test_blocker_add_works_after_move() {
 	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 
 	let vi1 = parse_virtual(
@@ -404,7 +404,7 @@ async fn test_blocker_add_works_after_toggle() {
 	let path1 = ctx.resolve_issue_path(&issue1);
 	let path2 = ctx.resolve_issue_path(&issue2);
 
-	// Start on A, toggle to B
+	// Start on A, move up to B
 	ctx.xdg.write_cache(
 		"milestone_blockers.json",
 		&milestone_cache_json(
@@ -415,11 +415,11 @@ async fn test_blocker_add_works_after_toggle() {
 			0,
 		),
 	);
-	ctx.run(&["--offline", "blocker", "toggle"]);
+	ctx.run(&["--offline", "blocker", "move", "up"]);
 
 	// Add a blocker - should go into Issue B (the now-current one)
 	let out = ctx.run(&["--offline", "blocker", "add", "new task on B"]);
-	assert!(out.status.success(), "add should succeed after toggle. stderr: {}", out.stderr);
+	assert!(out.status.success(), "add should succeed after move. stderr: {}", out.stderr);
 
 	// Verify it went into issue B
 	insta::assert_snapshot!(read_issue_file(&path2), @"

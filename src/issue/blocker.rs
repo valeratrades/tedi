@@ -325,20 +325,48 @@ impl MilestoneBlockerCache {
 		}
 	}
 
-	/// Advance to the next embedded issue. Returns the new current link.
-	pub fn toggle() -> Result<super::IssueLink, String> {
+	/// Move current index by `delta` positions (circular). Returns the new current link.
+	pub fn move_by(delta: isize) -> Result<super::IssueLink, String> {
 		let mut cache = Self::load().ok_or("No milestone blocker cache. Run `todo milestones edit` first.")?;
 		let links = cache.embedded_links();
 		if links.is_empty() {
 			return Err("No issues in milestone. Add issues to the milestone first.".into());
 		}
 		if links.len() == 1 {
-			return Err("Only one issue in milestone. Nothing to toggle to.".into());
+			return Err("Only one issue in milestone. Nothing to move to.".into());
 		}
-		cache.current_index = (cache.current_index + 1) % links.len();
+		let len = links.len() as isize;
+		cache.current_index = ((cache.current_index as isize + delta).rem_euclid(len)) as usize;
 		let link = links[cache.current_index].clone();
 		cache.save().map_err(|e| format!("Failed to save milestone cache: {e}"))?;
 		Ok(link)
+	}
+
+	/// Set current to the first embedded link whose display string contains `pattern` (case-insensitive).
+	pub fn set_by_pattern(pattern: &str) -> Result<super::IssueLink, String> {
+		let mut cache = Self::load().ok_or("No milestone blocker cache. Run `todo milestones edit` first.")?;
+		let links = cache.embedded_links();
+		if links.is_empty() {
+			return Err("No issues in milestone.".into());
+		}
+		let pattern_lower = pattern.to_lowercase();
+		let found = links.iter().enumerate().find(|(_, link)| Self::display_for_link(link).to_lowercase().contains(&pattern_lower));
+		match found {
+			Some((idx, link)) => {
+				cache.current_index = idx;
+				let link = link.clone();
+				cache.save().map_err(|e| format!("Failed to save milestone cache: {e}"))?;
+				Ok(link)
+			}
+			None => Err(format!("No issue matching '{pattern}' in milestone.")),
+		}
+	}
+
+	/// Display string for a link: local relative path if resolvable, otherwise `owner/repo#number`.
+	fn display_for_link(link: &super::IssueLink) -> String {
+		Self::resolve_link_to_path(link)
+			.and_then(|p| p.strip_prefix(crate::local::Local::issues_dir()).ok().map(|rel| rel.to_string_lossy().to_string()))
+			.unwrap_or_else(|| format!("{}/{}#{}", link.owner(), link.repo(), link.number()))
 	}
 
 	/// Write/update the cache from a milestone description.

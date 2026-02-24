@@ -124,52 +124,27 @@ pub async fn main_integrated(command: super::io::Command, offline: bool) -> Resu
 	use crate::open_interactions::{Modifier, SyncOptions, modify_and_sync_issue};
 
 	match command {
-		Command::Toggle => match MilestoneBlockerCache::toggle() {
-			Ok(link) => {
-				let path = MilestoneBlockerCache::resolve_link_to_path(&link).ok_or_else(|| eyre!("Could not find local file for {}/{}/#{}", link.owner(), link.repo(), link.number()))?;
-				let source = BlockerIssueSource::build(path)?;
-				println!("Toggled to: {}", source.display_name());
+		Command::Move(sub) => {
+			use super::io::MoveCommand;
+			let result = match sub {
+				MoveCommand::Up => MilestoneBlockerCache::move_by(1),
+				MoveCommand::Down => MilestoneBlockerCache::move_by(-1),
+				MoveCommand::To { pattern } => MilestoneBlockerCache::set_by_pattern(&pattern),
+			};
+			match result {
+				Ok(link) => {
+					let path =
+						MilestoneBlockerCache::resolve_link_to_path(&link).ok_or_else(|| eyre!("Could not find local file for {}/{}/#{}", link.owner(), link.repo(), link.number()))?;
+					let source = BlockerIssueSource::build(path)?;
+					println!("Moved to: {}", source.display_name());
 
-				let blockers = source.load()?;
-				if let Some(current) = blockers.current_with_context(&[]) {
-					println!("Current: {current}");
-				}
-			}
-			Err(msg) => {
-				bail!("{msg}");
-			}
-		},
-
-		Command::Revolver(sub) => {
-			use super::io::RevolverCommand;
-			match sub {
-				RevolverCommand::List => {
-					let Some(cache) = MilestoneBlockerCache::load() else {
-						println!("No milestone blocker cache. Run `todo milestones edit` first.");
-						return Ok(());
-					};
-					let links = cache.embedded_links();
-					if links.is_empty() {
-						println!("No issues in milestone.");
-						return Ok(());
-					}
-					for (i, link) in links.iter().enumerate() {
-						let marker = if i == cache.current_index { ">" } else { " " };
-						let display = MilestoneBlockerCache::resolve_link_to_path(link)
-							.and_then(|p| p.strip_prefix(tedi::local::Local::issues_dir()).ok().map(|rel| rel.to_string_lossy().to_string()))
-							.unwrap_or_else(|| format!("{}/{}#{}", link.owner(), link.repo(), link.number()));
-						println!("{marker} {display}");
+					let blockers = source.load()?;
+					if let Some(current) = blockers.current_with_context(&[]) {
+						println!("Current: {current}");
 					}
 				}
-				RevolverCommand::Open => {
-					// Open the milestone description for editing
-					let Some(cache) = MilestoneBlockerCache::load() else {
-						bail!("No milestone blocker cache. Run `todo milestones edit` first.");
-					};
-					// Write to temp file and open
-					let tmp_path = std::path::PathBuf::from("/tmp/milestone_blockers.md");
-					std::fs::write(&tmp_path, &cache.milestone_description)?;
-					v_utils::io::file_open::open(&tmp_path).await?;
+				Err(msg) => {
+					bail!("{msg}");
 				}
 			}
 		}
@@ -259,6 +234,7 @@ pub async fn main_integrated(command: super::io::Command, offline: bool) -> Resu
 				}
 			}
 
+			let cache = MilestoneBlockerCache::load();
 			let source = BlockerIssueSource::current().ok_or_else(|| eyre!("No blocker source. Run `todo milestones edit` to set up milestone."))?;
 			let blockers = source.load()?;
 
@@ -266,10 +242,12 @@ pub async fn main_integrated(command: super::io::Command, offline: bool) -> Resu
 				let hierarchy = if fully_qualified { source.hierarchy() } else { vec![] };
 
 				if let Some(current) = blockers.current_with_context(&hierarchy) {
+					let position_prefix = cache.map(|c| format!("{}| ", c.current_index + 1)).unwrap_or_default();
+					let output = format!("{position_prefix}{current}");
 					const MAX_LEN: usize = 70;
-					match current.len() {
-						0..=MAX_LEN => println!("{current}"),
-						_ => println!("{}...", &current[..(MAX_LEN - 3)]),
+					match output.len() {
+						0..=MAX_LEN => println!("{output}"),
+						_ => println!("{}...", &output[..(MAX_LEN - 3)]),
 					}
 				}
 			}
