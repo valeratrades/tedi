@@ -56,6 +56,8 @@
               release.default = true;
               labels.extra = [
                 { name = "milestones"; color = "0000ff"; }
+                { name = "nuke"; color = "0000ff"; description = "remove something. Basically `chore` but strictly subtractive"; }
+                { name = "daily_ev"; color = "0000ff"; description = "everything relevant to the `ev` command"; }
               ];
             };
           readme = v-utils.readme-fw {

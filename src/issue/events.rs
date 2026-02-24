@@ -398,6 +398,7 @@ impl Events {
 		// replace End(Paragraph)+Start(Paragraph) boundaries with SoftBreak.
 		// This ensures loose and tight lists produce identical event structure.
 		let events = normalize_list_items_tight(events);
+		let events = preserve_paragraph_spacing(events);
 
 		Self(split_blockers_from_checkboxes(events))
 	}
@@ -459,6 +460,31 @@ fn normalize_list_items_tight(events: Vec<OwnedEvent>) -> Vec<OwnedEvent> {
 				out.push(events[i].clone());
 				i += 1;
 			}
+		}
+	}
+	out
+}
+
+/// Preserve blank lines between block elements by inserting `Html("\n")` after `End(Paragraph)`.
+///
+/// `newlines_after_paragraph: 1` in cmark options means `End(P)` only emits 1 newline.
+/// When followed by another block element (Start(P), Start(Heading), etc.), the original blank line
+/// is lost. We restore it by inserting a raw `\n` event, so the final output has 2 newlines (blank line).
+///
+/// Skipped inside list items — list item spacing is handled by normalization and cmark itself.
+/// Skipped when next event is `End(...)` — that means we're exiting a scope, not starting a new block.
+fn preserve_paragraph_spacing(events: Vec<OwnedEvent>) -> Vec<OwnedEvent> {
+	let mut out = Vec::with_capacity(events.len());
+	let mut item_depth = 0usize;
+	for i in 0..events.len() {
+		match &events[i] {
+			OwnedEvent::Start(OwnedTag::Item) => item_depth += 1,
+			OwnedEvent::End(OwnedTagEnd::Item) => item_depth -= 1,
+			_ => {}
+		}
+		out.push(events[i].clone());
+		if item_depth == 0 && matches!(&events[i], OwnedEvent::End(OwnedTagEnd::Paragraph)) && matches!(events.get(i + 1), Some(OwnedEvent::Start(_))) {
+			out.push(OwnedEvent::Html("\n".to_string()));
 		}
 	}
 	out
@@ -909,6 +935,30 @@ mod tests {
 		let loose = "- item\n\n  body\n\n  ---\n\n  after rule\n";
 		let rendered: String = Events::parse(loose).into();
 		assert!(rendered.contains("---"), "Rule must survive normalization");
+	}
+
+	#[test]
+	fn paragraph_spacing_preserved_at_top_level() {
+		// User content with blank line between paragraphs
+		let input = "First paragraph\n\nSecond paragraph\n";
+		let rendered: String = Events::parse(input).into();
+		insta::assert_snapshot!(rendered, @r"
+		First paragraph
+
+		Second paragraph
+		");
+	}
+
+	#[test]
+	fn paragraph_spacing_not_added_inside_list_items() {
+		// Inside list items, spacing should NOT be added
+		let input = "- [ ] item\n\n  body text\n\n  more body\n";
+		let rendered: String = Events::parse(input).into();
+		insta::assert_snapshot!(rendered, @r"
+		- [ ] item
+		  body text
+		  more body
+		");
 	}
 
 	#[test]

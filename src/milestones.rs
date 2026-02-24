@@ -259,6 +259,14 @@ fn cache_blocker_milestone(settings: &LiveSettings, milestones: &[Milestone]) {
 async fn edit_milestone(settings: &LiveSettings, tf: Timeframe, offline: bool, mock: bool) -> Result<()> {
 	use std::fs;
 
+	use fs2::FileExt;
+
+	let lock_path = v_utils::xdg_cache_file!(format!("milestones_{tf}.lock"));
+	let lock_file = fs::File::create(&lock_path)?;
+	lock_file
+		.try_lock_exclusive()
+		.map_err(|_| eyre!("Another instance is already editing milestone '{tf}'. Only one editor at a time is allowed."))?;
+
 	let (original_description, milestone_number, is_outdated) = if mock {
 		// In mock mode, read milestone content from env-specified file
 		let mock_milestone_path =

@@ -1377,15 +1377,19 @@ impl VirtualIssue {
 			}
 		}
 
-		// Parse the InlineHtml marker
+		// Parse the InlineHtml marker, or fall back to `!n` shorthand embedded in title text
 		let identity_info = match &events[pos] {
 			OwnedEvent::InlineHtml(html) => {
-				// marker was already handled in parse_from_events title section
 				let (marker, _) = IssueMarker::parse_from_end(&format!("x {html}")).ok_or_else(|| ParseError::missing_url_marker(ctx.named_source(), ctx.line_span(1)))?;
 				pos += 1;
 				marker
 			}
-			_ => return Err(ParseError::missing_url_marker(ctx.named_source(), ctx.line_span(1))),
+			_ => {
+				// `!n` shorthand: pulldown_cmark embeds it in the Text event (no separate InlineHtml)
+				let (marker, rest) = IssueMarker::parse_from_end(&title_text).ok_or_else(|| ParseError::missing_url_marker(ctx.named_source(), ctx.line_span(1)))?;
+				title_text = rest.to_string();
+				marker
+			}
 		};
 
 		// Skip inline omitted markers (and intervening whitespace) that follow the issue marker on the title line

@@ -598,6 +598,7 @@ async fn test_reset_syncs_changes_after_editor() {
 	modified_issue.contents.state = tedi::CloseState::Closed;
 	let out = ctx.open_url(("o", "r").into(), 1).args(&["--reset"]).edit(&modified_issue).run();
 
+	// want to see the issue closed here
 	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().redact_timestamps(&[12]), &out), @r#"
 	//- /o/r/.meta.json
 	{
@@ -846,6 +847,7 @@ async fn test_consensus_sink_writes_meta_json_with_timestamps() {
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
 	  remote body
 	  \---<!-- comment 1001 @commenter -->
+	  
 	  A test comment
 	"#);
 }
