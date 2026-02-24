@@ -119,6 +119,17 @@ impl ParseContext {
 			.len();
 		(offset, len).into()
 	}
+
+	/// Find the line containing a substring (searching from `start_line`, 1-indexed) and return its span.
+	/// Falls back to `start_line` if not found.
+	pub fn find_line_span(&self, needle: &str, start_line: usize) -> SourceSpan {
+		for (i, line) in self.content.lines().enumerate().skip(start_line.saturating_sub(1)) {
+			if line.contains(needle) {
+				return self.line_span(i + 1);
+			}
+		}
+		self.line_span(start_line)
+	}
 }
 
 /// Internal miette diagnostic for nice error rendering with source highlighting.

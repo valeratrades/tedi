@@ -356,13 +356,18 @@ impl Sink<Remote> for Issue {
 		// If this is a pending (local) issue, create it first
 		if self.is_local() {
 			let title = &self.contents.title;
-			let body = self.body();
+			let body: String = self.body().into();
 			let closed = self.contents.state.is_closed();
 			let parent_index = self.identity.parent_index;
 
 			println!("Creating issue: {title}");
 			let created = gh.create_issue(repo_info, title, &body).await?;
 			println!("Created issue #{}: {}", created.number, created.html_url);
+
+			// Set labels if any
+			if !self.contents.labels.is_empty() {
+				gh.set_labels(repo_info, created.number, &self.contents.labels).await?;
+			}
 
 			// Close if needed
 			if closed {
@@ -394,9 +399,15 @@ impl Sink<Remote> for Issue {
 			None => false,
 		};
 		if body_changed {
-			let body = self.body();
+			let body: String = self.body().into();
 			println!("Updating issue #{issue_number} body...");
 			gh.update_issue_body(repo_info, issue_number, &body).await?;
+			changed = true;
+		}
+
+		if diff.labels_changed {
+			println!("Updating issue #{issue_number} labels...");
+			gh.set_labels(repo_info, issue_number, &self.contents.labels).await?;
 			changed = true;
 		}
 
@@ -415,7 +426,7 @@ impl Sink<Remote> for Issue {
 		// Create pending comments sequentially (order matters)
 		for comment in self.contents.comments.iter_mut().skip(1) {
 			if comment.is_pending() && !comment.body.is_empty() {
-				let body_str = comment.body.render();
+				let body_str = comment.body.to_string();
 				println!("Creating new comment on issue #{issue_number}...");
 				gh.create_comment(repo_info, issue_number, &body_str).await?;
 				changed = true;
@@ -429,7 +440,7 @@ impl Sink<Remote> for Issue {
 			{
 				continue;
 			}
-			let body_str = comment.body.render();
+			let body_str = comment.body.to_string();
 			println!("Updating comment {comment_id}...");
 			gh.update_comment(repo_info, *comment_id, &body_str).await?;
 			changed = true;

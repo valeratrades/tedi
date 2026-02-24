@@ -62,6 +62,9 @@ pub trait GithubClient: Send + Sync {
 	/// Note: Comment timestamps should be extracted from GithubComment's created_at/updated_at fields.
 	async fn fetch_timeline_timestamps(&self, repo: RepoInfo, issue_number: u64) -> Result<GraphqlTimelineTimestamps>;
 
+	/// Replace all labels on an issue.
+	async fn set_labels(&self, repo: RepoInfo, issue_number: u64, labels: &[String]) -> Result<()>;
+
 	/// Set or clear the milestone on an issue.
 	/// Pass `Some(number)` to assign, `None` to unassign.
 	async fn set_issue_milestone(&self, repo: RepoInfo, issue_number: u64, milestone: Option<u64>) -> Result<()>;
@@ -263,6 +266,11 @@ impl GithubClient for RealGithubClient {
 	async fn update_issue_state(&self, repo: RepoInfo, issue_number: u64, state: &str) -> Result<()> {
 		let url = format!("https://api.github.com/repos/{}/{}/issues/{issue_number}", repo.owner(), repo.repo());
 		self.patch_json(&url, &serde_json::json!({ "state": state }), "Failed to update issue state").await
+	}
+
+	async fn set_labels(&self, repo: RepoInfo, issue_number: u64, labels: &[String]) -> Result<()> {
+		let url = format!("https://api.github.com/repos/{}/{}/issues/{issue_number}", repo.owner(), repo.repo());
+		self.patch_json(&url, &serde_json::json!({ "labels": labels }), "Failed to set labels").await
 	}
 
 	async fn set_issue_milestone(&self, repo: RepoInfo, issue_number: u64, milestone: Option<u64>) -> Result<()> {

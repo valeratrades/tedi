@@ -480,6 +480,15 @@ impl GithubClient for MockGithubClient {
 		self.with_issue_mut(repo, issue_number, |issue| issue.state = state.to_string())
 	}
 
+	#[instrument(skip_all, fields(issue_number))]
+	async fn set_labels(&self, repo: RepoInfo, issue_number: u64, labels: &[String]) -> Result<()> {
+		let owner = repo.owner();
+		let repo_name = repo.repo();
+		tracing::info!(target: "mock_github", owner, repo_name, issue_number, ?labels, "set_labels");
+		self.log_call(&format!("set_labels({owner}, {repo_name}, {issue_number}, {labels:?})"));
+		self.with_issue_mut(repo, issue_number, |issue| issue.labels = labels.to_vec())
+	}
+
 	#[instrument(skip_all, fields(comment_id))]
 	async fn update_comment(&self, repo: RepoInfo, comment_id: u64, body: &str) -> Result<()> {
 		let owner = repo.owner();

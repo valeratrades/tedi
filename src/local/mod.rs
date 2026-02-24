@@ -136,8 +136,18 @@ impl LocalIssueSource<FsReader> {
 		}
 
 		// Check for unresolved conflicts (resolves if user already fixed markers)
-		if let Some(conflict_file) = conflict::check_for_existing_conflict(local_path.index).await.map_err(LocalError::Other)? {
-			return Err(ConflictBlockedError { conflict_file }.into());
+		if let Some(conflict_file) = conflict::check_for_existing_conflict(local_path.index).await? {
+			eprintln!("Unresolved merge conflict in: {}", conflict_file.display());
+			eprintln!("Opening for resolution...");
+			let modified = v_utils::io::file_open::open(&conflict_file).await?;
+			if !modified {
+				return Err(ConflictBlockedError { conflict_file }.into());
+			}
+
+			// Re-check after user exits editor
+			if let Some(conflict_file) = conflict::check_for_existing_conflict(local_path.index).await? {
+				return Err(ConflictBlockedError { conflict_file }.into());
+			}
 		}
 
 		Ok(Self::new(local_path, FsReader))

@@ -179,6 +179,6 @@ mod tests {
 	async fn test_parse_touch_path_errors() {
 		let err1 = parse_touch_path("owner/issue.md", None, true).await.unwrap_err();
 		let err2 = parse_touch_path("issue.md", None, true).await.unwrap_err();
-		dbg!(&err1, &err2); // can't `snapshot` assert it, - error contains home path atm, which depends on the env
+		eprintln!("{err1:?}\n\n&{err2:?}"); // can't `snapshot` assert it, - error contains home path atm, which depends on the env
 	}
 }

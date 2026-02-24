@@ -13,7 +13,7 @@ use crate::{
 /// Path: owner/repo/partial_title should match 99_-_full_title.md
 #[test]
 fn test_touch_matches_issue_by_substring() {
-	let ctx = TestContext::build(
+	let ctx = TestContext::build_with_preexisting_state_unsafe(
 		r#"
 		//- /data/issues/testowner/testrepo/.meta.json
 		{
@@ -53,7 +53,7 @@ fn test_touch_matches_issue_by_substring() {
 #[test]
 fn test_touch_path_with_more_segments_after_flat_file_match() {
 	//HACK: shouldn't write out TestContext contents
-	let ctx = TestContext::build(
+	let ctx = TestContext::build_with_preexisting_state_unsafe(
 		r#"
 		//- /data/issues/testowner/testrepo/.meta.json
 		{
@@ -95,7 +95,7 @@ fn test_touch_path_with_more_segments_after_flat_file_match() {
 /// The issue should only be created when the user actually saves changes.
 #[test]
 fn test_touch_new_subissue_no_edits_does_not_create() {
-	let ctx = TestContext::build(
+	let ctx = TestContext::build_with_preexisting_state_unsafe(
 		r#"
 		//- /data/issues/testowner/testrepo/.meta.json
 		{
@@ -138,7 +138,7 @@ fn test_touch_new_subissue_no_edits_does_not_create() {
 #[test]
 fn test_nested_issue_under_unsynced_parent_offline() {
 	// Set up a parent issue with title-only naming (no git number - just "Parent_Issue.md")
-	let ctx = TestContext::build(
+	let ctx = TestContext::build_with_preexisting_state_unsafe(
 		r#"
 		//- /data/issues/o/r/.meta.json
 		{
@@ -178,7 +178,7 @@ fn test_nested_issue_under_unsynced_parent_offline() {
 #[test]
 fn test_nested_issue_under_unsynced_parent_online() {
 	// Set up a parent issue with title-only naming (no git number)
-	let ctx = TestContext::build(
+	let ctx = TestContext::build_with_preexisting_state_unsafe(
 		r#"
 		//- /data/issues/o/r/.meta.json
 		{
@@ -201,7 +201,7 @@ fn test_nested_issue_under_unsynced_parent_online() {
 	- [ ] child <!-- @mock_user https://github.com/o/r/issues/2 -->
 	//- /o/r/1_-_Parent_Issue/__main__.md
 	- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-		parent body
+	  parent body
 	");
 
 	assert!(out.status.success(), "Should succeed syncing child under unsynced parent. stderr: {}", out.stderr);
@@ -210,7 +210,7 @@ fn test_nested_issue_under_unsynced_parent_online() {
 /// Test `break_to_edit` allows pausing execution to inspect and modify the virtual file.
 #[tokio::test]
 async fn test_break_to_edit_allows_mid_execution_modification() {
-	let ctx = TestContext::build("");
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 
 	let vi = parse_virtual("- [ ] test issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\toriginal body\n");
 	ctx.local(&vi, None).await;
@@ -227,7 +227,7 @@ async fn test_break_to_edit_allows_mid_execution_modification() {
 	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().skip_meta(), &out), @"
 	//- /o/r/1_-_test_issue.md
 	- [ ] test issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-		original body
-		appended content
+	  original body
+	  appended content
 	");
 }

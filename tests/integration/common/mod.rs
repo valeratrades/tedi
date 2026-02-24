@@ -96,13 +96,18 @@ impl TestContext {
 	/// # Example
 	///
 	/// ```ignore
-	/// let ctx = TestContext::build(r#"
+	/// let ctx = TestContext::build_with_preexisting_state_unsafe(r#"
 	///     //- /data/blockers/test.md
 	///     # Project
 	///     - task 1
 	/// "#);
 	/// ```
-	pub fn build(fixture_str: &str) -> Self {
+	pub fn build() -> Self {
+		Self::build_with_preexisting_state_unsafe("")
+	}
+
+	/// when using this, it's very easy to mismatch the input from what the latest version of actual Issue parsing/rendering would have had encoded. Prefer using Issue-based methods for setting state, like [local](Self::local), [remote](Self::remote), [context](Self::consensus)
+	pub fn build_with_preexisting_state_unsafe(fixture_str: &str) -> Self {
 		let fixture = Fixture::parse(fixture_str);
 		let xdg = Xdg::new(fixture.write_to_tempdir(), env!("CARGO_PKG_NAME"));
 
@@ -288,6 +293,9 @@ impl TestContext {
 					});
 					if let Some(reason) = &i.state_reason {
 						json["state_reason"] = serde_json::Value::String(reason.clone());
+					}
+					if !i.labels.is_empty() {
+						json["labels"] = serde_json::json!(i.labels);
 					}
 					// Add timestamps if provided
 					if let Some(ts) = &i.timestamps {
@@ -535,9 +543,9 @@ impl<'a> OpenBuilder<'a> {
 				if let Some(EditOperation::FullIssue(virtual_issue)) = &edit_op {
 					let issue = with_timestamps(virtual_issue, None, is_virtual);
 					let vpath = tedi::local::Local::virtual_edit_path(&issue);
-					let content = issue.serialize_virtual();
+					let content: String = issue.serialize_virtual().into();
 					eprintln!("[test:OpenBuilder] submitting user input // writing to {vpath:?}:\n{content}");
-					std::fs::write(&vpath, content).unwrap();
+					std::fs::write(&vpath, &content).unwrap();
 				}
 
 				// Try to signal the pipe (use nix O_NONBLOCK to avoid blocking)
@@ -951,9 +959,10 @@ fn add_issue_recursive(state: &mut GitState, repo_info: tedi::RepoInfo, number: 
 		repo: repo.to_string(),
 		number,
 		title: issue.contents.title.clone(),
-		body: issue.body(),
+		body: issue.body().into(),
 		state: issue.contents.state.to_github_state().to_string(),
 		state_reason: issue.contents.state.to_github_state_reason().map(|s| s.to_string()),
+		labels: issue.contents.labels.clone(),
 		owner_login: issue_owner_login,
 		timestamps: timestamps.cloned(),
 	});
@@ -980,7 +989,7 @@ fn add_issue_recursive(state: &mut GitState, repo_info: tedi::RepoInfo, number: 
 				repo: repo.to_string(),
 				issue_number: number,
 				comment_id: id,
-				body: comment.body.render(),
+				body: comment.body.to_string(),
 				owner_login: comment_owner_login,
 				timestamp: comment_ts,
 			});
@@ -1019,6 +1028,7 @@ struct MockIssue {
 	body: String,
 	state: String,
 	state_reason: Option<String>,
+	labels: Vec<String>,
 	owner_login: String,
 	/// Timestamps for this issue (if provided via seed)
 	timestamps: Option<IssueTimestamps>,

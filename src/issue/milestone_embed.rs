@@ -4,9 +4,7 @@
 //! This module parses them into a `MilestoneDoc` AST via pulldown_cmark, enabling
 //! structured operations like parent-context resolution for bare `#123` refs.
 
-use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
-
-use super::{Issue, IssueLink, IssueMarker, OwnedEvent, OwnedTag, OwnedTagEnd};
+use super::{Events, Issue, IssueLink, IssueMarker, OwnedEvent, OwnedTag, OwnedTagEnd, events::indent_into};
 
 /// A parsed milestone document: a sequence of top-level sections.
 pub struct MilestoneDoc {
@@ -14,8 +12,7 @@ pub struct MilestoneDoc {
 }
 impl MilestoneDoc {
 	pub fn parse(content: &str) -> Self {
-		let parser = Parser::new_ext(content, parser_options());
-		let events: Vec<Event<'_>> = parser.collect();
+		let events = Events::parse(content);
 		let mut pos = 0;
 		let sections = parse_sections(&events, &mut pos, None, 0);
 		let mut doc = Self { sections };
@@ -89,29 +86,48 @@ impl MilestoneDoc {
 
 /// Serialize an issue as title line + blockers only (for milestone embedding).
 pub fn serialize_blockers_view(issue: &Issue) -> String {
-	let mut out = String::new();
-
-	// Title line with issue marker
-	let checked = issue.contents.state.to_checkbox();
+	let checkbox_contents = issue.contents.state.to_checkbox_contents();
 	let issue_marker = IssueMarker::from(&issue.identity);
 	let labels_part = if issue.contents.labels.is_empty() {
 		String::new()
 	} else {
-		format!("[{}] ", issue.contents.labels.join(", "))
+		format!("({}) ", issue.contents.labels.join(", "))
 	};
-	out.push_str(&format!("- [{checked}] {labels_part}{} {issue_marker}", issue.contents.title));
 
-	// Blockers section
+	// Build events: a single list item with inline title + optional blocker children
+	let mut events = Vec::new();
+	events.push(OwnedEvent::Start(OwnedTag::List(None)));
+	events.push(OwnedEvent::Start(OwnedTag::Item));
+
+	// Checkbox + title + marker as inline content
+	events.push(OwnedEvent::CheckBox(checkbox_contents));
+	events.push(OwnedEvent::Text(format!("{labels_part}{} ", issue.contents.title)));
+	events.push(OwnedEvent::InlineHtml(format!("<!-- {} -->", issue_marker.encode())));
+
+	// Blockers section as children
 	if !issue.contents.blockers.is_empty() {
-		out.push('\n');
+		// Wrap inline in paragraph since we have children
+		// (need to rebuild: insert Paragraph start/end around inline content)
+		let inline_start = 2; // after Start(List), Start(Item)
+		events.insert(inline_start, OwnedEvent::Start(OwnedTag::Paragraph));
+		events.push(OwnedEvent::End(OwnedTagEnd::Paragraph));
+
 		let header = crate::Header::new(1, "Blockers");
-		out.push_str(&format!("\t{}", header.encode()));
-		for line in issue.contents.blockers.raw_lines() {
-			out.push_str(&format!("\n\t{line}"));
-		}
+		events.push(OwnedEvent::Start(OwnedTag::Heading {
+			level: pulldown_cmark::HeadingLevel::H1,
+			id: None,
+			classes: Vec::new(),
+			attrs: Vec::new(),
+		}));
+		events.push(OwnedEvent::Text(header.content.clone()));
+		events.push(OwnedEvent::End(OwnedTagEnd::Heading(pulldown_cmark::HeadingLevel::H1)));
+		events.extend(issue.contents.blockers.to_events());
 	}
 
-	out
+	events.push(OwnedEvent::End(OwnedTagEnd::Item));
+	events.push(OwnedEvent::End(OwnedTagEnd::List(false)));
+
+	Events::from(events).into()
 }
 /// Parse blockers from an embedded issue section in milestone content.
 /// The section is: title line, then optionally a `# Blockers` header + blocker lines.
@@ -148,11 +164,11 @@ pub fn parse_blockers_from_embedded(section: &str) -> super::BlockerSequence {
 		return super::BlockerSequence::default();
 	};
 
-	// Collect blocker lines (strip one level of indent — tab or spaces)
+	// Collect blocker lines (strip one level of indent — tab or 2 spaces)
 	let blocker_lines: Vec<String> = lines[start..]
 		.iter()
 		.filter(|l| !l.trim().is_empty())
-		.map(|l| l.strip_prefix('\t').unwrap_or_else(|| l.trim_start()).to_string())
+		.map(|l| l.strip_prefix('\t').or_else(|| l.strip_prefix("  ")).unwrap_or(l).to_string())
 		.collect();
 
 	let mut seq = super::BlockerSequence::parse(&blocker_lines.join("\n"));
@@ -176,7 +192,7 @@ struct MilestoneList {
 impl MilestoneList {
 	/// Whether this list uses checkboxes, determined by the first item.
 	fn is_checkbox_list(&self) -> bool {
-		self.items.first().is_some_and(|item| item.checked.is_some())
+		self.items.first().is_some_and(|item| item.checkbox.is_some())
 	}
 
 	/// Normalize all items to match the list type of the first item.
@@ -185,11 +201,11 @@ impl MilestoneList {
 		let is_checkbox = self.is_checkbox_list();
 		let mut changed = false;
 		for item in &mut self.items {
-			if is_checkbox && item.checked.is_none() {
-				item.checked = Some(CheckBox(" ".into()));
+			if is_checkbox && item.checkbox.is_none() {
+				item.checkbox = Some(" ".into());
 				changed = true;
-			} else if !is_checkbox && item.checked.is_some() {
-				item.checked = None;
+			} else if !is_checkbox && item.checkbox.is_some() {
+				item.checkbox = None;
 				changed = true;
 			}
 		}
@@ -197,12 +213,10 @@ impl MilestoneList {
 	}
 }
 
-/// Raw checkbox contents — just the string between `[` and `]`.
-struct CheckBox(String);
-
 /// A single list item.
 struct MilestoneItem {
-	checked: Option<CheckBox>,
+	/// The checkbox contents (between `[` and `]`), or None for plain items.
+	checkbox: Option<String>,
 	/// Semantic interpretation of this item's inline text.
 	content: ItemContent,
 	/// Nested content under this item (sub-lists, headings, etc.).
@@ -223,27 +237,23 @@ enum ItemContent {
 
 // ─── Parsing ─────────────────────────────────────────────────────────────────
 
-fn parser_options() -> Options {
-	Options::ENABLE_TASKLISTS | Options::ENABLE_STRIKETHROUGH
-}
-
 /// Parse sections from the event stream until we hit `stop_at` or end of events.
 /// `stop_at` is used for nested parsing inside list items — stops at `End(Item)`.
 /// `depth` tracks list nesting (0 = not yet inside any list).
-fn parse_sections(events: &[Event<'_>], pos: &mut usize, stop_at: Option<TagEnd>, depth: usize) -> Vec<MilestoneSection> {
+fn parse_sections(events: &[OwnedEvent], pos: &mut usize, stop_at: Option<OwnedTagEnd>, depth: usize) -> Vec<MilestoneSection> {
 	let mut sections = Vec::new();
 	let mut free_events: Vec<OwnedEvent> = Vec::new();
 
 	while *pos < events.len() {
 		// Check stop condition
 		if let Some(ref stop) = stop_at
-			&& matches!(&events[*pos], Event::End(tag_end) if tag_end == stop)
+			&& matches!(&events[*pos], OwnedEvent::End(tag_end) if tag_end == stop)
 		{
 			break;
 		}
 
 		match &events[*pos] {
-			Event::Start(Tag::List(_)) => {
+			OwnedEvent::Start(OwnedTag::List(_)) => {
 				// Flush accumulated free content
 				if !free_events.is_empty() {
 					sections.push(MilestoneSection::FreeContent(std::mem::take(&mut free_events)));
@@ -251,7 +261,7 @@ fn parse_sections(events: &[Event<'_>], pos: &mut usize, stop_at: Option<TagEnd>
 				sections.push(MilestoneSection::List(parse_list(events, pos, depth)));
 			}
 			_ => {
-				free_events.push(OwnedEvent::from_event(events[*pos].clone()));
+				free_events.push(events[*pos].clone());
 				*pos += 1;
 			}
 		}
@@ -266,8 +276,8 @@ fn parse_sections(events: &[Event<'_>], pos: &mut usize, stop_at: Option<TagEnd>
 
 /// Parse a `List` from the event stream. Expects `pos` to point at `Start(List(_))`.
 /// `depth` is the nesting level (1 = top-level list, 2+ = nested).
-fn parse_list(events: &[Event<'_>], pos: &mut usize, depth: usize) -> MilestoneList {
-	debug_assert!(matches!(&events[*pos], Event::Start(Tag::List(_))));
+fn parse_list(events: &[OwnedEvent], pos: &mut usize, depth: usize) -> MilestoneList {
+	debug_assert!(matches!(&events[*pos], OwnedEvent::Start(OwnedTag::List(_))));
 	let depth = depth + 1;
 	*pos += 1; // consume Start(List)
 
@@ -275,11 +285,11 @@ fn parse_list(events: &[Event<'_>], pos: &mut usize, depth: usize) -> MilestoneL
 
 	while *pos < events.len() {
 		match &events[*pos] {
-			Event::End(TagEnd::List(_)) => {
+			OwnedEvent::End(OwnedTagEnd::List(_)) => {
 				*pos += 1;
 				break;
 			}
-			Event::Start(Tag::Item) => {
+			OwnedEvent::Start(OwnedTag::Item) => {
 				items.push(parse_item(events, pos, depth));
 			}
 			_ => {
@@ -294,22 +304,22 @@ fn parse_list(events: &[Event<'_>], pos: &mut usize, depth: usize) -> MilestoneL
 
 /// Parse a single list `Item`. Expects `pos` to point at `Start(Item)`.
 /// `depth` is the list nesting level this item belongs to.
-fn parse_item(events: &[Event<'_>], pos: &mut usize, depth: usize) -> MilestoneItem {
-	debug_assert!(matches!(&events[*pos], Event::Start(Tag::Item)));
+fn parse_item(events: &[OwnedEvent], pos: &mut usize, depth: usize) -> MilestoneItem {
+	debug_assert!(matches!(&events[*pos], OwnedEvent::Start(OwnedTag::Item)));
 	*pos += 1; // consume Start(Item)
 
-	// Collect TaskListMarker if present.
-	// In loose lists, pulldown_cmark emits: Start(Item), Start(Paragraph), TaskListMarker
-	// In tight lists: Start(Item), TaskListMarker
+	// Collect CheckBox if present.
+	// In loose lists, pulldown_cmark emits: Start(Item), Start(Paragraph), CheckBox
+	// In tight lists: Start(Item), CheckBox
 	// So we need to peek past an optional Start(Paragraph).
-	let starts_with_paragraph = matches!(events.get(*pos), Some(Event::Start(Tag::Paragraph)));
+	let starts_with_paragraph = matches!(events.get(*pos), Some(OwnedEvent::Start(OwnedTag::Paragraph)));
 	if starts_with_paragraph {
 		*pos += 1;
 	}
-	let checked = if let Some(Event::TaskListMarker(c)) = events.get(*pos) {
-		let c = CheckBox(if *c { "x" } else { " " }.into());
+	let checkbox = if let Some(OwnedEvent::CheckBox(inner)) = events.get(*pos) {
+		let inner = inner.clone();
 		*pos += 1;
-		Some(c)
+		Some(inner)
 	} else {
 		None
 	};
@@ -323,25 +333,26 @@ fn parse_item(events: &[Event<'_>], pos: &mut usize, depth: usize) -> MilestoneI
 	// Consume inline content: everything before child blocks or End(Item)
 	while *pos < events.len() {
 		match &events[*pos] {
-			Event::End(TagEnd::Item) => break,
-			Event::Start(Tag::List(_)) | Event::Start(Tag::Heading { .. }) => break,
-			Event::Start(Tag::Paragraph) => {
+			OwnedEvent::End(OwnedTagEnd::Item) => break,
+			OwnedEvent::Start(OwnedTag::List(_)) | OwnedEvent::Start(OwnedTag::Heading { .. }) => break,
+			OwnedEvent::Start(OwnedTag::Paragraph) => {
+				// Also strip preceding SoftBreak (normalization artifact between title and body)
+				if matches!(inline_events.last(), Some(OwnedEvent::SoftBreak)) {
+					inline_events.pop();
+				}
 				in_paragraph = true;
 				*pos += 1;
 			}
-			Event::End(TagEnd::Paragraph) if in_paragraph => {
+			OwnedEvent::End(OwnedTagEnd::Paragraph) if in_paragraph => {
 				in_paragraph = false;
 				*pos += 1;
 			}
 			_ => {
-				inline_events.push(OwnedEvent::from_event(events[*pos].clone()));
+				inline_events.push(events[*pos].clone());
 				*pos += 1;
 			}
 		}
 	}
-
-	// Detect escaped checkboxes: pulldown_cmark turns `\[.\]` into Text("[.") + Text("] rest").
-	let checked = checked.or_else(|| try_extract_escaped_checkbox(&mut inline_events));
 
 	// Split inline events at SoftBreak if the tail is a bare URL or shorthand ref.
 	// This handles the case where a category item has a URL continuation:
@@ -351,39 +362,14 @@ fn parse_item(events: &[Event<'_>], pos: &mut usize, depth: usize) -> MilestoneI
 
 	// Collect children (sub-lists, headings, etc.) until End(Item)
 	let mut children = softbreak_children;
-	children.extend(parse_sections(events, pos, Some(TagEnd::Item), depth));
+	children.extend(parse_sections(events, pos, Some(OwnedTagEnd::Item), depth));
 
 	// Consume End(Item)
-	if matches!(events.get(*pos), Some(Event::End(TagEnd::Item))) {
+	if matches!(events.get(*pos), Some(OwnedEvent::End(OwnedTagEnd::Item))) {
 		*pos += 1;
 	}
 
-	MilestoneItem { checked, content, children }
-}
-
-/// Detect `\[<inner>\] ` at the start of inline events.
-/// pulldown_cmark turns `\[.\]` into `Text("[.")` + `Text("] rest")`.
-/// Extracts the checkbox and removes it from events, leaving only the trailing text.
-fn try_extract_escaped_checkbox(events: &mut Vec<OwnedEvent>) -> Option<CheckBox> {
-	if events.len() < 2 {
-		return None;
-	}
-	let (OwnedEvent::Text(first), OwnedEvent::Text(second)) = (&events[0], &events[1]) else {
-		return None;
-	};
-	let inner = first.strip_prefix('[')?;
-	let rest = second.strip_prefix(']')?;
-	if !rest.is_empty() && !rest.starts_with(' ') {
-		return None;
-	}
-	let checkbox = CheckBox(inner.to_string());
-	let rest = rest.strip_prefix(' ').unwrap_or(rest).to_string();
-	events.remove(0);
-	events.remove(0);
-	if !rest.is_empty() {
-		events.insert(0, OwnedEvent::Text(rest));
-	}
-	Some(checkbox)
+	MilestoneItem { checkbox, content, children }
 }
 
 /// Split inline events at a SoftBreak if the part after it is a bare URL or shorthand ref.
@@ -397,7 +383,7 @@ fn split_inline_at_ref_softbreak(events: Vec<OwnedEvent>) -> (ItemContent, Vec<M
 			let head = events[..break_pos].to_vec();
 			let content = classify_inline_events(head);
 			let child_item = MilestoneItem {
-				checked: None,
+				checkbox: None,
 				content: tail_classified,
 				children: Vec::new(),
 			};
@@ -592,7 +578,7 @@ fn expand_section(section: &mut MilestoneSection, expansions: &std::collections:
 				if let Some(MilestoneSection::List(expanded_list)) = expanded_doc.sections.into_iter().next()
 					&& let Some(expanded_item) = expanded_list.items.into_iter().next()
 				{
-					item.checked = expanded_item.checked;
+					item.checkbox = expanded_item.checkbox;
 					item.content = expanded_item.content;
 					item.children = expanded_item.children;
 				}
@@ -614,7 +600,7 @@ fn collapse_section(section: &mut MilestoneSection) {
 					..
 				} => {
 					item.content = ItemContent::BareUrl(link.clone());
-					item.checked = None;
+					item.checkbox = None;
 					item.children.clear();
 				}
 				ItemContent::ShorthandRef {
@@ -625,7 +611,7 @@ fn collapse_section(section: &mut MilestoneSection) {
 					let url = format!("https://github.com/{o}/{r}/issues/{number}");
 					if let Some(link) = IssueLink::parse(&url) {
 						item.content = ItemContent::BareUrl(link);
-						item.checked = None;
+						item.checkbox = None;
 						item.children.clear();
 					}
 				}
@@ -670,29 +656,14 @@ fn ensure_blank_line(output: &mut String) {
 	}
 }
 
-fn render_events_to_cmark(events: &[OwnedEvent]) -> String {
-	let borrowed: Vec<Event<'_>> = events.iter().map(|e| e.to_event()).collect();
-	let mut output = String::new();
-	pulldown_cmark_to_cmark::cmark_with_options(borrowed.into_iter(), &mut output, cmark_options()).expect("markdown rendering should not fail");
-	output
-}
-
-fn cmark_options() -> pulldown_cmark_to_cmark::Options<'static> {
-	pulldown_cmark_to_cmark::Options {
-		list_token: '-',
-		newlines_after_headline: 1,
-		newlines_after_paragraph: 1,
-		..Default::default()
-	}
-}
-
 fn serialize_section(section: &MilestoneSection, output: &mut String) {
 	match section {
 		MilestoneSection::FreeContent(owned) => {
 			if !output.is_empty() {
 				ensure_blank_line(output);
 			}
-			output.push_str(&render_events_to_cmark(owned));
+			let s: String = Events::from(owned.clone()).into();
+			output.push_str(&s);
 		}
 		MilestoneSection::List(list) => {
 			let loose = list.is_checkbox_list();
@@ -713,18 +684,10 @@ fn serialize_item(item: &MilestoneItem, output: &mut String) {
 	events.push(OwnedEvent::Start(OwnedTag::List(None)));
 	events.push(OwnedEvent::Start(OwnedTag::Item));
 
-	if let Some(CheckBox(ref inner)) = item.checked {
-		match inner.as_str() {
-			" " => events.push(OwnedEvent::TaskListMarker(false)),
-			"x" => events.push(OwnedEvent::TaskListMarker(true)),
-			_ => {
-				// Emit with backslash before `]` so cmark produces `\[<inner>\]`
-				events.push(OwnedEvent::Text(format!("[{inner}\\] ")));
-			}
-		}
+	let mut inline_events = item_content_to_events(&item.content);
+	if let Some(ref inner) = item.checkbox {
+		inline_events.insert(0, OwnedEvent::CheckBox(inner.clone()));
 	}
-
-	let inline_events = item_content_to_events(&item.content);
 	if !inline_events.is_empty() && !item.children.is_empty() {
 		events.push(OwnedEvent::Start(OwnedTag::Paragraph));
 		events.extend(inline_events);
@@ -736,26 +699,17 @@ fn serialize_item(item: &MilestoneItem, output: &mut String) {
 	// Render inline part + item/list wrappers
 	events.push(OwnedEvent::End(OwnedTagEnd::Item));
 	events.push(OwnedEvent::End(OwnedTagEnd::List(false)));
-	output.push_str(&render_events_to_cmark(&events));
+	let s: String = Events::from(events).into();
+	output.push_str(&s);
 
 	// Render children recursively with proper indentation
 	if !item.children.is_empty() {
+		output.push('\n');
 		let mut child_output = String::new();
 		for child in &item.children {
 			serialize_section(child, &mut child_output);
 		}
-		// Indent children under this item
-		for line in child_output.lines() {
-			output.push('\n');
-			if !line.is_empty() {
-				output.push_str("  ");
-				output.push_str(line);
-			}
-		}
-		// Preserve trailing newline
-		if child_output.ends_with('\n') {
-			output.push('\n');
-		}
+		indent_into(output, &child_output, "  ");
 	}
 }
 
@@ -947,9 +901,9 @@ mod tests {
 		let serialized = serialize_blockers_view(&issue);
 		insta::assert_snapshot!(serialized, @"
 		- [ ] My Issue <!-- https://github.com/owner/repo/issues/42 -->
-			# Blockers
-			- task 1
-			- task 2
+		  # Blockers
+		  - task 1
+		  - task 2
 		");
 
 		// Parse it back
@@ -994,9 +948,9 @@ mod tests {
 			children: std::collections::HashMap::new(),
 		};
 		insta::assert_snapshot!(serialize_blockers_view(&issue), @"
-		- [ ] [bug, urgent] Labeled <!-- https://github.com/owner/repo/issues/42 -->
-			# Blockers
-			- do thing
+		- [ ] (bug, urgent) Labeled <!-- https://github.com/owner/repo/issues/42 -->
+		  # Blockers
+		  - do thing
 		");
 	}
 
@@ -1141,7 +1095,7 @@ mod tests {
 	}
 
 	/// In loose lists (blank lines between items or inside items), pulldown_cmark
-	/// emits Start(Paragraph) before TaskListMarker. We must handle this ordering.
+	/// emits Start(Paragraph) before CheckBox. We must handle this ordering.
 	#[test]
 	fn test_stored_form_loose_checkbox_list() {
 		let stored = "- [ ] OpenClaw\n  text\n\n  # Blockers\n  - wait\n- [ ] Second\n";
@@ -1315,12 +1269,12 @@ mod tests {
 		    - \[.\] communication layer
 		      - move clap interface into \_strategy, alongside `dummy_market.rs` for only protocol
 		      - take exact string, send over redis, be able to interpret it again
-
+		      
 		      <!--x-->
 		      - get dummy market suggesting orders correctly //NB: no execution yet, - don't rush the implementation
-
+		    
 		    - [ ] allow defining `percent_controlled` for any protocol
-
+		    
 		    - [ ] update the standard for clear delineation between opening new pos and updating an existing one
 		      - on \_strategy:
 		        adj
@@ -1330,20 +1284,20 @@ mod tests {
 		      - main entrypoint:
 		        new (with --quality instead of size)
 		      - define in terms of target delta change for \_strategy, and expand on total def space for main entrypoint
-
+		  
 		  - [ ] risk
 		    - [ ] update the logic for %controlled on followup algos -> integrate `adjust-pos` into the main loop (require id provision)
-
+		    
 		    - [ ] transition to distinctly different datatypes for AggrBook and External
-
+		    
 		    - [ ] fix: limit chase is failing to update consistently as the price moves up
-
+		    
 		    - \[.\] rm_engine (XXX: might be outdated):
 		      - [ ] make stop_loss_proximity layer reasonable
 		        plug fix: just nuke certainty
-
+		      
 		      - [ ] some mechanic to check how much bias our suggestions actually had historically; warn if outside of some certainty\*val range
-
+		      
 		      - [ ] integrate diffusion testing
 		        backtests could also be a thing, but don't like lack of consistency for which layers get backtests run on them.
 		"#);

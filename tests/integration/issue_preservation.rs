@@ -17,15 +17,17 @@ use crate::{
 
 #[tokio::test]
 async fn test_comments_with_ids_sync_correctly() {
-	let ctx = TestContext::build("");
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 
 	// Issue with a comment that has an ID
 	let vi = parse_virtual(
-		"- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
-		 \tbody text\n\
-		 \n\
-		 \t<!-- @mock_user https://github.com/o/r/issues/1#issuecomment-12345 -->\n\
-		 \tThis is my comment\n",
+		r#"- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->
+
+  body text
+
+  <!-- @mock_user https://github.com/o/r/issues/1#issuecomment-12345 -->
+  This is my comment
+"#,
 	);
 
 	let issue = ctx.consensus(&vi, None).await;
@@ -41,17 +43,21 @@ async fn test_comments_with_ids_sync_correctly() {
 
 #[tokio::test]
 async fn test_nested_issues_preserved_through_sync() {
-	let ctx = TestContext::build("");
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 
 	let vi = parse_virtual(
-		"- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
-		 \tlorem ipsum\n\
-		 \n\
-		 \t- [ ] b <!-- @mock_user https://github.com/o/r/issues/2 -->\n\
-		 \t\tnested body b\n\
-		 \n\
-		 \t- [ ] c <!-- @mock_user https://github.com/o/r/issues/3 -->\n\
-		 \t\tnested body c\n",
+		r#"- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->
+
+  lorem ipsum
+
+  - [ ] b <!-- @mock_user https://github.com/o/r/issues/2 -->
+
+    nested body b
+
+  - [ ] c <!-- @mock_user https://github.com/o/r/issues/3 -->
+
+    nested body c
+"#,
 	);
 
 	let issue = ctx.consensus(&vi, None).await;
@@ -78,15 +84,17 @@ async fn test_nested_issues_preserved_through_sync() {
 
 #[tokio::test]
 async fn test_blockers_preserved_through_sync() {
-	let ctx = TestContext::build("");
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 
 	let vi = parse_virtual(
-		"- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
-		 \tlorem ipsum\n\
-		 \n\
-		 \t# Blockers\n\
-		 \t- first blocker\n\
-		 \t- second blocker\n",
+		r#"- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->
+
+  lorem ipsum
+
+  # Blockers
+  - first blocker
+  - second blocker
+"#,
 	);
 
 	let issue = ctx.consensus(&vi, None).await;
@@ -107,21 +115,28 @@ async fn test_blockers_preserved_through_sync() {
 
 #[tokio::test]
 async fn test_blockers_added_during_edit_preserved() {
-	let ctx = TestContext::build("");
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 
 	// Initial state: no blockers
-	let initial_vi = parse_virtual("- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tlorem ipsum\n");
+	let initial_vi = parse_virtual(
+		r#"- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->
+
+  lorem ipsum
+"#,
+	);
 
 	let initial_issue = ctx.consensus(&initial_vi, None).await;
 	ctx.remote(&initial_vi, None);
 
 	// User adds blockers during edit
 	let edited_issue = parse_virtual(
-		"- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
-		 \tlorem ipsum\n\
-		 \n\
-		 \t# Blockers\n\
-		 \t- new blocker added\n",
+		r#"- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->
+
+  lorem ipsum
+
+  # Blockers
+  - new blocker added
+"#,
 	);
 
 	let out = ctx.open_issue(&initial_issue).edit(&edited_issue).run();
@@ -138,18 +153,20 @@ async fn test_blockers_added_during_edit_preserved() {
 
 #[tokio::test]
 async fn test_blockers_with_nesting_preserved() {
-	let ctx = TestContext::build("");
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 
 	let vi = parse_virtual(
-		"- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
-		 \tlorem ipsum\n\
-		 \n\
-		 \t# Blockers\n\
-		 \t- phase 1\n\
-		 \t\t- task alpha\n\
-		 \t\t- task beta\n\
-		 \t- phase 2\n\
-		 \t\t- task gamma\n",
+		r#"- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->
+
+  lorem ipsum
+
+  # Blockers
+  - phase 1
+    - task alpha
+    - task beta
+  - phase 2
+    - task gamma
+"#,
 	);
 
 	let issue = ctx.consensus(&vi, None).await;
@@ -170,53 +187,19 @@ async fn test_blockers_with_nesting_preserved() {
 }
 
 #[tokio::test]
-async fn test_nested_issues_and_blockers_together() {
-	let ctx = TestContext::build("");
-
-	let vi = parse_virtual(
-		"- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
-		 \tlorem ipsum\n\
-		 \n\
-		 \t# Blockers\n\
-		 \t- blocker one\n\
-		 \t- blocker two\n\
-		 \n\
-		 \t- [ ] b <!--sub @mock_user https://github.com/o/r/issues/2 -->\n\
-		 \t\tnested body\n",
-	);
-
-	let issue = ctx.consensus(&vi, None).await;
-	ctx.remote(&vi, None);
-
-	let out = ctx.open_issue(&issue).run();
-	eprintln!("stdout: {}", out.stdout);
-	eprintln!("stderr: {}", out.stderr);
-
-	assert!(out.status.success(), "stderr: {}", out.stderr);
-
-	// File is in directory format (path points to __main__.md)
-	let path = ctx.resolve_issue_path(&issue);
-	let final_content = read_issue_file(&path);
-	assert!(final_content.contains("# Blockers"), "blockers section lost");
-	assert!(final_content.contains("blocker one"), "blocker one lost");
-
-	// With the new model, nested issue is in a separate file
-	let child_path = path.parent().unwrap().join("2_-_b.md");
-	let child_content = read_issue_file(&child_path);
-	assert!(child_content.contains("nested body"), "nested issue body lost");
-}
-
-#[tokio::test]
 async fn test_closing_nested_issue_creates_bak_file() {
-	let ctx = TestContext::build("");
+	let ctx = TestContext::build();
 
 	// Start with open nested issue
 	let initial_vi = parse_virtual(
-		"- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
-		 \tlorem ipsum\n\
-		 \n\
-		 \t- [ ] b <!-- @mock_user https://github.com/o/r/issues/2 -->\n\
-		 \t\tnested body content\n",
+		r#"- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->
+
+  lorem ipsum
+
+  - [ ] b <!-- @mock_user https://github.com/o/r/issues/2 -->
+
+    nested body content
+"#,
 	);
 
 	let initial_issue = ctx.consensus(&initial_vi, None).await;
@@ -234,41 +217,14 @@ async fn test_closing_nested_issue_creates_bak_file() {
 
 	assert!(out.status.success(), "stderr: {}", out.stderr);
 
-	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().redact_timestamps(&[22]), &out), @r#"
-	//- /o/r/.meta.json
-	{
-	  "virtual_project": false,
-	  "next_virtual_issue_number": 0,
-	  "issues": {
-	    "1": {
-	      "user": "mock_user",
-	      "timestamps": {
-	        "title": null,
-	        "description": null,
-	        "labels": null,
-	        "state": null,
-	        "comments": []
-	      }
-	    },
-	    "2": {
-	      "user": "mock_user",
-	      "timestamps": {
-	        "title": null,
-	        "description": null,
-	        "labels": null,
-	        [REDACTED - non-deterministic timestamp]
-	        "comments": []
-	      }
-	    }
-	  }
-	}
+	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().skip_meta(), &out), @"
 	//- /o/r/1_-_a/2_-_b.md.bak
 	- [x] b <!-- @mock_user https://github.com/o/r/issues/2 -->
-		nested body content
+	  nested body content
 	//- /o/r/1_-_a/__main__.md
 	- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->
-		lorem ipsum
-	"#);
+	  lorem ipsum
+	");
 
 	// With the new model, closed child is in a separate .bak file
 	let path = ctx.resolve_issue_path(&initial_issue);

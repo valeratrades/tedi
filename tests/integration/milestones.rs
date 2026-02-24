@@ -118,7 +118,7 @@ fn parse_tmp_path(stderr: &str) -> Option<PathBuf> {
 /// Shorthand ref at root level gets expanded to full embedded issue view.
 #[tokio::test]
 async fn test_expand_shorthand_ref() {
-	let ctx = TestContext::build("");
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 
 	let vi = parse_virtual(
 		"- [ ] My Issue <!-- @mock_user https://github.com/o/r/issues/10 -->\n\
@@ -146,7 +146,7 @@ async fn test_expand_shorthand_ref() {
 /// Child issue (nested under a parent dir) can be found and expanded.
 #[tokio::test]
 async fn test_expand_child_issue() {
-	let ctx = TestContext::build("");
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 
 	// Create parent issue (dir-format, has children)
 	let parent_vi = parse_virtual(
@@ -171,7 +171,7 @@ async fn test_expand_child_issue() {
 async fn test_milestone_edit_adds_blockers() {
 	use crate::common::are_you_sure::read_issue_file;
 
-	let ctx = TestContext::build("");
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 
 	// Issue starts with NO blockers
 	let vi = parse_virtual("- [ ] Empty Issue <!-- @mock_user https://github.com/o/r/issues/50 -->\n\tjust a body\n");
@@ -194,9 +194,8 @@ async fn test_milestone_edit_adds_blockers() {
 	let issue_content = read_issue_file(&issue_path);
 	insta::assert_snapshot!(issue_content, @"
 	- [ ] Empty Issue <!-- @mock_user https://github.com/o/r/issues/50 -->
-		just a body
-		
-		# Blockers
-		- todo
+	  just a body
+	  # Blockers
+	  - todo
 	");
 }

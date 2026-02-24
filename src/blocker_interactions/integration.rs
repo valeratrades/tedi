@@ -93,7 +93,8 @@ impl StandaloneSource {
 		if let Some(parent) = self.path.parent() {
 			std::fs::create_dir_all(parent)?;
 		}
-		std::fs::write(&self.path, blockers.serialize())?;
+		let s: String = blockers.to_events().into();
+		std::fs::write(&self.path, s)?;
 		Ok(())
 	}
 
@@ -221,7 +222,7 @@ pub async fn main_integrated(command: super::io::Command, offline: bool) -> Resu
 				let blockers = urgent.load()?;
 				if !blockers.is_empty() {
 					println!("=== URGENT ===");
-					println!("{}", blockers.serialize());
+					println!("{}", String::from(&blockers));
 					return Ok(());
 				}
 			}
@@ -233,7 +234,7 @@ pub async fn main_integrated(command: super::io::Command, offline: bool) -> Resu
 				let marker = Marker::BlockersSection(tedi::Header::new(1, "Blockers"));
 				println!("No `{marker}` marker found in issue body.");
 			} else {
-				let output = blockers.serialize();
+				let output = String::from(&blockers);
 				if output.is_empty() {
 					println!("Blockers section is empty.");
 				} else {

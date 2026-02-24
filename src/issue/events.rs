@@ -24,7 +24,10 @@ pub enum OwnedEvent {
 	SoftBreak,
 	HardBreak,
 	Rule,
-	TaskListMarker(bool),
+	/// Checkbox: raw contents between `[` and `]`.
+	/// Standard: `" "` (unchecked), `"x"` (checked).
+	/// Custom: anything else (e.g. `"."` for partial).
+	CheckBox(String),
 }
 
 impl OwnedEvent {
@@ -43,7 +46,7 @@ impl OwnedEvent {
 			Event::SoftBreak => OwnedEvent::SoftBreak,
 			Event::HardBreak => OwnedEvent::HardBreak,
 			Event::Rule => OwnedEvent::Rule,
-			Event::TaskListMarker(checked) => OwnedEvent::TaskListMarker(checked),
+			Event::TaskListMarker(checked) => OwnedEvent::CheckBox(if checked { "x" } else { " " }.into()),
 		}
 	}
 
@@ -62,7 +65,11 @@ impl OwnedEvent {
 			OwnedEvent::SoftBreak => Event::SoftBreak,
 			OwnedEvent::HardBreak => Event::HardBreak,
 			OwnedEvent::Rule => Event::Rule,
-			OwnedEvent::TaskListMarker(checked) => Event::TaskListMarker(*checked),
+			OwnedEvent::CheckBox(inner) => match inner.as_str() {
+				" " => Event::TaskListMarker(false),
+				"x" => Event::TaskListMarker(true),
+				_ => panic!("CheckBox(\"{inner}\") cannot be converted to Event directly; use prepare_for_render()"),
+			},
 		}
 	}
 }
@@ -309,93 +316,519 @@ impl OwnedCodeBlockKind {
 
 /// A sequence of owned markdown events.
 /// This is the primary type for storing markdown content.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct Events(pub Vec<OwnedEvent>);
-
+#[derive(Clone, Debug, Default, derive_more::Deref, derive_more::IntoIterator, PartialEq)]
+pub struct Events(Vec<OwnedEvent>);
 impl Events {
-	/// Create a new empty events sequence.
-	pub fn new() -> Self {
-		Self(Vec::new())
-	}
-
 	/// Parse markdown content into events.
+	///
+	/// Handles checkbox coercion inline: pulldown_cmark turns `\[.\]` into
+	/// `Text("[.")` + `Text("] rest")` — we detect this pattern inside list items
+	/// and replace with `CheckBox(inner)` + optional `Text(rest)`.
 	pub fn parse(content: &str) -> Self {
-		use pulldown_cmark::{Options, Parser};
-		let options = Options::ENABLE_TASKLISTS | Options::ENABLE_STRIKETHROUGH;
-		let parser = Parser::new_ext(content, options);
-		let events: Vec<OwnedEvent> = parser.map(OwnedEvent::from_event).collect();
-		Self(events)
+		use pulldown_cmark::Parser;
+		let parser = Parser::new_ext(content, parser_options());
+		let raw: Vec<OwnedEvent> = parser.map(OwnedEvent::from_event).collect();
+
+		// Single pass: detect escaped-checkbox patterns and coerce them.
+		// After Start(Item) [+ optional Start(Paragraph)], detect:
+		//   2-event: Text("[<inner>") + Text("] <rest>")
+		//   4-event: Text("[") + Text(<inner>) + Text("]") + Text(" <rest>")
+		// Replace with CheckBox(inner) + optional Text(rest).
+		let mut events = Vec::with_capacity(raw.len());
+		let mut i = 0;
+		while i < raw.len() {
+			if !matches!(&raw[i], OwnedEvent::Start(OwnedTag::Item)) {
+				events.push(raw[i].clone());
+				i += 1;
+				continue;
+			}
+			// Push Start(Item)
+			events.push(raw[i].clone());
+			i += 1;
+
+			// Skip optional Start(Paragraph)
+			let had_paragraph = i < raw.len() && matches!(&raw[i], OwnedEvent::Start(OwnedTag::Paragraph));
+			if had_paragraph {
+				events.push(raw[i].clone());
+				i += 1;
+			}
+
+			// Already a CheckBox (from TaskListMarker) — skip coercion
+			if i < raw.len() && matches!(&raw[i], OwnedEvent::CheckBox(_)) {
+				continue;
+			}
+
+			// Try 4-event pattern: Text("[") + Text(<inner>) + Text("]") + Text(" <rest>")
+			if i + 3 < raw.len() {
+				if let (OwnedEvent::Text(open), OwnedEvent::Text(inner), OwnedEvent::Text(close), OwnedEvent::Text(rest)) = (&raw[i], &raw[i + 1], &raw[i + 2], &raw[i + 3]) {
+					if open == "[" && close == "]" && (rest.is_empty() || rest.starts_with(' ')) {
+						events.push(OwnedEvent::CheckBox(inner.clone()));
+						let rest = rest.strip_prefix(' ').unwrap_or(rest);
+						if !rest.is_empty() {
+							events.push(OwnedEvent::Text(rest.to_string()));
+						}
+						i += 4;
+						continue;
+					}
+				}
+			}
+
+			// Try 2-event pattern: Text("[<inner>") + Text("] <rest>")
+			if i + 1 < raw.len() {
+				if let (OwnedEvent::Text(first), OwnedEvent::Text(second)) = (&raw[i], &raw[i + 1]) {
+					if let Some(inner) = first.strip_prefix('[') {
+						if let Some(rest) = second.strip_prefix(']') {
+							if rest.is_empty() || rest.starts_with(' ') {
+								events.push(OwnedEvent::CheckBox(inner.to_string()));
+								let rest = rest.strip_prefix(' ').unwrap_or(rest);
+								if !rest.is_empty() {
+									events.push(OwnedEvent::Text(rest.to_string()));
+								}
+								i += 2;
+								continue;
+							}
+						}
+					}
+				}
+			}
+			// No pattern matched — continue normally
+		}
+
+		// Normalize loose list items to tight: strip Paragraph wrappers inside Items,
+		// replace End(Paragraph)+Start(Paragraph) boundaries with SoftBreak.
+		// This ensures loose and tight lists produce identical event structure.
+		let events = normalize_list_items_tight(events);
+		let events = preserve_paragraph_spacing(events);
+
+		Self(split_blockers_from_checkboxes(events))
+	}
+}
+
+/// Normalize the first paragraph in each loose list item to match tight structure.
+///
+/// In loose lists, pulldown_cmark wraps the title in a paragraph:
+///   `Start(Item), Start(P₁), CheckBox/Text, End(P₁), Start(P₂), body, End(P₂), ...`
+/// Tight items have no paragraph wrapper on the title:
+///   `Start(Item), CheckBox/Text, SoftBreak, body text, ...`
+///
+/// This pass strips `Start(P₁)` and converts the `End(P₁)` boundary to `SoftBreak`
+/// (when followed by more content). All subsequent paragraphs are preserved —
+/// they provide block-level structure around elements like `Rule`, code blocks, etc.
+fn normalize_list_items_tight(events: Vec<OwnedEvent>) -> Vec<OwnedEvent> {
+	// Per-item state:
+	//   Pending — haven't seen first Start(P) yet
+	//   InFirst — inside stripped first paragraph, waiting for its End(P)
+	//   Done    — first paragraph handled, pass everything through
+	#[derive(Clone, Copy)]
+	enum State {
+		Pending,
+		InFirst,
+		Done,
 	}
 
-	/// Render events back to markdown.
-	/// Note: This may not produce identical output to the original due to markdown normalization.
-	pub fn render(&self) -> String {
-		use pulldown_cmark_to_cmark::cmark;
-		let events = self.0.iter().map(|e| e.to_event());
-		let mut output = String::new();
-		// Use pulldown-cmark-to-cmark for proper markdown output
-		cmark(events, &mut output).expect("markdown rendering should not fail");
-		output
+	let mut out = Vec::with_capacity(events.len());
+	let mut stack: Vec<State> = Vec::new();
+
+	let mut i = 0;
+	while i < events.len() {
+		match &events[i] {
+			OwnedEvent::Start(OwnedTag::Item) => {
+				stack.push(State::Pending);
+				out.push(events[i].clone());
+				i += 1;
+			}
+			OwnedEvent::End(OwnedTagEnd::Item) => {
+				stack.pop();
+				out.push(events[i].clone());
+				i += 1;
+			}
+			// First Start(Paragraph) in a pending item → strip it
+			OwnedEvent::Start(OwnedTag::Paragraph) if matches!(stack.last(), Some(State::Pending)) => {
+				*stack.last_mut().unwrap() = State::InFirst;
+				i += 1; // strip Start(P₁)
+			}
+			// End(Paragraph) closing the first (stripped) paragraph
+			OwnedEvent::End(OwnedTagEnd::Paragraph) if matches!(stack.last(), Some(State::InFirst)) => {
+				*stack.last_mut().unwrap() = State::Done;
+				if matches!(events.get(i + 1), Some(OwnedEvent::Start(OwnedTag::Paragraph))) {
+					// Followed by body paragraph → SoftBreak to bridge title and body
+					out.push(OwnedEvent::SoftBreak);
+				}
+				i += 1; // strip End(P₁)
+			}
+			_ => {
+				out.push(events[i].clone());
+				i += 1;
+			}
+		}
+	}
+	out
+}
+
+/// Preserve blank lines between block elements by inserting `Html("\n")` after `End(Paragraph)`.
+///
+/// `newlines_after_paragraph: 1` in cmark options means `End(P)` only emits 1 newline.
+/// When followed by another block element (Start(P), Start(Heading), etc.), the original blank line
+/// is lost. We restore it by inserting a raw `\n` event, so the final output has 2 newlines (blank line).
+///
+/// Skipped inside list items — list item spacing is handled by normalization and cmark itself.
+/// Skipped when next event is `End(...)` — that means we're exiting a scope, not starting a new block.
+fn preserve_paragraph_spacing(events: Vec<OwnedEvent>) -> Vec<OwnedEvent> {
+	let mut out = Vec::with_capacity(events.len());
+	let mut item_depth = 0usize;
+	for i in 0..events.len() {
+		match &events[i] {
+			OwnedEvent::Start(OwnedTag::Item) => item_depth += 1,
+			OwnedEvent::End(OwnedTagEnd::Item) => item_depth -= 1,
+			_ => {}
+		}
+		out.push(events[i].clone());
+		if item_depth == 0 && matches!(&events[i], OwnedEvent::End(OwnedTagEnd::Paragraph)) && matches!(events.get(i + 1), Some(OwnedEvent::Start(_))) {
+			out.push(OwnedEvent::Html("\n".to_string()));
+		}
+	}
+	out
+}
+
+/// Split a list after a `# Blockers` heading at the point where checkbox items begin.
+///
+/// pulldown_cmark merges all consecutive `- ` items into a single list, even when
+/// some are plain blocker items and some are checkbox items from a semantically separate list.
+/// We split them, but ONLY when all conditions are met:
+/// 1. A `Marker::BlockersSection` heading immediately precedes the list
+/// 2. The list starts with non-checkbox items (the actual blockers)
+/// 3. At some point checkbox items begin — that's where we split
+///
+/// Milestone lists (where checkboxes and plain refs coexist) are left intact.
+fn split_blockers_from_checkboxes(events: Vec<OwnedEvent>) -> Vec<OwnedEvent> {
+	let mut out = Vec::with_capacity(events.len());
+	let mut i = 0;
+
+	while i < events.len() {
+		if !matches!(&events[i], OwnedEvent::Start(OwnedTag::List(_))) {
+			out.push(events[i].clone());
+			i += 1;
+			continue;
+		}
+
+		let list_start_event = events[i].clone();
+		let list_end = find_matching_end_list(&events, i);
+
+		// Check condition 1: is this list immediately preceded by a BlockersSection heading?
+		if !preceded_by_blockers_heading(&out) {
+			// Not a blockers list — pass through unchanged, but recurse into nested lists
+			out.push(events[i].clone());
+			i += 1;
+			continue;
+		}
+
+		// Walk items at depth=1, record (start_idx, end_idx, has_checkbox)
+		let mut items: Vec<(usize, usize, bool)> = Vec::new();
+		let mut depth = 0;
+		let mut j = i;
+		while j < list_end {
+			match &events[j] {
+				OwnedEvent::Start(OwnedTag::List(_)) => depth += 1,
+				OwnedEvent::End(OwnedTagEnd::List(_)) => depth -= 1,
+				OwnedEvent::Start(OwnedTag::Item) if depth == 1 => {
+					let item_start = j;
+					let item_end = find_matching_end_item(&events, j);
+					let has_checkbox = item_has_checkbox(&events[item_start..item_end]);
+					items.push((item_start, item_end, has_checkbox));
+					j = item_end;
+					continue;
+				}
+				_ => {}
+			}
+			j += 1;
+		}
+
+		// Condition 2: list must start with non-checkbox items
+		// Condition 3: must transition to checkbox at some point
+		let first_checkbox_idx = items.iter().position(|(_, _, has)| *has);
+		let should_split = match first_checkbox_idx {
+			Some(idx) if idx > 0 => true, // starts non-checkbox, then transitions
+			_ => false,
+		};
+
+		if !should_split {
+			out.push(events[i].clone());
+			i += 1;
+			continue;
+		}
+
+		let split_at = first_checkbox_idx.unwrap();
+
+		// Emit blocker items as one list
+		out.push(list_start_event.clone());
+		for &(item_start, item_end, _) in &items[..split_at] {
+			out.extend(events[item_start..item_end].iter().cloned());
+		}
+		out.push(OwnedEvent::End(OwnedTagEnd::List(false)));
+
+		// Emit checkbox items as a separate list
+		out.push(list_start_event.clone());
+		for &(item_start, item_end, _) in &items[split_at..] {
+			out.extend(events[item_start..item_end].iter().cloned());
+		}
+		out.push(OwnedEvent::End(OwnedTagEnd::List(false)));
+
+		i = list_end;
 	}
 
-	/// Check if the events sequence is empty.
-	pub fn is_empty(&self) -> bool {
-		self.0.is_empty()
+	out
+}
+
+/// Check whether the events accumulated so far end with a BlockersSection heading.
+/// Reconstructs the heading text from events and delegates to `Marker::decode`.
+fn preceded_by_blockers_heading(out: &[OwnedEvent]) -> bool {
+	// Walk backwards: expect End(Heading), then text events, then Start(Heading)
+	let Some(last) = out.last() else { return false };
+	let OwnedEvent::End(OwnedTagEnd::Heading(level)) = last else { return false };
+
+	// Collect heading text by walking backwards past the End(Heading)
+	let mut heading_text = String::new();
+	let mut found_start = false;
+	for ev in out[..out.len() - 1].iter().rev() {
+		match ev {
+			OwnedEvent::Start(OwnedTag::Heading { level: start_level, .. }) if start_level == level => {
+				found_start = true;
+				break;
+			}
+			OwnedEvent::Text(t) => {
+				// Prepend (since we're walking backwards)
+				heading_text.insert_str(0, t);
+			}
+			_ => break, // unexpected event inside heading
+		}
+	}
+	if !found_start {
+		return false;
 	}
 
-	/// Get the number of events.
-	pub fn len(&self) -> usize {
-		self.0.len()
+	// Reconstruct the line as it would appear in markdown
+	let hashes: String = "#".repeat(match level {
+		HeadingLevel::H1 => 1,
+		HeadingLevel::H2 => 2,
+		HeadingLevel::H3 => 3,
+		HeadingLevel::H4 => 4,
+		HeadingLevel::H5 => 5,
+		HeadingLevel::H6 => 6,
+	});
+	let line = format!("{hashes} {heading_text}");
+
+	matches!(super::Marker::decode(&line), Some(super::Marker::BlockersSection(_)))
+}
+
+fn find_matching_end_list(events: &[OwnedEvent], start: usize) -> usize {
+	let mut depth = 0;
+	for (j, ev) in events[start..].iter().enumerate() {
+		match ev {
+			OwnedEvent::Start(OwnedTag::List(_)) => depth += 1,
+			OwnedEvent::End(OwnedTagEnd::List(_)) => {
+				depth -= 1;
+				if depth == 0 {
+					return start + j + 1;
+				}
+			}
+			_ => {}
+		}
+	}
+	events.len()
+}
+
+fn find_matching_end_item(events: &[OwnedEvent], start: usize) -> usize {
+	let mut depth = 0;
+	for (j, ev) in events[start..].iter().enumerate() {
+		match ev {
+			OwnedEvent::Start(OwnedTag::Item) => depth += 1,
+			OwnedEvent::End(OwnedTagEnd::Item) => {
+				depth -= 1;
+				if depth == 0 {
+					return start + j + 1;
+				}
+			}
+			_ => {}
+		}
+	}
+	events.len()
+}
+
+fn item_has_checkbox(item_events: &[OwnedEvent]) -> bool {
+	let mut i = 0;
+	if matches!(item_events.get(i), Some(OwnedEvent::Start(OwnedTag::Item))) {
+		i += 1;
+	}
+	matches!(item_events.get(i), Some(OwnedEvent::CheckBox(_)))
+}
+
+fn parser_options() -> pulldown_cmark::Options {
+	pulldown_cmark::Options::ENABLE_TASKLISTS | pulldown_cmark::Options::ENABLE_STRIKETHROUGH
+}
+
+pub(crate) fn cmark_options() -> pulldown_cmark_to_cmark::Options<'static> {
+	pulldown_cmark_to_cmark::Options {
+		list_token: '-',
+		newlines_after_headline: 1,
+		newlines_after_paragraph: 1,
+		..Default::default()
+	}
+}
+
+/// Convert `&[OwnedEvent]` to `Vec<Event>` ready for `pulldown_cmark_to_cmark`.
+///
+/// Handles:
+/// 1. `CheckBox(" ")`/`CheckBox("x")` → `TaskListMarker`
+/// 2. Custom `CheckBox` → escaped `Text("[<inner>\] ")`
+/// 3. Loose-list spacing: inserts `Html("\n")` between items in lists that contain checkboxes
+pub(crate) fn prepare_for_render(events: &[OwnedEvent]) -> Vec<Event<'_>> {
+	let mut out = Vec::with_capacity(events.len());
+
+	// Identify which list ranges contain checkboxes (for loose inter-item spacing).
+	struct ListInfo {
+		start_idx: usize,
+		has_checkbox: bool,
+	}
+	let mut list_stack: Vec<ListInfo> = Vec::new();
+	let mut checkbox_lists: Vec<(usize, usize)> = Vec::new();
+
+	for (i, ev) in events.iter().enumerate() {
+		match ev {
+			OwnedEvent::Start(OwnedTag::List(_)) => {
+				list_stack.push(ListInfo { start_idx: i, has_checkbox: false });
+			}
+			OwnedEvent::CheckBox(_) =>
+				if let Some(info) = list_stack.last_mut() {
+					info.has_checkbox = true;
+				},
+			OwnedEvent::End(OwnedTagEnd::List(_)) =>
+				if let Some(info) = list_stack.pop() {
+					if info.has_checkbox {
+						checkbox_lists.push((info.start_idx, i));
+					}
+				},
+			_ => {}
+		}
 	}
 
-	/// Get a reference to the underlying events.
-	pub fn events(&self) -> &[OwnedEvent] {
-		&self.0
-	}
-
-	/// Get a mutable reference to the underlying events.
-	pub fn events_mut(&mut self) -> &mut Vec<OwnedEvent> {
-		&mut self.0
-	}
-
-	/// Extract plain text from events (for display/comparison purposes).
-	pub fn plain_text(&self) -> String {
-		let mut text = String::new();
-		for event in &self.0 {
-			match event {
-				OwnedEvent::Text(t) => text.push_str(t),
-				OwnedEvent::Code(c) => text.push_str(c),
-				OwnedEvent::SoftBreak | OwnedEvent::HardBreak => text.push(' '),
+	// Build a set of Item end indices where we should insert Html("\n") for loose spacing.
+	let mut loose_item_ends: std::collections::HashSet<usize> = std::collections::HashSet::new();
+	for (list_start, list_end) in &checkbox_lists {
+		let mut depth = 0;
+		let mut item_ends = Vec::new();
+		for (i, ev) in events[*list_start..=*list_end].iter().enumerate() {
+			let abs_i = list_start + i;
+			match ev {
+				OwnedEvent::Start(OwnedTag::List(_)) => depth += 1,
+				OwnedEvent::End(OwnedTagEnd::List(_)) => depth -= 1,
+				OwnedEvent::End(OwnedTagEnd::Item) if depth == 1 => item_ends.push(abs_i),
 				_ => {}
 			}
 		}
-		text
+		if item_ends.len() > 1 {
+			for &idx in &item_ends[..item_ends.len() - 1] {
+				loose_item_ends.insert(idx);
+			}
+		}
 	}
 
-	/// Create Events from a simple string (wraps in paragraph).
-	pub fn from_plain_text(text: &str) -> Self {
-		if text.is_empty() {
-			return Self::new();
+	for (i, ev) in events.iter().enumerate() {
+		match ev {
+			OwnedEvent::CheckBox(inner) => match inner.as_str() {
+				" " => out.push(Event::TaskListMarker(false)),
+				"x" => out.push(Event::TaskListMarker(true)),
+				_ => out.push(Event::Text(format!("[{inner}\\] ").into())),
+			},
+			_ => out.push(ev.to_event()),
 		}
-		Self(vec![
-			OwnedEvent::Start(OwnedTag::Paragraph),
-			OwnedEvent::Text(text.to_string()),
-			OwnedEvent::End(OwnedTagEnd::Paragraph),
-		])
+		if loose_item_ends.contains(&i) {
+			out.push(Event::Html("\n".into()));
+		}
 	}
 
-	/// Create Events from inline content (no paragraph wrapper).
-	pub fn from_inline_text(text: &str) -> Self {
-		if text.is_empty() {
-			return Self::new();
+	out
+}
+
+/// Append `content` to `out`, prefixing each line with `prefix`.
+/// Preserves trailing newline from content.
+pub(super) fn indent_into(out: &mut String, content: &str, prefix: &str) {
+	for line in content.lines() {
+		out.push_str(prefix);
+		out.push_str(line);
+		out.push('\n');
+	}
+}
+
+/// Wrap runs of inline events in `Start(Paragraph)` / `End(Paragraph)`.
+///
+/// Events stored from inside list items have paragraph wrappers stripped (by normalization).
+/// When rendering these events as standalone markdown (e.g., GitHub body), inline content
+/// needs paragraph wrappers for proper block-level separation from subsequent elements.
+pub(super) fn wrap_inline_in_paragraphs(events: Vec<OwnedEvent>) -> Vec<OwnedEvent> {
+	if events.is_empty() {
+		return events;
+	}
+	let mut out = Vec::with_capacity(events.len() + 2);
+	let mut in_inline = false;
+
+	for ev in events {
+		let is_inline = matches!(
+			&ev,
+			OwnedEvent::Text(_)
+				| OwnedEvent::Code(_)
+				| OwnedEvent::InlineHtml(_)
+				| OwnedEvent::InlineMath(_)
+				| OwnedEvent::SoftBreak
+				| OwnedEvent::HardBreak
+				| OwnedEvent::Start(OwnedTag::Emphasis)
+				| OwnedEvent::End(OwnedTagEnd::Emphasis)
+				| OwnedEvent::Start(OwnedTag::Strong)
+				| OwnedEvent::End(OwnedTagEnd::Strong)
+				| OwnedEvent::Start(OwnedTag::Strikethrough)
+				| OwnedEvent::End(OwnedTagEnd::Strikethrough)
+				| OwnedEvent::Start(OwnedTag::Link { .. })
+				| OwnedEvent::End(OwnedTagEnd::Link)
+				| OwnedEvent::Start(OwnedTag::Image { .. })
+				| OwnedEvent::End(OwnedTagEnd::Image)
+		);
+		if is_inline && !in_inline {
+			out.push(OwnedEvent::Start(OwnedTag::Paragraph));
+			in_inline = true;
+		} else if !is_inline && in_inline {
+			out.push(OwnedEvent::End(OwnedTagEnd::Paragraph));
+			in_inline = false;
 		}
-		Self(vec![OwnedEvent::Text(text.to_string())])
+		out.push(ev);
+	}
+	if in_inline {
+		out.push(OwnedEvent::End(OwnedTagEnd::Paragraph));
+	}
+	out
+}
+
+/// Render a slice of `OwnedEvent`s to markdown using the shared cmark options.
+fn render_events(events: &[OwnedEvent]) -> String {
+	let prepared = prepare_for_render(events);
+	let mut output = String::new();
+	pulldown_cmark_to_cmark::cmark_with_options(prepared.into_iter(), &mut output, cmark_options()).expect("markdown rendering should not fail");
+	output
+}
+
+impl From<Events> for String {
+	fn from(events: Events) -> Self {
+		render_events(&events)
 	}
 }
 
 impl fmt::Display for Events {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		write!(f, "{}", self.render())
+		write!(f, "{}", render_events(self))
+	}
+}
+
+impl From<Vec<OwnedEvent>> for Events {
+	fn from(events: Vec<OwnedEvent>) -> Self {
+		Self(events)
 	}
 }
 
@@ -419,45 +852,120 @@ mod tests {
 	fn test_parse_simple_text() {
 		let events = Events::parse("Hello world");
 		assert!(!events.is_empty());
-		assert_eq!(events.plain_text(), "Hello world");
+		let rendered: String = events.into();
+		assert!(rendered.contains("Hello world"));
 	}
 
 	#[test]
 	fn test_parse_with_formatting() {
 		let events = Events::parse("Hello **bold** and `code`");
-		let plain = events.plain_text();
-		assert!(plain.contains("Hello"));
-		assert!(plain.contains("bold"));
-		assert!(plain.contains("code"));
+		let rendered: String = events.into();
+		assert!(rendered.contains("Hello"));
+		assert!(rendered.contains("bold"));
+		assert!(rendered.contains("code"));
 	}
 
 	#[test]
 	fn test_roundtrip_simple() {
 		let original = "Simple paragraph.";
 		let events = Events::parse(original);
-		let rendered = events.render();
-		// The rendered output should contain the same text
+		let rendered: String = events.into();
 		assert!(rendered.contains("Simple paragraph"));
 	}
 
 	#[test]
-	fn test_from_plain_text() {
-		let events = Events::from_plain_text("Test");
-		assert_eq!(events.len(), 3); // Start(Paragraph), Text, End(Paragraph)
-		assert_eq!(events.plain_text(), "Test");
-	}
-
-	#[test]
-	fn test_from_inline_text() {
-		let events = Events::from_inline_text("Test");
-		assert_eq!(events.len(), 1); // Just Text
-		assert_eq!(events.plain_text(), "Test");
-	}
-
-	#[test]
 	fn test_empty() {
-		let events = Events::new();
+		let events = Events::default();
 		assert!(events.is_empty());
 		assert_eq!(events.len(), 0);
+	}
+
+	#[test]
+	fn blockers_list_split_from_checkbox_items() {
+		// After # Blockers heading, non-checkbox items then checkbox items → split
+		let events = Events::parse("# Blockers\n- a\n- b\n- [ ] item\n");
+		let list_count = events.iter().filter(|e| matches!(e, OwnedEvent::Start(OwnedTag::List(_)))).count();
+		assert_eq!(list_count, 2, "blockers + checkbox tight should split into 2 lists");
+
+		let events = Events::parse("# Blockers\n- a\n- b\n\n- [ ] item\n");
+		let list_count = events.iter().filter(|e| matches!(e, OwnedEvent::Start(OwnedTag::List(_)))).count();
+		assert_eq!(list_count, 2, "blockers + checkbox loose should split into 2 lists");
+	}
+
+	#[test]
+	fn milestone_mixed_list_stays_unified() {
+		// Milestone: checkbox + plain ref in same list → must NOT split
+		let events = Events::parse("- [ ] one item\n- ref in the same list\n");
+		let list_count = events.iter().filter(|e| matches!(e, OwnedEvent::Start(OwnedTag::List(_)))).count();
+		assert_eq!(list_count, 1, "milestone mixed tight should stay as 1 list");
+
+		let events = Events::parse("- [ ] one item\n\n- ref in the same list\n");
+		let list_count = events.iter().filter(|e| matches!(e, OwnedEvent::Start(OwnedTag::List(_)))).count();
+		assert_eq!(list_count, 1, "milestone mixed loose should stay as 1 list");
+	}
+
+	#[test]
+	fn non_blockers_mixed_list_stays_unified() {
+		// Mixed list without blockers heading → must NOT split
+		let events = Events::parse("- a\n- [ ] item\n");
+		let list_count = events.iter().filter(|e| matches!(e, OwnedEvent::Start(OwnedTag::List(_)))).count();
+		assert_eq!(list_count, 1, "mixed list without heading should stay as 1 list");
+	}
+
+	#[test]
+	fn blockers_all_checkbox_stays_unified() {
+		// # Blockers followed by all-checkbox list → no split needed
+		let events = Events::parse("# Blockers\n- [ ] a\n- [ ] b\n");
+		let list_count = events.iter().filter(|e| matches!(e, OwnedEvent::Start(OwnedTag::List(_)))).count();
+		assert_eq!(list_count, 1, "all-checkbox list after blockers heading should stay as 1 list");
+	}
+
+	#[test]
+	fn loose_list_no_padding_before_body() {
+		let input = "- [ ] item\n\n  body text\n";
+		let rendered: String = Events::parse(input).into();
+		insta::assert_snapshot!(rendered, @"
+		- [ ] item
+		  body text
+		");
+	}
+
+	#[test]
+	fn rule_inside_list_item_survives_normalization() {
+		let loose = "- item\n\n  body\n\n  ---\n\n  after rule\n";
+		let rendered: String = Events::parse(loose).into();
+		assert!(rendered.contains("---"), "Rule must survive normalization");
+	}
+
+	#[test]
+	fn paragraph_spacing_preserved_at_top_level() {
+		// User content with blank line between paragraphs
+		let input = "First paragraph\n\nSecond paragraph\n";
+		let rendered: String = Events::parse(input).into();
+		insta::assert_snapshot!(rendered, @r"
+		First paragraph
+
+		Second paragraph
+		");
+	}
+
+	#[test]
+	fn paragraph_spacing_not_added_inside_list_items() {
+		// Inside list items, spacing should NOT be added
+		let input = "- [ ] item\n\n  body text\n\n  more body\n";
+		let rendered: String = Events::parse(input).into();
+		insta::assert_snapshot!(rendered, @r"
+		- [ ] item
+		  body text
+		  more body
+		");
+	}
+
+	#[test]
+	fn blockers_starts_with_checkbox_no_split() {
+		// # Blockers where first item is checkbox → don't split (condition: must START non-checkbox)
+		let events = Events::parse("# Blockers\n- [ ] a\n- b\n");
+		let list_count = events.iter().filter(|e| matches!(e, OwnedEvent::Start(OwnedTag::List(_)))).count();
+		assert_eq!(list_count, 1, "checkbox-first blockers list should stay as 1 list");
 	}
 }
