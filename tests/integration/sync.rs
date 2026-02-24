@@ -364,19 +364,16 @@ async fn test_pull_with_divergence_runs_sync_before_editor() {
 
 	let consensus_vi = parse_virtual(
 		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-
   consensus body
 "#,
 	);
 	let local_vi = parse_virtual(
 		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-
   local diverged body
 "#,
 	);
 	let remote_vi = parse_virtual(
 		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-
   remote diverged body
 "#,
 	);
@@ -436,7 +433,6 @@ async fn test_closing_issue_syncs_state_change() {
 
 	let open_vi = parse_virtual(
 		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-
   body
 "#,
 	);
@@ -637,7 +633,6 @@ async fn test_comment_shorthand_creates_comment() {
 	// Start with an issue that has no comments
 	let vi = parse_virtual(
 		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-
   issue body
 "#,
 	);
@@ -647,7 +642,6 @@ async fn test_comment_shorthand_creates_comment() {
 	// Simulate user adding `!c` followed by comment content
 	// After expansion, the file should have `<!-- new comment -->` marker
 	let edited_content = r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-
   issue body
 
   !c
@@ -709,12 +703,10 @@ async fn test_force_merge_preserves_both_sub_issues(#[case] args: &[&str], #[cas
 	// Local: parent with local-only sub-issue and modified description
 	let local_vi = parse_virtual(
 		r#"- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-
   parent body
   extra line from local
 
   - [ ] Local Sub <!--sub @mock_user https://github.com/o/r/issues/2 -->
-
     local sub body
 "#,
 	);
@@ -722,11 +714,9 @@ async fn test_force_merge_preserves_both_sub_issues(#[case] args: &[&str], #[cas
 	// Remote: parent with remote-only sub-issue (no extra description line)
 	let remote_vi = parse_virtual(
 		r#"- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-
   parent body
 
   - [ ] Remote Sub <!--sub @mock_user https://github.com/o/r/issues/3 -->
-
     remote sub body
 "#,
 	);
@@ -734,7 +724,6 @@ async fn test_force_merge_preserves_both_sub_issues(#[case] args: &[&str], #[cas
 	// Consensus: original state (no sub-issues, original description)
 	let consensus_vi = parse_virtual(
 		r#"- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-
   parent body
 "#,
 	);
@@ -786,7 +775,6 @@ async fn test_undo_shorthand_aborts_sync() {
 
 	let vi = parse_virtual(
 		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-
   issue body
 "#,
 	);
@@ -819,7 +807,6 @@ async fn test_consensus_sink_writes_meta_json_with_timestamps() {
 	// Set up a remote issue with a comment (will have timestamps from mock)
 	let remote_vi = parse_virtual(
 		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-
   remote body
 
   ---
