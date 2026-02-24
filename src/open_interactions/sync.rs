@@ -186,7 +186,6 @@ mod core {
 			}
 			false => {
 				// Conflict - initiate git merge
-				dbg!(&local_merged, &remote_merged);
 				match initiate_conflict_merge(repo_info, issue_number, &local_merged, &remote_merged)? {
 					ConflictOutcome::AutoMerged => {
 						unreachable!(
