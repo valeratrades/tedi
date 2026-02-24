@@ -1071,7 +1071,7 @@ impl Issue /*{{{1*/ {
 		let labels_part = if self.contents.labels.is_empty() {
 			String::new()
 		} else {
-			format!("[{}] ", self.contents.labels.join(", "))
+			format!("({}) ", self.contents.labels.join(", "))
 		};
 
 		let title_str: String = super::Events::from(vec![
@@ -1413,11 +1413,11 @@ impl VirtualIssue {
 
 		// Parse labels from title text
 		let title_text = title_text.trim_end();
-		let (labels, title) = if title_text.starts_with('[') {
-			if let Some(bracket_end) = title_text.find("] ") {
-				let labels_str = &title_text[1..bracket_end];
+		let (labels, title) = if title_text.starts_with('(') {
+			if let Some(paren_end) = title_text.find(") ") {
+				let labels_str = &title_text[1..paren_end];
 				let labels: Vec<String> = labels_str.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
-				(labels, title_text[bracket_end + 2..].to_string())
+				(labels, title_text[paren_end + 2..].to_string())
 			} else {
 				(vec![], title_text.to_string())
 			}

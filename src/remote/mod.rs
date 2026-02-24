@@ -364,6 +364,11 @@ impl Sink<Remote> for Issue {
 			let created = gh.create_issue(repo_info, title, &body).await?;
 			println!("Created issue #{}: {}", created.number, created.html_url);
 
+			// Set labels if any
+			if !self.contents.labels.is_empty() {
+				gh.set_labels(repo_info, created.number, &self.contents.labels).await?;
+			}
+
 			// Close if needed
 			if closed {
 				gh.update_issue_state(repo_info, created.number, "closed").await?;
@@ -397,6 +402,12 @@ impl Sink<Remote> for Issue {
 			let body: String = self.body().into();
 			println!("Updating issue #{issue_number} body...");
 			gh.update_issue_body(repo_info, issue_number, &body).await?;
+			changed = true;
+		}
+
+		if diff.labels_changed {
+			println!("Updating issue #{issue_number} labels...");
+			gh.set_labels(repo_info, issue_number, &self.contents.labels).await?;
 			changed = true;
 		}
 

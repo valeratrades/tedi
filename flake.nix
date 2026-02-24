@@ -54,6 +54,9 @@
               jobs.warnings.install = jobDeps;
               jobs.warnings.augment = [ "code-duplication" ];
               release.default = true;
+              labels.extra = [
+                { name = "milestones"; color = "0000ff"; }
+              ];
             };
           readme = v-utils.readme-fw {
             inherit pkgs pname;

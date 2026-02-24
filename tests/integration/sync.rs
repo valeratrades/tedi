@@ -675,7 +675,6 @@ async fn test_comment_shorthand_creates_comment() {
 	>>>>>>> remote-state
 	//- /o/r/1_-_Test_Issue.md
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-
 	  issue body
 
 	  !c
@@ -849,4 +848,33 @@ async fn test_consensus_sink_writes_meta_json_with_timestamps() {
 	  \---<!-- comment 1001 @commenter -->
 	  A test comment
 	"#);
+}
+
+/// Adding labels to an issue should sync them to remote.
+/// Labels are specified as `[label1, label2] Title` in the file format.
+#[tokio::test]
+async fn test_adding_labels_syncs_to_remote() {
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+
+	let vi = parse_virtual(
+		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+  body
+"#,
+	);
+	let issue = ctx.consensus(&vi, Some(Seed::new(5))).await;
+	ctx.remote(&vi, Some(Seed::new(5)));
+
+	// Edit to add labels
+	let mut labeled_vi = vi.clone();
+	labeled_vi.contents.labels = vec!["bug".to_string(), "urgent".to_string()];
+
+	let out = ctx.open_issue(&issue).edit(&labeled_vi).run();
+
+	assert!(out.status.success(), "Should succeed. stderr: {}", out.stderr);
+	assert!(out.stdout.contains("Updating issue #1 labels"), "Should push labels to remote. stdout: {}", out.stdout);
+
+	// Verify labels appear in the resulting file
+	let issue_path = ctx.resolve_issue_path(&issue);
+	let content = read_issue_file(&issue_path);
+	assert!(content.contains("(bug, urgent)"), "Labels should be in file. Got: {content}");
 }

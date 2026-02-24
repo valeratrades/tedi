@@ -91,7 +91,7 @@ pub fn serialize_blockers_view(issue: &Issue) -> String {
 	let labels_part = if issue.contents.labels.is_empty() {
 		String::new()
 	} else {
-		format!("[{}] ", issue.contents.labels.join(", "))
+		format!("({}) ", issue.contents.labels.join(", "))
 	};
 
 	// Build events: a single list item with inline title + optional blocker children
@@ -947,8 +947,8 @@ mod tests {
 			},
 			children: std::collections::HashMap::new(),
 		};
-		insta::assert_snapshot!(serialize_blockers_view(&issue), @r"
-		- [ ] \[bug, urgent] Labeled <!-- https://github.com/owner/repo/issues/42 -->
+		insta::assert_snapshot!(serialize_blockers_view(&issue), @"
+		- [ ] (bug, urgent) Labeled <!-- https://github.com/owner/repo/issues/42 -->
 		  # Blockers
 		  - do thing
 		");

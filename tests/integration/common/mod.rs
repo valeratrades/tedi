@@ -294,6 +294,9 @@ impl TestContext {
 					if let Some(reason) = &i.state_reason {
 						json["state_reason"] = serde_json::Value::String(reason.clone());
 					}
+					if !i.labels.is_empty() {
+						json["labels"] = serde_json::json!(i.labels);
+					}
 					// Add timestamps if provided
 					if let Some(ts) = &i.timestamps {
 						if let Some(t) = ts.title {
@@ -959,6 +962,7 @@ fn add_issue_recursive(state: &mut GitState, repo_info: tedi::RepoInfo, number: 
 		body: issue.body().into(),
 		state: issue.contents.state.to_github_state().to_string(),
 		state_reason: issue.contents.state.to_github_state_reason().map(|s| s.to_string()),
+		labels: issue.contents.labels.clone(),
 		owner_login: issue_owner_login,
 		timestamps: timestamps.cloned(),
 	});
@@ -1024,6 +1028,7 @@ struct MockIssue {
 	body: String,
 	state: String,
 	state_reason: Option<String>,
+	labels: Vec<String>,
 	owner_login: String,
 	/// Timestamps for this issue (if provided via seed)
 	timestamps: Option<IssueTimestamps>,
