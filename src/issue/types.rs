@@ -1099,15 +1099,15 @@ impl Issue /*{{{1*/ {
 		let mut content = String::new();
 
 		// === Body (first comment) ===
-		if let Some(body_comment) = self.contents.comments.first() {
-			if !body_comment.body.is_empty() {
-				let body_str: String = super::Events::from(body_comment.body.to_vec()).into();
-				if !is_owned {
-					// Extra indent for unowned issues
-					indent_into(&mut content, &body_str, "  ");
-				} else {
-					content.push_str(&body_str);
-				}
+		if let Some(body_comment) = self.contents.comments.first()
+			&& !body_comment.body.is_empty()
+		{
+			let body_str: String = super::Events::from(body_comment.body.to_vec()).into();
+			if !is_owned {
+				// Extra indent for unowned issues
+				indent_into(&mut content, &body_str, "  ");
+			} else {
+				content.push_str(&body_str);
 			}
 		}
 
@@ -1179,7 +1179,7 @@ impl Issue /*{{{1*/ {
 				}
 
 				if child.contents.state.is_closed() {
-					let child_str: String = child.serialize_virtual_at_depth(depth + 1, true).into();
+					let child_str = child.serialize_virtual_at_depth(depth + 1, true);
 					let omitted_start = Marker::OmittedStart.encode();
 					let omitted_end = Marker::OmittedEnd.encode();
 					let child_content_indent = "  ".repeat(depth + 2);
@@ -1199,7 +1199,7 @@ impl Issue /*{{{1*/ {
 					out.push_str(&omitted_end);
 					out.push('\n');
 				} else {
-					let child_str: String = child.serialize_virtual_at_depth(depth + 1, true).into();
+					let child_str = child.serialize_virtual_at_depth(depth + 1, true);
 					out.push_str(&child_str);
 				}
 			}
@@ -1553,10 +1553,8 @@ impl VirtualIssue {
 						if matches!(body_events.last(), Some(OwnedEvent::SoftBreak)) {
 							body_events.pop();
 						}
-					} else if current_comment_meta.is_some() {
-						if matches!(current_comment_events.last(), Some(OwnedEvent::SoftBreak)) {
-							current_comment_events.pop();
-						}
+					} else if current_comment_meta.is_some() && matches!(current_comment_events.last(), Some(OwnedEvent::SoftBreak)) {
+						current_comment_events.pop();
 					}
 					if t.trim().eq_ignore_ascii_case("!s") {
 						select_blockers = true;
@@ -1731,8 +1729,8 @@ impl VirtualIssue {
 	fn find_matching_end_list(events: &[super::OwnedEvent], start: usize) -> usize {
 		use super::{OwnedEvent, OwnedTag, OwnedTagEnd};
 		let mut depth = 0;
-		for i in start..events.len() {
-			match &events[i] {
+		for (i, event) in events.iter().enumerate().skip(start) {
+			match event {
 				OwnedEvent::Start(OwnedTag::List(_)) => depth += 1,
 				OwnedEvent::End(OwnedTagEnd::List(_)) => {
 					depth -= 1;
@@ -1750,8 +1748,8 @@ impl VirtualIssue {
 	fn find_matching_end_item(events: &[super::OwnedEvent], start: usize) -> usize {
 		use super::{OwnedEvent, OwnedTag, OwnedTagEnd};
 		let mut depth = 0;
-		for i in start..events.len() {
-			match &events[i] {
+		for (i, event) in events.iter().enumerate().skip(start) {
+			match event {
 				OwnedEvent::Start(OwnedTag::Item) => depth += 1,
 				OwnedEvent::End(OwnedTagEnd::Item) => {
 					depth -= 1;

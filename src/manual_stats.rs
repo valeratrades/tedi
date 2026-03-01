@@ -400,7 +400,7 @@ fn print_relative(settings: &crate::config::LiveSettings, days_back: usize, n: u
 	let today_ev = entries[0].1;
 
 	let mut sorted: Vec<(usize, &str, i32)> = entries.iter().enumerate().map(|(i, (d, ev))| (i, d.as_str(), *ev)).collect();
-	sorted.sort_by(|a, b| b.2.cmp(&a.2));
+	sorted.sort_by_key(|b| std::cmp::Reverse(b.2));
 
 	let rank = sorted.iter().position(|e| e.0 == 0).unwrap() + 1;
 	let beaten = n - rank;

@@ -359,37 +359,35 @@ impl Events {
 			}
 
 			// Try 4-event pattern: Text("[") + Text(<inner>) + Text("]") + Text(" <rest>")
-			if i + 3 < raw.len() {
-				if let (OwnedEvent::Text(open), OwnedEvent::Text(inner), OwnedEvent::Text(close), OwnedEvent::Text(rest)) = (&raw[i], &raw[i + 1], &raw[i + 2], &raw[i + 3]) {
-					if open == "[" && close == "]" && (rest.is_empty() || rest.starts_with(' ')) {
-						events.push(OwnedEvent::CheckBox(inner.clone()));
-						let rest = rest.strip_prefix(' ').unwrap_or(rest);
-						if !rest.is_empty() {
-							events.push(OwnedEvent::Text(rest.to_string()));
-						}
-						i += 4;
-						continue;
-					}
+			if i + 3 < raw.len()
+				&& let (OwnedEvent::Text(open), OwnedEvent::Text(inner), OwnedEvent::Text(close), OwnedEvent::Text(rest)) = (&raw[i], &raw[i + 1], &raw[i + 2], &raw[i + 3])
+				&& open == "["
+				&& close == "]"
+				&& (rest.is_empty() || rest.starts_with(' '))
+			{
+				events.push(OwnedEvent::CheckBox(inner.clone()));
+				let rest = rest.strip_prefix(' ').unwrap_or(rest);
+				if !rest.is_empty() {
+					events.push(OwnedEvent::Text(rest.to_string()));
 				}
+				i += 4;
+				continue;
 			}
 
 			// Try 2-event pattern: Text("[<inner>") + Text("] <rest>")
-			if i + 1 < raw.len() {
-				if let (OwnedEvent::Text(first), OwnedEvent::Text(second)) = (&raw[i], &raw[i + 1]) {
-					if let Some(inner) = first.strip_prefix('[') {
-						if let Some(rest) = second.strip_prefix(']') {
-							if rest.is_empty() || rest.starts_with(' ') {
-								events.push(OwnedEvent::CheckBox(inner.to_string()));
-								let rest = rest.strip_prefix(' ').unwrap_or(rest);
-								if !rest.is_empty() {
-									events.push(OwnedEvent::Text(rest.to_string()));
-								}
-								i += 2;
-								continue;
-							}
-						}
-					}
+			if i + 1 < raw.len()
+				&& let (OwnedEvent::Text(first), OwnedEvent::Text(second)) = (&raw[i], &raw[i + 1])
+				&& let Some(inner) = first.strip_prefix('[')
+				&& let Some(rest) = second.strip_prefix(']')
+				&& (rest.is_empty() || rest.starts_with(' '))
+			{
+				events.push(OwnedEvent::CheckBox(inner.to_string()));
+				let rest = rest.strip_prefix(' ').unwrap_or(rest);
+				if !rest.is_empty() {
+					events.push(OwnedEvent::Text(rest.to_string()));
 				}
+				i += 2;
+				continue;
 			}
 			// No pattern matched — continue normally
 		}
@@ -702,10 +700,10 @@ pub(crate) fn prepare_for_render(events: &[OwnedEvent]) -> Vec<Event<'_>> {
 					info.has_checkbox = true;
 				},
 			OwnedEvent::End(OwnedTagEnd::List(_)) =>
-				if let Some(info) = list_stack.pop() {
-					if info.has_checkbox {
-						checkbox_lists.push((info.start_idx, i));
-					}
+				if let Some(info) = list_stack.pop()
+					&& info.has_checkbox
+				{
+					checkbox_lists.push((info.start_idx, i));
 				},
 			_ => {}
 		}

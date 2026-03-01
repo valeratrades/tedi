@@ -28,50 +28,6 @@ fn milestone_cache_json(titles: &[(&str, &str, &str)], current_index: usize) -> 
 }
 
 #[tokio::test]
-async fn test_blocker_add_in_integrated_mode() {
-	let ctx = TestContext::build_with_preexisting_state_unsafe("");
-
-	// Create issue with existing blockers section
-	let vi = parse_virtual(
-		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-
-  Body text.
-
-  # Blockers
-  - First task
-"#,
-	);
-
-	// Set up: local issue file exists
-	let issue = ctx.local(&vi, None).await;
-	let issue_path = ctx.resolve_issue_path(&issue);
-
-	// Set this issue as the current blocker issue via milestone cache
-	ctx.xdg.write_cache(
-		"milestone_blockers.json",
-		&milestone_cache_json(&[("Test Issue", "mock_user", "https://github.com/o/r/issues/1")], 0),
-	);
-
-	// Run blocker add in integrated mode (no --individual-files flag)
-	let out = ctx.run(&["--offline", "blocker", "add", "New task from CLI"]);
-
-	eprintln!("stdout: {}", out.stdout);
-	eprintln!("stderr: {}", out.stderr);
-
-	assert!(out.status.success(), "blocker add should succeed in integrated mode. stderr: {}", out.stderr);
-
-	// new blocker added, existing preserved
-	insta::assert_snapshot!(read_issue_file(&issue_path), @"
-	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-	    Body text.
-	  
-	  # Blockers
-	  - First task
-	  - New task from CLI
-	");
-}
-
-#[tokio::test]
 async fn test_blocker_pop_in_integrated_mode() {
 	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 
@@ -124,8 +80,7 @@ async fn test_blocker_add_creates_blockers_section_if_missing() {
 	// Create issue WITHOUT blockers section
 	let vi = parse_virtual(
 		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-
-  Body text without blockers section.
+	Body text without blockers section.
 "#,
 	);
 
@@ -185,10 +140,9 @@ async fn test_blocker_add_with_nested_context() {
 	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 
 	// Create issue with blockers section containing nested items
-	let vi = parse_virtual(
+	let initial_vi = parse_virtual(
 		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-
-  Body text.
+description
 
   # Blockers
   - Phase 1

@@ -66,11 +66,11 @@ impl MilestoneDoc {
 
 	fn normalize_lists(&mut self) {
 		for section in &mut self.sections {
-			if let MilestoneSection::List(list) = section {
-				if list.normalize_item_types() {
-					let kind = if list.is_checkbox_list() { "checkbox (- [..])" } else { "plain (- )" };
-					eprintln!("warning: mixed list item types detected; normalized to {kind} (determined by first element)");
-				}
+			if let MilestoneSection::List(list) = section
+				&& list.normalize_item_types()
+			{
+				let kind = if list.is_checkbox_list() { "checkbox (- [..])" } else { "plain (- )" };
+				eprintln!("warning: mixed list item types detected; normalized to {kind} (determined by first element)");
 			}
 		}
 	}
@@ -425,10 +425,11 @@ fn classify_inline_events(events: Vec<OwnedEvent>) -> ItemContent {
 	let trimmed = full_text.trim();
 
 	// Case 2: Single word, no spaces → might be shorthand ref or bare URL
-	if !trimmed.is_empty() && !trimmed.contains(' ') {
-		if let Some(issue_ref) = super::issue_ref::IssueRef::parse_word(trimmed) {
-			return ItemContent::Ref(issue_ref);
-		}
+	if !trimmed.is_empty()
+		&& !trimmed.contains(' ')
+		&& let Some(issue_ref) = super::issue_ref::IssueRef::parse_word(trimmed)
+	{
+		return ItemContent::Ref(issue_ref);
 	}
 
 	// Case 3: plain text
@@ -451,10 +452,10 @@ fn resolve_section(section: &mut MilestoneSection, parent_context: Option<&str>)
 			};
 
 			// Resolve this item if it's a ref with missing owner/repo
-			if let ItemContent::Ref(issue_ref) = &mut item.content {
-				if let Some(ctx) = parent_context {
-					issue_ref.resolve_with_context(ctx);
-				}
+			if let ItemContent::Ref(issue_ref) = &mut item.content
+				&& let Some(ctx) = parent_context
+			{
+				issue_ref.resolve_with_context(ctx);
 			}
 
 			// Recurse into children with this item's context
