@@ -12,6 +12,12 @@ use crate::common::{
 /// Build a MilestoneBlockerCache JSON from embedded issue title lines.
 /// `titles` is a list of `(title, user, url)` tuples.
 fn milestone_cache_json(titles: &[(&str, &str, &str)], current_index: usize) -> String {
+	milestone_cache_json_with_refs(titles, current_index, &[])
+}
+
+/// Build a MilestoneBlockerCache JSON with ref_targets annotations.
+/// `ref_targets` is a list of `(source_url, target_url)` tuples.
+fn milestone_cache_json_with_refs(titles: &[(&str, &str, &str)], current_index: usize, ref_targets: &[(&str, &str)]) -> String {
 	let description: String = titles
 		.iter()
 		.enumerate()
@@ -20,9 +26,14 @@ fn milestone_cache_json(titles: &[(&str, &str, &str)], current_index: usize) -> 
 			format!("- [ ] {title} <!-- @{user} {url} -->{sep}")
 		})
 		.collect();
+	let refs: serde_json::Map<String, serde_json::Value> = ref_targets
+		.iter()
+		.map(|(src, tgt)| (src.to_string(), serde_json::Value::String(tgt.to_string())))
+		.collect();
 	serde_json::json!({
 		"current_index": current_index,
-		"milestone_description": description
+		"milestone_description": description,
+		"ref_targets": refs
 	})
 	.to_string()
 }
@@ -391,4 +402,106 @@ async fn test_blocker_add_works_after_move() {
 	  # Blockers
 	  - task A
 	");
+}
+
+#[tokio::test]
+async fn test_blocker_move_skips_ref_annotated_issues() {
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+
+	// Create three issues: A (real task), B (delegates to C via ref), C (real task)
+	let vi1 = parse_virtual(
+		r#"- [ ] Issue A <!-- @mock_user https://github.com/o/r/issues/1 -->
+
+  # Blockers
+  - task A
+"#,
+	);
+	let vi2 = parse_virtual(
+		r#"- [ ] Issue B <!-- @mock_user https://github.com/o/r/issues/2 -->
+
+  # Blockers
+  - o/r#3
+"#,
+	);
+	let vi3 = parse_virtual(
+		r#"- [ ] Issue C <!-- @mock_user https://github.com/o/r/issues/3 -->
+
+  # Blockers
+  - task C
+"#,
+	);
+
+	ctx.local(&vi1, None).await;
+	ctx.local(&vi2, None).await;
+	ctx.local(&vi3, None).await;
+
+	// Set up milestone cache with ref_targets: B points at C
+	ctx.xdg.write_cache(
+		"milestone_blockers.json",
+		&milestone_cache_json_with_refs(
+			&[
+				("Issue A", "mock_user", "https://github.com/o/r/issues/1"),
+				("Issue B", "mock_user", "https://github.com/o/r/issues/2"),
+				("Issue C", "mock_user", "https://github.com/o/r/issues/3"),
+			],
+			0,
+			&[("https://github.com/o/r/issues/2", "https://github.com/o/r/issues/3")],
+		),
+	);
+
+	// Starting at A (index 0), move up should skip B (ref-annotated) and land on C
+	let out = ctx.run(&["--offline", "blocker", "move", "up"]);
+	assert!(out.status.success(), "move up should succeed. stderr: {}", out.stderr);
+
+	let out = ctx.run(&["--offline", "blocker", "current"]);
+	assert!(out.stdout.contains("task C"), "Should skip B and land on C. stdout: {}", out.stdout);
+}
+
+#[tokio::test]
+async fn test_blocker_move_all_refs_errors() {
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+
+	// Create two issues, both with ref blockers
+	let vi1 = parse_virtual(
+		r#"- [ ] Issue A <!-- @mock_user https://github.com/o/r/issues/1 -->
+
+  # Blockers
+  - o/r#2
+"#,
+	);
+	let vi2 = parse_virtual(
+		r#"- [ ] Issue B <!-- @mock_user https://github.com/o/r/issues/2 -->
+
+  # Blockers
+  - o/r#1
+"#,
+	);
+
+	ctx.local(&vi1, None).await;
+	ctx.local(&vi2, None).await;
+
+	// Both issues are ref-annotated
+	ctx.xdg.write_cache(
+		"milestone_blockers.json",
+		&milestone_cache_json_with_refs(
+			&[
+				("Issue A", "mock_user", "https://github.com/o/r/issues/1"),
+				("Issue B", "mock_user", "https://github.com/o/r/issues/2"),
+			],
+			0,
+			&[
+				("https://github.com/o/r/issues/1", "https://github.com/o/r/issues/2"),
+				("https://github.com/o/r/issues/2", "https://github.com/o/r/issues/1"),
+			],
+		),
+	);
+
+	// Move should error: all issues have refs
+	let out = ctx.run(&["--offline", "blocker", "move", "up"]);
+	assert!(!out.status.success(), "move should fail when all issues have refs. stdout: {}", out.stdout);
+	assert!(
+		out.stderr.contains("All issues") || out.stderr.contains("Nothing to stop at"),
+		"error should mention all refs. stderr: {}",
+		out.stderr
+	);
 }

@@ -52,7 +52,7 @@ impl BlockerSequenceExt for BlockerSequence {
 	}
 
 	fn current_issue_ref(&self) -> Option<IssueRef> {
-		deepest_issue_ref_on_path(&self.items)
+		self.deepest_issue_ref()
 	}
 
 	fn add(&mut self, text: &str) {
@@ -77,17 +77,6 @@ impl BlockerSequenceExt for BlockerSequence {
 	fn pop(&mut self) -> Option<String> {
 		pop_last(&mut self.items).map(|item| item.text)
 	}
-}
-
-/// Walk the path to the current (deepest) item, returning the deepest issue ref found.
-fn deepest_issue_ref_on_path(items: &[BlockerItem]) -> Option<IssueRef> {
-	let last = items.last()?;
-	let mine = last.issue_ref();
-	if last.children.is_empty() {
-		return mine;
-	}
-	// Recurse into children; deepest wins, fall back to ours
-	deepest_issue_ref_on_path(&last.children).or(mine)
 }
 
 /// Get the last item in a list of items (depth-first, rightmost)
