@@ -126,6 +126,7 @@ pub async fn main_integrated(command: super::io::Command, offline: bool) -> Resu
 	match command {
 		Command::Move(sub) => {
 			use super::io::MoveCommand;
+			let description_before = get_current_blocker_description(false);
 			let result = match sub {
 				MoveCommand::Up => MilestoneBlockerCache::move_by(1),
 				MoveCommand::Down => MilestoneBlockerCache::move_by(-1),
@@ -138,9 +139,16 @@ pub async fn main_integrated(command: super::io::Command, offline: bool) -> Resu
 					let source = BlockerIssueSource::build(path)?;
 					println!("Moved to: {}", source.display_name());
 
-					let blockers = source.load()?;
-					if let Some(current) = blockers.current_with_context(&[]) {
-						println!("Current: {current}");
+					// Post-update: follow refs then update clockify
+					post_update(description_before, false).await?;
+
+					// Show current after ref-following (may have changed)
+					if let Some(source) = BlockerIssueSource::current() {
+						if let Ok(blockers) = source.load() {
+							if let Some(current) = blockers.current_with_context(&[]) {
+								println!("Current: {current}");
+							}
+						}
 					}
 				}
 				Err(msg) => {
@@ -512,7 +520,7 @@ fn follow_blocker_refs(is_urgent: bool, mut visited: Vec<IssueLink>) -> Result<(
 	// Cycle detection
 	if visited.iter().any(|v| v.number() == link.number() && v.owner() == link.owner() && v.repo() == link.repo()) {
 		let cycle: Vec<String> = visited.iter().map(|l| format!("{}/{}#{}", l.owner(), l.repo(), l.number())).collect();
-		bail!("Blocker reference cycle detected: {} → {}", cycle.join(" → "), issue_ref);
+		bail!("Blocker reference cycle detected: {} → {issue_ref}", cycle.join(" → "));
 	}
 
 	let Some(path) = MilestoneBlockerCache::resolve_link_to_path(&link) else {
