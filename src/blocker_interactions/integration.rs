@@ -318,6 +318,18 @@ pub async fn main_integrated(command: super::io::Command, offline: bool) -> Resu
 				println!("Current: {new_current}");
 			} else {
 				println!("Blockers section is now empty.");
+
+				// Dead-ref cascade: pop refs pointing at this now-empty issue
+				if let Some(mut cache) = MilestoneBlockerCache::load() {
+					let empty_link = cache.current_link();
+					if let Some(empty_link) = empty_link {
+						let cleaned = cache.cleanup_dead_refs(empty_link.as_str());
+						for issue_ref in &cleaned {
+							println!("Cleaned dead ref from {issue_ref}");
+						}
+						let _ = cache.save();
+					}
+				}
 			}
 		}
 
@@ -478,6 +490,13 @@ fn get_current_blocker_description(fully_qualified: bool) -> Option<String> {
 /// `is_urgent`: if true, error out when a blocker references an issue (urgent can't reference).
 async fn post_update(description_before: Option<String>, is_urgent: bool) -> Result<()> {
 	follow_blocker_refs(is_urgent, Vec::new())?;
+
+	// Refresh ref annotations in the cache
+	if let Some(mut cache) = MilestoneBlockerCache::load() {
+		cache.refresh_ref_targets();
+		let _ = cache.save();
+	}
+
 	update_clockify_tracking(description_before).await;
 	Ok(())
 }
