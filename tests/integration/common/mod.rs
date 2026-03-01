@@ -543,7 +543,7 @@ impl<'a> OpenBuilder<'a> {
 				if let Some(EditOperation::FullIssue(virtual_issue)) = &edit_op {
 					let issue = with_timestamps(virtual_issue, None, is_virtual);
 					let vpath = tedi::local::Local::virtual_edit_path(&issue);
-					let content: String = issue.serialize_virtual().into();
+					let content = issue.serialize_virtual();
 					eprintln!("[test:OpenBuilder] submitting user input // writing to {vpath:?}:\n{content}");
 					std::fs::write(&vpath, &content).unwrap();
 				}

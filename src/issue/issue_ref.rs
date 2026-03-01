@@ -91,10 +91,11 @@ impl IssueRef {
 				*owner = Some(resolved_owner);
 				*repo = Some(resolved_repo);
 			}
-			if owner.is_none() && repo.is_some() {
-				if let Some(user) = crate::current_user::get() {
-					*owner = Some(user);
-				}
+			if owner.is_none()
+				&& repo.is_some()
+				&& let Some(user) = crate::current_user::get()
+			{
+				*owner = Some(user);
 			}
 		}
 	}

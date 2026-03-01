@@ -143,12 +143,11 @@ pub async fn main_integrated(command: super::io::Command, offline: bool) -> Resu
 					post_update(description_before, false).await?;
 
 					// Show current after ref-following (may have changed)
-					if let Some(source) = BlockerIssueSource::current() {
-						if let Ok(blockers) = source.load() {
-							if let Some(current) = blockers.current_with_context(&[]) {
-								println!("Current: {current}");
-							}
-						}
+					if let Some(source) = BlockerIssueSource::current()
+						&& let Ok(blockers) = source.load()
+						&& let Some(current) = blockers.current_with_context(&[])
+					{
+						println!("Current: {current}");
 					}
 				}
 				Err(msg) => {
