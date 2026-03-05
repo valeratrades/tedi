@@ -9,15 +9,6 @@ use color_eyre::eyre::Result;
 
 use super::clockify::{HaltArgs, ResumeArgs};
 
-pub async fn main(args: BlockerArgs, offline: bool) -> Result<()> {
-	super::integration::main_integrated(args.command, offline).await
-}
-#[derive(Args, Clone, Debug)]
-pub struct BlockerArgs {
-	#[command(subcommand)]
-	pub command: Command,
-}
-
 #[derive(Clone, Debug, Subcommand)]
 pub enum Command {
 	/// Append a blocker
@@ -63,7 +54,6 @@ pub enum Command {
 	/// Show the current clockify project name (repo/title)
 	CurrentProject,
 }
-
 #[derive(Clone, Debug, Subcommand)]
 pub enum MoveCommand {
 	/// Move to the next issue in the rotation (circular)
@@ -72,4 +62,12 @@ pub enum MoveCommand {
 	Down,
 	/// Jump to the first issue matching a pattern (case-insensitive substring on display path)
 	To { pattern: String },
+}
+#[derive(Args, Clone, Debug)]
+pub struct BlockerArgs {
+	#[command(subcommand)]
+	pub command: Command,
+}
+pub async fn main(args: BlockerArgs, offline: bool) -> Result<()> {
+	super::integration::main_integrated(args.command, offline).await
 }

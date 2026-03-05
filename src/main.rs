@@ -14,6 +14,47 @@ pub enum MockType {
 	/// Ghost edit - skip editor and pretend edit was made.
 	GhostEdit,
 }
+#[derive(clap::Parser)]
+#[command(author, version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("GIT_HASH"), ")"), about, long_about = None)]
+struct Cli {
+	#[command(subcommand)]
+	command: Commands,
+	#[clap(flatten)]
+	settings_flags: config::SettingsFlags,
+	/// Use mock Github client. Optionally specify mock behavior.
+	#[arg(long, global = true, hide = true, num_args = 0..=1, require_equals = true, default_missing_value = "")]
+	mock: Option<MockType>,
+	/// Skip all network operations - edit locally only, don't sync to Github.
+	/// Automatically enabled for virtual projects (projects without Github remote).
+	#[arg(long, global = true)]
+	offline: bool,
+	/// Log to a specific file (filename only, no path). Logs go to ~/.local/state/tedi/{filename}.log
+	#[arg(long, global = true)]
+	log_to: Option<String>,
+}
+#[derive(clap::Subcommand)]
+enum Commands {
+	/// Record day's ev and other stats.
+	///Following records ev of 420 for yesterday, then opens the file.
+	///```rust
+	///todo manual -d1 --ev 420 -o
+	///```
+	Manual(manual_stats::ManualArgs),
+	/// Operations with milestones (1d, 1w, 1M, 1Q, 1y)
+	Milestones(milestones::MilestonesArgs),
+	/// Shell aliases and hooks. Usage: `todos init <shell> | source`
+	Init(shell_init::ShellInitArgs),
+	/// Blockers tree (use --integrated flag for issue files)
+	Blocker(blocker_interactions::BlockerArgs),
+	/// Clockify time tracking
+	Clockify(blocker_interactions::clockify::ClockifyArgs),
+	/// Performance evaluation with screenshots
+	PerfEval(perf_eval::PerfEvalArgs),
+	/// Watch monitors daemon - takes screenshots every 60s
+	WatchMonitors(watch_monitors::WatchMonitorsArgs),
+	/// Open a Github issue in $EDITOR
+	Open(open_interactions::OpenArgs),
+}
 #[tokio::main]
 async fn main() {
 	v_utils::clientside!(extract_log_to());
@@ -85,49 +126,6 @@ use std::time::Duration;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use v_utils::utils::exit_on_error;
-
-#[derive(Parser)]
-#[command(author, version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("GIT_HASH"), ")"), about, long_about = None)]
-struct Cli {
-	#[command(subcommand)]
-	command: Commands,
-	#[clap(flatten)]
-	settings_flags: config::SettingsFlags,
-	/// Use mock Github client. Optionally specify mock behavior.
-	#[arg(long, global = true, hide = true, num_args = 0..=1, require_equals = true, default_missing_value = "")]
-	mock: Option<MockType>,
-	/// Skip all network operations - edit locally only, don't sync to Github.
-	/// Automatically enabled for virtual projects (projects without Github remote).
-	#[arg(long, global = true)]
-	offline: bool,
-	/// Log to a specific file (filename only, no path). Logs go to ~/.local/state/tedi/{filename}.log
-	#[arg(long, global = true)]
-	log_to: Option<String>,
-}
-
-#[derive(Subcommand)]
-enum Commands {
-	/// Record day's ev and other stats.
-	///Following records ev of 420 for yesterday, then opens the file.
-	///```rust
-	///todo manual -d1 --ev 420 -o
-	///```
-	Manual(manual_stats::ManualArgs),
-	/// Operations with milestones (1d, 1w, 1M, 1Q, 1y)
-	Milestones(milestones::MilestonesArgs),
-	/// Shell aliases and hooks. Usage: `todos init <shell> | source`
-	Init(shell_init::ShellInitArgs),
-	/// Blockers tree (use --integrated flag for issue files)
-	Blocker(blocker_interactions::BlockerArgs),
-	/// Clockify time tracking
-	Clockify(blocker_interactions::clockify::ClockifyArgs),
-	/// Performance evaluation with screenshots
-	PerfEval(perf_eval::PerfEvalArgs),
-	/// Watch monitors daemon - takes screenshots every 60s
-	WatchMonitors(watch_monitors::WatchMonitorsArgs),
-	/// Open a Github issue in $EDITOR
-	Open(open_interactions::OpenArgs),
-}
 
 /// Extract --log-to value from args before full CLI parsing (needed for early logging init)
 fn extract_log_to() -> Option<String> {

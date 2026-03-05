@@ -7,6 +7,8 @@ use libwayshot::WayshotConnection;
 
 use crate::config::LiveSettings;
 
+#[derive(Args, Debug)]
+pub struct WatchMonitorsArgs {}
 pub fn main(_settings: &LiveSettings, _args: WatchMonitorsArgs) -> Result<()> {
 	let cache_dir = v_utils::xdg_cache_dir!("watch_monitors");
 
@@ -68,8 +70,6 @@ pub fn main(_settings: &LiveSettings, _args: WatchMonitorsArgs) -> Result<()> {
 		thread::sleep(Duration::from_secs(60));
 	}
 }
-#[derive(Args, Debug)]
-pub struct WatchMonitorsArgs {}
 
 fn save_screenshot_png(image_buffer: &image::DynamicImage, path: &std::path::Path) -> Result<()> {
 	let rgba = image_buffer.to_rgba8();

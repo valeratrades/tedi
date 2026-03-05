@@ -13,16 +13,7 @@ use v_utils::prelude::*;
 
 use crate::config::LiveSettings;
 
-pub static HEALTHCHECK_REL_PATH: &str = "healthcheck.status";
-pub static SPRINT_HEADER_REL_PATH: &str = "sprint_header.md";
-
-#[derive(Args)]
-pub struct MilestonesArgs {
-	#[command(subcommand)]
-	command: MilestonesCommands,
-}
-
-#[derive(Subcommand)]
+#[derive(clap::Subcommand)]
 pub enum MilestonesCommands {
 	Get {
 		tf: Timeframe,
@@ -37,6 +28,13 @@ pub enum MilestonesCommands {
 	/// Can get outdated easily, so printed output of the command is prepended with the filename
 	Healthcheck,
 }
+#[derive(Args)]
+pub struct MilestonesArgs {
+	#[command(subcommand)]
+	command: MilestonesCommands,
+}
+pub static HEALTHCHECK_REL_PATH: &str = "healthcheck.status";
+pub static SPRINT_HEADER_REL_PATH: &str = "sprint_header.md";
 
 pub async fn milestones_command(settings: &LiveSettings, args: MilestonesArgs, mock: Option<crate::MockType>) -> Result<()> {
 	match args.command {

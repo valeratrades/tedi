@@ -14,6 +14,79 @@ use v_utils::{Percent, io::file_open::OpenMode, time::Timelike};
 
 use crate::utils;
 
+#[derive(clap::Subcommand)]
+pub enum ManualSubcommands {
+	/// All evokations will be considered as updates in the `last-ev-update` command, even if we write exact same values.
+	Ev(EvArgs),
+	Open(OpenArgs),
+	PrintEv(PrintArgs),
+	/// Full hours since last update
+	LastEvUpdateHours(LastEvUpdateArgs),
+	CounterStep(CounterStepArgs),
+	/// Compare today's ev against previous days (youtube-style ranking)
+	Relative(RelativeArgs),
+}
+#[derive(Args)]
+pub struct ManualArgs {
+	#[arg(short, long, default_value = "0")]
+	pub days_back: usize,
+	#[command(subcommand)]
+	pub command: ManualSubcommands,
+}
+#[derive(Args)]
+pub struct EvArgs {
+	#[arg(allow_hyphen_values = true)]
+	pub ev: i32,
+	#[arg(short, long)]
+	pub open: bool,
+	#[arg(short, long)]
+	pub change: bool,
+	#[arg(short, long, default_value = "true")]
+	pub replace: bool,
+}
+impl EvArgs {
+	//? This seems ugly. There has to be a way to do this natively with clap, specifically with the `conflicts_with` attribute
+	fn validate(&self) -> Result<Self> {
+		let replace = match self.change {
+			true => false,
+			false => self.replace,
+		};
+		if !self.change && !self.replace {
+			bail!("Exactly one of {{'change', 'replace'}} must be specified.");
+		}
+		Ok(Self {
+			ev: self.ev,
+			open: self.open,
+			change: self.change,
+			replace,
+		})
+	}
+}
+
+#[derive(Args)]
+pub struct OpenArgs {
+	#[arg(short, long)]
+	pub pbs: bool,
+}
+#[derive(Args)]
+pub struct PrintArgs;
+#[derive(Args)]
+pub struct LastEvUpdateArgs;
+#[derive(Args, Clone, Copy, Debug, Default, Deserialize, Serialize, derive_new::new)]
+pub struct CounterStepArgs {
+	/// Counter specifically for cargo_watch recompiles, as the metric is incocmpatible with workflow of other languages.
+	#[arg(long)]
+	pub cargo_watch: bool,
+	/// Counter of dev test runs of a code in any language.
+	#[arg(long)]
+	pub dev_runs: bool,
+}
+#[derive(Args)]
+pub struct RelativeArgs {
+	/// Number of days to compare against (including today)
+	#[arg(default_value = "10")]
+	pub n: usize,
+}
 pub async fn update_or_open(settings: &crate::config::LiveSettings, args: ManualArgs) -> Result<()> {
 	let date = utils::format_date(args.days_back, settings);
 
@@ -119,79 +192,6 @@ pub async fn update_or_open(settings: &crate::config::LiveSettings, args: Manual
 	}
 
 	Ok(())
-}
-#[derive(Args)]
-pub struct ManualArgs {
-	#[arg(short, long, default_value = "0")]
-	pub days_back: usize,
-	#[command(subcommand)]
-	pub command: ManualSubcommands,
-}
-#[derive(Subcommand)]
-pub enum ManualSubcommands {
-	/// All evokations will be considered as updates in the `last-ev-update` command, even if we write exact same values.
-	Ev(EvArgs),
-	Open(OpenArgs),
-	PrintEv(PrintArgs),
-	/// Full hours since last update
-	LastEvUpdateHours(LastEvUpdateArgs),
-	CounterStep(CounterStepArgs),
-	/// Compare today's ev against previous days (youtube-style ranking)
-	Relative(RelativeArgs),
-}
-#[derive(Args)]
-pub struct EvArgs {
-	#[arg(allow_hyphen_values = true)]
-	pub ev: i32,
-	#[arg(short, long)]
-	pub open: bool,
-	#[arg(short, long)]
-	pub change: bool,
-	#[arg(short, long, default_value = "true")]
-	pub replace: bool,
-}
-impl EvArgs {
-	//? This seems ugly. There has to be a way to do this natively with clap, specifically with the `conflicts_with` attribute
-	fn validate(&self) -> Result<Self> {
-		let replace = match self.change {
-			true => false,
-			false => self.replace,
-		};
-		if !self.change && !self.replace {
-			bail!("Exactly one of {{'change', 'replace'}} must be specified.");
-		}
-		Ok(Self {
-			ev: self.ev,
-			open: self.open,
-			change: self.change,
-			replace,
-		})
-	}
-}
-
-#[derive(Args)]
-pub struct OpenArgs {
-	#[arg(short, long)]
-	pub pbs: bool,
-}
-#[derive(Args)]
-pub struct PrintArgs;
-#[derive(Args)]
-pub struct LastEvUpdateArgs;
-#[derive(Args, Clone, Copy, Debug, Default, Deserialize, Serialize, derive_new::new)]
-pub struct CounterStepArgs {
-	/// Counter specifically for cargo_watch recompiles, as the metric is incocmpatible with workflow of other languages.
-	#[arg(long)]
-	pub cargo_watch: bool,
-	/// Counter of dev test runs of a code in any language.
-	#[arg(long)]
-	pub dev_runs: bool,
-}
-#[derive(Args)]
-pub struct RelativeArgs {
-	/// Number of days to compare against (including today)
-	#[arg(default_value = "10")]
-	pub n: usize,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]

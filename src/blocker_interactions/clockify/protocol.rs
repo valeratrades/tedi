@@ -6,6 +6,59 @@ use jiff::Timestamp;
 use reqwest::header::{HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};
 
+#[derive(Clone, Debug, Parser)]
+pub struct StartArgs {
+	/// Description for the time entry
+	pub description: String,
+
+	/// Workspace ID or name (if omitted, use the user's active workspace)
+	#[arg(short = 'w', long)]
+	pub workspace: Option<String>,
+
+	/// Project ID or name (name will be resolved if no exact ID match found)
+	#[arg(short = 'p', long)]
+	pub project: Option<String>,
+
+	/// Task ID or name (requires --project; name will be resolved)
+	#[arg(short = 't', long)]
+	pub task: Option<String>,
+
+	/// Comma-separated tag IDs or names (names will be resolved)
+	#[arg(short = 'g', long)]
+	pub tags: Option<String>,
+
+	/// Mark entry as billable
+	#[arg(short = 'b', long, default_value_t = false)]
+	pub billable: bool,
+}
+#[derive(Clone, Debug, Parser)]
+pub struct StopArgs {
+	/// Workspace ID or name (if omitted, use the user's active workspace)
+	#[arg(short = 'w', long)]
+	pub workspace: Option<String>,
+}
+#[derive(Clone, Debug, Parser)]
+pub struct ListProjectsArgs {
+	/// Workspace ID or name (if omitted, use the user's active workspace)
+	#[arg(short = 'w', long)]
+	pub workspace: Option<String>,
+}
+#[derive(Clone, Debug, Subcommand)]
+pub enum Command {
+	/// Start a new time entry
+	Start(StartArgs),
+	/// Stop the currently running time entry
+	Stop(StopArgs),
+	/// List workspaces
+	ListWorkspaces,
+	/// List projects in a workspace
+	ListProjects(ListProjectsArgs),
+}
+#[derive(Args, Clone, Debug)]
+pub struct ClockifyArgs {
+	#[command(subcommand)]
+	command: Command,
+}
 pub async fn main(_settings: &crate::config::LiveSettings, args: ClockifyArgs) -> Result<()> {
 	match args.command {
 		Command::ListWorkspaces => {
@@ -89,59 +142,6 @@ pub async fn main(_settings: &crate::config::LiveSettings, args: ClockifyArgs) -
 	}
 
 	Ok(())
-}
-#[derive(Args, Clone, Debug)]
-pub struct ClockifyArgs {
-	#[command(subcommand)]
-	command: Command,
-}
-#[derive(Clone, Debug, Subcommand)]
-pub enum Command {
-	/// Start a new time entry
-	Start(StartArgs),
-	/// Stop the currently running time entry
-	Stop(StopArgs),
-	/// List workspaces
-	ListWorkspaces,
-	/// List projects in a workspace
-	ListProjects(ListProjectsArgs),
-}
-#[derive(Clone, Debug, Parser)]
-pub struct StartArgs {
-	/// Description for the time entry
-	pub description: String,
-
-	/// Workspace ID or name (if omitted, use the user's active workspace)
-	#[arg(short = 'w', long)]
-	pub workspace: Option<String>,
-
-	/// Project ID or name (name will be resolved if no exact ID match found)
-	#[arg(short = 'p', long)]
-	pub project: Option<String>,
-
-	/// Task ID or name (requires --project; name will be resolved)
-	#[arg(short = 't', long)]
-	pub task: Option<String>,
-
-	/// Comma-separated tag IDs or names (names will be resolved)
-	#[arg(short = 'g', long)]
-	pub tags: Option<String>,
-
-	/// Mark entry as billable
-	#[arg(short = 'b', long, default_value_t = false)]
-	pub billable: bool,
-}
-#[derive(Clone, Debug, Parser)]
-pub struct StopArgs {
-	/// Workspace ID or name (if omitted, use the user's active workspace)
-	#[arg(short = 'w', long)]
-	pub workspace: Option<String>,
-}
-#[derive(Clone, Debug, Parser)]
-pub struct ListProjectsArgs {
-	/// Workspace ID or name (if omitted, use the user's active workspace)
-	#[arg(short = 'w', long)]
-	pub workspace: Option<String>,
 }
 pub async fn start_time_entry_with_defaults(workspace: Option<&str>, project: Option<&str>, description: String, task: Option<&str>, tags: Option<&str>, billable: bool) -> Result<()> {
 	let api_key = env::var("CLOCKIFY_API_KEY").wrap_err("Set CLOCKIFY_API_KEY in your environment with a valid API token")?;

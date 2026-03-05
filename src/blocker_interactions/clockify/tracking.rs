@@ -10,10 +10,6 @@ use serde::{Deserialize, Serialize};
 
 use super::protocol;
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-pub struct WorkspaceSettings {
-	pub fully_qualified: bool,
-}
 #[derive(Clone, Debug, Default, Parser)]
 pub struct ResumeArgs {
 	/// Workspace ID or name (if omitted, use the user's active workspace)
@@ -41,6 +37,10 @@ pub struct HaltArgs {
 	/// Workspace ID or name (if omitted, use the user's active workspace)
 	#[arg(short = 'w', long)]
 	pub workspace: Option<String>,
+}
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct WorkspaceSettings {
+	pub fully_qualified: bool,
 }
 /// Check if blocker tracking is enabled
 pub fn is_tracking_enabled() -> bool {
