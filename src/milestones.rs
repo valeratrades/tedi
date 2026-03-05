@@ -3,8 +3,11 @@ use jiff::Timestamp;
 use reqwest::Client;
 use tedi::{
 	Issue, IssueLink, LazyIssue, MilestoneBlockerCache, MilestoneDoc,
-	local::{FsReader, Local, LocalIssueSource},
-	parse_blockers_from_embedded, serialize_blockers_view,
+	local::{Consensus, FsReader, Local, LocalFs, LocalIssueSource},
+	parse_blockers_from_embedded,
+	remote::RemoteSource,
+	serialize_blockers_view,
+	sink::Sink,
 };
 use v_utils::prelude::*;
 
@@ -450,6 +453,15 @@ async fn load_local_issue(link: &IssueLink) -> Result<Issue> {
 	Issue::load(local_source).await.map_err(Into::into)
 }
 
+/// Fetch an issue from GitHub and store it locally (filesystem + consensus).
+async fn fetch_and_store_remote_issue(link: &IssueLink) -> Result<Issue> {
+	let source = RemoteSource::build(link.clone(), None)?;
+	let mut issue = Issue::load(source).await?;
+	<Issue as Sink<LocalFs>>::sink(&mut issue, None).await?;
+	<Issue as Sink<Consensus>>::sink(&mut issue, None).await?;
+	Ok(issue)
+}
+
 /// Expand shorthand refs and refresh all embedded issue sections from local state.
 ///
 /// Parses the content into a MilestoneDoc, resolves bare refs, then for each
@@ -467,15 +479,18 @@ async fn expand_and_refresh(content: &str) -> Result<String> {
 		if expansions.contains_key(&link.number()) {
 			continue;
 		}
-		match load_local_issue(link).await {
-			Ok(issue) => {
-				let view = serialize_blockers_view(&issue);
-				expansions.insert(link.number(), view);
-			}
-			Err(e) => {
-				eprintln!("Warning: failed to expand {}/{}/#{}: {e}", link.owner(), link.repo(), link.number());
-			}
-		}
+		let issue = match load_local_issue(link).await {
+			Ok(issue) => issue,
+			Err(_) => match fetch_and_store_remote_issue(link).await {
+				Ok(issue) => issue,
+				Err(e) => {
+					eprintln!("Warning: failed to expand {}/{}/#{}: {e}", link.owner(), link.repo(), link.number());
+					continue;
+				}
+			},
+		};
+		let view = serialize_blockers_view(&issue);
+		expansions.insert(link.number(), view);
 	}
 
 	doc.expand_with(&expansions);
