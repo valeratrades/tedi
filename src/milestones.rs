@@ -1,4 +1,4 @@
-use clap::{Args, Subcommand};
+use clap::Args;
 use jiff::Timestamp;
 use reqwest::Client;
 use tedi::{

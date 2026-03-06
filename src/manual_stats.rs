@@ -7,7 +7,7 @@ use std::{
 	path::{Path, PathBuf},
 };
 
-use clap::{Args, Subcommand};
+use clap::Args;
 use color_eyre::eyre::{Result, bail, ensure};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use v_utils::{Percent, io::file_open::OpenMode, time::Timelike};

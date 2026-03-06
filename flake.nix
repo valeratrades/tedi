@@ -115,17 +115,17 @@
         }
       )
     // {
-      homeManagerModules."watch-monitors" = { config, lib, pkgs, ... }:
+      homeManagerModules."monitors-watch" = { config, lib, pkgs, ... }:
         let
           inherit (lib) mkEnableOption mkOption mkIf;
           inherit (lib.types) package;
-          cfg = config.services.todo-watch-monitors;
+          cfg = config.services.todo-monitors-watch;
           manifest = (lib.importTOML ./Cargo.toml).package;
           pname = manifest.name;
         in
         {
-          options.services.todo-watch-monitors = {
-            enable = mkEnableOption "todo watch-monitors daemon";
+          options.services.todo-monitors-watch = {
+            enable = mkEnableOption "todo monitors watch daemon";
 
             package = mkOption {
               type = package;
@@ -135,9 +135,9 @@
           };
 
           config = mkIf cfg.enable {
-            systemd.user.services.todo-watch-monitors = {
+            systemd.user.services.todo-monitors-watch = {
               Unit = {
-                Description = "todo watch-monitors daemon - periodic screenshot capture";
+                Description = "todo monitors watch daemon - periodic screenshot capture";
                 After = [ "graphical-session.target" ];
               };
 
@@ -147,7 +147,7 @@
 
               Service = {
                 Type = "simple";
-                ExecStart = "${cfg.package}/bin/${pname} watch-monitors";
+                ExecStart = "${cfg.package}/bin/${pname} monitors watch";
                 Restart = "on-failure";
                 RestartSec = "10s";
               };

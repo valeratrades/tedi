@@ -50,8 +50,8 @@ enum Commands {
 	Clockify(blocker_interactions::clockify::ClockifyArgs),
 	/// Performance evaluation with screenshots
 	PerfEval(perf_eval::PerfEvalArgs),
-	/// Watch monitors daemon - takes screenshots every 60s
-	WatchMonitors(watch_monitors::WatchMonitorsArgs),
+	/// Monitor screenshots: watch daemon and annotation
+	Monitors(watch_monitors::MonitorsArgs),
 	/// Open a Github issue in $EDITOR
 	Open(open_interactions::OpenArgs),
 }
@@ -110,7 +110,7 @@ async fn main() {
 		Commands::Blocker(args) => blocker_interactions::main(args, cli.offline).await,
 		Commands::Clockify(args) => blocker_interactions::clockify::clockify_main(&settings, args).await,
 		Commands::PerfEval(args) => perf_eval::main(&settings, args).await,
-		Commands::WatchMonitors(args) => watch_monitors::main(&settings, args),
+		Commands::Monitors(args) => watch_monitors::main(&settings, args).await,
 		Commands::Open(args) => open_interactions::open_command(&settings, args, cli.offline, cli.mock).await,
 	});
 }
@@ -124,7 +124,7 @@ mod shell_init;
 mod watch_monitors;
 use std::time::Duration;
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, ValueEnum};
 use v_utils::utils::exit_on_error;
 
 /// Extract --log-to value from args before full CLI parsing (needed for early logging init)

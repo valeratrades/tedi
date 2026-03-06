@@ -27,7 +27,7 @@ pub async fn main(_settings: &LiveSettings, args: PerfEvalArgs) -> Result<()> {
 	let now = Zoned::now();
 	let date_dir = cache_dir.join(now.strftime("%Y-%m-%d").to_string());
 
-	// Check for recent screenshots from watch-monitors daemon
+	// Check for recent screenshots from monitors watch daemon
 	if date_dir.exists() {
 		// Find the most recent screenshot
 		let mut most_recent: Option<(std::path::PathBuf, std::time::SystemTime)> = None;
@@ -51,9 +51,9 @@ pub async fn main(_settings: &LiveSettings, args: PerfEvalArgs) -> Result<()> {
 			{
 				bail!(
 					"Most recent screenshot is {} seconds old (found at: {}).\n\
-						The watch-monitors daemon should be running to provide fresh screenshots.\n\
-						Start it with: {} watch-monitors\n\
-						Or enable the systemd service: services.{}-watch-monitors.enable = true;",
+						The monitors watch daemon should be running to provide fresh screenshots.\n\
+						Start it with: {} monitors watch\n\
+						Or enable the systemd service: services.{}-monitors-watch.enable = true;",
 					elapsed.as_secs(),
 					recent_path.display(),
 					env!("CARGO_PKG_NAME"),
@@ -63,9 +63,9 @@ pub async fn main(_settings: &LiveSettings, args: PerfEvalArgs) -> Result<()> {
 		} else {
 			bail!(
 				"No screenshots found in {}.\n\
-				The watch-monitors daemon should be running to capture screenshots.\n\
-				Start it with: {} watch-monitors\n\
-				Or enable the systemd service: services.{}-watch-monitors.enable = true;",
+				The monitors watch daemon should be running to capture screenshots.\n\
+				Start it with: {} monitors watch\n\
+				Or enable the systemd service: services.{}-monitors-watch.enable = true;",
 				date_dir.display(),
 				env!("CARGO_PKG_NAME"),
 				env!("CARGO_PKG_NAME"),
@@ -74,9 +74,9 @@ pub async fn main(_settings: &LiveSettings, args: PerfEvalArgs) -> Result<()> {
 	} else {
 		bail!(
 			"Screenshot directory does not exist: {}\n\
-			The watch-monitors daemon should be running to capture screenshots.\n\
-			Start it with: {} watch-monitors\n\
-			Or enable the systemd service: services.{}-watch-monitors.enable = true;",
+			The monitors watch daemon should be running to capture screenshots.\n\
+			Start it with: {} monitors watch\n\
+			Or enable the systemd service: services.{}-monitors-watch.enable = true;",
 			date_dir.display(),
 			env!("CARGO_PKG_NAME"),
 			env!("CARGO_PKG_NAME"),
