@@ -9,12 +9,6 @@ use v_utils::prelude::*;
 
 use crate::config::LiveSettings;
 
-#[derive(Args, Debug)]
-pub struct MonitorsArgs {
-	#[command(subcommand)]
-	pub command: MonitorsCommands,
-}
-
 #[derive(Debug, Subcommand)]
 pub enum MonitorsCommands {
 	/// Daemon that takes screenshots every 15 minutes, storing up to 24h of history.
@@ -28,6 +22,11 @@ pub enum MonitorsCommands {
 		#[arg(short, long, default_value = "Fast")]
 		model: Model,
 	},
+}
+#[derive(Args, Debug)]
+pub struct MonitorsArgs {
+	#[command(subcommand)]
+	pub command: MonitorsCommands,
 }
 
 pub async fn main(_settings: &LiveSettings, args: MonitorsArgs) -> Result<()> {

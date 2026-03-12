@@ -1607,10 +1607,13 @@ impl VirtualIssue {
 
 				// List: could be blockers list or child issues list
 				OwnedEvent::Start(OwnedTag::List(_)) => {
-					// Peek inside to determine what kind of list this is
+					// Peek inside to determine what kind of list this is.
+					// When in_blockers, checkbox items without issue markers are just blockers
+					// (split_blockers_from_checkboxes already separated actual child issues).
 					let has_checkbox = Self::list_has_checkbox(&events[pos..]);
+					let is_child_list = has_checkbox && (!in_blockers || Self::list_has_issue_marker(&events[pos..]));
 
-					if has_checkbox {
+					if is_child_list {
 						// Child issues list — parse each item as a child VirtualIssue
 						// Collect the full list as a sub-slice and parse each Item
 						let list_end = Self::find_matching_end_list(events, pos);
@@ -1719,6 +1722,27 @@ impl VirtualIssue {
 					}
 				}
 				OwnedEvent::CheckBox(_) if depth == 1 => return true,
+				_ => {}
+			}
+		}
+		false
+	}
+
+	/// Check if a list's top-level items contain an InlineHtml with a GitHub issue URL.
+	/// Used to distinguish child issue lists from blocker lists that happen to have checkboxes.
+	fn list_has_issue_marker(events: &[super::OwnedEvent]) -> bool {
+		use super::{OwnedEvent, OwnedTag, OwnedTagEnd};
+		let mut depth = 0;
+		for ev in events {
+			match ev {
+				OwnedEvent::Start(OwnedTag::List(_)) => depth += 1,
+				OwnedEvent::End(OwnedTagEnd::List(_)) => {
+					depth -= 1;
+					if depth == 0 {
+						break;
+					}
+				}
+				OwnedEvent::InlineHtml(html) if depth == 1 && html.contains("github.com") && html.contains("/issues/") => return true,
 				_ => {}
 			}
 		}
@@ -2040,11 +2064,10 @@ mod tests {
 	}
 
 	#[test]
-	#[ignore = "blocker+child in same cmark list: parser treats all items as children when any has checkbox"]
 	fn test_find_last_blocker_position_before_sub_issues() {
 		let content = "- [ ] Issue <!-- https://github.com/owner/repo/issues/1 -->\n\n  Body\n\n  # Blockers\n  - blocker task\n\n  - [ ] Sub issue <!--sub https://github.com/owner/repo/issues/2 -->\n";
 		let issue = unsafe_mock_parse_virtual(content);
-		insta::assert_snapshot!(format!("{:?}", issue.find_last_blocker_position()), @"");
+		insta::assert_snapshot!(format!("{:?}", issue.find_last_blocker_position()), @"Some((4, 5))");
 	}
 
 	#[test]
