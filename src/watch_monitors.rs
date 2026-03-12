@@ -1,10 +1,19 @@
-use std::{fs::File, io::BufWriter, path::PathBuf, thread, time::Duration};
+use std::{
+	collections::HashMap,
+	fs::File,
+	hash::{DefaultHasher, Hasher},
+	io::BufWriter,
+	path::PathBuf,
+	thread,
+	time::Duration,
+};
 
 use ask_llm::{ImageContent, Message, Model, Role};
 use clap::{Args, Subcommand};
 use color_eyre::eyre::{Context, Result, bail};
 use jiff::{Timestamp, ToSpan, Zoned, civil};
 use libwayshot::WayshotConnection;
+use serde::{Deserialize, Serialize};
 use v_utils::prelude::*;
 
 use crate::config::LiveSettings;
@@ -22,6 +31,15 @@ pub enum MonitorsCommands {
 		#[arg(short, long, default_value = "Fast")]
 		model: Model,
 	},
+	/// Take a screenshot of a specific monitor and remember it with a description.
+	/// Next time `annotated` sees a matching screenshot, it will use this description instead of calling the LLM.
+	Remember {
+		/// Monitor number (0-indexed).
+		#[arg(short, long)]
+		monitor: usize,
+		/// Description to associate with the current screen content.
+		description: String,
+	},
 }
 #[derive(Args, Debug)]
 pub struct MonitorsArgs {
@@ -33,6 +51,7 @@ pub async fn main(_settings: &LiveSettings, args: MonitorsArgs) -> Result<()> {
 	match args.command {
 		MonitorsCommands::Watch => watch_daemon(),
 		MonitorsCommands::Annotated { timeframe, model } => annotated(timeframe, model).await,
+		MonitorsCommands::Remember { monitor, description } => remember(monitor, description),
 	}
 }
 
@@ -137,6 +156,70 @@ fn cleanup_old_screenshots(cache_dir: &std::path::Path) -> Result<()> {
 	Ok(())
 }
 
+// Remember command
+
+fn data_dir() -> PathBuf {
+	v_utils::xdg_data_dir!("monitors")
+}
+
+fn screenshot_hash(png_bytes: &[u8]) -> String {
+	let mut hasher = DefaultHasher::new();
+	hasher.write(png_bytes);
+	format!("{:016x}", hasher.finish())
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct Descriptions(HashMap<String, String>);
+
+impl Descriptions {
+	fn load() -> Result<Self> {
+		let path = data_dir().join("descriptions.json");
+		if !path.exists() {
+			return Ok(Self::default());
+		}
+		let content = std::fs::read_to_string(&path).wrap_err("Failed to read descriptions.json")?;
+		serde_json::from_str(&content).wrap_err("Failed to parse descriptions.json")
+	}
+
+	fn save(&self) -> Result<()> {
+		let path = data_dir().join("descriptions.json");
+		let content = serde_json::to_string_pretty(self).wrap_err("Failed to serialize descriptions")?;
+		std::fs::write(&path, content).wrap_err("Failed to write descriptions.json")
+	}
+}
+
+fn remember(monitor: usize, description: String) -> Result<()> {
+	let wayshot = WayshotConnection::new().wrap_err("Failed to connect to Wayland compositor")?;
+	let outputs = wayshot.get_all_outputs();
+
+	if monitor >= outputs.len() {
+		bail!("Monitor {monitor} not found (have {} monitors: 0..{})", outputs.len(), outputs.len() - 1);
+	}
+
+	let image_buffer = wayshot
+		.screenshot_single_output(&outputs[monitor], false)
+		.wrap_err(format!("Failed to capture screenshot from monitor {monitor}"))?;
+
+	// Save to a temp path first to get the PNG bytes
+	let data_dir = data_dir();
+	let tmp_path = data_dir.join("_tmp.png");
+	save_screenshot_png(&image_buffer, &tmp_path)?;
+	let png_bytes = std::fs::read(&tmp_path).wrap_err("Failed to read temp screenshot")?;
+	let hash = screenshot_hash(&png_bytes);
+
+	// Move to final location
+	let screenshot_path = data_dir.join(format!("{hash}.png"));
+	std::fs::rename(&tmp_path, &screenshot_path).wrap_err("Failed to move screenshot")?;
+
+	// Update descriptions
+	let mut descriptions = Descriptions::load()?;
+	descriptions.0.insert(hash.clone(), description.clone());
+	descriptions.save()?;
+
+	println!("Remembered monitor {monitor} as \"{description}\" [{hash}]");
+	Ok(())
+}
+
 // Annotated command
 
 /// Take a fresh screenshot, then collect all screenshots within the timeframe and annotate them via LLM.
@@ -154,35 +237,47 @@ async fn annotated(timeframe: Timeframe, model: Model) -> Result<()> {
 		bail!("No screenshots found within the requested timeframe");
 	}
 
-	// Load all images for the LLM
-	let mut images = Vec::new();
-	for s in &screenshots {
+	// Check remembered descriptions
+	let descriptions = Descriptions::load()?;
+	let mut results: Vec<(usize, String)> = Vec::with_capacity(screenshots.len());
+	let mut needs_llm: Vec<(usize, &ScreenshotEntry, Vec<u8>)> = Vec::new();
+
+	for (i, s) in screenshots.iter().enumerate() {
 		let png_bytes = std::fs::read(&s.path).wrap_err(format!("Failed to read screenshot: {}", s.path.display()))?;
 		if png_bytes.is_empty() {
 			tracing::warn!("Skipping empty screenshot: {}", s.path.display());
 			continue;
 		}
-		let base64_data = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &png_bytes);
-		images.push(ImageContent {
-			base64_data,
-			media_type: "image/png".to_string(),
-		});
+		let hash = screenshot_hash(&png_bytes);
+		if let Some(desc) = descriptions.0.get(&hash) {
+			results.push((i, format!("[{}] {} {}", s.time_str, s.monitor_index, desc)));
+		} else {
+			needs_llm.push((i, s, png_bytes));
+		}
 	}
 
-	if images.is_empty() {
-		bail!("All screenshot files were empty");
-	}
+	if !needs_llm.is_empty() {
+		let mut images = Vec::new();
+		let mut llm_screenshots: Vec<(usize, &ScreenshotEntry)> = Vec::new();
 
-	// Build the prompt
-	let image_listing = screenshots
-		.iter()
-		.enumerate()
-		.map(|(i, s)| format!("Image {}: [{}] monitor {} ({})", i + 1, s.time_str, s.monitor_index, s.path.display()))
-		.collect::<Vec<_>>()
-		.join("\n");
+		for (i, s, png_bytes) in &needs_llm {
+			let base64_data = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, png_bytes);
+			images.push(ImageContent {
+				base64_data,
+				media_type: "image/png".to_string(),
+			});
+			llm_screenshots.push((*i, s));
+		}
 
-	let prompt = format!(
-		r#"You are annotating workspace screenshots. Each image corresponds to a specific timestamp and monitor.
+		let image_listing = llm_screenshots
+			.iter()
+			.enumerate()
+			.map(|(img_idx, (_, s))| format!("Image {}: [{}] monitor {} ({})", img_idx + 1, s.time_str, s.monitor_index, s.path.display()))
+			.collect::<Vec<_>>()
+			.join("\n");
+
+		let prompt = format!(
+			r#"You are annotating workspace screenshots. Each image corresponds to a specific timestamp and monitor.
 
 Here are the screenshots in chronological order:
 {image_listing}
@@ -195,33 +290,54 @@ Format your response as one line per screenshot, EXACTLY matching this format:
 </annotations>
 
 Where HH:MM is the UTC time, monitor_number is the monitor index, and description is your brief annotation. One line per image, in the same order as the images above."#
-	);
+		);
 
-	let message = Message::new_with_text_and_images(Role::User, prompt, images);
-	let mut conv = ask_llm::Conversation::new();
-	conv.0.push(message);
+		let message = Message::new_with_text_and_images(Role::User, prompt, images);
+		let mut conv = ask_llm::Conversation::new();
+		conv.0.push(message);
 
-	let response = ask_llm::conversation::<&str>(&conv, model, Some(4096), None).await?;
+		let response = ask_llm::conversation::<&str>(&conv, model, Some(4096), None).await?;
 
-	let annotations_raw = response.extract_html_tag("annotations").inspect_err(|_| {
-		eprintln!("Failed to extract <annotations> tag. Full response:\n{}\n", response.text);
-	})?;
+		let annotations_raw = response.extract_html_tag("annotations").inspect_err(|_| {
+			eprintln!("Failed to extract <annotations> tag. Full response:\n{}\n", response.text);
+		})?;
 
-	// Parse annotations and attach file paths
-	let annotation_lines: Vec<&str> = annotations_raw.lines().map(|l| l.trim()).filter(|l| !l.is_empty()).collect();
+		let annotation_lines: Vec<&str> = annotations_raw.lines().map(|l| l.trim()).filter(|l| !l.is_empty()).collect();
 
-	if annotation_lines.len() != screenshots.len() {
-		tracing::warn!("LLM returned {} annotations but we have {} screenshots — printing raw", annotation_lines.len(), screenshots.len());
-		for line in &annotation_lines {
-			println!("{line}");
+		if annotation_lines.len() != llm_screenshots.len() {
+			tracing::warn!(
+				"LLM returned {} annotations but we sent {} screenshots — printing raw",
+				annotation_lines.len(),
+				llm_screenshots.len()
+			);
+			for line in &annotation_lines {
+				results.push((usize::MAX, line.to_string()));
+			}
+		} else {
+			for (line, (orig_idx, _)) in annotation_lines.iter().zip(llm_screenshots.iter()) {
+				results.push((*orig_idx, line.to_string()));
+			}
 		}
-	} else {
-		for (line, s) in annotation_lines.iter().zip(screenshots.iter()) {
-			println!("{line} [{}]", s.path.display());
-		}
+
+		tracing::info!("Cost: {:.4} cents", response.cost_cents);
 	}
 
-	tracing::info!("Cost: {:.4} cents", response.cost_cents);
+	// Sort by original index to maintain chronological order
+	results.sort_by_key(|(idx, _)| *idx);
+
+	let mut prev_time_str: Option<&str> = None;
+	for (idx, line) in &results {
+		if *idx < screenshots.len() {
+			let time_str = &screenshots[*idx].time_str;
+			if prev_time_str.is_some_and(|prev| prev != time_str) {
+				println!();
+			}
+			prev_time_str = Some(time_str);
+			println!("{line} [{}]", screenshots[*idx].path.display());
+		} else {
+			println!("{line}");
+		}
+	}
 
 	Ok(())
 }
