@@ -24,7 +24,7 @@ pub enum MonitorsCommands {
 	Watch,
 	/// Take a fresh screenshot, then annotate all stored screenshots within the given timeframe.
 	/// Output: `[HH:MM] <monitor_number> description [path]`
-	Annotated {
+	Annotate {
 		/// How far back to look (e.g. "1h", "6h", "24h"). Capped at stored history (24h).
 		timeframe: Timeframe,
 		/// Model name to pass to ask_llm (e.g. "Fast", "Medium", "Slow").
@@ -32,7 +32,7 @@ pub enum MonitorsCommands {
 		model: Model,
 	},
 	/// Take a screenshot of a specific monitor and remember it with a description.
-	/// Next time `annotated` sees a matching screenshot, it will use this description instead of calling the LLM.
+	/// Next time `annotate` sees a matching screenshot, it will use this description instead of calling the LLM.
 	Remember {
 		/// Monitor number (0-indexed).
 		#[arg(short, long)]
@@ -50,7 +50,7 @@ pub struct MonitorsArgs {
 pub async fn main(_settings: &LiveSettings, args: MonitorsArgs) -> Result<()> {
 	match args.command {
 		MonitorsCommands::Watch => watch_daemon(),
-		MonitorsCommands::Annotated { timeframe, model } => annotated(timeframe, model).await,
+		MonitorsCommands::Annotate { timeframe, model } => annotate(timeframe, model).await,
 		MonitorsCommands::Remember { monitor, description } => remember(monitor, description),
 	}
 }
@@ -223,7 +223,7 @@ fn remember(monitor: usize, description: String) -> Result<()> {
 // Annotated command
 
 /// Take a fresh screenshot, then collect all screenshots within the timeframe and annotate them via LLM.
-async fn annotated(timeframe: Timeframe, model: Model) -> Result<()> {
+async fn annotate(timeframe: Timeframe, model: Model) -> Result<()> {
 	let cache_dir = cache_dir();
 
 	// Take a fresh screenshot right now
