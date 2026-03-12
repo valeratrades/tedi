@@ -26,10 +26,7 @@ fn milestone_cache_json_with_refs(titles: &[(&str, &str, &str)], current_index: 
 			format!("- [ ] {title} <!-- @{user} {url} -->{sep}")
 		})
 		.collect();
-	let refs: serde_json::Map<String, serde_json::Value> = ref_targets
-		.iter()
-		.map(|(src, tgt)| (src.to_string(), serde_json::Value::String(tgt.to_string())))
-		.collect();
+	let refs: serde_json::Map<String, serde_json::Value> = ref_targets.iter().map(|(src, tgt)| (src.to_string(), serde_json::Value::String(tgt.to_string()))).collect();
 	serde_json::json!({
 		"current_index": current_index,
 		"milestone_description": description,
@@ -151,7 +148,7 @@ async fn test_blocker_add_with_nested_context() {
 	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 
 	// Create issue with blockers section containing nested items
-	let initial_vi = parse_virtual(
+	let vi = parse_virtual(
 		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
 description
 
@@ -184,7 +181,7 @@ description
 	// new sub-task added under Phase 2
 	insta::assert_snapshot!(read_issue_file(&issue_path), @"
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-	    Body text.
+	    description
 	  
 	  # Blockers
 	  - Phase 1

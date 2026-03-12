@@ -1175,7 +1175,7 @@ mod tests {
 
 		- [ ] discretionary_engine
 		  - [ ] strategy
-		    - \[.\] communication layer
+		    - \[.] communication layer
 		      - move clap interface into \_strategy, alongside `dummy_market.rs` for only protocol
 		      - take exact string, send over redis, be able to interpret it again
 		      
@@ -1201,7 +1201,7 @@ mod tests {
 		    
 		    - [ ] fix: limit chase is failing to update consistently as the price moves up
 		    
-		    - \[.\] rm_engine (XXX: might be outdated):
+		    - \[.] rm_engine (XXX: might be outdated):
 		      - [ ] make stop_loss_proximity layer reasonable
 		        plug fix: just nuke certainty
 		      
@@ -1210,5 +1210,28 @@ mod tests {
 		      - [ ] integrate diffusion testing
 		        backtests could also be a thing, but don't like lack of consistency for which layers get backtests run on them.
 		"#);
+	}
+
+	#[test]
+	fn test_milestone_serialize_idempotent_custom_checkboxes() {
+		let content = "\
+- [ ] OpenClaw
+  text
+  # Blockers
+  - wait
+- [-] Not Planned <!-- @user https://github.com/owner/repo/issues/2 -->
+  np body
+- [42] Duplicate <!-- @user https://github.com/owner/repo/issues/3 -->
+  dup body
+- \\[.\\] custom marker
+  custom body
+";
+		let doc = MilestoneDoc::parse(content);
+		let s1 = doc.serialize();
+		for cycle in 1..=5 {
+			let re = MilestoneDoc::parse(&s1);
+			let sn = re.serialize();
+			assert_eq!(s1, sn, "milestone serialize must be idempotent at cycle {cycle}");
+		}
 	}
 }

@@ -214,7 +214,26 @@ pub async fn open_command(settings: &LiveSettings, args: OpenArgs, offline: bool
 		// Check if we already have this issue locally
 		let existing_path = Local::find_by_number(RepoInfo::new(&owner, &repo), issue_number, FsReader);
 
-		let issue = if let Some(path) = existing_path {
+		let issue = if existing_path.is_some() && args.reset {
+			// Reset mode: skip parsing local file entirely, fetch fresh from remote
+			println!("Resetting to remote state...");
+			let url = format!("https://github.com/{owner}/{repo}/issues/{issue_number}");
+			let link = IssueLink::parse(&url).expect("valid URL");
+			let source = RemoteSource::build(link, None)?;
+			let mut issue = Issue::load(source).await?;
+
+			// Overwrite local with remote
+			<Issue as Sink<LocalFs>>::sink(&mut issue, None).await?;
+			<Issue as Sink<Consensus>>::sink(&mut issue, None).await?;
+
+			// Clean up conflict file if it exists
+			let conflict_path = tedi::local::conflict::conflict_file_path(&owner);
+			if conflict_path.exists() {
+				std::fs::remove_file(&conflict_path)?;
+			}
+
+			issue
+		} else if let Some(path) = existing_path {
 			// File exists locally - proceed with unified sync (like --pull)
 			println!("Found existing local file, will sync with remote...");
 			let source = LocalIssueSource::<FsReader>::build_from_path(&path).await?;

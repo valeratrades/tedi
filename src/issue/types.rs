@@ -2001,11 +2001,11 @@ mod tests {
 		    closed body
 		    <!--,}}}-->
 		  
-		  - \[-\] Not planned sub <!-- https://github.com/owner/repo/issues/3 --> <!--omitted {{{always-->
+		  - \[-] Not planned sub <!-- https://github.com/owner/repo/issues/3 --> <!--omitted {{{always-->
 		    not planned body
 		    <!--,}}}-->
 		  
-		  - \[42\] Duplicate sub <!-- https://github.com/owner/repo/issues/4 --> <!--omitted {{{always-->
+		  - \[42] Duplicate sub <!-- https://github.com/owner/repo/issues/4 --> <!--omitted {{{always-->
 		    duplicate body
 		    <!--,}}}-->
 		");
@@ -2208,6 +2208,19 @@ mod tests {
 		let issue2 = unsafe_mock_parse_virtual(&s1);
 		let s2 = issue2.serialize_virtual();
 		assert_eq!(s1, s2, "serialize_virtual must be idempotent");
+	}
+
+	#[test]
+	fn test_serialize_roundtrip_custom_checkboxes_idempotent() {
+		crate::current_user::set("mock_user".to_string());
+		let input = "- [ ] Parent <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n  Body\n\n  - [-] Not planned <!--sub @mock_user https://github.com/o/r/issues/2 -->\n\n    np body\n\n  - [42] Duplicate <!--sub @mock_user https://github.com/o/r/issues/3 -->\n\n    dup body\n";
+		let issue = unsafe_mock_parse_virtual(input);
+		let s1 = issue.serialize_virtual();
+		for cycle in 1..=5 {
+			let re = unsafe_mock_parse_virtual(&s1);
+			let sn = re.serialize_virtual();
+			assert_eq!(s1, sn, "serialize_virtual must be idempotent at cycle {cycle}");
+		}
 	}
 
 	#[test]

@@ -374,6 +374,34 @@ impl Events {
 				continue;
 			}
 
+			// Try 3-event patterns (two variants from partial escaping):
+			//   A: Text("[") + Text(<inner>) + Text("] <rest>")   — \[ escaped, \] joins with rest
+			//   B: Text("[<inner>") + Text("]") + Text(" <rest>") — \[ joins with inner, ] separate
+			if i + 2 < raw.len() {
+				let (a, b, c) = (&raw[i], &raw[i + 1], &raw[i + 2]);
+				let matched = if let (OwnedEvent::Text(open), OwnedEvent::Text(inner), OwnedEvent::Text(rest)) = (a, b, c)
+					&& open == "[" && let Some(rest) = rest.strip_prefix(']')
+					&& (rest.is_empty() || rest.starts_with(' '))
+				{
+					Some((inner.clone(), rest.strip_prefix(' ').unwrap_or(rest).to_string()))
+				} else if let (OwnedEvent::Text(first), OwnedEvent::Text(close), OwnedEvent::Text(rest)) = (a, b, c)
+					&& let Some(inner) = first.strip_prefix('[')
+					&& close == "]" && (rest.is_empty() || rest.starts_with(' '))
+				{
+					Some((inner.to_string(), rest.strip_prefix(' ').unwrap_or(rest).to_string()))
+				} else {
+					None
+				};
+				if let Some((inner, rest)) = matched {
+					events.push(OwnedEvent::CheckBox(inner));
+					if !rest.is_empty() {
+						events.push(OwnedEvent::Text(rest));
+					}
+					i += 3;
+					continue;
+				}
+			}
+
 			// Try 2-event pattern: Text("[<inner>") + Text("] <rest>")
 			if i + 1 < raw.len()
 				&& let (OwnedEvent::Text(first), OwnedEvent::Text(second)) = (&raw[i], &raw[i + 1])
@@ -735,7 +763,7 @@ pub(crate) fn prepare_for_render(events: &[OwnedEvent]) -> Vec<Event<'_>> {
 			OwnedEvent::CheckBox(inner) => match inner.as_str() {
 				" " => out.push(Event::TaskListMarker(false)),
 				"x" => out.push(Event::TaskListMarker(true)),
-				_ => out.push(Event::Text(format!("[{inner}\\] ").into())),
+				_ => out.push(Event::Text(format!("[{inner}] ").into())),
 			},
 			_ => out.push(ev.to_event()),
 		}

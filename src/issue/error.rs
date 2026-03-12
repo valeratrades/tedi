@@ -139,12 +139,12 @@ enum ParseDiagnostic {
 	#[diagnostic(code(tedi::parse::empty_file))]
 	EmptyFile,
 
-	#[error("invalid title line")]
+	#[error("invalid title line: {detail}")]
 	#[diagnostic(code(tedi::parse::invalid_title), help("title must be formatted as: '- [ ] Title <!-- url -->' or '- [x] Title <!-- url -->'"))]
 	InvalidTitle {
 		#[source_code]
 		src: NamedSource<String>,
-		#[label("expected checkbox prefix '- [ ] ' or '- [x] '")]
+		#[label("{detail}")]
 		span: SourceSpan,
 		detail: String,
 	},
