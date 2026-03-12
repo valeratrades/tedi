@@ -59,6 +59,10 @@ impl ParseError {
 	pub fn child_not_in_hollow(src: NamedSource<String>, span: SourceSpan, issue_number: u64) -> Self {
 		Self::from_diagnostic(ParseDiagnostic::ChildNotInHollow { src, span, issue_number })
 	}
+
+	pub fn invalid_composition(src: NamedSource<String>, span: SourceSpan, detail: String) -> Self {
+		Self::from_diagnostic(ParseDiagnostic::InvalidComposition { src, span, detail })
+	}
 }
 
 /// Error type for issue composition and structural invariant violations.
@@ -211,5 +215,18 @@ enum ParseDiagnostic {
 		#[label("issue #{issue_number} not found in HollowIssue.children")]
 		span: SourceSpan,
 		issue_number: u64,
+	},
+
+	#[error("invalid composition after blockers section: {detail}")]
+	#[diagnostic(
+		code(tedi::parse::invalid_composition),
+		help("after the blockers section, only checkbox list items (child issues) are allowed. Plain text or non-checkbox lists cannot follow blockers.")
+	)]
+	InvalidComposition {
+		#[source_code]
+		src: NamedSource<String>,
+		#[label("{detail}")]
+		span: SourceSpan,
+		detail: String,
 	},
 }

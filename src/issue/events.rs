@@ -525,6 +525,9 @@ fn preserve_paragraph_spacing(events: Vec<OwnedEvent>) -> Vec<OwnedEvent> {
 /// 2. The list starts with non-checkbox items (the actual blockers)
 /// 3. At some point checkbox items begin — that's where we split
 ///
+/// Any checkbox item after a blockers heading is NOT a blocker — it's either a linked
+/// child issue or implicitly a new issue request.
+///
 /// Milestone lists (where checkboxes and plain refs coexist) are left intact.
 fn split_blockers_from_checkboxes(events: Vec<OwnedEvent>) -> Vec<OwnedEvent> {
 	let mut out = Vec::with_capacity(events.len());
@@ -548,7 +551,7 @@ fn split_blockers_from_checkboxes(events: Vec<OwnedEvent>) -> Vec<OwnedEvent> {
 			continue;
 		}
 
-		// Walk items at depth=1, record (start_idx, end_idx, is_child_issue)
+		// Walk items at depth=1, record (start_idx, end_idx, has_checkbox)
 		let mut items: Vec<(usize, usize, bool)> = Vec::new();
 		let mut depth = 0;
 		let mut j = i;
@@ -559,8 +562,8 @@ fn split_blockers_from_checkboxes(events: Vec<OwnedEvent>) -> Vec<OwnedEvent> {
 				OwnedEvent::Start(OwnedTag::Item) if depth == 1 => {
 					let item_start = j;
 					let item_end = find_matching_end_item(&events, j);
-					let is_child = item_is_child_issue(&events[item_start..item_end]);
-					items.push((item_start, item_end, is_child));
+					let has_cb = item_has_checkbox(&events[item_start..item_end]);
+					items.push((item_start, item_end, has_cb));
 					j = item_end;
 					continue;
 				}
@@ -569,28 +572,28 @@ fn split_blockers_from_checkboxes(events: Vec<OwnedEvent>) -> Vec<OwnedEvent> {
 			j += 1;
 		}
 
-		// Need both blocker items and child issue items to split
-		let has_blocker = items.iter().any(|(_, _, is_child)| !*is_child);
-		let has_child = items.iter().any(|(_, _, is_child)| *is_child);
+		// Need both blocker items (non-checkbox) and checkbox items to split
+		let has_blocker = items.iter().any(|(_, _, has_cb)| !*has_cb);
+		let has_checkbox = items.iter().any(|(_, _, has_cb)| *has_cb);
 
-		if !has_blocker || !has_child {
+		if !has_blocker || !has_checkbox {
 			out.push(events[i].clone());
 			i += 1;
 			continue;
 		}
 
-		// Split: non-child items → blocker list, child issue items → child issues list
+		// Split: non-checkbox items → blocker list, checkbox items → child issues list
 		out.push(list_start_event.clone());
-		for &(item_start, item_end, is_child) in &items {
-			if !is_child {
+		for &(item_start, item_end, has_cb) in &items {
+			if !has_cb {
 				out.extend(events[item_start..item_end].iter().cloned());
 			}
 		}
 		out.push(OwnedEvent::End(OwnedTagEnd::List(false)));
 
 		out.push(list_start_event.clone());
-		for &(item_start, item_end, is_child) in &items {
-			if is_child {
+		for &(item_start, item_end, has_cb) in &items {
+			if has_cb {
 				out.extend(events[item_start..item_end].iter().cloned());
 			}
 		}
@@ -683,18 +686,6 @@ fn item_has_checkbox(item_events: &[OwnedEvent]) -> bool {
 		i += 1;
 	}
 	matches!(item_events.get(i), Some(OwnedEvent::CheckBox(_)))
-}
-
-/// Check if a list item looks like a child issue: has checkbox AND contains an InlineHtml
-/// with a GitHub issue URL pattern (used by split_blockers_from_checkboxes to distinguish
-/// actual child issues from blockers that happen to have checkboxes).
-fn item_is_child_issue(item_events: &[OwnedEvent]) -> bool {
-	if !item_has_checkbox(item_events) {
-		return false;
-	}
-	item_events
-		.iter()
-		.any(|ev| matches!(ev, OwnedEvent::InlineHtml(html) if html.contains("github.com") && html.contains("/issues/")))
 }
 
 fn parser_options() -> pulldown_cmark::Options {
@@ -928,11 +919,11 @@ mod tests {
 	}
 
 	#[test]
-	fn blockers_with_checkbox_no_marker_no_split() {
-		// Blocker items with checkboxes but no issue markers should NOT split
-		let events = Events::parse("# Blockers\n- a\n- b\n- [ ] just a checkbox blocker\n");
+	fn blockers_with_checkbox_no_marker_splits() {
+		// Checkbox items after blockers heading are NOT blockers — they always split out
+		let events = Events::parse("# Blockers\n- a\n- b\n- [ ] just a checkbox item\n");
 		let list_count = events.iter().filter(|e| matches!(e, OwnedEvent::Start(OwnedTag::List(_)))).count();
-		assert_eq!(list_count, 1, "checkbox blocker without issue marker should stay as 1 list");
+		assert_eq!(list_count, 2, "checkbox items after blockers heading must split into separate list");
 	}
 
 	#[test]
@@ -1005,10 +996,10 @@ mod tests {
 	}
 
 	#[test]
-	fn blockers_starts_with_checkbox_no_split() {
-		// # Blockers where first item is checkbox → don't split (condition: must START non-checkbox)
+	fn blockers_starts_with_checkbox_splits() {
+		// # Blockers where first item is checkbox → still splits (checkbox items are never blockers)
 		let events = Events::parse("# Blockers\n- [ ] a\n- b\n");
 		let list_count = events.iter().filter(|e| matches!(e, OwnedEvent::Start(OwnedTag::List(_)))).count();
-		assert_eq!(list_count, 1, "checkbox-first blockers list should stay as 1 list");
+		assert_eq!(list_count, 2, "checkbox-first blockers list should split");
 	}
 }

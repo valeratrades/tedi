@@ -1335,6 +1335,10 @@ impl VirtualIssue {
 	/// The item contains: CheckBox, title text, InlineHtml marker, body events,
 	/// comment markers (Html), blocker heading+list, child issue lists.
 	fn parse_from_events(events: &[super::OwnedEvent], ctx: &ParseContext) -> Result<Self, ParseError> {
+		Self::parse_from_events_inner(events, ctx, false)
+	}
+
+	fn parse_from_events_inner(events: &[super::OwnedEvent], ctx: &ParseContext, default_pending: bool) -> Result<Self, ParseError> {
 		use super::{OwnedEvent, OwnedTag, OwnedTagEnd};
 
 		let mut pos = 0;
@@ -1377,7 +1381,9 @@ impl VirtualIssue {
 			}
 		}
 
-		// Parse the InlineHtml marker, or fall back to `!n` shorthand embedded in title text
+		// Parse the InlineHtml marker, or fall back to `!n` shorthand embedded in title text.
+		// When `default_pending` is true (post-blocker checkbox items), missing markers
+		// default to Pending instead of erroring.
 		let identity_info = match &events[pos] {
 			OwnedEvent::InlineHtml(html) => {
 				let (marker, _) = IssueMarker::parse_from_end(&format!("x {html}")).ok_or_else(|| ParseError::missing_url_marker(ctx.named_source(), ctx.line_span(1)))?;
@@ -1386,9 +1392,14 @@ impl VirtualIssue {
 			}
 			_ => {
 				// `!n` shorthand: pulldown_cmark embeds it in the Text event (no separate InlineHtml)
-				let (marker, rest) = IssueMarker::parse_from_end(&title_text).ok_or_else(|| ParseError::missing_url_marker(ctx.named_source(), ctx.line_span(1)))?;
-				title_text = rest.to_string();
-				marker
+				match IssueMarker::parse_from_end(&title_text) {
+					Some((marker, rest)) => {
+						title_text = rest.to_string();
+						marker
+					}
+					None if default_pending => IssueMarker::Pending,
+					None => return Err(ParseError::missing_url_marker(ctx.named_source(), ctx.line_span(1))),
+				}
 			}
 		};
 
@@ -1440,6 +1451,7 @@ impl VirtualIssue {
 		let mut blocker_events: Vec<OwnedEvent> = Vec::new();
 		let mut in_body = true;
 		let mut in_blockers = false;
+		let mut blocker_list_consumed = false;
 		let mut select_blockers = false;
 
 		// Helper: flush current body/comment events into the comments list.
@@ -1608,12 +1620,15 @@ impl VirtualIssue {
 				// List: could be blockers list or child issues list
 				OwnedEvent::Start(OwnedTag::List(_)) => {
 					// Peek inside to determine what kind of list this is.
-					// When in_blockers, checkbox items without issue markers are just blockers
-					// (split_blockers_from_checkboxes already separated actual child issues).
+					// After blockers, any checkbox list terminates the blocker section
+					// (split_blockers_from_checkboxes already separated checkbox items out).
 					let has_checkbox = Self::list_has_checkbox(&events[pos..]);
-					let is_child_list = has_checkbox && (!in_blockers || Self::list_has_issue_marker(&events[pos..]));
+					let is_child_list = has_checkbox;
 
 					if is_child_list {
+						// After blockers, checkbox items without markers auto-become Pending
+						let children_default_pending = blocker_list_consumed;
+						in_blockers = false;
 						// Child issues list — parse each item as a child VirtualIssue
 						// Collect the full list as a sub-slice and parse each Item
 						let list_end = Self::find_matching_end_list(events, pos);
@@ -1635,7 +1650,7 @@ impl VirtualIssue {
 								child_events.extend(list_events[item_start..item_end].iter().cloned());
 								child_events.push(OwnedEvent::End(OwnedTagEnd::List(false)));
 
-								let child = Self::parse_from_events(&child_events, ctx)?;
+								let child = Self::parse_from_events_inner(&child_events, ctx, children_default_pending)?;
 								children.insert(child.selector, child);
 
 								inner_pos = item_end;
@@ -1646,9 +1661,19 @@ impl VirtualIssue {
 
 						pos = list_end;
 					} else if in_blockers {
+						if blocker_list_consumed {
+							// A non-checkbox list appeared after the blocker list was already consumed.
+							// This means mixed content types after blockers — invalid.
+							return Err(ParseError::invalid_composition(
+								ctx.named_source(),
+								ctx.line_span(1),
+								"non-checkbox list after blockers section".into(),
+							));
+						}
 						// Blocker list — collect events for BlockerSequence parsing
 						let list_end = Self::find_matching_end_list(events, pos);
 						blocker_events.extend(events[pos..list_end].iter().cloned());
+						blocker_list_consumed = true;
 						pos = list_end;
 					} else {
 						// Regular list in body/comment content
@@ -1665,7 +1690,32 @@ impl VirtualIssue {
 
 				// Any other event: body or comment content
 				_ => {
-					if in_blockers {
+					if in_blockers && blocker_list_consumed {
+						// After the blocker list was consumed, non-list content means
+						// invalid composition (only checkbox lists are allowed after blockers).
+						// SoftBreak / Html("\n") between blocks are harmless — skip them.
+						match &events[pos] {
+							OwnedEvent::SoftBreak | OwnedEvent::HardBreak => {
+								pos += 1;
+								continue;
+							}
+							OwnedEvent::Html(h) if h.trim().is_empty() => {
+								pos += 1;
+								continue;
+							}
+							OwnedEvent::Text(t) if t.trim().is_empty() => {
+								pos += 1;
+								continue;
+							}
+							_ => {
+								return Err(ParseError::invalid_composition(
+									ctx.named_source(),
+									ctx.line_span(1),
+									format!("unexpected content after blockers section: {:?}", &events[pos]),
+								));
+							}
+						}
+					} else if in_blockers {
 						blocker_events.push(events[pos].clone());
 					} else if in_body {
 						body_events.push(events[pos].clone());
@@ -1722,27 +1772,6 @@ impl VirtualIssue {
 					}
 				}
 				OwnedEvent::CheckBox(_) if depth == 1 => return true,
-				_ => {}
-			}
-		}
-		false
-	}
-
-	/// Check if a list's top-level items contain an InlineHtml with a GitHub issue URL.
-	/// Used to distinguish child issue lists from blocker lists that happen to have checkboxes.
-	fn list_has_issue_marker(events: &[super::OwnedEvent]) -> bool {
-		use super::{OwnedEvent, OwnedTag, OwnedTagEnd};
-		let mut depth = 0;
-		for ev in events {
-			match ev {
-				OwnedEvent::Start(OwnedTag::List(_)) => depth += 1,
-				OwnedEvent::End(OwnedTagEnd::List(_)) => {
-					depth -= 1;
-					if depth == 0 {
-						break;
-					}
-				}
-				OwnedEvent::InlineHtml(html) if depth == 1 && html.contains("github.com") && html.contains("/issues/") => return true,
 				_ => {}
 			}
 		}
@@ -2259,5 +2288,31 @@ mod tests {
 		let vi = VirtualIssue::parse(input, PathBuf::from("test.md")).unwrap();
 		assert_eq!(vi.contents.blockers.items.len(), 1, "should have 1 blocker");
 		assert_eq!(vi.children.len(), 1, "should have 1 child");
+	}
+
+	#[test]
+	fn test_blocker_section_does_not_absorb_checkbox_items() {
+		// Checkbox list items after blockers must NOT be treated as blockers.
+		// They are separate child issues (with implicit Pending marker).
+		let input = "- [ ] Parent <!-- https://github.com/owner/repo/issues/1 -->\n\n  body\n\n  # Blockers\n  - vector series\n    - all the others\n    - ex 10\n\n  - [ ] series\n    up to and including ex 8\n";
+		let vi = VirtualIssue::parse(input, PathBuf::from("test.md")).unwrap();
+		assert_eq!(vi.contents.blockers.items.len(), 1, "should have 1 blocker (vector series)");
+		assert_eq!(vi.contents.blockers.items[0].text, "vector series");
+		assert_eq!(vi.contents.blockers.items[0].children.len(), 2, "vector series has 2 children");
+		assert_eq!(vi.children.len(), 1, "should have 1 child issue (series)");
+		let child = vi.children.values().next().unwrap();
+		assert_eq!(child.contents.title, "series");
+	}
+
+	#[test]
+	fn test_blocker_section_terminates_on_empty_line_before_checkbox() {
+		// Even with an empty line between blockers and checkbox items,
+		// the checkbox items must NOT be absorbed into blockers.
+		let input = "- [ ] Parent <!-- https://github.com/owner/repo/issues/1 -->\n\n  # Blockers\n  - task A\n  - task B\n\n  - [ ] new child\n    child body\n";
+		let vi = VirtualIssue::parse(input, PathBuf::from("test.md")).unwrap();
+		assert_eq!(vi.contents.blockers.items.len(), 2, "should have 2 blockers");
+		assert_eq!(vi.children.len(), 1, "checkbox item after empty line becomes child");
+		let child = vi.children.values().next().unwrap();
+		assert_eq!(child.contents.title, "new child");
 	}
 }
