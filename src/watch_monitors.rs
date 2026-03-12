@@ -168,7 +168,7 @@ fn screenshot_hash(png_bytes: &[u8]) -> String {
 	format!("{:016x}", hasher.finish())
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 struct Descriptions(HashMap<String, String>);
 
 impl Descriptions {
@@ -250,7 +250,7 @@ async fn annotated(timeframe: Timeframe, model: Model) -> Result<()> {
 		}
 		let hash = screenshot_hash(&png_bytes);
 		if let Some(desc) = descriptions.0.get(&hash) {
-			results.push((i, format!("[{}] {} {}", s.time_str, s.monitor_index, desc)));
+			results.push((i, format!("[{}] {} {desc}", s.time_str, s.monitor_index)));
 		} else {
 			needs_llm.push((i, s, png_bytes));
 		}
