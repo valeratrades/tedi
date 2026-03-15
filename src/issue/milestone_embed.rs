@@ -94,40 +94,31 @@ pub fn serialize_blockers_view(issue: &Issue) -> String {
 		format!("({}) ", issue.contents.labels.join(", "))
 	};
 
-	// Build events: a single list item with inline title + optional blocker children
+	// Build title line events
 	let mut events = Vec::new();
 	events.push(OwnedEvent::Start(OwnedTag::List(None)));
 	events.push(OwnedEvent::Start(OwnedTag::Item));
-
-	// Checkbox + title + marker as inline content
 	events.push(OwnedEvent::CheckBox(checkbox_contents));
 	events.push(OwnedEvent::Text(format!("{labels_part}{} ", issue.contents.title)));
 	events.push(OwnedEvent::InlineHtml(format!("<!-- {} -->", issue_marker.encode())));
-
-	// Blockers section as children
-	if !issue.contents.blockers.is_empty() {
-		// Wrap inline in paragraph since we have children
-		// (need to rebuild: insert Paragraph start/end around inline content)
-		let inline_start = 2; // after Start(List), Start(Item)
-		events.insert(inline_start, OwnedEvent::Start(OwnedTag::Paragraph));
-		events.push(OwnedEvent::End(OwnedTagEnd::Paragraph));
-
-		let header = crate::Header::new(1, "Blockers");
-		events.push(OwnedEvent::Start(OwnedTag::Heading {
-			level: pulldown_cmark::HeadingLevel::H1,
-			id: None,
-			classes: Vec::new(),
-			attrs: Vec::new(),
-		}));
-		events.push(OwnedEvent::Text(header.content.clone()));
-		events.push(OwnedEvent::End(OwnedTagEnd::Heading(pulldown_cmark::HeadingLevel::H1)));
-		events.extend(issue.contents.blockers.to_events());
-	}
-
 	events.push(OwnedEvent::End(OwnedTagEnd::Item));
 	events.push(OwnedEvent::End(OwnedTagEnd::List(false)));
 
-	Events::from(events).into()
+	let mut out: String = Events::from(events).into();
+
+	// Append blockers as raw text (avoids pulldown_cmark_to_cmark escaping `#`)
+	if !issue.contents.blockers.is_empty() {
+		if !out.ends_with('\n') {
+			out.push('\n');
+		}
+		let header = crate::Header::new(1, "Blockers");
+		// Indent blockers under the list item (2 spaces)
+		indent_into(&mut out, &header.encode(), "  ");
+		let blockers_str = String::from(&issue.contents.blockers);
+		indent_into(&mut out, &blockers_str, "  ");
+	}
+
+	out
 }
 /// Parse blockers from an embedded issue section in milestone content.
 /// The section is: title line, then optionally a `# Blockers` header + blocker lines.

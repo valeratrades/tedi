@@ -11,8 +11,10 @@
 //! - Indent level (2 spaces) determines nesting depth
 //! - Once a nested blocker appears under an item, no more comments can follow at that level
 
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::{
+	collections::HashMap,
+	path::{Path, PathBuf},
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -248,7 +250,30 @@ impl BlockerSequence {
 
 impl From<&BlockerSequence> for String {
 	fn from(seq: &BlockerSequence) -> Self {
-		seq.to_events().into()
+		let mut out = String::new();
+		for item in &seq.items {
+			render_item_text(&mut out, item, 0);
+		}
+		out
+	}
+}
+
+/// Render a blocker item as raw text lines with indentation.
+/// Avoids pulldown_cmark_to_cmark which escapes `#` at line start.
+fn render_item_text(out: &mut String, item: &BlockerItem, indent: usize) {
+	let prefix = "  ".repeat(indent);
+	out.push_str(&prefix);
+	out.push_str("- ");
+	out.push_str(&item.text);
+	out.push('\n');
+	for comment in &item.comments {
+		out.push_str(&prefix);
+		out.push_str("  ");
+		out.push_str(comment);
+		out.push('\n');
+	}
+	for child in &item.children {
+		render_item_text(out, child, indent + 1);
 	}
 }
 
@@ -794,5 +819,19 @@ mod tests {
 		let seq = BlockerSequence::parse("- o/r#10\n  - plain task");
 		let r = seq.deepest_issue_ref().unwrap();
 		assert_eq!(r.to_string(), "o/r#10");
+	}
+
+	#[test]
+	fn test_issue_ref_blocker_roundtrip_no_escaping() {
+		// Verify that `#` in blocker text does not get escaped on roundtrip
+		let content = "- #13\n- #42";
+		let seq = BlockerSequence::parse(content);
+		let serialized = String::from(&seq);
+		let reparsed = BlockerSequence::parse(&serialized);
+		assert_eq!(seq, reparsed, "structural roundtrip must preserve blocker items");
+		insta::assert_snapshot!(serialized, @"
+		- #13
+		- #42
+		");
 	}
 }

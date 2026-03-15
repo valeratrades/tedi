@@ -93,7 +93,7 @@ impl StandaloneSource {
 		if let Some(parent) = self.path.parent() {
 			std::fs::create_dir_all(parent)?;
 		}
-		let s: String = blockers.to_events().into();
+		let s: String = String::from(blockers);
 		std::fs::write(&self.path, s)?;
 		Ok(())
 	}

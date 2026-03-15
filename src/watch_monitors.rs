@@ -1,9 +1,10 @@
 use std::{
-	collections::HashMap,
+	collections::{HashMap, HashSet},
 	fs::File,
 	hash::{DefaultHasher, Hasher},
 	io::BufWriter,
 	path::PathBuf,
+	process::Command,
 	thread,
 	time::Duration,
 };
@@ -61,6 +62,57 @@ fn cache_dir() -> PathBuf {
 
 // Watch daemon
 
+/// Query sway for which outputs currently have windows open.
+/// Returns a set of output names (e.g. "HDMI-A-1", "eDP-1") that have at least one window.
+fn occupied_outputs() -> HashSet<String> {
+	let output = match Command::new("swaymsg").args(["-t", "get_tree"]).output() {
+		Ok(o) if o.status.success() => o.stdout,
+		Ok(o) => {
+			tracing::warn!("swaymsg exited with {}", o.status);
+			return HashSet::new();
+		}
+		Err(e) => {
+			tracing::warn!("Failed to run swaymsg: {e}");
+			return HashSet::new();
+		}
+	};
+
+	let tree: serde_json::Value = match serde_json::from_slice(&output) {
+		Ok(v) => v,
+		Err(e) => {
+			tracing::warn!("Failed to parse swaymsg output: {e}");
+			return HashSet::new();
+		}
+	};
+
+	fn has_windows(node: &serde_json::Value) -> bool {
+		// A node with a pid is a window
+		if node.get("pid").is_some_and(|p| p.is_u64()) {
+			return true;
+		}
+		for child in node["nodes"].as_array().into_iter().flatten() {
+			if has_windows(child) {
+				return true;
+			}
+		}
+		for child in node["floating_nodes"].as_array().into_iter().flatten() {
+			if has_windows(child) {
+				return true;
+			}
+		}
+		false
+	}
+
+	tree["nodes"]
+		.as_array()
+		.into_iter()
+		.flatten()
+		.filter(|output| output["name"].as_str().is_some_and(|n| n != "__i3"))
+		.filter(|output| has_windows(output))
+		.filter_map(|output| output["name"].as_str().map(String::from))
+		.collect()
+}
+
 fn watch_daemon() -> Result<()> {
 	let cache_dir = cache_dir();
 
@@ -90,9 +142,15 @@ fn watch_daemon() -> Result<()> {
 			continue;
 		}
 
+		let occupied = occupied_outputs();
 		let timestamp = now.strftime("%H-%M-%S").to_string();
 
 		for (i, output) in outputs.iter().enumerate() {
+			if !occupied.contains(&output.name) {
+				tracing::debug!("Skipping empty output {i} ({})", output.name);
+				continue;
+			}
+
 			let filename = format!("{timestamp}-s{i}.png");
 			let screenshot_path = date_dir.join(filename);
 

@@ -1157,7 +1157,7 @@ impl Issue /*{{{1*/ {
 			let header = crate::Header::new(1, "Blockers");
 			content.push_str(&header.encode());
 			content.push('\n');
-			let blockers_str: String = super::Events::from(self.contents.blockers.to_events().to_vec()).into();
+			let blockers_str: String = String::from(&self.contents.blockers);
 			content.push_str(&blockers_str);
 		}
 
