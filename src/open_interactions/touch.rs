@@ -112,7 +112,12 @@ pub async fn parse_touch_path(user_input: &str, parent: Option<ProjectType>, off
 	let repo_info = RepoInfo::new(&owner, &repo);
 
 	// Check if we can access this repo on GitHub (unless offline)
-	let repo_accessible = if offline { false } else { exit_on_error(github::client::get().repo_exists(repo_info).await) };
+	let repo_accessible = if offline {
+		false
+	} else {
+		let client = exit_on_error(github::client::get());
+		exit_on_error(client.repo_exists(repo_info).await)
+	};
 
 	if repo_accessible {
 		let selectors: Vec<IssueSelector> = issue_rgxs.iter().map(|s| IssueSelector::title(strip_md_extension(s))).collect();

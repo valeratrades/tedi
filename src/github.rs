@@ -527,9 +527,12 @@ pub mod client {
 	}
 
 	/// Get the global GitHub client.
-	/// Panics if not set - this is a programming error.
-	pub fn get() -> BoxedGithubClient {
-		CLIENT.with(|c| c.borrow().clone().expect("GitHub client not initialized - call github::client::set() first"))
+	pub fn get() -> color_eyre::Result<BoxedGithubClient> {
+		CLIENT.with(|c| {
+			c.borrow()
+				.clone()
+				.ok_or_else(|| color_eyre::eyre::eyre!("GitHub client not initialized. Is the config file missing a github_token?"))
+		})
 	}
 }
 

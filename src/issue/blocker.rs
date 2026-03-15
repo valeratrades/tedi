@@ -258,25 +258,6 @@ impl From<&BlockerSequence> for String {
 	}
 }
 
-/// Render a blocker item as raw text lines with indentation.
-/// Avoids pulldown_cmark_to_cmark which escapes `#` at line start.
-fn render_item_text(out: &mut String, item: &BlockerItem, indent: usize) {
-	let prefix = "  ".repeat(indent);
-	out.push_str(&prefix);
-	out.push_str("- ");
-	out.push_str(&item.text);
-	out.push('\n');
-	for comment in &item.comments {
-		out.push_str(&prefix);
-		out.push_str("  ");
-		out.push_str(comment);
-		out.push('\n');
-	}
-	for child in &item.children {
-		render_item_text(out, child, indent + 1);
-	}
-}
-
 /// Milestone-derived blocker cache. Replaces the old `Revolver` (rotating list of paths).
 ///
 /// The working set of issues is derived from a milestone description (default `1d`).
@@ -292,7 +273,6 @@ pub struct MilestoneBlockerCache {
 	#[serde(default)]
 	pub ref_targets: HashMap<String, String>,
 }
-
 impl MilestoneBlockerCache {
 	fn cache_path() -> PathBuf {
 		v_utils::xdg_cache_file!("milestone_blockers.json")
@@ -553,6 +533,25 @@ impl MilestoneBlockerCache {
 				self.cleanup_dead_refs_inner(&source_url, cleaned);
 			}
 		}
+	}
+}
+
+/// Render a blocker item as raw text lines with indentation.
+/// Avoids pulldown_cmark_to_cmark which escapes `#` at line start.
+fn render_item_text(out: &mut String, item: &BlockerItem, indent: usize) {
+	let prefix = "  ".repeat(indent);
+	out.push_str(&prefix);
+	out.push_str("- ");
+	out.push_str(&item.text);
+	out.push('\n');
+	for comment in &item.comments {
+		out.push_str(&prefix);
+		out.push_str("  ");
+		out.push_str(comment);
+		out.push('\n');
+	}
+	for child in &item.children {
+		render_item_text(out, child, indent + 1);
 	}
 }
 

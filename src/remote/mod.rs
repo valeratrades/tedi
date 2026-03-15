@@ -69,6 +69,10 @@ pub enum RemoteError {
 	/// Required executable not found.
 	#[error("`{executable}` not found in PATH (required for {operation})")]
 	MissingExecutable { executable: &'static str, operation: &'static str },
+
+	/// GitHub client not available.
+	#[error("GitHub client not available")]
+	NoClient(#[source] color_eyre::Report),
 }
 use copy_arrayvec::CopyArrayVec;
 use v_utils::prelude::*;
@@ -128,7 +132,7 @@ impl RemoteSource {
 			Some(l) => l.to_vec(),
 			None => {
 				// Fetch lineage from GitHub by traversing parent chain
-				let gh = github::client::get();
+				let gh = github::client::get().map_err(RemoteError::NoClient)?;
 				let mut current = number;
 				let mut parents = Vec::new();
 
@@ -182,7 +186,7 @@ impl crate::LazyIssue<RemoteSource> for Issue {
 			return Ok(self.identity.clone());
 		}
 
-		let gh = github::client::get();
+		let gh = github::client::get().map_err(RemoteError::NoClient)?;
 		let repo_info = source.link.repo_info();
 		let number = source.link.number();
 
@@ -216,7 +220,7 @@ impl crate::LazyIssue<RemoteSource> for Issue {
 			return Ok(self.contents.clone());
 		}
 
-		let gh = github::client::get();
+		let gh = github::client::get().map_err(RemoteError::NoClient)?;
 		let repo_info = source.link.repo_info();
 		let number = source.link.number();
 
@@ -261,7 +265,7 @@ impl crate::LazyIssue<RemoteSource> for Issue {
 			return Ok(self.children.clone());
 		}
 
-		let gh = github::client::get();
+		let gh = github::client::get().map_err(RemoteError::NoClient)?;
 		let repo_info = source.link.repo_info();
 		let number = source.link.number();
 
@@ -348,7 +352,7 @@ impl Sink<Remote> for Issue {
 			return Ok(false);
 		}
 
-		let gh = crate::github::client::get();
+		let gh = crate::github::client::get()?;
 		let repo_info = self.identity.parent_index.repo_info();
 
 		let mut changed = false;

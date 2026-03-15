@@ -552,7 +552,7 @@ async fn sync_milestone_assignments(settings: &LiveSettings, milestone_number: u
 		return Ok(());
 	}
 
-	let client = tedi::github::client::get();
+	let client = tedi::github::client::get()?;
 	let repo = tedi::RepoInfo::new(&ms_owner, &ms_repo);
 
 	let mut futs = Vec::new();

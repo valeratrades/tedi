@@ -63,32 +63,33 @@ async fn main() {
 
 	let settings = exit_on_error(config::LiveSettings::new(cli.settings_flags.clone(), Duration::from_secs(3)));
 
-	// Commands that require GitHub client (when not offline)
-	let needs_github = matches!(cli.command, Commands::Open(_) | Commands::Blocker(_) | Commands::Milestones(_)) && !cli.offline;
+	// Commands that may need GitHub client (always construct it - offline only skips network calls)
+	let has_github_commands = matches!(cli.command, Commands::Open(_) | Commands::Blocker(_) | Commands::Milestones(_));
 
 	let github_client: Option<tedi::github::BoxedGithubClient> = if cli.mock.is_some() {
 		Some(std::sync::Arc::new(mock_github::MockGithubClient::new("mock_user")))
-	} else if needs_github {
+	} else if has_github_commands {
 		let config = exit_on_error(settings.config());
 		let client = tedi::github::RealGithubClient::new(config.github_token.clone());
 		Some(std::sync::Arc::new(client))
 	} else {
-		// Commands that don't need GitHub - don't initialize client
 		None
 	};
 
 	// Set global GitHub client and current user for sink operations
-	if let Some(client) = github_client {
-		if let Ok(user) = client.fetch_authenticated_user().await {
-			tracing::info!("Authenticated as: {user}");
-			// Cache for offline use
-			let cache_path = v_utils::xdg_cache_file!("authenticated_user.txt");
-			let _ = std::fs::write(&cache_path, &user);
-			tedi::current_user::set(user);
+	if let Some(client) = &github_client {
+		if !cli.offline || cli.mock.is_some() {
+			if let Ok(user) = client.fetch_authenticated_user().await {
+				tracing::info!("Authenticated as: {user}");
+				let cache_path = v_utils::xdg_cache_file!("authenticated_user.txt");
+				let _ = std::fs::write(&cache_path, &user);
+				tedi::current_user::set(user);
+			}
 		}
-		tedi::github::client::set(client);
-	} else {
-		// Offline or no client — load from cache
+		tedi::github::client::set(client.clone());
+	}
+	// Load cached user if not fetched from network
+	if tedi::current_user::get().is_none() {
 		let cache_path = v_utils::xdg_cache_file!("authenticated_user.txt");
 		if let Ok(user) = std::fs::read_to_string(&cache_path) {
 			let user = user.trim().to_string();
