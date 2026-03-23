@@ -2112,6 +2112,27 @@ mod tests {
 	}
 
 	#[test]
+	fn test_serialize_filesystem_roundtrip_blocker_escaping() {
+		let cases = vec![
+			"- [ ] Title <!-- https://github.com/owner/repo/issues/1 -->\n  # Blockers\n  - `insert` semantics on `RoutingHub`\n",
+			"- [ ] Title <!-- https://github.com/owner/repo/issues/1 -->\n  # Blockers\n  - `insert`semantics on`RoutingHub`\n",
+			"- [ ] Title <!-- https://github.com/owner/repo/issues/1 -->\n  # Blockers\n  - move clap interface into \\_strategy\n",
+			"- [ ] Title <!-- https://github.com/owner/repo/issues/1 -->\n  # Blockers\n  - some certainty\\*val range\n",
+			"- [ ] Title <!-- https://github.com/owner/repo/issues/1 -->\n  # Blockers\n  - text with ` lone backtick\n",
+		];
+
+		for initial_content in cases {
+			let issue = unsafe_mock_parse_virtual(initial_content);
+			let s1 = issue.serialize_filesystem();
+			for cycle in 1..=5 {
+				let re = unsafe_mock_parse_virtual(&s1);
+				let sn = re.serialize_filesystem();
+				assert_eq!(s1, sn, "serialize_filesystem not idempotent at cycle {cycle} for input: {initial_content:?}");
+			}
+		}
+	}
+
+	#[test]
 	fn test_serialize_virtual_includes_children() {
 		let content =
 			"- [ ] Parent <!-- https://github.com/owner/repo/issues/1 -->\n\n  Parent body\n\n  - [ ] Child 1 <!--sub https://github.com/owner/repo/issues/2 -->\n\n    Child 1 body\n";

@@ -570,13 +570,28 @@ impl PartialEq for BlockerSequence {
 	}
 }
 
+/// Parse inline markdown text into events, stripping the paragraph wrapper.
+///
+/// pulldown_cmark wraps bare text in Start(Paragraph)..End(Paragraph).
+/// We strip that wrapper since the caller provides block-level context.
+fn inline_text_to_events(text: &str, events: &mut Vec<OwnedEvent>) {
+	let parsed = super::Events::parse(text);
+	let slice: &[OwnedEvent] = &parsed;
+	// Strip leading Start(Paragraph) and trailing End(Paragraph)
+	let inner = match slice {
+		[OwnedEvent::Start(OwnedTag::Paragraph), inner @ .., OwnedEvent::End(OwnedTagEnd::Paragraph)] => inner,
+		other => other,
+	};
+	events.extend(inner.iter().cloned());
+}
+
 /// Build events for a single blocker item (including comments and children).
 fn item_to_events(item: &BlockerItem, events: &mut Vec<OwnedEvent>) {
 	events.push(OwnedEvent::Start(OwnedTag::Item));
-	events.push(OwnedEvent::Text(item.text.clone()));
+	inline_text_to_events(&item.text, events);
 	for comment in &item.comments {
 		events.push(OwnedEvent::SoftBreak);
-		events.push(OwnedEvent::Text(comment.clone()));
+		inline_text_to_events(comment, events);
 	}
 	if !item.children.is_empty() {
 		events.push(OwnedEvent::Start(OwnedTag::List(None)));

@@ -1203,6 +1203,76 @@ mod tests {
 		"#);
 	}
 
+	/// Simulates the full cross-session milestones open cycle:
+	/// 1. Local issue file → parse → get blockers
+	/// 2. serialize_blockers_view → view string
+	/// 3. MilestoneDoc::parse → expand_with → serialize → user sees expanded
+	/// 4. User saves → MilestoneDoc::parse → embedded_issues → parse_blockers_from_embedded
+	/// 5. sync_blocker_changes writes new BlockerSequence to issue
+	/// 6. Issue serialized to filesystem → next session reads it
+	#[test]
+	fn test_milestone_cross_session_blocker_escaping() {
+		let initial_files = vec![
+			"- [ ] Test <!-- https://github.com/o/r/issues/42 -->\n  # Blockers\n  - `insert`semantics on`RoutingHub`\n",
+			"- [ ] Test <!-- https://github.com/o/r/issues/42 -->\n  # Blockers\n  - `insert` semantics on `RoutingHub`\n",
+			"- [ ] Test <!-- https://github.com/o/r/issues/42 -->\n  # Blockers\n  - move into \\_strategy\n",
+			"- [ ] Test <!-- https://github.com/o/r/issues/42 -->\n  # Blockers\n  - certainty\\*val range\n",
+			"- [ ] Test <!-- https://github.com/o/r/issues/42 -->\n  # Blockers\n  - parent\n    - `child` with backtick\n",
+			"- [ ] Test <!-- https://github.com/o/r/issues/42 -->\n  # Blockers\n  - `insert`semantics on`RoutingHub`\n  - another task\n",
+		];
+
+		for initial in initial_files {
+			let mut file_content = initial.to_string();
+			for cycle in 1..=5 {
+				// Step 1: Parse local issue file
+				let vi = super::super::VirtualIssue::parse(&file_content, std::path::PathBuf::from("/tmp/test.md")).unwrap();
+
+				// Step 2: Build Issue and serialize_blockers_view
+				let link = super::super::IssueLink::parse("https://github.com/o/r/issues/42").unwrap();
+				let identity = super::super::IssueIdentity::new_linked(None, None, link, super::super::IssueTimestamps::default());
+				let issue = super::super::Issue {
+					identity,
+					contents: vi.contents.clone(),
+					children: std::collections::HashMap::new(),
+				};
+				let view = serialize_blockers_view(&issue);
+
+				// Step 3: expand_and_refresh (parse the view, which is the expanded form)
+				let doc = MilestoneDoc::parse(&view);
+				let expanded = doc.serialize();
+
+				// Step 4: sync_blocker_changes (parse edited content, extract blockers)
+				let edited_doc = MilestoneDoc::parse(&expanded);
+				let embedded = edited_doc.embedded_issues();
+				let (_, section_text) = embedded.first().expect("should have embedded issue");
+				let new_blockers = parse_blockers_from_embedded(section_text);
+
+				// Step 5: Write new blockers back to issue
+				let mut new_vi = vi;
+				new_vi.contents.blockers = new_blockers;
+
+				// Step 6: Serialize to filesystem (new local file content)
+				// Rebuild as Issue for serialize_filesystem
+				let link2 = super::super::IssueLink::parse("https://github.com/o/r/issues/42").unwrap();
+				let identity2 = super::super::IssueIdentity::new_linked(None, None, link2, super::super::IssueTimestamps::default());
+				let new_issue = super::super::Issue {
+					identity: identity2,
+					contents: new_vi.contents,
+					children: std::collections::HashMap::new(),
+				};
+				let new_file = new_issue.serialize_filesystem();
+
+				if new_file.trim() == file_content.trim() {
+					break;
+				}
+				file_content = new_file;
+				if cycle == 5 {
+					panic!("cross-session cycle not stable after 5 cycles for input: {initial:?}\nfinal: {file_content:?}");
+				}
+			}
+		}
+	}
+
 	#[test]
 	fn test_milestone_serialize_idempotent_custom_checkboxes() {
 		let content = "\
