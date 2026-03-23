@@ -12,7 +12,7 @@ use color_eyre::eyre::{Result, bail, ensure};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use v_utils::{Percent, io::file_open::OpenMode, time::Timelike};
 
-use crate::utils;
+use crate::{MANUAL_PATH_APPENDIX, utils};
 
 #[derive(clap::Subcommand)]
 pub enum ManualSubcommands {
@@ -381,10 +381,7 @@ impl Day {
 		file.write_all(formatted_json.as_bytes()).unwrap();
 	}
 }
-
 static PBS_FILENAME: &str = ".pbs.json";
-
-use crate::MANUAL_PATH_APPENDIX;
 
 fn print_relative(settings: &crate::config::LiveSettings, days_back: usize, n: usize) -> Result<()> {
 	ensure!(n >= 2, "n must be at least 2 to have something to compare against");

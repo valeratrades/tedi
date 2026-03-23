@@ -19,6 +19,12 @@ pub const MAX_TITLE_LENGTH: usize = 256;
 pub const MAX_INDEX_DEPTH: usize = MAX_LINEAGE_DEPTH + 1;
 pub const MAX_LINEAGE_DEPTH: usize = 8;
 pub type IssueChildren<T> = HashMap<IssueSelector, T>;
+use super::{
+	IssueMarker, Marker,
+	blocker::BlockerSequence,
+	error::{ParseContext, ParseError},
+};
+
 /// Trait for lazily loading an issue from a source.
 ///
 /// `S` is the source type directly (e.g., `LocalIssueSource<FsReader>`, `RemoteSource`).
@@ -163,12 +169,6 @@ pub enum CommentIdentity {
 }
 
 //,}}}1
-
-use super::{
-	IssueMarker, Marker,
-	blocker::BlockerSequence,
-	error::{ParseContext, ParseError},
-};
 
 /// Close state of an issue.
 /// Maps to Github's binary open/closed, but locally supports additional variants.

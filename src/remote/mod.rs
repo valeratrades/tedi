@@ -9,10 +9,18 @@
 //! - Remote: `Issue::load(RemoteSource)` - loads from GitHub via IssueLink
 
 use HashMap;
-
 //==============================================================================
 // Error Types
 //==============================================================================
+use copy_arrayvec::CopyArrayVec;
+use v_utils::prelude::*;
+
+use crate::{
+	CloseState, Comment, CommentIdentity, Issue, IssueContents, IssueIdentity, IssueIndex, IssueLink, IssueSelector, IssueTimestamps, MAX_LINEAGE_DEPTH, RepoInfo,
+	github::{self, GithubComment, GithubIssue},
+	sink::{Sink, compute_node_diff},
+	split_blockers,
+};
 
 /// Error type for remote GitHub operations.
 #[derive(Debug, thiserror::Error)]
@@ -74,15 +82,6 @@ pub enum RemoteError {
 	#[error("GitHub client not available")]
 	NoClient(#[source] color_eyre::Report),
 }
-use copy_arrayvec::CopyArrayVec;
-use v_utils::prelude::*;
-
-use crate::{
-	CloseState, Comment, CommentIdentity, Issue, IssueContents, IssueIdentity, IssueIndex, IssueLink, IssueSelector, IssueTimestamps, MAX_LINEAGE_DEPTH, RepoInfo,
-	github::{self, GithubComment, GithubIssue},
-	sink::{Sink, compute_node_diff},
-	split_blockers,
-};
 
 /// Marker type for remote GitHub sink operations.
 pub enum Remote {}

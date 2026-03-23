@@ -2,8 +2,21 @@
 #![allow(clippy::len_zero)]
 #![allow(clippy::doc_lazy_continuation)]
 const MANUAL_PATH_APPENDIX: &str = "manual_stats/";
+mod blocker_interactions;
 pub mod config;
+mod manual_stats;
+mod milestones;
+mod mock_github;
+mod open_interactions;
+mod perf_eval;
+mod shell_init;
 pub mod utils;
+mod watch_monitors;
+use std::time::Duration;
+
+use clap::{Parser, ValueEnum};
+use v_utils::utils::exit_on_error;
+
 /// Mock behavior type for testing.
 #[derive(Clone, Copy, Debug, Default, ValueEnum)]
 pub enum MockType {
@@ -115,18 +128,6 @@ async fn main() {
 		Commands::Open(args) => open_interactions::open_command(&settings, args, cli.offline, cli.mock).await,
 	});
 }
-mod blocker_interactions;
-mod manual_stats;
-mod milestones;
-mod mock_github;
-mod open_interactions;
-mod perf_eval;
-mod shell_init;
-mod watch_monitors;
-use std::time::Duration;
-
-use clap::{Parser, ValueEnum};
-use v_utils::utils::exit_on_error;
 
 /// Extract --log-to value from args before full CLI parsing (needed for early logging init)
 fn extract_log_to() -> Option<String> {

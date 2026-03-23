@@ -42,21 +42,6 @@ const OWNER: &str = "o";
 const REPO: &str = "r";
 pub const USER: &str = "mock_user";
 
-/// Compile the binary before running any tests
-pub fn ensure_binary_compiled() {
-	BINARY_COMPILED.get_or_init(|| {
-		let status = Command::new("cargo").arg("build").status().expect("Failed to execute cargo build");
-
-		if !status.success() {
-			panic!("Failed to build binary");
-		}
-	});
-}
-
-/// Seed for deterministic timestamp generation. Must be in range -100..=100.
-#[derive(Clone, Copy, Debug, derive_more::Deref, derive_more::DerefMut, derive_more::Display, Eq, derive_more::Into, PartialEq)]
-pub struct Seed(i64);
-
 impl Seed {
 	pub fn new(value: i64) -> Self {
 		assert!((-100..=100).contains(&value), "seed must be in range -100..=100, got {value}");
@@ -70,21 +55,6 @@ impl From<i8> for Seed {
 	}
 }
 
-/// Unified test context for integration tests.
-///
-/// Combines functionality from the old `TodoTestContext` and `SyncTestContext`.
-/// Handles XDG directory setup, command execution, and optional mock state.
-pub struct TestContext {
-	/// The Xdg wrapper managing temp directories
-	pub xdg: Xdg,
-	/// Path to mock Github state file (for sync tests)
-	pub mock_state_path: PathBuf,
-	/// Path to named pipe for editor simulation (for sync tests)
-	pub pipe_path: PathBuf,
-	/// encodes whether the repo associated with test context is virtual.
-	//DEPENDS: on us hardcoding `repo` across the board. If that's not a case, then having two issue at different repos where only one is virtual is possible. But with current arch it's always the same repo, so can't have two ways about it.
-	pub(crate) is_virtual_repo: bool,
-}
 impl TestContext {
 	/// Create a new test context from a fixture string with git initialized.
 	///
@@ -366,14 +336,6 @@ impl TestContext {
 	}
 }
 
-/// Builder for running the `open` command with various options.
-pub struct OpenBuilder<'a> {
-	ctx: &'a TestContext,
-	target: BuilderTarget<'a>,
-	extra_args: Vec<&'a str>,
-	edit_op: Option<EditOperation>,
-	ghost_edit: bool,
-}
 impl<'a> OpenBuilder<'a> {
 	/// Add extra CLI arguments.
 	pub fn args(mut self, args: &[&'a str]) -> Self {
@@ -577,34 +539,6 @@ impl<'a> OpenBuilder<'a> {
 	}
 }
 
-pub fn parse_virtual(content: &str) -> tedi::VirtualIssue {
-	tedi::VirtualIssue::parse(content, std::path::PathBuf::from("test.md")).expect("failed to parse test issue")
-}
-/// Render a fixture with optional error output if the command failed.
-pub fn render_fixture(renderer: FixtureRenderer<'_>, output: &RunOutput) -> String {
-	let result = renderer.always_show_filepath().render();
-
-	// will only see it if snapshot failed. //Q: how much overhead this has though?
-	let s = format!("\n\nBINARY FAILED\nstatus: {}\nstdout:\n{}\nstderr:\n{}", output.status, output.stdout, output.stderr);
-	eprintln!("{s}");
-
-	result
-}
-/// Output from running a command.
-pub struct RunOutput {
-	pub status: ExitStatus,
-	pub stdout: String,
-	pub stderr: String,
-}
-
-/// Handle for a paused edit operation. Call `.resume()` to continue execution.
-pub struct PausedEdit {
-	child: std::process::Child,
-	stdout: std::process::ChildStdout,
-	stderr: std::process::ChildStderr,
-	pipe_path: PathBuf,
-}
-
 impl PausedEdit {
 	/// Resume execution after modifying the virtual file.
 	pub fn resume(mut self) -> RunOutput {
@@ -711,6 +645,36 @@ pub mod are_you_sure {
 		std::fs::write(path, content).expect("failed to write file");
 	}
 }
+mod snapshot;
+use std::{
+	cell::RefCell,
+	collections::HashSet,
+	io::{Read, Write},
+	os::fd::AsRawFd,
+	path::{Path, PathBuf},
+	process::{Command, ExitStatus},
+	sync::OnceLock,
+};
+
+pub use snapshot::FixtureIssuesExt;
+use tedi::{
+	Issue, IssueTimestamps,
+	local::{Consensus, IssueMeta, Local, LocalFs},
+	sink::Sink,
+};
+use v_fixtures::{
+	Fixture, FixtureRenderer,
+	fs_standards::{git::Git, xdg::Xdg},
+};
+
+/// Set timestamps on an issue and all its children.
+pub fn set_timestamps(issue: &mut Issue, seed: Seed) {
+	let timestamps = timestamps_from_seed(seed);
+	for (_, node) in issue.iter_mut() {
+		node.identity.mut_linked_issue_meta().unwrap().timestamps = timestamps.clone();
+	}
+}
+
 /// Generate timestamps from a seed value.
 ///
 /// Seed must be in range -100..=100. Each timestamp field gets:
@@ -734,12 +698,75 @@ pub fn timestamps_from_seed(seed: Seed) -> IssueTimestamps {
 		comments: vec![],
 	}
 }
-/// Set timestamps on an issue and all its children.
-pub fn set_timestamps(issue: &mut Issue, seed: Seed) {
-	let timestamps = timestamps_from_seed(seed);
-	for (_, node) in issue.iter_mut() {
-		node.identity.mut_linked_issue_meta().unwrap().timestamps = timestamps.clone();
-	}
+
+/// Handle for a paused edit operation. Call `.resume()` to continue execution.
+pub struct PausedEdit {
+	child: std::process::Child,
+	stdout: std::process::ChildStdout,
+	stderr: std::process::ChildStderr,
+	pipe_path: PathBuf,
+}
+
+/// Output from running a command.
+pub struct RunOutput {
+	pub status: ExitStatus,
+	pub stdout: String,
+	pub stderr: String,
+}
+
+/// Render a fixture with optional error output if the command failed.
+pub fn render_fixture(renderer: FixtureRenderer<'_>, output: &RunOutput) -> String {
+	let result = renderer.always_show_filepath().render();
+
+	// will only see it if snapshot failed. //Q: how much overhead this has though?
+	let s = format!("\n\nBINARY FAILED\nstatus: {}\nstdout:\n{}\nstderr:\n{}", output.status, output.stdout, output.stderr);
+	eprintln!("{s}");
+
+	result
+}
+
+pub fn parse_virtual(content: &str) -> tedi::VirtualIssue {
+	tedi::VirtualIssue::parse(content, std::path::PathBuf::from("test.md")).expect("failed to parse test issue")
+}
+
+/// Builder for running the `open` command with various options.
+pub struct OpenBuilder<'a> {
+	ctx: &'a TestContext,
+	target: BuilderTarget<'a>,
+	extra_args: Vec<&'a str>,
+	edit_op: Option<EditOperation>,
+	ghost_edit: bool,
+}
+
+/// Unified test context for integration tests.
+///
+/// Combines functionality from the old `TodoTestContext` and `SyncTestContext`.
+/// Handles XDG directory setup, command execution, and optional mock state.
+pub struct TestContext {
+	/// The Xdg wrapper managing temp directories
+	pub xdg: Xdg,
+	/// Path to mock Github state file (for sync tests)
+	pub mock_state_path: PathBuf,
+	/// Path to named pipe for editor simulation (for sync tests)
+	pub pipe_path: PathBuf,
+	/// encodes whether the repo associated with test context is virtual.
+	//DEPENDS: on us hardcoding `repo` across the board. If that's not a case, then having two issue at different repos where only one is virtual is possible. But with current arch it's always the same repo, so can't have two ways about it.
+	pub(crate) is_virtual_repo: bool,
+}
+
+/// Seed for deterministic timestamp generation. Must be in range -100..=100.
+#[derive(Clone, Copy, Debug, derive_more::Deref, derive_more::DerefMut, derive_more::Display, Eq, derive_more::Into, PartialEq)]
+pub struct Seed(i64);
+
+/// Compile the binary before running any tests
+pub fn ensure_binary_compiled() {
+	BINARY_COMPILED.get_or_init(|| {
+		let status = Command::new("cargo").arg("build").status().expect("Failed to execute cargo build");
+
+		if !status.success() {
+			panic!("Failed to build binary");
+		}
+	});
 }
 /// What target the OpenBuilder opens.
 enum BuilderTarget<'a> {
@@ -750,28 +777,6 @@ enum BuilderTarget<'a> {
 	/// Open by touch pattern (--touch flag)
 	Touch(String),
 }
-
-mod snapshot;
-
-use std::{
-	cell::RefCell,
-	collections::HashSet,
-	io::{Read, Write},
-	os::fd::AsRawFd,
-	path::{Path, PathBuf},
-	process::{Command, ExitStatus},
-	sync::OnceLock,
-};
-
-use tedi::{
-	Issue, IssueTimestamps,
-	local::{Consensus, IssueMeta, Local, LocalFs},
-	sink::Sink,
-};
-use v_fixtures::{
-	Fixture, FixtureRenderer,
-	fs_standards::{git::Git, xdg::Xdg},
-};
 
 /// Set a file descriptor to non-blocking mode.
 pub(crate) fn set_nonblocking<F: AsRawFd>(f: &F) {
@@ -796,8 +801,6 @@ pub(crate) fn drain_pipe<R: Read>(pipe: &mut R, buf: &mut Vec<u8>) {
 		}
 	}
 }
-
-pub use snapshot::FixtureIssuesExt;
 
 static BINARY_COMPILED: OnceLock<()> = OnceLock::new();
 

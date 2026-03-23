@@ -20,88 +20,7 @@ use HashMap;
 
 pub mod conflict;
 pub mod consensus;
-/// Error type for local issue loading operations.
-#[derive(Debug, thiserror::Error, derive_more::From)]
-pub enum LocalError {
-	/// Path resolution or IO error.
-	#[error(transparent)]
-	Io(LocalPathError),
 
-	/// Failed to parse issue content.
-	#[error(transparent)]
-	Parse(crate::ParseError),
-
-	/// Issue composition error.
-	#[error(transparent)]
-	Issue(crate::IssueError),
-
-	//Q: LocalPathError also contains ReaderError. Seems suboptimal, - wonder if I can restructure somehow to remove this proprietor level ambiguity
-	/// Reader operation failed.
-	#[error(transparent)]
-	Reader(ReaderError),
-
-	/// Git operation failed (for consensus reads).
-	//TODO: check if it covers cases that ReaderError doesn't when it comes to git operations. If not, we should nuke this and rely on `Io` which already references LocalPathError (which nests ReaderError)
-	#[error("git operation failed: {message}")]
-	GitError { message: String },
-
-	/// Unresolved merge conflict blocks operation.
-	#[error(transparent)]
-	ConflictBlocked(conflict::ConflictBlockedError),
-
-	/// Required executable not found.
-	#[error("`{executable}` not found in PATH (required for {operation})")]
-	MissingExecutable { executable: &'static str, operation: &'static str },
-
-	/// Path extraction failed.
-	#[error("failed to extract issue index from path: {0}")]
-	#[from(skip)]
-	PathExtraction(String),
-
-	#[error(transparent)]
-	Other(Report),
-}
-
-/// Error type for consensus sink operations.
-#[derive(Debug, miette::Diagnostic, derive_more::Display, thiserror::Error)]
-pub enum ConsensusSinkError {
-	#[display("failed to write issue files: {_0}")]
-	#[diagnostic(code(tedi::consensus::write))]
-	Write(color_eyre::Report),
-
-	#[display("git add failed: {_0}")]
-	#[diagnostic(code(tedi::consensus::git_add))]
-	GitAdd(String),
-
-	#[display("git status failed: {_0}")]
-	#[diagnostic(code(tedi::consensus::git_status))]
-	GitStatus(String),
-
-	#[display("git commit failed: {_0}")]
-	#[diagnostic(code(tedi::consensus::git_commit))]
-	GitCommit(String),
-
-	#[display("files rejected by .gitignore:\n{_0}")]
-	#[diagnostic(code(tedi::consensus::gitignore), help("Check your .gitignore rules or remove the conflicting patterns"))]
-	GitIgnoreRejection(String),
-
-	#[display("invalid data directory path (not valid UTF-8)")]
-	#[diagnostic(code(tedi::consensus::invalid_path))]
-	InvalidDataDir,
-
-	#[display("{_0}")]
-	#[diagnostic(code(tedi::consensus::io))]
-	Io(#[from] std::io::Error),
-}
-/// Source for loading issues from local storage.
-///
-/// Combines a `LocalPath` (for path computation) with a reader (for reading from fs or git).
-/// Use `build()` to construct with validation of required tools.
-#[derive(Clone, Debug)]
-pub struct LocalIssueSource<R: LocalReader> {
-	pub local_path: LocalPath,
-	pub reader: R,
-}
 impl<R: LocalReader> LocalIssueSource<R> {
 	fn new(local_path: LocalPath, reader: R) -> Self {
 		Self { local_path, reader }
@@ -179,10 +98,6 @@ impl LocalIssueSource<GitReader> {
 	}
 }
 
-/// Type for local filesystem operations.
-///
-/// All custom logic for local issue storage is consolidated as methods on this type.
-pub enum Local {}
 impl Local {
 	/// The filename used for the main issue file when it has a directory for sub-issues.
 	pub const MAIN_ISSUE_FILENAME: &'static str = "__main__";
@@ -692,35 +607,6 @@ impl Local {
 	}
 }
 
-/// Exact match level for fzf queries.
-#[derive(Clone, Copy, Debug, Default)]
-pub enum ExactMatchLevel {
-	#[default]
-	Fuzzy,
-	ExactTerms,
-	RegexSubstring,
-	RegexLine,
-}
-/// Project-level metadata file.
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-pub struct ProjectMeta {
-	#[serde(default)]
-	pub virtual_project: bool,
-	#[serde(default)]
-	pub next_virtual_issue_number: u64,
-	#[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
-	pub issues: std::collections::BTreeMap<u64, IssueMeta>,
-}
-/// Per-issue metadata stored in .meta.json.
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-pub struct IssueMeta {
-	/// User who created the issue.
-	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub user: Option<String>,
-	/// Timestamps for individual field changes.
-	#[serde(default)]
-	pub timestamps: crate::IssueTimestamps,
-}
 mod reader;
 
 pub use reader::{FsReader, GitReader, LocalReader, ReaderError, ReaderErrorKind};
@@ -1217,6 +1103,127 @@ use serde::{Deserialize, Serialize};
 use v_utils::prelude::*;
 
 use crate::{Issue, IssueIndex, IssueLink, IssueSelector, LinkedIssueMeta, RepoInfo, local::conflict::ConflictBlockedError};
+
+/// Per-issue metadata stored in .meta.json.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct IssueMeta {
+	/// User who created the issue.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub user: Option<String>,
+	/// Timestamps for individual field changes.
+	#[serde(default)]
+	pub timestamps: crate::IssueTimestamps,
+}
+
+/// Project-level metadata file.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct ProjectMeta {
+	#[serde(default)]
+	pub virtual_project: bool,
+	#[serde(default)]
+	pub next_virtual_issue_number: u64,
+	#[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+	pub issues: std::collections::BTreeMap<u64, IssueMeta>,
+}
+
+/// Exact match level for fzf queries.
+#[derive(Clone, Copy, Debug, Default)]
+pub enum ExactMatchLevel {
+	#[default]
+	Fuzzy,
+	ExactTerms,
+	RegexSubstring,
+	RegexLine,
+}
+
+/// Type for local filesystem operations.
+///
+/// All custom logic for local issue storage is consolidated as methods on this type.
+pub enum Local {}
+
+/// Source for loading issues from local storage.
+///
+/// Combines a `LocalPath` (for path computation) with a reader (for reading from fs or git).
+/// Use `build()` to construct with validation of required tools.
+#[derive(Clone, Debug)]
+pub struct LocalIssueSource<R: LocalReader> {
+	pub local_path: LocalPath,
+	pub reader: R,
+}
+
+/// Error type for consensus sink operations.
+#[derive(Debug, miette::Diagnostic, derive_more::Display, thiserror::Error)]
+pub enum ConsensusSinkError {
+	#[display("failed to write issue files: {_0}")]
+	#[diagnostic(code(tedi::consensus::write))]
+	Write(color_eyre::Report),
+
+	#[display("git add failed: {_0}")]
+	#[diagnostic(code(tedi::consensus::git_add))]
+	GitAdd(String),
+
+	#[display("git status failed: {_0}")]
+	#[diagnostic(code(tedi::consensus::git_status))]
+	GitStatus(String),
+
+	#[display("git commit failed: {_0}")]
+	#[diagnostic(code(tedi::consensus::git_commit))]
+	GitCommit(String),
+
+	#[display("files rejected by .gitignore:\n{_0}")]
+	#[diagnostic(code(tedi::consensus::gitignore), help("Check your .gitignore rules or remove the conflicting patterns"))]
+	GitIgnoreRejection(String),
+
+	#[display("invalid data directory path (not valid UTF-8)")]
+	#[diagnostic(code(tedi::consensus::invalid_path))]
+	InvalidDataDir,
+
+	#[display("{_0}")]
+	#[diagnostic(code(tedi::consensus::io))]
+	Io(#[from] std::io::Error),
+}
+
+/// Error type for local issue loading operations.
+#[derive(Debug, thiserror::Error, derive_more::From)]
+pub enum LocalError {
+	/// Path resolution or IO error.
+	#[error(transparent)]
+	Io(LocalPathError),
+
+	/// Failed to parse issue content.
+	#[error(transparent)]
+	Parse(crate::ParseError),
+
+	/// Issue composition error.
+	#[error(transparent)]
+	Issue(crate::IssueError),
+
+	//Q: LocalPathError also contains ReaderError. Seems suboptimal, - wonder if I can restructure somehow to remove this proprietor level ambiguity
+	/// Reader operation failed.
+	#[error(transparent)]
+	Reader(ReaderError),
+
+	/// Git operation failed (for consensus reads).
+	//TODO: check if it covers cases that ReaderError doesn't when it comes to git operations. If not, we should nuke this and rely on `Io` which already references LocalPathError (which nests ReaderError)
+	#[error("git operation failed: {message}")]
+	GitError { message: String },
+
+	/// Unresolved merge conflict blocks operation.
+	#[error(transparent)]
+	ConflictBlocked(conflict::ConflictBlockedError),
+
+	/// Required executable not found.
+	#[error("`{executable}` not found in PATH (required for {operation})")]
+	MissingExecutable { executable: &'static str, operation: &'static str },
+
+	/// Path extraction failed.
+	#[error("failed to extract issue index from path: {0}")]
+	#[from(skip)]
+	PathExtraction(String),
+
+	#[error(transparent)]
+	Other(Report),
+}
 
 //==============================================================================
 // Local - The interface for local issue storage

@@ -5,6 +5,15 @@
 //! - Loading consensus issues via `LazyIssue<LocalIssueSource<GitReader>>`
 //! - Committing changes via `Sink<Consensus>`
 
+mod git;
+mod sink;
+
+pub use git::is_git_initialized;
+pub use sink::Consensus;
+
+use super::{GitReader, LocalError, LocalIssueSource, LocalPath};
+use crate::{Issue, IssueIndex, LazyIssue};
+
 /// Load the consensus Issue tree from git (last committed state).
 ///
 /// Uses `Issue::load(LocalIssueSource<GitReader>)` to read from git HEAD.
@@ -24,12 +33,3 @@ pub async fn load_consensus_issue(index: IssueIndex) -> Result<Option<Issue>, Lo
 	}
 	Issue::load(source).await.map(Some)
 }
-
-mod git;
-mod sink;
-
-pub use git::is_git_initialized;
-pub use sink::Consensus;
-
-use super::{GitReader, LocalError, LocalIssueSource, LocalPath};
-use crate::{Issue, IssueIndex, LazyIssue};
