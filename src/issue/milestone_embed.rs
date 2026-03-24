@@ -1169,12 +1169,12 @@ mod tests {
 		    - \[.] communication layer
 		      - move clap interface into \_strategy, alongside `dummy_market.rs` for only protocol
 		      - take exact string, send over redis, be able to interpret it again
-		      
+
 		      <!--x-->
 		      - get dummy market suggesting orders correctly //NB: no execution yet, - don't rush the implementation
-		    
+
 		    - [ ] allow defining `percent_controlled` for any protocol
-		    
+
 		    - [ ] update the standard for clear delineation between opening new pos and updating an existing one
 		      - on \_strategy:
 		        adj
@@ -1184,20 +1184,20 @@ mod tests {
 		      - main entrypoint:
 		        new (with --quality instead of size)
 		      - define in terms of target delta change for \_strategy, and expand on total def space for main entrypoint
-		  
+
 		  - [ ] risk
 		    - [ ] update the logic for %controlled on followup algos -> integrate `adjust-pos` into the main loop (require id provision)
-		    
+
 		    - [ ] transition to distinctly different datatypes for AggrBook and External
-		    
+
 		    - [ ] fix: limit chase is failing to update consistently as the price moves up
-		    
+
 		    - \[.] rm_engine (XXX: might be outdated):
 		      - [ ] make stop_loss_proximity layer reasonable
 		        plug fix: just nuke certainty
-		      
+
 		      - [ ] some mechanic to check how much bias our suggestions actually had historically; warn if outside of some certainty\*val range
-		      
+
 		      - [ ] integrate diffusion testing
 		        backtests could also be a thing, but don't like lack of consistency for which layers get backtests run on them.
 		"#);

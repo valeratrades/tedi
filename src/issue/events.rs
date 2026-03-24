@@ -499,7 +499,7 @@ fn normalize_list_items_tight(events: Vec<OwnedEvent>) -> Vec<OwnedEvent> {
 ///
 /// Skipped inside list items — list item spacing is handled by normalization and cmark itself.
 /// Skipped when next event is `End(...)` — that means we're exiting a scope, not starting a new block.
-fn preserve_paragraph_spacing(events: Vec<OwnedEvent>) -> Vec<OwnedEvent> {
+pub(super) fn preserve_paragraph_spacing(events: Vec<OwnedEvent>) -> Vec<OwnedEvent> {
 	let mut out = Vec::with_capacity(events.len());
 	let mut item_depth = 0usize;
 	for i in 0..events.len() {
@@ -779,9 +779,13 @@ pub(crate) fn prepare_for_render(events: &[OwnedEvent]) -> Vec<Event<'_>> {
 /// Preserves trailing newline from content.
 pub(super) fn indent_into(out: &mut String, content: &str, prefix: &str) {
 	for line in content.lines() {
-		out.push_str(prefix);
-		out.push_str(line);
-		out.push('\n');
+		if line.is_empty() {
+			out.push('\n');
+		} else {
+			out.push_str(prefix);
+			out.push_str(line);
+			out.push('\n');
+		}
 	}
 }
 

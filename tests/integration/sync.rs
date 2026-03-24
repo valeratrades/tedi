@@ -665,9 +665,8 @@ async fn test_comment_shorthand_creates_comment() {
 	<<<<<<< HEAD
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
 	  issue body
-	  
+
 	  <!-- new comment -->
-	  
 	  My new comment content
 	||||||| [hash]
 	=======
@@ -825,7 +824,7 @@ async fn test_consensus_sink_writes_meta_json_with_timestamps() {
 	assert!(out.status.success(), "Fetch should succeed. stderr: {}", out.stderr);
 
 	// Capture the resulting directory state (includes .meta.json with timestamps)
-	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap(), &out), @r#"
+	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().redact_timestamps(&[10]), &out), @r#"
 	//- /o/r/.meta.json
 	{
 	  "virtual_project": false,
@@ -835,7 +834,7 @@ async fn test_consensus_sink_writes_meta_json_with_timestamps() {
 	      "user": "mock_user",
 	      "timestamps": {
 	        "title": null,
-	        "description": null,
+	        [REDACTED - non-deterministic timestamp]
 	        "labels": null,
 	        "state": null,
 	        "comments": []
@@ -847,7 +846,7 @@ async fn test_consensus_sink_writes_meta_json_with_timestamps() {
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
 	  remote body
 	  \---<!-- comment 1001 @commenter -->
-	  
+
 	  A test comment
 	"#);
 }

@@ -74,7 +74,7 @@ async fn test_blocker_pop_in_integrated_mode() {
 	insta::assert_snapshot!(read_issue_file(&issue_path), @"
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
 	    Body text.
-	  
+
 	  # Blockers
 	  - First task
 	  - Second task
@@ -114,7 +114,7 @@ async fn test_blocker_add_creates_blockers_section_if_missing() {
 	insta::assert_snapshot!(read_issue_file(&issue_path), @"
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
 	    Body text without blockers section.
-	  
+
 	  # Blockers
 	  - New task
 	");
@@ -182,7 +182,7 @@ description
 	insta::assert_snapshot!(read_issue_file(&issue_path), @"
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
 	    description
-	  
+
 	  # Blockers
 	  - Phase 1
 	    - Setup task

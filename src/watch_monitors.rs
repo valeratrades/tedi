@@ -505,7 +505,7 @@ fn collect_screenshots(cache_dir: &std::path::Path, cutoff: Timestamp) -> Result
 		}
 	}
 
-	entries.sort_by_key(|e| e.timestamp);
+	entries.sort_by_key(|e| (e.timestamp, e.monitor_index));
 
 	Ok(entries)
 }

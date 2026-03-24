@@ -10,7 +10,7 @@ use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-use super::events::{indent_into, wrap_inline_in_paragraphs};
+use super::events::{indent_into, preserve_paragraph_spacing, wrap_inline_in_paragraphs};
 
 /// Maximum title length enforced by Github.
 pub const MAX_TITLE_LENGTH: usize = 256;
@@ -1111,6 +1111,20 @@ impl Issue /*{{{1*/ {
 			}
 		}
 
+		/// Ensure `content` ends with `\n\n` (blank line separator) when it has trailing content.
+		/// cmark rendering sometimes omits trailing newlines, so we normalize before inserting separators.
+		fn ensure_blank_line(content: &mut String) {
+			if content.is_empty() {
+				return;
+			}
+			if !content.ends_with('\n') {
+				content.push('\n');
+			}
+			if content.lines().last().is_some_and(|l| !l.trim().is_empty()) {
+				content.push('\n');
+			}
+		}
+
 		// === Additional comments ===
 		for comment in self.contents.comments.iter().skip(1) {
 			if self.identity.is_virtual {
@@ -1123,9 +1137,7 @@ impl Issue /*{{{1*/ {
 			let comment_is_owned = comment.user().is_none() || comment.user().is_some_and(crate::current_user::is);
 
 			// Blank line before comment separator
-			if content.lines().last().is_some_and(|l| !l.trim().is_empty()) {
-				content.push('\n');
-			}
+			ensure_blank_line(&mut content);
 
 			// Comment separator marker
 			let marker_html = match &comment.identity {
@@ -1151,9 +1163,7 @@ impl Issue /*{{{1*/ {
 
 		// === Blockers section ===
 		if !self.contents.blockers.is_empty() {
-			if content.lines().last().is_some_and(|l| !l.trim().is_empty()) {
-				content.push('\n');
-			}
+			ensure_blank_line(&mut content);
 			let header = crate::Header::new(1, "Blockers");
 			content.push_str(&header.encode());
 			content.push('\n');
@@ -1464,15 +1474,14 @@ impl VirtualIssue {
 		             comments: &mut Vec<Comment>| {
 			if *in_body {
 				*in_body = false;
+				let events = preserve_paragraph_spacing(wrap_inline_in_paragraphs(std::mem::take(body_events)));
 				comments.push(Comment {
 					identity: CommentIdentity::Body,
-					body: wrap_inline_in_paragraphs(std::mem::take(body_events)).into(),
+					body: events.into(),
 				});
 			} else if let Some(identity) = current_comment_meta.take() {
-				comments.push(Comment {
-					identity,
-					body: wrap_inline_in_paragraphs(std::mem::take(current_comment_events)).into(),
-				});
+				let events = preserve_paragraph_spacing(wrap_inline_in_paragraphs(std::mem::take(current_comment_events)));
+				comments.push(Comment { identity, body: events.into() });
 			}
 		};
 
@@ -1560,13 +1569,23 @@ impl VirtualIssue {
 
 				// "!s" or "!c" as bare text (tight items have no paragraph wrappers)
 				OwnedEvent::Text(t) if t.trim().eq_ignore_ascii_case("!s") || t.trim().eq_ignore_ascii_case("!c") => {
-					// Remove trailing SoftBreak from accumulated events (normalization artifact)
-					if in_body {
-						if matches!(body_events.last(), Some(OwnedEvent::SoftBreak)) {
-							body_events.pop();
+					// Remove trailing artifacts from accumulated events.
+					// When `!c` appears as first text inside a paragraph (e.g. `Start(P), Text("!c"), SoftBreak, ...`),
+					// the Start(P) was already pushed. Strip it along with any preceding SoftBreak.
+					let strip_trailing = |evs: &mut Vec<OwnedEvent>| {
+						// Pop trailing Start(Paragraph) — stray from paragraph containing `!c`
+						if matches!(evs.last(), Some(OwnedEvent::Start(OwnedTag::Paragraph))) {
+							evs.pop();
 						}
-					} else if current_comment_meta.is_some() && matches!(current_comment_events.last(), Some(OwnedEvent::SoftBreak)) {
-						current_comment_events.pop();
+						// Pop trailing SoftBreak — normalization artifact
+						if matches!(evs.last(), Some(OwnedEvent::SoftBreak)) {
+							evs.pop();
+						}
+					};
+					if in_body {
+						strip_trailing(&mut body_events);
+					} else if current_comment_meta.is_some() {
+						strip_trailing(&mut current_comment_events);
 					}
 					if t.trim().eq_ignore_ascii_case("!s") {
 						select_blockers = true;
@@ -1575,6 +1594,10 @@ impl VirtualIssue {
 						current_comment_meta = Some(CommentIdentity::Pending);
 					}
 					pos += 1;
+					// Skip SoftBreak following `!c`/`!s` text (continuation within same paragraph)
+					if matches!(events.get(pos), Some(OwnedEvent::SoftBreak)) {
+						pos += 1;
+					}
 				}
 
 				// Heading: check for "# Blockers" (with optional !s suffix)
@@ -2075,28 +2098,28 @@ mod tests {
 	fn test_find_last_blocker_position_single_item() {
 		let content = "- [ ] Issue <!-- https://github.com/owner/repo/issues/1 -->\n\n  Body\n\n  # Blockers\n  - task 1\n";
 		let issue = unsafe_mock_parse_virtual(content);
-		insta::assert_snapshot!(format!("{:?}", issue.find_last_blocker_position()), @"Some((4, 5))");
+		insta::assert_snapshot!(format!("{:?}", issue.find_last_blocker_position()), @"Some((5, 5))");
 	}
 
 	#[test]
 	fn test_find_last_blocker_position_multiple_items() {
 		let content = "- [ ] Issue <!-- https://github.com/owner/repo/issues/1 -->\n\n  Body\n\n  # Blockers\n  - task 1\n  - task 2\n  - task 3\n";
 		let issue = unsafe_mock_parse_virtual(content);
-		insta::assert_snapshot!(format!("{:?}", issue.find_last_blocker_position()), @"Some((6, 5))");
+		insta::assert_snapshot!(format!("{:?}", issue.find_last_blocker_position()), @"Some((7, 5))");
 	}
 
 	#[test]
 	fn test_find_last_blocker_position_with_nesting() {
 		let content = "- [ ] Issue <!-- https://github.com/owner/repo/issues/1 -->\n\n  Body\n\n  # Blockers\n  - Phase 1\n    - task a\n  - Phase 2\n    - task b\n";
 		let issue = unsafe_mock_parse_virtual(content);
-		insta::assert_snapshot!(format!("{:?}", issue.find_last_blocker_position()), @"Some((7, 7))");
+		insta::assert_snapshot!(format!("{:?}", issue.find_last_blocker_position()), @"Some((8, 7))");
 	}
 
 	#[test]
 	fn test_find_last_blocker_position_before_sub_issues() {
 		let content = "- [ ] Issue <!-- https://github.com/owner/repo/issues/1 -->\n\n  Body\n\n  # Blockers\n  - blocker task\n\n  - [ ] Sub issue <!--sub https://github.com/owner/repo/issues/2 -->\n";
 		let issue = unsafe_mock_parse_virtual(content);
-		insta::assert_snapshot!(format!("{:?}", issue.find_last_blocker_position()), @"Some((4, 5))");
+		insta::assert_snapshot!(format!("{:?}", issue.find_last_blocker_position()), @"Some((5, 5))");
 	}
 
 	#[test]
@@ -2184,6 +2207,7 @@ mod tests {
 		insta::assert_snapshot!(unsafe_mock_parse_virtual(content).serialize_virtual(), @"
 		- [ ] Issue <!-- https://github.com/owner/repo/issues/1 -->
 		  Body
+
 		  # Blockers
 		  - task 1
 		  - task 2
@@ -2335,5 +2359,52 @@ mod tests {
 		assert_eq!(vi.children.len(), 1, "checkbox item after empty line becomes child");
 		let child = vi.children.values().next().unwrap();
 		assert_eq!(child.contents.title, "new child");
+	}
+
+	#[test]
+	fn test_body_blank_lines_preserved_roundtrip() {
+		crate::current_user::set("mock_user".to_string());
+		let input = "- [ ] Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n  some text\n\n  ```rust\n  fn main() {\n    println!(\"hello\");\n  }\n  ```\n\n  more text\n";
+		let issue = unsafe_mock_parse_virtual(input);
+		let serialized = issue.serialize_virtual();
+		insta::assert_snapshot!(serialized, @r#"
+		- [ ] Issue <!-- https://github.com/owner/repo/issues/1 -->
+		  some text
+
+		  ````rust
+		  fn main() {
+		    println!("hello");
+		  }
+		  ````
+
+		  more text
+		"#);
+	}
+
+	#[test]
+	fn test_body_multiple_paragraphs_preserved_roundtrip() {
+		crate::current_user::set("mock_user".to_string());
+		let input = "- [ ] Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n  first paragraph\n\n  second paragraph\n\n  third paragraph\n";
+		let issue = unsafe_mock_parse_virtual(input);
+		let serialized = issue.serialize_virtual();
+		insta::assert_snapshot!(serialized, @"
+		- [ ] Issue <!-- https://github.com/owner/repo/issues/1 -->
+		  first paragraph
+
+		  second paragraph
+
+		  third paragraph
+		");
+	}
+
+	#[test]
+	fn test_body_blank_lines_idempotent() {
+		crate::current_user::set("mock_user".to_string());
+		let input = "- [ ] Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n  some text\n\n  ```rust\n  fn main() {\n    println!(\"hello\");\n  }\n  ```\n\n  more text\n";
+		let issue = unsafe_mock_parse_virtual(input);
+		let s1 = issue.serialize_virtual();
+		let issue2 = unsafe_mock_parse_virtual(&s1);
+		let s2 = issue2.serialize_virtual();
+		assert_eq!(s1, s2, "body blank lines must be preserved idempotently");
 	}
 }

@@ -254,6 +254,11 @@ impl From<&BlockerSequence> for String {
 		for item in &seq.items {
 			render_item_text(&mut out, item, 0);
 		}
+		// render_item_text appends \n after each item; trim the trailing one
+		// so the output doesn't include a spurious trailing newline
+		if out.ends_with('\n') {
+			out.pop();
+		}
 		out
 	}
 }
