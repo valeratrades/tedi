@@ -154,7 +154,7 @@ fn get_milestone(tf: Timeframe, retrieved_milestones: &[Milestone]) -> Result<St
 				source: MilestoneError::MissingDueOn,
 			})?;
 
-			if *due_on < Timestamp::now() {
+			if *due_on + crate::utils::same_day_buffer() < Timestamp::now() {
 				return Err(GetMilestoneError {
 					requested_tf: tf,
 					source: MilestoneError::MilestoneOutdated { due_on: *due_on },
@@ -282,7 +282,7 @@ async fn edit_milestone(settings: &LiveSettings, tf: Timeframe, offline: bool, m
 		})?;
 		let desc = milestone.description.clone().unwrap_or_default();
 		let num = milestone.number;
-		let outdated = milestone.due_on.map(|d| d < Timestamp::now()).unwrap_or(true);
+		let outdated = milestone.due_on.map(|d| d + crate::utils::same_day_buffer() < Timestamp::now()).unwrap_or(true);
 		(desc, num, outdated)
 	};
 
