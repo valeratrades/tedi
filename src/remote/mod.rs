@@ -303,6 +303,17 @@ impl crate::LazyIssue<RemoteSource> for Issue {
 	// Uses default load() impl from LazyIssue trait
 }
 
+/// Error type for remote sink operations.
+#[derive(Debug, thiserror::Error)]
+pub enum RemoteSinkError {
+	/// GitHub API operation failed.
+	#[error(transparent)]
+	Github(#[from] crate::github::GithubError),
+
+	/// Parent issue has unresolved title-based selector (pending issue in lineage).
+	#[error(transparent)]
+	TitleInGitPath(#[from] crate::TitleInGitPathError),
+}
 /// Build IssueContents from GitHub API data.
 #[instrument(skip_all, fields(issue_number = issue.number, title = %issue.title))]
 fn build_contents_from_github(issue: &GithubIssue, comments: &[GithubComment]) -> IssueContents {
@@ -339,18 +350,6 @@ fn build_contents_from_github(issue: &GithubIssue, comments: &[GithubComment]) -
 //==============================================================================
 // Sink<Remote> Implementation
 //==============================================================================
-
-/// Error type for remote sink operations.
-#[derive(Debug, thiserror::Error)]
-pub enum RemoteSinkError {
-	/// GitHub API operation failed.
-	#[error(transparent)]
-	Github(#[from] crate::github::GithubError),
-
-	/// Parent issue has unresolved title-based selector (pending issue in lineage).
-	#[error(transparent)]
-	TitleInGitPath(#[from] crate::TitleInGitPathError),
-}
 
 impl Sink<Remote> for Issue {
 	type Error = RemoteSinkError;

@@ -6,37 +6,9 @@ use serde::Deserialize;
 
 pub use crate::RepoInfo;
 
-/// Error type for GitHub API operations.
-#[derive(Debug, thiserror::Error)]
-pub enum GithubError {
-	/// HTTP request failed (network, TLS, timeout, etc.)
-	#[error(transparent)]
-	Request(#[from] reqwest::Error),
-
-	/// GitHub API returned a non-success status code.
-	#[error("{context}: {status} - {body}")]
-	Api {
-		status: reqwest::StatusCode,
-		body: String,
-		context: String,
-		#[backtrace]
-		backtrace: Backtrace,
-	},
-
-	/// GraphQL-level errors in the response body.
-	#[error("GraphQL errors: {0}")]
-	Graphql(String),
-
-	/// Client not initialized.
-	#[error("GitHub client not initialized. Is the config file missing a github_token?")]
-	NotInitialized,
-
-	/// Generic error (for mocks and other non-HTTP contexts).
-	#[error("{0}")]
-	Other(String),
-}
-
 pub type BoxedGithubClient = Arc<dyn GithubClient>;
+use color_eyre::eyre::{Result, bail, eyre};
+
 /// Trait defining all Github API operations.
 /// This allows for both real API calls and mock implementations for testing.
 #[async_trait]
@@ -101,6 +73,36 @@ pub trait GithubClient: Send + Sync {
 	/// Check if a repository exists and is accessible (we have at least read access)
 	async fn repo_exists(&self, repo: RepoInfo) -> Result<bool, GithubError>;
 }
+/// Error type for GitHub API operations.
+#[derive(Debug, thiserror::Error)]
+pub enum GithubError {
+	/// HTTP request failed (network, TLS, timeout, etc.)
+	#[error(transparent)]
+	Request(#[from] reqwest::Error),
+
+	/// GitHub API returned a non-success status code.
+	#[error("{context}: {status} - {body}")]
+	Api {
+		status: reqwest::StatusCode,
+		body: String,
+		context: String,
+		#[backtrace]
+		backtrace: Backtrace,
+	},
+
+	/// GraphQL-level errors in the response body.
+	#[error("GraphQL errors: {0}")]
+	Graphql(String),
+
+	/// Client not initialized.
+	#[error("GitHub client not initialized. Is the config file missing a github_token?")]
+	NotInitialized,
+
+	/// Generic error (for mocks and other non-HTTP contexts).
+	#[error("{0}")]
+	Other(String),
+}
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct GithubIssue {
 	pub number: u64,
@@ -609,8 +611,6 @@ pub mod client {
 //==============================================================================
 // Utility functions (URL parsing, etc.) - These don't need the trait
 //==============================================================================
-
-use color_eyre::eyre::{Result, bail, eyre};
 
 /// Parse a Github issue URL and extract owner, repo, and issue number.
 /// Supports formats like:
