@@ -672,13 +672,18 @@ impl std::fmt::Display for IssueIndex {
 	}
 }
 
+/// Error returned when parsing an `IssueIndex` from a string fails.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub struct IssueIndexParseError(String);
+
 impl std::str::FromStr for IssueIndex {
-	type Err = color_eyre::eyre::Report;
+	type Err = IssueIndexParseError;
 
 	fn from_str(s: &str) -> Result<Self, Self::Err> {
 		let parts: Vec<&str> = s.split('/').collect();
 		if parts.len() < 2 {
-			color_eyre::eyre::bail!("IssueIndex requires at least owner/repo, got: {s}");
+			return Err(IssueIndexParseError(format!("IssueIndex requires at least owner/repo, got: {s}")));
 		}
 		let repo_info = RepoInfo::new(parts[0], parts[1]);
 		let selectors: Vec<IssueSelector> = parts[2..]

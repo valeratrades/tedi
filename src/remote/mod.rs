@@ -31,7 +31,7 @@ pub enum RemoteError {
 		repo: RepoInfo,
 		number: u64,
 		#[source]
-		source: color_eyre::Report,
+		source: crate::github::GithubError,
 	},
 
 	/// Failed to fetch issue comments from GitHub.
@@ -40,7 +40,7 @@ pub enum RemoteError {
 		repo: RepoInfo,
 		number: u64,
 		#[source]
-		source: color_eyre::Report,
+		source: crate::github::GithubError,
 	},
 
 	/// Failed to fetch sub-issues from GitHub.
@@ -49,7 +49,7 @@ pub enum RemoteError {
 		repo: RepoInfo,
 		number: u64,
 		#[source]
-		source: color_eyre::Report,
+		source: crate::github::GithubError,
 	},
 
 	/// Failed to resolve ancestry (parent issue chain).
@@ -58,7 +58,7 @@ pub enum RemoteError {
 		repo: RepoInfo,
 		number: u64,
 		#[source]
-		source: color_eyre::Report,
+		source: crate::github::GithubError,
 	},
 
 	/// Failed to fetch timestamps from GitHub GraphQL API.
@@ -67,7 +67,7 @@ pub enum RemoteError {
 		repo: RepoInfo,
 		number: u64,
 		#[source]
-		source: color_eyre::Report,
+		source: crate::github::GithubError,
 	},
 
 	/// Issue not found on GitHub (404).
@@ -80,7 +80,7 @@ pub enum RemoteError {
 
 	/// GitHub client not available.
 	#[error("GitHub client not available")]
-	NoClient(#[source] color_eyre::Report),
+	NoClient(#[source] crate::github::GithubError),
 }
 
 /// Marker type for remote GitHub sink operations.
@@ -340,10 +340,20 @@ fn build_contents_from_github(issue: &GithubIssue, comments: &[GithubComment]) -
 // Sink<Remote> Implementation
 //==============================================================================
 
-//TODO: @claude: create proper error type for Remote sink (see ConsensusSinkError for reference)
-// in the perfect world would have a common SinkError<T> type with encapsulation of shared failure modes. Generic <T> there is for tool-specific errors, - so for local and consensus it should embed `LocalError`, for remote `GithubError`
+/// Error type for remote sink operations.
+#[derive(Debug, thiserror::Error)]
+pub enum RemoteSinkError {
+	/// GitHub API operation failed.
+	#[error(transparent)]
+	Github(#[from] crate::github::GithubError),
+
+	/// Parent issue has unresolved title-based selector (pending issue in lineage).
+	#[error(transparent)]
+	TitleInGitPath(#[from] crate::TitleInGitPathError),
+}
+
 impl Sink<Remote> for Issue {
-	type Error = color_eyre::Report;
+	type Error = RemoteSinkError;
 
 	async fn sink(&mut self, old: Option<&Issue>) -> Result<bool, Self::Error> {
 		// Virtual issues never sync to remote - they're local-only

@@ -1,11 +1,40 @@
-use std::sync::Arc;
+use std::{backtrace::Backtrace, sync::Arc};
 
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::Deserialize;
-use v_utils::prelude::*;
 
 pub use crate::RepoInfo;
+
+/// Error type for GitHub API operations.
+#[derive(Debug, thiserror::Error)]
+pub enum GithubError {
+	/// HTTP request failed (network, TLS, timeout, etc.)
+	#[error(transparent)]
+	Request(#[from] reqwest::Error),
+
+	/// GitHub API returned a non-success status code.
+	#[error("{context}: {status} - {body}")]
+	Api {
+		status: reqwest::StatusCode,
+		body: String,
+		context: String,
+		#[backtrace]
+		backtrace: Backtrace,
+	},
+
+	/// GraphQL-level errors in the response body.
+	#[error("GraphQL errors: {0}")]
+	Graphql(String),
+
+	/// Client not initialized.
+	#[error("GitHub client not initialized. Is the config file missing a github_token?")]
+	NotInitialized,
+
+	/// Generic error (for mocks and other non-HTTP contexts).
+	#[error("{0}")]
+	Other(String),
+}
 
 pub type BoxedGithubClient = Arc<dyn GithubClient>;
 /// Trait defining all Github API operations.
@@ -13,64 +42,64 @@ pub type BoxedGithubClient = Arc<dyn GithubClient>;
 #[async_trait]
 pub trait GithubClient: Send + Sync {
 	/// Fetch the authenticated user's login name
-	async fn fetch_authenticated_user(&self) -> Result<String>;
+	async fn fetch_authenticated_user(&self) -> Result<String, GithubError>;
 
 	/// Fetch a single issue by number
-	async fn fetch_issue(&self, repo: RepoInfo, issue_number: u64) -> Result<GithubIssue>;
+	async fn fetch_issue(&self, repo: RepoInfo, issue_number: u64) -> Result<GithubIssue, GithubError>;
 
 	/// Fetch all comments on an issue
-	async fn fetch_comments(&self, repo: RepoInfo, issue_number: u64) -> Result<Vec<GithubComment>>;
+	async fn fetch_comments(&self, repo: RepoInfo, issue_number: u64) -> Result<Vec<GithubComment>, GithubError>;
 
 	/// Fetch all sub-issues of an issue
-	async fn fetch_sub_issues(&self, repo: RepoInfo, issue_number: u64) -> Result<Vec<GithubIssue>>;
+	async fn fetch_sub_issues(&self, repo: RepoInfo, issue_number: u64) -> Result<Vec<GithubIssue>, GithubError>;
 
 	/// Update an issue's body
-	async fn update_issue_body(&self, repo: RepoInfo, issue_number: u64, body: &str) -> Result<()>;
+	async fn update_issue_body(&self, repo: RepoInfo, issue_number: u64, body: &str) -> Result<(), GithubError>;
 
 	/// Update an issue's state (open/closed)
-	async fn update_issue_state(&self, repo: RepoInfo, issue_number: u64, state: &str) -> Result<()>;
+	async fn update_issue_state(&self, repo: RepoInfo, issue_number: u64, state: &str) -> Result<(), GithubError>;
 
 	/// Update a comment's body
-	async fn update_comment(&self, repo: RepoInfo, comment_id: u64, body: &str) -> Result<()>;
+	async fn update_comment(&self, repo: RepoInfo, comment_id: u64, body: &str) -> Result<(), GithubError>;
 
 	/// Create a new comment on an issue
-	async fn create_comment(&self, repo: RepoInfo, issue_number: u64, body: &str) -> Result<()>;
+	async fn create_comment(&self, repo: RepoInfo, issue_number: u64, body: &str) -> Result<(), GithubError>;
 
 	/// Delete a comment
-	async fn delete_comment(&self, repo: RepoInfo, comment_id: u64) -> Result<()>;
+	async fn delete_comment(&self, repo: RepoInfo, comment_id: u64) -> Result<(), GithubError>;
 
 	/// Create a new issue
-	async fn create_issue(&self, repo: RepoInfo, title: &str, body: &str) -> Result<CreatedIssue>;
+	async fn create_issue(&self, repo: RepoInfo, title: &str, body: &str) -> Result<CreatedIssue, GithubError>;
 
 	/// Add a sub-issue to a parent issue
 	/// Note: `child_issue_id` is the resource ID (not the issue number)
-	async fn add_sub_issue(&self, repo: RepoInfo, parent_issue_number: u64, child_issue_id: u64) -> Result<()>;
+	async fn add_sub_issue(&self, repo: RepoInfo, parent_issue_number: u64, child_issue_id: u64) -> Result<(), GithubError>;
 
 	/// Find an issue by exact title match
 	#[allow(dead_code)]
-	async fn find_issue_by_title(&self, repo: RepoInfo, title: &str) -> Result<Option<u64>>;
+	async fn find_issue_by_title(&self, repo: RepoInfo, title: &str) -> Result<Option<u64>, GithubError>;
 
 	/// Check if an issue exists by number
 	#[allow(dead_code)]
-	async fn issue_exists(&self, repo: RepoInfo, issue_number: u64) -> Result<bool>;
+	async fn issue_exists(&self, repo: RepoInfo, issue_number: u64) -> Result<bool, GithubError>;
 
 	/// Fetch the parent issue of a sub-issue (returns None if issue has no parent)
-	async fn fetch_parent_issue(&self, repo: RepoInfo, issue_number: u64) -> Result<Option<GithubIssue>>;
+	async fn fetch_parent_issue(&self, repo: RepoInfo, issue_number: u64) -> Result<Option<GithubIssue>, GithubError>;
 
 	/// Fetch timestamps from GraphQL timeline API for title, description, and label changes.
 	/// All fields are optional because GitHub only retains timeline events for 90 days.
 	/// Note: Comment timestamps should be extracted from GithubComment's created_at/updated_at fields.
-	async fn fetch_timeline_timestamps(&self, repo: RepoInfo, issue_number: u64) -> Result<GraphqlTimelineTimestamps>;
+	async fn fetch_timeline_timestamps(&self, repo: RepoInfo, issue_number: u64) -> Result<GraphqlTimelineTimestamps, GithubError>;
 
 	/// Replace all labels on an issue.
-	async fn set_labels(&self, repo: RepoInfo, issue_number: u64, labels: &[String]) -> Result<()>;
+	async fn set_labels(&self, repo: RepoInfo, issue_number: u64, labels: &[String]) -> Result<(), GithubError>;
 
 	/// Set or clear the milestone on an issue.
 	/// Pass `Some(number)` to assign, `None` to unassign.
-	async fn set_issue_milestone(&self, repo: RepoInfo, issue_number: u64, milestone: Option<u64>) -> Result<()>;
+	async fn set_issue_milestone(&self, repo: RepoInfo, issue_number: u64, milestone: Option<u64>) -> Result<(), GithubError>;
 
 	/// Check if a repository exists and is accessible (we have at least read access)
-	async fn repo_exists(&self, repo: RepoInfo) -> Result<bool>;
+	async fn repo_exists(&self, repo: RepoInfo) -> Result<bool, GithubError>;
 }
 #[derive(Clone, Debug, Deserialize)]
 pub struct GithubIssue {
@@ -175,26 +204,36 @@ impl RealGithubClient {
 	}
 
 	/// Send a PATCH request with JSON body, returning an error on non-success status
-	async fn patch_json(&self, url: &str, json: &serde_json::Value, error_context: &str) -> Result<()> {
+	async fn patch_json(&self, url: &str, json: &serde_json::Value, error_context: &str) -> Result<(), GithubError> {
 		let res = self.patch(url).json(json).send().await?;
 
 		if !res.status().is_success() {
 			let status = res.status();
 			let body = res.text().await.unwrap_or_default();
-			bail!("{error_context}: {status} - {body}");
+			return Err(GithubError::Api {
+				status,
+				body,
+				context: error_context.to_string(),
+				backtrace: Backtrace::capture(),
+			});
 		}
 
 		Ok(())
 	}
 
 	/// Send a POST request with JSON body, returning an error on non-success status
-	async fn post_json(&self, url: &str, json: &serde_json::Value, error_context: &str) -> Result<()> {
+	async fn post_json(&self, url: &str, json: &serde_json::Value, error_context: &str) -> Result<(), GithubError> {
 		let res = self.post(url).json(json).send().await?;
 
 		if !res.status().is_success() {
 			let status = res.status();
 			let body = res.text().await.unwrap_or_default();
-			bail!("{error_context}: {status} - {body}");
+			return Err(GithubError::Api {
+				status,
+				body,
+				context: error_context.to_string(),
+				backtrace: Backtrace::capture(),
+			});
 		}
 
 		Ok(())
@@ -203,48 +242,63 @@ impl RealGithubClient {
 
 #[async_trait]
 impl GithubClient for RealGithubClient {
-	async fn fetch_authenticated_user(&self) -> Result<String> {
+	async fn fetch_authenticated_user(&self) -> Result<String, GithubError> {
 		let res = self.get("https://api.github.com/user").send().await?;
 
 		if !res.status().is_success() {
 			let status = res.status();
 			let body = res.text().await.unwrap_or_default();
-			bail!("Failed to fetch authenticated user: {status} - {body}");
+			return Err(GithubError::Api {
+				status,
+				body,
+				context: "Failed to fetch authenticated user".into(),
+				backtrace: Backtrace::capture(),
+			});
 		}
 
 		let user = res.json::<GithubUser>().await?;
 		Ok(user.login)
 	}
 
-	async fn fetch_issue(&self, repo: RepoInfo, issue_number: u64) -> Result<GithubIssue> {
+	async fn fetch_issue(&self, repo: RepoInfo, issue_number: u64) -> Result<GithubIssue, GithubError> {
 		let url = format!("https://api.github.com/repos/{}/{}/issues/{issue_number}", repo.owner(), repo.repo());
 		let res = self.get(&url).send().await?;
 
 		if !res.status().is_success() {
 			let status = res.status();
 			let body = res.text().await.unwrap_or_default();
-			bail!("Failed to fetch issue: {status} - {body}");
+			return Err(GithubError::Api {
+				status,
+				body,
+				context: "Failed to fetch issue".into(),
+				backtrace: Backtrace::capture(),
+			});
 		}
 
 		let issue = res.json::<GithubIssue>().await?;
 		Ok(issue)
 	}
 
-	async fn fetch_comments(&self, repo: RepoInfo, issue_number: u64) -> Result<Vec<GithubComment>> {
+	async fn fetch_comments(&self, repo: RepoInfo, issue_number: u64) -> Result<Vec<GithubComment>, GithubError> {
 		let url = format!("https://api.github.com/repos/{}/{}/issues/{issue_number}/comments", repo.owner(), repo.repo());
 		let res = self.get(&url).send().await?;
 
 		if !res.status().is_success() {
 			let status = res.status();
 			let body = res.text().await.unwrap_or_default();
-			bail!("Failed to fetch comments: {status} - {body}");
+			return Err(GithubError::Api {
+				status,
+				body,
+				context: "Failed to fetch comments".into(),
+				backtrace: Backtrace::capture(),
+			});
 		}
 
 		let comments = res.json::<Vec<GithubComment>>().await?;
 		Ok(comments)
 	}
 
-	async fn fetch_sub_issues(&self, repo: RepoInfo, issue_number: u64) -> Result<Vec<GithubIssue>> {
+	async fn fetch_sub_issues(&self, repo: RepoInfo, issue_number: u64) -> Result<Vec<GithubIssue>, GithubError> {
 		let url = format!("https://api.github.com/repos/{}/{}/issues/{issue_number}/sub_issues", repo.owner(), repo.repo());
 		let res = self.get(&url).send().await?;
 
@@ -258,70 +312,80 @@ impl GithubClient for RealGithubClient {
 		Ok(sub_issues)
 	}
 
-	async fn update_issue_body(&self, repo: RepoInfo, issue_number: u64, body: &str) -> Result<()> {
+	async fn update_issue_body(&self, repo: RepoInfo, issue_number: u64, body: &str) -> Result<(), GithubError> {
 		let url = format!("https://api.github.com/repos/{}/{}/issues/{issue_number}", repo.owner(), repo.repo());
 		self.patch_json(&url, &serde_json::json!({ "body": body }), "Failed to update issue body").await
 	}
 
-	async fn update_issue_state(&self, repo: RepoInfo, issue_number: u64, state: &str) -> Result<()> {
+	async fn update_issue_state(&self, repo: RepoInfo, issue_number: u64, state: &str) -> Result<(), GithubError> {
 		let url = format!("https://api.github.com/repos/{}/{}/issues/{issue_number}", repo.owner(), repo.repo());
 		self.patch_json(&url, &serde_json::json!({ "state": state }), "Failed to update issue state").await
 	}
 
-	async fn set_labels(&self, repo: RepoInfo, issue_number: u64, labels: &[String]) -> Result<()> {
+	async fn set_labels(&self, repo: RepoInfo, issue_number: u64, labels: &[String]) -> Result<(), GithubError> {
 		let url = format!("https://api.github.com/repos/{}/{}/issues/{issue_number}", repo.owner(), repo.repo());
 		self.patch_json(&url, &serde_json::json!({ "labels": labels }), "Failed to set labels").await
 	}
 
-	async fn set_issue_milestone(&self, repo: RepoInfo, issue_number: u64, milestone: Option<u64>) -> Result<()> {
+	async fn set_issue_milestone(&self, repo: RepoInfo, issue_number: u64, milestone: Option<u64>) -> Result<(), GithubError> {
 		let url = format!("https://api.github.com/repos/{}/{}/issues/{issue_number}", repo.owner(), repo.repo());
 		let json = serde_json::json!({ "milestone": milestone });
 		self.patch_json(&url, &json, "Failed to set issue milestone").await
 	}
 
-	async fn update_comment(&self, repo: RepoInfo, comment_id: u64, body: &str) -> Result<()> {
+	async fn update_comment(&self, repo: RepoInfo, comment_id: u64, body: &str) -> Result<(), GithubError> {
 		let url = format!("https://api.github.com/repos/{}/{}/issues/comments/{comment_id}", repo.owner(), repo.repo());
 		self.patch_json(&url, &serde_json::json!({ "body": body }), "Failed to update comment").await
 	}
 
-	async fn create_comment(&self, repo: RepoInfo, issue_number: u64, body: &str) -> Result<()> {
+	async fn create_comment(&self, repo: RepoInfo, issue_number: u64, body: &str) -> Result<(), GithubError> {
 		let url = format!("https://api.github.com/repos/{}/{}/issues/{issue_number}/comments", repo.owner(), repo.repo());
 		self.post_json(&url, &serde_json::json!({ "body": body }), "Failed to create comment").await
 	}
 
-	async fn delete_comment(&self, repo: RepoInfo, comment_id: u64) -> Result<()> {
+	async fn delete_comment(&self, repo: RepoInfo, comment_id: u64) -> Result<(), GithubError> {
 		let url = format!("https://api.github.com/repos/{}/{}/issues/comments/{comment_id}", repo.owner(), repo.repo());
 		let res = self.delete(&url).send().await?;
 
 		if !res.status().is_success() {
 			let status = res.status();
 			let body = res.text().await.unwrap_or_default();
-			bail!("Failed to delete comment: {status} - {body}");
+			return Err(GithubError::Api {
+				status,
+				body,
+				context: "Failed to delete comment".into(),
+				backtrace: Backtrace::capture(),
+			});
 		}
 
 		Ok(())
 	}
 
-	async fn create_issue(&self, repo: RepoInfo, title: &str, body: &str) -> Result<CreatedIssue> {
+	async fn create_issue(&self, repo: RepoInfo, title: &str, body: &str) -> Result<CreatedIssue, GithubError> {
 		let url = format!("https://api.github.com/repos/{}/{}/issues", repo.owner(), repo.repo());
 		let res = self.post(&url).json(&serde_json::json!({ "title": title, "body": body })).send().await?;
 
 		if !res.status().is_success() {
 			let status = res.status();
 			let body = res.text().await.unwrap_or_default();
-			bail!("Failed to create issue: {status} - {body}");
+			return Err(GithubError::Api {
+				status,
+				body,
+				context: "Failed to create issue".into(),
+				backtrace: Backtrace::capture(),
+			});
 		}
 
 		let issue = res.json::<CreatedIssue>().await?;
 		Ok(issue)
 	}
 
-	async fn add_sub_issue(&self, repo: RepoInfo, parent_issue_number: u64, child_issue_id: u64) -> Result<()> {
+	async fn add_sub_issue(&self, repo: RepoInfo, parent_issue_number: u64, child_issue_id: u64) -> Result<(), GithubError> {
 		let url = format!("https://api.github.com/repos/{}/{}/issues/{parent_issue_number}/sub_issues", repo.owner(), repo.repo());
 		self.post_json(&url, &serde_json::json!({ "sub_issue_id": child_issue_id }), "Failed to add sub-issue").await
 	}
 
-	async fn find_issue_by_title(&self, repo: RepoInfo, title: &str) -> Result<Option<u64>> {
+	async fn find_issue_by_title(&self, repo: RepoInfo, title: &str) -> Result<Option<u64>, GithubError> {
 		// Search for issues with this title (search in open and closed)
 		let encoded_title = urlencoding::encode(title);
 		let url = format!("https://api.github.com/search/issues?q=repo:{}/{}+in:title+{encoded_title}", repo.owner(), repo.repo());
@@ -353,13 +417,13 @@ impl GithubClient for RealGithubClient {
 		Ok(None)
 	}
 
-	async fn issue_exists(&self, repo: RepoInfo, issue_number: u64) -> Result<bool> {
+	async fn issue_exists(&self, repo: RepoInfo, issue_number: u64) -> Result<bool, GithubError> {
 		let url = format!("https://api.github.com/repos/{}/{}/issues/{issue_number}", repo.owner(), repo.repo());
 		let res = self.get(&url).send().await?;
 		Ok(res.status().is_success())
 	}
 
-	async fn fetch_parent_issue(&self, repo: RepoInfo, issue_number: u64) -> Result<Option<GithubIssue>> {
+	async fn fetch_parent_issue(&self, repo: RepoInfo, issue_number: u64) -> Result<Option<GithubIssue>, GithubError> {
 		let url = format!("https://api.github.com/repos/{}/{}/issues/{issue_number}/parent", repo.owner(), repo.repo());
 		let res = self.get(&url).send().await?;
 
@@ -371,14 +435,19 @@ impl GithubClient for RealGithubClient {
 		if !res.status().is_success() {
 			let status = res.status();
 			let body = res.text().await.unwrap_or_default();
-			bail!("Failed to fetch parent issue: {status} - {body}");
+			return Err(GithubError::Api {
+				status,
+				body,
+				context: "Failed to fetch parent issue".into(),
+				backtrace: Backtrace::capture(),
+			});
 		}
 
 		let parent = res.json::<GithubIssue>().await?;
 		Ok(Some(parent))
 	}
 
-	async fn fetch_timeline_timestamps(&self, repo: RepoInfo, issue_number: u64) -> Result<GraphqlTimelineTimestamps> {
+	async fn fetch_timeline_timestamps(&self, repo: RepoInfo, issue_number: u64) -> Result<GraphqlTimelineTimestamps, GithubError> {
 		// GraphQL query to fetch timeline events for timestamp extraction.
 		// We query for:
 		// - RenamedTitleEvent: title changes
@@ -435,14 +504,19 @@ impl GithubClient for RealGithubClient {
 		if !res.status().is_success() {
 			let status = res.status();
 			let body = res.text().await.unwrap_or_default();
-			bail!("Failed to fetch timeline timestamps via GraphQL: {status} - {body}");
+			return Err(GithubError::Api {
+				status,
+				body,
+				context: "Failed to fetch timeline timestamps via GraphQL".into(),
+				backtrace: Backtrace::capture(),
+			});
 		}
 
 		let response: serde_json::Value = res.json().await?;
 
 		// Check for GraphQL errors
 		if let Some(errors) = response.get("errors") {
-			bail!("GraphQL errors: {errors}");
+			return Err(GithubError::Graphql(errors.to_string()));
 		}
 
 		let mut timestamps = GraphqlTimelineTimestamps::default();
@@ -495,7 +569,7 @@ impl GithubClient for RealGithubClient {
 		Ok(timestamps)
 	}
 
-	async fn repo_exists(&self, repo: RepoInfo) -> Result<bool> {
+	async fn repo_exists(&self, repo: RepoInfo) -> Result<bool, GithubError> {
 		let url = format!("https://api.github.com/repos/{}/{}", repo.owner(), repo.repo());
 		let res = self.get(&url).send().await?;
 		Ok(res.status().is_success())
@@ -527,18 +601,16 @@ pub mod client {
 	}
 
 	/// Get the global GitHub client.
-	pub fn get() -> color_eyre::Result<BoxedGithubClient> {
-		CLIENT.with(|c| {
-			c.borrow()
-				.clone()
-				.ok_or_else(|| color_eyre::eyre::eyre!("GitHub client not initialized. Is the config file missing a github_token?"))
-		})
+	pub fn get() -> Result<BoxedGithubClient, super::GithubError> {
+		CLIENT.with(|c| c.borrow().clone().ok_or(super::GithubError::NotInitialized))
 	}
 }
 
 //==============================================================================
 // Utility functions (URL parsing, etc.) - These don't need the trait
 //==============================================================================
+
+use color_eyre::eyre::{Result, bail, eyre};
 
 /// Parse a Github issue URL and extract owner, repo, and issue number.
 /// Supports formats like:

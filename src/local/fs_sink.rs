@@ -10,26 +10,38 @@ use std::{
 use tracing::{debug, info, instrument, trace, warn};
 use v_utils::prelude::*;
 
-use super::{FsReader, IssueMeta, Local, LocalPath, LocalReader};
+use super::{FsReader, IssueMeta, Local, LocalPath, LocalReader, local_path::LocalPathError};
 use crate::{Issue, RepoInfo, local::LocalPathErrorKind, sink::Sink};
 
 /// Marker type for sinking to filesystem (submitted state).
 pub struct LocalFs;
 
+/// Error type for local filesystem sink operations.
+#[derive(Debug, thiserror::Error)]
+pub enum LocalFsSinkError {
+	/// Filesystem IO error (create_dir, write, remove, etc.)
+	#[error(transparent)]
+	Io(#[from] std::io::Error),
+
+	/// Path resolution failed.
+	#[error(transparent)]
+	Path(#[from] LocalPathError),
+}
+
 /// Remove a file, ignoring NotFound errors (file may not exist).
 /// Propagates other errors (permission denied, etc.).
-fn try_remove_file(path: &Path) -> Result<()> {
+fn try_remove_file(path: &Path) -> Result<(), std::io::Error> {
 	match std::fs::remove_file(path) {
 		Ok(()) => Ok(()),
 		Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-		Err(e) => Err(e.into()),
+		Err(e) => Err(e),
 	}
 }
 
 //TODO: @claude: create proper error type for Submitted sink (see ConsensusSinkError for reference)
 /// r[local.sink-only-mutation]
 impl Sink<LocalFs> for Issue {
-	type Error = color_eyre::Report;
+	type Error = LocalFsSinkError;
 
 	async fn sink(&mut self, old: Option<&Issue>) -> Result<bool, Self::Error> {
 		let result = sink_issue_node(self, old, &FsReader)?;
@@ -66,7 +78,7 @@ impl Sink<LocalFs> for Issue {
 	issue_id = ?new.git_id(),
 	title = %new.contents.title,
 ))]
-fn sink_issue_node<R: LocalReader>(new: &Issue, maybe_old: Option<&Issue>, reader: &R) -> Result<bool> {
+fn sink_issue_node<R: LocalReader>(new: &Issue, maybe_old: Option<&Issue>, reader: &R) -> Result<bool, LocalFsSinkError> {
 	// Duplicate issues self-eliminate: remove local files instead of writing
 	if let crate::CloseState::Duplicate(dup_of) = new.contents.state {
 		info!(issue = ?new.git_id(), duplicate_of = dup_of, "Removing duplicate issue from local storage");
@@ -173,7 +185,7 @@ fn sink_issue_node<R: LocalReader>(new: &Issue, maybe_old: Option<&Issue>, reade
 /// Strategy: find all matching paths via `matching_subpaths`, compute the correct target path
 /// via `deterministic`, then remove any matching paths that aren't the target.
 #[instrument(skip(issue), fields(has_children, closed))]
-fn cleanup_old_locations(issue: &Issue, has_children: bool, closed: bool) -> Result<()> {
+fn cleanup_old_locations(issue: &Issue, has_children: bool, closed: bool) -> Result<(), LocalFsSinkError> {
 	let parent_issue_idx = issue.parent_index();
 	let parent_path = LocalPath::from(parent_issue_idx);
 	let reader = FsReader;
@@ -278,7 +290,7 @@ fn cleanup_old_locations(issue: &Issue, has_children: bool, closed: bool) -> Res
 
 /// Remove all file variants for an issue.
 #[instrument(skip_all)]
-fn remove_issue_files<R: LocalReader>(issue: &Issue, reader: &R) -> Result<bool> {
+fn remove_issue_files<R: LocalReader>(issue: &Issue, reader: &R) -> Result<bool, LocalFsSinkError> {
 	let owner = issue.identity.owner().to_string();
 	let repo = issue.identity.repo().to_string();
 
@@ -295,7 +307,7 @@ fn remove_issue_files<R: LocalReader>(issue: &Issue, reader: &R) -> Result<bool>
 		Err(e) if e.kind == LocalPathErrorKind::NotFound => {
 			debug!("issue not found, nothing to remove");
 		}
-		Err(e) => color_eyre::eyre::bail!(e),
+		Err(e) => return Err(e.into()),
 	};
 
 	// Remove metadata

@@ -509,12 +509,12 @@ impl Local {
 	}
 
 	/// Save project metadata
-	fn save_project_meta(repo_info: RepoInfo, meta: &ProjectMeta) -> Result<()> {
+	fn save_project_meta(repo_info: RepoInfo, meta: &ProjectMeta) -> std::io::Result<()> {
 		let meta_path = Self::project_meta_path(repo_info);
 		if let Some(parent) = meta_path.parent() {
 			std::fs::create_dir_all(parent)?;
 		}
-		let content = serde_json::to_string_pretty(meta)?;
+		let content = serde_json::to_string_pretty(meta).expect("ProjectMeta serialization is infallible");
 		std::fs::write(&meta_path, content)?;
 		Ok(())
 	}
@@ -536,7 +536,7 @@ impl Local {
 
 	/// Save metadata for a specific issue to the project's .meta.json.
 	#[instrument(skip(meta), fields(issue_number))]
-	pub fn save_issue_meta(repo_info: RepoInfo, issue_number: u64, meta: &IssueMeta) -> Result<()> {
+	pub fn save_issue_meta(repo_info: RepoInfo, issue_number: u64, meta: &IssueMeta) -> std::io::Result<()> {
 		let mut project_meta = Self::load_project_meta(repo_info);
 		project_meta.issues.insert(issue_number, meta.clone());
 		Self::save_project_meta(repo_info, &project_meta)
@@ -544,7 +544,7 @@ impl Local {
 
 	/// Remove metadata for a specific issue from the project's .meta.json.
 	#[instrument(skip(repo_info), fields(issue_number))]
-	fn remove_issue_meta(repo_info: RepoInfo, issue_number: u64) -> Result<()> {
+	fn remove_issue_meta(repo_info: RepoInfo, issue_number: u64) -> std::io::Result<()> {
 		let mut project_meta = Self::load_project_meta(repo_info);
 		if project_meta.issues.remove(&issue_number).is_some() {
 			Self::save_project_meta(repo_info, &project_meta)?;
@@ -1094,7 +1094,7 @@ mod fs_sink;
 use std::path::{Path, PathBuf};
 
 pub use consensus::Consensus;
-pub use fs_sink::LocalFs;
+pub use fs_sink::{LocalFs, LocalFsSinkError};
 //==============================================================================
 // Error Types
 //==============================================================================
@@ -1156,7 +1156,7 @@ pub struct LocalIssueSource<R: LocalReader> {
 pub enum ConsensusSinkError {
 	#[display("failed to write issue files: {_0}")]
 	#[diagnostic(code(tedi::consensus::write))]
-	Write(color_eyre::Report),
+	Write(#[from] fs_sink::LocalFsSinkError),
 
 	#[display("git add failed: {_0}")]
 	#[diagnostic(code(tedi::consensus::git_add))]

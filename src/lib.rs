@@ -1,4 +1,5 @@
 #![feature(vec_peek_mut)]
+#![feature(error_generic_member_access)]
 
 pub mod github;
 pub mod issue;
