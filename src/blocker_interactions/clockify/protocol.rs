@@ -351,13 +351,18 @@ async fn resolve_project(client: &reqwest::Client, ws: &str, input: &str) -> Res
 
 	// Project not found - ask user if they want to create it
 	println!("Project '{input}' not found in Clockify workspace.");
-	print!("Would you like to create a new Clockify project with this exact name? [y/N]: ");
-	Write::flush(&mut std::io::stdout())?;
+	let accepted = if crate::auto_yes::get() {
+		println!("Would you like to create a new Clockify project with this exact name? [y/N]: y (--yes)");
+		true
+	} else {
+		print!("Would you like to create a new Clockify project with this exact name? [y/N]: ");
+		Write::flush(&mut std::io::stdout())?;
+		let mut response = String::new();
+		std::io::stdin().read_line(&mut response)?;
+		response.trim().to_lowercase() == "y" || response.trim().to_lowercase() == "yes"
+	};
 
-	let mut response = String::new();
-	std::io::stdin().read_line(&mut response)?;
-
-	if response.trim().to_lowercase() == "y" || response.trim().to_lowercase() == "yes" {
+	if accepted {
 		let project_id = create_project(client, ws, input).await?;
 		println!("Created new project '{input}' with ID: {project_id}");
 		Ok(project_id)

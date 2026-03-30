@@ -17,6 +17,20 @@ use std::time::Duration;
 use clap::{Parser, ValueEnum};
 use v_utils::utils::exit_on_error;
 
+pub mod auto_yes {
+	use std::sync::atomic::{AtomicBool, Ordering};
+
+	static AUTO_YES: AtomicBool = AtomicBool::new(false);
+
+	pub fn set(value: bool) {
+		AUTO_YES.store(value, Ordering::Relaxed);
+	}
+
+	pub fn get() -> bool {
+		AUTO_YES.load(Ordering::Relaxed)
+	}
+}
+
 /// Mock behavior type for testing.
 #[derive(Clone, Copy, Debug, Default, ValueEnum)]
 pub enum MockType {
@@ -44,6 +58,9 @@ struct Cli {
 	/// Log to a specific file (filename only, no path). Logs go to ~/.local/state/tedi/{filename}.log
 	#[arg(long, global = true)]
 	log_to: Option<String>,
+	/// Auto-accept all confirmation prompts
+	#[arg(long, short = 'y', global = true)]
+	yes: bool,
 }
 #[derive(clap::Subcommand)]
 enum Commands {
@@ -73,6 +90,7 @@ async fn main() {
 	v_utils::clientside!(extract_log_to());
 
 	let cli = Cli::parse();
+	auto_yes::set(cli.yes);
 
 	let settings = exit_on_error(config::LiveSettings::new(cli.settings_flags.clone(), Duration::from_secs(3)));
 

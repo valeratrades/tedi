@@ -75,12 +75,16 @@ pub fn get_workspace_fully_qualified_setting(workspace: &str) -> Result<bool> {
 	} else {
 		// Ask user for preference
 		println!("Workspace '{workspace}' fully-qualified mode setting not found.");
-		print!("Use fully-qualified mode (legacy) for this workspace? [y/N]: ");
-		IoWrite::flush(&mut std::io::stdout())?;
-
-		let mut input = String::new();
-		std::io::stdin().read_line(&mut input)?;
-		let use_fully_qualified = input.trim().to_lowercase() == "y" || input.trim().to_lowercase() == "yes";
+		let use_fully_qualified = if crate::auto_yes::get() {
+			println!("Use fully-qualified mode (legacy) for this workspace? [y/N]: y (--yes)");
+			true
+		} else {
+			print!("Use fully-qualified mode (legacy) for this workspace? [y/N]: ");
+			IoWrite::flush(&mut std::io::stdout())?;
+			let mut input = String::new();
+			std::io::stdin().read_line(&mut input)?;
+			input.trim().to_lowercase() == "y" || input.trim().to_lowercase() == "yes"
+		};
 
 		// Save the preference
 		let mut cache = load_workspace_cache();
