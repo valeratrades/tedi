@@ -399,7 +399,9 @@ impl MilestoneBlockerCache {
 		Ok(link)
 	}
 
-	/// Set current to the first embedded link whose display string contains `pattern` (case-insensitive).
+	/// Set current to the embedded link whose display string matches `pattern` (case-insensitive).
+	/// If exactly one link matches, selects it directly.
+	/// If multiple links match, opens fzf with all matching entries and the pattern pre-filled.
 	pub fn set_by_pattern(pattern: &str) -> Result<super::IssueLink, String> {
 		let mut cache = Self::load().ok_or("No milestone blocker cache. Run `todo milestones edit` first.")?;
 		let links = cache.embedded_links();
@@ -407,16 +409,27 @@ impl MilestoneBlockerCache {
 			return Err("No issues in milestone.".into());
 		}
 		let pattern_lower = pattern.to_lowercase();
-		let found = links.iter().enumerate().find(|(_, link)| Self::display_for_link(link).to_lowercase().contains(&pattern_lower));
-		match found {
-			Some((idx, link)) => {
-				cache.current_index = idx;
-				let link = link.clone();
-				cache.save().map_err(|e| format!("Failed to save milestone cache: {e}"))?;
-				Ok(link)
+		let matches: Vec<(usize, super::IssueLink)> = links
+			.iter()
+			.enumerate()
+			.filter(|(_, link)| Self::display_for_link(link).to_lowercase().contains(&pattern_lower))
+			.map(|(i, link)| (i, link.clone()))
+			.collect();
+		let (idx, link) = match matches.len() {
+			0 => return Err(format!("No issue matching '{pattern}' in milestone.")),
+			1 => matches.into_iter().next().unwrap(),
+			_ => {
+				let displays: Vec<String> = matches.iter().map(|(_, link)| Self::display_for_link(link)).collect();
+				let selected = crate::local::Local::fzf_select(&displays, pattern).map_err(|e| format!("fzf failed: {e}"))?;
+				matches
+					.into_iter()
+					.find(|(_, link)| Self::display_for_link(link) == selected)
+					.ok_or_else(|| format!("fzf returned unknown entry: {selected}"))?
 			}
-			None => Err(format!("No issue matching '{pattern}' in milestone.")),
-		}
+		};
+		cache.current_index = idx;
+		cache.save().map_err(|e| format!("Failed to save milestone cache: {e}"))?;
+		Ok(link)
 	}
 
 	/// Display string for a link: local relative path if resolvable, otherwise `owner/repo#number`.

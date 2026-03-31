@@ -500,3 +500,122 @@ async fn test_blocker_move_all_refs_errors() {
 		out.stderr
 	);
 }
+
+#[tokio::test]
+async fn test_blocker_move_to_unique_pattern_selects_directly() {
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+
+	let vi1 = parse_virtual(
+		r#"- [ ] Issue Alpha <!-- @mock_user https://github.com/o/r/issues/1 -->
+
+  # Blockers
+  - task alpha
+"#,
+	);
+	let vi2 = parse_virtual(
+		r#"- [ ] Issue Beta <!-- @mock_user https://github.com/o/r/issues/2 -->
+
+  # Blockers
+  - task beta
+"#,
+	);
+
+	ctx.local(&vi1, None).await;
+	ctx.local(&vi2, None).await;
+
+	ctx.xdg.write_cache(
+		"milestone_blockers.json",
+		&milestone_cache_json(
+			&[
+				("Issue Alpha", "mock_user", "https://github.com/o/r/issues/1"),
+				("Issue Beta", "mock_user", "https://github.com/o/r/issues/2"),
+			],
+			0,
+		),
+	);
+
+	// "beta" uniquely matches Issue Beta — should succeed without fzf
+	let out = ctx.run(&["--offline", "blocker", "move", "to", "beta"]);
+	assert!(out.status.success(), "unique match should succeed. stderr: {}", out.stderr);
+	assert!(
+		out.stdout.contains("Beta") || out.stdout.contains("beta"),
+		"output should mention the selected issue. stdout: {}",
+		out.stdout
+	);
+
+	// Current should now be task beta
+	let out = ctx.run(&["--offline", "blocker", "current"]);
+	assert!(out.stdout.contains("task beta"), "after move to beta, current should be task beta. stdout: {}", out.stdout);
+}
+
+#[tokio::test]
+async fn test_blocker_move_to_no_match_errors() {
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+
+	let vi1 = parse_virtual(
+		r#"- [ ] Issue Alpha <!-- @mock_user https://github.com/o/r/issues/1 -->
+
+  # Blockers
+  - task alpha
+"#,
+	);
+
+	ctx.local(&vi1, None).await;
+
+	ctx.xdg.write_cache(
+		"milestone_blockers.json",
+		&milestone_cache_json(&[("Issue Alpha", "mock_user", "https://github.com/o/r/issues/1")], 0),
+	);
+
+	let out = ctx.run(&["--offline", "blocker", "move", "to", "zzznomatch"]);
+	assert!(!out.status.success(), "no-match should fail. stdout: {}", out.stdout);
+	assert!(out.stderr.contains("zzznomatch"), "error should mention the pattern. stderr: {}", out.stderr);
+}
+
+#[tokio::test]
+async fn test_blocker_move_to_ambiguous_pattern_does_not_silently_pick_first() {
+	// Regression test: before the fix, `move to issue` on a milestone with two issues
+	// whose display paths both contain "issue" would silently select the first match.
+	// After the fix, multiple matches trigger fzf; since there's no TTY in tests,
+	// fzf exits with an error rather than silently returning the wrong issue.
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+
+	let vi1 = parse_virtual(
+		r#"- [ ] Issue One <!-- @mock_user https://github.com/o/r/issues/1 -->
+
+  # Blockers
+  - task one
+"#,
+	);
+	let vi2 = parse_virtual(
+		r#"- [ ] Issue Two <!-- @mock_user https://github.com/o/r/issues/2 -->
+
+  # Blockers
+  - task two
+"#,
+	);
+
+	ctx.local(&vi1, None).await;
+	ctx.local(&vi2, None).await;
+
+	ctx.xdg.write_cache(
+		"milestone_blockers.json",
+		&milestone_cache_json(
+			&[
+				("Issue One", "mock_user", "https://github.com/o/r/issues/1"),
+				("Issue Two", "mock_user", "https://github.com/o/r/issues/2"),
+			],
+			0,
+		),
+	);
+
+	// "issue" matches both entries — must NOT silently select the first one
+	let out = ctx.run(&["--offline", "blocker", "move", "to", "issue"]);
+	// In a non-interactive context fzf fails (no TTY), so the command should fail
+	// rather than silently return the first matching issue (the pre-fix behavior).
+	assert!(
+		!out.status.success(),
+		"ambiguous pattern without a TTY should not silently pick the first match. stdout: {}",
+		out.stdout
+	);
+}

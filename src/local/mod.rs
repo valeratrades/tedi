@@ -340,6 +340,42 @@ impl Local {
 		Ok(IssueIndex::with_index(RepoInfo::new(owner, repo), selectors))
 	}
 
+	/// Spawn fzf with a given list of items and a pre-filled query, return the selected item.
+	/// Uses `--select-1` so a single-entry list resolves without interaction.
+	pub(crate) fn fzf_select(items: &[String], query: &str) -> Result<String> {
+		use std::{
+			io::Write,
+			process::{Command, Stdio},
+		};
+
+		let mut cmd = Command::new("fzf");
+		cmd.arg("--query")
+			.arg(query)
+			.arg("--select-1")
+			.arg("--preview")
+			.arg("cat {}")
+			.arg("--preview-window")
+			.arg("right:50%:wrap")
+			.current_dir(Self::issues_dir())
+			.stdin(Stdio::piped())
+			.stdout(Stdio::piped());
+
+		let mut child = cmd.spawn()?;
+		if let Some(stdin) = child.stdin.as_mut() {
+			for item in items {
+				writeln!(stdin, "{item}")?;
+			}
+		}
+		let output = child.wait_with_output()?;
+		if output.status.success() {
+			let selected = String::from_utf8_lossy(&output.stdout).trim().to_string();
+			if !selected.is_empty() {
+				return Ok(selected);
+			}
+		}
+		bail!("No item selected")
+	}
+
 	/// Interactive issue file selection using fzf.
 	/// Collects all issue files and presents them in fzf for selection.
 	pub fn fzf_issue(initial_query: &str, exact: ExactMatchLevel) -> Result<PathBuf> {
@@ -418,41 +454,39 @@ impl Local {
 				},
 		};
 
-		let mut cmd = Command::new("fzf");
-
-		cmd.arg("--query").arg(&fzf_query);
-
+		let owned: Vec<String> = filtered_list.iter().map(|s| s.to_string()).collect();
 		if matches!(exact, ExactMatchLevel::ExactTerms) {
-			cmd.arg("--exact");
-		}
-
-		cmd.arg("--select-1")
-			.arg("--preview")
-			.arg("cat {}")
-			.arg("--preview-window")
-			.arg("right:50%:wrap")
-			.current_dir(&issues_base)
-			.stdin(Stdio::piped())
-			.stdout(Stdio::piped());
-
-		let mut child = cmd.spawn()?;
-
-		if let Some(stdin) = child.stdin.as_mut() {
-			for file in &filtered_list {
-				writeln!(stdin, "{file}")?;
+			// Need --exact flag: spawn fzf directly
+			let mut cmd = Command::new("fzf");
+			cmd.arg("--query")
+				.arg(&fzf_query)
+				.arg("--exact")
+				.arg("--select-1")
+				.arg("--preview")
+				.arg("cat {}")
+				.arg("--preview-window")
+				.arg("right:50%:wrap")
+				.current_dir(&issues_base)
+				.stdin(Stdio::piped())
+				.stdout(Stdio::piped());
+			let mut child = cmd.spawn()?;
+			if let Some(stdin) = child.stdin.as_mut() {
+				for file in &owned {
+					writeln!(stdin, "{file}")?;
+				}
 			}
-		}
-
-		let output = child.wait_with_output()?;
-
-		if output.status.success() {
-			let selected = String::from_utf8_lossy(&output.stdout).trim().to_string();
-			if !selected.is_empty() {
-				return Ok(issues_base.join(selected));
+			let output = child.wait_with_output()?;
+			if output.status.success() {
+				let selected = String::from_utf8_lossy(&output.stdout).trim().to_string();
+				if !selected.is_empty() {
+					return Ok(issues_base.join(selected));
+				}
 			}
+			bail!("No issue selected")
+		} else {
+			let selected = Self::fzf_select(&owned, &fzf_query)?;
+			Ok(issues_base.join(selected))
 		}
-
-		bail!("No issue selected")
 	}
 
 	/// Check if a project is virtual (has no Github remote)
