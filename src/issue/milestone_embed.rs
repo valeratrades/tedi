@@ -47,9 +47,9 @@ impl MilestoneDoc {
 	}
 
 	/// Expand issue refs in-place using pre-loaded serialized views.
-	/// `expansions` maps issue number → serialized blocker view (from `serialize_blockers_view`).
+	/// `expansions` maps issue link → serialized blocker view (from `serialize_blockers_view`).
 	/// Items with no matching expansion are left unchanged.
-	pub fn expand_with(&mut self, expansions: &std::collections::HashMap<u64, String>) {
+	pub fn expand_with(&mut self, expansions: &std::collections::HashMap<IssueLink, String>) {
 		for section in &mut self.sections {
 			expand_section(section, expansions);
 		}
@@ -491,11 +491,11 @@ fn collect_embedded_from_section(section: &MilestoneSection, result: &mut Vec<(I
 	}
 }
 
-fn expand_section(section: &mut MilestoneSection, expansions: &std::collections::HashMap<u64, String>) {
+fn expand_section(section: &mut MilestoneSection, expansions: &std::collections::HashMap<IssueLink, String>) {
 	if let MilestoneSection::List(list) = section {
 		for item in list.items.iter_mut() {
 			if let Some(link) = item_issue_link(item)
-				&& let Some(view) = expansions.get(&link.number())
+				&& let Some(view) = expansions.get(&link)
 			{
 				// Re-parse the serialized view as a MilestoneDoc to get the item structure
 				let expanded_doc = MilestoneDoc::parse(view);
@@ -1023,8 +1023,14 @@ mod tests {
 
 		// Simulate expand_with by manually replacing items
 		let mut expansions = std::collections::HashMap::new();
-		expansions.insert(42, "- [ ] Issue One <!-- @user https://github.com/owner/repo/issues/42 -->\n\t# Blockers\n\t- task 1".to_string());
-		expansions.insert(43, "- [ ] Issue Two <!-- @user https://github.com/owner/repo/issues/43 -->".to_string());
+		expansions.insert(
+			IssueLink::parse("https://github.com/owner/repo/issues/42").unwrap(),
+			"- [ ] Issue One <!-- @user https://github.com/owner/repo/issues/42 -->\n\t# Blockers\n\t- task 1".to_string(),
+		);
+		expansions.insert(
+			IssueLink::parse("https://github.com/owner/repo/issues/43").unwrap(),
+			"- [ ] Issue Two <!-- @user https://github.com/owner/repo/issues/43 -->".to_string(),
+		);
 		doc.expand_with(&expansions);
 
 		insta::assert_snapshot!(doc.serialize(), @r#"
@@ -1054,10 +1060,13 @@ mod tests {
 
 		let mut expansions = std::collections::HashMap::new();
 		expansions.insert(
-			77,
+			IssueLink::parse("https://github.com/valeratrades/discretionary_engine/issues/77").unwrap(),
 			"- [ ] v2_interface <!-- @valeratrades https://github.com/valeratrades/discretionary_engine/issues/77 -->\n\t# Blockers\n\t- new protocols".to_string(),
 		);
-		expansions.insert(78, "- [ ] risk <!-- @valeratrades https://github.com/valeratrades/discretionary_engine/issues/78 -->".to_string());
+		expansions.insert(
+			IssueLink::parse("https://github.com/valeratrades/discretionary_engine/issues/78").unwrap(),
+			"- [ ] risk <!-- @valeratrades https://github.com/valeratrades/discretionary_engine/issues/78 -->".to_string(),
+		);
 		doc.expand_with(&expansions);
 
 		insta::assert_snapshot!(doc.serialize(), @r#"
@@ -1087,9 +1096,18 @@ mod tests {
 		let mut doc = MilestoneDoc::parse(stored);
 
 		let mut expansions = std::collections::HashMap::new();
-		expansions.insert(1, "- [ ] First <!-- @user https://github.com/owner/repo/issues/1 -->\n\t# Blockers\n\t- task A".to_string());
-		expansions.insert(2, "- [ ] Second <!-- @user https://github.com/owner/repo/issues/2 -->".to_string());
-		expansions.insert(3, "- [x] Third <!-- @user https://github.com/owner/repo/issues/3 -->".to_string());
+		expansions.insert(
+			IssueLink::parse("https://github.com/owner/repo/issues/1").unwrap(),
+			"- [ ] First <!-- @user https://github.com/owner/repo/issues/1 -->\n\t# Blockers\n\t- task A".to_string(),
+		);
+		expansions.insert(
+			IssueLink::parse("https://github.com/owner/repo/issues/2").unwrap(),
+			"- [ ] Second <!-- @user https://github.com/owner/repo/issues/2 -->".to_string(),
+		);
+		expansions.insert(
+			IssueLink::parse("https://github.com/owner/repo/issues/3").unwrap(),
+			"- [x] Third <!-- @user https://github.com/owner/repo/issues/3 -->".to_string(),
+		);
 		doc.expand_with(&expansions);
 
 		insta::assert_snapshot!(doc.serialize(), @"

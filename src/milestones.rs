@@ -471,10 +471,10 @@ async fn expand_and_refresh(content: &str) -> Result<String> {
 
 	// Collect all issue links with their resolved info, then load and expand
 	let links = doc.issue_links();
-	let mut expansions: std::collections::HashMap<u64, String> = std::collections::HashMap::new();
+	let mut expansions: std::collections::HashMap<IssueLink, String> = std::collections::HashMap::new();
 
 	for link in &links {
-		if expansions.contains_key(&link.number()) {
+		if expansions.contains_key(link) {
 			continue;
 		}
 		let issue = match load_local_issue(link).await {
@@ -488,7 +488,7 @@ async fn expand_and_refresh(content: &str) -> Result<String> {
 			},
 		};
 		let view = serialize_blockers_view(&issue);
-		expansions.insert(link.number(), view);
+		expansions.insert(link.clone(), view);
 	}
 
 	doc.expand_with(&expansions);
