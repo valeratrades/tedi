@@ -48,16 +48,16 @@ alias tdo="{exe_name} open"
 alias tdp="{exe_name} open --pull"
 
 # {exe_name}s-blocker
-alias tbp="{exe_name} --offline blocker pop"
-alias tba="{exe_name} --offline blocker add"
-alias tbo="{exe_name} --offline blocker open"
+alias tbp="{exe_name} -y --offline blocker pop"
+alias tba="{exe_name} -y --offline blocker add"
+alias tbo="{exe_name} -y --offline blocker open"
 
-alias tbs="{exe_name} --offline blocker set-project"
-alias tbl="{exe_name} --offline blocker list"
-alias tbc="{exe_name} --offline blocker current"
+alias tbs="{exe_name} -y --offline blocker set-project"
+alias tbl="{exe_name} -y --offline blocker list"
+alias tbc="{exe_name} -y --offline blocker current"
 
-alias tbr="{exe_name} blocker resume"
-alias tbh="{exe_name} blocker halt"
+alias tbr="{exe_name} -y blocker resume"
+alias tbh="{exe_name} -y blocker halt"
 "#
 		)
 	}
