@@ -130,7 +130,7 @@ pub async fn main_integrated(command: super::io::Command, offline: bool) -> Resu
 			let result = match sub {
 				MoveCommand::Up => MilestoneBlockerCache::move_by(1),
 				MoveCommand::Down => MilestoneBlockerCache::move_by(-1),
-				MoveCommand::To { pattern } => MilestoneBlockerCache::set_by_pattern(&pattern),
+				MoveCommand::To { pattern } => MilestoneBlockerCache::set_by_pattern(pattern.as_deref()),
 			};
 			match result {
 				Ok(link) => {

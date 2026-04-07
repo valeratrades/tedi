@@ -60,8 +60,9 @@ pub enum MoveCommand {
 	Up,
 	/// Move to the previous issue in the rotation (circular)
 	Down,
-	/// Jump to the first issue matching a pattern (case-insensitive substring on display path)
-	To { pattern: String },
+	/// Jump to the first issue matching a pattern (case-insensitive substring on display path).
+	/// If omitted, opens fzf on all available issues.
+	To { pattern: Option<String> },
 }
 #[derive(Args, Clone, Debug)]
 pub struct BlockerArgs {

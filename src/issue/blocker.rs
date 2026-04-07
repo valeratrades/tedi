@@ -401,26 +401,31 @@ impl MilestoneBlockerCache {
 
 	/// Set current to the embedded link whose display string matches `pattern` (case-insensitive).
 	/// If exactly one link matches, selects it directly.
-	/// If multiple links match, opens fzf with all matching entries and the pattern pre-filled.
-	pub fn set_by_pattern(pattern: &str) -> Result<super::IssueLink, String> {
+	/// If multiple links match (or no pattern given), opens fzf with matching entries pre-filled.
+	pub fn set_by_pattern(pattern: Option<&str>) -> Result<super::IssueLink, String> {
 		let mut cache = Self::load().ok_or("No milestone blocker cache. Run `todo milestones edit` first.")?;
 		let links = cache.embedded_links();
 		if links.is_empty() {
 			return Err("No issues in milestone.".into());
 		}
-		let pattern_lower = pattern.to_lowercase();
-		let matches: Vec<(usize, super::IssueLink)> = links
-			.iter()
-			.enumerate()
-			.filter(|(_, link)| Self::display_for_link(link).to_lowercase().contains(&pattern_lower))
-			.map(|(i, link)| (i, link.clone()))
-			.collect();
+		let all_indexed: Vec<(usize, super::IssueLink)> = links.into_iter().enumerate().collect();
+		let (matches, fzf_query): (Vec<(usize, super::IssueLink)>, &str) = match pattern {
+			None => (all_indexed, ""),
+			Some(p) => {
+				let pattern_lower = p.to_lowercase();
+				let filtered: Vec<_> = all_indexed
+					.into_iter()
+					.filter(|(_, link)| Self::display_for_link(link).to_lowercase().contains(&pattern_lower))
+					.collect();
+				(filtered, p)
+			}
+		};
 		let (idx, link) = match matches.len() {
-			0 => return Err(format!("No issue matching '{pattern}' in milestone.")),
-			1 => matches.into_iter().next().unwrap(),
+			0 => return Err(format!("No issue matching '{}' in milestone.", pattern.unwrap_or(""))),
+			1 if pattern.is_some() => matches.into_iter().next().unwrap(),
 			_ => {
 				let displays: Vec<String> = matches.iter().map(|(_, link)| Self::display_for_link(link)).collect();
-				let selected = crate::local::Local::fzf_select(&displays, pattern).map_err(|e| format!("fzf failed: {e}"))?;
+				let selected = crate::local::Local::fzf_select(&displays, fzf_query).map_err(|e| format!("fzf failed: {e}"))?;
 				matches
 					.into_iter()
 					.find(|(_, link)| Self::display_for_link(link) == selected)
