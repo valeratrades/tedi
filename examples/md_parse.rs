@@ -19,7 +19,7 @@ fn main() {
 
 	println!("=== Events ({}) ===\n", events.len());
 
-	let mut events_str = String::new();
+	let mut events_str = String::default();
 	for (i, event) in events.iter().enumerate() {
 		let line = format!("[{i:3}] {event:?}\n");
 		print!("{line}");
