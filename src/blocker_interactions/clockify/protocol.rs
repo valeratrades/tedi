@@ -106,11 +106,11 @@ pub async fn main(_settings: &crate::config::LiveSettings, args: ClockifyArgs) -
 				None
 			};
 
-			let now = Timestamp::now().round(Unit::Second).unwrap().to_string();
+			let now = Timestamp::now().round(Unit::Second).unwrap().strftime("%Y-%m-%dT%H:%M:%SZ").to_string();
 
 			let payload = NewTimeEntry {
 				start: now,
-				description: start_args.description,
+				description: start_args.description.replace('<', "").replace('>', ""),
 				billable: start_args.billable,
 				project_id,
 				task_id,
@@ -158,8 +158,9 @@ pub async fn start_time_entry_with_defaults(workspace: Option<&str>, project: Op
 	let resolved_project_id = resolve_project(&client, &workspace_id, project_name).await?;
 
 	// The description is already fully-qualified (includes project prefix) when fully_qualified=true,
-	// as it's handled by get_current_blocker_with_headers in blocker.rs
-	let final_description = description;
+	// as it's handled by get_current_blocker_with_headers in blocker.rs.
+	// Clockify rejects `<` and `>` characters (error 501), so strip them.
+	let final_description = description.replace('<', "").replace('>', "");
 
 	let project_id = Some(resolved_project_id);
 
@@ -172,7 +173,7 @@ pub async fn start_time_entry_with_defaults(workspace: Option<&str>, project: Op
 
 	let tag_ids = if let Some(t) = tags { Some(resolve_tags(&client, &workspace_id, t).await?) } else { None };
 
-	let now = Timestamp::now().round(Unit::Second).unwrap().to_string();
+	let now = Timestamp::now().round(Unit::Second).unwrap().strftime("%Y-%m-%dT%H:%M:%SZ").to_string();
 
 	let payload = NewTimeEntry {
 		start: now,
@@ -185,17 +186,13 @@ pub async fn start_time_entry_with_defaults(workspace: Option<&str>, project: Op
 
 	let url = format!("https://api.clockify.me/api/v1/workspaces/{workspace_id}/time-entries");
 
-	let created: CreatedEntry = client
-		.post(url)
-		.json(&payload)
-		.send()
-		.await
-		.wrap_err("Failed to create time entry")?
-		.error_for_status()
-		.wrap_err("Clockify API returned an error creating the time entry")?
-		.json()
-		.await
-		.wrap_err("Failed to parse Clockify response")?;
+	let response = client.post(url).json(&payload).send().await.wrap_err("Failed to create time entry")?;
+	if !response.status().is_success() {
+		let status = response.status();
+		let body = response.text().await.unwrap_or_default();
+		color_eyre::eyre::bail!("Clockify API {status}: {body}");
+	}
+	let created: CreatedEntry = response.json().await.wrap_err("Failed to parse Clockify response")?;
 
 	println!("Started working on blocker:");
 	println!("  id: {}", created.id);
@@ -583,7 +580,7 @@ async fn stop_current_entry_by_id(workspace_id: &str) -> Result<()> {
 	}
 
 	let entry = running_entry.unwrap();
-	let now = Timestamp::now().round(Unit::Second).unwrap().to_string();
+	let now = Timestamp::now().round(Unit::Second).unwrap().strftime("%Y-%m-%dT%H:%M:%SZ").to_string();
 
 	// Stop the time entry using the correct endpoint
 	let stop_url = format!("https://api.clockify.me/api/v1/workspaces/{workspace_id}/time-entries/{}", entry.id);
