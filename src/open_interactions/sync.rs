@@ -33,9 +33,98 @@ use tedi::{
 	sink::Sink,
 };
 use tracing::instrument;
+pub use types::*;
 use v_utils::elog;
 
 use super::merge::Merge;
+
+/// Modify a local issue, then sync changes back to Github.
+///
+/// Caller is responsible for loading the issue (via `Issue::load(LocalIssueSource)`).
+#[instrument(skip_all, fields(
+	repo = ?issue.identity.repo_info(),
+	issue_id = ?issue.git_id(),
+	title = %issue.contents.title,
+	offline,
+	modifier = ?modifier,
+))]
+pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Modifier, sync_opts: SyncOptions) -> Result<ModifyResult> {
+	let repo_info = issue.identity.repo_info();
+	let issue_index = IssueIndex::from(&issue);
+
+	// if linked, check if local diverges from consensus. If yes, - need to sync the two. And while at it, let's pull remote too.
+	if !offline && issue.is_linked() {
+		let consensus = load_consensus_issue(issue_index).await?;
+		let local_differs = consensus.as_ref().map(|c| *c != issue).unwrap_or(false); //IGNORED_ERROR: if consensus doesn't exist, then local doesn't need to think about it
+
+		if sync_opts.pull || local_differs {
+			elog!("triggered pre-open sync");
+			core::sync(&mut issue, consensus, sync_opts.take_merge_mode()).await?;
+		}
+	}
+
+	// expose for modification (by user or procedural)
+	let new_modified = {
+		let result = modifier.apply(&mut issue).await?;
+		if !result.file_modified {
+			v_utils::log!("Aborted (no changes made)");
+			return Ok(result);
+		}
+		// Record this issue as the last modified
+		let cache_path = v_utils::xdg_cache_file!("last_modified_issue");
+		std::fs::write(&cache_path, issue.full_index().to_string()).ok();
+		result
+	};
+
+	match offline || Local::is_virtual_project(repo_info) {
+		true => {
+			<Issue as Sink<LocalFs>>::sink(&mut issue, None).await?;
+			println!("Offline: saved locally and exiting.");
+			return Ok(new_modified);
+		}
+		false => {
+			// Post-editor sync
+			let mode = sync_opts.take_merge_mode();
+			match issue.is_linked() {
+				true => {
+					let consensus = load_consensus_issue(issue_index).await?;
+					core::sync(&mut issue, consensus, mode).await?;
+				}
+				false => {
+					// New issue - check if parent needs syncing first
+					let parent_index = issue.identity.parent_index;
+					if let Some((i, _)) = parent_index.index().iter().enumerate().find(|(_, s)| matches!(s, IssueSelector::Title(_))) {
+						// 1. Sink current issue to local so ancestor can find it
+						<Issue as Sink<LocalFs>>::sink(&mut issue, None).await?;
+
+						// 2. Load ancestor up to first Title selector
+						let ancestor_index = IssueIndex::with_index(repo_info, parent_index.index()[..=i].to_vec());
+						let ancestor_source = LocalIssueSource::<FsReader>::build(LocalPath::new(ancestor_index)).await?;
+						let mut ancestor = Issue::load(ancestor_source).await?;
+						let old_ancestor = ancestor.clone();
+
+						// 3. Sink ancestor to Remote, then Local (with old state for cleanup)
+						<Issue as Sink<Remote>>::sink(&mut ancestor, None).await?;
+						<Issue as Sink<LocalFs>>::sink(&mut ancestor, Some(&old_ancestor)).await?;
+
+						// 4. Commit
+						<Issue as Sink<Consensus>>::sink(&mut ancestor, None).await?;
+					} else {
+						<Issue as Sink<Remote>>::sink(&mut issue, None).await?;
+						<Issue as Sink<LocalFs>>::sink(&mut issue, None).await?;
+						<Issue as Sink<Consensus>>::sink(&mut issue, None).await?;
+					}
+				}
+			}
+
+			Ok(new_modified)
+		}
+	}
+}
+#[derive(Debug, miette::Diagnostic, thiserror::Error)]
+#[error(transparent)]
+#[diagnostic(help("Your changes were saved to /tmp/tedi/rejected-changes.md — you can recover them from there."))]
+struct RejectedEdit(#[from] tedi::ParseError);
 
 mod core {
 	use super::*;
@@ -267,7 +356,10 @@ mod types {
 					let parent_idx = issue.identity.parent_index;
 					let is_virtual = issue.identity.is_virtual;
 					let hollow: HollowIssue = old_issue.clone().into();
-					let virtual_issue = VirtualIssue::parse(&content, vpath.clone())?;
+					let virtual_issue = VirtualIssue::parse(&content, vpath.clone()).map_err(|e| {
+						crate::utils::persist_rejected_changes(&content);
+						RejectedEdit(e)
+					})?;
 					*issue = Issue::from_combined(hollow, virtual_issue, parent_idx, is_virtual)?;
 
 					ModifyResult { output: None, file_modified }
@@ -302,91 +394,6 @@ mod types {
 			}
 
 			Ok(result)
-		}
-	}
-}
-pub use types::*;
-
-/// Modify a local issue, then sync changes back to Github.
-///
-/// Caller is responsible for loading the issue (via `Issue::load(LocalIssueSource)`).
-#[instrument(skip_all, fields(
-	repo = ?issue.identity.repo_info(),
-	issue_id = ?issue.git_id(),
-	title = %issue.contents.title,
-	offline,
-	modifier = ?modifier,
-))]
-pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Modifier, sync_opts: SyncOptions) -> Result<ModifyResult> {
-	let repo_info = issue.identity.repo_info();
-	let issue_index = IssueIndex::from(&issue);
-
-	// if linked, check if local diverges from consensus. If yes, - need to sync the two. And while at it, let's pull remote too.
-	if !offline && issue.is_linked() {
-		let consensus = load_consensus_issue(issue_index).await?;
-		let local_differs = consensus.as_ref().map(|c| *c != issue).unwrap_or(false); //IGNORED_ERROR: if consensus doesn't exist, then local doesn't need to think about it
-
-		if sync_opts.pull || local_differs {
-			elog!("triggered pre-open sync");
-			core::sync(&mut issue, consensus, sync_opts.take_merge_mode()).await?;
-		}
-	}
-
-	// expose for modification (by user or procedural)
-	let new_modified = {
-		let result = modifier.apply(&mut issue).await?;
-		if !result.file_modified {
-			v_utils::log!("Aborted (no changes made)");
-			return Ok(result);
-		}
-		// Record this issue as the last modified
-		let cache_path = v_utils::xdg_cache_file!("last_modified_issue");
-		std::fs::write(&cache_path, issue.full_index().to_string()).ok();
-		result
-	};
-
-	match offline || Local::is_virtual_project(repo_info) {
-		true => {
-			<Issue as Sink<LocalFs>>::sink(&mut issue, None).await?;
-			println!("Offline: saved locally and exiting.");
-			return Ok(new_modified);
-		}
-		false => {
-			// Post-editor sync
-			let mode = sync_opts.take_merge_mode();
-			match issue.is_linked() {
-				true => {
-					let consensus = load_consensus_issue(issue_index).await?;
-					core::sync(&mut issue, consensus, mode).await?;
-				}
-				false => {
-					// New issue - check if parent needs syncing first
-					let parent_index = issue.identity.parent_index;
-					if let Some((i, _)) = parent_index.index().iter().enumerate().find(|(_, s)| matches!(s, IssueSelector::Title(_))) {
-						// 1. Sink current issue to local so ancestor can find it
-						<Issue as Sink<LocalFs>>::sink(&mut issue, None).await?;
-
-						// 2. Load ancestor up to first Title selector
-						let ancestor_index = IssueIndex::with_index(repo_info, parent_index.index()[..=i].to_vec());
-						let ancestor_source = LocalIssueSource::<FsReader>::build(LocalPath::new(ancestor_index)).await?;
-						let mut ancestor = Issue::load(ancestor_source).await?;
-						let old_ancestor = ancestor.clone();
-
-						// 3. Sink ancestor to Remote, then Local (with old state for cleanup)
-						<Issue as Sink<Remote>>::sink(&mut ancestor, None).await?;
-						<Issue as Sink<LocalFs>>::sink(&mut ancestor, Some(&old_ancestor)).await?;
-
-						// 4. Commit
-						<Issue as Sink<Consensus>>::sink(&mut ancestor, None).await?;
-					} else {
-						<Issue as Sink<Remote>>::sink(&mut issue, None).await?;
-						<Issue as Sink<LocalFs>>::sink(&mut issue, None).await?;
-						<Issue as Sink<Consensus>>::sink(&mut issue, None).await?;
-					}
-				}
-			}
-
-			Ok(new_modified)
 		}
 	}
 }

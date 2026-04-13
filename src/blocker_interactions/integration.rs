@@ -590,6 +590,6 @@ async fn update_clockify_tracking(description_before: Option<String>) {
 	)
 	.await
 	{
-		eprintln!("Warning: Failed to start tracking for task: {e}");
+		tracing::warn!("Failed to start tracking for task: {e}");
 	}
 }

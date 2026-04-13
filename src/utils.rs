@@ -14,6 +14,7 @@ use crate::config::LiveSettings;
 
 /// Environment variable name for mock pipe (integration tests)
 const ENV_MOCK_PIPE: &str = concat!(env!("CARGO_PKG_NAME"), "_MOCK_PIPE");
+const REJECTED_CHANGES_PATH: &str = "/tmp/tedi/rejected-changes.md";
 /// Open a file in editor.
 ///
 /// Behavior depends on environment:
@@ -126,6 +127,21 @@ impl std::str::FromStr for DaySectionBorders {
 		} else {
 			bail!("invalid dimensions");
 		}
+	}
+}
+
+/// Persist rejected user-edited content to a known path for recovery.
+/// Call this before propagating a parse/validation error on user-edited content.
+pub fn persist_rejected_changes(content: &str) {
+	let path = std::path::Path::new(REJECTED_CHANGES_PATH);
+	if let Some(parent) = path.parent() {
+		if let Err(e) = std::fs::create_dir_all(parent) {
+			tracing::warn!("failed to create rejected-changes dir: {e}");
+			return;
+		}
+	}
+	if let Err(e) = std::fs::write(path, content) {
+		tracing::warn!("failed to persist rejected changes: {e}");
 	}
 }
 

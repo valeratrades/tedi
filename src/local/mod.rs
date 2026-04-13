@@ -412,12 +412,15 @@ impl Local {
 			bail!("No issue files found. Use a Github URL to fetch an issue first.");
 		}
 
-		// Sort by modification time (most recent first)
-		files.sort_by(|a, b| {
-			let a_time = std::fs::metadata(a).and_then(|m| m.modified()).ok();
-			let b_time = std::fs::metadata(b).and_then(|m| m.modified()).ok();
-			b_time.cmp(&a_time)
-		});
+		// Sort by modification time (most recent first) when using exact matching modes,
+		// to match GitHub's default sort order. In fuzzy mode, preserve filesystem order.
+		if !matches!(exact, ExactMatchLevel::Fuzzy) {
+			files.sort_by(|a, b| {
+				let a_time = std::fs::metadata(a).and_then(|m| m.modified()).ok();
+				let b_time = std::fs::metadata(b).and_then(|m| m.modified()).ok();
+				b_time.cmp(&a_time)
+			});
+		}
 
 		let file_list: Vec<String> = files
 			.iter()

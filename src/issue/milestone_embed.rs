@@ -70,7 +70,7 @@ impl MilestoneDoc {
 				&& list.normalize_item_types()
 			{
 				let kind = if list.is_checkbox_list() { "checkbox (- [..])" } else { "plain (- )" };
-				eprintln!("warning: mixed list item types detected; normalized to {kind} (determined by first element)");
+				tracing::warn!("mixed list item types detected; normalized to {kind} (determined by first element)");
 			}
 		}
 	}

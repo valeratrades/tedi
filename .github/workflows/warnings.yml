@@ -77,7 +77,7 @@ jobs:
     - uses: actions/checkout@v4
       with:
         path: my_gh_stuff
-        repository: valeratrades/.github
+        repository: valeratrades/v_flakes
         sparse-checkout: github/workflows
         sparse-checkout-cone-mode: false
     - name: Setup nightly Rust

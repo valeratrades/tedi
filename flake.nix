@@ -48,7 +48,7 @@
             v-utils.github {
               inherit pkgs pname rs;
               lastSupportedVersion = "nightly-2025-08-01";
-              langs = [ "rs" ];
+              enable = true;
               jobs.default = true;
               jobs.errors.install = jobDeps;
               jobs.warnings.install = jobDeps;

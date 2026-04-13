@@ -253,7 +253,7 @@ fn cache_blocker_milestone(settings: &LiveSettings, milestones: &[Milestone]) {
 		&& let Some(ref desc) = ms.description
 		&& let Err(e) = MilestoneBlockerCache::update_from_description(desc)
 	{
-		eprintln!("Warning: failed to cache blocker milestone: {e}");
+		tracing::warn!("failed to cache blocker milestone: {e}");
 	}
 }
 
@@ -308,7 +308,11 @@ async fn edit_milestone(settings: &LiveSettings, tf: Timeframe, offline: bool, m
 	}
 
 	// Sync blocker changes back to individual issue files
-	sync_blocker_changes(&edited_content, offline).await?;
+	if let Err(e) = sync_blocker_changes(&edited_content, offline).await {
+		crate::utils::persist_rejected_changes(&edited_content);
+		eprintln!("Your changes were saved to /tmp/tedi/rejected-changes.md — you can recover them from there.");
+		return Err(e);
+	}
 
 	// Collapse expanded issues back to bare links for storage
 	let mut edited_doc = MilestoneDoc::parse(&edited_content);
@@ -339,7 +343,7 @@ async fn edit_milestone(settings: &LiveSettings, tf: Timeframe, offline: bool, m
 	if tf.to_string() == blocker_tf
 		&& let Err(e) = MilestoneBlockerCache::update_from_description(&new_description)
 	{
-		eprintln!("Warning: failed to update blocker cache: {e}");
+		tracing::warn!("failed to update blocker cache: {e}");
 	}
 
 	// If outdated, archive old contents and update date
@@ -358,7 +362,7 @@ async fn edit_milestone(settings: &LiveSettings, tf: Timeframe, offline: bool, m
 
 		update_result?;
 		if let Err(e) = archive_result {
-			eprintln!("Warning: Failed to archive old milestone contents: {e}");
+			tracing::warn!("Failed to archive old milestone contents: {e}");
 		}
 	} else {
 		// Not outdated, just update description
@@ -482,7 +486,7 @@ async fn expand_and_refresh(content: &str) -> Result<String> {
 			Err(_) => match fetch_and_store_remote_issue(link).await {
 				Ok(issue) => issue,
 				Err(e) => {
-					eprintln!("Warning: failed to expand {}/{}/#{}: {e}", link.owner(), link.repo(), link.number());
+					tracing::warn!("failed to expand {}/{}/#{}: {e}", link.owner(), link.repo(), link.number());
 					continue;
 				}
 			},
@@ -509,7 +513,7 @@ async fn sync_blocker_changes(content: &str, offline: bool) -> Result<()> {
 		let issue = match load_local_issue(&link).await {
 			Ok(issue) => issue,
 			Err(e) => {
-				eprintln!("Warning: failed to load {}/{}/#{} for sync: {e}", link.owner(), link.repo(), link.number());
+				tracing::warn!("failed to load {}/{}/#{} for sync: {e}", link.owner(), link.repo(), link.number());
 				continue;
 			}
 		};
