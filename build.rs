@@ -4,6 +4,8 @@ fn main() {
 }
 
 fn git_version() {
+	println!("cargo:rerun-if-changed=.git/HEAD");
+	println!("cargo:rerun-if-changed=.git/refs/");
 	// Embed git commit hash (fallback to "unknown" if git unavailable, e.g., in Nix sandbox)
 	let git_hash = std::process::Command::new("git")
 		.args(["rev-parse", "--short", "HEAD"])

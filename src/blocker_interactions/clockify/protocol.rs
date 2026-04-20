@@ -1,4 +1,4 @@
-use std::{env, io::Write};
+use std::{env, io::Write, sync::Arc};
 
 use clap::{Args, Parser, Subcommand};
 use color_eyre::eyre::{Result, WrapErr, bail, eyre};
@@ -59,7 +59,8 @@ pub struct ClockifyArgs {
 	#[command(subcommand)]
 	command: Command,
 }
-pub async fn main(_settings: &crate::config::LiveSettings, args: ClockifyArgs) -> Result<()> {
+pub async fn main(settings: Arc<crate::config::LiveSettings>, args: ClockifyArgs) -> Result<()> {
+	let yes = settings.config()?.yes;
 	match args.command {
 		Command::ListWorkspaces => {
 			list_workspaces().await?;
@@ -91,7 +92,7 @@ pub async fn main(_settings: &crate::config::LiveSettings, args: ClockifyArgs) -
 			// Require project for creating time entries
 			let project = start_args.project.ok_or_else(|| eyre!("--project is required when creating time entries"))?;
 
-			let project_id = Some(resolve_project(&client, &workspace_id, &project).await?);
+			let project_id = Some(resolve_project(&client, &workspace_id, &project, yes).await?);
 
 			let task_id = if let Some(t) = start_args.task {
 				let pid = project_id.as_ref().ok_or_else(|| eyre!("--task requires --project to be set"))?;
@@ -143,7 +144,16 @@ pub async fn main(_settings: &crate::config::LiveSettings, args: ClockifyArgs) -
 
 	Ok(())
 }
-pub async fn start_time_entry_with_defaults(workspace: Option<&str>, project: Option<&str>, description: String, task: Option<&str>, tags: Option<&str>, billable: bool) -> Result<()> {
+pub async fn start_time_entry_with_defaults(
+	workspace: Option<&str>,
+	project: Option<&str>,
+	description: String,
+	task: Option<&str>,
+	tags: Option<&str>,
+	billable: bool,
+	settings: Arc<crate::config::LiveSettings>,
+) -> Result<()> {
+	let yes = settings.config()?.yes;
 	let api_key = env::var("CLOCKIFY_API_KEY").wrap_err("Set CLOCKIFY_API_KEY in your environment with a valid API token")?;
 	let client = reqwest::Client::builder().default_headers(make_headers(&api_key)?).build()?;
 
@@ -155,7 +165,7 @@ pub async fn start_time_entry_with_defaults(workspace: Option<&str>, project: Op
 
 	let project_name = project.ok_or_else(|| eyre!("--project is required for starting time entries"))?;
 
-	let resolved_project_id = resolve_project(&client, &workspace_id, project_name).await?;
+	let resolved_project_id = resolve_project(&client, &workspace_id, project_name, yes).await?;
 
 	// The description is already fully-qualified (includes project prefix) when fully_qualified=true,
 	// as it's handled by get_current_blocker_with_headers in blocker.rs.
@@ -302,7 +312,7 @@ async fn get_active_workspace(client: &reqwest::Client) -> Result<String> {
 		.wrap_err("Failed to parse user response")?;
 	Ok(user.active_workspace)
 }
-async fn resolve_project(client: &reqwest::Client, ws: &str, input: &str) -> Result<String> {
+async fn resolve_project(client: &reqwest::Client, ws: &str, input: &str, yes: bool) -> Result<String> {
 	// If input looks like an ID (UUID-ish), try it directly by fetching it
 	if looks_like_id(input)
 		&& let Ok(id) = fetch_project_by_id(client, ws, input).await
@@ -348,7 +358,7 @@ async fn resolve_project(client: &reqwest::Client, ws: &str, input: &str) -> Res
 
 	// Project not found - ask user if they want to create it
 	println!("Project '{input}' not found in Clockify workspace.");
-	let accepted = if crate::auto_yes::get() {
+	let accepted = if yes {
 		println!("Would you like to create a new Clockify project with this exact name? [y/N]: y (--yes)");
 		true
 	} else {

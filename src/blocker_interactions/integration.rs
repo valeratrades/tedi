@@ -7,7 +7,10 @@
 //! urgent.md file at `issues/{owner}/urgent.md`. This file is a simple blocker list
 //! without Github sync. Only one urgent file can exist at a time across all owners.
 
-use std::path::{Path, PathBuf};
+use std::{
+	path::{Path, PathBuf},
+	sync::Arc,
+};
 
 use color_eyre::eyre::{Result, bail, eyre};
 use tedi::{
@@ -119,7 +122,7 @@ impl StandaloneSource {
 
 /// Main entry point for integrated blocker commands (works with issue files).
 /// This is the default mode for blocker commands.
-pub async fn main_integrated(command: super::io::Command, offline: bool) -> Result<()> {
+pub async fn main_integrated(command: super::io::Command, offline: bool, settings: Arc<crate::config::LiveSettings>) -> Result<()> {
 	use super::{io::Command, source::BlockerSource};
 	use crate::open_interactions::{Modifier, SyncOptions, modify_and_sync_issue};
 
@@ -140,7 +143,7 @@ pub async fn main_integrated(command: super::io::Command, offline: bool) -> Resu
 					println!("Moved to: {}", source.display_name());
 
 					// Post-update: follow refs then update clockify
-					post_update(description_before, false).await?;
+					post_update(description_before, false, settings).await?;
 
 					// Show current after ref-following (may have changed)
 					if let Some(source) = BlockerIssueSource::current()
@@ -172,7 +175,7 @@ pub async fn main_integrated(command: super::io::Command, offline: bool) -> Resu
 				urgent.cleanup_if_empty()?;
 
 				// Post-update
-				post_update(description_before, true).await?;
+				post_update(description_before, true, settings).await?;
 			} else {
 				let issue_source = if let Some(pat) = pattern {
 					BlockerIssueSource::build(resolve_issue_file(&pat)?)?
@@ -194,7 +197,7 @@ pub async fn main_integrated(command: super::io::Command, offline: bool) -> Resu
 				}
 
 				// Post-update
-				post_update(description_before, false).await?;
+				post_update(description_before, false, settings).await?;
 			}
 		}
 
@@ -278,7 +281,7 @@ pub async fn main_integrated(command: super::io::Command, offline: bool) -> Resu
 					urgent.cleanup_if_empty()?;
 
 					// Post-update
-					post_update(description_before, true).await?;
+					post_update(description_before, true, settings).await?;
 
 					// Show new current
 					if let Some(current) = blockers.current_with_context(&[]) {
@@ -310,7 +313,7 @@ pub async fn main_integrated(command: super::io::Command, offline: bool) -> Resu
 			}
 
 			// Post-update
-			post_update(description_before, false).await?;
+			post_update(description_before, false, settings).await?;
 
 			// Show new current blocker (reload to get updated state)
 			let blockers = issue_source.load()?;
@@ -350,7 +353,7 @@ pub async fn main_integrated(command: super::io::Command, offline: bool) -> Resu
 				}
 				urgent.save(&blockers)?;
 
-				post_update(description_before.clone(), true).await?;
+				post_update(description_before.clone(), true, settings).await?;
 
 				println!("Added to urgent: {name}");
 				if let Some(current) = blockers.current_with_context(&[]) {
@@ -367,7 +370,7 @@ pub async fn main_integrated(command: super::io::Command, offline: bool) -> Resu
 					println!("{output}");
 				}
 
-				post_update(description_before, false).await?;
+				post_update(description_before, false, settings).await?;
 
 				let blockers = issue_source.load()?;
 				if let Some(new_current) = blockers.current_with_context(&[]) {
@@ -391,6 +394,7 @@ pub async fn main_integrated(command: super::io::Command, offline: bool) -> Resu
 				|fully_qualified| get_current_blocker_description(fully_qualified).unwrap_or(description.clone()),
 				&resume_args,
 				None,
+				settings.clone(),
 			)
 			.await?;
 
@@ -488,7 +492,7 @@ fn get_current_blocker_description(fully_qualified: bool) -> Option<String> {
 /// 2. Otherwise, update clockify tracking.
 ///
 /// `is_urgent`: if true, error out when a blocker references an issue (urgent can't reference).
-async fn post_update(description_before: Option<String>, is_urgent: bool) -> Result<()> {
+async fn post_update(description_before: Option<String>, is_urgent: bool, settings: Arc<crate::config::LiveSettings>) -> Result<()> {
 	follow_blocker_refs(is_urgent, Vec::new())?;
 
 	// Refresh ref annotations in the cache
@@ -497,7 +501,7 @@ async fn post_update(description_before: Option<String>, is_urgent: bool) -> Res
 		let _ = cache.save();
 	}
 
-	update_clockify_tracking(description_before).await;
+	update_clockify_tracking(description_before, settings).await;
 	Ok(())
 }
 
@@ -560,7 +564,7 @@ fn follow_blocker_refs(is_urgent: bool, mut visited: Vec<IssueLink>) -> Result<(
 
 /// Update clockify tracking after a blocker change (add/pop/edit).
 /// Only restarts tracking if the current blocker description actually changed.
-async fn update_clockify_tracking(description_before: Option<String>) {
+async fn update_clockify_tracking(description_before: Option<String>, settings: Arc<crate::config::LiveSettings>) {
 	if !super::clockify::is_tracking_enabled() {
 		return;
 	}
@@ -587,6 +591,7 @@ async fn update_clockify_tracking(description_before: Option<String>) {
 		|fully_qualified| get_current_blocker_description(fully_qualified).unwrap_or(description.clone()),
 		&resume_args,
 		None,
+		settings.clone(),
 	)
 	.await
 	{

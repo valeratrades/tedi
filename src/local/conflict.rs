@@ -15,7 +15,7 @@ use std::{path::PathBuf, process::Command};
 
 use miette::Diagnostic;
 use thiserror::Error;
-use v_utils::prelude::*;
+use v_utils::{macros::wrap_err, prelude::*};
 
 use super::{GitReader, Local, LocalFs, LocalIssueSource, LocalPath, consensus::is_git_initialized};
 use crate::{Issue, IssueIndex, LazyIssue as _, RepoInfo, VirtualIssue, remote::Remote, sink::Sink};
@@ -25,6 +25,7 @@ use crate::{Issue, IssueIndex, LazyIssue as _, RepoInfo, VirtualIssue, remote::R
 //==============================================================================
 
 /// Error returned when there are unresolved conflicts blocking operations.
+#[wrap_err]
 #[derive(Debug, Diagnostic, Error)]
 #[error("Unresolved merge conflict")]
 #[diagnostic(
@@ -45,16 +46,19 @@ pub struct ConflictBlockedError {
 }
 
 /// Error from conflict operations.
+#[wrap_err]
 #[derive(Debug, Error)]
 pub enum ConflictError {
+	#[leaf]
 	#[error("git is not initialized in issues directory")]
 	GitNotInitialized,
 
+	#[leaf]
 	#[error("git operation failed: {message}")]
 	GitError { message: String },
 
-	#[error("IO error: {0}")]
-	Io(#[from] std::io::Error),
+	#[foreign]
+	Io(std::io::Error),
 }
 
 //==============================================================================
@@ -150,16 +154,14 @@ pub fn is_merge_in_progress() -> bool {
 /// Both local and remote are written to `{owner}/__conflict.md` in virtual format.
 pub fn initiate_conflict_merge(repo_info: RepoInfo, issue_number: u64, local_issue: &Issue, remote_issue: &Issue) -> Result<ConflictOutcome, ConflictError> {
 	if !is_git_initialized() {
-		return Err(ConflictError::GitNotInitialized);
+		return Err(ConflictError::new_git_not_initialized());
 	}
 
 	let owner = repo_info.owner();
 	let repo = repo_info.repo();
 
 	let data_dir = Local::issues_dir();
-	let data_dir_str = data_dir.to_str().ok_or_else(|| ConflictError::GitError {
-		message: "Invalid data directory path".into(),
-	})?;
+	let data_dir_str = data_dir.to_str().ok_or_else(|| ConflictError::new_git_error("Invalid data directory path".into()))?;
 
 	// Ensure owner directory exists
 	let owner_dir = data_dir.join(owner);
@@ -180,9 +182,7 @@ pub fn initiate_conflict_merge(repo_info: RepoInfo, issue_number: u64, local_iss
 	// Stage and commit local state
 	let add_status = Command::new("git").args(["-C", data_dir_str, "add", "-A"]).status()?;
 	if !add_status.success() {
-		return Err(ConflictError::GitError {
-			message: "git add -A failed".into(),
-		});
+		return Err(ConflictError::new_git_error("git add -A failed".into()));
 	}
 
 	let commit_msg = format!("__conflict: local state for {owner}/{repo}#{issue_number}");
@@ -212,9 +212,7 @@ pub fn initiate_conflict_merge(repo_info: RepoInfo, issue_number: u64, local_iss
 	let branch_status = Command::new("git").args(["-C", data_dir_str, "branch", "remote-state", &base_commit]).status()?;
 
 	if !branch_status.success() {
-		return Err(ConflictError::GitError {
-			message: "Failed to create remote-state branch".into(),
-		});
+		return Err(ConflictError::new_git_error("Failed to create remote-state branch".into()));
 	}
 
 	// Checkout remote-state branch
@@ -222,9 +220,7 @@ pub fn initiate_conflict_merge(repo_info: RepoInfo, issue_number: u64, local_iss
 
 	if !checkout_status.success() {
 		cleanup_branch(data_dir_str, &current_branch);
-		return Err(ConflictError::GitError {
-			message: "Failed to checkout remote-state branch".into(),
-		});
+		return Err(ConflictError::new_git_error("Failed to checkout remote-state branch".into()));
 	}
 
 	// Write remote state to conflict file (virtual format)
@@ -235,9 +231,7 @@ pub fn initiate_conflict_merge(repo_info: RepoInfo, issue_number: u64, local_iss
 	let add_status = Command::new("git").args(["-C", data_dir_str, "add", "-A"]).status()?;
 	if !add_status.success() {
 		cleanup_branch(data_dir_str, &current_branch);
-		return Err(ConflictError::GitError {
-			message: "git add -A failed".into(),
-		});
+		return Err(ConflictError::new_git_error("git add -A failed".into()));
 	}
 
 	// Check if there are changes to commit
@@ -256,9 +250,7 @@ pub fn initiate_conflict_merge(repo_info: RepoInfo, issue_number: u64, local_iss
 	if !commit_status.success() {
 		let _ = Command::new("git").args(["-C", data_dir_str, "checkout", &current_branch]).status();
 		cleanup_branch(data_dir_str, &current_branch);
-		return Err(ConflictError::GitError {
-			message: "Failed to commit remote state".into(),
-		});
+		return Err(ConflictError::new_git_error("Failed to commit remote state".into()));
 	}
 
 	// Switch back to original branch
@@ -297,9 +289,7 @@ pub fn initiate_conflict_merge(repo_info: RepoInfo, issue_number: u64, local_iss
 		// Some other error
 		let _ = Command::new("git").args(["-C", data_dir_str, "merge", "--abort"]).status();
 		cleanup_branch(data_dir_str, &current_branch);
-		Err(ConflictError::GitError {
-			message: format!("Merge failed: {}\n{}", stdout.trim(), stderr.trim()),
-		})
+		Err(ConflictError::new_git_error(format!("Merge failed: {}\n{}", stdout.trim(), stderr.trim())))
 	}
 }
 

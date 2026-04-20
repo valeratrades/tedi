@@ -48,10 +48,7 @@ impl LocalIssueSource<FsReader> {
 	pub async fn build(local_path: LocalPath) -> Result<Self, LocalError> {
 		// Check for fd
 		if std::process::Command::new("fd").arg("--version").output().is_err() {
-			return Err(LocalError::MissingExecutable {
-				executable: "fd",
-				operation: "local filesystem operations",
-			});
+			return Err(LocalError::new_missing_executable("fd", "local filesystem operations"));
 		}
 
 		// Check for unresolved conflicts (resolves if user already fixed markers)
@@ -60,12 +57,12 @@ impl LocalIssueSource<FsReader> {
 			eprintln!("Opening for resolution...");
 			let modified = v_utils::io::file_open::open(&conflict_file).await?;
 			if !modified {
-				return Err(ConflictBlockedError { conflict_file }.into());
+				return Err(ConflictBlockedError::new(conflict_file).into());
 			}
 
 			// Re-check after user exits editor
 			if let Some(conflict_file) = conflict::check_for_existing_conflict(local_path.index).await? {
-				return Err(ConflictBlockedError { conflict_file }.into());
+				return Err(ConflictBlockedError::new(conflict_file).into());
 			}
 		}
 
@@ -77,7 +74,7 @@ impl LocalIssueSource<FsReader> {
 	/// This extracts the parent_index from the path, then constructs the full index
 	/// by adding the target issue's selector.
 	pub async fn build_from_path(path: &Path) -> Result<Self, LocalError> {
-		let index = Local::extract_index_from_path(path).map_err(|e| LocalError::PathExtraction(e.to_string()))?;
+		let index = Local::extract_index_from_path(path).map_err(|e| LocalError::new_path_extraction(e.to_string()))?;
 		Self::build(LocalPath::new(index)).await
 	}
 }
@@ -88,10 +85,7 @@ impl LocalIssueSource<GitReader> {
 	pub fn build(local_path: LocalPath) -> Result<Self, LocalError> {
 		// Check for git
 		if std::process::Command::new("git").arg("--version").output().is_err() {
-			return Err(LocalError::MissingExecutable {
-				executable: "git",
-				operation: "consensus state operations",
-			});
+			return Err(LocalError::new_missing_executable("git", "consensus state operations"));
 		}
 
 		Ok(Self::new(local_path, GitReader))
@@ -649,7 +643,7 @@ mod reader;
 pub use reader::{FsReader, GitReader, LocalReader, ReaderError, ReaderErrorKind};
 
 mod local_path {
-	use std::collections::VecDeque;
+	use std::{backtrace::Backtrace, collections::VecDeque};
 
 	use miette::SourceSpan;
 	use tracing_error::SpanTrace;
@@ -666,6 +660,7 @@ mod local_path {
 		pub kind: LocalPathErrorKind,
 		rendered: String,
 		spantrace: SpanTrace,
+		backtrace: Backtrace,
 	}
 
 	impl LocalPathError {
@@ -675,6 +670,7 @@ mod local_path {
 				kind,
 				rendered,
 				spantrace: SpanTrace::capture(),
+				backtrace: Backtrace::capture(),
 			}
 		}
 
@@ -1137,7 +1133,7 @@ pub use fs_sink::{LocalFs, LocalFsSinkError};
 //==============================================================================
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use v_utils::prelude::*;
+use v_utils::{macros::wrap_err, prelude::*};
 
 use crate::{Issue, IssueIndex, IssueLink, IssueSelector, LinkedIssueMeta, RepoInfo, local::conflict::ConflictBlockedError};
 
@@ -1189,38 +1185,48 @@ pub struct LocalIssueSource<R: LocalReader> {
 }
 
 /// Error type for consensus sink operations.
-#[derive(Debug, miette::Diagnostic, derive_more::Display, thiserror::Error)]
+#[wrap_err]
+#[derive(Debug, miette::Diagnostic, thiserror::Error)]
 pub enum ConsensusSinkError {
-	#[display("failed to write issue files: {_0}")]
+	#[error("failed to write issue files: {_0}")]
 	#[diagnostic(code(tedi::consensus::write))]
-	Write(#[from] fs_sink::LocalFsSinkError),
+	Write(
+		#[from]
+		#[backtrace]
+		fs_sink::LocalFsSinkError,
+	),
 
-	#[display("git add failed: {_0}")]
+	#[leaf]
+	#[error("git add failed: {msg}")]
 	#[diagnostic(code(tedi::consensus::git_add))]
-	GitAdd(String),
+	GitAdd { msg: String },
 
-	#[display("git status failed: {_0}")]
+	#[leaf]
+	#[error("git status failed: {msg}")]
 	#[diagnostic(code(tedi::consensus::git_status))]
-	GitStatus(String),
+	GitStatus { msg: String },
 
-	#[display("git commit failed: {_0}")]
+	#[leaf]
+	#[error("git commit failed: {msg}")]
 	#[diagnostic(code(tedi::consensus::git_commit))]
-	GitCommit(String),
+	GitCommit { msg: String },
 
-	#[display("files rejected by .gitignore:\n{_0}")]
+	#[leaf]
+	#[error("files rejected by .gitignore:\n{msg}")]
 	#[diagnostic(code(tedi::consensus::gitignore), help("Check your .gitignore rules or remove the conflicting patterns"))]
-	GitIgnoreRejection(String),
+	GitIgnoreRejection { msg: String },
 
-	#[display("invalid data directory path (not valid UTF-8)")]
+	#[leaf]
+	#[error("invalid data directory path (not valid UTF-8)")]
 	#[diagnostic(code(tedi::consensus::invalid_path))]
 	InvalidDataDir,
 
-	#[display("{_0}")]
-	#[diagnostic(code(tedi::consensus::io))]
-	Io(#[from] std::io::Error),
+	#[foreign]
+	Io(std::io::Error),
 }
 
 /// Error type for local issue loading operations.
+#[wrap_err]
 #[derive(Debug, thiserror::Error, derive_more::From)]
 pub enum LocalError {
 	/// Path resolution or IO error.
@@ -1242,6 +1248,7 @@ pub enum LocalError {
 
 	/// Git operation failed (for consensus reads).
 	//TODO: check if it covers cases that ReaderError doesn't when it comes to git operations. If not, we should nuke this and rely on `Io` which already references LocalPathError (which nests ReaderError)
+	#[leaf]
 	#[error("git operation failed: {message}")]
 	GitError { message: String },
 
@@ -1250,13 +1257,15 @@ pub enum LocalError {
 	ConflictBlocked(conflict::ConflictBlockedError),
 
 	/// Required executable not found.
+	#[leaf]
 	#[error("`{executable}` not found in PATH (required for {operation})")]
 	MissingExecutable { executable: &'static str, operation: &'static str },
 
 	/// Path extraction failed.
-	#[error("failed to extract issue index from path: {0}")]
+	#[leaf]
+	#[error("failed to extract issue index from path: {msg}")]
 	#[from(skip)]
-	PathExtraction(String),
+	PathExtraction { msg: String },
 
 	#[error(transparent)]
 	Other(Report),

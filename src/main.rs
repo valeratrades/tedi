@@ -13,24 +13,10 @@ mod perf_eval;
 mod shell_init;
 pub mod utils;
 mod watch_monitors;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use clap::{Parser, ValueEnum};
 use v_utils::utils::exit_on_error;
-
-pub mod auto_yes {
-	use std::sync::atomic::{AtomicBool, Ordering};
-
-	static AUTO_YES: AtomicBool = AtomicBool::new(false);
-
-	pub fn set(value: bool) {
-		AUTO_YES.store(value, Ordering::Relaxed);
-	}
-
-	pub fn get() -> bool {
-		AUTO_YES.load(Ordering::Relaxed)
-	}
-}
 
 /// Mock behavior type for testing.
 #[derive(Clone, Copy, Debug, Default, ValueEnum)]
@@ -59,9 +45,6 @@ struct Cli {
 	/// Log to a specific file (filename only, no path). Logs go to ~/.local/state/tedi/{filename}.log
 	#[arg(long, global = true)]
 	log_to: Option<String>,
-	/// Auto-accept all confirmation prompts
-	#[arg(long, short = 'y', global = true)]
-	yes: bool,
 }
 #[derive(clap::Subcommand)]
 enum Commands {
@@ -91,9 +74,7 @@ async fn main() {
 	v_utils::clientside!(extract_log_to());
 
 	let cli = Cli::parse();
-	auto_yes::set(cli.yes);
-
-	let settings = exit_on_error(config::LiveSettings::new(cli.settings_flags.clone(), Duration::from_secs(3)));
+	let settings = Arc::new(exit_on_error(config::LiveSettings::new(cli.settings_flags.clone(), Duration::from_secs(3))));
 
 	// Commands that may need GitHub client (always construct it - offline only skips network calls)
 	let has_github_commands = matches!(cli.command, Commands::Open(_) | Commands::Blocker(_) | Commands::Milestones(_));
@@ -134,17 +115,17 @@ async fn main() {
 
 	// All the functions here can rely on config being correct.
 	exit_on_error(match cli.command {
-		Commands::Manual(manual_args) => manual_stats::update_or_open(&settings, manual_args).await,
-		Commands::Milestones(milestones_command) => milestones::milestones_command(&settings, milestones_command, cli.mock).await,
+		Commands::Manual(manual_args) => manual_stats::update_or_open(&*settings, manual_args).await,
+		Commands::Milestones(milestones_command) => milestones::milestones_command(&*settings, milestones_command, cli.mock).await,
 		Commands::Init(args) => {
-			shell_init::output(&settings, args);
+			shell_init::output(&*settings, args);
 			Ok(())
 		}
-		Commands::Blocker(args) => blocker_interactions::main(args, cli.offline).await,
-		Commands::Clockify(args) => blocker_interactions::clockify::clockify_main(&settings, args).await,
-		Commands::PerfEval(args) => perf_eval::main(&settings, args).await,
-		Commands::Monitors(args) => watch_monitors::main(&settings, args).await,
-		Commands::Open(args) => open_interactions::open_command(&settings, args, cli.offline, cli.mock).await,
+		Commands::Blocker(args) => blocker_interactions::main(args, cli.offline, settings.clone()).await,
+		Commands::Clockify(args) => blocker_interactions::clockify::clockify_main(settings.clone(), args).await,
+		Commands::PerfEval(args) => perf_eval::main(&*settings, args).await,
+		Commands::Monitors(args) => watch_monitors::main(&*settings, args).await,
+		Commands::Open(args) => open_interactions::open_command(&*settings, args, cli.offline, cli.mock).await,
 	});
 }
 

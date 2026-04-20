@@ -21,22 +21,22 @@ default = []
 
 [dependencies]
 arrayvec = "0.7"
-ask_llm = { version = "^2.2.1" }
+ask_llm = { version = "^2.2.2" }
 async-trait = "^0.1.89"
 async_from = "0.2.0"
 base64 = "0.22"
 clap = { version = "^4.5.60", features = ["derive"] }
-clap_complete = "4.5.66"
+clap_complete = "4.6.2"
 color-eyre = "0.6.5"
-config = "^0.15.19"
+config = "^0.15.22"
 copy_arrayvec = "0.1"
 derive-new = "^0"
 derive_more = { version = "2.1.1", features = ["from_str", "display", "from", "into_iterator"] }
 fs2 = "0.4.3"
 futures = "0.3.32"
-image = "0.25.9"
+image = "0.25.10"
 jiff = { version = "^0.2", features = ["serde"] }
-libwayshot = "0.7.2"
+libwayshot = "0.7.3"
 miette = { version = "7", features = ["fancy"] }
 pandoc = "^0.8.11"
 png = "0.18"
@@ -47,22 +47,21 @@ reqwest = { version = "^0.13.2", features = ["blocking", "json"] }
 serde = { version = "^1.0.228", features = ["derive"] }
 serde_json = { version = "^1.0.149", features = ["std"] }
 smart-default = "^0.7"
-tempfile = "^3.26.0"
+tempfile = "^3.27.0"
 thiserror = "2.0.18"
-tokio = { version = "^1.50.0", features = ["rt", "rt-multi-thread"] }
+tokio = { version = "^1.52.1", features = ["rt", "rt-multi-thread"] }
 tracing = "^0.1.44"
 tracing-error = "^0.2"
 tracing-subscriber = { version = "^0.3", features = ["env-filter", "json"] }
 url = "^2.5"
 urlencoding = "^2.1.3"
-v_utils = { version = "^2.15.30", features = ["io", "async-io", "macros", "trades", "xdg", "cli"] }
-v_utils_macros = { path = "../v_utils/v_utils_macros" }
+v_utils = { version = "^2.15.39", features = ["io", "async-io", "macros", "trades", "xdg", "cli"] }
 xdg = "3.0.0"
 
 [dev-dependencies]
-ctor = "0.6"
+ctor = "0.10"
 derive_builder = "0.20"
-insta = "1.46"
+insta = "1.47"
 libc = "0.2"
 rstest = "0.26"
 v_fixtures = { version = "^0.3.4" }

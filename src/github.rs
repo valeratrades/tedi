@@ -3,7 +3,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::Deserialize;
-use v_utils_macros::wrap_err;
+use v_utils::macros::wrap_err;
 
 pub use crate::RepoInfo;
 
@@ -79,17 +79,13 @@ pub trait GithubClient: Send + Sync {
 #[derive(Debug, thiserror::Error)]
 pub enum GithubError {
 	/// HTTP request failed (network, TLS, timeout, etc.)
-	#[error(transparent)]
-	Request(#[from] reqwest::Error),
+	#[foreign]
+	Request(reqwest::Error),
 
 	/// GitHub API returned a non-success status code.
 	#[leaf]
 	#[error("{context}: {status} - {body}")]
-	Api {
-		status: reqwest::StatusCode,
-		body: String,
-		context: String,
-	},
+	Api { status: reqwest::StatusCode, body: String, context: String },
 
 	/// GraphQL-level errors in the response body.
 	#[leaf]

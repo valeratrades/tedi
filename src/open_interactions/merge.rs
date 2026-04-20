@@ -23,7 +23,7 @@ use std::collections::HashMap;
 use jiff::Timestamp;
 use tedi::{Issue, IssueSelector};
 use thiserror::Error;
-use v_utils_macros::wrap_err;
+use v_utils::macros::wrap_err;
 
 /// Extension trait for merging Issues.
 pub trait Merge {

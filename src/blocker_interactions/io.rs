@@ -69,6 +69,6 @@ pub struct BlockerArgs {
 	#[command(subcommand)]
 	pub command: Command,
 }
-pub async fn main(args: BlockerArgs, offline: bool) -> Result<()> {
-	super::integration::main_integrated(args.command, offline).await
+pub async fn main(args: BlockerArgs, offline: bool, settings: std::sync::Arc<crate::config::LiveSettings>) -> Result<()> {
+	super::integration::main_integrated(args.command, offline, settings).await
 }

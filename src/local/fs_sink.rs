@@ -8,7 +8,7 @@ use std::{
 };
 
 use tracing::{debug, info, instrument, trace, warn};
-use v_utils::prelude::*;
+use v_utils::{macros::wrap_err, prelude::*};
 
 use super::{FsReader, IssueMeta, Local, LocalPath, LocalReader, local_path::LocalPathError};
 use crate::{Issue, RepoInfo, local::LocalPathErrorKind, sink::Sink};
@@ -17,15 +17,20 @@ use crate::{Issue, RepoInfo, local::LocalPathErrorKind, sink::Sink};
 pub struct LocalFs;
 
 /// Error type for local filesystem sink operations.
+#[wrap_err]
 #[derive(Debug, thiserror::Error)]
 pub enum LocalFsSinkError {
 	/// Filesystem IO error (create_dir, write, remove, etc.)
-	#[error(transparent)]
-	Io(#[from] std::io::Error),
+	#[foreign]
+	Io(std::io::Error),
 
 	/// Path resolution failed.
 	#[error(transparent)]
-	Path(#[from] LocalPathError),
+	Path(
+		#[from]
+		#[backtrace]
+		LocalPathError,
+	),
 }
 
 /// Remove a file, ignoring NotFound errors (file may not exist).

@@ -9,6 +9,7 @@ use copy_arrayvec::CopyArrayVec;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use url::Url;
+use v_utils::macros::wrap_err;
 
 use super::events::{indent_into, preserve_paragraph_spacing, wrap_inline_in_paragraphs};
 
@@ -628,10 +629,7 @@ impl IssueIndex {
 				}
 				IssueSelector::Title(title) | IssueSelector::Regex(title) => {
 					let span: SourceSpan = (offset + 1, title.len()).into(); // +1 to skip the '/'
-					return Err(super::error::TitleInGitPathError {
-						index_display: NamedSource::new("IssueIndex", self.to_string()),
-						span,
-					});
+					return Err(super::error::TitleInGitPathError::new(NamedSource::new("IssueIndex", self.to_string()), span));
 				}
 			}
 		}
@@ -673,9 +671,12 @@ impl std::fmt::Display for IssueIndex {
 }
 
 /// Error returned when parsing an `IssueIndex` from a string fails.
+#[wrap_err]
 #[derive(Debug, thiserror::Error)]
-#[error("{0}")]
-pub struct IssueIndexParseError(String);
+#[error("{msg}")]
+pub struct IssueIndexParseError {
+	msg: String,
+}
 
 impl std::str::FromStr for IssueIndex {
 	type Err = IssueIndexParseError;
@@ -683,7 +684,7 @@ impl std::str::FromStr for IssueIndex {
 	fn from_str(s: &str) -> Result<Self, Self::Err> {
 		let parts: Vec<&str> = s.split('/').collect();
 		if parts.len() < 2 {
-			return Err(IssueIndexParseError(format!("IssueIndex requires at least owner/repo, got: {s}")));
+			return Err(IssueIndexParseError::new(format!("IssueIndex requires at least owner/repo, got: {s}")));
 		}
 		let repo_info = RepoInfo::new(parts[0], parts[1]);
 		let selectors: Vec<IssueSelector> = parts[2..]
@@ -997,11 +998,10 @@ impl Issue /*{{{1*/ {
 				Some(ch) => ch.clone(),
 				None => {
 					if let IssueSelector::GitId(n) = selector {
-						return Err(super::error::IssueError::ErroneousComposition {
-							issue_number: n,
-							detail: "either internal bug (HollowIssue was constructed incorrectly) or user manually embedded a `<!-- @user url -->` marker, which is not permitted"
-								.to_string(),
-						});
+						return Err(super::error::IssueError::new_erroneous_composition(
+							n,
+							"either internal bug (HollowIssue was constructed incorrectly) or user manually embedded a `<!-- @user url -->` marker, which is not permitted".to_string(),
+						));
 					}
 					HollowIssue::default()
 				}

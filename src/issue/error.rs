@@ -4,10 +4,11 @@
 
 #![allow(unused_assignments)] // Fields are read by miette's derive macro via attributes
 
-use std::path::PathBuf;
+use std::{backtrace::Backtrace, path::PathBuf};
 
 use miette::{NamedSource, SourceSpan};
 use tracing_error::SpanTrace;
+use v_utils::macros::wrap_err;
 
 /// Error type for issue file parsing.
 ///
@@ -17,6 +18,7 @@ use tracing_error::SpanTrace;
 pub struct ParseError {
 	rendered: String,
 	spantrace: SpanTrace,
+	backtrace: Backtrace,
 }
 
 impl ParseError {
@@ -25,6 +27,7 @@ impl ParseError {
 		Self {
 			rendered,
 			spantrace: SpanTrace::capture(),
+			backtrace: Backtrace::capture(),
 		}
 	}
 
@@ -66,6 +69,7 @@ impl ParseError {
 }
 
 /// Error type for issue composition and structural invariant violations.
+#[wrap_err]
 #[derive(Debug, thiserror::Error)]
 pub enum IssueError {
 	/// A git-linked child (GitId selector) exists in virtual representation but not in HollowIssue.
@@ -73,12 +77,14 @@ pub enum IssueError {
 	/// This means either:
 	/// - Internal bug: we constructed the HollowIssue incorrectly and missed a child
 	/// - User error: user manually embedded an issue with a `<!-- @user url -->` marker, which is not permitted
+	#[leaf]
 	#[error("git-linked child #{issue_number} present in virtual but missing from HollowIssue: {detail}")]
 	ErroneousComposition { issue_number: u64, detail: String },
 }
 
 /// Error when converting IssueIndex to a git number path.
 /// Occurs when a Title selector is encountered but only GitId selectors are valid.
+#[wrap_err]
 #[derive(Debug, miette::Diagnostic, thiserror::Error)]
 #[error("cannot convert IssueIndex to git number path: contains Title selector")]
 #[diagnostic(

@@ -3,7 +3,10 @@
 //! - `FsReader`: reads from filesystem (submitted/current state)
 //! - `GitReader`: reads from git HEAD (consensus state)
 
-use std::path::{Path, PathBuf};
+use std::{
+	backtrace::Backtrace,
+	path::{Path, PathBuf},
+};
 
 use miette::{NamedSource, SourceSpan};
 use tracing::{info, instrument};
@@ -38,6 +41,7 @@ pub struct ReaderError {
 	pub kind: ReaderErrorKind,
 	rendered: String,
 	spantrace: SpanTrace,
+	backtrace: Backtrace,
 }
 impl ReaderError {
 	fn from_diagnostic(kind: ReaderErrorKind, diag: ReaderDiagnostic) -> Self {
@@ -46,6 +50,7 @@ impl ReaderError {
 			kind,
 			rendered,
 			spantrace: SpanTrace::capture(),
+			backtrace: Backtrace::capture(),
 		}
 	}
 

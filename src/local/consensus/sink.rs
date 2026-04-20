@@ -28,12 +28,12 @@ impl Sink<Consensus> for Issue {
 		let git_id = self.git_id().expect("calling this before having had linked the issue means invalid implementation somewhere");
 
 		let data_dir = Local::issues_dir();
-		let data_dir_str = data_dir.to_str().ok_or(ConsensusSinkError::InvalidDataDir)?;
+		let data_dir_str = data_dir.to_str().ok_or_else(ConsensusSinkError::new_invalid_data_dir)?;
 
 		// Stage changes
 		let add_output = Command::new("git").args(["-C", data_dir_str, "add", "-A"]).output()?;
 		if !add_output.status.success() {
-			return Err(ConsensusSinkError::GitAdd(String::from_utf8_lossy(&add_output.stderr).into_owned()));
+			return Err(ConsensusSinkError::new_git_add(String::from_utf8_lossy(&add_output.stderr).into_owned()));
 		}
 
 		// Check for ignored files that we tried to add
@@ -42,7 +42,7 @@ impl Sink<Consensus> for Issue {
 			let check_ignored = Command::new("git").args(["-C", data_dir_str, "check-ignore", "--no-index", "-v"]).arg(rel.join("**")).output()?;
 			// check-ignore returns 0 if files ARE ignored, 1 if none are ignored
 			if check_ignored.status.success() && !check_ignored.stdout.is_empty() {
-				return Err(ConsensusSinkError::GitIgnoreRejection(String::from_utf8_lossy(&check_ignored.stdout).into_owned()));
+				return Err(ConsensusSinkError::new_git_ignore_rejection(String::from_utf8_lossy(&check_ignored.stdout).into_owned()));
 			}
 		}
 
@@ -57,7 +57,7 @@ impl Sink<Consensus> for Issue {
 		let commit_msg = format!("sync: {owner}/{repo}#{git_id}");
 		let commit_output = Command::new("git").args(["-C", data_dir_str, "commit", "-m", &commit_msg]).output()?;
 		if !commit_output.status.success() {
-			return Err(ConsensusSinkError::GitCommit(String::from_utf8_lossy(&commit_output.stderr).into_owned()));
+			return Err(ConsensusSinkError::new_git_commit(String::from_utf8_lossy(&commit_output.stderr).into_owned()));
 		}
 
 		Ok(true)

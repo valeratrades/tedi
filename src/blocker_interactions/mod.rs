@@ -34,6 +34,6 @@ pub use operations::BlockerSequenceExt;
 pub use tedi::BlockerSequence;
 
 /// Main entry point for blocker commands
-pub async fn main(args: BlockerArgs, offline: bool) -> Result<()> {
-	io::main(args, offline).await
+pub async fn main(args: BlockerArgs, offline: bool, settings: std::sync::Arc<crate::config::LiveSettings>) -> Result<()> {
+	io::main(args, offline, settings).await
 }

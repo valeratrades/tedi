@@ -2,7 +2,7 @@
 //!
 //! Handles halt/resume commands and automatic task switching when blockers change.
 
-use std::{collections::HashMap, io::Write as IoWrite};
+use std::{collections::HashMap, io::Write as IoWrite, sync::Arc};
 
 use clap::Parser;
 use color_eyre::eyre::Result;
@@ -67,15 +67,16 @@ pub fn set_tracking_enabled(enabled: bool) -> Result<()> {
 	Ok(())
 }
 /// Get fully_qualified setting for a workspace, prompting user if not set
-pub fn get_workspace_fully_qualified_setting(workspace: &str) -> Result<bool> {
+pub fn get_workspace_fully_qualified_setting(workspace: &str, settings: &Arc<crate::config::LiveSettings>) -> Result<bool> {
 	let cache = load_workspace_cache();
 
-	if let Some(settings) = cache.workspaces.get(workspace) {
-		Ok(settings.fully_qualified)
+	if let Some(ws_settings) = cache.workspaces.get(workspace) {
+		Ok(ws_settings.fully_qualified)
 	} else {
+		let yes = settings.config()?.yes;
 		// Ask user for preference
 		println!("Workspace '{workspace}' fully-qualified mode setting not found.");
-		let use_fully_qualified = if crate::auto_yes::get() {
+		let use_fully_qualified = if yes {
 			println!("Use fully-qualified mode (legacy) for this workspace? [y/N]: y (--yes)");
 			true
 		} else {
@@ -108,16 +109,15 @@ pub async fn stop_current_tracking(workspace: Option<&str>) -> Result<()> {
 ///
 /// `get_description` is a callback that returns the final description to use,
 /// given the fully_qualified setting for the workspace.
-pub async fn start_tracking_for_task<F>(get_description: F, resume_args: &ResumeArgs, workspace_override: Option<&str>) -> Result<()>
+pub async fn start_tracking_for_task<F>(get_description: F, resume_args: &ResumeArgs, workspace_override: Option<&str>, settings: Arc<crate::config::LiveSettings>) -> Result<()>
 where
 	F: FnOnce(bool) -> String, {
 	let workspace = workspace_override.or(resume_args.workspace.as_deref());
 
 	// Determine fully_qualified mode from workspace settings (legacy mode for clockify)
 	let fully_qualified = if let Some(ws) = workspace {
-		get_workspace_fully_qualified_setting(ws)?
+		get_workspace_fully_qualified_setting(ws, &settings)?
 	} else {
-		// If no workspace specified, use default (false)
 		false
 	};
 
@@ -130,6 +130,7 @@ where
 		resume_args.task.as_deref(),
 		resume_args.tags.as_deref(),
 		resume_args.billable,
+		settings,
 	)
 	.await
 }

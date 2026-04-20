@@ -8,6 +8,9 @@ pub struct AppConfig {
 	pub timer: Option<Timer>,
 	pub milestones: Option<Milestones>,
 	pub manual_stats: Option<ManualStats>,
+	#[settings(skip(flag))]
+	#[serde(default)]
+	pub yes: bool,
 }
 
 #[derive(Clone, Debug, v_macros::MyConfigPrimitives, v_macros::SettingsNested)]
