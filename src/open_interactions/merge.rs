@@ -23,6 +23,7 @@ use std::collections::HashMap;
 use jiff::Timestamp;
 use tedi::{Issue, IssueSelector};
 use thiserror::Error;
+use v_utils_macros::wrap_err;
 
 /// Extension trait for merging Issues.
 pub trait Merge {
@@ -35,9 +36,11 @@ pub trait Merge {
 	fn merge(&mut self, other: &Issue, force: bool) -> Result<(), MergeError>;
 }
 /// Error from merge operations.
+#[wrap_err]
 #[derive(Debug, Error)]
 pub enum MergeError {
 	/// Cannot merge virtual-only issues.
+	#[leaf]
 	#[error("cannot merge virtual-only issue: virtual issues are local-only and should not participate in sync")]
 	VirtualIssue,
 }
@@ -46,7 +49,7 @@ impl Merge for Issue {
 	fn merge(&mut self, other: &Issue, force: bool) -> Result<(), MergeError> {
 		// Virtual issues cannot participate in merge
 		if self.identity.is_virtual || other.identity.is_virtual {
-			return Err(MergeError::VirtualIssue);
+			return Err(MergeError::new_virtual_issue());
 		}
 
 		// Get timestamps, initializing pending issues to default
@@ -221,7 +224,7 @@ mod tests {
 		let linked = make_linked_issue("test", 1, timestamps);
 
 		let result = virtual_issue.merge(&linked, false);
-		assert!(matches!(result, Err(MergeError::VirtualIssue)));
+		assert!(matches!(result, Err(MergeError::VirtualIssue { .. })));
 	}
 
 	#[test]

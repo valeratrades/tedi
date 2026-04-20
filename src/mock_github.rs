@@ -251,10 +251,10 @@ impl MockGithubClient {
 		let mut issues = self.issues.lock().unwrap();
 		let repo_issues = issues
 			.get_mut(&key)
-			.ok_or_else(|| GithubError::Other(format!("Repository not found: {}/{}", repo.owner(), repo.repo())))?;
+			.ok_or_else(|| GithubError::new_other(format!("Repository not found: {}/{}", repo.owner(), repo.repo())))?;
 		let issue = repo_issues
 			.get_mut(&issue_number)
-			.ok_or_else(|| GithubError::Other(format!("Issue not found: #{issue_number}")))?;
+			.ok_or_else(|| GithubError::new_other(format!("Issue not found: #{issue_number}")))?;
 		Ok(f(issue))
 	}
 
@@ -266,8 +266,8 @@ impl MockGithubClient {
 		let mut comments = self.comments.lock().unwrap();
 		let repo_comments = comments
 			.get_mut(&key)
-			.ok_or_else(|| GithubError::Other(format!("Repository not found: {}/{}", repo.owner(), repo.repo())))?;
-		let comment = repo_comments.get_mut(&comment_id).ok_or_else(|| GithubError::Other(format!("Comment not found: {comment_id}")))?;
+			.ok_or_else(|| GithubError::new_other(format!("Repository not found: {}/{}", repo.owner(), repo.repo())))?;
+		let comment = repo_comments.get_mut(&comment_id).ok_or_else(|| GithubError::new_other(format!("Comment not found: {comment_id}")))?;
 		Ok(f(comment))
 	}
 
@@ -399,9 +399,9 @@ impl GithubClient for MockGithubClient {
 		let key = RepoKey::new(owner, repo_name);
 		let issues = self.issues.lock().unwrap();
 
-		let repo_issues = issues.get(&key).ok_or_else(|| GithubError::Other(format!("Repository not found: {owner}/{repo_name}")))?;
+		let repo_issues = issues.get(&key).ok_or_else(|| GithubError::new_other(format!("Repository not found: {owner}/{repo_name}")))?;
 
-		let issue_data = repo_issues.get(&issue_number).ok_or_else(|| GithubError::Other(format!("Issue not found: #{issue_number}")))?;
+		let issue_data = repo_issues.get(&issue_number).ok_or_else(|| GithubError::new_other(format!("Issue not found: #{issue_number}")))?;
 
 		Ok(self.convert_issue_data(issue_data))
 	}
@@ -603,13 +603,13 @@ impl GithubClient for MockGithubClient {
 		// Find the issue number that matches the child_issue_id
 		let child_number = {
 			let issues = self.issues.lock().unwrap();
-			let repo_issues = issues.get(&key).ok_or_else(|| GithubError::Other(format!("Repository not found: {owner}/{repo_name}")))?;
+			let repo_issues = issues.get(&key).ok_or_else(|| GithubError::new_other(format!("Repository not found: {owner}/{repo_name}")))?;
 
 			repo_issues
 				.values()
 				.find(|i| i.id == child_issue_id)
 				.map(|i| i.number)
-				.ok_or_else(|| GithubError::Other(format!("Child issue with id {child_issue_id} not found")))?
+				.ok_or_else(|| GithubError::new_other(format!("Child issue with id {child_issue_id} not found")))?
 		};
 
 		let mut sub_issues = self.sub_issues.lock().unwrap();
@@ -684,8 +684,8 @@ impl GithubClient for MockGithubClient {
 		match parent_number {
 			Some(parent_num) => {
 				let issues = self.issues.lock().unwrap();
-				let repo_issues = issues.get(&key).ok_or_else(|| GithubError::Other(format!("Repository not found: {owner}/{repo_name}")))?;
-				let parent_data = repo_issues.get(&parent_num).ok_or_else(|| GithubError::Other(format!("Parent issue not found: #{parent_num}")))?;
+				let repo_issues = issues.get(&key).ok_or_else(|| GithubError::new_other(format!("Repository not found: {owner}/{repo_name}")))?;
+				let parent_data = repo_issues.get(&parent_num).ok_or_else(|| GithubError::new_other(format!("Parent issue not found: #{parent_num}")))?;
 				Ok(Some(self.convert_issue_data(parent_data)))
 			}
 			None => Ok(None),

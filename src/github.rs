@@ -1,8 +1,9 @@
-use std::{backtrace::Backtrace, sync::Arc};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::Deserialize;
+use v_utils_macros::wrap_err;
 
 pub use crate::RepoInfo;
 
@@ -74,6 +75,7 @@ pub trait GithubClient: Send + Sync {
 	async fn repo_exists(&self, repo: RepoInfo) -> Result<bool, GithubError>;
 }
 /// Error type for GitHub API operations.
+#[wrap_err]
 #[derive(Debug, thiserror::Error)]
 pub enum GithubError {
 	/// HTTP request failed (network, TLS, timeout, etc.)
@@ -81,26 +83,28 @@ pub enum GithubError {
 	Request(#[from] reqwest::Error),
 
 	/// GitHub API returned a non-success status code.
+	#[leaf]
 	#[error("{context}: {status} - {body}")]
 	Api {
 		status: reqwest::StatusCode,
 		body: String,
 		context: String,
-		#[backtrace]
-		backtrace: Backtrace,
 	},
 
 	/// GraphQL-level errors in the response body.
-	#[error("GraphQL errors: {0}")]
-	Graphql(String),
+	#[leaf]
+	#[error("GraphQL errors: {msg}")]
+	Graphql { msg: String },
 
 	/// Client not initialized.
+	#[leaf]
 	#[error("GitHub client not initialized. Is the config file missing a github_token?")]
 	NotInitialized,
 
 	/// Generic error (for mocks and other non-HTTP contexts).
-	#[error("{0}")]
-	Other(String),
+	#[leaf]
+	#[error("{msg}")]
+	Other { msg: String },
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -212,12 +216,7 @@ impl RealGithubClient {
 		if !res.status().is_success() {
 			let status = res.status();
 			let body = res.text().await.unwrap_or_default();
-			return Err(GithubError::Api {
-				status,
-				body,
-				context: error_context.to_string(),
-				backtrace: Backtrace::capture(),
-			});
+			return Err(GithubError::new_api(status, body, error_context.to_string()));
 		}
 
 		Ok(())
@@ -230,12 +229,7 @@ impl RealGithubClient {
 		if !res.status().is_success() {
 			let status = res.status();
 			let body = res.text().await.unwrap_or_default();
-			return Err(GithubError::Api {
-				status,
-				body,
-				context: error_context.to_string(),
-				backtrace: Backtrace::capture(),
-			});
+			return Err(GithubError::new_api(status, body, error_context.to_string()));
 		}
 
 		Ok(())
@@ -250,12 +244,7 @@ impl GithubClient for RealGithubClient {
 		if !res.status().is_success() {
 			let status = res.status();
 			let body = res.text().await.unwrap_or_default();
-			return Err(GithubError::Api {
-				status,
-				body,
-				context: "Failed to fetch authenticated user".into(),
-				backtrace: Backtrace::capture(),
-			});
+			return Err(GithubError::new_api(status, body, "Failed to fetch authenticated user".to_string()));
 		}
 
 		let user = res.json::<GithubUser>().await?;
@@ -269,12 +258,7 @@ impl GithubClient for RealGithubClient {
 		if !res.status().is_success() {
 			let status = res.status();
 			let body = res.text().await.unwrap_or_default();
-			return Err(GithubError::Api {
-				status,
-				body,
-				context: "Failed to fetch issue".into(),
-				backtrace: Backtrace::capture(),
-			});
+			return Err(GithubError::new_api(status, body, "Failed to fetch issue".to_string()));
 		}
 
 		let issue = res.json::<GithubIssue>().await?;
@@ -288,12 +272,7 @@ impl GithubClient for RealGithubClient {
 		if !res.status().is_success() {
 			let status = res.status();
 			let body = res.text().await.unwrap_or_default();
-			return Err(GithubError::Api {
-				status,
-				body,
-				context: "Failed to fetch comments".into(),
-				backtrace: Backtrace::capture(),
-			});
+			return Err(GithubError::new_api(status, body, "Failed to fetch comments".to_string()));
 		}
 
 		let comments = res.json::<Vec<GithubComment>>().await?;
@@ -352,12 +331,7 @@ impl GithubClient for RealGithubClient {
 		if !res.status().is_success() {
 			let status = res.status();
 			let body = res.text().await.unwrap_or_default();
-			return Err(GithubError::Api {
-				status,
-				body,
-				context: "Failed to delete comment".into(),
-				backtrace: Backtrace::capture(),
-			});
+			return Err(GithubError::new_api(status, body, "Failed to delete comment".to_string()));
 		}
 
 		Ok(())
@@ -370,12 +344,7 @@ impl GithubClient for RealGithubClient {
 		if !res.status().is_success() {
 			let status = res.status();
 			let body = res.text().await.unwrap_or_default();
-			return Err(GithubError::Api {
-				status,
-				body,
-				context: "Failed to create issue".into(),
-				backtrace: Backtrace::capture(),
-			});
+			return Err(GithubError::new_api(status, body, "Failed to create issue".to_string()));
 		}
 
 		let issue = res.json::<CreatedIssue>().await?;
@@ -437,12 +406,7 @@ impl GithubClient for RealGithubClient {
 		if !res.status().is_success() {
 			let status = res.status();
 			let body = res.text().await.unwrap_or_default();
-			return Err(GithubError::Api {
-				status,
-				body,
-				context: "Failed to fetch parent issue".into(),
-				backtrace: Backtrace::capture(),
-			});
+			return Err(GithubError::new_api(status, body, "Failed to fetch parent issue".to_string()));
 		}
 
 		let parent = res.json::<GithubIssue>().await?;
@@ -506,19 +470,14 @@ impl GithubClient for RealGithubClient {
 		if !res.status().is_success() {
 			let status = res.status();
 			let body = res.text().await.unwrap_or_default();
-			return Err(GithubError::Api {
-				status,
-				body,
-				context: "Failed to fetch timeline timestamps via GraphQL".into(),
-				backtrace: Backtrace::capture(),
-			});
+			return Err(GithubError::new_api(status, body, "Failed to fetch timeline timestamps via GraphQL".to_string()));
 		}
 
 		let response: serde_json::Value = res.json().await?;
 
 		// Check for GraphQL errors
 		if let Some(errors) = response.get("errors") {
-			return Err(GithubError::Graphql(errors.to_string()));
+			return Err(GithubError::new_graphql(errors.to_string()));
 		}
 
 		let mut timestamps = GraphqlTimelineTimestamps::default();
@@ -604,7 +563,7 @@ pub mod client {
 
 	/// Get the global GitHub client.
 	pub fn get() -> Result<BoxedGithubClient, super::GithubError> {
-		CLIENT.with(|c| c.borrow().clone().ok_or(super::GithubError::NotInitialized))
+		CLIENT.with(|c| c.borrow().clone().ok_or_else(|| super::GithubError::new_not_initialized()))
 	}
 }
 

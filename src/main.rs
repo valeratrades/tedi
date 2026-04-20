@@ -1,4 +1,5 @@
 #![feature(try_blocks)]
+#![feature(error_generic_member_access)]
 #![allow(clippy::len_zero)]
 #![allow(clippy::doc_lazy_continuation)]
 const MANUAL_PATH_APPENDIX: &str = "manual_stats/";
