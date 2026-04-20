@@ -653,7 +653,6 @@ use std::{
 	os::fd::AsRawFd,
 	path::{Path, PathBuf},
 	process::{Command, ExitStatus},
-	sync::OnceLock,
 };
 
 pub use snapshot::FixtureIssuesExt;
@@ -758,16 +757,6 @@ pub struct TestContext {
 #[derive(Clone, Copy, Debug, derive_more::Deref, derive_more::DerefMut, derive_more::Display, Eq, derive_more::Into, PartialEq)]
 pub struct Seed(i64);
 
-/// Compile the binary before running any tests
-pub fn ensure_binary_compiled() {
-	BINARY_COMPILED.get_or_init(|| {
-		let status = Command::new("cargo").arg("build").status().expect("Failed to execute cargo build");
-
-		if !status.success() {
-			panic!("Failed to build binary");
-		}
-	});
-}
 /// What target the OpenBuilder opens.
 enum BuilderTarget<'a> {
 	/// Open by issue reference (derives path from issue)
@@ -802,11 +791,7 @@ pub(crate) fn drain_pipe<R: Read>(pipe: &mut R, buf: &mut Vec<u8>) {
 	}
 }
 
-static BINARY_COMPILED: OnceLock<()> = OnceLock::new();
-
 pub(crate) fn get_binary_path() -> PathBuf {
-	ensure_binary_compiled();
-
 	let mut path = std::env::current_exe().unwrap();
 	path.pop(); // Remove test binary name
 	path.pop(); // Remove 'deps'
