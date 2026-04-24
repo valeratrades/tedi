@@ -508,6 +508,15 @@ async fn sync_blocker_changes(content: &str, offline: bool) -> Result<()> {
 	for (link, section_text) in doc.embedded_issues() {
 		// Parse blockers from the embedded section
 		let edited_blockers = parse_blockers_from_embedded(&section_text);
+		if edited_blockers.had_orphans {
+			bail!(
+				"blocker section for {}/{}/#{} contains lines that don't belong to any blocker item — \
+				fix the format (all text must be under a `- ` blocker line)",
+				link.owner(),
+				link.repo(),
+				link.number()
+			);
+		}
 
 		// Load the real issue from local fs
 		let issue = match load_local_issue(&link).await {

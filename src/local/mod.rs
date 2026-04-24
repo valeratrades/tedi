@@ -548,7 +548,9 @@ impl Local {
 			std::fs::create_dir_all(parent)?;
 		}
 		let content = serde_json::to_string_pretty(meta).expect("ProjectMeta serialization is infallible");
-		std::fs::write(&meta_path, content)?;
+		let tmp_path = meta_path.with_extension("json.tmp");
+		std::fs::write(&tmp_path, &content)?;
+		std::fs::rename(&tmp_path, &meta_path)?;
 		Ok(())
 	}
 
@@ -558,6 +560,7 @@ impl Local {
 		let meta_path = Self::project_meta_path(repo_info);
 
 		match reader.read_content(&meta_path) {
+			Ok(c) if c.trim().is_empty() => ProjectMeta::default(),
 			Ok(c) => match serde_json::from_str(&c) {
 				Ok(meta) => meta,
 				Err(e) => panic!("corrupted project metadata at {}: {e}", meta_path.display()),
@@ -1331,7 +1334,7 @@ impl<R: LocalReader> crate::LazyIssue<LocalIssueSource<R>> for Issue {
 			let remote = match parsed.selector {
 				IssueSelector::GitId(n) => {
 					let repo_info = index.repo_info();
-					let meta = Local::load_project_meta_from_reader(repo_info, &source.reader).issues.remove(&n);
+					let meta = Local::load_project_meta(repo_info).issues.remove(&n);
 					let link = IssueLink::parse(&format!("https://github.com/{}/{}/issues/{n}", repo_info.owner(), repo_info.repo())).expect("constructed URL must be valid");
 					Some(Box::new(LinkedIssueMeta::new(
 						meta.as_ref().and_then(|m| m.user.clone()),

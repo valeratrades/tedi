@@ -93,6 +93,8 @@ pub struct BlockerSequence {
 	pub items: Vec<BlockerItem>,
 	/// Transient state for `!s` marker. Not serialized, not compared.
 	pub set_state: Option<BlockerSetState>,
+	/// Set when parse dropped lines that didn't fit the format. Not serialized, not compared.
+	pub had_orphans: bool,
 }
 impl BlockerSequence {
 	/// Parse raw text content into a BlockerSequence.
@@ -104,16 +106,18 @@ impl BlockerSequence {
 	/// Build tree from raw lines, using indentation for nesting.
 	fn build_from_lines(lines: &[&str]) -> Self {
 		let mut root_items: Vec<BlockerItem> = Vec::new();
-		Self::parse_items_at_indent(lines, &mut 0, 0, &mut root_items);
+		let mut had_orphans = false;
+		Self::parse_items_at_indent(lines, &mut 0, 0, &mut root_items, &mut had_orphans);
 		Self {
 			items: root_items,
+			had_orphans,
 			..Default::default()
 		}
 	}
 
 	/// Parse items at a given indent level, advancing `pos` through the lines.
 	/// `indent` is the number of 2-space units expected for items at this level.
-	fn parse_items_at_indent(lines: &[&str], pos: &mut usize, indent: usize, items: &mut Vec<BlockerItem>) {
+	fn parse_items_at_indent(lines: &[&str], pos: &mut usize, indent: usize, items: &mut Vec<BlockerItem>, had_orphans: &mut bool) {
 		let indent_str = "  ".repeat(indent);
 
 		while *pos < lines.len() {
@@ -174,7 +178,7 @@ impl BlockerSequence {
 
 					if child_content.starts_with("- ") {
 						// Nested blocker — parse all children at this indent level
-						Self::parse_items_at_indent(lines, pos, child_indent, &mut item.children);
+						Self::parse_items_at_indent(lines, pos, child_indent, &mut item.children, had_orphans);
 						// After parsing children, we continue to check for more at our level
 						// but no more comments are allowed (children already started)
 					} else {
@@ -194,8 +198,8 @@ impl BlockerSequence {
 				items.push(item);
 			} else {
 				// Not a blocker item and not deeper — this is a comment line without a parent item.
-				// At root level this could be a bare comment. Just skip it with a warning.
 				tracing::warn!("orphan comment (no preceding blocker item): {content:?}");
+				*had_orphans = true;
 				*pos += 1;
 			}
 		}
