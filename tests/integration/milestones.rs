@@ -3,14 +3,18 @@
 //! Tests the full `milestones edit` cycle: expand shorthand refs from local issue files,
 //! present to editor, sync changes back. Uses `--mock` to skip GitHub API.
 
-use std::{io::Write, path::PathBuf, process::Command};
+use std::{
+	io::Write,
+	path::{Path, PathBuf},
+	process::Command,
+};
 
 use crate::common::{RunOutput, Seed, TestContext, drain_pipe, get_binary_path, parse_virtual, set_nonblocking};
 
 const ENV_MOCK_MILESTONE: &str = concat!(env!("CARGO_PKG_NAME"), "_MOCK_MILESTONE");
 const ENV_MOCK_PIPE: &str = concat!(env!("CARGO_PKG_NAME"), "_MOCK_PIPE");
 
-type EditFn = Box<dyn FnOnce(&std::path::Path)>;
+type EditFn = Box<dyn FnOnce(&Path)>;
 
 impl TestContext {
 	/// Run `milestones edit` in mock mode against a milestone file.
@@ -23,7 +27,7 @@ impl TestContext {
 	}
 
 	/// Run `milestones edit --offline` in mock mode, modifying the temp file before signaling the pipe.
-	fn milestone_edit_with_changes(&self, milestone_content: &str, edit_fn: impl FnOnce(&std::path::Path) + 'static) -> (RunOutput, String) {
+	fn milestone_edit_with_changes(&self, milestone_content: &str, edit_fn: impl FnOnce(&Path) + 'static) -> (RunOutput, String) {
 		self.milestone_edit_impl(milestone_content, &["--mock", "--offline", "milestones", "edit", "1d"], Some(Box::new(edit_fn) as EditFn))
 	}
 

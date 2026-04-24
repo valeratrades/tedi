@@ -725,7 +725,7 @@ pub fn render_fixture(renderer: FixtureRenderer<'_>, output: &RunOutput) -> Stri
 }
 
 pub fn parse_virtual(content: &str) -> tedi::VirtualIssue {
-	tedi::VirtualIssue::parse(content, std::path::PathBuf::from("test.md")).expect("failed to parse test issue")
+	tedi::VirtualIssue::parse(content, PathBuf::from("test.md")).expect("failed to parse test issue")
 }
 
 /// Builder for running the `open` command with various options.

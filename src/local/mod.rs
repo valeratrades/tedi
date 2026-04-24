@@ -16,6 +16,8 @@
 
 #![allow(unused_assignments)] // miette's derive macro triggers false positives
 
+use std::collections::BTreeMap;
+
 use HashMap;
 
 pub mod conflict;
@@ -504,7 +506,7 @@ impl Local {
 			let project_meta = ProjectMeta {
 				virtual_project: true,
 				next_virtual_issue_number: 1,
-				issues: std::collections::BTreeMap::new(),
+				issues: BTreeMap::new(),
 			};
 			Self::save_project_meta(repo_info, &project_meta)?;
 			Ok(project_meta)
@@ -643,7 +645,11 @@ mod reader;
 pub use reader::{FsReader, GitReader, LocalReader, ReaderError, ReaderErrorKind};
 
 mod local_path {
-	use std::{backtrace::Backtrace, collections::VecDeque};
+	use std::{
+		backtrace::Backtrace,
+		collections::VecDeque,
+		path::{Path, PathBuf},
+	};
 
 	use miette::SourceSpan;
 	use tracing_error::SpanTrace;
@@ -1156,7 +1162,7 @@ pub struct ProjectMeta {
 	#[serde(default)]
 	pub next_virtual_issue_number: u64,
 	#[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
-	pub issues: std::collections::BTreeMap<u64, IssueMeta>,
+	pub issues: BTreeMap<u64, IssueMeta>,
 }
 
 /// Exact match level for fzf queries.

@@ -133,7 +133,7 @@ impl std::str::FromStr for DaySectionBorders {
 /// Persist rejected user-edited content to a known path for recovery.
 /// Call this before propagating a parse/validation error on user-edited content.
 pub fn persist_rejected_changes(content: &str) {
-	let path = std::path::Path::new(REJECTED_CHANGES_PATH);
+	let path = Path::new(REJECTED_CHANGES_PATH);
 	if let Some(parent) = path.parent() {
 		if let Err(e) = std::fs::create_dir_all(parent) {
 			tracing::warn!("failed to create rejected-changes dir: {e}");

@@ -3,7 +3,7 @@ use std::{
 	fs::File,
 	hash::{DefaultHasher, Hasher},
 	io::BufWriter,
-	path::PathBuf,
+	path::{Path, PathBuf},
 	process::Command,
 	thread,
 	time::Duration,
@@ -175,7 +175,7 @@ fn watch_daemon() -> Result<()> {
 	}
 }
 
-fn save_screenshot_png(image_buffer: &image::DynamicImage, path: &std::path::Path) -> Result<()> {
+fn save_screenshot_png(image_buffer: &image::DynamicImage, path: &Path) -> Result<()> {
 	let rgba = image_buffer.to_rgba8();
 	let file = File::create(path).wrap_err(format!("Failed to create file: {}", path.display()))?;
 	let writer = BufWriter::new(file);
@@ -190,7 +190,7 @@ fn save_screenshot_png(image_buffer: &image::DynamicImage, path: &std::path::Pat
 	Ok(())
 }
 
-fn cleanup_old_screenshots(cache_dir: &std::path::Path) -> Result<()> {
+fn cleanup_old_screenshots(cache_dir: &Path) -> Result<()> {
 	let threshold = Timestamp::now() - 1.day();
 
 	for entry in std::fs::read_dir(cache_dir)? {
@@ -408,7 +408,7 @@ struct ScreenshotEntry {
 }
 
 /// Capture screenshots from all monitors right now and save them to the cache dir.
-fn capture_screenshots_now(cache_dir: &std::path::Path) -> Result<()> {
+fn capture_screenshots_now(cache_dir: &Path) -> Result<()> {
 	let now = Zoned::now();
 	let date_dir = cache_dir.join(now.strftime("%Y-%m-%d").to_string());
 	std::fs::create_dir_all(&date_dir).wrap_err(format!("Failed to create directory: {}", date_dir.display()))?;
@@ -437,7 +437,7 @@ fn capture_screenshots_now(cache_dir: &std::path::Path) -> Result<()> {
 }
 
 /// Collect all screenshots from the cache that are newer than `cutoff`, sorted chronologically.
-fn collect_screenshots(cache_dir: &std::path::Path, cutoff: Timestamp) -> Result<Vec<ScreenshotEntry>> {
+fn collect_screenshots(cache_dir: &Path, cutoff: Timestamp) -> Result<Vec<ScreenshotEntry>> {
 	let mut entries = Vec::new();
 
 	for dir_entry in std::fs::read_dir(cache_dir)? {

@@ -1,3 +1,4 @@
+#![feature(default_field_values)]
 #![feature(vec_peek_mut)]
 #![feature(error_generic_member_access)]
 

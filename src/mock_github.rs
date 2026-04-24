@@ -5,6 +5,7 @@
 
 use std::{
 	collections::HashMap,
+	path::Path,
 	sync::{
 		Mutex,
 		atomic::{AtomicU64, Ordering},
@@ -289,7 +290,7 @@ impl MockGithubClient {
 /// Scan the project directory for the maximum issue number in filenames.
 /// Looks at files/dirs matching pattern `{number}_-_*` or just `{number}`.
 fn scan_max_issue_number(repo_info: RepoInfo) -> u64 {
-	fn scan_dir(path: &std::path::Path, max: &mut u64) {
+	fn scan_dir(path: &Path, max: &mut u64) {
 		let Ok(entries) = std::fs::read_dir(path) else {
 			return;
 		};

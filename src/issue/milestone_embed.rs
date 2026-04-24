@@ -660,6 +660,8 @@ fn events_to_plain_text(events: &[OwnedEvent]) -> String {
 
 #[cfg(test)]
 mod tests {
+	use std::path::PathBuf;
+
 	use super::*;
 
 	#[test]
@@ -1243,7 +1245,7 @@ mod tests {
 			let mut file_content = initial.to_string();
 			for cycle in 1..=5 {
 				// Step 1: Parse local issue file
-				let vi = super::super::VirtualIssue::parse(&file_content, std::path::PathBuf::from("/tmp/test.md")).unwrap();
+				let vi = super::super::VirtualIssue::parse(&file_content, PathBuf::from("/tmp/test.md")).unwrap();
 
 				// Step 2: Build Issue and serialize_blockers_view
 				let link = super::super::IssueLink::parse("https://github.com/o/r/issues/42").unwrap();

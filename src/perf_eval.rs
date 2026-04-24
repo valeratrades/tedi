@@ -1,4 +1,4 @@
-use std::process::Command;
+use std::{path::PathBuf, process::Command};
 
 use ask_llm::{ImageContent, Message, Model, Role};
 use clap::Args;
@@ -30,7 +30,7 @@ pub async fn main(_settings: &LiveSettings, args: PerfEvalArgs) -> Result<()> {
 	// Check for recent screenshots from monitors watch daemon
 	if date_dir.exists() {
 		// Find the most recent screenshot
-		let mut most_recent: Option<(std::path::PathBuf, std::time::SystemTime)> = None;
+		let mut most_recent: Option<(PathBuf, std::time::SystemTime)> = None;
 
 		if let Ok(entries) = std::fs::read_dir(&date_dir) {
 			for entry in entries.flatten() {
@@ -87,7 +87,7 @@ pub async fn main(_settings: &LiveSettings, args: PerfEvalArgs) -> Result<()> {
 	let mut screenshot_images = Vec::new();
 
 	// Collect all PNG files with their metadata
-	let mut entries_with_time: Vec<(std::path::PathBuf, std::time::SystemTime)> = Vec::new();
+	let mut entries_with_time: Vec<(PathBuf, std::time::SystemTime)> = Vec::new();
 	for entry in std::fs::read_dir(&date_dir)?.filter_map(|e| e.ok()) {
 		let path = entry.path();
 		if path.extension().and_then(|s| s.to_str()) == Some("png")
@@ -110,8 +110,8 @@ pub async fn main(_settings: &LiveSettings, args: PerfEvalArgs) -> Result<()> {
 	let five_minutes_ago = most_recent_time - std::time::Duration::from_secs(5 * 60);
 
 	// Group screenshots by capture time (within 2 seconds tolerance)
-	let mut capture_groups: Vec<Vec<std::path::PathBuf>> = Vec::new();
-	let mut current_group: Vec<std::path::PathBuf> = Vec::new();
+	let mut capture_groups: Vec<Vec<PathBuf>> = Vec::new();
+	let mut current_group: Vec<PathBuf> = Vec::new();
 	let mut last_time: Option<std::time::SystemTime> = None;
 
 	for (screenshot_path, modified_time) in &entries_with_time {

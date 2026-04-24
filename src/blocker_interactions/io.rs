@@ -4,6 +4,8 @@
 //! - CLI argument parsing
 //! - Dispatching to the integration module for issue-based blockers
 
+use std::sync::Arc;
+
 use clap::{Args, Subcommand};
 use color_eyre::eyre::Result;
 
@@ -69,6 +71,6 @@ pub struct BlockerArgs {
 	#[command(subcommand)]
 	pub command: Command,
 }
-pub async fn main(args: BlockerArgs, offline: bool, settings: std::sync::Arc<crate::config::LiveSettings>) -> Result<()> {
+pub async fn main(args: BlockerArgs, offline: bool, settings: Arc<crate::config::LiveSettings>) -> Result<()> {
 	super::integration::main_integrated(args.command, offline, settings).await
 }

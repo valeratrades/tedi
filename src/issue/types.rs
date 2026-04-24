@@ -1926,6 +1926,8 @@ impl_issue_tree_index!(VirtualIssue);
 
 #[cfg(test)]
 mod tests {
+	use std::path::PathBuf;
+
 	use super::*;
 
 	fn unsafe_mock_parse_virtual(content: &str) -> Issue {

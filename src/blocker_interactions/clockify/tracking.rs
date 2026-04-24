@@ -2,7 +2,7 @@
 //!
 //! Handles halt/resume commands and automatic task switching when blockers change.
 
-use std::{collections::HashMap, io::Write as IoWrite, sync::Arc};
+use std::{collections::HashMap, io::Write as IoWrite, path::PathBuf, sync::Arc};
 
 use clap::Parser;
 use color_eyre::eyre::Result;
@@ -140,10 +140,10 @@ static WORKSPACE_SETTINGS_FILENAME: &str = "workspace_settings.json";
 struct WorkspaceCache {
 	workspaces: HashMap<String, WorkspaceSettings>,
 }
-fn get_blocker_state_path() -> std::path::PathBuf {
+fn get_blocker_state_path() -> PathBuf {
 	v_utils::xdg_state_file!(BLOCKER_STATE_FILENAME)
 }
-fn get_workspace_settings_path() -> std::path::PathBuf {
+fn get_workspace_settings_path() -> PathBuf {
 	v_utils::xdg_cache_file!(WORKSPACE_SETTINGS_FILENAME)
 }
 fn load_workspace_cache() -> WorkspaceCache {

@@ -80,11 +80,11 @@ async fn main() {
 	let has_github_commands = matches!(cli.command, Commands::Open(_) | Commands::Blocker(_) | Commands::Milestones(_));
 
 	let github_client: Option<tedi::github::BoxedGithubClient> = if cli.mock.is_some() {
-		Some(std::sync::Arc::new(mock_github::MockGithubClient::new("mock_user")))
+		Some(Arc::new(mock_github::MockGithubClient::new("mock_user")))
 	} else if has_github_commands {
 		let config = exit_on_error(settings.config());
 		let client = tedi::github::RealGithubClient::new(config.github_token.clone());
-		Some(std::sync::Arc::new(client))
+		Some(Arc::new(client))
 	} else {
 		None
 	};
