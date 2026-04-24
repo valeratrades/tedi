@@ -7,35 +7,26 @@ use tedi::{
 	IssueIndex, IssueSelector, RepoInfo, github,
 	local::{FsReader, Local, LocalError, LocalIssueSource, LocalPath, LocalPathError, LocalPathErrorKind, ReaderError},
 };
-use v_utils::utils::exit_on_error;
+use v_utils::{macros::wrap_err, utils::exit_on_error};
 
 use super::command::ProjectType;
 
+#[wrap_err]
 #[derive(Debug, thiserror::Error)]
 pub enum TouchError {
-	#[error(transparent)]
+	#[own]
 	Path(LocalPathError),
 
-	#[error(transparent)]
+	#[own]
 	Local(LocalError),
 
+	#[leaf]
 	#[error("Ambiguous {kind}: pattern '{pattern}' matches multiple entries\nMatches: {matches}")]
 	Ambiguous { kind: &'static str, pattern: String, matches: String },
 
+	#[leaf]
 	#[error("Repository '{owner}/{repo}' doesn't exist locally and is not accessible on GitHub\nCheck that the owner/repo is correct, or use --parent=virtual for local-only tracking.")]
 	RepoNotAccessible { owner: String, repo: String },
-}
-
-impl From<LocalPathError> for TouchError {
-	fn from(e: LocalPathError) -> Self {
-		TouchError::Path(e)
-	}
-}
-
-impl From<LocalError> for TouchError {
-	fn from(e: LocalError) -> Self {
-		TouchError::Local(e)
-	}
 }
 
 /// Parse a path for --touch mode using regex matching against filesystem
@@ -91,11 +82,7 @@ pub async fn parse_touch_path(user_input: &str, parent: Option<ProjectType>, off
 					let create_path = resolved.deterministic(title, false, false).path();
 					Ok(LocalIssueSource::<FsReader>::build_from_path(&create_path).await?)
 				}
-				LocalPathErrorKind::NotUnique => Err(TouchError::Ambiguous {
-					kind: "issue",
-					pattern: issue_rgxs.last().unwrap().to_string(),
-					matches: format!("{e}"),
-				}),
+				LocalPathErrorKind::NotUnique => Err(TouchError::new_ambiguous("issue", issue_rgxs.last().unwrap().to_string(), format!("{e}"))),
 				LocalPathErrorKind::Reader => Err(e.into()),
 			},
 		}
@@ -141,7 +128,7 @@ pub async fn parse_touch_path(user_input: &str, parent: Option<ProjectType>, off
 			let create_path = resolved.deterministic(title, false, false).path();
 			Ok(LocalIssueSource::<FsReader>::build_from_path(&create_path).await?)
 		}
-		Some(ProjectType::Default) | None => Err(TouchError::RepoNotAccessible { owner, repo }),
+		Some(ProjectType::Default) | None => Err(TouchError::new_repo_not_accessible(owner, repo)),
 	}
 }
 
@@ -168,11 +155,11 @@ fn regex_match_unique(dir: &PathBuf, pattern: &str, kind: &'static str) -> Resul
 	match matches.len() {
 		0 => Err(LocalPathError::not_found(IssueSelector::regex(pattern), dir.clone()).into()),
 		1 => Ok(matches[0].clone()),
-		_ => Err(TouchError::Ambiguous {
+		_ => Err(TouchError::new_ambiguous(
 			kind,
-			pattern: pattern.to_string(),
-			matches: matches.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", "),
-		}),
+			pattern.to_string(),
+			matches.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", "),
+		)),
 	}
 }
 

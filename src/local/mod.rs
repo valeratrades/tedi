@@ -1227,23 +1227,23 @@ pub enum ConsensusSinkError {
 
 /// Error type for local issue loading operations.
 #[wrap_err]
-#[derive(Debug, thiserror::Error, derive_more::From)]
+#[derive(Debug, thiserror::Error)]
 pub enum LocalError {
 	/// Path resolution or IO error.
-	#[error(transparent)]
+	#[own]
 	Io(LocalPathError),
 
 	/// Failed to parse issue content.
-	#[error(transparent)]
+	#[own]
 	Parse(crate::ParseError),
 
 	/// Issue composition error.
-	#[error(transparent)]
+	#[own]
 	Issue(crate::IssueError),
 
 	//Q: LocalPathError also contains ReaderError. Seems suboptimal, - wonder if I can restructure somehow to remove this proprietor level ambiguity
 	/// Reader operation failed.
-	#[error(transparent)]
+	#[own]
 	Reader(ReaderError),
 
 	/// Git operation failed (for consensus reads).
@@ -1253,7 +1253,7 @@ pub enum LocalError {
 	GitError { message: String },
 
 	/// Unresolved merge conflict blocks operation.
-	#[error(transparent)]
+	#[own]
 	ConflictBlocked(conflict::ConflictBlockedError),
 
 	/// Required executable not found.
@@ -1264,11 +1264,10 @@ pub enum LocalError {
 	/// Path extraction failed.
 	#[leaf]
 	#[error("failed to extract issue index from path: {msg}")]
-	#[from(skip)]
 	PathExtraction { msg: String },
 
 	#[error(transparent)]
-	Other(Report),
+	Other(#[from] Report),
 }
 
 //==============================================================================

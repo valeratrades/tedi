@@ -13,7 +13,7 @@ use HashMap;
 // Error Types
 //==============================================================================
 use copy_arrayvec::CopyArrayVec;
-use v_utils::prelude::*;
+use v_utils::{macros::wrap_err, prelude::*};
 
 use crate::{
 	CloseState, Comment, CommentIdentity, Issue, IssueContents, IssueIdentity, IssueIndex, IssueLink, IssueSelector, IssueTimestamps, MAX_LINEAGE_DEPTH, RepoInfo,
@@ -23,6 +23,7 @@ use crate::{
 };
 
 /// Error type for remote GitHub operations.
+#[wrap_err]
 #[derive(Debug, thiserror::Error)]
 pub enum RemoteError {
 	/// Failed to fetch issue from GitHub.
@@ -31,6 +32,7 @@ pub enum RemoteError {
 		repo: RepoInfo,
 		number: u64,
 		#[source]
+		#[backtrace]
 		source: crate::github::GithubError,
 	},
 
@@ -40,6 +42,7 @@ pub enum RemoteError {
 		repo: RepoInfo,
 		number: u64,
 		#[source]
+		#[backtrace]
 		source: crate::github::GithubError,
 	},
 
@@ -49,6 +52,7 @@ pub enum RemoteError {
 		repo: RepoInfo,
 		number: u64,
 		#[source]
+		#[backtrace]
 		source: crate::github::GithubError,
 	},
 
@@ -58,6 +62,7 @@ pub enum RemoteError {
 		repo: RepoInfo,
 		number: u64,
 		#[source]
+		#[backtrace]
 		source: crate::github::GithubError,
 	},
 
@@ -67,20 +72,23 @@ pub enum RemoteError {
 		repo: RepoInfo,
 		number: u64,
 		#[source]
+		#[backtrace]
 		source: crate::github::GithubError,
 	},
 
 	/// Issue not found on GitHub (404).
+	#[leaf]
 	#[error("issue #{number} not found in {}/{}", repo.owner(), repo.repo())]
 	NotFound { repo: RepoInfo, number: u64 },
 
 	/// Required executable not found.
+	#[leaf]
 	#[error("`{executable}` not found in PATH (required for {operation})")]
 	MissingExecutable { executable: &'static str, operation: &'static str },
 
 	/// GitHub client not available.
-	#[error("GitHub client not available")]
-	NoClient(#[source] crate::github::GithubError),
+	#[own]
+	NoClient(crate::github::GithubError),
 }
 
 /// Marker type for remote GitHub sink operations.
@@ -107,10 +115,7 @@ impl RemoteSource {
 	/// Checks that `gh` executable is available.
 	pub fn build(link: IssueLink, lineage: Option<&[u64]>) -> Result<Self, Box<RemoteError>> {
 		if std::process::Command::new("gh").arg("--version").output().is_err() {
-			return Err(Box::new(RemoteError::MissingExecutable {
-				executable: "gh",
-				operation: "GitHub operations",
-			}));
+			return Err(Box::new(RemoteError::new_missing_executable("gh", "GitHub operations")));
 		}
 		Ok(Self {
 			link,
@@ -304,15 +309,16 @@ impl crate::LazyIssue<RemoteSource> for Issue {
 }
 
 /// Error type for remote sink operations.
+#[wrap_err]
 #[derive(Debug, thiserror::Error)]
 pub enum RemoteSinkError {
 	/// GitHub API operation failed.
-	#[error(transparent)]
-	Github(#[from] crate::github::GithubError),
+	#[own]
+	Github(crate::github::GithubError),
 
 	/// Parent issue has unresolved title-based selector (pending issue in lineage).
-	#[error(transparent)]
-	TitleInGitPath(#[from] crate::TitleInGitPathError),
+	#[own]
+	TitleInGitPath(crate::TitleInGitPathError),
 }
 /// Build IssueContents from GitHub API data.
 #[instrument(skip_all, fields(issue_number = issue.number, title = %issue.title))]

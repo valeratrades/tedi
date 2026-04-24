@@ -93,9 +93,9 @@ pub enum IssueError {
 )]
 pub struct TitleInGitPathError {
 	#[source_code]
-	pub index_display: NamedSource<String>,
+	index_display: NamedSource<String>,
 	#[label("expected GitId, found Title selector")]
-	pub span: SourceSpan,
+	span: SourceSpan,
 }
 /// Holds source content and filename for error reporting.
 #[derive(Clone, Debug)]
