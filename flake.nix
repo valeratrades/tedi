@@ -1,10 +1,10 @@
 {
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    rust-overlay.url = "github:oxalica/rust-overlay";
-    flake-utils.url = "github:numtide/flake-utils";
-    pre-commit-hooks.url = "github:cachix/git-hooks.nix";
-    v-utils.url = "github:valeratrades/v_flakes?ref=v1.6";
+    nixpkgs.url = "github:NixOS/nixpkgs/3e2499d5539c16d0d173ba53552a4ff8547f4539";
+    rust-overlay.url = "github:oxalica/rust-overlay/91e1f7a0017065360f447622d11b7ce6ed04772f";
+    flake-utils.url = "github:numtide/flake-utils/11707dc2f618dd54ca8739b309ec4fc024de578b";
+    pre-commit-hooks.url = "github:cachix/git-hooks.nix/f0927703b7b1c8d97511c4116eb9b4ec6645a0fa";
+    v-utils.url = "github:valeratrades/v_flakes/8f303402daf15d26afa177d724643644c06b7d0e";
   };
   outputs = { self, nixpkgs, rust-overlay, flake-utils, pre-commit-hooks, v-utils }:
     flake-utils.lib.eachDefaultSystem
