@@ -290,8 +290,8 @@ async fn edit_milestone(settings: &LiveSettings, tf: Timeframe, offline: bool, m
 	let expanded_description = expand_and_refresh(&original_description).await?;
 
 	// Write to temp file
-	let tmp_dir = tempfile::tempdir()?;
-	let tmp_path = tmp_dir.path().join(format!("milestone_{tf}.md"));
+	// Use into_path() to prevent TempDir from auto-deleting on drop (survives panics/errors)
+	let tmp_path = tempfile::tempdir()?.keep().join(format!("milestone_{tf}.md"));
 	fs::write(&tmp_path, &expanded_description)?;
 	eprintln!("[milestone] tmp_path: {}", tmp_path.display());
 
