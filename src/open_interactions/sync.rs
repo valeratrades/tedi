@@ -301,7 +301,10 @@ mod types {
 		Editor {
 			open_at_blocker: bool,
 		},
-		BlockerPop,
+		BlockerPop {
+			/// Number of parent ancestors to pop in addition to the current leaf.
+			parents: usize,
+		},
 		BlockerAdd {
 			text: String,
 			nest: bool,
@@ -368,11 +371,15 @@ mod types {
 
 					ModifyResult { output: None, file_modified }
 				}
-				Modifier::BlockerPop => {
+				Modifier::BlockerPop { parents } => {
 					use crate::blocker_interactions::BlockerSequenceExt;
-					let popped = issue.contents.blockers.pop();
+					let popped = issue
+						.contents
+						.blockers
+						.pop(*parents)
+						.ok_or_else(|| color_eyre::eyre::eyre!("Cannot pop {parents} parents — blocker chain is shorter"))?;
 					ModifyResult {
-						output: popped.map(|text| format!("Popped: {text}")),
+						output: Some(format!("Popped: {popped}")),
 						file_modified: true,
 					}
 				}

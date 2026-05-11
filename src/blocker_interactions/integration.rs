@@ -264,19 +264,18 @@ pub async fn main_integrated(command: super::io::Command, offline: bool, setting
 			// No blockers section or no current blocker - silently exit (for status line integration)
 		}
 
-		Command::Pop => {
+		Command::Pop { parents } => {
+			let parents = parents as usize;
 			let description_before = get_current_blocker_description(false);
 
 			// Check if there's an urgent file - pop from there first
 			if let Some(urgent) = StandaloneSource::urgent() {
 				let mut blockers = urgent.load()?;
 				if !blockers.is_empty() {
-					let popped = blockers.pop();
+					let popped = blockers.pop(parents).ok_or_else(|| eyre!("Cannot pop {parents} parents — urgent chain is shorter"))?;
 					urgent.save(&blockers)?;
 
-					if let Some(text) = popped {
-						println!("Popped (urgent): {text}");
-					}
+					println!("Popped (urgent): {popped}");
 
 					urgent.cleanup_if_empty()?;
 
@@ -305,7 +304,7 @@ pub async fn main_integrated(command: super::io::Command, offline: bool, setting
 			// Use unified modify workflow
 			let local_source = LocalIssueSource::<FsReader>::build_from_path(&issue_source.virtual_issue_buffer_path).await?;
 			let issue = Issue::load(local_source).await?;
-			let result = modify_and_sync_issue(issue, offline, Modifier::BlockerPop, SyncOptions::default()).await?;
+			let result = modify_and_sync_issue(issue, offline, Modifier::BlockerPop { parents }, SyncOptions::default()).await?;
 
 			// Output results
 			if let Some(output) = result.output {

@@ -24,7 +24,14 @@ pub enum Command {
 		urgent: bool,
 	},
 	/// Pop the last one
-	Pop,
+	Pop {
+		/// Also pop one parent (can be repeated; `-p -p` pops two parents in addition to current).
+		///
+		/// Inverse of `add -n`: with `-p` provided N times, removes the current leaf plus its
+		/// N nearest ancestors along the chain.
+		#[arg(short = 'p', long = "parent", action = clap::ArgAction::Count)]
+		parents: u8,
+	},
 	/// Replace the current (deepest) blocker in-place.
 	///
 	/// Unlike pop + add, this preserves the item's position in the tree —

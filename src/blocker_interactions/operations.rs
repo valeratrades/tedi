@@ -25,8 +25,15 @@ pub trait BlockerSequenceExt {
 	/// Add a content line as a child of the current deepest item
 	fn add_child(&mut self, text: &str);
 
-	/// Remove the last content line from the blocker sequence.
-	fn pop(&mut self) -> Option<String>;
+	/// Remove the current (deepest) blocker, plus `parents` ancestors along its path.
+	///
+	/// With `parents = 0`, pops only the current leaf. With `parents = N`, pops the leaf
+	/// plus its N nearest ancestors (i.e. removes the ancestor at depth `leaf_depth - N`,
+	/// which takes its descendants with it).
+	///
+	/// Returns the text of the topmost popped item, or `None` if the sequence is empty
+	/// or `parents` exceeds the current chain depth.
+	fn pop(&mut self, parents: usize) -> Option<String>;
 
 	/// Replace the text of the current (deepest) blocker in-place.
 	/// Preserves the item's position in the tree (unlike pop+add, which can change nesting).
@@ -80,8 +87,8 @@ impl BlockerSequenceExt for BlockerSequence {
 		add_child_to_current(&mut self.items, item);
 	}
 
-	fn pop(&mut self) -> Option<String> {
-		pop_last(&mut self.items).map(|item| item.text)
+	fn pop(&mut self, parents: usize) -> Option<String> {
+		pop_last(&mut self.items, parents).map(|item| item.text)
 	}
 
 	fn set(&mut self, text: &str) -> Option<String> {
@@ -132,15 +139,33 @@ fn replace_last(items: &mut Vec<BlockerItem>, new_text: String) -> Option<String
 	Some(old)
 }
 
-/// Pop the last item from the tree (depth-first, rightmost)
-fn pop_last(items: &mut Vec<BlockerItem>) -> Option<BlockerItem> {
-	let last = items.last_mut()?;
-	// Try children first
-	if let Some(popped) = pop_last(&mut last.children) {
-		return Some(popped);
+/// Pop the deepest (rightmost) item from the tree, plus `parents` ancestors along its path.
+///
+/// Walks down the "last child" chain. At each level, the local chain depth equals the
+/// number of further descents available. When that depth matches the requested `parents`
+/// count, pops the current `last` (which also drops its descendants).
+///
+/// Returns `None` if the sequence is empty or `parents` exceeds the available chain depth.
+fn pop_last(items: &mut Vec<BlockerItem>, parents: usize) -> Option<BlockerItem> {
+	let last = items.last()?;
+	let depth = chain_depth(last);
+	if parents > depth {
+		return None;
 	}
-	// No children — pop ourselves
-	items.pop()
+	if parents == depth {
+		return items.pop();
+	}
+	let last = items.last_mut().expect("just inspected via .last()");
+	pop_last(&mut last.children, parents)
+}
+
+/// Number of additional levels reachable by descending into the last child chain.
+/// A leaf (no children) has depth 0.
+fn chain_depth(item: &BlockerItem) -> usize {
+	match item.children.last() {
+		Some(child) => 1 + chain_depth(child),
+		None => 0,
+	}
 }
 
 /// Add item to the deepest current section
@@ -244,7 +269,7 @@ mod tests {
 	#[test]
 	fn test_pop() {
 		let mut seq = BlockerSequence::parse("- task 1\n- task 2");
-		let popped = seq.pop();
+		let popped = seq.pop(0);
 		assert_eq!(popped, Some("task 2".to_string()));
 		assert_eq!(String::from(&seq), "- task 1");
 	}
@@ -252,7 +277,7 @@ mod tests {
 	#[test]
 	fn test_pop_from_section() {
 		let mut seq = BlockerSequence::parse("- Section\n  - task 1\n  - task 2");
-		let popped = seq.pop();
+		let popped = seq.pop(0);
 		assert_eq!(popped, Some("task 2".to_string()));
 		assert_eq!(String::from(&seq), "- Section\n  - task 1");
 	}
@@ -260,7 +285,7 @@ mod tests {
 	#[test]
 	fn test_pop_empty() {
 		let mut seq = BlockerSequence::default();
-		let popped = seq.pop();
+		let popped = seq.pop(0);
 		assert!(popped.is_none());
 	}
 
@@ -303,12 +328,12 @@ mod tests {
 
 		// Pop removes task c (last child of C)
 		let mut seq = seq;
-		seq.pop();
+		seq.pop(0);
 		// C still exists as a leaf item
 		assert_eq!(seq.current_with_context(&[]), Some("C".to_string()));
 
 		// Pop again removes C itself
-		seq.pop();
+		seq.pop(0);
 		assert_eq!(seq.current_with_context(&[]), Some("B: task b".to_string()));
 	}
 
@@ -397,6 +422,41 @@ mod tests {
 	fn test_set_empty() {
 		let mut seq = BlockerSequence::default();
 		assert_eq!(seq.set("anything"), None);
+	}
+
+	#[test]
+	fn test_pop_with_one_parent_linear_chain() {
+		// farm tasks: shave yak: get a stool: remember where I left it
+		let mut seq = BlockerSequence::parse("- farm tasks\n  - shave yak\n    - get a stool\n      - remember where I left it");
+		let popped = seq.pop(1);
+		// Topmost popped item is "get a stool" (parent of leaf)
+		assert_eq!(popped, Some("get a stool".to_string()));
+		assert_eq!(seq.current_with_context(&[]), Some("farm tasks: shave yak".to_string()));
+	}
+
+	#[test]
+	fn test_pop_with_two_parents_linear_chain() {
+		let mut seq = BlockerSequence::parse("- farm tasks\n  - shave yak\n    - get a stool\n      - remember where I left it");
+		let popped = seq.pop(2);
+		assert_eq!(popped, Some("shave yak".to_string()));
+		assert_eq!(seq.current_with_context(&[]), Some("farm tasks".to_string()));
+	}
+
+	#[test]
+	fn test_pop_parents_exceeds_chain() {
+		let mut seq = BlockerSequence::parse("- only");
+		// chain depth = 0, asking for 1 parent → no-op, return None
+		let before: String = (&seq).into();
+		let popped = seq.pop(1);
+		assert!(popped.is_none());
+		let after: String = (&seq).into();
+		assert_eq!(before, after, "sequence must be unchanged when pop fails");
+	}
+
+	#[test]
+	fn test_pop_parents_empty_sequence() {
+		let mut seq = BlockerSequence::default();
+		assert!(seq.pop(2).is_none());
 	}
 
 	#[test]
