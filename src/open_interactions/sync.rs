@@ -306,6 +306,10 @@ mod types {
 			text: String,
 			nest: bool,
 		},
+		/// Replace the current (deepest) blocker's text in-place, preserving its position in the tree.
+		BlockerSet {
+			text: String,
+		},
 		/// Replace the issue's entire blocker sequence.
 		/// Used by milestone editing to sync blocker changes back to individual issues.
 		BlockerWrite {
@@ -380,6 +384,14 @@ mod types {
 						issue.contents.blockers.add(text);
 					}
 					ModifyResult { output: None, file_modified: true }
+				}
+				Modifier::BlockerSet { text } => {
+					use crate::blocker_interactions::BlockerSequenceExt;
+					let old = issue.contents.blockers.set(text);
+					ModifyResult {
+						output: old.map(|prev| format!("Replaced: {prev} -> {text}")),
+						file_modified: true,
+					}
 				}
 				Modifier::BlockerWrite { blockers } => {
 					let file_modified = issue.contents.blockers != *blockers;

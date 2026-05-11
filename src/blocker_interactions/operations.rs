@@ -27,6 +27,12 @@ pub trait BlockerSequenceExt {
 
 	/// Remove the last content line from the blocker sequence.
 	fn pop(&mut self) -> Option<String>;
+
+	/// Replace the text of the current (deepest) blocker in-place.
+	/// Preserves the item's position in the tree (unlike pop+add, which can change nesting).
+	/// Resets the item's comments (they belonged to the previous task).
+	/// Returns the previous text, or None if the sequence is empty.
+	fn set(&mut self, text: &str) -> Option<String>;
 }
 
 impl BlockerSequenceExt for BlockerSequence {
@@ -77,6 +83,10 @@ impl BlockerSequenceExt for BlockerSequence {
 	fn pop(&mut self) -> Option<String> {
 		pop_last(&mut self.items).map(|item| item.text)
 	}
+
+	fn set(&mut self, text: &str) -> Option<String> {
+		replace_last(&mut self.items, text.to_string())
+	}
 }
 
 /// Get the last item in a list of items (depth-first, rightmost)
@@ -108,6 +118,18 @@ fn path_to_last_inner(items: &[BlockerItem], path: &mut Vec<String>) {
 		path_to_last_inner(&last.children, path);
 	}
 	// If no children, this is the leaf (current item) — don't add to path
+}
+
+/// Replace the text of the deepest leaf (depth-first, rightmost) in-place.
+/// Comments on the replaced item are cleared. Returns the old text.
+fn replace_last(items: &mut Vec<BlockerItem>, new_text: String) -> Option<String> {
+	let last = items.last_mut()?;
+	if !last.children.is_empty() {
+		return replace_last(&mut last.children, new_text);
+	}
+	let old = std::mem::replace(&mut last.text, new_text);
+	last.comments.clear();
+	Some(old)
 }
 
 /// Pop the last item from the tree (depth-first, rightmost)
@@ -331,6 +353,50 @@ mod tests {
 		let mut seq = BlockerSequence::default();
 		seq.add_child("first");
 		insta::assert_snapshot!(String::from(&seq), @"- first");
+	}
+
+	#[test]
+	fn test_set_flat() {
+		let mut seq = BlockerSequence::parse("- task 1\n- task 2");
+		let old = seq.set("replaced");
+		assert_eq!(old, Some("task 2".to_string()));
+		assert_eq!(String::from(&seq), "- task 1\n- replaced");
+	}
+
+	#[test]
+	fn test_set_only_child_preserves_nesting() {
+		// The key case: current is the only child of its parent.
+		// pop+add would un-nest the replacement; set must keep it nested.
+		let mut seq = BlockerSequence::parse("- Section\n  - lonely task");
+		seq.set("replacement");
+		insta::assert_snapshot!(String::from(&seq), @"
+		- Section
+		  - replacement
+		");
+	}
+
+	#[test]
+	fn test_set_deeply_nested() {
+		let mut seq = BlockerSequence::parse("- L1\n  - L2\n    - L3");
+		seq.set("L3-new");
+		insta::assert_snapshot!(String::from(&seq), @"
+		- L1
+		  - L2
+		    - L3-new
+		");
+	}
+
+	#[test]
+	fn test_set_clears_comments() {
+		let mut seq = BlockerSequence::parse("- task\n  comment 1\n  comment 2");
+		seq.set("replaced");
+		assert_eq!(String::from(&seq), "- replaced");
+	}
+
+	#[test]
+	fn test_set_empty() {
+		let mut seq = BlockerSequence::default();
+		assert_eq!(seq.set("anything"), None);
 	}
 
 	#[test]

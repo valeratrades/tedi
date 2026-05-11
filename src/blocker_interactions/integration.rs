@@ -336,6 +336,53 @@ pub async fn main_integrated(command: super::io::Command, offline: bool, setting
 			}
 		}
 
+		Command::Set { name } => {
+			let description_before = get_current_blocker_description(false);
+
+			// Check urgent first — if it's the active source, replace there.
+			if let Some(urgent) = StandaloneSource::urgent() {
+				let mut blockers = urgent.load()?;
+				if !blockers.is_empty() {
+					let old = blockers.set(&name);
+					urgent.save(&blockers)?;
+
+					if let Some(prev) = old {
+						println!("Replaced (urgent): {prev} -> {name}");
+					}
+
+					post_update(description_before, true, settings).await?;
+
+					if let Some(current) = blockers.current_with_context(&[]) {
+						println!("Current (urgent): {current}");
+					}
+					return Ok(());
+				}
+			}
+
+			let issue_source = BlockerIssueSource::current().ok_or_else(|| eyre!("No blocker source. Run `todo milestones edit` to set up milestone."))?;
+
+			let blockers = issue_source.load()?;
+			if blockers.is_empty() {
+				let marker = Marker::BlockersSection(tedi::Header::new(1, "Blockers"));
+				bail!("No `{marker}` marker found in issue body.");
+			}
+
+			let local_source = LocalIssueSource::<FsReader>::build_from_path(&issue_source.virtual_issue_buffer_path).await?;
+			let issue = Issue::load(local_source).await?;
+			let result = modify_and_sync_issue(issue, offline, Modifier::BlockerSet { text: name }, SyncOptions::default()).await?;
+
+			if let Some(output) = result.output {
+				println!("{output}");
+			}
+
+			post_update(description_before, false, settings).await?;
+
+			let blockers = issue_source.load()?;
+			if let Some(new_current) = blockers.current_with_context(&[]) {
+				println!("Current: {new_current}");
+			}
+		}
+
 		Command::Add {
 			name,
 			nested: nest,

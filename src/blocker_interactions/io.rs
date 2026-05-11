@@ -25,6 +25,12 @@ pub enum Command {
 	},
 	/// Pop the last one
 	Pop,
+	/// Replace the current (deepest) blocker in-place.
+	///
+	/// Unlike pop + add, this preserves the item's position in the tree —
+	/// useful when the current blocker is the only child of its parent
+	/// (where pop + add would un-nest the replacement).
+	Set { name: String },
 	/// Full list of blockers down from the main task
 	List,
 	/// Compactly show the last entry
