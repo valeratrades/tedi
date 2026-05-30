@@ -68,11 +68,13 @@ pub struct RepoInfo {
 
 impl RepoInfo {
 	/// Create a new RepoInfo.
+	/// Owner and repo are lowercased: GitHub treats them case-insensitively,
+	/// so this is a primitive-level invariant (every `RepoInfo` is normalized).
 	/// Panics if owner exceeds 39 chars or repo exceeds 100 chars.
 	pub fn new(owner: &str, repo: &str) -> Self {
 		Self {
-			owner: ArrayString::from(owner).expect("owner name too long (max 39 chars)"),
-			repo: ArrayString::from(repo).expect("repo name too long (max 100 chars)"),
+			owner: ArrayString::from(&owner.to_lowercase()).expect("owner name too long (max 39 chars)"),
+			repo: ArrayString::from(&repo.to_lowercase()).expect("repo name too long (max 100 chars)"),
 		}
 	}
 
@@ -100,7 +102,7 @@ pub struct IssueLink(Url);
 
 impl IssueLink /*{{{1*/ {
 	/// Create from a URL. Returns None if not a valid Github issue URL.
-	pub fn new(url: Url) -> Option<Self> {
+	pub fn new(mut url: Url) -> Option<Self> {
 		// Validate it's a Github issue URL
 		if url.host_str() != Some("github.com") {
 			return None;
@@ -112,6 +114,10 @@ impl IssueLink /*{{{1*/ {
 		}
 		// Number must be valid
 		segments[3].parse::<u64>().ok()?;
+		// Normalize owner/repo to lowercase: Github treats them case-insensitively,
+		// so every reader (owner(), repo(), as_str()) sees the same canonical form.
+		let normalized: Vec<String> = segments.iter().enumerate().map(|(i, s)| if i < 2 { s.to_lowercase() } else { s.to_string() }).collect();
+		url.path_segments_mut().ok()?.clear().extend(normalized.iter().map(String::as_str));
 		Some(Self(url))
 	}
 
@@ -1948,6 +1954,31 @@ mod tests {
 		};
 		let children = v.children.iter().map(|(sel, child)| (*sel, hollow_from_virtual(child))).collect();
 		HollowIssue::new(remote, children)
+	}
+
+	#[test]
+	fn repo_info_lowercases_owner_and_repo() {
+		let info = RepoInfo::new("MyOrg", "MyRepo");
+		assert_eq!(info.owner(), "myorg");
+		assert_eq!(info.repo(), "myrepo");
+
+		// The `From` and `FromStr` paths route through `new`, so they normalize too.
+		let from_tuple: RepoInfo = ("FooBar", "Baz-Qux").into();
+		assert_eq!((from_tuple.owner(), from_tuple.repo()), ("foobar", "baz-qux"));
+		let idx: IssueIndex = "OWNER/REPO/123".parse().unwrap();
+		assert_eq!((idx.repo_info().owner(), idx.repo_info().repo()), ("owner", "repo"));
+	}
+
+	#[test]
+	fn issue_link_normalizes_owner_and_repo() {
+		let link = IssueLink::parse("https://github.com/MyOrg/MyRepo/issues/42").unwrap();
+		// Every reader sees the canonical lowercase form, including the raw URL string.
+		assert_eq!(link.owner(), "myorg");
+		assert_eq!(link.repo(), "myrepo");
+		assert_eq!(link.as_str(), "https://github.com/myorg/myrepo/issues/42");
+		assert_eq!((link.repo_info().owner(), link.repo_info().repo()), ("myorg", "myrepo"));
+		// The issue number segment is untouched (no case to normalize, but ensure it's preserved).
+		assert_eq!(link.number(), 42);
 	}
 
 	#[test]
