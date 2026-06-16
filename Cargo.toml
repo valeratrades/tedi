@@ -84,3 +84,6 @@ undocumented_unsafe_blocks = "warn"
 doc_lazy_continuation = "allow"
 
 tabs_in_doc_comments = "allow"
+
+[lints.rust]
+unused_features = "allow"

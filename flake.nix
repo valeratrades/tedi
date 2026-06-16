@@ -67,7 +67,7 @@
             rootDir = ./.;
             badges = [ "msrv" "crates_io" "docs_rs" "loc" "ci" ];
           };
-          combined = v-utils.utils.combine [ rs github readme ];
+          combined = v-utils.utils.combine { inherit rust; modules = [ rs github readme ]; };
           #,}}}1
         in
         {
