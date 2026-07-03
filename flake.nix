@@ -1,25 +1,19 @@
 {
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/3e2499d5539c16d0d173ba53552a4ff8547f4539";
-    rust-overlay.url = "github:oxalica/rust-overlay/91e1f7a0017065360f447622d11b7ce6ed04772f";
     flake-utils.url = "github:numtide/flake-utils/11707dc2f618dd54ca8739b309ec4fc024de578b";
     pre-commit-hooks.url = "github:cachix/git-hooks.nix/f0927703b7b1c8d97511c4116eb9b4ec6645a0fa";
     v-utils.url = "github:valeratrades/v_flakes?ref=v1.6";
   };
-  outputs = { self, nixpkgs, rust-overlay, flake-utils, pre-commit-hooks, v-utils }:
+  outputs = { self, flake-utils, pre-commit-hooks, v-utils }:
     flake-utils.lib.eachDefaultSystem
       (
         system:
         let
-          overlays = [ (import rust-overlay) ];
-          pkgs = import nixpkgs {
-            inherit system overlays;
+          pkgs = import v-utils.default_nixpkgs {
+            inherit system;
             allowUnfree = true;
           };
-          #NB: can't load rust-bin from nightly.latest, as there are week guarantees of which components will be available on each day.
-          rust = pkgs.rust-bin.selectLatestNightlyWith (toolchain: toolchain.default.override {
-            extensions = [ "rust-src" "rust-analyzer" "rust-docs" "rustc-codegen-cranelift-preview" ];
-          });
+          rust = v-utils.rs.default_nightly system;
           pre-commit-check = pre-commit-hooks.lib.${system}.run (v-utils.files.preCommit { inherit pkgs; });
           manifest = (pkgs.lib.importTOML ./Cargo.toml).package;
           pname = manifest.name;

@@ -15,8 +15,13 @@ jobs:
     - uses: actions/checkout@v4
     - name: Install Nix
       uses: DeterminateSystems/nix-installer-action@main
-    - name: Restore Nix cache
-      uses: DeterminateSystems/magic-nix-cache-action@main
+      with:
+        extra-conf: lazy-trees = true
+    - name: Setup Nix cache
+      uses: nix-community/cache-nix-action@v7
+      with:
+        primary-key: nix-${{ runner.os }}-${{ hashFiles('**/flake.lock') }}
+        restore-prefixes-first-match: nix-${{ runner.os }}-
     - name: Debug nix environment
       run: "echo \"=== NIX ENVIRONMENT DEBUG ===\"\necho \"\"\necho \"1. Which nix:\"\
         \nwhich nix || echo \"nix not found in PATH\"\necho \"\"\necho \"2. Nix version:\"\
@@ -132,8 +137,13 @@ jobs:
     steps:
     - name: Install Nix
       uses: DeterminateSystems/nix-installer-action@main
+      with:
+        extra-conf: lazy-trees = true
     - name: Setup Nix cache
-      uses: DeterminateSystems/magic-nix-cache-action@main
+      uses: nix-community/cache-nix-action@v7
+      with:
+        primary-key: nix-${{ runner.os }}-${{ hashFiles('**/flake.lock') }}
+        restore-prefixes-first-match: nix-${{ runner.os }}-
     - name: Cache packages
       run: '# Pre-fetch packages into nix store so they''re cached for dependent jobs
 
@@ -156,8 +166,13 @@ jobs:
     - uses: actions/checkout@v4
     - name: Install Nix
       uses: DeterminateSystems/nix-installer-action@main
-    - name: Restore Nix cache
-      uses: DeterminateSystems/magic-nix-cache-action@main
+      with:
+        extra-conf: lazy-trees = true
+    - name: Setup Nix cache
+      uses: nix-community/cache-nix-action@v7
+      with:
+        primary-key: nix-${{ runner.os }}-${{ hashFiles('**/flake.lock') }}
+        restore-prefixes-first-match: nix-${{ runner.os }}-
     - name: Debug nix environment
       run: "echo \"=== NIX ENVIRONMENT DEBUG ===\"\necho \"\"\necho \"1. Which nix:\"\
         \nwhich nix || echo \"nix not found in PATH\"\necho \"\"\necho \"2. Nix version:\"\
@@ -260,8 +275,13 @@ jobs:
     - uses: actions/checkout@v4
     - name: Install Nix
       uses: DeterminateSystems/nix-installer-action@main
-    - name: Restore Nix cache
-      uses: DeterminateSystems/magic-nix-cache-action@main
+      with:
+        extra-conf: lazy-trees = true
+    - name: Setup Nix cache
+      uses: nix-community/cache-nix-action@v7
+      with:
+        primary-key: nix-${{ runner.os }}-${{ hashFiles('**/flake.lock') }}
+        restore-prefixes-first-match: nix-${{ runner.os }}-
     - name: Debug nix environment
       run: "echo \"=== NIX ENVIRONMENT DEBUG ===\"\necho \"\"\necho \"1. Which nix:\"\
         \nwhich nix || echo \"nix not found in PATH\"\necho \"\"\necho \"2. Nix version:\"\
@@ -350,8 +370,13 @@ jobs:
         tool: cargo-machete
     - name: Install Nix
       uses: DeterminateSystems/nix-installer-action@main
-    - name: Restore Nix cache
-      uses: DeterminateSystems/magic-nix-cache-action@main
+      with:
+        extra-conf: lazy-trees = true
+    - name: Setup Nix cache
+      uses: nix-community/cache-nix-action@v7
+      with:
+        primary-key: nix-${{ runner.os }}-${{ hashFiles('**/flake.lock') }}
+        restore-prefixes-first-match: nix-${{ runner.os }}-
     - name: Debug nix environment
       run: "echo \"=== NIX ENVIRONMENT DEBUG ===\"\necho \"\"\necho \"1. Which nix:\"\
         \nwhich nix || echo \"nix not found in PATH\"\necho \"\"\necho \"2. Nix version:\"\
@@ -440,8 +465,13 @@ jobs:
     - uses: actions/checkout@v4
     - name: Install Nix
       uses: DeterminateSystems/nix-installer-action@main
-    - name: Restore Nix cache
-      uses: DeterminateSystems/magic-nix-cache-action@main
+      with:
+        extra-conf: lazy-trees = true
+    - name: Setup Nix cache
+      uses: nix-community/cache-nix-action@v7
+      with:
+        primary-key: nix-${{ runner.os }}-${{ hashFiles('**/flake.lock') }}
+        restore-prefixes-first-match: nix-${{ runner.os }}-
     - name: Debug nix environment
       run: "echo \"=== NIX ENVIRONMENT DEBUG ===\"\necho \"\"\necho \"1. Which nix:\"\
         \nwhich nix || echo \"nix not found in PATH\"\necho \"\"\necho \"2. Nix version:\"\
@@ -534,8 +564,13 @@ jobs:
     - uses: actions/checkout@v4
     - name: Install Nix
       uses: DeterminateSystems/nix-installer-action@main
-    - name: Restore Nix cache
-      uses: DeterminateSystems/magic-nix-cache-action@main
+      with:
+        extra-conf: lazy-trees = true
+    - name: Setup Nix cache
+      uses: nix-community/cache-nix-action@v7
+      with:
+        primary-key: nix-${{ runner.os }}-${{ hashFiles('**/flake.lock') }}
+        restore-prefixes-first-match: nix-${{ runner.os }}-
     - name: Debug nix environment
       run: "echo \"=== NIX ENVIRONMENT DEBUG ===\"\necho \"\"\necho \"1. Which nix:\"\
         \nwhich nix || echo \"nix not found in PATH\"\necho \"\"\necho \"2. Nix version:\"\
@@ -629,8 +664,13 @@ jobs:
       uses: actions/checkout@v4
     - name: Install Nix
       uses: DeterminateSystems/nix-installer-action@main
-    - name: Restore Nix cache
-      uses: DeterminateSystems/magic-nix-cache-action@main
+      with:
+        extra-conf: lazy-trees = true
+    - name: Setup Nix cache
+      uses: nix-community/cache-nix-action@v7
+      with:
+        primary-key: nix-${{ runner.os }}-${{ hashFiles('**/flake.lock') }}
+        restore-prefixes-first-match: nix-${{ runner.os }}-
     - name: Debug nix environment
       run: "echo \"=== NIX ENVIRONMENT DEBUG ===\"\necho \"\"\necho \"1. Which nix:\"\
         \nwhich nix || echo \"nix not found in PATH\"\necho \"\"\necho \"2. Nix version:\"\
