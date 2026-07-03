@@ -429,14 +429,14 @@ pub async fn main_integrated(command: super::io::Command, offline: bool, setting
 			let description = get_current_blocker_description(false).ok_or_else(|| eyre!("No current blocker task found. Add one with 'todo blocker add <task>'"))?;
 
 			// Enable tracking state
-			super::clockify::set_tracking_enabled(true)?;
+			super::clockify_tracking::set_tracking_enabled(true)?;
 
 			if resume_args.project.is_none() {
 				resume_args.project = current_project();
 			}
 
 			// Start tracking with current blocker description
-			super::clockify::start_tracking_for_task(
+			super::clockify_tracking::start_tracking_for_task(
 				|fully_qualified| get_current_blocker_description(fully_qualified).unwrap_or(description.clone()),
 				&resume_args,
 				None,
@@ -454,9 +454,9 @@ pub async fn main_integrated(command: super::io::Command, offline: bool, setting
 
 		Command::Halt(halt_args) => {
 			// Disable tracking state
-			super::clockify::set_tracking_enabled(false)?;
+			super::clockify_tracking::set_tracking_enabled(false)?;
 
-			super::clockify::stop_current_tracking(halt_args.workspace.as_deref()).await?;
+			super::clockify_tracking::stop_current_tracking(halt_args.workspace.as_deref()).await?;
 
 			println!("Tracking halted.");
 		}
@@ -611,7 +611,7 @@ fn follow_blocker_refs(is_urgent: bool, mut visited: Vec<IssueLink>) -> Result<(
 /// Update clockify tracking after a blocker change (add/pop/edit).
 /// Only restarts tracking if the current blocker description actually changed.
 async fn update_clockify_tracking(description_before: Option<String>, settings: Arc<crate::config::LiveSettings>) {
-	if !super::clockify::is_tracking_enabled() {
+	if !super::clockify_tracking::is_tracking_enabled() {
 		return;
 	}
 
@@ -621,7 +621,7 @@ async fn update_clockify_tracking(description_before: Option<String>, settings: 
 	}
 
 	// Stop current tracking
-	if let Err(e) = super::clockify::stop_current_tracking(None).await {
+	if let Err(e) = super::clockify_tracking::stop_current_tracking(None).await {
 		tracing::warn!("failed to stop clockify tracking: {e}");
 	}
 
@@ -629,11 +629,11 @@ async fn update_clockify_tracking(description_before: Option<String>, settings: 
 	let Some(description) = description_after else {
 		return;
 	};
-	let resume_args = super::clockify::ResumeArgs {
+	let resume_args = super::clockify_tracking::ResumeArgs {
 		project: current_project(),
 		..Default::default()
 	};
-	if let Err(e) = super::clockify::start_tracking_for_task(
+	if let Err(e) = super::clockify_tracking::start_tracking_for_task(
 		|fully_qualified| get_current_blocker_description(fully_qualified).unwrap_or(description.clone()),
 		&resume_args,
 		None,

@@ -8,10 +8,9 @@ use arrayvec::ArrayString;
 use copy_arrayvec::CopyArrayVec;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
+use tedi_md::{indent_into, preserve_paragraph_spacing, wrap_inline_in_paragraphs};
 use url::Url;
 use v_utils::macros::wrap_err;
-
-use super::events::{indent_into, preserve_paragraph_spacing, wrap_inline_in_paragraphs};
 
 /// Maximum title length enforced by Github.
 pub const MAX_TITLE_LENGTH: usize = 256;
@@ -55,45 +54,7 @@ pub trait LazyIssue<S: Clone + std::fmt::Debug>: Sized {
 		Ok(issue)
 	}
 }
-/// Repository identification: owner and repo name.
-/// Uses fixed-size `ArrayString`s to be `Copy`.
-/// GitHub limits: owner max 39 chars, repo max 100 chars.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub struct RepoInfo {
-	/// Repository owner (fixed max length; following Github spec)
-	owner: ArrayString<39>,
-	/// Repository name (fixed max length; following Github spec)
-	repo: ArrayString<100>,
-}
-
-impl RepoInfo {
-	/// Create a new RepoInfo.
-	/// Owner and repo are lowercased: GitHub treats them case-insensitively,
-	/// so this is a primitive-level invariant (every `RepoInfo` is normalized).
-	/// Panics if owner exceeds 39 chars or repo exceeds 100 chars.
-	pub fn new(owner: &str, repo: &str) -> Self {
-		Self {
-			owner: ArrayString::from(&owner.to_lowercase()).expect("owner name too long (max 39 chars)"),
-			repo: ArrayString::from(&repo.to_lowercase()).expect("repo name too long (max 100 chars)"),
-		}
-	}
-
-	/// Get the owner.
-	pub fn owner(&self) -> &str {
-		self.owner.as_str()
-	}
-
-	/// Get the repo.
-	pub fn repo(&self) -> &str {
-		self.repo.as_str()
-	}
-}
-
-impl From<(&str, &str)> for RepoInfo {
-	fn from((owner, repo): (&str, &str)) -> Self {
-		Self::new(owner, repo)
-	}
-}
+pub use tedi_adapters::github::RepoInfo;
 
 /// A Github issue identifier. Wraps a URL and derives all properties on demand.
 /// Format: `https://github.com/{owner}/{repo}/issues/{number}`
@@ -1729,6 +1690,11 @@ impl VirtualIssue {
 						// invalid composition (only checkbox lists are allowed after blockers).
 						// SoftBreak / Html("\n") between blocks are harmless — skip them.
 						match &events[pos] {
+							// `---` is the blockers-section terminator emitted by tedi_md's parse
+							OwnedEvent::Rule => {
+								pos += 1;
+								continue;
+							}
 							OwnedEvent::SoftBreak | OwnedEvent::HardBreak => {
 								pos += 1;
 								continue;

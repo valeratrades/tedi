@@ -12,7 +12,7 @@ use color_eyre::eyre::{Result, bail, ensure};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use v_utils::{Percent, io::file_open::OpenMode, time::Timelike};
 
-use crate::{MANUAL_PATH_APPENDIX, utils};
+const MANUAL_PATH_APPENDIX: &str = "manual_stats/";
 
 #[derive(clap::Subcommand)]
 pub enum ManualSubcommands {
@@ -87,8 +87,8 @@ pub struct RelativeArgs {
 	#[arg(default_value = "10")]
 	pub n: usize,
 }
-pub async fn update_or_open(settings: &crate::config::LiveSettings, args: ManualArgs) -> Result<()> {
-	let date = utils::format_date(args.days_back, settings);
+pub async fn update_or_open(date_format: &str, args: ManualArgs) -> Result<()> {
+	let date = crate::format_date(args.days_back, date_format);
 
 	let target_file_path = Day::path(&date);
 
@@ -115,7 +115,7 @@ pub async fn update_or_open(settings: &crate::config::LiveSettings, args: Manual
 					bail!("Tried to open ev file of a day that was not initialized");
 				}
 				v_utils::io::file_open::open(&target_file_path).await?;
-				return process_manual_updates(&target_file_path, settings);
+				return process_manual_updates(&target_file_path, date_format);
 			}
 			true => {
 				let pbs_path = target_file_path.parent().unwrap().join(PBS_FILENAME);
@@ -124,7 +124,7 @@ pub async fn update_or_open(settings: &crate::config::LiveSettings, args: Manual
 			}
 		},
 		ManualSubcommands::Relative(rel_args) => {
-			return print_relative(settings, args.days_back, rel_args.n);
+			return print_relative(date_format, args.days_back, rel_args.n);
 		}
 		ManualSubcommands::Ev(_) | ManualSubcommands::CounterStep(_) => {}
 	}
@@ -179,7 +179,7 @@ pub async fn update_or_open(settings: &crate::config::LiveSettings, args: Manual
 		day.last_ev_change = Some(jiff::Timestamp::now());
 	}
 
-	day.update_pbs(target_file_path.parent().unwrap(), settings);
+	day.update_pbs(target_file_path.parent().unwrap(), date_format);
 
 	let formatted_json = serde_json::to_string_pretty(&day).unwrap();
 	let mut file = OpenOptions::new().read(true).write(true).create(true).truncate(true).open(&target_file_path).unwrap();
@@ -188,7 +188,7 @@ pub async fn update_or_open(settings: &crate::config::LiveSettings, args: Manual
 
 	if ev_override.is_some_and(|ev_args| ev_args.open) {
 		v_utils::io::file_open::open(&target_file_path).await?;
-		process_manual_updates(&target_file_path, settings)?;
+		process_manual_updates(&target_file_path, date_format)?;
 	}
 
 	Ok(())
@@ -230,7 +230,7 @@ impl Day {
 		Ok(serde_json::from_str::<Day>(&file_contents)?)
 	}
 
-	fn update_pbs<T: AsRef<Path>>(&self, data_storage_dir: T, settings: &crate::config::LiveSettings) {
+	fn update_pbs<T: AsRef<Path>>(&self, data_storage_dir: T, date_format: &str) {
 		//TODO!!: fix error with adding extra brackets to ~/.data/personal/manual_stats/.pbs.json
 		fn announce_new_pb<T: std::fmt::Display>(new_value: &T, old_value: Option<&T>, name: &str) {
 			let old_value = match old_value {
@@ -243,7 +243,7 @@ impl Day {
 		}
 
 		let pbs_path = data_storage_dir.as_ref().join(PBS_FILENAME);
-		let yd_date = utils::format_date(1, settings); // no matter what file is being checked, we only ever care about physical yesterday
+		let yd_date = crate::format_date(1, date_format); // no matter what file is being checked, we only ever care about physical yesterday
 		let mut pbs_as_value = match std::fs::read_to_string(&pbs_path) {
 			Ok(s) => serde_json::from_str::<serde_json::Value>(&s).unwrap(), // Value so we don't need to rewrite everything on `Day` struct changes. Both in terms of extra code, and recorded pb values. Previously had a Pbs struct, but that has proven to be unnecessary.
 			Err(_) => serde_json::Value::Null,
@@ -383,12 +383,12 @@ impl Day {
 }
 static PBS_FILENAME: &str = ".pbs.json";
 
-fn print_relative(settings: &crate::config::LiveSettings, days_back: usize, n: usize) -> Result<()> {
+fn print_relative(date_format: &str, days_back: usize, n: usize) -> Result<()> {
 	ensure!(n >= 2, "n must be at least 2 to have something to compare against");
 
 	let mut entries: Vec<(String, i32)> = Vec::with_capacity(n);
 	for i in days_back..days_back + n {
-		let date = utils::format_date(i, settings);
+		let date = crate::format_date(i, date_format);
 		let ev = Day::load(&date).map(|d| d.ev).unwrap_or(0);
 		entries.push((date, ev));
 	}
@@ -413,12 +413,12 @@ fn print_relative(settings: &crate::config::LiveSettings, days_back: usize, n: u
 	Ok(())
 }
 
-fn process_manual_updates<T: AsRef<Path>>(path: T, settings: &crate::config::LiveSettings) -> Result<()> {
+fn process_manual_updates<T: AsRef<Path>>(path: T, date_format: &str) -> Result<()> {
 	if !path.as_ref().exists() {
 		bail!("File does not exist, likely because you manually changed something.");
 	}
 	let day: Day = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
-	day.update_pbs(path.as_ref().parent().unwrap(), settings);
+	day.update_pbs(path.as_ref().parent().unwrap(), date_format);
 	Ok(())
 }
 

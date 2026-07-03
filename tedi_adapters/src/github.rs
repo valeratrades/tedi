@@ -1,14 +1,53 @@
 use std::sync::Arc;
 
+use arrayvec::ArrayString;
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::Deserialize;
 use v_utils::macros::wrap_err;
 
-pub use crate::RepoInfo;
-
 pub type BoxedGithubClient = Arc<dyn GithubClient>;
 use color_eyre::eyre::{Result, bail, eyre};
+
+/// Repository identification: owner and repo name.
+/// Uses fixed-size `ArrayString`s to be `Copy`.
+/// GitHub limits: owner max 39 chars, repo max 100 chars.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct RepoInfo {
+	/// Repository owner (fixed max length; following Github spec)
+	owner: ArrayString<39>,
+	/// Repository name (fixed max length; following Github spec)
+	repo: ArrayString<100>,
+}
+
+impl RepoInfo {
+	/// Create a new RepoInfo.
+	/// Owner and repo are lowercased: GitHub treats them case-insensitively,
+	/// so this is a primitive-level invariant (every `RepoInfo` is normalized).
+	/// Panics if owner exceeds 39 chars or repo exceeds 100 chars.
+	pub fn new(owner: &str, repo: &str) -> Self {
+		Self {
+			owner: ArrayString::from(&owner.to_lowercase()).expect("owner name too long (max 39 chars)"),
+			repo: ArrayString::from(&repo.to_lowercase()).expect("repo name too long (max 100 chars)"),
+		}
+	}
+
+	/// Get the owner.
+	pub fn owner(&self) -> &str {
+		self.owner.as_str()
+	}
+
+	/// Get the repo.
+	pub fn repo(&self) -> &str {
+		self.repo.as_str()
+	}
+}
+
+impl From<(&str, &str)> for RepoInfo {
+	fn from((owner, repo): (&str, &str)) -> Self {
+		Self::new(owner, repo)
+	}
+}
 
 /// Trait defining all Github API operations.
 /// This allows for both real API calls and mock implementations for testing.

@@ -11,7 +11,7 @@
 //! - `integration`: Issue-based blocker implementation (uses modify_and_sync_issue)
 //! - `operations`: Extended operations on BlockerSequence (pop, add, etc.)
 //! - `source`: BlockerSource trait for data access abstraction
-//! - `clockify`: Time tracking integration
+//! - `clockify_tracking`: Blocker-aware time tracking state over the `tedi_adapters::clockify` protocol
 //!
 //! Urgent mode stores blockers in `issues/{owner}/urgent.md` - a simple blocker list
 //! without Github sync. Only one urgent file can exist at a time.
@@ -19,7 +19,7 @@
 //! Core types (BlockerItem, BlockerSequence) are defined in the
 //! library crate and re-exported here for convenience.
 
-pub mod clockify;
+pub mod clockify_tracking;
 pub(super) mod integration;
 mod io;
 mod operations;

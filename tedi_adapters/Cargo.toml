@@ -1,0 +1,26 @@
+[package]
+name = "tedi_adapters"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Remote-service adapters (GitHub, Clockify) for tedi"
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+arrayvec.workspace = true
+async-trait.workspace = true
+clap.workspace = true
+color-eyre.workspace = true
+jiff.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-error.workspace = true
+urlencoding.workspace = true
+v_utils.workspace = true
+
+[lints]
+workspace = true

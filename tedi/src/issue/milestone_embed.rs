@@ -4,7 +4,9 @@
 //! This module parses them into a `MilestoneDoc` AST via pulldown_cmark, enabling
 //! structured operations like parent-context resolution for bare `#123` refs.
 
-use super::{Events, Issue, IssueLink, IssueMarker, OwnedEvent, OwnedTag, OwnedTagEnd, events::indent_into};
+use tedi_md::indent_into;
+
+use super::{Events, Issue, IssueLink, IssueMarker, OwnedEvent, OwnedTag, OwnedTagEnd};
 
 /// A parsed milestone document: a sequence of top-level sections.
 pub struct MilestoneDoc {

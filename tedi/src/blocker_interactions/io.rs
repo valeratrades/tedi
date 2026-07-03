@@ -9,7 +9,7 @@ use std::sync::Arc;
 use clap::{Args, Subcommand};
 use color_eyre::eyre::Result;
 
-use super::clockify::{HaltArgs, ResumeArgs};
+use super::clockify_tracking::{HaltArgs, ResumeArgs};
 
 #[derive(Clone, Debug, Subcommand)]
 pub enum Command {

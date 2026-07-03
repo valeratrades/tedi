@@ -1,4 +1,4 @@
-use std::{env, io::Write, sync::Arc};
+use std::{env, io::Write};
 
 use clap::{Args, Parser, Subcommand};
 use color_eyre::eyre::{Result, WrapErr, bail, eyre};
@@ -59,8 +59,8 @@ pub struct ClockifyArgs {
 	#[command(subcommand)]
 	command: Command,
 }
-pub async fn main(settings: Arc<crate::config::LiveSettings>, args: ClockifyArgs) -> Result<()> {
-	let yes = settings.config()?.yes;
+/// `yes`: skip interactive confirmations (from the caller's config/flags).
+pub async fn main(yes: bool, args: ClockifyArgs) -> Result<()> {
 	match args.command {
 		Command::ListWorkspaces => {
 			list_workspaces().await?;
@@ -151,9 +151,8 @@ pub async fn start_time_entry_with_defaults(
 	task: Option<&str>,
 	tags: Option<&str>,
 	billable: bool,
-	settings: Arc<crate::config::LiveSettings>,
+	yes: bool,
 ) -> Result<()> {
-	let yes = settings.config()?.yes;
 	let api_key = env::var("CLOCKIFY_API_KEY").wrap_err("Set CLOCKIFY_API_KEY in your environment with a valid API token")?;
 	let client = reqwest::Client::builder().default_headers(make_headers(&api_key)?).build()?;
 

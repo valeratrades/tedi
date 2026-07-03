@@ -17,8 +17,6 @@ use libwayshot::WayshotConnection;
 use serde::{Deserialize, Serialize};
 use v_utils::prelude::*;
 
-use crate::config::LiveSettings;
-
 #[derive(Debug, Subcommand)]
 pub enum MonitorsCommands {
 	/// Daemon that takes screenshots every 15 minutes, storing up to 24h of history.
@@ -48,7 +46,7 @@ pub struct MonitorsArgs {
 	pub command: MonitorsCommands,
 }
 
-pub async fn main(_settings: &LiveSettings, args: MonitorsArgs) -> Result<()> {
+pub async fn main(args: MonitorsArgs) -> Result<()> {
 	match args.command {
 		MonitorsCommands::Watch => watch_daemon(),
 		MonitorsCommands::Annotate { timeframe, model } => annotate(timeframe, model).await,

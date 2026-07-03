@@ -499,7 +499,7 @@ fn normalize_list_items_tight(events: Vec<OwnedEvent>) -> Vec<OwnedEvent> {
 ///
 /// Skipped inside list items — list item spacing is handled by normalization and cmark itself.
 /// Skipped when next event is `End(...)` — that means we're exiting a scope, not starting a new block.
-pub(super) fn preserve_paragraph_spacing(events: Vec<OwnedEvent>) -> Vec<OwnedEvent> {
+pub fn preserve_paragraph_spacing(events: Vec<OwnedEvent>) -> Vec<OwnedEvent> {
 	let mut out = Vec::with_capacity(events.len());
 	let mut item_depth = 0usize;
 	for i in 0..events.len() {
@@ -591,6 +591,10 @@ fn split_blockers_from_checkboxes(events: Vec<OwnedEvent>) -> Vec<OwnedEvent> {
 		}
 		out.push(OwnedEvent::End(OwnedTagEnd::List(false)));
 
+		// `---` marks where the Blockers section ends: without it the two lists would
+		// render adjacent and re-merge into one on the next parse.
+		out.push(OwnedEvent::Rule);
+
 		out.push(list_start_event.clone());
 		for &(item_start, item_end, has_cb) in &items {
 			if has_cb {
@@ -605,8 +609,8 @@ fn split_blockers_from_checkboxes(events: Vec<OwnedEvent>) -> Vec<OwnedEvent> {
 	out
 }
 
-/// Check whether the events accumulated so far end with a BlockersSection heading.
-/// Reconstructs the heading text from events and delegates to `Marker::decode`.
+/// Check whether the events accumulated so far end with a Blockers section heading
+/// (a heading whose text is `blockers`/`blocker`, case-insensitive, optionally with a trailing `:`).
 fn preceded_by_blockers_heading(out: &[OwnedEvent]) -> bool {
 	// Walk backwards: expect End(Heading), then text events, then Start(Heading)
 	let Some(last) = out.last() else { return false };
@@ -632,18 +636,9 @@ fn preceded_by_blockers_heading(out: &[OwnedEvent]) -> bool {
 		return false;
 	}
 
-	// Reconstruct the line as it would appear in markdown
-	let hashes: String = "#".repeat(match level {
-		HeadingLevel::H1 => 1,
-		HeadingLevel::H2 => 2,
-		HeadingLevel::H3 => 3,
-		HeadingLevel::H4 => 4,
-		HeadingLevel::H5 => 5,
-		HeadingLevel::H6 => 6,
-	});
-	let line = format!("{hashes} {heading_text}");
-
-	matches!(super::Marker::decode(&line), Some(super::Marker::BlockersSection(_)))
+	let content_lower = heading_text.trim().to_ascii_lowercase();
+	let content = content_lower.trim_end_matches(':');
+	content == "blockers" || content == "blocker"
 }
 
 fn find_matching_end_list(events: &[OwnedEvent], start: usize) -> usize {
@@ -692,7 +687,7 @@ fn parser_options() -> pulldown_cmark::Options {
 	pulldown_cmark::Options::ENABLE_TASKLISTS | pulldown_cmark::Options::ENABLE_STRIKETHROUGH
 }
 
-pub(crate) fn cmark_options() -> pulldown_cmark_to_cmark::Options<'static> {
+fn cmark_options() -> pulldown_cmark_to_cmark::Options<'static> {
 	pulldown_cmark_to_cmark::Options {
 		list_token: '-',
 		newlines_after_headline: 1,
@@ -707,7 +702,7 @@ pub(crate) fn cmark_options() -> pulldown_cmark_to_cmark::Options<'static> {
 /// 1. `CheckBox(" ")`/`CheckBox("x")` → `TaskListMarker`
 /// 2. Custom `CheckBox` → escaped `Text("[<inner>\] ")`
 /// 3. Loose-list spacing: inserts `Html("\n")` between items in lists that contain checkboxes
-pub(crate) fn prepare_for_render(events: &[OwnedEvent]) -> Vec<Event<'_>> {
+fn prepare_for_render(events: &[OwnedEvent]) -> Vec<Event<'_>> {
 	let mut out = Vec::with_capacity(events.len());
 
 	// Identify which list ranges contain checkboxes (for loose inter-item spacing).
@@ -777,7 +772,7 @@ pub(crate) fn prepare_for_render(events: &[OwnedEvent]) -> Vec<Event<'_>> {
 
 /// Append `content` to `out`, prefixing each line with `prefix`.
 /// Preserves trailing newline from content.
-pub(super) fn indent_into(out: &mut String, content: &str, prefix: &str) {
+pub fn indent_into(out: &mut String, content: &str, prefix: &str) {
 	for line in content.lines() {
 		if line.is_empty() {
 			out.push('\n');
@@ -794,7 +789,7 @@ pub(super) fn indent_into(out: &mut String, content: &str, prefix: &str) {
 /// Events stored from inside list items have paragraph wrappers stripped (by normalization).
 /// When rendering these events as standalone markdown (e.g., GitHub body), inline content
 /// needs paragraph wrappers for proper block-level separation from subsequent elements.
-pub(super) fn wrap_inline_in_paragraphs(events: Vec<OwnedEvent>) -> Vec<OwnedEvent> {
+pub fn wrap_inline_in_paragraphs(events: Vec<OwnedEvent>) -> Vec<OwnedEvent> {
 	if events.is_empty() {
 		return events;
 	}
@@ -997,6 +992,17 @@ mod tests {
 		  body text
 		  more body
 		");
+	}
+
+	#[test]
+	fn blockers_split_is_roundtrip_stable() {
+		// The inserted `---` must keep the two lists separate in rendered text,
+		// so a reparse doesn't merge them back and re-split.
+		let events = Events::parse("# Blockers\n- a\n- b\n- [ ] item <!-- https://github.com/o/r/issues/1 -->\n");
+		let rendered: String = events.clone().into();
+		assert!(rendered.contains("---"), "rendered split must contain the `---` terminator: {rendered}");
+		let reparsed = Events::parse(&rendered);
+		assert_eq!(*events, *reparsed, "reparse of rendered output must be a fixpoint");
 	}
 
 	#[test]

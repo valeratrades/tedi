@@ -5,15 +5,13 @@ use clap::Args;
 use color_eyre::eyre::{Context, Result, bail};
 use jiff::Zoned;
 
-use crate::config::LiveSettings;
-
 #[derive(Args, Debug)]
 pub struct PerfEvalArgs {
 	/// Github API token (can also be set via GITHUB_KEY env var)
 	#[arg(long)]
 	pub github_key: Option<String>,
 }
-pub async fn main(_settings: &LiveSettings, args: PerfEvalArgs) -> Result<()> {
+pub async fn main(args: PerfEvalArgs) -> Result<()> {
 	// Set GITHUB_KEY env var if provided via flag
 	if let Some(ref github_key) = args.github_key {
 		// SAFETY: Only called during initialization, before spawning threads for the LLM call

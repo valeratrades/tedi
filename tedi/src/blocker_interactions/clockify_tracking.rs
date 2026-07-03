@@ -7,8 +7,7 @@ use std::{collections::HashMap, io::Write as IoWrite, path::PathBuf, sync::Arc};
 use clap::Parser;
 use color_eyre::eyre::Result;
 use serde::{Deserialize, Serialize};
-
-use super::protocol;
+use tedi_adapters::clockify as protocol;
 
 #[derive(Clone, Debug, Default, Parser)]
 pub struct ResumeArgs {
@@ -130,7 +129,7 @@ where
 		resume_args.task.as_deref(),
 		resume_args.tags.as_deref(),
 		resume_args.billable,
-		settings,
+		settings.config()?.yes,
 	)
 	.await
 }

@@ -2,17 +2,13 @@
 #![feature(error_generic_member_access)]
 #![allow(clippy::len_zero)]
 #![allow(clippy::doc_lazy_continuation)]
-const MANUAL_PATH_APPENDIX: &str = "manual_stats/";
 mod blocker_interactions;
 pub mod config;
-mod manual_stats;
 mod milestones;
 mod mock_github;
 mod open_interactions;
-mod perf_eval;
 mod shell_init;
 pub mod utils;
-mod watch_monitors;
 use std::{sync::Arc, time::Duration};
 
 use clap::{Parser, ValueEnum};
@@ -53,7 +49,7 @@ enum Commands {
 	///```rust
 	///todo manual -d1 --ev 420 -o
 	///```
-	Manual(manual_stats::ManualArgs),
+	Manual(tedi_eval::manual_stats::ManualArgs),
 	/// Operations with milestones (1d, 1w, 1M, 1Q, 1y)
 	Milestones(milestones::MilestonesArgs),
 	/// Shell aliases and hooks. Usage: `todos init <shell> | source`
@@ -61,11 +57,11 @@ enum Commands {
 	/// Blockers tree (use --integrated flag for issue files)
 	Blocker(blocker_interactions::BlockerArgs),
 	/// Clockify time tracking
-	Clockify(blocker_interactions::clockify::ClockifyArgs),
+	Clockify(tedi_adapters::clockify::ClockifyArgs),
 	/// Performance evaluation with screenshots
-	PerfEval(perf_eval::PerfEvalArgs),
+	PerfEval(tedi_eval::perf_eval::PerfEvalArgs),
 	/// Monitor screenshots: watch daemon and annotation
-	Monitors(watch_monitors::MonitorsArgs),
+	Monitors(tedi_eval::watch_monitors::MonitorsArgs),
 	/// Open a Github issue in $EDITOR
 	Open(open_interactions::OpenArgs),
 }
@@ -115,16 +111,21 @@ async fn main() {
 
 	// All the functions here can rely on config being correct.
 	exit_on_error(match cli.command {
-		Commands::Manual(manual_args) => manual_stats::update_or_open(&*settings, manual_args).await,
+		Commands::Manual(manual_args) => {
+			let config = exit_on_error(settings.config());
+			// Empty format string in config would silently produce empty dates, so treat it as unset.
+			let date_format = config.manual_stats.as_ref().map(|m| m.date_format.as_str()).filter(|s| !s.is_empty()).unwrap_or("%Y-%m-%d");
+			tedi_eval::manual_stats::update_or_open(date_format, manual_args).await
+		}
 		Commands::Milestones(milestones_command) => milestones::milestones_command(&*settings, milestones_command, cli.mock).await,
 		Commands::Init(args) => {
 			shell_init::output(&*settings, args);
 			Ok(())
 		}
 		Commands::Blocker(args) => blocker_interactions::main(args, cli.offline, settings.clone()).await,
-		Commands::Clockify(args) => blocker_interactions::clockify::clockify_main(settings.clone(), args).await,
-		Commands::PerfEval(args) => perf_eval::main(&*settings, args).await,
-		Commands::Monitors(args) => watch_monitors::main(&*settings, args).await,
+		Commands::Clockify(args) => tedi_adapters::clockify::main(exit_on_error(settings.config()).yes, args).await,
+		Commands::PerfEval(args) => tedi_eval::perf_eval::main(args).await,
+		Commands::Monitors(args) => tedi_eval::watch_monitors::main(args).await,
 		Commands::Open(args) => open_interactions::open_command(&*settings, args, cli.offline, cli.mock).await,
 	});
 }

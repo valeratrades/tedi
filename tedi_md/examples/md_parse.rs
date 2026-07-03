@@ -7,7 +7,7 @@ use std::{env, fs, path::Path};
 use pulldown_cmark::{Options, Parser};
 
 fn main() {
-	let path = env::args().nth(1).unwrap_or_else(|| "examples/test_issue.md".into());
+	let path = env::args().nth(1).unwrap_or_else(|| "tedi_md/examples/test_issue.md".into());
 
 	let content = fs::read_to_string(&path).expect("Failed to read file");
 
