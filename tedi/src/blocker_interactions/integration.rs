@@ -14,8 +14,8 @@ use std::{
 
 use color_eyre::eyre::{Result, bail, eyre};
 use tedi::{
-	Issue, IssueLink, LazyIssue, Marker, MilestoneBlockerCache, RepoInfo, VirtualIssue,
-	local::{ExactMatchLevel, FsReader, Local, LocalIssueSource},
+	Issue, IssueLink, LazyIssue, Marker, RepoInfo, VirtualIssue,
+	local::{ExactMatchLevel, FsReader, Local, LocalIssueSource, MilestoneBlockerCache},
 };
 
 use super::{BlockerSequence, operations::BlockerSequenceExt, source::BlockerSource};

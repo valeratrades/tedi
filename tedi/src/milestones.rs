@@ -2,8 +2,8 @@ use clap::Args;
 use jiff::Timestamp;
 use reqwest::Client;
 use tedi::{
-	Issue, IssueLink, LazyIssue, MilestoneBlockerCache, MilestoneDoc,
-	local::{Consensus, FsReader, Local, LocalFs, LocalIssueSource},
+	Issue, IssueLink, LazyIssue, MilestoneDoc,
+	local::{Consensus, FsReader, Local, LocalFs, LocalIssueSource, MilestoneBlockerCache},
 	parse_blockers_from_embedded,
 	remote::RemoteSource,
 	serialize_blockers_view,

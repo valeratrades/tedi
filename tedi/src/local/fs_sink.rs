@@ -59,7 +59,13 @@ impl Sink<LocalFs> for Issue {
 			match LocalPath::from(&*self).resolve_parent(FsReader) {
 				Ok(resolved) => {
 					let issue_file_path = resolved.deterministic(title, closed, has_children).path();
-					self.contents.blockers.ensure_set(&issue_file_path);
+					match super::MilestoneBlockerCache::set_by_path(&issue_file_path) {
+						Ok(()) => {
+							tracing::info!(path = %issue_file_path.display(), "blocker selection persisted via !s");
+							self.contents.blockers.set_state = Some(crate::BlockerSetState::Applied);
+						}
+						Err(e) => tracing::warn!("failed to persist blocker selection: {e}"),
+					}
 				}
 				Err(e) => {
 					tracing::warn!("!s: failed to resolve issue path for blocker selection: {e}");

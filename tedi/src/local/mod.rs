@@ -1131,10 +1131,11 @@ mod local_path {
 }
 pub use local_path::{LocalPath, LocalPathError, LocalPathErrorKind, LocalPathResolved};
 
+mod blocker_cache;
 mod fs_sink;
-
 use std::path::{Path, PathBuf};
 
+pub use blocker_cache::MilestoneBlockerCache;
 pub use consensus::Consensus;
 pub use fs_sink::{LocalFs, LocalFsSinkError};
 //==============================================================================
