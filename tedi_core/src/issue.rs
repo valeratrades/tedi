@@ -1,43 +1,14 @@
-//! Core issue data structures and parsing/serialization.
-//!
-//! This module contains the pure Issue type with parsing and serialization.
+//! The Issue primitive: identity, contents, comments, blockers, children,
+//! plus parse/serialize over `tedi_md::Events`.
 
 use std::{collections::HashMap, path::PathBuf};
 
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
-use tedi_core::{Blockers, IssueChildren, IssueIndex, IssueLink, IssueMarker, IssueSelector, Marker, ParseContext, ParseError, RepoInfo, TitleInGitPathError};
 use tedi_md::{indent_into, preserve_paragraph_spacing, wrap_inline_in_paragraphs};
 
-/// Trait for lazily loading an issue from a source.
-///
-/// `S` is the source type directly (e.g., `LocalIssueSource<FsReader>`, `RemoteSource`).
-/// Methods load data on demand; `&mut self` allows caching intermediate results.
-#[allow(async_fn_in_trait)]
-pub trait LazyIssue<S: Clone + std::fmt::Debug>: Sized {
-	/// Error type for operations on this source.
-	type Error: std::error::Error;
+use crate::{Blockers, IssueChildren, IssueIndex, IssueLink, IssueMarker, IssueSelector, Marker, ParseContext, ParseError, RepoInfo, TitleInGitPathError};
 
-	/// Resolve parent_index from the source.
-	/// Returns None for root-level issues (no parent).
-	async fn parent_index(source: &S) -> Result<Option<IssueIndex>, Self::Error>;
-	async fn identity(&mut self, source: S) -> Result<IssueIdentity, Self::Error>;
-	async fn contents(&mut self, source: S) -> Result<IssueContents, Self::Error>;
-	async fn children(&mut self, source: S) -> Result<IssueChildren<Issue>, Self::Error>;
-
-	/// Load a full issue tree from the source.
-	/// Default implementation calls parent_index, then populates identity, contents, and children.
-	async fn load(source: S) -> Result<Issue, Self::Error>
-	where
-		Issue: LazyIssue<S, Error = Self::Error>, {
-		let parent_index = <Issue as LazyIssue<S>>::parent_index(&source).await?.expect("load requires parent_index to be Some");
-		let mut issue = Issue::empty_local(parent_index);
-		<Issue as LazyIssue<S>>::identity(&mut issue, source.clone()).await?;
-		<Issue as LazyIssue<S>>::contents(&mut issue, source.clone()).await?;
-		Box::pin(<Issue as LazyIssue<S>>::children(&mut issue, source)).await?;
-		Ok(issue)
-	}
-}
 /// Identity of a comment - either linked to Github or pending creation.
 /// Note: The first comment (issue body) is always `Body`, not `Linked` or `Pending`.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -432,7 +403,7 @@ pub struct Comment {
 	pub identity: CommentIdentity,
 	/// The markdown body stored as parsed events for lossless roundtripping
 	#[deref]
-	pub body: super::Events,
+	pub body: crate::Events,
 }
 impl Comment {
 	/// Get the comment ID if linked.
@@ -670,18 +641,18 @@ impl Issue /*{{{1*/ {
 
 	/// Get the full issue body including blockers section as events.
 	/// This is what should be synced to Github as the issue body.
-	pub fn body(&self) -> super::Events {
+	pub fn body(&self) -> crate::Events {
 		//NB: DO NOT CHANGE Output Type
-		let mut events: Vec<super::OwnedEvent> = self.contents.comments.first().map(|c| c.body.to_vec()).unwrap_or_default();
+		let mut events: Vec<crate::OwnedEvent> = self.contents.comments.first().map(|c| c.body.to_vec()).unwrap_or_default();
 		if !self.contents.blockers.is_empty() {
-			events.push(super::OwnedEvent::Start(super::OwnedTag::Heading {
+			events.push(crate::OwnedEvent::Start(crate::OwnedTag::Heading {
 				level: pulldown_cmark::HeadingLevel::H1,
 				id: None,
 				classes: Vec::new(),
 				attrs: Vec::new(),
 			}));
-			events.push(super::OwnedEvent::Text("Blockers".to_string()));
-			events.push(super::OwnedEvent::End(super::OwnedTagEnd::Heading(pulldown_cmark::HeadingLevel::H1)));
+			events.push(crate::OwnedEvent::Text("Blockers".to_string()));
+			events.push(crate::OwnedEvent::End(crate::OwnedTagEnd::Heading(pulldown_cmark::HeadingLevel::H1)));
 			events.extend(self.contents.blockers.to_events());
 		}
 		events.into()
@@ -696,7 +667,7 @@ impl Issue /*{{{1*/ {
 	/// # Errors
 	/// Returns `IssueError::ErroneousComposition` if a git-linked child (GitId selector) exists
 	/// in virtual but not in hollow — either an internal bug or user manually embedded a linked marker.
-	pub fn from_combined(hollow: HollowIssue, virtual_issue: VirtualIssue, parent_idx: IssueIndex, is_virtual: bool) -> Result<Self, tedi_core::IssueError> {
+	pub fn from_combined(hollow: HollowIssue, virtual_issue: VirtualIssue, parent_idx: IssueIndex, is_virtual: bool) -> Result<Self, crate::IssueError> {
 		let identity = IssueIdentity {
 			parent_index: parent_idx,
 			is_virtual,
@@ -710,7 +681,7 @@ impl Issue /*{{{1*/ {
 				Some(ch) => ch.clone(),
 				None => {
 					if let IssueSelector::GitId(n) = selector {
-						return Err(tedi_core::IssueError::new_erroneous_composition(
+						return Err(crate::IssueError::new_erroneous_composition(
 							n,
 							"either internal bug (HollowIssue was constructed incorrectly) or user manually embedded a `<!-- @user url -->` marker, which is not permitted".to_string(),
 						));
@@ -735,25 +706,6 @@ impl Issue /*{{{1*/ {
 			contents: virtual_issue.contents,
 			children,
 		})
-	}
-
-	/// Parse `@user url#issuecomment-id` format into CommentIdentity.
-	/// Returns Pending if parsing fails.
-	fn parse_comment_identity(s: &str) -> CommentIdentity {
-		let s = s.trim();
-
-		// Format: `@username url#issuecomment-123`
-		if let Some(rest) = s.strip_prefix('@')
-			&& let Some(space_idx) = rest.find(' ')
-		{
-			let user = rest[..space_idx].to_string();
-			let url = rest[space_idx + 1..].trim();
-			if let Some(id) = url.split("#issuecomment-").nth(1).and_then(|s| s.parse().ok()) {
-				return CommentIdentity::Created { user, id };
-			}
-		}
-
-		CommentIdentity::Pending
 	}
 
 	//==========================================================================
@@ -791,7 +743,7 @@ impl Issue /*{{{1*/ {
 			format!("({}) ", self.contents.labels.join(", "))
 		};
 
-		let title_str: String = super::Events::from(vec![
+		let title_str: String = crate::Events::from(vec![
 			OwnedEvent::Start(OwnedTag::List(None)),
 			OwnedEvent::Start(OwnedTag::Item),
 			OwnedEvent::CheckBox(checkbox_contents),
@@ -819,7 +771,7 @@ impl Issue /*{{{1*/ {
 		if let Some(body_comment) = self.contents.comments.first()
 			&& !body_comment.body.is_empty()
 		{
-			let body_str: String = super::Events::from(body_comment.body.to_vec()).into();
+			let body_str: String = crate::Events::from(body_comment.body.to_vec()).into();
 			if !is_owned {
 				// Extra indent for unowned issues
 				indent_into(&mut content, &body_str, "  ");
@@ -869,7 +821,7 @@ impl Issue /*{{{1*/ {
 
 			// Comment body
 			if !comment.body.is_empty() {
-				let body_str: String = super::Events::from(comment.body.to_vec()).into();
+				let body_str: String = crate::Events::from(comment.body.to_vec()).into();
 				if !comment_is_owned {
 					indent_into(&mut content, &body_str, "  ");
 				} else {
@@ -944,7 +896,7 @@ impl Issue /*{{{1*/ {
 	/// Serialize for GitHub API (markdown body only, no local markers).
 	/// This is what gets sent to GitHub as the issue body.
 	/// Always outputs markdown format regardless of local file extension.
-	pub fn render_github(&self) -> super::Events {
+	pub fn render_github(&self) -> crate::Events {
 		//NB: DO NOT CHANGE Output Type
 		// GitHub body is: body text + blockers section (if any)
 		// No title line, no URL markers, no comments - just the body content
@@ -1052,7 +1004,7 @@ impl VirtualIssue {
 	/// Use `Issue::from_combined` to merge with identity info from a `HollowIssue`.
 	pub fn parse(content: &str, path: PathBuf) -> Result<Self, ParseError> {
 		let ctx = ParseContext::new(content.to_owned(), path);
-		let events = super::Events::parse(content);
+		let events = crate::Events::parse(content);
 		Self::parse_from_events(&events, &ctx)
 	}
 
@@ -1061,11 +1013,11 @@ impl VirtualIssue {
 	/// Expects: `Start(List) > Start(Item) > ... > End(Item) > End(List)`
 	/// The item contains: CheckBox, title text, InlineHtml marker, body events,
 	/// comment markers (Html), blocker heading+list, child issue lists.
-	fn parse_from_events(events: &[super::OwnedEvent], ctx: &ParseContext) -> Result<Self, ParseError> {
+	fn parse_from_events(events: &[crate::OwnedEvent], ctx: &ParseContext) -> Result<Self, ParseError> {
 		Self::parse_from_events_inner(events, ctx, false)
 	}
 
-	fn parse_from_events_inner(events: &[super::OwnedEvent], ctx: &ParseContext, default_pending: bool) -> Result<Self, ParseError> {
+	fn parse_from_events_inner(events: &[crate::OwnedEvent], ctx: &ParseContext, default_pending: bool) -> Result<Self, ParseError> {
 		use super::{OwnedEvent, OwnedTag, OwnedTagEnd};
 
 		let mut pos = 0;
@@ -1249,7 +1201,10 @@ impl VirtualIssue {
 						}
 						if inner.contains("#issuecomment-") {
 							flush(&mut in_body, &mut current_comment_meta, &mut body_events, &mut current_comment_events, &mut comments);
-							current_comment_meta = Some(Issue::parse_comment_identity(inner));
+							current_comment_meta = Some(match Marker::decode(trimmed) {
+								Some(Marker::Comment { user, id, .. }) => CommentIdentity::Created { user, id },
+								_ => CommentIdentity::Pending,
+							});
 							pos += 1;
 							continue;
 						}
@@ -1480,7 +1435,7 @@ impl VirtualIssue {
 			Blockers::default()
 		} else {
 			// Render blocker events to string and parse with Blockers::parse
-			let blocker_text: String = super::Events::from(blocker_events).into();
+			let blocker_text: String = crate::Events::from(blocker_events).into();
 			Blockers::parse(&blocker_text)
 		};
 
@@ -1494,7 +1449,7 @@ impl VirtualIssue {
 				blockers: {
 					let mut seq = blockers;
 					if select_blockers {
-						seq.set_state = Some(tedi_core::BlockerSetState::Pending);
+						seq.set_state = Some(crate::BlockerSetState::Pending);
 					}
 					seq
 				},
@@ -1504,7 +1459,7 @@ impl VirtualIssue {
 	}
 
 	/// Check if a list (starting at `Start(List(...))`) contains any CheckBox items.
-	fn list_has_checkbox(events: &[super::OwnedEvent]) -> bool {
+	fn list_has_checkbox(events: &[crate::OwnedEvent]) -> bool {
 		use super::{OwnedEvent, OwnedTag, OwnedTagEnd};
 		let mut depth = 0;
 		for ev in events {
@@ -1524,7 +1479,7 @@ impl VirtualIssue {
 	}
 
 	/// Find the position after the matching `End(List)` for a `Start(List)` at `start`.
-	fn find_matching_end_list(events: &[super::OwnedEvent], start: usize) -> usize {
+	fn find_matching_end_list(events: &[crate::OwnedEvent], start: usize) -> usize {
 		use super::{OwnedEvent, OwnedTag, OwnedTagEnd};
 		let mut depth = 0;
 		for (i, event) in events.iter().enumerate().skip(start) {
@@ -1543,7 +1498,7 @@ impl VirtualIssue {
 	}
 
 	/// Find the position after the matching `End(Item)` for a `Start(Item)` at `start`.
-	fn find_matching_end_item(events: &[super::OwnedEvent], start: usize) -> usize {
+	fn find_matching_end_item(events: &[crate::OwnedEvent], start: usize) -> usize {
 		use super::{OwnedEvent, OwnedTag, OwnedTagEnd};
 		let mut depth = 0;
 		for (i, event) in events.iter().enumerate().skip(start) {
@@ -1926,7 +1881,7 @@ mod tests {
 	fn test_select_blockers_standalone_line() {
 		let content = "- [ ] Issue <!-- https://github.com/owner/repo/issues/1 -->\n\n  Body\n\n  !s\n  # Blockers\n  - task 1\n  - task 2\n";
 		let vi = VirtualIssue::parse(content, PathBuf::from("test.md")).unwrap();
-		assert!(matches!(vi.contents.blockers.set_state, Some(tedi_core::BlockerSetState::Pending)));
+		assert!(matches!(vi.contents.blockers.set_state, Some(crate::BlockerSetState::Pending)));
 		// !s must not appear in re-serialized output, blockers preserved
 		insta::assert_snapshot!(unsafe_mock_parse_virtual(content).serialize_virtual(), @"
 		- [ ] Issue <!-- https://github.com/owner/repo/issues/1 -->
@@ -1942,7 +1897,7 @@ mod tests {
 	fn test_select_blockers_suffix_on_header() {
 		let content = "- [ ] Issue <!-- https://github.com/owner/repo/issues/1 -->\n\n  Body\n\n  # Blockers !s\n  - one\n";
 		let vi = VirtualIssue::parse(content, PathBuf::from("test.md")).unwrap();
-		assert!(matches!(vi.contents.blockers.set_state, Some(tedi_core::BlockerSetState::Pending)));
+		assert!(matches!(vi.contents.blockers.set_state, Some(crate::BlockerSetState::Pending)));
 		// blocker text parsed correctly despite !s suffix on header
 		insta::assert_snapshot!(vi.contents.blockers.items[0].text, @"one");
 	}
@@ -1960,7 +1915,7 @@ mod tests {
 		let content = "- [ ] Issue <!-- https://github.com/owner/repo/issues/1 -->\n\n  !S\n  # Blockers\n  - task\n";
 		let virtual_issue = VirtualIssue::parse(content, PathBuf::from("test.md")).unwrap();
 
-		assert!(matches!(virtual_issue.contents.blockers.set_state, Some(tedi_core::BlockerSetState::Pending)));
+		assert!(matches!(virtual_issue.contents.blockers.set_state, Some(crate::BlockerSetState::Pending)));
 	}
 
 	#[test]

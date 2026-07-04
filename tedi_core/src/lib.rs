@@ -27,11 +27,13 @@ pub mod current_user {
 
 pub mod blockers;
 pub mod error;
+pub mod issue;
 pub mod locate;
 pub mod marker;
 
 pub use blockers::{BlockerItem, BlockerSetState, Blockers, split_blockers};
 pub use error::{IssueError, ParseContext, ParseError, TitleInGitPathError};
+pub use issue::{CloseState, Comment, CommentIdentity, Comments, HollowIssue, Issue, IssueContents, IssueIdentity, IssueTimestamps, LinkedIssueMeta, VirtualIssue};
 pub use locate::{IssueChildren, IssueIndex, IssueIndexParseError, IssueLink, IssueRef, IssueSelector, MAX_INDEX_DEPTH, MAX_LINEAGE_DEPTH, MAX_TITLE_LENGTH, RepoInfo, parse_repo_context};
 pub use marker::{IssueMarker, Marker};
 pub use tedi_md::{Events, Header, OwnedCodeBlockKind, OwnedEvent, OwnedTag, OwnedTagEnd};

@@ -1,18 +1,16 @@
-//! Issue file format standard.
+//! Issue file format glue for the tedi binary.
 //!
-//! This module contains the canonical representation of issue files,
-//! including parsing, serialization, and all pure types.
-//!
-//! The issue format is designed for local-first issue tracking with
-//! optional Github synchronization.
+//! The pure Issue model now lives in `tedi_core`; this module re-exports it
+//! for convenience and hosts the tedi-side pieces (lazy loading, milestone
+//! embedding) that still depend on IO/app context.
 
+mod lazy;
 pub mod milestone_embed;
+pub use lazy::LazyIssue;
 pub use milestone_embed::{MilestoneDoc, parse_blockers_from_embedded, serialize_blockers_view};
 pub use tedi_core::{
-	BlockerItem, BlockerSetState, Blockers, IssueError, IssueIndex, IssueLink, IssueMarker, IssueRef, IssueSelector, MAX_INDEX_DEPTH, MAX_LINEAGE_DEPTH, MAX_TITLE_LENGTH, Marker,
-	ParseError, RepoInfo, TitleInGitPathError, split_blockers,
+	BlockerItem, BlockerSetState, Blockers, CloseState, Comment, CommentIdentity, Comments, HollowIssue, Issue, IssueContents, IssueError, IssueIdentity, IssueIndex, IssueLink, IssueMarker,
+	IssueRef, IssueSelector, IssueTimestamps, LinkedIssueMeta, MAX_INDEX_DEPTH, MAX_LINEAGE_DEPTH, MAX_TITLE_LENGTH, Marker, ParseError, RepoInfo, TitleInGitPathError, VirtualIssue,
+	split_blockers,
 };
 pub use tedi_md::{Events, Header, OwnedCodeBlockKind, OwnedEvent, OwnedTag, OwnedTagEnd};
-
-mod types;
-pub use types::{CloseState, Comment, CommentIdentity, Comments, HollowIssue, Issue, IssueContents, IssueIdentity, IssueTimestamps, LazyIssue, LinkedIssueMeta, VirtualIssue};
