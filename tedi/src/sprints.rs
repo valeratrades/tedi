@@ -3,19 +3,16 @@ use jiff::Timestamp;
 use tedi_adapters::github::GithubMilestone;
 use tedi_core::RepoInfo;
 use tedi_ops::{
-	Issue, IssueLink, LazyIssue, Milestone,
-	local::{Consensus, FsReader, Local, LocalFs, LocalIssueSource, MilestoneBlockerCache},
-	parse_blockers_from_embedded,
-	remote::RemoteSource,
-	serialize_blockers_view,
-	sink::Sink,
+	IssueLink, Milestone,
+	local::MilestoneBlockerCache,
+	sprints::{expand_and_refresh, sync_blocker_changes},
 };
 use v_utils::prelude::*;
 
 use crate::config::LiveSettings;
 
 #[derive(clap::Subcommand)]
-pub enum MilestonesCommands {
+pub enum SprintsCommands {
 	Get {
 		tf: Timeframe,
 	},
@@ -30,24 +27,24 @@ pub enum MilestonesCommands {
 	Healthcheck,
 }
 #[derive(Args)]
-pub struct MilestonesArgs {
+pub struct SprintsArgs {
 	#[command(subcommand)]
-	command: MilestonesCommands,
+	command: SprintsCommands,
 }
 pub static HEALTHCHECK_REL_PATH: &str = "healthcheck.status";
 pub static SPRINT_HEADER_REL_PATH: &str = "sprint_header.md";
 
-pub async fn milestones_command(settings: &LiveSettings, args: MilestonesArgs, mock: Option<tedi_ops::MockType>) -> Result<()> {
+pub async fn sprints_command(settings: &LiveSettings, args: SprintsArgs, mock: Option<tedi_ops::MockType>) -> Result<()> {
 	match args.command {
-		MilestonesCommands::Get { tf } => {
+		SprintsCommands::Get { tf } => {
 			let retrieved_milestones = request_milestones(settings).await?;
 			let raw = get_milestone(tf, &retrieved_milestones)?;
 			let expanded = expand_and_refresh(&raw).await?;
 			println!("{expanded}");
 			Ok(())
 		}
-		MilestonesCommands::Edit { tf, offline } => edit_milestone(settings, tf, offline, mock.is_some()).await,
-		MilestonesCommands::Healthcheck => healthcheck(settings).await,
+		SprintsCommands::Edit { tf, offline } => edit_milestone(settings, tf, offline, mock.is_some()).await,
+		SprintsCommands::Healthcheck => healthcheck(settings).await,
 	}
 }
 async fn request_milestones(settings: &LiveSettings) -> Result<Vec<GithubMilestone>> {
@@ -373,104 +370,6 @@ fn milestone_repo(settings: &LiveSettings) -> Result<(String, String)> {
 	let config = settings.config()?;
 	let milestones_config = config.milestones.as_ref().ok_or_else(|| eyre!("milestones config section is required"))?;
 	parse_github_repo(&milestones_config.url)
-}
-
-//==============================================================================
-// Embedded issue operations (async wrappers around lib functions)
-//==============================================================================
-
-/// Load a local issue by its IssueLink.
-async fn load_local_issue(link: &IssueLink) -> Result<Issue> {
-	let path = Local::find_by_number(link.repo_info(), link.number(), FsReader).ok_or_else(|| eyre!("issue #{} not found locally", link.number()))?;
-	let local_source = LocalIssueSource::<FsReader>::build_from_path(&path).await?;
-	Issue::load(local_source).await.map_err(Into::into)
-}
-
-/// Fetch an issue from GitHub and store it locally (filesystem + consensus).
-async fn fetch_and_store_remote_issue(link: &IssueLink) -> Result<Issue> {
-	let source = RemoteSource::build(link.clone(), None)?;
-	let mut issue = Issue::load(source).await?;
-	<Issue as Sink<LocalFs>>::sink(&mut issue, None).await?;
-	<Issue as Sink<Consensus>>::sink(&mut issue, None).await?;
-	Ok(issue)
-}
-
-/// Expand shorthand refs and refresh all embedded issue sections from local state.
-///
-/// Parses the content into a Milestone, resolves bare refs, then for each
-/// issue ref (shorthand, bare URL, or embedded), loads the local issue and
-/// replaces the item with a fresh `serialize_blockers_view` expansion.
-async fn expand_and_refresh(content: &str) -> Result<String> {
-	let mut doc = Milestone::parse(content);
-	doc.resolve_bare_refs();
-
-	// Collect all issue links with their resolved info, then load and expand
-	let links = doc.issue_links();
-	let mut expansions: std::collections::HashMap<IssueLink, String> = std::collections::HashMap::new();
-
-	for link in &links {
-		if expansions.contains_key(link) {
-			continue;
-		}
-		let issue = match load_local_issue(link).await {
-			Ok(issue) => issue,
-			Err(_) => match fetch_and_store_remote_issue(link).await {
-				Ok(issue) => issue,
-				Err(e) => {
-					tracing::warn!("failed to expand {}/{}/#{}: {e}", link.owner(), link.repo(), link.number());
-					continue;
-				}
-			},
-		};
-		let view = serialize_blockers_view(&issue);
-		expansions.insert(link.clone(), view);
-	}
-
-	doc.expand_with(&expansions);
-	Ok(doc.serialize())
-}
-
-/// Parse blocker changes from edited milestone content and sync back to issue files.
-async fn sync_blocker_changes(content: &str, offline: bool) -> Result<()> {
-	use tedi_ops::open_interactions::{Modifier, SyncOptions, modify_and_sync_issue};
-
-	let doc = Milestone::parse(content);
-
-	for (link, section_text) in doc.embedded_issues() {
-		// Parse blockers from the embedded section
-		let edited_blockers = parse_blockers_from_embedded(&section_text);
-		if edited_blockers.had_orphans {
-			bail!(
-				"blocker section for {}/{}/#{} contains lines that don't belong to any blocker item — \
-				fix the format (all text must be under a `- ` blocker line)",
-				link.owner(),
-				link.repo(),
-				link.number()
-			);
-		}
-
-		// Load the real issue from local fs
-		let issue = match load_local_issue(&link).await {
-			Ok(issue) => issue,
-			Err(e) => {
-				tracing::warn!("failed to load {}/{}/#{} for sync: {e}", link.owner(), link.repo(), link.number());
-				continue;
-			}
-		};
-
-		// Compare blockers — only sync if they actually differ
-		if issue.contents.blockers == edited_blockers {
-			continue;
-		}
-
-		println!("Syncing blocker changes for {}/{}#{}", link.owner(), link.repo(), link.number());
-
-		let modifier = Modifier::BlockerWrite { blockers: edited_blockers };
-		let sync_opts = SyncOptions::default();
-		modify_and_sync_issue(issue, offline, modifier, sync_opts).await?;
-	}
-
-	Ok(())
 }
 
 /// Sync milestone assignments on GitHub.

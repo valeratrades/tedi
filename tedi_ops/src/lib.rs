@@ -17,6 +17,7 @@ pub mod open_interactions;
 pub mod paths;
 pub mod remote;
 pub mod sink;
+pub mod sprints;
 pub mod utils;
 
 pub use lazy::LazyIssue;

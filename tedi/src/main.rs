@@ -1,8 +1,8 @@
 #![allow(clippy::len_zero)]
 #![allow(clippy::doc_lazy_continuation)]
 mod config;
-mod milestones;
 mod shell_init;
+mod sprints;
 use std::{sync::Arc, time::Duration};
 
 use clap::Parser;
@@ -35,8 +35,8 @@ enum Commands {
 	///todo manual -d1 --ev 420 -o
 	///```
 	Manual(tedi_eval::manual_stats::ManualArgs),
-	/// Operations with milestones (1d, 1w, 1M, 1Q, 1y)
-	Milestones(milestones::MilestonesArgs),
+	/// Operations with sprints (1d, 2w, 1Q, 1y, 3y, 7y)
+	Sprints(sprints::SprintsArgs),
 	/// Shell aliases and hooks. Usage: `todos init <shell> | source`
 	Init(shell_init::ShellInitArgs),
 	/// Blockers tree (use --integrated flag for issue files)
@@ -58,7 +58,7 @@ async fn main() {
 	let settings = Arc::new(exit_on_error(config::LiveSettings::new(cli.settings_flags.clone(), Duration::from_secs(3))));
 
 	// Commands that may need GitHub client (always construct it - offline only skips network calls)
-	let has_github_commands = matches!(cli.command, Commands::Open(_) | Commands::Blocker(_) | Commands::Milestones(_));
+	let has_github_commands = matches!(cli.command, Commands::Open(_) | Commands::Blocker(_) | Commands::Sprints(_));
 
 	let github_client: Option<tedi_adapters::github::BoxedGithubClient> = if cli.mock.is_some() {
 		Some(Arc::new(tedi_ops::mock_github::MockGithubClient::new("mock_user")))
@@ -102,7 +102,7 @@ async fn main() {
 			let date_format = config.manual_stats.as_ref().map(|m| m.date_format.as_str()).filter(|s| !s.is_empty()).unwrap_or("%Y-%m-%d");
 			tedi_eval::manual_stats::update_or_open(date_format, manual_args).await
 		}
-		Commands::Milestones(milestones_command) => milestones::milestones_command(&*settings, milestones_command, cli.mock).await,
+		Commands::Sprints(sprints_command) => sprints::sprints_command(&*settings, sprints_command, cli.mock).await,
 		Commands::Init(args) => {
 			shell_init::output(&*settings, args);
 			Ok(())

@@ -23,12 +23,12 @@ impl TestContext {
 	/// The editor mock (pipe) fires immediately — so the expanded content is what gets "saved".
 	/// Returns the RunOutput + the resulting milestone file content.
 	fn milestone_edit_no_changes(&self, milestone_content: &str) -> (RunOutput, String) {
-		self.milestone_edit_impl(milestone_content, &["--mock", "milestones", "edit", "1d"], None)
+		self.milestone_edit_impl(milestone_content, &["--mock", "sprints", "edit", "1d"], None)
 	}
 
 	/// Run `milestones edit --offline` in mock mode, modifying the temp file before signaling the pipe.
 	fn milestone_edit_with_changes(&self, milestone_content: &str, edit_fn: impl FnOnce(&Path) + 'static) -> (RunOutput, String) {
-		self.milestone_edit_impl(milestone_content, &["--mock", "--offline", "milestones", "edit", "1d"], Some(Box::new(edit_fn) as EditFn))
+		self.milestone_edit_impl(milestone_content, &["--mock", "--offline", "sprints", "edit", "1d"], Some(Box::new(edit_fn) as EditFn))
 	}
 
 	fn milestone_edit_impl(&self, milestone_content: &str, args: &[&str], edit_fn: Option<EditFn>) -> (RunOutput, String) {
