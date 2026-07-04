@@ -725,8 +725,6 @@ impl Issue /*{{{1*/ {
 	/// separately and indents them under the title. This matches how `milestone_embed::serialize_item` works,
 	/// avoiding cmark's paragraph spacing that would insert blank lines between title and body.
 	fn serialize_virtual_at_depth(&self, depth: usize, include_children: bool) -> String {
-		use super::{OwnedEvent, OwnedTag, OwnedTagEnd};
-
 		if self.identity.is_virtual {
 			assert!(self.user().is_none(), "virtual issue must not have a user tag, got: {:?}", self.user());
 		}
@@ -734,25 +732,8 @@ impl Issue /*{{{1*/ {
 		let content_indent = "  ".repeat(depth + 1);
 		let mut out = String::new();
 
-		// === Title line: render via cmark as standalone list item ===
-		let checkbox_contents = self.contents.state.to_checkbox_contents();
-		let issue_marker = IssueMarker::from(&self.identity);
-		let labels_part = if self.contents.labels.is_empty() {
-			String::new()
-		} else {
-			format!("({}) ", self.contents.labels.join(", "))
-		};
-
-		let title_str: String = crate::Events::from(vec![
-			OwnedEvent::Start(OwnedTag::List(None)),
-			OwnedEvent::Start(OwnedTag::Item),
-			OwnedEvent::CheckBox(checkbox_contents),
-			OwnedEvent::Text(format!("{labels_part}{} ", self.contents.title)),
-			OwnedEvent::InlineHtml(format!("<!-- {} -->", issue_marker.encode())),
-			OwnedEvent::End(OwnedTagEnd::Item),
-			OwnedEvent::End(OwnedTagEnd::List(false)),
-		])
-		.into();
+		// === Title line ===
+		let title_str = TitleLine::of(self).encode();
 
 		// Indent the title line to the correct depth
 		let depth_indent = "  ".repeat(depth);
@@ -991,34 +972,44 @@ impl From<Issue> for HollowIssue {
 	}
 }
 
-#[derive(Clone, Debug, PartialEq, derive_new::new)]
-pub struct VirtualIssue {
-	pub selector: IssueSelector,
-	pub contents: IssueContents,
-	pub children: IssueChildren<Self>,
+/// The `- [state] (labels) Title <!-- marker -->` line — the one-line header of every
+/// issue item, in both single-file and embedded forms.
+struct TitleLine {
+	state: CloseState,
+	labels: Vec<String>,
+	title: String,
+	marker: IssueMarker,
 }
-impl VirtualIssue {
-	/// Parse virtual representation (markdown with full tree) into a VirtualIssue.
-	///
-	/// Unlike `Issue::parse_virtual`, this doesn't need a `HollowIssue` - it purely parses content.
-	/// Use `Issue::from_combined` to merge with identity info from a `HollowIssue`.
-	pub fn parse(content: &str, path: PathBuf) -> Result<Self, ParseError> {
-		let ctx = ParseContext::new(content.to_owned(), path);
-		let events = crate::Events::parse(content);
-		Self::parse_from_events(&events, &ctx)
+impl TitleLine {
+	fn of(issue: &Issue) -> Self {
+		Self {
+			state: issue.contents.state.clone(),
+			labels: issue.contents.labels.clone(),
+			title: issue.contents.title.clone(),
+			marker: IssueMarker::from(&issue.identity),
+		}
 	}
 
-	/// Parse a VirtualIssue from a cmark event stream.
-	///
-	/// Expects: `Start(List) > Start(Item) > ... > End(Item) > End(List)`
-	/// The item contains: CheckBox, title text, InlineHtml marker, body events,
-	/// comment markers (Html), blocker heading+list, child issue lists.
-	fn parse_from_events(events: &[crate::OwnedEvent], ctx: &ParseContext) -> Result<Self, ParseError> {
-		Self::parse_from_events_inner(events, ctx, false)
+	/// Render via cmark as a standalone list item (depth 0; keeps its trailing newline).
+	fn encode(&self) -> String {
+		use crate::{OwnedEvent, OwnedTag, OwnedTagEnd};
+		let labels_part = if self.labels.is_empty() { String::new() } else { format!("({}) ", self.labels.join(", ")) };
+		crate::Events::from(vec![
+			OwnedEvent::Start(OwnedTag::List(None)),
+			OwnedEvent::Start(OwnedTag::Item),
+			OwnedEvent::CheckBox(self.state.to_checkbox_contents()),
+			OwnedEvent::Text(format!("{labels_part}{} ", self.title)),
+			OwnedEvent::InlineHtml(format!("<!-- {} -->", self.marker.encode())),
+			OwnedEvent::End(OwnedTagEnd::Item),
+			OwnedEvent::End(OwnedTagEnd::List(false)),
+		])
+		.into()
 	}
 
-	fn parse_from_events_inner(events: &[crate::OwnedEvent], ctx: &ParseContext, default_pending: bool) -> Result<Self, ParseError> {
-		use super::{OwnedEvent, OwnedTag, OwnedTagEnd};
+	/// Parse the title line from an item event stream. Returns the parsed line and the
+	/// position of the first body event inside the item.
+	fn decode(events: &[crate::OwnedEvent], ctx: &ParseContext, default_pending: bool) -> Result<(Self, usize), ParseError> {
+		use crate::{OwnedEvent, OwnedTag};
 
 		let mut pos = 0;
 
@@ -1119,11 +1110,110 @@ impl VirtualIssue {
 			(vec![], title_text.to_string())
 		};
 
-		let selector = identity_info.selector(&title);
+		Ok((
+			Self {
+				state: close_state,
+				labels,
+				title,
+				marker: identity_info,
+			},
+			pos,
+		))
+	}
+}
 
-		// --- Walk remaining events inside this Item to collect body, comments, blockers, children ---
-		let mut comments: Vec<Comment> = Vec::new();
+/// Typed spans produced by the segmenter for one issue item.
+struct ItemSegments {
+	/// Body span first (identity `Body`), then any additional comment spans.
+	comments: Vec<(CommentIdentity, Vec<crate::OwnedEvent>)>,
+	blocker_events: Vec<crate::OwnedEvent>,
+	/// Child item slices (each already wrapped in a List), with their default-pending flag.
+	child_slices: Vec<(Vec<crate::OwnedEvent>, bool)>,
+	select_blockers: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, derive_new::new)]
+pub struct VirtualIssue {
+	pub selector: IssueSelector,
+	pub contents: IssueContents,
+	pub children: IssueChildren<Self>,
+}
+impl VirtualIssue {
+	/// Parse virtual representation (markdown with full tree) into a VirtualIssue.
+	///
+	/// Unlike `Issue::parse_virtual`, this doesn't need a `HollowIssue` - it purely parses content.
+	/// Use `Issue::from_combined` to merge with identity info from a `HollowIssue`.
+	pub fn parse(content: &str, path: PathBuf) -> Result<Self, ParseError> {
+		let ctx = ParseContext::new(content.to_owned(), path);
+		let events = crate::Events::parse(content);
+		Self::parse_from_events(&events, &ctx)
+	}
+
+	/// Parse a VirtualIssue from a cmark event stream.
+	///
+	/// Expects: `Start(List) > Start(Item) > ... > End(Item) > End(List)`
+	/// The item contains: CheckBox, title text, InlineHtml marker, body events,
+	/// comment markers (Html), blocker heading+list, child issue lists.
+	fn parse_from_events(events: &[crate::OwnedEvent], ctx: &ParseContext) -> Result<Self, ParseError> {
+		Self::parse_from_events_inner(events, ctx, false)
+	}
+
+	fn parse_from_events_inner(events: &[crate::OwnedEvent], ctx: &ParseContext, default_pending: bool) -> Result<Self, ParseError> {
+		let (title, pos) = TitleLine::decode(events, ctx, default_pending)?;
+		let selector = title.marker.selector(&title.title);
+
+		let seg = Self::segment_item(events, pos, ctx)?;
+
+		let comments: Vec<Comment> = seg
+			.comments
+			.into_iter()
+			.map(|(identity, evs)| Comment {
+				identity,
+				body: preserve_paragraph_spacing(wrap_inline_in_paragraphs(evs)).into(),
+			})
+			.collect();
+
 		let mut children = HashMap::new();
+		for (child_events, children_default_pending) in seg.child_slices {
+			let child = Self::parse_from_events_inner(&child_events, ctx, children_default_pending)?;
+			children.insert(child.selector, child);
+		}
+
+		let blockers = if seg.blocker_events.is_empty() {
+			Blockers::default()
+		} else {
+			let blocker_text: String = crate::Events::from(seg.blocker_events).into();
+			Blockers::parse(&blocker_text)
+		};
+
+		Ok(VirtualIssue {
+			selector,
+			contents: IssueContents {
+				title: title.title,
+				labels: title.labels,
+				state: title.state,
+				comments: comments.into(),
+				blockers: {
+					let mut seq = blockers;
+					if seg.select_blockers {
+						seq.set_state = Some(crate::BlockerSetState::Pending);
+					}
+					seq
+				},
+			},
+			children,
+		})
+	}
+
+	/// Segmenter: walk one item's events (from `pos`, just past the title) into typed spans —
+	/// body/comment spans, blocker events, and child item slices. All `!c`/`!s` tight-vs-loose
+	/// quirks and omitted-marker skipping live only here. The blocker span closes on `Rule` or
+	/// the first checkbox list.
+	fn segment_item(events: &[crate::OwnedEvent], mut pos: usize, ctx: &ParseContext) -> Result<ItemSegments, ParseError> {
+		use super::{OwnedEvent, OwnedTag, OwnedTagEnd};
+
+		let mut comment_spans: Vec<(CommentIdentity, Vec<OwnedEvent>)> = Vec::new();
+		let mut child_slices: Vec<(Vec<OwnedEvent>, bool)> = Vec::new();
 		let mut body_events: Vec<OwnedEvent> = Vec::new();
 		let mut current_comment_events: Vec<OwnedEvent> = Vec::new();
 		let mut current_comment_meta: Option<CommentIdentity> = None;
@@ -1133,24 +1223,18 @@ impl VirtualIssue {
 		let mut blocker_list_consumed = false;
 		let mut select_blockers = false;
 
-		// Helper: flush current body/comment events into the comments list.
-		// Events are wrapped in paragraphs so they match the structure produced
-		// by standalone parsing (e.g., remote body from GitHub).
+		// Flush the current body/comment accumulation into a raw span (identity + events).
+		// Per-primitive assembly (paragraph wrapping) happens in the caller.
 		let flush = |in_body: &mut bool,
 		             current_comment_meta: &mut Option<CommentIdentity>,
 		             body_events: &mut Vec<OwnedEvent>,
 		             current_comment_events: &mut Vec<OwnedEvent>,
-		             comments: &mut Vec<Comment>| {
+		             comment_spans: &mut Vec<(CommentIdentity, Vec<OwnedEvent>)>| {
 			if *in_body {
 				*in_body = false;
-				let events = preserve_paragraph_spacing(wrap_inline_in_paragraphs(std::mem::take(body_events)));
-				comments.push(Comment {
-					identity: CommentIdentity::Body,
-					body: events.into(),
-				});
+				comment_spans.push((CommentIdentity::Body, std::mem::take(body_events)));
 			} else if let Some(identity) = current_comment_meta.take() {
-				let events = preserve_paragraph_spacing(wrap_inline_in_paragraphs(std::mem::take(current_comment_events)));
-				comments.push(Comment { identity, body: events.into() });
+				comment_spans.push((identity, std::mem::take(current_comment_events)));
 			}
 		};
 
@@ -1194,13 +1278,13 @@ impl VirtualIssue {
 						let inner = trimmed.strip_prefix("<!--").unwrap().strip_suffix("-->").unwrap().trim();
 
 						if inner == "new comment" || inner.eq_ignore_ascii_case("!c") {
-							flush(&mut in_body, &mut current_comment_meta, &mut body_events, &mut current_comment_events, &mut comments);
+							flush(&mut in_body, &mut current_comment_meta, &mut body_events, &mut current_comment_events, &mut comment_spans);
 							current_comment_meta = Some(CommentIdentity::Pending);
 							pos += 1;
 							continue;
 						}
 						if inner.contains("#issuecomment-") {
-							flush(&mut in_body, &mut current_comment_meta, &mut body_events, &mut current_comment_events, &mut comments);
+							flush(&mut in_body, &mut current_comment_meta, &mut body_events, &mut current_comment_events, &mut comment_spans);
 							current_comment_meta = Some(match Marker::decode(trimmed) {
 								Some(Marker::Comment { user, id, .. }) => CommentIdentity::Created { user, id },
 								_ => CommentIdentity::Pending,
@@ -1233,7 +1317,7 @@ impl VirtualIssue {
 					if text == "!s" {
 						select_blockers = true;
 					} else {
-						flush(&mut in_body, &mut current_comment_meta, &mut body_events, &mut current_comment_events, &mut comments);
+						flush(&mut in_body, &mut current_comment_meta, &mut body_events, &mut current_comment_events, &mut comment_spans);
 						current_comment_meta = Some(CommentIdentity::Pending);
 					}
 					pos += 3; // skip Start(Paragraph), Text, End(Paragraph)
@@ -1262,7 +1346,7 @@ impl VirtualIssue {
 					if t.trim().eq_ignore_ascii_case("!s") {
 						select_blockers = true;
 					} else {
-						flush(&mut in_body, &mut current_comment_meta, &mut body_events, &mut current_comment_events, &mut comments);
+						flush(&mut in_body, &mut current_comment_meta, &mut body_events, &mut current_comment_events, &mut comment_spans);
 						current_comment_meta = Some(CommentIdentity::Pending);
 					}
 					pos += 1;
@@ -1299,7 +1383,7 @@ impl VirtualIssue {
 						if has_select_suffix {
 							select_blockers = true;
 						}
-						flush(&mut in_body, &mut current_comment_meta, &mut body_events, &mut current_comment_events, &mut comments);
+						flush(&mut in_body, &mut current_comment_meta, &mut body_events, &mut current_comment_events, &mut comment_spans);
 						in_blockers = true;
 					} else {
 						// Not a blockers heading, treat as body/comment content
@@ -1330,7 +1414,7 @@ impl VirtualIssue {
 						let list_events = &events[pos..list_end];
 
 						// Flush body/comment before children
-						flush(&mut in_body, &mut current_comment_meta, &mut body_events, &mut current_comment_events, &mut comments);
+						flush(&mut in_body, &mut current_comment_meta, &mut body_events, &mut current_comment_events, &mut comment_spans);
 
 						// Walk items within this list
 						let mut inner_pos = 1; // skip Start(List)
@@ -1345,8 +1429,7 @@ impl VirtualIssue {
 								child_events.extend(list_events[item_start..item_end].iter().cloned());
 								child_events.push(OwnedEvent::End(OwnedTagEnd::List(false)));
 
-								let child = Self::parse_from_events_inner(&child_events, ctx, children_default_pending)?;
-								children.insert(child.selector, child);
+								child_slices.push((child_events, children_default_pending));
 
 								inner_pos = item_end;
 							} else {
@@ -1427,34 +1510,13 @@ impl VirtualIssue {
 			}
 		}
 
-		// Flush final body/comment
-		flush(&mut in_body, &mut current_comment_meta, &mut body_events, &mut current_comment_events, &mut comments);
+		flush(&mut in_body, &mut current_comment_meta, &mut body_events, &mut current_comment_events, &mut comment_spans);
 
-		// Parse blockers from collected events
-		let blockers = if blocker_events.is_empty() {
-			Blockers::default()
-		} else {
-			// Render blocker events to string and parse with Blockers::parse
-			let blocker_text: String = crate::Events::from(blocker_events).into();
-			Blockers::parse(&blocker_text)
-		};
-
-		Ok(VirtualIssue {
-			selector,
-			contents: IssueContents {
-				title,
-				labels,
-				state: close_state,
-				comments: comments.into(),
-				blockers: {
-					let mut seq = blockers;
-					if select_blockers {
-						seq.set_state = Some(crate::BlockerSetState::Pending);
-					}
-					seq
-				},
-			},
-			children,
+		Ok(ItemSegments {
+			comments: comment_spans,
+			blocker_events,
+			child_slices,
+			select_blockers,
 		})
 	}
 
