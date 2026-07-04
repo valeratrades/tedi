@@ -6,7 +6,7 @@
 
 use tedi_md::indent_into;
 
-use super::{Events, Issue, IssueLink, IssueMarker, OwnedEvent, OwnedTag, OwnedTagEnd};
+use crate::{Events, Issue, IssueLink, IssueMarker, OwnedEvent, OwnedTag, OwnedTagEnd};
 
 /// A parsed milestone document: a sequence of top-level sections.
 pub struct MilestoneDoc {
@@ -124,10 +124,10 @@ pub fn serialize_blockers_view(issue: &Issue) -> String {
 }
 /// Parse blockers from an embedded issue section in milestone content.
 /// The section is: title line, then optionally a `# Blockers` header + blocker lines.
-pub fn parse_blockers_from_embedded(section: &str) -> super::Blockers {
+pub fn parse_blockers_from_embedded(section: &str) -> crate::Blockers {
 	let lines: Vec<&str> = section.lines().collect();
 	if lines.len() < 2 {
-		return super::Blockers::default();
+		return crate::Blockers::default();
 	}
 
 	// Find the blockers header (at one level of indent — tab or spaces)
@@ -140,7 +140,7 @@ pub fn parse_blockers_from_embedded(section: &str) -> super::Blockers {
 			Some(before) => (before.trim_end(), true),
 			None => (content, false),
 		};
-		if matches!(super::Marker::decode(effective), Some(super::Marker::BlockersSection(_))) {
+		if matches!(crate::Marker::decode(effective), Some(crate::Marker::BlockersSection(_))) {
 			blockers_start = Some(idx + 1);
 			if has_select {
 				select_blockers = true;
@@ -154,7 +154,7 @@ pub fn parse_blockers_from_embedded(section: &str) -> super::Blockers {
 	}
 
 	let Some(start) = blockers_start else {
-		return super::Blockers::default();
+		return crate::Blockers::default();
 	};
 
 	// Collect blocker lines (strip one level of indent — tab or 2 spaces)
@@ -164,9 +164,9 @@ pub fn parse_blockers_from_embedded(section: &str) -> super::Blockers {
 		.map(|l| l.strip_prefix('\t').or_else(|| l.strip_prefix("  ")).unwrap_or(l).to_string())
 		.collect();
 
-	let mut seq = super::Blockers::parse(&blocker_lines.join("\n"));
+	let mut seq = crate::Blockers::parse(&blocker_lines.join("\n"));
 	if select_blockers {
-		seq.set_state = Some(super::BlockerSetState::Pending);
+		seq.set_state = Some(crate::BlockerSetState::Pending);
 	}
 	seq
 }
@@ -219,7 +219,7 @@ struct MilestoneItem {
 /// Semantic interpretation of a list item's inline text.
 enum ItemContent {
 	/// A bare issue reference (URL or shorthand).
-	Ref(super::IssueRef),
+	Ref(crate::IssueRef),
 	/// Embedded issue with title + marker: `Title <!-- @user url -->`
 	EmbeddedIssue { prefix_events: Vec<OwnedEvent>, marker: IssueMarker },
 	/// Plain text (category headers like `discretionary_engine`, `valeratrades/tedi`, or anything else).
@@ -420,7 +420,7 @@ fn classify_inline_events(events: Vec<OwnedEvent>) -> ItemContent {
 	// Case 2: Single word, no spaces → might be shorthand ref or bare URL
 	if !trimmed.is_empty()
 		&& !trimmed.contains(' ')
-		&& let Some(issue_ref) = super::IssueRef::parse_word(trimmed)
+		&& let Some(issue_ref) = crate::IssueRef::parse_word(trimmed)
 	{
 		return ItemContent::Ref(issue_ref);
 	}
@@ -530,7 +530,7 @@ fn collapse_section(section: &mut MilestoneSection) {
 				_ => None,
 			};
 			if let Some(link) = link {
-				item.content = ItemContent::Ref(super::IssueRef::Url(link));
+				item.content = ItemContent::Ref(crate::IssueRef::Url(link));
 				item.checkbox = None;
 				item.children.clear();
 			}
@@ -787,7 +787,7 @@ mod tests {
 
 	#[test]
 	fn test_serialize_blockers_view() {
-		use super::super::{Blockers, IssueContents, IssueIdentity, IssueTimestamps};
+		use crate::{Blockers, IssueContents, IssueIdentity, IssueTimestamps};
 
 		let link = IssueLink::parse("https://github.com/owner/repo/issues/42").unwrap();
 		let identity = IssueIdentity::new_linked(None, None, link, IssueTimestamps::default());
@@ -819,7 +819,7 @@ mod tests {
 
 	#[test]
 	fn test_serialize_blockers_view_no_blockers() {
-		use super::super::{IssueContents, IssueIdentity, IssueTimestamps};
+		use crate::{IssueContents, IssueIdentity, IssueTimestamps};
 
 		let link = IssueLink::parse("https://github.com/owner/repo/issues/42").unwrap();
 		let identity = IssueIdentity::new_linked(None, None, link, IssueTimestamps::default());
@@ -836,7 +836,7 @@ mod tests {
 
 	#[test]
 	fn test_serialize_blockers_view_with_labels() {
-		use super::super::{Blockers, IssueContents, IssueIdentity, IssueTimestamps};
+		use crate::{Blockers, IssueContents, IssueIdentity, IssueTimestamps};
 
 		let link = IssueLink::parse("https://github.com/owner/repo/issues/42").unwrap();
 		let identity = IssueIdentity::new_linked(None, None, link, IssueTimestamps::default());
@@ -1247,12 +1247,12 @@ mod tests {
 			let mut file_content = initial.to_string();
 			for cycle in 1..=5 {
 				// Step 1: Parse local issue file
-				let vi = super::super::VirtualIssue::parse(&file_content, PathBuf::from("/tmp/test.md")).unwrap();
+				let vi = crate::VirtualIssue::parse(&file_content, PathBuf::from("/tmp/test.md")).unwrap();
 
 				// Step 2: Build Issue and serialize_blockers_view
-				let link = super::super::IssueLink::parse("https://github.com/o/r/issues/42").unwrap();
-				let identity = super::super::IssueIdentity::new_linked(None, None, link, super::super::IssueTimestamps::default());
-				let issue = super::super::Issue {
+				let link = crate::IssueLink::parse("https://github.com/o/r/issues/42").unwrap();
+				let identity = crate::IssueIdentity::new_linked(None, None, link, crate::IssueTimestamps::default());
+				let issue = crate::Issue {
 					identity,
 					contents: vi.contents.clone(),
 					children: std::collections::HashMap::new(),
@@ -1275,9 +1275,9 @@ mod tests {
 
 				// Step 6: Serialize to filesystem (new local file content)
 				// Rebuild as Issue for serialize_filesystem
-				let link2 = super::super::IssueLink::parse("https://github.com/o/r/issues/42").unwrap();
-				let identity2 = super::super::IssueIdentity::new_linked(None, None, link2, super::super::IssueTimestamps::default());
-				let new_issue = super::super::Issue {
+				let link2 = crate::IssueLink::parse("https://github.com/o/r/issues/42").unwrap();
+				let identity2 = crate::IssueIdentity::new_linked(None, None, link2, crate::IssueTimestamps::default());
+				let new_issue = crate::Issue {
 					identity: identity2,
 					contents: new_vi.contents,
 					children: std::collections::HashMap::new(),

@@ -21,9 +21,10 @@
 use std::collections::HashMap;
 
 use jiff::Timestamp;
-use tedi::{Issue, IssueSelector};
 use thiserror::Error;
 use v_utils::macros::wrap_err;
+
+use crate::{Issue, IssueSelector};
 
 /// Extension trait for merging Issues.
 pub trait Merge {
@@ -167,9 +168,8 @@ fn merge_children(self_children: &mut HashMap<IssueSelector, Issue>, other_child
 
 #[cfg(test)]
 mod tests {
-	use tedi::{IssueContents, IssueIdentity, IssueIndex, IssueLink, IssueTimestamps, RepoInfo};
-
 	use super::*;
+	use crate::{IssueContents, IssueIdentity, IssueIndex, IssueLink, IssueTimestamps, RepoInfo};
 
 	fn test_repo() -> RepoInfo {
 		RepoInfo::new("test", "repo")

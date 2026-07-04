@@ -3,13 +3,13 @@
 use std::path::PathBuf;
 
 use regex::Regex;
-use tedi::{
-	IssueIndex, IssueSelector, RepoInfo, github,
-	local::{FsReader, Local, LocalError, LocalIssueSource, LocalPath, LocalPathError, LocalPathErrorKind, ReaderError},
-};
 use v_utils::{macros::wrap_err, utils::exit_on_error};
 
 use super::command::ProjectType;
+use crate::{
+	IssueIndex, IssueSelector, RepoInfo, github,
+	local::{FsReader, Local, LocalError, LocalIssueSource, LocalPath, LocalPathError, LocalPathErrorKind, ReaderError},
+};
 
 #[wrap_err]
 #[derive(Debug, thiserror::Error)]

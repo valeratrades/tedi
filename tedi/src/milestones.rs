@@ -1,7 +1,7 @@
 use clap::Args;
 use jiff::Timestamp;
 use reqwest::Client;
-use tedi::{
+use tedi_ops::{
 	Issue, IssueLink, LazyIssue, MilestoneDoc,
 	local::{Consensus, FsReader, Local, LocalFs, LocalIssueSource, MilestoneBlockerCache},
 	parse_blockers_from_embedded,
@@ -36,7 +36,7 @@ pub struct MilestonesArgs {
 pub static HEALTHCHECK_REL_PATH: &str = "healthcheck.status";
 pub static SPRINT_HEADER_REL_PATH: &str = "sprint_header.md";
 
-pub async fn milestones_command(settings: &LiveSettings, args: MilestonesArgs, mock: Option<crate::MockType>) -> Result<()> {
+pub async fn milestones_command(settings: &LiveSettings, args: MilestonesArgs, mock: Option<tedi_ops::MockType>) -> Result<()> {
 	match args.command {
 		MilestonesCommands::Get { tf } => {
 			let retrieved_milestones = request_milestones(settings).await?;
@@ -296,7 +296,7 @@ async fn edit_milestone(settings: &LiveSettings, tf: Timeframe, offline: bool, m
 	eprintln!("[milestone] tmp_path: {}", tmp_path.display());
 
 	// Open in editor
-	crate::utils::open_file(&tmp_path, None).await?;
+	tedi_ops::utils::open_file(&tmp_path, None).await?;
 
 	// Read back
 	let edited_content = fs::read_to_string(&tmp_path)?;
@@ -309,7 +309,7 @@ async fn edit_milestone(settings: &LiveSettings, tf: Timeframe, offline: bool, m
 
 	// Sync blocker changes back to individual issue files
 	if let Err(e) = sync_blocker_changes(&edited_content, offline).await {
-		crate::utils::persist_rejected_changes(&edited_content);
+		tedi_ops::utils::persist_rejected_changes(&edited_content);
 		eprintln!("Your changes were saved to /tmp/tedi/rejected-changes.md — you can recover them from there.");
 		return Err(e);
 	}
@@ -501,7 +501,7 @@ async fn expand_and_refresh(content: &str) -> Result<String> {
 
 /// Parse blocker changes from edited milestone content and sync back to issue files.
 async fn sync_blocker_changes(content: &str, offline: bool) -> Result<()> {
-	use crate::open_interactions::{Modifier, SyncOptions, modify_and_sync_issue};
+	use tedi_ops::open_interactions::{Modifier, SyncOptions, modify_and_sync_issue};
 
 	let doc = MilestoneDoc::parse(content);
 
@@ -565,8 +565,8 @@ async fn sync_milestone_assignments(settings: &LiveSettings, milestone_number: u
 		return Ok(());
 	}
 
-	let client = tedi::github::client::get()?;
-	let repo = tedi::RepoInfo::new(&ms_owner, &ms_repo);
+	let client = tedi_adapters::github::client::get()?;
+	let repo = tedi_core::RepoInfo::new(&ms_owner, &ms_repo);
 
 	let mut futs = Vec::new();
 	for num in &to_assign {

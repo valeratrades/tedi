@@ -1,29 +1,14 @@
-#![feature(try_blocks)]
-#![feature(error_generic_member_access)]
 #![allow(clippy::len_zero)]
 #![allow(clippy::doc_lazy_continuation)]
-mod blocker_interactions;
-pub mod config;
+mod config;
 mod milestones;
-mod mock_github;
-mod open_interactions;
 mod shell_init;
-pub mod utils;
 use std::{sync::Arc, time::Duration};
 
-use clap::{Parser, ValueEnum};
+use clap::Parser;
+use tedi_ops::MockType;
 use v_utils::utils::exit_on_error;
 
-/// Mock behavior type for testing.
-#[derive(Clone, Copy, Debug, Default, ValueEnum)]
-pub enum MockType {
-	/// Standard mock - uses mock Github client but normal editor flow.
-	#[default]
-	#[value(name = "")]
-	Standard,
-	/// Ghost edit - skip editor and pretend edit was made.
-	GhostEdit,
-}
 #[derive(clap::Parser)]
 #[command(author, version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("GIT_HASH"), ")"), about, long_about = None)]
 struct Cli {
@@ -55,7 +40,7 @@ enum Commands {
 	/// Shell aliases and hooks. Usage: `todos init <shell> | source`
 	Init(shell_init::ShellInitArgs),
 	/// Blockers tree (use --integrated flag for issue files)
-	Blocker(blocker_interactions::BlockerArgs),
+	Blocker(tedi_ops::blocker_interactions::BlockerArgs),
 	/// Clockify time tracking
 	Clockify(tedi_adapters::clockify::ClockifyArgs),
 	/// Performance evaluation with screenshots
@@ -63,7 +48,7 @@ enum Commands {
 	/// Monitor screenshots: watch daemon and annotation
 	Monitors(tedi_eval::watch_monitors::MonitorsArgs),
 	/// Open a Github issue in $EDITOR
-	Open(open_interactions::OpenArgs),
+	Open(tedi_ops::open_interactions::OpenArgs),
 }
 #[tokio::main]
 async fn main() {
@@ -75,11 +60,11 @@ async fn main() {
 	// Commands that may need GitHub client (always construct it - offline only skips network calls)
 	let has_github_commands = matches!(cli.command, Commands::Open(_) | Commands::Blocker(_) | Commands::Milestones(_));
 
-	let github_client: Option<tedi::github::BoxedGithubClient> = if cli.mock.is_some() {
-		Some(Arc::new(mock_github::MockGithubClient::new("mock_user")))
+	let github_client: Option<tedi_adapters::github::BoxedGithubClient> = if cli.mock.is_some() {
+		Some(Arc::new(tedi_ops::mock_github::MockGithubClient::new("mock_user")))
 	} else if has_github_commands {
 		let config = exit_on_error(settings.config());
-		let client = tedi::github::RealGithubClient::new(config.github_token.clone());
+		let client = tedi_adapters::github::RealGithubClient::new(config.github_token.clone());
 		Some(Arc::new(client))
 	} else {
 		None
@@ -92,19 +77,19 @@ async fn main() {
 				tracing::info!("Authenticated as: {user}");
 				let cache_path = v_utils::xdg_cache_file!("authenticated_user.txt");
 				let _ = std::fs::write(&cache_path, &user);
-				tedi::current_user::set(user);
+				tedi_ops::current_user::set(user);
 			}
 		}
-		tedi::github::client::set(client.clone());
+		tedi_adapters::github::client::set(client.clone());
 	}
 	// Load cached user if not fetched from network
-	if tedi::current_user::get().is_none() {
+	if tedi_ops::current_user::get().is_none() {
 		let cache_path = v_utils::xdg_cache_file!("authenticated_user.txt");
 		if let Ok(user) = std::fs::read_to_string(&cache_path) {
 			let user = user.trim().to_string();
 			if !user.is_empty() {
 				tracing::info!("Loaded cached user: {user}");
-				tedi::current_user::set(user);
+				tedi_ops::current_user::set(user);
 			}
 		}
 	}
@@ -122,11 +107,11 @@ async fn main() {
 			shell_init::output(&*settings, args);
 			Ok(())
 		}
-		Commands::Blocker(args) => blocker_interactions::main(args, cli.offline, settings.clone()).await,
+		Commands::Blocker(args) => tedi_ops::blocker_interactions::main(args, cli.offline, exit_on_error(settings.config()).yes).await,
 		Commands::Clockify(args) => tedi_adapters::clockify::main(exit_on_error(settings.config()).yes, args).await,
 		Commands::PerfEval(args) => tedi_eval::perf_eval::main(args).await,
 		Commands::Monitors(args) => tedi_eval::watch_monitors::main(args).await,
-		Commands::Open(args) => open_interactions::open_command(&*settings, args, cli.offline, cli.mock).await,
+		Commands::Open(args) => tedi_ops::open_interactions::open_command(args, cli.offline, cli.mock).await,
 	});
 }
 

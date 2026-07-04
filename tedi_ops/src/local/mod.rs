@@ -114,7 +114,7 @@ impl Local {
 			// Either thread_local is set (in-process test code) or we're a subprocess of a test
 			Self::issues_dir().parent().unwrap().parent().unwrap().parent().unwrap().to_path_buf()
 		} else {
-			PathBuf::from("/tmp").join(env!("CARGO_PKG_NAME"))
+			PathBuf::from("/tmp").join("tedi")
 		};
 		let index_path = issue.full_index().to_string();
 		let vpath = base.join(format!("{index_path}.md"));
@@ -132,7 +132,7 @@ impl Local {
 		if let Some(override_dir) = crate::mocks::MockIssuesDir::get() {
 			return override_dir;
 		}
-		v_utils::xdg_data_dir!("issues")
+		crate::paths::data_dir("issues")
 	}
 
 	/// Get the project directory path (where .meta.json lives).

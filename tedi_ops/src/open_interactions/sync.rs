@@ -22,7 +22,12 @@
 //! sync always uses `Normal`. This prevents accidental data loss.
 
 use color_eyre::eyre::{Result, bail};
-use tedi::{
+use tracing::instrument;
+pub use types::*;
+use v_utils::elog;
+
+use super::merge::Merge;
+use crate::{
 	HollowIssue, Issue, IssueIndex, IssueLink, IssueSelector, LazyIssue, RepoInfo, VirtualIssue,
 	local::{
 		Consensus, FsReader, Local, LocalFs, LocalIssueSource, LocalPath,
@@ -32,11 +37,6 @@ use tedi::{
 	remote::{Remote, RemoteSource},
 	sink::Sink,
 };
-use tracing::instrument;
-pub use types::*;
-use v_utils::elog;
-
-use super::merge::Merge;
 
 /// Modify a local issue, then sync changes back to Github.
 ///
@@ -71,7 +71,7 @@ pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Mo
 			return Ok(result);
 		}
 		// Record this issue as the last modified
-		let cache_path = v_utils::xdg_cache_file!("last_modified_issue");
+		let cache_path = crate::paths::cache_file("last_modified_issue");
 		std::fs::write(&cache_path, issue.full_index().to_string()).ok();
 		result
 	};
@@ -124,7 +124,7 @@ pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Mo
 #[derive(Debug, miette::Diagnostic, thiserror::Error)]
 #[error(transparent)]
 #[diagnostic(help("Your changes were saved to /tmp/tedi/rejected-changes.md — you can recover them from there."))]
-struct RejectedEdit(#[from] tedi::ParseError);
+struct RejectedEdit(#[from] crate::ParseError);
 
 mod core {
 	use super::*;
@@ -316,7 +316,7 @@ mod types {
 		/// Replace the issue's entire blocker sequence.
 		/// Used by milestone editing to sync blocker changes back to individual issues.
 		BlockerWrite {
-			blockers: tedi::Blockers,
+			blockers: crate::Blockers,
 		},
 		/// Mock modifier that does nothing but reports file as modified. For testing.
 		MockGhostEdit,

@@ -24,9 +24,9 @@
 /// Global CLI flags that must appear before the subcommand.
 const GLOBAL_FLAGS: &[&str] = &["--offline", "--mock", "-v", "--verbose", "-q", "--quiet"];
 /// Environment variable names derived from package name
-const ENV_GITHUB_TOKEN: &str = concat!(env!("CARGO_PKG_NAME"), "__GITHUB_TOKEN");
-const ENV_MOCK_STATE: &str = concat!(env!("CARGO_PKG_NAME"), "_MOCK_STATE");
-const ENV_MOCK_PIPE: &str = concat!(env!("CARGO_PKG_NAME"), "_MOCK_PIPE");
+const ENV_GITHUB_TOKEN: &str = concat!("tedi", "__GITHUB_TOKEN");
+const ENV_MOCK_STATE: &str = concat!("tedi", "_MOCK_STATE");
+const ENV_MOCK_PIPE: &str = concat!("tedi", "_MOCK_PIPE");
 
 /// Base timestamp: 2001-09-11 12:00:00 UTC (midday).
 const BASE_TIMESTAMP_SECS: i64 = 1000209600;
@@ -79,14 +79,14 @@ impl TestContext {
 	/// when using this, it's very easy to mismatch the input from what the latest version of actual Issue parsing/rendering would have had encoded. Prefer using Issue-based methods for setting state, like [local](Self::local), [remote](Self::remote), [context](Self::consensus)
 	pub fn build_with_preexisting_state_unsafe(fixture_str: &str) -> Self {
 		let fixture = Fixture::parse(fixture_str);
-		let xdg = Xdg::new(fixture.write_to_tempdir(), env!("CARGO_PKG_NAME"));
+		let xdg = Xdg::new(fixture.write_to_tempdir(), "tedi");
 
 		let mock_state_path = xdg.inner.root.join("mock_state.json");
 		let pipe_path = xdg.inner.create_pipe("editor_pipe");
 
 		// Set overrides so all library calls use our temp dir
-		tedi::mocks::set_issues_dir(xdg.data_dir().join("issues"));
-		tedi::current_user::set(USER.to_string());
+		tedi_ops::mocks::set_issues_dir(xdg.data_dir().join("issues"));
+		tedi_ops::current_user::set(USER.to_string());
 
 		let ctx = Self {
 			xdg,
@@ -138,7 +138,7 @@ impl TestContext {
 	}
 
 	/// Create an OpenBuilder for running the `open` command with a Github URL.
-	pub fn open_url(&self, repo_info: tedi::RepoInfo, number: u64) -> OpenBuilder<'_> {
+	pub fn open_url(&self, repo_info: tedi_ops::RepoInfo, number: u64) -> OpenBuilder<'_> {
 		let url = format!("https://github.com/{}/{}/issues/{number}", repo_info.owner(), repo_info.repo());
 		OpenBuilder {
 			ctx: self,
@@ -180,7 +180,7 @@ impl TestContext {
 	/// Panics if same (owner, repo, number) is submitted twice.
 	///
 	/// If `seed` is provided, timestamps are generated from it for the mock response.
-	pub fn remote(&self, issue: &tedi::VirtualIssue, seed: Option<Seed>) -> Issue {
+	pub fn remote(&self, issue: &tedi_ops::VirtualIssue, seed: Option<Seed>) -> Issue {
 		let issue = with_timestamps(issue, seed, self.is_virtual_repo);
 		let (owner, repo, number) = extract_issue_coords(&issue);
 
@@ -190,7 +190,14 @@ impl TestContext {
 				!state.remote_issue_ids.contains(&(owner.clone(), repo.clone(), number)),
 				"remote() called twice for same issue: {owner}/{repo}#{number}"
 			);
-			add_issue_recursive(state, tedi::RepoInfo::new(&owner, &repo), number, None, &issue, issue.identity.as_linked().map(|m| &m.timestamps));
+			add_issue_recursive(
+				state,
+				tedi_ops::RepoInfo::new(&owner, &repo),
+				number,
+				None,
+				&issue,
+				issue.identity.as_linked().map(|m| &m.timestamps),
+			);
 		});
 
 		self.rebuild_mock_state();
@@ -200,7 +207,7 @@ impl TestContext {
 	/// Write issue to local filesystem (uncommitted). Uses defaults: owner="o", repo="r", user="mock_user".
 	///
 	/// If `seed` is provided, timestamps are generated from it and written to `.meta.json`.
-	pub async fn local(&self, issue: &tedi::VirtualIssue, seed: Option<Seed>) -> Issue {
+	pub async fn local(&self, issue: &tedi_ops::VirtualIssue, seed: Option<Seed>) -> Issue {
 		let mut issue = with_timestamps(issue, seed, self.is_virtual_repo);
 		let (owner, repo, number) = extract_issue_coords(&issue);
 		with_state(self, |state| assert!(state.local_issues.insert((owner, repo, number)), "local() called twice for same issue"));
@@ -212,7 +219,7 @@ impl TestContext {
 	/// Panics if same (owner, repo, number) is submitted twice.
 	///
 	/// If `seed` is provided, timestamps are generated from it and written to `.meta.json`.
-	pub async fn consensus(&self, issue: &tedi::VirtualIssue, seed: Option<Seed>) -> Issue {
+	pub async fn consensus(&self, issue: &tedi_ops::VirtualIssue, seed: Option<Seed>) -> Issue {
 		let mut issue = with_timestamps(issue, seed, self.is_virtual_repo);
 		let (owner, repo, number) = extract_issue_coords(&issue);
 		with_state(self, |state| {
@@ -229,7 +236,7 @@ impl TestContext {
 	/// Uses the thread_local mock mechanism to isolate test filesystem state.
 	/// This is preferred over `set_xdg_env` as it doesn't modify global process env vars.
 	pub(crate) fn set_issues_dir_override(&self) {
-		tedi::mocks::set_issues_dir(self.xdg.data_dir().join("issues"));
+		tedi_ops::mocks::set_issues_dir(self.xdg.data_dir().join("issues"));
 	}
 
 	async fn sink_local(&self, issue: &mut Issue, seed: Option<Seed>) {
@@ -242,7 +249,7 @@ impl TestContext {
 				user: Some(USER.to_string()),
 				timestamps,
 			};
-			Local::save_issue_meta(tedi::RepoInfo::new(&owner, &repo), number, &meta).expect("save_issue_meta failed");
+			Local::save_issue_meta(tedi_ops::RepoInfo::new(&owner, &repo), number, &meta).expect("save_issue_meta failed");
 		}
 	}
 
@@ -344,7 +351,7 @@ impl<'a> OpenBuilder<'a> {
 	}
 
 	/// Edit the file to this issue while "editor is open".
-	pub fn edit(mut self, issue: &tedi::VirtualIssue) -> Self {
+	pub fn edit(mut self, issue: &tedi_ops::VirtualIssue) -> Self {
 		self.edit_op = Some(EditOperation::FullIssue(Box::new(issue.clone())));
 		self
 	}
@@ -374,8 +381,8 @@ impl<'a> OpenBuilder<'a> {
 
 		match &self.target {
 			BuilderTarget::Issue(issue) => {
-				let issue_path = tedi::local::LocalPath::from(*issue)
-					.resolve_parent(tedi::local::FsReader)
+				let issue_path = tedi_ops::local::LocalPath::from(*issue)
+					.resolve_parent(tedi_ops::local::FsReader)
 					.expect("failed to resolve issue parent path")
 					.search()
 					.expect("failed to find issue file")
@@ -449,8 +456,8 @@ impl<'a> OpenBuilder<'a> {
 		// Then the target
 		match &self.target {
 			BuilderTarget::Issue(issue) => {
-				let issue_path = tedi::local::LocalPath::from(*issue)
-					.resolve_parent(tedi::local::FsReader)
+				let issue_path = tedi_ops::local::LocalPath::from(*issue)
+					.resolve_parent(tedi_ops::local::FsReader)
 					.expect("failed to resolve issue parent path")
 					.search()
 					.expect("failed to find issue file")
@@ -504,7 +511,7 @@ impl<'a> OpenBuilder<'a> {
 				// Edit the file while "editor is open" if requested
 				if let Some(EditOperation::FullIssue(virtual_issue)) = &edit_op {
 					let issue = with_timestamps(virtual_issue, None, is_virtual);
-					let vpath = tedi::local::Local::virtual_edit_path(&issue);
+					let vpath = tedi_ops::local::Local::virtual_edit_path(&issue);
 					let content = issue.serialize_virtual();
 					eprintln!("[test:OpenBuilder] submitting user input // writing to {vpath:?}:\n{content}");
 					std::fs::write(&vpath, &content).unwrap();
@@ -583,7 +590,7 @@ impl PausedEdit {
 pub mod are_you_sure {
 	use std::path::{Path, PathBuf};
 
-	use tedi::local::{FsReader, LocalPath};
+	use tedi_ops::local::{FsReader, LocalPath};
 
 	use super::TestContext;
 
@@ -596,33 +603,33 @@ pub mod are_you_sure {
 		/// Get the flat format path for an issue: `{number}_-_{title}.md`
 		///
 		/// **Unsafe**: bypasses proper issue addressing. Use only for filesystem tests.
-		fn flat_issue_path(&self, repo_info: tedi::RepoInfo, number: u64, title: &str) -> PathBuf;
+		fn flat_issue_path(&self, repo_info: tedi_ops::RepoInfo, number: u64, title: &str) -> PathBuf;
 
 		/// Get the directory format path for an issue: `{number}_-_{title}/__main__.md`
 		///
 		/// **Unsafe**: bypasses proper issue addressing. Use only for filesystem tests.
-		fn dir_issue_path(&self, repo_info: tedi::RepoInfo, number: u64, title: &str) -> PathBuf;
+		fn dir_issue_path(&self, repo_info: tedi_ops::RepoInfo, number: u64, title: &str) -> PathBuf;
 
 		/// Resolve an issue's actual filesystem path after it's been written.
 		///
 		/// **Unsafe**: uses filesystem search. Prefer working with Issue directly.
-		fn resolve_issue_path(&self, issue: &tedi::Issue) -> PathBuf;
+		fn resolve_issue_path(&self, issue: &tedi_ops::Issue) -> PathBuf;
 	}
 
 	impl UnsafePathExt for TestContext {
-		fn flat_issue_path(&self, repo_info: tedi::RepoInfo, number: u64, title: &str) -> PathBuf {
+		fn flat_issue_path(&self, repo_info: tedi_ops::RepoInfo, number: u64, title: &str) -> PathBuf {
 			let sanitized = title.replace(' ', "_");
 			self.xdg.data_dir().join(format!("issues/{}/{}/{number}_-_{sanitized}.md", repo_info.owner(), repo_info.repo()))
 		}
 
-		fn dir_issue_path(&self, repo_info: tedi::RepoInfo, number: u64, title: &str) -> PathBuf {
+		fn dir_issue_path(&self, repo_info: tedi_ops::RepoInfo, number: u64, title: &str) -> PathBuf {
 			let sanitized = title.replace(' ', "_");
 			self.xdg
 				.data_dir()
 				.join(format!("issues/{}/{}/{number}_-_{sanitized}/__main__.md", repo_info.owner(), repo_info.repo()))
 		}
 
-		fn resolve_issue_path(&self, issue: &tedi::Issue) -> PathBuf {
+		fn resolve_issue_path(&self, issue: &tedi_ops::Issue) -> PathBuf {
 			self.set_issues_dir_override();
 			LocalPath::from(issue).resolve_parent(FsReader).unwrap().search().unwrap().path()
 		}
@@ -656,7 +663,7 @@ use std::{
 };
 
 pub use snapshot::FixtureIssuesExt;
-use tedi::{
+use tedi_ops::{
 	Issue, IssueTimestamps,
 	local::{Consensus, IssueMeta, Local, LocalFs},
 	sink::Sink,
@@ -724,8 +731,8 @@ pub fn render_fixture(renderer: FixtureRenderer<'_>, output: &RunOutput) -> Stri
 	result
 }
 
-pub fn parse_virtual(content: &str) -> tedi::VirtualIssue {
-	tedi::VirtualIssue::parse(content, PathBuf::from("test.md")).expect("failed to parse test issue")
+pub fn parse_virtual(content: &str) -> tedi_ops::VirtualIssue {
+	tedi_ops::VirtualIssue::parse(content, PathBuf::from("test.md")).expect("failed to parse test issue")
 }
 
 /// Builder for running the `open` command with various options.
@@ -795,7 +802,7 @@ pub(crate) fn get_binary_path() -> PathBuf {
 	let mut path = std::env::current_exe().unwrap();
 	path.pop(); // Remove test binary name
 	path.pop(); // Remove 'deps'
-	path.push(env!("CARGO_PKG_NAME"));
+	path.push("tedi");
 	path
 }
 
@@ -803,7 +810,7 @@ pub(crate) fn get_binary_path() -> PathBuf {
 #[derive(Clone)]
 enum EditOperation {
 	/// Edit using a full VirtualIssue (converted to Issue at run time, writes serialize_virtual)
-	FullIssue(Box<tedi::VirtualIssue>),
+	FullIssue(Box<tedi_ops::VirtualIssue>),
 }
 
 /// Find the most recently modified .md file under the virtual edit base path.
@@ -839,10 +846,10 @@ fn find_virtual_edit_file(base: &Path) -> Option<PathBuf> {
 
 /// Convert VirtualIssue to Issue by building HollowIssue with timestamps from seed.
 /// Uses defaults: owner="o", repo="r", user="mock_user".
-pub(crate) fn with_timestamps(virtual_issue: &tedi::VirtualIssue, seed: Option<Seed>, is_virtual: bool) -> Issue {
+pub(crate) fn with_timestamps(virtual_issue: &tedi_ops::VirtualIssue, seed: Option<Seed>, is_virtual: bool) -> Issue {
 	let timestamps = seed.map(timestamps_from_seed).unwrap_or_default();
 	let hollow = build_hollow_from_virtual(virtual_issue, &timestamps);
-	let parent_idx = tedi::IssueIndex::repo_only((OWNER, REPO).into());
+	let parent_idx = tedi_ops::IssueIndex::repo_only((OWNER, REPO).into());
 	Issue::from_combined(hollow, virtual_issue.clone(), parent_idx, is_virtual).expect("test hollow must match virtual")
 }
 
@@ -896,13 +903,13 @@ where
 }
 
 /// Recursively build HollowIssue tree from VirtualIssue, setting up remote with timestamps.
-fn build_hollow_from_virtual(virtual_issue: &tedi::VirtualIssue, timestamps: &IssueTimestamps) -> tedi::HollowIssue {
+fn build_hollow_from_virtual(virtual_issue: &tedi_ops::VirtualIssue, timestamps: &IssueTimestamps) -> tedi_ops::HollowIssue {
 	let remote = match &virtual_issue.selector {
-		tedi::IssueSelector::GitId(n) => {
-			let link = tedi::IssueLink::parse(&format!("https://github.com/{OWNER}/{REPO}/issues/{n}")).unwrap();
-			Some(Box::new(tedi::LinkedIssueMeta::new(Some(USER.to_string()), link, timestamps.clone())))
+		tedi_ops::IssueSelector::GitId(n) => {
+			let link = tedi_ops::IssueLink::parse(&format!("https://github.com/{OWNER}/{REPO}/issues/{n}")).unwrap();
+			Some(Box::new(tedi_ops::LinkedIssueMeta::new(Some(USER.to_string()), link, timestamps.clone())))
 		}
-		tedi::IssueSelector::Title(_) | tedi::IssueSelector::Regex(_) => None,
+		tedi_ops::IssueSelector::Title(_) | tedi_ops::IssueSelector::Regex(_) => None,
 	};
 
 	let children = virtual_issue
@@ -914,7 +921,7 @@ fn build_hollow_from_virtual(virtual_issue: &tedi::VirtualIssue, timestamps: &Is
 		})
 		.collect();
 
-	tedi::HollowIssue::new(remote, children)
+	tedi_ops::HollowIssue::new(remote, children)
 }
 
 /// Extract owner, repo, number from an Issue's identity, with defaults.
@@ -930,7 +937,7 @@ fn extract_issue_coords(issue: &Issue) -> (String, String, u64) {
 
 /// Recursively add an issue and all its children to the mock state.
 /// Transforms library `Issue` types into mock JSON state for the test mock server.
-fn add_issue_recursive(state: &mut GitState, repo_info: tedi::RepoInfo, number: u64, parent_number: Option<u64>, issue: &Issue, timestamps: Option<&IssueTimestamps>) {
+fn add_issue_recursive(state: &mut GitState, repo_info: tedi_ops::RepoInfo, number: u64, parent_number: Option<u64>, issue: &Issue, timestamps: Option<&IssueTimestamps>) {
 	let owner = repo_info.owner();
 	let repo = repo_info.repo();
 	let key = (owner.to_string(), repo.to_string(), number);

@@ -29,7 +29,7 @@ pub struct MilestoneBlockerCache {
 }
 impl MilestoneBlockerCache {
 	fn cache_path() -> PathBuf {
-		v_utils::xdg_cache_file!("milestone_blockers.json")
+		crate::paths::cache_file("milestone_blockers.json")
 	}
 
 	/// Load cache from disk. Returns None if no cache file exists.

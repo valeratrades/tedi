@@ -3,19 +3,18 @@
 use std::path::Path;
 
 use clap::Args;
-use tedi::{
-	Issue, IssueIndex, IssueLink, LazyIssue, RepoInfo, github,
-	local::{Consensus, ExactMatchLevel, FsReader, Local, LocalFs, LocalIssueSource, LocalPath},
-	remote::RemoteSource,
-	sink::Sink,
-};
 use v_utils::prelude::*;
 
 use super::{
 	sync::{MergeMode, Modifier, Side, SyncOptions, modify_and_sync_issue},
 	touch::parse_touch_path,
 };
-use crate::{MockType, config::LiveSettings};
+use crate::{
+	Issue, IssueIndex, IssueLink, LazyIssue, MockType, RepoInfo, github,
+	local::{Consensus, ExactMatchLevel, FsReader, Local, LocalFs, LocalIssueSource, LocalPath},
+	remote::RemoteSource,
+	sink::Sink,
+};
 
 /// Open a Github issue in $EDITOR.
 ///
@@ -104,7 +103,7 @@ pub enum ProjectType {
 	offline,
 	mock = ?mock,
 ))]
-pub async fn open_command(settings: &LiveSettings, args: OpenArgs, offline: bool, mock: Option<MockType>) -> Result<()> {
+pub async fn open_command(args: OpenArgs, offline: bool, mock: Option<MockType>) -> Result<()> {
 	tracing::debug!("open_command entered, blocker={}", args.blocker);
 
 	// Helper to create the appropriate modifier based on mock type
@@ -114,7 +113,6 @@ pub async fn open_command(settings: &LiveSettings, args: OpenArgs, offline: bool
 			_ => Modifier::Editor { open_at_blocker },
 		}
 	};
-	let _ = settings; // settings still available if needed in future
 
 	// Validate and convert exact match level
 	let exact = ExactMatchLevel::try_from(args.exact).map_err(|e| eyre!(e))?;
@@ -196,7 +194,7 @@ pub async fn open_command(settings: &LiveSettings, args: OpenArgs, offline: bool
 	// Resolve issue and sync options based on mode
 	let (issue, sync_opts, effective_offline) = if args.last {
 		// Handle --last mode: open the last modified issue (recorded in cache)
-		let cache_path = v_utils::xdg_cache_file!("last_modified_issue");
+		let cache_path = crate::paths::cache_file("last_modified_issue");
 		let index_str = std::fs::read_to_string(&cache_path).map_err(|_| eyre!("No last modified issue recorded. Open an issue first."))?;
 		let index: IssueIndex = index_str.parse()?;
 		let source = LocalIssueSource::<FsReader>::build(LocalPath::new(index)).await?;
@@ -227,7 +225,7 @@ pub async fn open_command(settings: &LiveSettings, args: OpenArgs, offline: bool
 			<Issue as Sink<Consensus>>::sink(&mut issue, None).await?;
 
 			// Clean up conflict file if it exists
-			let conflict_path = tedi::local::conflict::conflict_file_path(&owner);
+			let conflict_path = crate::local::conflict::conflict_file_path(&owner);
 			if conflict_path.exists() {
 				std::fs::remove_file(&conflict_path)?;
 			}

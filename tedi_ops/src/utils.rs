@@ -6,7 +6,7 @@ use tracing::{debug, instrument};
 pub use v_utils::io::file_open::{Client as OpenClient, OpenMode, Position};
 
 /// Environment variable name for mock pipe (integration tests)
-const ENV_MOCK_PIPE: &str = concat!(env!("CARGO_PKG_NAME"), "_MOCK_PIPE");
+const ENV_MOCK_PIPE: &str = "tedi_MOCK_PIPE";
 const REJECTED_CHANGES_PATH: &str = "/tmp/tedi/rejected-changes.md";
 /// Open a file in editor.
 ///

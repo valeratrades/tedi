@@ -36,7 +36,7 @@ use crate::common::{
 /// and therefore which side "wins" the merge.
 struct DivergedBodiesFixture {
 	ctx: TestContext,
-	local: tedi::Issue,
+	local: tedi_ops::Issue,
 }
 
 impl DivergedBodiesFixture {
@@ -443,7 +443,7 @@ async fn test_closing_issue_syncs_state_change() {
 
 	// Edit to close the issue
 	let mut closed_issue = open_vi.clone();
-	closed_issue.contents.state = tedi::CloseState::Closed;
+	closed_issue.contents.state = tedi_ops::CloseState::Closed;
 
 	let out = ctx.open_issue(&open_issue).edit(&closed_issue).run();
 
@@ -595,7 +595,7 @@ async fn test_reset_syncs_changes_after_editor() {
 
 	// emulate user closing the issue after
 	let mut modified_issue = remote_vi.clone();
-	modified_issue.contents.state = tedi::CloseState::Closed;
+	modified_issue.contents.state = tedi_ops::CloseState::Closed;
 	let out = ctx.open_url(("o", "r").into(), 1).args(&["--reset"]).edit(&modified_issue).run();
 
 	// want to see the issue closed here

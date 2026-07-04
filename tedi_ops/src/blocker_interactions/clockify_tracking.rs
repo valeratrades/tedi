@@ -2,7 +2,7 @@
 //!
 //! Handles halt/resume commands and automatic task switching when blockers change.
 
-use std::{collections::HashMap, io::Write as IoWrite, path::PathBuf, sync::Arc};
+use std::{collections::HashMap, io::Write as IoWrite, path::PathBuf};
 
 use clap::Parser;
 use color_eyre::eyre::Result;
@@ -66,13 +66,12 @@ pub fn set_tracking_enabled(enabled: bool) -> Result<()> {
 	Ok(())
 }
 /// Get fully_qualified setting for a workspace, prompting user if not set
-pub fn get_workspace_fully_qualified_setting(workspace: &str, settings: &Arc<crate::config::LiveSettings>) -> Result<bool> {
+pub fn get_workspace_fully_qualified_setting(workspace: &str, yes: bool) -> Result<bool> {
 	let cache = load_workspace_cache();
 
 	if let Some(ws_settings) = cache.workspaces.get(workspace) {
 		Ok(ws_settings.fully_qualified)
 	} else {
-		let yes = settings.config()?.yes;
 		// Ask user for preference
 		println!("Workspace '{workspace}' fully-qualified mode setting not found.");
 		let use_fully_qualified = if yes {
@@ -108,17 +107,13 @@ pub async fn stop_current_tracking(workspace: Option<&str>) -> Result<()> {
 ///
 /// `get_description` is a callback that returns the final description to use,
 /// given the fully_qualified setting for the workspace.
-pub async fn start_tracking_for_task<F>(get_description: F, resume_args: &ResumeArgs, workspace_override: Option<&str>, settings: Arc<crate::config::LiveSettings>) -> Result<()>
+pub async fn start_tracking_for_task<F>(get_description: F, resume_args: &ResumeArgs, workspace_override: Option<&str>, yes: bool) -> Result<()>
 where
 	F: FnOnce(bool) -> String, {
 	let workspace = workspace_override.or(resume_args.workspace.as_deref());
 
 	// Determine fully_qualified mode from workspace settings (legacy mode for clockify)
-	let fully_qualified = if let Some(ws) = workspace {
-		get_workspace_fully_qualified_setting(ws, &settings)?
-	} else {
-		false
-	};
+	let fully_qualified = if let Some(ws) = workspace { get_workspace_fully_qualified_setting(ws, yes)? } else { false };
 
 	let final_description = get_description(fully_qualified);
 
@@ -129,7 +124,7 @@ where
 		resume_args.task.as_deref(),
 		resume_args.tags.as_deref(),
 		resume_args.billable,
-		settings.config()?.yes,
+		yes,
 	)
 	.await
 }
@@ -140,10 +135,10 @@ struct WorkspaceCache {
 	workspaces: HashMap<String, WorkspaceSettings>,
 }
 fn get_blocker_state_path() -> PathBuf {
-	v_utils::xdg_state_file!(BLOCKER_STATE_FILENAME)
+	crate::paths::state_file(BLOCKER_STATE_FILENAME)
 }
 fn get_workspace_settings_path() -> PathBuf {
-	v_utils::xdg_cache_file!(WORKSPACE_SETTINGS_FILENAME)
+	crate::paths::cache_file(WORKSPACE_SETTINGS_FILENAME)
 }
 fn load_workspace_cache() -> WorkspaceCache {
 	let cache_path = get_workspace_settings_path();

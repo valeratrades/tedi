@@ -11,8 +11,8 @@ use std::{
 
 use crate::common::{RunOutput, Seed, TestContext, drain_pipe, get_binary_path, parse_virtual, set_nonblocking};
 
-const ENV_MOCK_MILESTONE: &str = concat!(env!("CARGO_PKG_NAME"), "_MOCK_MILESTONE");
-const ENV_MOCK_PIPE: &str = concat!(env!("CARGO_PKG_NAME"), "_MOCK_PIPE");
+const ENV_MOCK_MILESTONE: &str = concat!("tedi", "_MOCK_MILESTONE");
+const ENV_MOCK_PIPE: &str = concat!("tedi", "_MOCK_PIPE");
 
 type EditFn = Box<dyn FnOnce(&Path)>;
 
@@ -39,7 +39,7 @@ impl TestContext {
 		let mut cmd = Command::new(get_binary_path());
 		cmd.args(args);
 		cmd.env("__IS_INTEGRATION_TEST", "1");
-		cmd.env(concat!(env!("CARGO_PKG_NAME"), "__GITHUB_TOKEN"), "test_token");
+		cmd.env(concat!("tedi", "__GITHUB_TOKEN"), "test_token");
 		cmd.env(ENV_MOCK_MILESTONE, &milestone_path);
 		cmd.env(ENV_MOCK_PIPE, &self.pipe_path);
 		for (key, value) in self.xdg.env_vars() {
@@ -194,7 +194,7 @@ async fn test_milestone_edit_adds_blockers() {
 
 	// The issue file should now have the blockers
 	ctx.set_issues_dir_override();
-	let issue_path = tedi::local::Local::find_by_number(tedi::RepoInfo::new("o", "r"), 50, tedi::local::FsReader).expect("issue #50 should still exist");
+	let issue_path = tedi_ops::local::Local::find_by_number(tedi_ops::RepoInfo::new("o", "r"), 50, tedi_ops::local::FsReader).expect("issue #50 should still exist");
 	let issue_content = read_issue_file(&issue_path);
 	insta::assert_snapshot!(issue_content, @"
 	- [ ] Empty Issue <!-- @mock_user https://github.com/o/r/issues/50 -->

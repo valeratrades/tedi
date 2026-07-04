@@ -5,7 +5,7 @@
 //! - `pop`: Remove the last blocker from the stack
 //! - `current`: Get the current (last) blocker with its parent context
 
-use tedi::{BlockerItem, Blockers, IssueRef};
+use crate::{BlockerItem, Blockers, IssueRef};
 
 /// Extension trait for Blockers with additional operations
 pub trait BlockersExt {

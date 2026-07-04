@@ -125,7 +125,7 @@ async fn test_duplicate_removes_local_file() {
 
 	// Modify the issue to mark it as duplicate
 	let mut duplicate = original_vi.clone();
-	duplicate.contents.state = tedi::CloseState::Duplicate(999);
+	duplicate.contents.state = tedi_ops::CloseState::Duplicate(999);
 
 	// Sync the duplicate state
 	let out = ctx.open_issue(&original).edit(&duplicate).run();
@@ -159,7 +159,7 @@ async fn test_duplicate_reference_to_existing_issue_succeeds() {
 
 	// Modify the issue to mark it as duplicate of #2 (which exists)
 	let mut duplicate = original.clone();
-	duplicate.contents.state = tedi::CloseState::Duplicate(2);
+	duplicate.contents.state = tedi_ops::CloseState::Duplicate(2);
 	let out = ctx.open_issue(&original_issue).edit(&duplicate).run();
 
 	eprintln!("stdout: {}", out.stdout);

@@ -27,15 +27,15 @@ mod source;
 
 // Re-export core types from library
 // Re-export the CLI API
-use std::sync::Arc;
 
 use color_eyre::eyre::Result;
 pub use io::BlockerArgs;
 // Re-export extended operations
 pub use operations::BlockersExt;
-pub use tedi::Blockers;
+
+pub use crate::Blockers;
 
 /// Main entry point for blocker commands
-pub async fn main(args: BlockerArgs, offline: bool, settings: Arc<crate::config::LiveSettings>) -> Result<()> {
-	io::main(args, offline, settings).await
+pub async fn main(args: BlockerArgs, offline: bool, yes: bool) -> Result<()> {
+	io::main(args, offline, yes).await
 }
