@@ -190,7 +190,7 @@ pub fn compute_node_diff(new: &Issue, old: Option<&Issue>) -> IssueDiff {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::{BlockerSequence, CloseState, Comments, Events, IssueContents, IssueIdentity, IssueIndex, IssueLink, IssueTimestamps, RepoInfo};
+	use crate::{Blockers, CloseState, Comments, Events, IssueContents, IssueIdentity, IssueIndex, IssueLink, IssueTimestamps, RepoInfo};
 
 	fn make_issue(title: &str, number: Option<u64>) -> Issue {
 		let parent_index = IssueIndex::repo_only(RepoInfo::new("o", "r"));
@@ -212,7 +212,7 @@ mod tests {
 					identity: CommentIdentity::Body,
 					body: Events::parse("body"),
 				}]),
-				blockers: BlockerSequence::default(),
+				blockers: Blockers::default(),
 			},
 			children: HashMap::default(),
 		}

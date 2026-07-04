@@ -21,6 +21,7 @@ default = []
 
 [dependencies]
 tedi_adapters.workspace = true
+tedi_core.workspace = true
 tedi_eval.workspace = true
 tedi_md.workspace = true
 

@@ -5,14 +5,14 @@
 
 use color_eyre::eyre::Result;
 
-use super::BlockerSequence;
+use super::Blockers;
 
 /// Trait for blocker data sources.
 /// Used for reading blocker content and displaying source information.
 /// Note: Writing is done through `modify_and_sync_issue`, not through this trait.
 pub trait BlockerSource {
 	/// Load the blocker sequence
-	fn load(&self) -> Result<BlockerSequence>;
+	fn load(&self) -> Result<Blockers>;
 
 	/// Get a display name for this source (for user messages)
 	fn display_name(&self) -> String;

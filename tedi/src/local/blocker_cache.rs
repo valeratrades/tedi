@@ -7,9 +7,10 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
+use tedi_core::{BlockerItem, Blockers, IssueLink, Marker, split_blockers};
 
 use super::{FsReader, Local};
-use crate::issue::{BlockerItem, BlockerSequence, IssueLink, Marker, MilestoneDoc, split_blockers};
+use crate::MilestoneDoc;
 
 /// Milestone-derived blocker cache. Replaces the old `Revolver` (rotating list of paths).
 ///
@@ -277,7 +278,7 @@ impl MilestoneBlockerCache {
 
 			let before = &lines[..=marker_idx]; // includes marker line
 			let after_marker = lines[marker_idx + 1..].join("\n");
-			let mut blockers = BlockerSequence::parse(&after_marker);
+			let mut blockers = Blockers::parse(&after_marker);
 
 			let popped = pop_deepest(&mut blockers.items);
 			if popped.is_none() {

@@ -124,10 +124,10 @@ pub fn serialize_blockers_view(issue: &Issue) -> String {
 }
 /// Parse blockers from an embedded issue section in milestone content.
 /// The section is: title line, then optionally a `# Blockers` header + blocker lines.
-pub fn parse_blockers_from_embedded(section: &str) -> super::BlockerSequence {
+pub fn parse_blockers_from_embedded(section: &str) -> super::Blockers {
 	let lines: Vec<&str> = section.lines().collect();
 	if lines.len() < 2 {
-		return super::BlockerSequence::default();
+		return super::Blockers::default();
 	}
 
 	// Find the blockers header (at one level of indent — tab or spaces)
@@ -154,7 +154,7 @@ pub fn parse_blockers_from_embedded(section: &str) -> super::BlockerSequence {
 	}
 
 	let Some(start) = blockers_start else {
-		return super::BlockerSequence::default();
+		return super::Blockers::default();
 	};
 
 	// Collect blocker lines (strip one level of indent — tab or 2 spaces)
@@ -164,7 +164,7 @@ pub fn parse_blockers_from_embedded(section: &str) -> super::BlockerSequence {
 		.map(|l| l.strip_prefix('\t').or_else(|| l.strip_prefix("  ")).unwrap_or(l).to_string())
 		.collect();
 
-	let mut seq = super::BlockerSequence::parse(&blocker_lines.join("\n"));
+	let mut seq = super::Blockers::parse(&blocker_lines.join("\n"));
 	if select_blockers {
 		seq.set_state = Some(super::BlockerSetState::Pending);
 	}
@@ -219,7 +219,7 @@ struct MilestoneItem {
 /// Semantic interpretation of a list item's inline text.
 enum ItemContent {
 	/// A bare issue reference (URL or shorthand).
-	Ref(super::issue_ref::IssueRef),
+	Ref(super::IssueRef),
 	/// Embedded issue with title + marker: `Title <!-- @user url -->`
 	EmbeddedIssue { prefix_events: Vec<OwnedEvent>, marker: IssueMarker },
 	/// Plain text (category headers like `discretionary_engine`, `valeratrades/tedi`, or anything else).
@@ -420,7 +420,7 @@ fn classify_inline_events(events: Vec<OwnedEvent>) -> ItemContent {
 	// Case 2: Single word, no spaces → might be shorthand ref or bare URL
 	if !trimmed.is_empty()
 		&& !trimmed.contains(' ')
-		&& let Some(issue_ref) = super::issue_ref::IssueRef::parse_word(trimmed)
+		&& let Some(issue_ref) = super::IssueRef::parse_word(trimmed)
 	{
 		return ItemContent::Ref(issue_ref);
 	}
@@ -530,7 +530,7 @@ fn collapse_section(section: &mut MilestoneSection) {
 				_ => None,
 			};
 			if let Some(link) = link {
-				item.content = ItemContent::Ref(super::issue_ref::IssueRef::Url(link));
+				item.content = ItemContent::Ref(super::IssueRef::Url(link));
 				item.checkbox = None;
 				item.children.clear();
 			}
@@ -787,11 +787,11 @@ mod tests {
 
 	#[test]
 	fn test_serialize_blockers_view() {
-		use super::super::{BlockerSequence, IssueContents, IssueIdentity, IssueTimestamps};
+		use super::super::{Blockers, IssueContents, IssueIdentity, IssueTimestamps};
 
 		let link = IssueLink::parse("https://github.com/owner/repo/issues/42").unwrap();
 		let identity = IssueIdentity::new_linked(None, None, link, IssueTimestamps::default());
-		let blockers = BlockerSequence::parse("- task 1\n- task 2");
+		let blockers = Blockers::parse("- task 1\n- task 2");
 		let issue = Issue {
 			identity,
 			contents: IssueContents {
@@ -836,11 +836,11 @@ mod tests {
 
 	#[test]
 	fn test_serialize_blockers_view_with_labels() {
-		use super::super::{BlockerSequence, IssueContents, IssueIdentity, IssueTimestamps};
+		use super::super::{Blockers, IssueContents, IssueIdentity, IssueTimestamps};
 
 		let link = IssueLink::parse("https://github.com/owner/repo/issues/42").unwrap();
 		let identity = IssueIdentity::new_linked(None, None, link, IssueTimestamps::default());
-		let blockers = BlockerSequence::parse("- do thing");
+		let blockers = Blockers::parse("- do thing");
 		let issue = Issue {
 			identity,
 			contents: IssueContents {
@@ -1230,7 +1230,7 @@ mod tests {
 	/// 2. serialize_blockers_view → view string
 	/// 3. MilestoneDoc::parse → expand_with → serialize → user sees expanded
 	/// 4. User saves → MilestoneDoc::parse → embedded_issues → parse_blockers_from_embedded
-	/// 5. sync_blocker_changes writes new BlockerSequence to issue
+	/// 5. sync_blocker_changes writes new Blockers to issue
 	/// 6. Issue serialized to filesystem → next session reads it
 	#[test]
 	fn test_milestone_cross_session_blocker_escaping() {

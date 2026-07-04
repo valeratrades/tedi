@@ -1,28 +1,31 @@
 [package]
-name = "tedi_adapters"
+name = "tedi_core"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
-description = "Remote-service adapters (GitHub, Clockify) for tedi"
+description = "Pure todo primitives (issues, blockers) and their parse/serialize for tedi"
 license.workspace = true
 repository.workspace = true
 
 [dependencies]
-tedi_core.workspace = true
+tedi_md.workspace = true
 
 arrayvec.workspace = true
-async-trait.workspace = true
-clap.workspace = true
-color-eyre.workspace = true
+copy_arrayvec.workspace = true
+derive-new.workspace = true
+derive_more.workspace = true
 jiff.workspace = true
-reqwest.workspace = true
+miette.workspace = true
+pulldown-cmark.workspace = true
 serde.workspace = true
-serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 tracing-error.workspace = true
-urlencoding.workspace = true
+url.workspace = true
 v_utils.workspace = true
+
+[dev-dependencies]
+insta.workspace = true
 
 [lints]
 workspace = true

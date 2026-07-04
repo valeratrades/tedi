@@ -3768,6 +3768,7 @@ dependencies = [
  "serde_json",
  "smart-default",
  "tedi_adapters",
+ "tedi_core",
  "tedi_eval",
  "tedi_md",
  "tempfile",
@@ -3796,10 +3797,32 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "tedi_core",
  "thiserror 2.0.18",
  "tracing",
  "tracing-error",
  "urlencoding",
+ "v_utils",
+]
+
+[[package]]
+name = "tedi_core"
+version = "0.16.3"
+dependencies = [
+ "arrayvec",
+ "copy_arrayvec",
+ "derive-new",
+ "derive_more",
+ "insta",
+ "jiff",
+ "miette",
+ "pulldown-cmark",
+ "serde",
+ "tedi_md",
+ "thiserror 2.0.18",
+ "tracing",
+ "tracing-error",
+ "url",
  "v_utils",
 ]
 

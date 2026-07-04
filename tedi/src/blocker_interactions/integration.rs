@@ -18,7 +18,7 @@ use tedi::{
 	local::{ExactMatchLevel, FsReader, Local, LocalIssueSource, MilestoneBlockerCache},
 };
 
-use super::{BlockerSequence, operations::BlockerSequenceExt, source::BlockerSource};
+use super::{Blockers, operations::BlockersExt, source::BlockerSource};
 
 /// Issue-based blocker source for blockers embedded in issue files.
 pub struct BlockerIssueSource {
@@ -92,7 +92,7 @@ impl StandaloneSource {
 	}
 
 	/// Save blockers to the file
-	pub fn save(&self, blockers: &BlockerSequence) -> Result<()> {
+	pub fn save(&self, blockers: &Blockers) -> Result<()> {
 		if let Some(parent) = self.path.parent() {
 			std::fs::create_dir_all(parent)?;
 		}
@@ -466,7 +466,7 @@ pub async fn main_integrated(command: super::io::Command, offline: bool, setting
 }
 
 impl super::source::BlockerSource for BlockerIssueSource {
-	fn load(&self) -> Result<BlockerSequence> {
+	fn load(&self) -> Result<Blockers> {
 		let content = std::fs::read_to_string(&self.virtual_issue_buffer_path)?;
 		let parsed = VirtualIssue::parse(&content, self.virtual_issue_buffer_path.clone())?;
 		Ok(parsed.contents.blockers)
@@ -482,10 +482,10 @@ impl super::source::BlockerSource for BlockerIssueSource {
 }
 
 impl super::source::BlockerSource for StandaloneSource {
-	fn load(&self) -> Result<BlockerSequence> {
+	fn load(&self) -> Result<Blockers> {
 		match std::fs::read_to_string(&self.path) {
-			Ok(content) => Ok(BlockerSequence::parse(&content)),
-			Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(BlockerSequence::default()),
+			Ok(content) => Ok(Blockers::parse(&content)),
+			Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Blockers::default()),
 			Err(e) => Err(e.into()),
 		}
 	}

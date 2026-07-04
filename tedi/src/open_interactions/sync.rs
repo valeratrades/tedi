@@ -316,7 +316,7 @@ mod types {
 		/// Replace the issue's entire blocker sequence.
 		/// Used by milestone editing to sync blocker changes back to individual issues.
 		BlockerWrite {
-			blockers: tedi::BlockerSequence,
+			blockers: tedi::Blockers,
 		},
 		/// Mock modifier that does nothing but reports file as modified. For testing.
 		MockGhostEdit,
@@ -372,7 +372,7 @@ mod types {
 					ModifyResult { output: None, file_modified }
 				}
 				Modifier::BlockerPop { parents } => {
-					use crate::blocker_interactions::BlockerSequenceExt;
+					use crate::blocker_interactions::BlockersExt;
 					let popped = issue
 						.contents
 						.blockers
@@ -384,7 +384,7 @@ mod types {
 					}
 				}
 				Modifier::BlockerAdd { text, nest } => {
-					use crate::blocker_interactions::BlockerSequenceExt;
+					use crate::blocker_interactions::BlockersExt;
 					if *nest {
 						issue.contents.blockers.add_child(text);
 					} else {
@@ -393,7 +393,7 @@ mod types {
 					ModifyResult { output: None, file_modified: true }
 				}
 				Modifier::BlockerSet { text } => {
-					use crate::blocker_interactions::BlockerSequenceExt;
+					use crate::blocker_interactions::BlockersExt;
 					let old = issue.contents.blockers.set(text);
 					ModifyResult {
 						output: old.map(|prev| format!("Replaced: {prev} -> {text}")),

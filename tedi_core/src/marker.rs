@@ -6,7 +6,9 @@
 
 use std::fmt;
 
-use crate::{Header, IssueIdentity, IssueLink};
+use tedi_md::Header;
+
+use crate::{IssueLink, IssueSelector};
 
 /// Issue identity marker - encodes how an issue relates to GitHub.
 ///
@@ -122,10 +124,10 @@ impl IssueMarker {
 
 	/// Get the selector for this marker.
 	/// For linked issues, returns GitId. For pending/virtual, returns Title.
-	pub fn selector(&self, title: &str) -> super::IssueSelector {
+	pub fn selector(&self, title: &str) -> IssueSelector {
 		match self {
-			Self::Linked { link, .. } => super::IssueSelector::GitId(link.number()),
-			Self::Pending | Self::Virtual => super::IssueSelector::title(title),
+			Self::Linked { link, .. } => IssueSelector::GitId(link.number()),
+			Self::Pending | Self::Virtual => IssueSelector::title(title),
 		}
 	}
 }
@@ -133,21 +135,6 @@ impl IssueMarker {
 impl fmt::Display for IssueMarker {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		write!(f, "<!-- {} -->", self.encode())
-	}
-}
-
-impl From<&IssueIdentity> for IssueMarker {
-	fn from(identity: &IssueIdentity) -> Self {
-		if let Some(meta) = identity.as_linked() {
-			IssueMarker::Linked {
-				user: meta.user.clone(),
-				link: meta.link().clone(),
-			}
-		} else if identity.is_virtual {
-			IssueMarker::Virtual
-		} else {
-			IssueMarker::Pending
-		}
 	}
 }
 
@@ -325,19 +312,15 @@ mod tests {
 
 	#[test]
 	fn test_decode_issue_marker_via_marker() {
-		// Linked
 		let m = Marker::decode("<!-- @owner https://github.com/owner/repo/issues/123 -->");
 		assert!(matches!(m, Some(Marker::Issue(IssueMarker::Linked { .. }))));
 
-		// Pending (explicit)
 		let m = Marker::decode("<!-- pending -->");
 		assert!(matches!(m, Some(Marker::Issue(IssueMarker::Pending))));
 
-		// Virtual
 		let m = Marker::decode("<!-- virtual -->");
 		assert!(matches!(m, Some(Marker::Issue(IssueMarker::Virtual))));
 
-		// Legacy local:
 		let m = Marker::decode("<!-- local: -->");
 		assert!(matches!(m, Some(Marker::Issue(IssueMarker::Pending))));
 	}
@@ -354,27 +337,21 @@ mod tests {
 			matches!(marker, Some(Marker::BlockersSection(_)))
 		}
 
-		// Markdown header (preferred)
 		assert!(is_blockers_section(Marker::decode("# Blockers")));
 		assert!(is_blockers_section(Marker::decode("## Blockers")));
 		assert!(is_blockers_section(Marker::decode("### Blockers:")));
-		// With leading/trailing whitespace
 		assert!(is_blockers_section(Marker::decode("  # Blockers  ")));
-		// Legacy HTML comment (converts to Header)
 		assert!(is_blockers_section(Marker::decode("<!--blockers-->")));
 		assert!(is_blockers_section(Marker::decode("<!-- blockers -->")));
 		assert!(is_blockers_section(Marker::decode("<!--blocker-->")));
 
-		// Shorthand
 		assert!(is_blockers_section(Marker::decode("!b")));
 		assert!(is_blockers_section(Marker::decode("!B")));
 		assert!(is_blockers_section(Marker::decode("  !b  ")));
 
-		// Should NOT match if there's other content on the line
 		assert!(!is_blockers_section(Marker::decode("# Blockers and more")));
 		assert!(!is_blockers_section(Marker::decode("Some text # Blockers")));
 
-		// Test that Header content and level are preserved
 		if let Some(Marker::BlockersSection(header)) = Marker::decode("## Blockers") {
 			assert_eq!(header.level, 2);
 			assert_eq!(header.content, "Blockers");
@@ -387,7 +364,6 @@ mod tests {
 	fn test_decode_new_comment() {
 		assert_eq!(Marker::decode("<!--new comment-->"), Some(Marker::NewComment));
 		assert_eq!(Marker::decode("<!-- new comment -->"), Some(Marker::NewComment));
-		// Shorthand
 		assert_eq!(Marker::decode("!c"), Some(Marker::NewComment));
 		assert_eq!(Marker::decode("!C"), Some(Marker::NewComment));
 		assert_eq!(Marker::decode("  !c  "), Some(Marker::NewComment));
@@ -440,7 +416,6 @@ mod tests {
 
 	#[test]
 	fn test_issue_marker_parse_from_end() {
-		// Shorthand !n
 		let (marker, title) = IssueMarker::parse_from_end("My title !n").unwrap();
 		assert_eq!(marker, IssueMarker::Pending);
 		assert_eq!(title, "My title");
@@ -449,7 +424,6 @@ mod tests {
 		assert_eq!(marker, IssueMarker::Pending);
 		assert_eq!(title, "My title");
 
-		// HTML comment markers
 		let (marker, title) = IssueMarker::parse_from_end("My title <!-- pending -->").unwrap();
 		assert_eq!(marker, IssueMarker::Pending);
 		assert_eq!(title, "My title");
@@ -462,12 +436,10 @@ mod tests {
 		assert!(matches!(marker, IssueMarker::Linked { user: Some(ref user), .. } if user == "owner"));
 		assert_eq!(title, "My title");
 
-		// Legacy sub prefix
 		let (marker, title) = IssueMarker::parse_from_end("My title <!--sub @owner https://github.com/owner/repo/issues/123 -->").unwrap();
 		assert!(matches!(marker, IssueMarker::Linked { user: Some(ref user), .. } if user == "owner"));
 		assert_eq!(title, "My title");
 
-		// No marker
 		assert!(IssueMarker::parse_from_end("My title").is_none());
 		assert!(IssueMarker::parse_from_end("My title with - [ ] checkbox").is_none());
 	}

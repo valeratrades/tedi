@@ -9,14 +9,14 @@
 //!
 //! - `io`: CLI definitions and entry point
 //! - `integration`: Issue-based blocker implementation (uses modify_and_sync_issue)
-//! - `operations`: Extended operations on BlockerSequence (pop, add, etc.)
+//! - `operations`: Extended operations on Blockers (pop, add, etc.)
 //! - `source`: BlockerSource trait for data access abstraction
 //! - `clockify_tracking`: Blocker-aware time tracking state over the `tedi_adapters::clockify` protocol
 //!
 //! Urgent mode stores blockers in `issues/{owner}/urgent.md` - a simple blocker list
 //! without Github sync. Only one urgent file can exist at a time.
 //!
-//! Core types (BlockerItem, BlockerSequence) are defined in the
+//! Core types (BlockerItem, Blockers) are defined in the
 //! library crate and re-exported here for convenience.
 
 pub mod clockify_tracking;
@@ -32,8 +32,8 @@ use std::sync::Arc;
 use color_eyre::eyre::Result;
 pub use io::BlockerArgs;
 // Re-export extended operations
-pub use operations::BlockerSequenceExt;
-pub use tedi::BlockerSequence;
+pub use operations::BlockersExt;
+pub use tedi::Blockers;
 
 /// Main entry point for blocker commands
 pub async fn main(args: BlockerArgs, offline: bool, settings: Arc<crate::config::LiveSettings>) -> Result<()> {
