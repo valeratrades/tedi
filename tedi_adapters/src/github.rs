@@ -72,6 +72,25 @@ pub trait GithubClient: Send + Sync {
 
 	/// Check if a repository exists and is accessible (we have at least read access)
 	async fn repo_exists(&self, repo: RepoInfo) -> Result<bool, GithubError>;
+
+	/// List all milestones (open and closed) for a repository.
+	async fn list_milestones(&self, repo: RepoInfo) -> Result<Vec<GithubMilestone>, GithubError>;
+
+	/// Create a milestone. `closed` opens it in the `closed` state (used for archival).
+	async fn create_milestone(&self, repo: RepoInfo, title: &str, description: &str, closed: bool) -> Result<(), GithubError>;
+
+	/// Update a milestone's description and, optionally, its due date.
+	async fn update_milestone(&self, repo: RepoInfo, number: u64, description: &str, due_on: Option<jiff::Timestamp>) -> Result<(), GithubError>;
+}
+
+/// A milestone as returned by the GitHub REST API.
+#[derive(Clone, Debug, Deserialize)]
+pub struct GithubMilestone {
+	pub number: u64,
+	pub title: String,
+	pub state: String,
+	pub due_on: Option<jiff::Timestamp>,
+	pub description: Option<String>,
 }
 /// Error type for GitHub API operations.
 #[wrap_err]
@@ -529,6 +548,35 @@ impl GithubClient for RealGithubClient {
 		let url = format!("https://api.github.com/repos/{}/{}", repo.owner(), repo.repo());
 		let res = self.get(&url).send().await?;
 		Ok(res.status().is_success())
+	}
+
+	async fn list_milestones(&self, repo: RepoInfo) -> Result<Vec<GithubMilestone>, GithubError> {
+		let url = format!("https://api.github.com/repos/{}/{}/milestones", repo.owner(), repo.repo());
+		let res = self.get(&url).send().await?;
+		if !res.status().is_success() {
+			let status = res.status();
+			let body = res.text().await.unwrap_or_default();
+			return Err(GithubError::new_api(status, body, "list milestones".to_string()));
+		}
+		Ok(res.json::<Vec<GithubMilestone>>().await?)
+	}
+
+	async fn create_milestone(&self, repo: RepoInfo, title: &str, description: &str, closed: bool) -> Result<(), GithubError> {
+		let url = format!("https://api.github.com/repos/{}/{}/milestones", repo.owner(), repo.repo());
+		let mut body = serde_json::json!({ "title": title, "description": description });
+		if closed {
+			body["state"] = serde_json::Value::String("closed".to_string());
+		}
+		self.post_json(&url, &body, "create milestone").await
+	}
+
+	async fn update_milestone(&self, repo: RepoInfo, number: u64, description: &str, due_on: Option<jiff::Timestamp>) -> Result<(), GithubError> {
+		let url = format!("https://api.github.com/repos/{}/{}/milestones/{number}", repo.owner(), repo.repo());
+		let mut body = serde_json::json!({ "description": description });
+		if let Some(date) = due_on {
+			body["due_on"] = serde_json::Value::String(date.to_string());
+		}
+		self.patch_json(&url, &body, "update milestone").await
 	}
 }
 

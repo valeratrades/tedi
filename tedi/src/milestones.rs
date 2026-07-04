@@ -1,6 +1,7 @@
 use clap::Args;
 use jiff::Timestamp;
-use reqwest::Client;
+use tedi_adapters::github::GithubMilestone;
+use tedi_core::RepoInfo;
 use tedi_ops::{
 	Issue, IssueLink, LazyIssue, MilestoneDoc,
 	local::{Consensus, FsReader, Local, LocalFs, LocalIssueSource, MilestoneBlockerCache},
@@ -49,40 +50,15 @@ pub async fn milestones_command(settings: &LiveSettings, args: MilestonesArgs, m
 		MilestonesCommands::Healthcheck => healthcheck(settings).await,
 	}
 }
-#[derive(Debug, Deserialize)]
-struct Milestone {
-	number: u64,
-	title: String,
-	#[serde(rename = "state")]
-	_state: String,
-	due_on: Option<Timestamp>,
-	description: Option<String>,
-}
-
-async fn request_milestones(settings: &LiveSettings) -> Result<Vec<Milestone>> {
+async fn request_milestones(settings: &LiveSettings) -> Result<Vec<GithubMilestone>> {
 	let config = settings.config()?;
 	let milestones_config = config
 		.milestones
 		.as_ref()
 		.ok_or_else(|| eyre!("milestones config section is required. Add [milestones] section with url to your config"))?;
-
-	// Parse owner/repo from URL (supports "owner/repo", "https://github.com/owner/repo", etc.)
-	let url_str = &milestones_config.url;
-	let (owner, repo) = parse_github_repo(url_str)?;
-
-	let api_url = format!("https://api.github.com/repos/{owner}/{repo}/milestones");
-
-	let client = Client::new();
-	let res = client
-		.get(&api_url)
-		.header("User-Agent", "Rust Github Client")
-		.header("Authorization", format!("token {}", config.github_token))
-		.send()
-		.await?;
-	info!(?res);
-
-	let milestones = res.json::<Vec<Milestone>>().await?;
-	Ok(milestones)
+	let (owner, repo) = parse_github_repo(&milestones_config.url)?;
+	let client = tedi_adapters::github::client::get()?;
+	Ok(client.list_milestones(RepoInfo::new(&owner, &repo)).await?)
 }
 
 /// Parse owner and repo from various Github URL formats
@@ -139,7 +115,7 @@ enum MilestoneError {
 	MissingDescription,
 }
 
-fn get_milestone(tf: Timeframe, retrieved_milestones: &[Milestone]) -> Result<String, GetMilestoneError> {
+fn get_milestone(tf: Timeframe, retrieved_milestones: &[GithubMilestone]) -> Result<String, GetMilestoneError> {
 	if tf.designator() == TimeframeDesignator::Minutes {
 		return Err(GetMilestoneError {
 			requested_tf: tf,
@@ -242,7 +218,7 @@ async fn healthcheck(settings: &LiveSettings) -> Result<()> {
 }
 
 /// Cache the blocker timeframe milestone description for synchronous blocker commands.
-fn cache_blocker_milestone(settings: &LiveSettings, milestones: &[Milestone]) {
+fn cache_blocker_milestone(settings: &LiveSettings, milestones: &[GithubMilestone]) {
 	let config = match settings.config() {
 		Ok(c) => c,
 		Err(_) => return,
@@ -378,70 +354,25 @@ async fn edit_milestone(settings: &LiveSettings, tf: Timeframe, offline: bool, m
 }
 
 async fn update_milestone(settings: &LiveSettings, milestone_number: u64, description: &str, due_on: Option<Timestamp>) -> Result<()> {
-	let config = settings.config()?;
-	let milestones_config = config.milestones.as_ref().ok_or_else(|| eyre!("milestones config section is required"))?;
-
-	let (owner, repo) = parse_github_repo(&milestones_config.url)?;
-	let api_url = format!("https://api.github.com/repos/{owner}/{repo}/milestones/{milestone_number}");
-
-	let mut body = serde_json::json!({
-		"description": description
-	});
-
-	if let Some(date) = due_on {
-		body["due_on"] = serde_json::Value::String(date.to_string());
-	}
-
-	let client = Client::new();
-	let res = client
-		.patch(&api_url)
-		.header("User-Agent", "Rust Github Client")
-		.header("Authorization", format!("token {}", config.github_token))
-		.header("Content-Type", "application/json")
-		.json(&body)
-		.send()
-		.await?;
-
-	if !res.status().is_success() {
-		let status = res.status();
-		let body = res.text().await.unwrap_or_default();
-		bail!("Failed to update milestone: {status} - {body}");
-	}
-
+	let (owner, repo) = milestone_repo(settings)?;
+	let client = tedi_adapters::github::client::get()?;
+	client.update_milestone(RepoInfo::new(&owner, &repo), milestone_number, description, due_on).await?;
 	Ok(())
 }
 
 /// Creates a new milestone with the given title, description, and immediately closes it
 async fn create_closed_milestone(settings: &LiveSettings, title: &str, description: &str) -> Result<()> {
+	let (owner, repo) = milestone_repo(settings)?;
+	let client = tedi_adapters::github::client::get()?;
+	client.create_milestone(RepoInfo::new(&owner, &repo), title, description, true).await?;
+	Ok(())
+}
+
+/// Resolve the (owner, repo) of the milestones repository from config.
+fn milestone_repo(settings: &LiveSettings) -> Result<(String, String)> {
 	let config = settings.config()?;
 	let milestones_config = config.milestones.as_ref().ok_or_else(|| eyre!("milestones config section is required"))?;
-
-	let (owner, repo) = parse_github_repo(&milestones_config.url)?;
-	let api_url = format!("https://api.github.com/repos/{owner}/{repo}/milestones");
-
-	let body = serde_json::json!({
-		"title": title,
-		"description": description,
-		"state": "closed"
-	});
-
-	let client = Client::new();
-	let res = client
-		.post(&api_url)
-		.header("User-Agent", "Rust Github Client")
-		.header("Authorization", format!("token {}", config.github_token))
-		.header("Content-Type", "application/json")
-		.json(&body)
-		.send()
-		.await?;
-
-	if !res.status().is_success() {
-		let status = res.status();
-		let body = res.text().await.unwrap_or_default();
-		bail!("Failed to create closed milestone: {status} - {body}");
-	}
-
-	Ok(())
+	parse_github_repo(&milestones_config.url)
 }
 
 //==============================================================================

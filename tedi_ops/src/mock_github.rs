@@ -744,6 +744,23 @@ impl GithubClient for MockGithubClient {
 		let issues = self.issues.lock().unwrap();
 		Ok(issues.contains_key(&key))
 	}
+
+	// Milestone editing in mock mode goes through the {app}_MOCK_MILESTONE file (see milestones.rs),
+	// not the client, so these are inert.
+	async fn list_milestones(&self, _repo: RepoInfo) -> Result<Vec<crate::github::GithubMilestone>, GithubError> {
+		self.log_call("list_milestones");
+		Ok(Vec::new())
+	}
+
+	async fn create_milestone(&self, _repo: RepoInfo, title: &str, _description: &str, _closed: bool) -> Result<(), GithubError> {
+		self.log_call(&format!("create_milestone({title})"));
+		Ok(())
+	}
+
+	async fn update_milestone(&self, _repo: RepoInfo, number: u64, _description: &str, _due_on: Option<jiff::Timestamp>) -> Result<(), GithubError> {
+		self.log_call(&format!("update_milestone({number})"));
+		Ok(())
+	}
 }
 
 #[cfg(test)]
