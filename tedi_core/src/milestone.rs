@@ -1,7 +1,7 @@
 //! Parsing and serialization of milestone descriptions as structured documents.
 //!
 //! Milestones contain a mix of free-form markdown and nested lists with issue refs.
-//! This module parses them into a `MilestoneDoc` AST via pulldown_cmark, enabling
+//! This module parses them into a `Milestone` AST via pulldown_cmark, enabling
 //! structured operations like parent-context resolution for bare `#123` refs.
 
 use tedi_md::indent_into;
@@ -9,10 +9,10 @@ use tedi_md::indent_into;
 use crate::{Events, Issue, IssueLink, IssueMarker, OwnedEvent, OwnedTag, OwnedTagEnd};
 
 /// A parsed milestone document: a sequence of top-level sections.
-pub struct MilestoneDoc {
+pub struct Milestone {
 	sections: Vec<MilestoneSection>,
 }
-impl MilestoneDoc {
+impl Milestone {
 	pub fn parse(content: &str) -> Self {
 		let events = Events::parse(content);
 		let mut pos = 0;
@@ -88,25 +88,8 @@ impl MilestoneDoc {
 
 /// Serialize an issue as title line + blockers only (for milestone embedding).
 pub fn serialize_blockers_view(issue: &Issue) -> String {
-	let checkbox_contents = issue.contents.state.to_checkbox_contents();
-	let issue_marker = IssueMarker::from(&issue.identity);
-	let labels_part = if issue.contents.labels.is_empty() {
-		String::new()
-	} else {
-		format!("({}) ", issue.contents.labels.join(", "))
-	};
-
-	// Build title line events
-	let mut events = Vec::new();
-	events.push(OwnedEvent::Start(OwnedTag::List(None)));
-	events.push(OwnedEvent::Start(OwnedTag::Item));
-	events.push(OwnedEvent::CheckBox(checkbox_contents));
-	events.push(OwnedEvent::Text(format!("{labels_part}{} ", issue.contents.title)));
-	events.push(OwnedEvent::InlineHtml(format!("<!-- {} -->", issue_marker.encode())));
-	events.push(OwnedEvent::End(OwnedTagEnd::Item));
-	events.push(OwnedEvent::End(OwnedTagEnd::List(false)));
-
-	let mut out: String = Events::from(events).into();
+	// Reuse the shared title-line unit so embedded views and single-file items stay in sync.
+	let mut out = crate::issue::TitleLine::of(issue).encode();
 
 	// Append blockers as raw text (avoids pulldown_cmark_to_cmark escaping `#`)
 	if !issue.contents.blockers.is_empty() {
@@ -499,8 +482,8 @@ fn expand_section(section: &mut MilestoneSection, expansions: &std::collections:
 			if let Some(link) = item_issue_link(item)
 				&& let Some(view) = expansions.get(&link)
 			{
-				// Re-parse the serialized view as a MilestoneDoc to get the item structure
-				let expanded_doc = MilestoneDoc::parse(view);
+				// Re-parse the serialized view as a Milestone to get the item structure
+				let expanded_doc = Milestone::parse(view);
 				// The view should be a single list with one item
 				if let Some(MilestoneSection::List(expanded_list)) = expanded_doc.sections.into_iter().next()
 					&& let Some(expanded_item) = expanded_list.items.into_iter().next()
@@ -669,7 +652,7 @@ mod tests {
 	#[test]
 	fn test_parse_serialize_basic_structure() {
 		let content = "# Sprint Goals\nSome description\n\n- [ ] discretionary_engine\n    - [ ] owner/repo#42\n\nFooter text\n";
-		let doc = MilestoneDoc::parse(content);
+		let doc = Milestone::parse(content);
 		insta::assert_snapshot!(doc.serialize(), @"
 		# Sprint Goals
 		Some description
@@ -683,7 +666,7 @@ mod tests {
 	#[test]
 	fn test_parse_shorthand_refs() {
 		let content = "- [ ] owner/repo#123\n- [ ] tedi#42\n- [ ] #77\n";
-		let doc = MilestoneDoc::parse(content);
+		let doc = Milestone::parse(content);
 		insta::assert_snapshot!(doc.serialize(), @r"
 		- [ ] owner/repo#123
 
@@ -696,7 +679,7 @@ mod tests {
 	#[test]
 	fn test_parse_embedded_issue() {
 		let content = "- [ ] My Issue <!-- @user https://github.com/owner/repo/issues/42 -->\n\t# Blockers\n\t- task 1\n";
-		let doc = MilestoneDoc::parse(content);
+		let doc = Milestone::parse(content);
 		insta::assert_snapshot!(doc.serialize(), @"
 		- [ ] My Issue <!-- @user https://github.com/owner/repo/issues/42 -->
 		  # Blockers
@@ -707,7 +690,7 @@ mod tests {
 	#[test]
 	fn test_parse_bare_url() {
 		let content = "- https://github.com/owner/repo/issues/99\n";
-		let doc = MilestoneDoc::parse(content);
+		let doc = Milestone::parse(content);
 		insta::assert_snapshot!(doc.serialize(), @"- https://github.com/owner/repo/issues/99");
 	}
 
@@ -715,7 +698,7 @@ mod tests {
 	fn test_resolve_bare_refs_single_word_parent() {
 		crate::current_user::set("myowner".to_string());
 		let content = "- [ ] discretionary_engine\n    - [ ] #77\n";
-		let mut doc = MilestoneDoc::parse(content);
+		let mut doc = Milestone::parse(content);
 		doc.resolve_bare_refs();
 		insta::assert_snapshot!(doc.serialize(), @"
 		- [ ] discretionary_engine
@@ -726,7 +709,7 @@ mod tests {
 	#[test]
 	fn test_resolve_bare_refs_owner_repo_parent() {
 		let content = "- valeratrades/tedi\n    - #80\n";
-		let mut doc = MilestoneDoc::parse(content);
+		let mut doc = Milestone::parse(content);
 		doc.resolve_bare_refs();
 		insta::assert_snapshot!(doc.serialize(), @"
 		- valeratrades/tedi
@@ -738,7 +721,7 @@ mod tests {
 	fn test_resolve_bare_refs_multilevel_takes_immediate_parent() {
 		crate::current_user::set("myowner".to_string());
 		let content = "- discretionary_engine\n    - tedi\n        - [ ] #80\n";
-		let mut doc = MilestoneDoc::parse(content);
+		let mut doc = Milestone::parse(content);
 		doc.resolve_bare_refs();
 		insta::assert_snapshot!(doc.serialize(), @"
 		- discretionary_engine
@@ -751,7 +734,7 @@ mod tests {
 	fn test_issue_links() {
 		crate::current_user::set("myowner".to_string());
 		let content = "- [ ] owner/repo#42\n- [ ] My Issue <!-- @user https://github.com/owner/repo/issues/99 -->\n";
-		let mut doc = MilestoneDoc::parse(content);
+		let mut doc = Milestone::parse(content);
 		doc.resolve_bare_refs();
 		let links: Vec<_> = doc.issue_links().iter().map(|l| l.number()).collect();
 		assert_eq!(links, [42, 99]);
@@ -760,7 +743,7 @@ mod tests {
 	#[test]
 	fn test_collapse_to_links() {
 		let content = "# Sprint\n\n- [ ] My Issue <!-- @user https://github.com/owner/repo/issues/42 -->\n\t# Blockers\n\t- task 1\n\nFooter\n";
-		let mut doc = MilestoneDoc::parse(content);
+		let mut doc = Milestone::parse(content);
 		doc.collapse_to_links();
 		insta::assert_snapshot!(doc.serialize(), @"
 		# Sprint
@@ -773,7 +756,7 @@ mod tests {
 	#[test]
 	fn test_serialize_roundtrip() {
 		let content = "# Sprint Goals\n\nSome description\n\n- [ ] owner/repo#42\n- [ ] My Issue <!-- @user https://github.com/owner/repo/issues/99 -->\n\nFooter text\n";
-		let doc = MilestoneDoc::parse(content);
+		let doc = Milestone::parse(content);
 		insta::assert_snapshot!(doc.serialize(), @"
 		# Sprint Goals
 		Some description
@@ -894,7 +877,7 @@ mod tests {
 	#[test]
 	fn test_no_checkbox_items() {
 		let content = "- valeratrades/tedi\n    - #80\n";
-		let doc = MilestoneDoc::parse(content);
+		let doc = Milestone::parse(content);
 		insta::assert_snapshot!(doc.serialize(), @r"
 		- valeratrades/tedi
 		  - \#80
@@ -904,7 +887,7 @@ mod tests {
 	#[test]
 	fn test_mixed_content() {
 		let content = "# Header\n\nParagraph text\n\n- item 1\n- item 2\n\nMore text\n";
-		let doc = MilestoneDoc::parse(content);
+		let doc = Milestone::parse(content);
 		insta::assert_snapshot!(doc.serialize(), @"
 		# Header
 		Paragraph text
@@ -918,7 +901,7 @@ mod tests {
 	#[test]
 	fn test_tight_list_roundtrip() {
 		let content = "- item 1\n- item 2\n- item 3\n";
-		let doc = MilestoneDoc::parse(content);
+		let doc = Milestone::parse(content);
 		insta::assert_snapshot!(doc.serialize(), @"
 		- item 1
 		- item 2
@@ -929,7 +912,7 @@ mod tests {
 	#[test]
 	fn test_loose_list_roundtrip() {
 		let content = "- item 1\n\n- item 2\n\n- item 3\n";
-		let doc = MilestoneDoc::parse(content);
+		let doc = Milestone::parse(content);
 		insta::assert_snapshot!(doc.serialize(), @"
 		- item 1
 		- item 2
@@ -940,7 +923,7 @@ mod tests {
 	#[test]
 	fn test_top_level_items_with_children_padded() {
 		let content = "- [ ] OpenClaw\n\t# Blockers\n\t- wait on Vincent\n- [ ] discretionary_engine\n\t# Blockers\n\t- new protocols\n\t- define interface\n";
-		let doc = MilestoneDoc::parse(content);
+		let doc = Milestone::parse(content);
 		insta::assert_snapshot!(doc.serialize(), @"
 		- [ ] OpenClaw
 		  # Blockers
@@ -956,7 +939,7 @@ mod tests {
 	#[test]
 	fn test_list_item_count() {
 		let content = "- item 1\n\n- item 2\n";
-		let doc = MilestoneDoc::parse(content);
+		let doc = Milestone::parse(content);
 		let list = match &doc.sections[0] {
 			MilestoneSection::List(l) => l,
 			_ => panic!("expected list"),
@@ -967,7 +950,7 @@ mod tests {
 	#[test]
 	fn test_expand_serialize_roundtrip() {
 		let view = "- [ ] Empty Issue <!-- @user https://github.com/o/r/issues/50 -->";
-		let mut doc = MilestoneDoc::parse(view);
+		let mut doc = Milestone::parse(view);
 		doc.resolve_bare_refs();
 		insta::assert_snapshot!(doc.serialize(), @"- [ ] Empty Issue <!-- @user https://github.com/o/r/issues/50 -->");
 	}
@@ -975,7 +958,7 @@ mod tests {
 	#[test]
 	fn test_embedded_issues_detected() {
 		let content = "- [ ] My Issue <!-- @user https://github.com/owner/repo/issues/42 -->\n\t# Blockers\n\t- task 1\n";
-		let doc = MilestoneDoc::parse(content);
+		let doc = Milestone::parse(content);
 		let embedded = doc.embedded_issues();
 		assert_eq!(embedded.len(), 1);
 		assert_eq!(embedded[0].0.number(), 42);
@@ -990,7 +973,7 @@ mod tests {
 	fn test_embedded_issues_after_edit_simulation() {
 		let expanded = "- [ ] Empty Issue <!-- @mock_user https://github.com/o/r/issues/50 -->";
 		let edited = format!("{expanded}\n\t# Blockers\n\t- todo\n");
-		let doc = MilestoneDoc::parse(&edited);
+		let doc = Milestone::parse(&edited);
 		let embedded = doc.embedded_issues();
 		assert_eq!(embedded.len(), 1);
 		let blockers = parse_blockers_from_embedded(&embedded[0].1);
@@ -1003,7 +986,7 @@ mod tests {
 	#[test]
 	fn test_stored_form_loose_checkbox_list() {
 		let stored = "- [ ] OpenClaw\n  text\n\n  # Blockers\n  - wait\n- [ ] Second\n";
-		let doc = MilestoneDoc::parse(stored);
+		let doc = Milestone::parse(stored);
 		insta::assert_snapshot!(doc.serialize(), @"
 		- [ ] OpenClaw
 		  text
@@ -1023,7 +1006,7 @@ mod tests {
 - https://github.com/owner/repo/issues/42
 - https://github.com/owner/repo/issues/43
 ";
-		let mut doc = MilestoneDoc::parse(collapsed);
+		let mut doc = Milestone::parse(collapsed);
 
 		// Simulate expand_with by manually replacing items
 		let mut expansions = std::collections::HashMap::new();
@@ -1060,7 +1043,7 @@ mod tests {
 - https://github.com/valeratrades/discretionary_engine/issues/77
 - https://github.com/valeratrades/discretionary_engine/issues/78
 ";
-		let mut doc = MilestoneDoc::parse(stored);
+		let mut doc = Milestone::parse(stored);
 
 		let mut expansions = std::collections::HashMap::new();
 		expansions.insert(
@@ -1097,7 +1080,7 @@ mod tests {
 - https://github.com/owner/repo/issues/2
 - https://github.com/owner/repo/issues/3
 ";
-		let mut doc = MilestoneDoc::parse(stored);
+		let mut doc = Milestone::parse(stored);
 
 		let mut expansions = std::collections::HashMap::new();
 		expansions.insert(
@@ -1170,7 +1153,7 @@ mod tests {
       - [ ] integrate diffusion testing
         backtests could also be a thing, but don't like lack of consistency for which layers get backtests run on them.
 ";
-		let doc = MilestoneDoc::parse(content);
+		let doc = Milestone::parse(content);
 		insta::assert_snapshot!(doc.serialize(), @r#"
 		# important today
 		- [ ] OpenClaw
@@ -1228,8 +1211,8 @@ mod tests {
 	/// Simulates the full cross-session milestones open cycle:
 	/// 1. Local issue file → parse → get blockers
 	/// 2. serialize_blockers_view → view string
-	/// 3. MilestoneDoc::parse → expand_with → serialize → user sees expanded
-	/// 4. User saves → MilestoneDoc::parse → embedded_issues → parse_blockers_from_embedded
+	/// 3. Milestone::parse → expand_with → serialize → user sees expanded
+	/// 4. User saves → Milestone::parse → embedded_issues → parse_blockers_from_embedded
 	/// 5. sync_blocker_changes writes new Blockers to issue
 	/// 6. Issue serialized to filesystem → next session reads it
 	#[test]
@@ -1260,11 +1243,11 @@ mod tests {
 				let view = serialize_blockers_view(&issue);
 
 				// Step 3: expand_and_refresh (parse the view, which is the expanded form)
-				let doc = MilestoneDoc::parse(&view);
+				let doc = Milestone::parse(&view);
 				let expanded = doc.serialize();
 
 				// Step 4: sync_blocker_changes (parse edited content, extract blockers)
-				let edited_doc = MilestoneDoc::parse(&expanded);
+				let edited_doc = Milestone::parse(&expanded);
 				let embedded = edited_doc.embedded_issues();
 				let (_, section_text) = embedded.first().expect("should have embedded issue");
 				let new_blockers = parse_blockers_from_embedded(section_text);
@@ -1309,10 +1292,10 @@ mod tests {
 - \\[.\\] custom marker
   custom body
 ";
-		let doc = MilestoneDoc::parse(content);
+		let doc = Milestone::parse(content);
 		let s1 = doc.serialize();
 		for cycle in 1..=5 {
-			let re = MilestoneDoc::parse(&s1);
+			let re = Milestone::parse(&s1);
 			let sn = re.serialize();
 			assert_eq!(s1, sn, "milestone serialize must be idempotent at cycle {cycle}");
 		}

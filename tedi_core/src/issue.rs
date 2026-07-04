@@ -974,14 +974,14 @@ impl From<Issue> for HollowIssue {
 
 /// The `- [state] (labels) Title <!-- marker -->` line — the one-line header of every
 /// issue item, in both single-file and embedded forms.
-struct TitleLine {
+pub(crate) struct TitleLine {
 	state: CloseState,
 	labels: Vec<String>,
 	title: String,
 	marker: IssueMarker,
 }
 impl TitleLine {
-	fn of(issue: &Issue) -> Self {
+	pub(crate) fn of(issue: &Issue) -> Self {
 		Self {
 			state: issue.contents.state.clone(),
 			labels: issue.contents.labels.clone(),
@@ -991,7 +991,7 @@ impl TitleLine {
 	}
 
 	/// Render via cmark as a standalone list item (depth 0; keeps its trailing newline).
-	fn encode(&self) -> String {
+	pub(crate) fn encode(&self) -> String {
 		use crate::{OwnedEvent, OwnedTag, OwnedTagEnd};
 		let labels_part = if self.labels.is_empty() { String::new() } else { format!("({}) ", self.labels.join(", ")) };
 		crate::Events::from(vec![

@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use tedi_core::{BlockerItem, Blockers, IssueLink, Marker, split_blockers};
 
 use super::{FsReader, Local};
-use crate::MilestoneDoc;
+use crate::Milestone;
 
 /// Milestone-derived blocker cache. Replaces the old `Revolver` (rotating list of paths).
 ///
@@ -61,7 +61,7 @@ impl MilestoneBlockerCache {
 	/// Recognizes all supported formats: expanded title lines, shorthand refs (`o/r#123`),
 	/// and bare issue URLs.
 	pub fn embedded_links(&self) -> Vec<IssueLink> {
-		let mut doc = MilestoneDoc::parse(&self.milestone_description);
+		let mut doc = Milestone::parse(&self.milestone_description);
 		doc.resolve_bare_refs();
 		doc.issue_links()
 	}

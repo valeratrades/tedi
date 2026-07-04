@@ -3,7 +3,7 @@ use jiff::Timestamp;
 use tedi_adapters::github::GithubMilestone;
 use tedi_core::RepoInfo;
 use tedi_ops::{
-	Issue, IssueLink, LazyIssue, MilestoneDoc,
+	Issue, IssueLink, LazyIssue, Milestone,
 	local::{Consensus, FsReader, Local, LocalFs, LocalIssueSource, MilestoneBlockerCache},
 	parse_blockers_from_embedded,
 	remote::RemoteSource,
@@ -291,16 +291,16 @@ async fn edit_milestone(settings: &LiveSettings, tf: Timeframe, offline: bool, m
 	}
 
 	// Collapse expanded issues back to bare links for storage
-	let mut edited_doc = MilestoneDoc::parse(&edited_content);
+	let mut edited_doc = Milestone::parse(&edited_content);
 	edited_doc.collapse_to_links();
 	let new_description = edited_doc.serialize();
 
 	// Sync milestone assignments on GitHub: assign new issues, unassign removed ones
 	if !mock && !offline {
-		let mut orig_doc = MilestoneDoc::parse(&original_description);
+		let mut orig_doc = Milestone::parse(&original_description);
 		orig_doc.resolve_bare_refs();
 		let old_links = orig_doc.issue_links();
-		let new_doc = MilestoneDoc::parse(&new_description);
+		let new_doc = Milestone::parse(&new_description);
 		let new_links = new_doc.issue_links();
 		sync_milestone_assignments(settings, milestone_number, &old_links, &new_links).await?;
 	}
@@ -397,11 +397,11 @@ async fn fetch_and_store_remote_issue(link: &IssueLink) -> Result<Issue> {
 
 /// Expand shorthand refs and refresh all embedded issue sections from local state.
 ///
-/// Parses the content into a MilestoneDoc, resolves bare refs, then for each
+/// Parses the content into a Milestone, resolves bare refs, then for each
 /// issue ref (shorthand, bare URL, or embedded), loads the local issue and
 /// replaces the item with a fresh `serialize_blockers_view` expansion.
 async fn expand_and_refresh(content: &str) -> Result<String> {
-	let mut doc = MilestoneDoc::parse(content);
+	let mut doc = Milestone::parse(content);
 	doc.resolve_bare_refs();
 
 	// Collect all issue links with their resolved info, then load and expand
@@ -434,7 +434,7 @@ async fn expand_and_refresh(content: &str) -> Result<String> {
 async fn sync_blocker_changes(content: &str, offline: bool) -> Result<()> {
 	use tedi_ops::open_interactions::{Modifier, SyncOptions, modify_and_sync_issue};
 
-	let doc = MilestoneDoc::parse(content);
+	let doc = Milestone::parse(content);
 
 	for (link, section_text) in doc.embedded_issues() {
 		// Parse blockers from the embedded section
