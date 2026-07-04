@@ -8,10 +8,6 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-tedi_adapters.workspace = true
-tedi_core.workspace = true
-tedi_md.workspace = true
-
 arrayvec.workspace = true
 async-trait.workspace = true
 async_from.workspace = true
@@ -32,6 +28,9 @@ reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 smart-default.workspace = true
+tedi_adapters.workspace = true
+tedi_core.workspace = true
+tedi_md.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
 tokio.workspace = true

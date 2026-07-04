@@ -8,8 +8,6 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-tedi_md.workspace = true
-
 arrayvec.workspace = true
 copy_arrayvec.workspace = true
 derive-new.workspace = true
@@ -18,6 +16,7 @@ jiff.workspace = true
 miette.workspace = true
 pulldown-cmark.workspace = true
 serde.workspace = true
+tedi_md.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 tracing-error.workspace = true

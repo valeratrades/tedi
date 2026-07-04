@@ -1,3 +1,4 @@
+#![feature(default_field_values)]
 //! Pure todo primitives: the data model (issues, blockers, locators, markers)
 //! plus parse/serialize over `tedi_md::Events`. No IO, no async, no reqwest.
 #![feature(error_generic_member_access)]

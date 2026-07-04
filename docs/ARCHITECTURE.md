@@ -37,18 +37,6 @@ objective: good times
 - make enough money
 ```
 
-### Sprints
-a selection of work, to be done in the given time period. 
-
-here we have a series of durations, like `1d`, `2w`, `1Q`, `1y` etc.
-This is less so a fundamental building component of the system, and rather a view into it, - our compiled selection of the tasks for each period.
-They assume top-down priority ordering, - as we admit impossibility of consistent 100% completion of the period's selection.
-
-### Bottlenecks
-a primitive over Milestones; name is immutable, can contain other milestones. In many ways it's much like [sprints](#sprints), - except it reasons in terms of current global priorities, serving as guideline for compiling the latter.
-
-Bottlenecks are represented with a single Milestone, listing the necessary constituents for getting it resolved.
-If a milestone technically covers a wider area of tasks, that could be added under its umbrella, but are not critical to its completion, - they should probably be aggregated under a secondary one, or not aggregated at all. Note that not being owned by any milestone, doesn't prevent the Issue from being includable in [Sprints](#sprints).
 
 ### Composition Rules
 how the system components interact with each other.
@@ -62,6 +50,36 @@ For normal Milestones, we choose to prohibit explicit inclusion of other [Milest
 [Issues](#issue) mostly own other issues, or just plaintext points of what needs to happen. Most often, as soon as the work starts, the Blockers become apparent.
 
 [Blockers](#blockers)  are only ever owned by Issues, as the Milestones and Milestone-based primitives assume self-contained selections, - thus all their parts are effectively blockers; and the potential case of each one being blocked by the same factor is an exception, and framework doesn't optimize for it. 
+
+### TaskView
+a primitive exposing a view into a slice of task space. Can contain Milestones and Issues (never blockers).
+
+Many user-facing interfaces are implemented at this level, - Sprints, Bottlenecks, Searches (eg all issues with `bug` label), etc
+
+#### Sprints
+a selection of work, to be done in the given time period. 
+
+here we have a series of durations, like `1d`, `2w`, `1Q`, `1y` etc.
+This is less so a fundamental building component of the system, and rather a view into it, - our compiled selection of the tasks for each period.
+They assume top-down priority ordering, - as we admit impossibility of consistent 100% completion of the period's selection.
+
+#### Bottlenecks
+a primitive over Milestones; name is immutable, can contain other milestones. In many ways it's much like [sprints](#sprints), - except it reasons in terms of current global priorities, serving as guideline for compiling the latter.
+
+Bottlenecks are represented with a single Milestone, listing the necessary constituents for getting it resolved.
+If a milestone technically covers a wider area of tasks, that could be added under its umbrella, but are not critical to its completion, - they should probably be aggregated under a secondary one, or not aggregated at all. Note that not being owned by any milestone, doesn't prevent the Issue from being includable in [Sprints](#sprints).
+
+## Crates
+```
+tedi_md → tedi_core → tedi_ops → tedi
+              ↑           ↑
+        tedi_adapters ────┘
+```
+- `tedi_md` — markdown primitives: owned pulldown_cmark `Events` ⇄ `String`.
+- `tedi_core` — the pure model: the primitives above (Issue/Blockers/Milestone), their locators/markers, and parse/serialize over `Events`. No IO, no async, no transport. A primitive cannot reach fs/network/app-state — the crate boundary enforces it.
+- `tedi_adapters` — transport at the edge: `GithubClient` (+ mock lives with ops), Clockify. Depends on core for the domain locator (`RepoInfo`).
+- `tedi_ops` — operations over the primitives: local/remote sources+sinks, sync/merge/touch/conflict, blocker stack, sprint flows, the `LazyIssue` loading protocol.
+- `tedi` — interface only: clap enums/dispatch, config, shell init. Parses args, resolves config, calls ops. Owns `config` (v_utils `LiveSettings` binds app identity to the crate that derives it).
 
 ## Sources
 
@@ -120,7 +138,7 @@ Uses `LazyIssue<Remote>` trait implemented in `remote/mod.rs`:
 │    state: CloseState,                                                       │
 │    comments: Vec<Comment>,  // [0] = body (CommentIdentity::Body)           │
 │                             // [1..] = comments (CommentIdentity::Created)  │
-│    blockers: BlockerSequence,                                               │
+│    blockers: Blockers,                                                      │
 │  }                                                                          │
 │  children: Vec<Issue>,      // sub-issues, recursively                      │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -138,7 +156,7 @@ Uses `LazyIssue<Remote>` trait implemented in `remote/mod.rs`:
 ┌───────────────────┐   ┌─────────────────────────┐   ┌─────────────────────┐
 │ close_state       │   │ issue.body()            │   │ children/comments   │
 │   .to_github_     │   │ = comments[0].body      │   │ with Pending        │
-│    state()        │   │ + join_with_blockers()  │   │ identity            │
+│    state()        │   │ + blockers section      │   │ identity            │
 │   .to_github_     │   │                         │   │                     │
 │    state_reason() │   │                         │   │                     │
 └───────────────────┘   └─────────────────────────┘   └─────────────────────┘
@@ -184,10 +202,14 @@ Uses `LazyIssue<Remote>` trait implemented in `remote/mod.rs`:
 
 | Type | File |
 |------|------|
-| `Issue`, `IssueContents`, `CloseState`, `IssueIdentity` | `src/issue/types.rs` |
-| `LazyIssue<S>` trait | `src/issue/types.rs` |
-| `GithubIssue`, `GithubComment`, `CreatedIssue` | `src/github.rs` |
-| `LazyIssue<Remote>` impl, `AsyncFrom<RemoteSource>` | `src/open_interactions/remote/mod.rs` |
-| `LazyIssue<Local>` impl | `src/open_interactions/local/mod.rs` |
-| `split_blockers()`, `join_with_blockers()` | `src/issue/blocker.rs` |
-| `sync_local_issue_to_github()` | `src/open_interactions/sync.rs` |
+| `Issue`, `IssueContents`, `CloseState`, `IssueIdentity`, `TitleLine`/segmenter | `tedi_core/src/issue.rs` |
+| `RepoInfo`, `IssueLink`, `IssueRef`, `IssueIndex`, `IssueSelector` | `tedi_core/src/locate.rs` |
+| `Blockers`, `split_blockers()` | `tedi_core/src/blockers.rs` |
+| `Milestone`, `serialize_blockers_view()`, `parse_blockers_from_embedded()` | `tedi_core/src/milestone.rs` |
+| `IssueMarker`, `Marker` | `tedi_core/src/marker.rs` |
+| `GithubIssue`, `GithubComment`, `CreatedIssue`, `GithubMilestone`, `list/create/update_milestone` | `tedi_adapters/src/github.rs` |
+| `LazyIssue<S>` trait | `tedi_ops/src/lazy.rs` |
+| `LazyIssue<Remote>` impl | `tedi_ops/src/remote/mod.rs` |
+| `LazyIssue<Local>` impl, `MilestoneBlockerCache` | `tedi_ops/src/local/mod.rs` |
+| `sync_local_issue_to_github()` | `tedi_ops/src/open_interactions/sync.rs` |
+| sprint expand/refresh + blocker sync | `tedi_ops/src/sprints.rs` |

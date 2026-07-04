@@ -1,3 +1,4 @@
+#![feature(default_field_values)]
 //! Markdown primitives: translating `String` into owned pulldown_cmark [`Events`] and back.
 
 mod events;

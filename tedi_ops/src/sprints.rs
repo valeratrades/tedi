@@ -15,22 +15,6 @@ use crate::{
 	sink::Sink,
 };
 
-/// Load a local issue by its IssueLink.
-async fn load_local_issue(link: &IssueLink) -> Result<Issue> {
-	let path = Local::find_by_number(link.repo_info(), link.number(), FsReader).ok_or_else(|| eyre!("issue #{} not found locally", link.number()))?;
-	let local_source = LocalIssueSource::<FsReader>::build_from_path(&path).await?;
-	Issue::load(local_source).await.map_err(Into::into)
-}
-
-/// Fetch an issue from GitHub and store it locally (filesystem + consensus).
-async fn fetch_and_store_remote_issue(link: &IssueLink) -> Result<Issue> {
-	let source = RemoteSource::build(link.clone(), None)?;
-	let mut issue = Issue::load(source).await?;
-	<Issue as Sink<LocalFs>>::sink(&mut issue, None).await?;
-	<Issue as Sink<Consensus>>::sink(&mut issue, None).await?;
-	Ok(issue)
-}
-
 /// Expand shorthand refs and refresh all embedded issue sections from local state.
 ///
 /// Parses the content into a `Milestone`, resolves bare refs, then for each issue
@@ -64,7 +48,6 @@ pub async fn expand_and_refresh(content: &str) -> Result<String> {
 	doc.expand_with(&expansions);
 	Ok(doc.serialize())
 }
-
 /// Parse blocker changes from an edited sprint description and sync them back to issue files.
 pub async fn sync_blocker_changes(content: &str, offline: bool) -> Result<()> {
 	use crate::open_interactions::{Modifier, SyncOptions, modify_and_sync_issue};
@@ -103,4 +86,19 @@ pub async fn sync_blocker_changes(content: &str, offline: bool) -> Result<()> {
 	}
 
 	Ok(())
+}
+/// Load a local issue by its IssueLink.
+async fn load_local_issue(link: &IssueLink) -> Result<Issue> {
+	let path = Local::find_by_number(link.repo_info(), link.number(), FsReader).ok_or_else(|| eyre!("issue #{} not found locally", link.number()))?;
+	let local_source = LocalIssueSource::<FsReader>::build_from_path(&path).await?;
+	Issue::load(local_source).await.map_err(Into::into)
+}
+
+/// Fetch an issue from GitHub and store it locally (filesystem + consensus).
+async fn fetch_and_store_remote_issue(link: &IssueLink) -> Result<Issue> {
+	let source = RemoteSource::build(link.clone(), None)?;
+	let mut issue = Issue::load(source).await?;
+	<Issue as Sink<LocalFs>>::sink(&mut issue, None).await?;
+	<Issue as Sink<Consensus>>::sink(&mut issue, None).await?;
+	Ok(issue)
 }

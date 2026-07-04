@@ -32,7 +32,7 @@
             tracey = true;
             style = {
               modules = {
-                ignored_error_comment = false;
+                ignored_error = false;
               };
             };
           };

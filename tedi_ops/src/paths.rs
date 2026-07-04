@@ -8,23 +8,20 @@ use xdg::BaseDirectories;
 
 const APP: &str = "tedi";
 
-fn dirs() -> BaseDirectories {
-	BaseDirectories::with_prefix(APP)
-}
-
 /// `$XDG_DATA_HOME/tedi/<sub>/`
 pub fn data_dir(sub: &str) -> PathBuf {
 	dirs().create_data_directory(sub).unwrap()
 }
-
 /// `$XDG_CACHE_HOME/tedi/<name>`
 pub fn cache_file(name: &str) -> PathBuf {
 	file(name, |d, parent| d.create_cache_directory(parent).unwrap())
 }
-
 /// `$XDG_STATE_HOME/tedi/<name>`
 pub fn state_file(name: &str) -> PathBuf {
 	file(name, |d, parent| d.create_state_directory(parent).unwrap())
+}
+fn dirs() -> BaseDirectories {
+	BaseDirectories::with_prefix(APP)
 }
 
 fn file(name: &str, mk: impl Fn(&BaseDirectories, &Path) -> PathBuf) -> PathBuf {

@@ -972,166 +972,6 @@ impl From<Issue> for HollowIssue {
 	}
 }
 
-/// The `- [state] (labels) Title <!-- marker -->` line — the one-line header of every
-/// issue item, in both single-file and embedded forms.
-pub(crate) struct TitleLine {
-	state: CloseState,
-	labels: Vec<String>,
-	title: String,
-	marker: IssueMarker,
-}
-impl TitleLine {
-	pub(crate) fn of(issue: &Issue) -> Self {
-		Self {
-			state: issue.contents.state.clone(),
-			labels: issue.contents.labels.clone(),
-			title: issue.contents.title.clone(),
-			marker: IssueMarker::from(&issue.identity),
-		}
-	}
-
-	/// Render via cmark as a standalone list item (depth 0; keeps its trailing newline).
-	pub(crate) fn encode(&self) -> String {
-		use crate::{OwnedEvent, OwnedTag, OwnedTagEnd};
-		let labels_part = if self.labels.is_empty() { String::new() } else { format!("({}) ", self.labels.join(", ")) };
-		crate::Events::from(vec![
-			OwnedEvent::Start(OwnedTag::List(None)),
-			OwnedEvent::Start(OwnedTag::Item),
-			OwnedEvent::CheckBox(self.state.to_checkbox_contents()),
-			OwnedEvent::Text(format!("{labels_part}{} ", self.title)),
-			OwnedEvent::InlineHtml(format!("<!-- {} -->", self.marker.encode())),
-			OwnedEvent::End(OwnedTagEnd::Item),
-			OwnedEvent::End(OwnedTagEnd::List(false)),
-		])
-		.into()
-	}
-
-	/// Parse the title line from an item event stream. Returns the parsed line and the
-	/// position of the first body event inside the item.
-	fn decode(events: &[crate::OwnedEvent], ctx: &ParseContext, default_pending: bool) -> Result<(Self, usize), ParseError> {
-		use crate::{OwnedEvent, OwnedTag};
-
-		let mut pos = 0;
-
-		// Skip to first Start(Item) inside the top-level List
-		while pos < events.len() && !matches!(&events[pos], OwnedEvent::Start(OwnedTag::Item)) {
-			pos += 1;
-		}
-		if pos >= events.len() {
-			return Err(ParseError::empty_file());
-		}
-		pos += 1; // past Start(Item)
-
-		// --- Parse title inline content: CheckBox, Text(labels+title), InlineHtml(marker) ---
-		let close_state = match &events[pos] {
-			OwnedEvent::CheckBox(inner) => {
-				pos += 1;
-				let needle = format!("[{inner}]");
-				CloseState::from_checkbox(inner).map_err(|content| ParseError::invalid_checkbox(ctx.named_source(), ctx.find_line_span(&needle, 1), content))?
-			}
-			_ => return Err(ParseError::invalid_title(ctx.named_source(), ctx.line_span(1), "missing checkbox".into())),
-		};
-
-		// Collect text before the issue marker InlineHtml
-		let mut title_text = String::new();
-		while pos < events.len() {
-			match &events[pos] {
-				OwnedEvent::InlineHtml(_) => break,
-				OwnedEvent::Text(t) => {
-					title_text.push_str(t);
-					pos += 1;
-				}
-				OwnedEvent::Code(c) => {
-					title_text.push('`');
-					title_text.push_str(c);
-					title_text.push('`');
-					pos += 1;
-				}
-				_ => break,
-			}
-		}
-
-		// Parse the InlineHtml marker, or fall back to `!n` shorthand embedded in title text.
-		// When `default_pending` is true (post-blocker checkbox items), missing markers
-		// default to Pending instead of erroring.
-		let identity_info = match &events[pos] {
-			OwnedEvent::InlineHtml(html) => {
-				let (marker, _) = IssueMarker::parse_from_end(&format!("x {html}")).ok_or_else(|| ParseError::missing_url_marker(ctx.named_source(), ctx.line_span(1)))?;
-				pos += 1;
-				marker
-			}
-			_ => {
-				// `!n` shorthand: pulldown_cmark embeds it in the Text event (no separate InlineHtml)
-				match IssueMarker::parse_from_end(&title_text) {
-					Some((marker, rest)) => {
-						title_text = rest.to_string();
-						marker
-					}
-					None if default_pending => IssueMarker::Pending,
-					None => return Err(ParseError::missing_url_marker(ctx.named_source(), ctx.line_span(1))),
-				}
-			}
-		};
-
-		// Skip inline omitted markers (and intervening whitespace) that follow the issue marker on the title line
-		loop {
-			match events.get(pos) {
-				Some(OwnedEvent::InlineHtml(html)) => {
-					let trimmed = html.trim();
-					if (trimmed.starts_with("<!--omitted") && trimmed.contains("{{{")) || trimmed.starts_with("<!--,}}}") {
-						pos += 1;
-					} else {
-						break;
-					}
-				}
-				Some(OwnedEvent::Text(t)) if t.trim().is_empty() => {
-					pos += 1; // whitespace between marker and omitted marker
-				}
-				_ => break,
-			}
-		}
-
-		// Skip SoftBreak after title (title flows directly into body in tight items)
-		if matches!(events.get(pos), Some(OwnedEvent::SoftBreak)) {
-			pos += 1;
-		}
-
-		// Parse labels from title text
-		let title_text = title_text.trim_end();
-		let (labels, title) = if title_text.starts_with('(') {
-			if let Some(paren_end) = title_text.find(") ") {
-				let labels_str = &title_text[1..paren_end];
-				let labels: Vec<String> = labels_str.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
-				(labels, title_text[paren_end + 2..].to_string())
-			} else {
-				(vec![], title_text.to_string())
-			}
-		} else {
-			(vec![], title_text.to_string())
-		};
-
-		Ok((
-			Self {
-				state: close_state,
-				labels,
-				title,
-				marker: identity_info,
-			},
-			pos,
-		))
-	}
-}
-
-/// Typed spans produced by the segmenter for one issue item.
-struct ItemSegments {
-	/// Body span first (identity `Body`), then any additional comment spans.
-	comments: Vec<(CommentIdentity, Vec<crate::OwnedEvent>)>,
-	blocker_events: Vec<crate::OwnedEvent>,
-	/// Child item slices (each already wrapped in a List), with their default-pending flag.
-	child_slices: Vec<(Vec<crate::OwnedEvent>, bool)>,
-	select_blockers: bool,
-}
-
 #[derive(Clone, Debug, PartialEq, derive_new::new)]
 pub struct VirtualIssue {
 	pub selector: IssueSelector,
@@ -1577,6 +1417,166 @@ impl VirtualIssue {
 		}
 		events.len()
 	}
+}
+
+/// The `- [state] (labels) Title <!-- marker -->` line — the one-line header of every
+/// issue item, in both single-file and embedded forms.
+pub(crate) struct TitleLine {
+	state: CloseState,
+	labels: Vec<String>,
+	title: String,
+	marker: IssueMarker,
+}
+impl TitleLine {
+	pub(crate) fn of(issue: &Issue) -> Self {
+		Self {
+			state: issue.contents.state.clone(),
+			labels: issue.contents.labels.clone(),
+			title: issue.contents.title.clone(),
+			marker: IssueMarker::from(&issue.identity),
+		}
+	}
+
+	/// Render via cmark as a standalone list item (depth 0; keeps its trailing newline).
+	pub(crate) fn encode(&self) -> String {
+		use crate::{OwnedEvent, OwnedTag, OwnedTagEnd};
+		let labels_part = if self.labels.is_empty() { String::new() } else { format!("({}) ", self.labels.join(", ")) };
+		crate::Events::from(vec![
+			OwnedEvent::Start(OwnedTag::List(None)),
+			OwnedEvent::Start(OwnedTag::Item),
+			OwnedEvent::CheckBox(self.state.to_checkbox_contents()),
+			OwnedEvent::Text(format!("{labels_part}{} ", self.title)),
+			OwnedEvent::InlineHtml(format!("<!-- {} -->", self.marker.encode())),
+			OwnedEvent::End(OwnedTagEnd::Item),
+			OwnedEvent::End(OwnedTagEnd::List(false)),
+		])
+		.into()
+	}
+
+	/// Parse the title line from an item event stream. Returns the parsed line and the
+	/// position of the first body event inside the item.
+	fn decode(events: &[crate::OwnedEvent], ctx: &ParseContext, default_pending: bool) -> Result<(Self, usize), ParseError> {
+		use crate::{OwnedEvent, OwnedTag};
+
+		let mut pos = 0;
+
+		// Skip to first Start(Item) inside the top-level List
+		while pos < events.len() && !matches!(&events[pos], OwnedEvent::Start(OwnedTag::Item)) {
+			pos += 1;
+		}
+		if pos >= events.len() {
+			return Err(ParseError::empty_file());
+		}
+		pos += 1; // past Start(Item)
+
+		// --- Parse title inline content: CheckBox, Text(labels+title), InlineHtml(marker) ---
+		let close_state = match &events[pos] {
+			OwnedEvent::CheckBox(inner) => {
+				pos += 1;
+				let needle = format!("[{inner}]");
+				CloseState::from_checkbox(inner).map_err(|content| ParseError::invalid_checkbox(ctx.named_source(), ctx.find_line_span(&needle, 1), content))?
+			}
+			_ => return Err(ParseError::invalid_title(ctx.named_source(), ctx.line_span(1), "missing checkbox".into())),
+		};
+
+		// Collect text before the issue marker InlineHtml
+		let mut title_text = String::new();
+		while pos < events.len() {
+			match &events[pos] {
+				OwnedEvent::InlineHtml(_) => break,
+				OwnedEvent::Text(t) => {
+					title_text.push_str(t);
+					pos += 1;
+				}
+				OwnedEvent::Code(c) => {
+					title_text.push('`');
+					title_text.push_str(c);
+					title_text.push('`');
+					pos += 1;
+				}
+				_ => break,
+			}
+		}
+
+		// Parse the InlineHtml marker, or fall back to `!n` shorthand embedded in title text.
+		// When `default_pending` is true (post-blocker checkbox items), missing markers
+		// default to Pending instead of erroring.
+		let identity_info = match &events[pos] {
+			OwnedEvent::InlineHtml(html) => {
+				let (marker, _) = IssueMarker::parse_from_end(&format!("x {html}")).ok_or_else(|| ParseError::missing_url_marker(ctx.named_source(), ctx.line_span(1)))?;
+				pos += 1;
+				marker
+			}
+			_ => {
+				// `!n` shorthand: pulldown_cmark embeds it in the Text event (no separate InlineHtml)
+				match IssueMarker::parse_from_end(&title_text) {
+					Some((marker, rest)) => {
+						title_text = rest.to_string();
+						marker
+					}
+					None if default_pending => IssueMarker::Pending,
+					None => return Err(ParseError::missing_url_marker(ctx.named_source(), ctx.line_span(1))),
+				}
+			}
+		};
+
+		// Skip inline omitted markers (and intervening whitespace) that follow the issue marker on the title line
+		loop {
+			match events.get(pos) {
+				Some(OwnedEvent::InlineHtml(html)) => {
+					let trimmed = html.trim();
+					if (trimmed.starts_with("<!--omitted") && trimmed.contains("{{{")) || trimmed.starts_with("<!--,}}}") {
+						pos += 1;
+					} else {
+						break;
+					}
+				}
+				Some(OwnedEvent::Text(t)) if t.trim().is_empty() => {
+					pos += 1; // whitespace between marker and omitted marker
+				}
+				_ => break,
+			}
+		}
+
+		// Skip SoftBreak after title (title flows directly into body in tight items)
+		if matches!(events.get(pos), Some(OwnedEvent::SoftBreak)) {
+			pos += 1;
+		}
+
+		// Parse labels from title text
+		let title_text = title_text.trim_end();
+		let (labels, title) = if title_text.starts_with('(') {
+			if let Some(paren_end) = title_text.find(") ") {
+				let labels_str = &title_text[1..paren_end];
+				let labels: Vec<String> = labels_str.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+				(labels, title_text[paren_end + 2..].to_string())
+			} else {
+				(vec![], title_text.to_string())
+			}
+		} else {
+			(vec![], title_text.to_string())
+		};
+
+		Ok((
+			Self {
+				state: close_state,
+				labels,
+				title,
+				marker: identity_info,
+			},
+			pos,
+		))
+	}
+}
+
+/// Typed spans produced by the segmenter for one issue item.
+struct ItemSegments {
+	/// Body span first (identity `Body`), then any additional comment spans.
+	comments: Vec<(CommentIdentity, Vec<crate::OwnedEvent>)>,
+	blocker_events: Vec<crate::OwnedEvent>,
+	/// Child item slices (each already wrapped in a List), with their default-pending flag.
+	child_slices: Vec<(Vec<crate::OwnedEvent>, bool)>,
+	select_blockers: bool,
 }
 
 impl From<Issue> for VirtualIssue {
