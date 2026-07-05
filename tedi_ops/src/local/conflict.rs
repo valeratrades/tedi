@@ -175,8 +175,8 @@ pub fn initiate_conflict_merge(repo_info: RepoInfo, issue_number: u64, local_iss
 	let branch_output = Command::new("git").args(["-C", data_dir_str, "rev-parse", "--abbrev-ref", "HEAD"]).output()?;
 	let current_branch = String::from_utf8_lossy(&branch_output.stdout).trim().to_string();
 
-	// Write local state to conflict file (virtual format)
-	let local_virtual = local_issue.serialize_virtual();
+	// Write local state to conflict file (node + child links)
+	let local_virtual = local_issue.to_string();
 	std::fs::write(&conflict_file, &local_virtual)?;
 
 	// Stage and commit local state
@@ -223,8 +223,8 @@ pub fn initiate_conflict_merge(repo_info: RepoInfo, issue_number: u64, local_iss
 		return Err(ConflictError::new_git_error("Failed to checkout remote-state branch".into()));
 	}
 
-	// Write remote state to conflict file (virtual format)
-	let remote_virtual = remote_issue.serialize_virtual();
+	// Write remote state to conflict file (node + child links)
+	let remote_virtual = remote_issue.to_string();
 	std::fs::write(&conflict_file, &remote_virtual)?;
 
 	// Stage and commit remote state

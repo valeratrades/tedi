@@ -198,11 +198,15 @@ Uses `LazyIssue<Remote>` trait implemented in `remote/mod.rs`:
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
+### Local
+
+Each issue is one file under `issues/{owner}/{repo}/…`; a node with children is a directory `{n}_-_{title}/` holding `__main__.md` plus one file per child. `impl Display for Issue` is the single rendering — the exact bytes on disk, in the editor, and embedded in a sprint: title line · body · comments (folded) · `# Blockers` · child issues as `[Title](./rel.md)` links. One level only — a child is a link, and the subtree is loaded from the child files (`LazyIssue<Local>`), never from the buffer. Editing opens the real file in place; `VirtualIssue::parse` is the inverse of `Display` (a link parses to a shallow child).
+
 #### Key Type Locations
 
 | Type | File |
 |------|------|
-| `Issue`, `IssueContents`, `CloseState`, `IssueIdentity`, `TitleLine`/segmenter | `tedi_core/src/issue.rs` |
+| `Issue`, `IssueContents`, `CloseState`, `IssueIdentity`, `Display`/`TitleLine`/segmenter | `tedi_core/src/issue.rs` |
 | `RepoInfo`, `IssueLink`, `IssueRef`, `IssueIndex`, `IssueSelector` | `tedi_core/src/locate.rs` |
 | `Blockers`, `split_blockers()` | `tedi_core/src/blockers.rs` |
 | `Milestone`, `serialize_blockers_view()`, `parse_blockers_from_embedded()` | `tedi_core/src/milestone.rs` |

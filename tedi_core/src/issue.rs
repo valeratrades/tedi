@@ -9,6 +9,8 @@ use tedi_md::{indent_into, preserve_paragraph_spacing, wrap_inline_in_paragraphs
 
 use crate::{Blockers, IssueChildren, IssueIndex, IssueLink, IssueMarker, IssueSelector, Marker, ParseContext, ParseError, RepoInfo, TitleInGitPathError};
 
+/// Filename stem for the main issue file when the issue lives in its own directory (has children).
+pub const MAIN_ISSUE_FILENAME: &str = "__main__";
 /// Identity of a comment - either linked to Github or pending creation.
 /// Note: The first comment (issue body) is always `Body`, not `Linked` or `Pending`.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -709,43 +711,27 @@ impl Issue /*{{{1*/ {
 	}
 
 	//==========================================================================
-	// Serialization Methods
+	// Serialization
 	//==========================================================================
 
-	/// Serialize for virtual file representation (human-readable, full tree).
-	/// Creates a complete markdown file with all children recursively embedded.
-	/// Used for temp files in /tmp where user views/edits the full issue tree.
-	pub fn serialize_virtual(&self) -> String {
-		self.serialize_virtual_at_depth(0, true)
-	}
-
-	/// Internal: serialize virtual representation using milestone-style rendering.
-	///
-	/// Renders title line via cmark as a standalone list item, then renders body/comments/blockers/children
-	/// separately and indents them under the title. This matches how `milestone_embed::serialize_item` works,
-	/// avoiding cmark's paragraph spacing that would insert blank lines between title and body.
-	fn serialize_virtual_at_depth(&self, depth: usize, include_children: bool) -> String {
+	/// Render this issue's own file: title line · body · folded comments · blockers
+	/// · child issues as one-line links. One level — children are links, not embedded.
+	/// This is the exact byte content written to disk, opened in the editor, and embedded
+	/// in a sprint. See `impl Display for Issue`.
+	fn render(&self) -> String {
 		if self.identity.is_virtual {
 			assert!(self.user().is_none(), "virtual issue must not have a user tag, got: {:?}", self.user());
 		}
 
-		let content_indent = "  ".repeat(depth + 1);
+		let content_indent = "  ";
+		// Normalize the title line to exactly one trailing newline before appending content.
 		let mut out = String::new();
-
-		// === Title line ===
-		let title_str = TitleLine::of(self).encode();
-
-		// Indent the title line to the correct depth
-		let depth_indent = "  ".repeat(depth);
-		for line in title_str.lines() {
-			out.push_str(&depth_indent);
+		for line in TitleLine::of(self).encode().lines() {
 			out.push_str(line);
 			out.push('\n');
 		}
 
 		let is_owned = self.identity.is_owned();
-
-		// Helper: render content below title, indented under the item
 		let mut content = String::new();
 
 		// === Body (first comment) ===
@@ -753,125 +739,132 @@ impl Issue /*{{{1*/ {
 			&& !body_comment.body.is_empty()
 		{
 			let body_str: String = crate::Events::from(body_comment.body.to_vec()).into();
-			if !is_owned {
-				// Extra indent for unowned issues
-				indent_into(&mut content, &body_str, "  ");
-			} else {
+			if is_owned {
 				content.push_str(&body_str);
+			} else {
+				indent_into(&mut content, &body_str, "  ");
 			}
 		}
 
-		/// Ensure `content` ends with `\n\n` (blank line separator) when it has trailing content.
-		/// cmark rendering sometimes omits trailing newlines, so we normalize before inserting separators.
-		fn ensure_blank_line(content: &mut String) {
-			if content.is_empty() {
-				return;
-			}
-			if !content.ends_with('\n') {
-				content.push('\n');
-			}
-			if content.lines().last().is_some_and(|l| !l.trim().is_empty()) {
-				content.push('\n');
-			}
-		}
-
-		// === Additional comments ===
-		for comment in self.contents.comments.iter().skip(1) {
-			if self.identity.is_virtual {
-				assert!(
-					!comment.is_comment() || comment.user().is_none(),
-					"virtual issue must not have linked comments, got: {:?}",
-					comment.identity
-				);
-			}
-			let comment_is_owned = comment.user().is_none() || comment.user().is_some_and(crate::current_user::is);
-
-			// Blank line before comment separator
+		// === Additional comments — wrapped in a default-fold vim marker ===
+		if self.contents.comments.len() > 1 {
 			ensure_blank_line(&mut content);
-
-			// Comment separator marker
-			let marker_html = match &comment.identity {
-				CommentIdentity::Body | CommentIdentity::Pending => Marker::NewComment.encode(),
-				CommentIdentity::Created { user, id } => {
-					let url = self.url_str().expect("remote must be initialized");
-					format!("<!-- @{user} {url}#issuecomment-{id} -->")
-				}
-			};
-			content.push_str(&marker_html);
+			content.push_str(&Marker::OmittedStart.encode());
 			content.push('\n');
-
-			// Comment body
-			if !comment.body.is_empty() {
-				let body_str: String = crate::Events::from(comment.body.to_vec()).into();
-				if !comment_is_owned {
-					indent_into(&mut content, &body_str, "  ");
-				} else {
-					content.push_str(&body_str);
+			for comment in self.contents.comments.iter().skip(1) {
+				if self.identity.is_virtual {
+					assert!(
+						!comment.is_comment() || comment.user().is_none(),
+						"virtual issue must not have linked comments, got: {:?}",
+						comment.identity
+					);
 				}
+				let comment_is_owned = comment.user().is_none() || comment.user().is_some_and(crate::current_user::is);
+
+				let marker_html = match &comment.identity {
+					CommentIdentity::Body | CommentIdentity::Pending => Marker::NewComment.encode(),
+					CommentIdentity::Created { user, id } => {
+						let url = self.url_str().expect("remote must be initialized");
+						format!("<!-- @{user} {url}#issuecomment-{id} -->")
+					}
+				};
+				content.push_str(&marker_html);
+				content.push('\n');
+
+				if !comment.body.is_empty() {
+					let body_str: String = crate::Events::from(comment.body.to_vec()).into();
+					if comment_is_owned {
+						content.push_str(&body_str);
+					} else {
+						indent_into(&mut content, &body_str, "  ");
+					}
+				}
+				ensure_blank_line(&mut content);
 			}
+			content.push_str(&Marker::OmittedEnd.encode());
+			content.push('\n');
 		}
 
 		// === Blockers section ===
 		if !self.contents.blockers.is_empty() {
 			ensure_blank_line(&mut content);
-			let header = crate::Header::new(1, "Blockers");
-			content.push_str(&header.encode());
+			content.push_str(&crate::Header::new(1, "Blockers").encode());
 			content.push('\n');
-			let blockers_str: String = String::from(&self.contents.blockers);
-			content.push_str(&blockers_str);
+			content.push_str(&String::from(&self.contents.blockers));
 		}
 
 		if !content.is_empty() {
-			indent_into(&mut out, &content, &content_indent);
+			indent_into(&mut out, &content, content_indent);
 		}
 
-		// === Children — sort: open first by selector, then closed by selector ===
-		if include_children {
+		// === Children as links — sort: open first by selector, then closed by selector ===
+		if !self.children.is_empty() {
 			let (mut open, mut closed): (Vec<_>, Vec<_>) = self.children.iter().partition(|(_, child)| !child.contents.state.is_closed());
 			open.sort_by_key(|(sel, _)| *sel);
 			closed.sort_by_key(|(sel, _)| *sel);
-			let sorted_children = open.into_iter().chain(closed);
 
-			for (_, child) in sorted_children {
-				if out.lines().last().is_some_and(|l| !l.trim().is_empty()) {
-					out.push_str(&content_indent);
-					out.push('\n');
-				}
-
-				if child.contents.state.is_closed() {
-					let child_str = child.serialize_virtual_at_depth(depth + 1, true);
-					let omitted_start = Marker::OmittedStart.encode();
-					let omitted_end = Marker::OmittedEnd.encode();
-					let child_content_indent = "  ".repeat(depth + 2);
-
-					let mut lines = child_str.lines();
-					// First line is the title — inject omitted marker
-					if let Some(title_line) = lines.next() {
-						out.push_str(&format!("{title_line} {omitted_start}\n"));
-					}
-					// Remaining lines are body content
-					for line in lines {
-						out.push_str(line);
-						out.push('\n');
-					}
-					// Vim fold end
-					out.push_str(&child_content_indent);
-					out.push_str(&omitted_end);
-					out.push('\n');
-				} else {
-					let child_str = child.serialize_virtual_at_depth(depth + 1, true);
-					out.push_str(&child_str);
-				}
+			if out.lines().last().is_some_and(|l| !l.trim().is_empty()) {
+				out.push('\n');
+			}
+			for (_, child) in open.into_iter().chain(closed) {
+				indent_into(&mut out, &child.child_link_line(), content_indent);
 			}
 		}
 
 		out
 	}
 
-	/// Serialize for filesystem storage (single node, no children).
-	/// Children are stored in separate files within the parent's directory.
-	pub fn serialize_filesystem(&self) -> String {
-		self.serialize_virtual_at_depth(0, false)
+	/// One-line `- [state] (labels) [Title](./rel) <!-- marker -->` link to this issue's file,
+	/// used when this issue is embedded as a child of its parent. The path is navigational
+	/// (`gf`-jumpable) and re-derived on write; identity comes from the marker.
+	fn child_link_line(&self) -> String {
+		use crate::{OwnedEvent, OwnedTag, OwnedTagEnd};
+		let labels_part = if self.contents.labels.is_empty() {
+			String::new()
+		} else {
+			format!("({}) ", self.contents.labels.join(", "))
+		};
+		let mut events = vec![
+			OwnedEvent::Start(OwnedTag::List(None)),
+			OwnedEvent::Start(OwnedTag::Item),
+			OwnedEvent::CheckBox(self.contents.state.to_checkbox_contents()),
+		];
+		if !labels_part.is_empty() {
+			events.push(OwnedEvent::Text(labels_part));
+		}
+		events.extend([
+			OwnedEvent::Start(OwnedTag::Link {
+				link_type: pulldown_cmark::LinkType::Inline,
+				dest_url: self.storage_rel_link(),
+				title: String::new(),
+				id: String::new(),
+			}),
+			OwnedEvent::Text(self.contents.title.clone()),
+			OwnedEvent::End(OwnedTagEnd::Link),
+			OwnedEvent::Text(" ".to_string()),
+			OwnedEvent::InlineHtml(format!("<!-- {} -->", IssueMarker::from(&self.identity).encode())),
+			OwnedEvent::End(OwnedTagEnd::Item),
+			OwnedEvent::End(OwnedTagEnd::List(false)),
+		]);
+		crate::Events::from(events).into()
+	}
+
+	/// Relative path (from the parent issue's directory) to this issue's markdown file.
+	fn storage_rel_link(&self) -> String {
+		let number = self.git_id();
+		let title = &self.contents.title;
+		let closed = self.contents.state.is_closed();
+		if self.children.is_empty() {
+			format!("./{}", issue_file_name(number, title, closed))
+		} else {
+			let dir = issue_dir_name(number, title, closed);
+			let main = if closed {
+				format!("{MAIN_ISSUE_FILENAME}.md.bak")
+			} else {
+				format!("{MAIN_ISSUE_FILENAME}.md")
+			};
+			format!("./{dir}/{main}")
+		}
 	}
 
 	/// Serialize for GitHub API (markdown body only, no local markers).
@@ -896,7 +889,7 @@ impl Issue /*{{{1*/ {
 		}
 
 		// Serialize and find the last blocker item line
-		let serialized = self.serialize_virtual();
+		let serialized = self.render();
 		let lines: Vec<&str> = serialized.lines().collect();
 
 		// Find where blockers section starts
@@ -951,6 +944,42 @@ impl Issue /*{{{1*/ {
 	}
 }
 
+/// The single stable rendering of an issue: the exact bytes written to disk, opened in the
+/// editor, and embedded in a sprint. Embedding an issue *is* rendering it in its own file.
+impl std::fmt::Display for Issue {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.write_str(&self.render())
+	}
+}
+
+/// Sanitize a title for use in filenames: spaces→`_`, drop non-alphanumeric (keep `-`/`_`), trim `_`.
+pub fn sanitize_title(title: &str) -> String {
+	title
+		.chars()
+		.map(|c| {
+			if c.is_alphanumeric() || c == '-' || c == '_' {
+				c
+			} else if c == ' ' {
+				'_'
+			} else {
+				'\0'
+			}
+		})
+		.filter(|&c| c != '\0')
+		.collect::<String>()
+		.trim_matches('_')
+		.to_string()
+}
+/// Flat issue filename: `{base}.md[.bak]`.
+pub fn issue_file_name(number: Option<u64>, title: &str, closed: bool) -> String {
+	let base = format!("{}.md", issue_base_name(number, title));
+	if closed { format!("{base}.bak") } else { base }
+}
+/// Directory name for an issue with children: `{base}[.bak]`.
+pub fn issue_dir_name(number: Option<u64>, title: &str, closed: bool) -> String {
+	let base = issue_base_name(number, title);
+	if closed { format!("{base}.bak") } else { base }
+}
 #[derive(Clone, Debug, Default, PartialEq, derive_new::new)]
 /// Hollow Issue container, - used for parsing virtual repr
 ///
@@ -959,19 +988,6 @@ pub struct HollowIssue {
 	pub remote: Option<Box<LinkedIssueMeta>>,
 	pub children: IssueChildren<HollowIssue>,
 }
-impl From<Issue> for HollowIssue {
-	fn from(value: Issue) -> Self {
-		let mut children = HashMap::with_capacity(value.children.capacity());
-		for (selector, child) in value.children.into_iter() {
-			children.insert(selector, child.into());
-		}
-		HollowIssue {
-			remote: value.identity.remote,
-			children,
-		}
-	}
-}
-
 #[derive(Clone, Debug, PartialEq, derive_new::new)]
 pub struct VirtualIssue {
 	pub selector: IssueSelector,
@@ -1013,6 +1029,10 @@ impl VirtualIssue {
 			})
 			.collect();
 
+		// A child normally renders as a one-line link (`- [x] [Title](./rel) <!-- marker -->`), which
+		// parses to a shallow child (empty body/children) since a link carries no content. We still
+		// descend recursively so any embedded content a child item does hold is captured — production
+		// buffers hold only links, but test fixtures and hand-authored files may embed child bodies.
 		let mut children = HashMap::new();
 		for (child_events, children_default_pending) in seg.child_slices {
 			let child = Self::parse_from_events_inner(&child_events, ctx, children_default_pending)?;
@@ -1419,6 +1439,44 @@ impl VirtualIssue {
 	}
 }
 
+/// Ensure `content` ends with a blank-line separator when it has trailing content.
+/// cmark rendering sometimes omits trailing newlines, so we normalize before inserting separators.
+fn ensure_blank_line(content: &mut String) {
+	if content.is_empty() {
+		return;
+	}
+	if !content.ends_with('\n') {
+		content.push('\n');
+	}
+	if content.lines().last().is_some_and(|l| !l.trim().is_empty()) {
+		content.push('\n');
+	}
+}
+
+/// Base name `{number}_-_{sanitized}` (or just `{sanitized}`/`{number}` when one side is empty).
+fn issue_base_name(number: Option<u64>, title: &str) -> String {
+	let sanitized = sanitize_title(title);
+	match number {
+		Some(n) if sanitized.is_empty() => n.to_string(),
+		Some(n) => format!("{n}_-_{sanitized}"),
+		None if sanitized.is_empty() => "untitled".to_string(),
+		None => sanitized,
+	}
+}
+
+impl From<Issue> for HollowIssue {
+	fn from(value: Issue) -> Self {
+		let mut children = HashMap::with_capacity(value.children.capacity());
+		for (selector, child) in value.children.into_iter() {
+			children.insert(selector, child.into());
+		}
+		HollowIssue {
+			remote: value.identity.remote,
+			children,
+		}
+	}
+}
+
 /// The `- [state] (labels) Title <!-- marker -->` line — the one-line header of every
 /// issue item, in both single-file and embedded forms.
 pub(crate) struct TitleLine {
@@ -1456,7 +1514,7 @@ impl TitleLine {
 	/// Parse the title line from an item event stream. Returns the parsed line and the
 	/// position of the first body event inside the item.
 	fn decode(events: &[crate::OwnedEvent], ctx: &ParseContext, default_pending: bool) -> Result<(Self, usize), ParseError> {
-		use crate::{OwnedEvent, OwnedTag};
+		use crate::{OwnedEvent, OwnedTag, OwnedTagEnd};
 
 		let mut pos = 0;
 
@@ -1479,7 +1537,9 @@ impl TitleLine {
 			_ => return Err(ParseError::invalid_title(ctx.named_source(), ctx.line_span(1), "missing checkbox".into())),
 		};
 
-		// Collect text before the issue marker InlineHtml
+		// Collect text before the issue marker InlineHtml.
+		// A child item renders its title as a markdown link (`[Title](./rel)`) so `gf` works;
+		// we unwrap the Link and keep its inner text as the title (the path is navigational).
 		let mut title_text = String::new();
 		while pos < events.len() {
 			match &events[pos] {
@@ -1492,6 +1552,9 @@ impl TitleLine {
 					title_text.push('`');
 					title_text.push_str(c);
 					title_text.push('`');
+					pos += 1;
+				}
+				OwnedEvent::Start(OwnedTag::Link { .. }) | OwnedEvent::End(OwnedTagEnd::Link) => {
 					pos += 1;
 				}
 				_ => break,
@@ -1810,21 +1873,13 @@ mod tests {
 		let content = "- [ ] Parent issue <!-- https://github.com/owner/repo/issues/1 -->\n\n  Body\n\n  - [x] Closed sub <!-- https://github.com/owner/repo/issues/2 --> <!--omitted {{{always-->\n\n    closed body\n    <!--,}}}-->\n\n  - [-] Not planned sub <!-- https://github.com/owner/repo/issues/3 --> <!--omitted {{{always-->\n\n    not planned body\n    <!--,}}}-->\n\n  - [42] Duplicate sub <!-- https://github.com/owner/repo/issues/4 --> <!--omitted {{{always-->\n\n    duplicate body\n    <!--,}}}-->\n";
 		let issue = unsafe_mock_parse_virtual(content);
 		// snapshot has trailing spaces on lines between closed children
-		insta::assert_snapshot!(issue.serialize_virtual(), @r"
+		insta::assert_snapshot!(issue.to_string(), @r"
 		- [ ] Parent issue <!-- https://github.com/owner/repo/issues/1 -->
 		  Body
-		  
-		  - [x] Closed sub <!-- https://github.com/owner/repo/issues/2 --> <!--omitted {{{always-->
-		    closed body
-		    <!--,}}}-->
-		  
-		  - \[-] Not planned sub <!-- https://github.com/owner/repo/issues/3 --> <!--omitted {{{always-->
-		    not planned body
-		    <!--,}}}-->
-		  
-		  - \[42] Duplicate sub <!-- https://github.com/owner/repo/issues/4 --> <!--omitted {{{always-->
-		    duplicate body
-		    <!--,}}}-->
+
+		  - [x] [Closed sub](./2_-_Closed_sub.md.bak) <!-- https://github.com/owner/repo/issues/2 -->
+		  - \[-] [Not planned sub](./3_-_Not_planned_sub.md.bak) <!-- https://github.com/owner/repo/issues/3 -->
+		  - \[42] [Duplicate sub](./4_-_Duplicate_sub.md.bak) <!-- https://github.com/owner/repo/issues/4 -->
 		");
 	}
 
@@ -1864,19 +1919,22 @@ mod tests {
 	}
 
 	#[test]
-	fn test_serialize_filesystem_no_children() {
+	fn test_display_renders_children_as_links() {
 		let content = "- [ ] Parent <!-- https://github.com/owner/repo/issues/1 -->\n\n  Parent body\n\n  - [ ] Child 1 <!--sub https://github.com/owner/repo/issues/2 -->\n\n    Child 1 body\n\n  - [ ] Child 2 <!--sub https://github.com/owner/repo/issues/3 -->\n\n    Child 2 body\n";
 		let issue = unsafe_mock_parse_virtual(content);
 		assert_eq!(issue.children.len(), 2);
-		// filesystem serialization should NOT include children
-		insta::assert_snapshot!(issue.serialize_filesystem(), @"
+		// Display embeds children as one-line links, not their content
+		insta::assert_snapshot!(issue.to_string(), @"
 		- [ ] Parent <!-- https://github.com/owner/repo/issues/1 -->
 		  Parent body
+
+		  - [ ] [Child 1](./2_-_Child_1.md) <!-- https://github.com/owner/repo/issues/2 -->
+		  - [ ] [Child 2](./3_-_Child_2.md) <!-- https://github.com/owner/repo/issues/3 -->
 		");
 	}
 
 	#[test]
-	fn test_serialize_filesystem_roundtrip_blocker_escaping() {
+	fn test_display_roundtrip_blocker_escaping() {
 		let cases = vec![
 			"- [ ] Title <!-- https://github.com/owner/repo/issues/1 -->\n  # Blockers\n  - `insert` semantics on `RoutingHub`\n",
 			"- [ ] Title <!-- https://github.com/owner/repo/issues/1 -->\n  # Blockers\n  - `insert`semantics on`RoutingHub`\n",
@@ -1887,26 +1945,25 @@ mod tests {
 
 		for initial_content in cases {
 			let issue = unsafe_mock_parse_virtual(initial_content);
-			let s1 = issue.serialize_filesystem();
+			let s1 = issue.to_string();
 			for cycle in 1..=5 {
 				let re = unsafe_mock_parse_virtual(&s1);
-				let sn = re.serialize_filesystem();
-				assert_eq!(s1, sn, "serialize_filesystem not idempotent at cycle {cycle} for input: {initial_content:?}");
+				let sn = re.to_string();
+				assert_eq!(s1, sn, "Display not idempotent at cycle {cycle} for input: {initial_content:?}");
 			}
 		}
 	}
 
 	#[test]
-	fn test_serialize_virtual_includes_children() {
+	fn test_display_includes_children() {
 		let content =
 			"- [ ] Parent <!-- https://github.com/owner/repo/issues/1 -->\n\n  Parent body\n\n  - [ ] Child 1 <!--sub https://github.com/owner/repo/issues/2 -->\n\n    Child 1 body\n";
 		let issue = unsafe_mock_parse_virtual(content);
-		insta::assert_snapshot!(issue.serialize_virtual(), @"
+		insta::assert_snapshot!(issue.to_string(), @"
 		- [ ] Parent <!-- https://github.com/owner/repo/issues/1 -->
 		  Parent body
-		  
-		  - [ ] Child 1 <!-- https://github.com/owner/repo/issues/2 -->
-		    Child 1 body
+
+		  - [ ] [Child 1](./2_-_Child_1.md) <!-- https://github.com/owner/repo/issues/2 -->
 		");
 	}
 
@@ -1928,7 +1985,7 @@ mod tests {
 	fn test_virtual_roundtrip() {
 		let content = "- [ ] Parent <!-- https://github.com/owner/repo/issues/1 -->\n\n  Parent body\n\n  - [ ] Child <!--sub https://github.com/owner/repo/issues/2 -->\n\n    Child body\n";
 		let issue = unsafe_mock_parse_virtual(content);
-		let serialized = issue.serialize_virtual();
+		let serialized = issue.to_string();
 		let reparsed = unsafe_mock_parse_virtual(&serialized);
 		insta::assert_snapshot!(
 			format!("title: {}\nchildren: {}", reparsed.contents.title, reparsed.children.len()),
@@ -1945,7 +2002,7 @@ mod tests {
 		let vi = VirtualIssue::parse(content, PathBuf::from("test.md")).unwrap();
 		assert!(matches!(vi.contents.blockers.set_state, Some(crate::BlockerSetState::Pending)));
 		// !s must not appear in re-serialized output, blockers preserved
-		insta::assert_snapshot!(unsafe_mock_parse_virtual(content).serialize_virtual(), @"
+		insta::assert_snapshot!(unsafe_mock_parse_virtual(content).to_string(), @"
 		- [ ] Issue <!-- https://github.com/owner/repo/issues/1 -->
 		  Body
 
@@ -2042,10 +2099,10 @@ mod tests {
 		crate::current_user::set("mock_user".to_string());
 		let input = "- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n  original body\n";
 		let issue = unsafe_mock_parse_virtual(input);
-		let s1 = issue.serialize_virtual();
+		let s1 = issue.to_string();
 		let issue2 = unsafe_mock_parse_virtual(&s1);
-		let s2 = issue2.serialize_virtual();
-		assert_eq!(s1, s2, "serialize_virtual must be idempotent");
+		let s2 = issue2.to_string();
+		assert_eq!(s1, s2, "Display must be idempotent");
 	}
 
 	#[test]
@@ -2053,11 +2110,11 @@ mod tests {
 		crate::current_user::set("mock_user".to_string());
 		let input = "- [ ] Parent <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n  Body\n\n  - [-] Not planned <!--sub @mock_user https://github.com/o/r/issues/2 -->\n\n    np body\n\n  - [42] Duplicate <!--sub @mock_user https://github.com/o/r/issues/3 -->\n\n    dup body\n";
 		let issue = unsafe_mock_parse_virtual(input);
-		let s1 = issue.serialize_virtual();
+		let s1 = issue.to_string();
 		for cycle in 1..=5 {
 			let re = unsafe_mock_parse_virtual(&s1);
-			let sn = re.serialize_virtual();
-			assert_eq!(s1, sn, "serialize_virtual must be idempotent at cycle {cycle}");
+			let sn = re.to_string();
+			assert_eq!(s1, sn, "Display must be idempotent at cycle {cycle}");
 		}
 	}
 
@@ -2107,7 +2164,7 @@ mod tests {
 		crate::current_user::set("mock_user".to_string());
 		let input = "- [ ] Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n  some text\n\n  ```rust\n  fn main() {\n    println!(\"hello\");\n  }\n  ```\n\n  more text\n";
 		let issue = unsafe_mock_parse_virtual(input);
-		let serialized = issue.serialize_virtual();
+		let serialized = issue.to_string();
 		insta::assert_snapshot!(serialized, @r#"
 		- [ ] Issue <!-- https://github.com/owner/repo/issues/1 -->
 		  some text
@@ -2127,7 +2184,7 @@ mod tests {
 		crate::current_user::set("mock_user".to_string());
 		let input = "- [ ] Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n  first paragraph\n\n  second paragraph\n\n  third paragraph\n";
 		let issue = unsafe_mock_parse_virtual(input);
-		let serialized = issue.serialize_virtual();
+		let serialized = issue.to_string();
 		insta::assert_snapshot!(serialized, @"
 		- [ ] Issue <!-- https://github.com/owner/repo/issues/1 -->
 		  first paragraph
@@ -2143,9 +2200,9 @@ mod tests {
 		crate::current_user::set("mock_user".to_string());
 		let input = "- [ ] Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n  some text\n\n  ```rust\n  fn main() {\n    println!(\"hello\");\n  }\n  ```\n\n  more text\n";
 		let issue = unsafe_mock_parse_virtual(input);
-		let s1 = issue.serialize_virtual();
+		let s1 = issue.to_string();
 		let issue2 = unsafe_mock_parse_virtual(&s1);
-		let s2 = issue2.serialize_virtual();
+		let s2 = issue2.to_string();
 		assert_eq!(s1, s2, "body blank lines must be preserved idempotently");
 	}
 }

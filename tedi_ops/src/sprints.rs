@@ -11,7 +11,6 @@ use crate::{
 	local::{Consensus, FsReader, Local, LocalFs, LocalIssueSource},
 	parse_blockers_from_embedded,
 	remote::RemoteSource,
-	serialize_blockers_view,
 	sink::Sink,
 };
 
@@ -19,7 +18,7 @@ use crate::{
 ///
 /// Parses the content into a `Milestone`, resolves bare refs, then for each issue
 /// ref (shorthand, bare URL, or embedded), loads the local issue and replaces the
-/// item with a fresh `serialize_blockers_view` expansion.
+/// item with the issue's fresh `Display`.
 pub async fn expand_and_refresh(content: &str) -> Result<String> {
 	let mut doc = Milestone::parse(content);
 	doc.resolve_bare_refs();
@@ -41,8 +40,7 @@ pub async fn expand_and_refresh(content: &str) -> Result<String> {
 				}
 			},
 		};
-		let view = serialize_blockers_view(&issue);
-		expansions.insert(link.clone(), view);
+		expansions.insert(link.clone(), issue.to_string());
 	}
 
 	doc.expand_with(&expansions);

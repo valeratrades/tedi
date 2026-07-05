@@ -6,7 +6,7 @@
 
 use tedi_md::indent_into;
 
-use crate::{Events, Issue, IssueLink, IssueMarker, OwnedEvent, OwnedTag, OwnedTagEnd};
+use crate::{Events, IssueLink, IssueMarker, OwnedEvent, OwnedTag, OwnedTagEnd};
 
 /// A parsed milestone document: a sequence of top-level sections.
 pub struct Milestone {
@@ -49,7 +49,7 @@ impl Milestone {
 	}
 
 	/// Expand issue refs in-place using pre-loaded serialized views.
-	/// `expansions` maps issue link → serialized blocker view (from `serialize_blockers_view`).
+	/// `expansions` maps issue link → the issue's `Display` rendering.
 	/// Items with no matching expansion are left unchanged.
 	pub fn expand_with(&mut self, expansions: &std::collections::HashMap<IssueLink, String>) {
 		for section in &mut self.sections {
@@ -86,27 +86,9 @@ impl Milestone {
 	}
 }
 
-/// Serialize an issue as title line + blockers only (for milestone embedding).
-pub fn serialize_blockers_view(issue: &Issue) -> String {
-	// Reuse the shared title-line unit so embedded views and single-file items stay in sync.
-	let mut out = crate::issue::TitleLine::of(issue).encode();
-
-	// Append blockers as raw text (avoids pulldown_cmark_to_cmark escaping `#`)
-	if !issue.contents.blockers.is_empty() {
-		if !out.ends_with('\n') {
-			out.push('\n');
-		}
-		let header = crate::Header::new(1, "Blockers");
-		// Indent blockers under the list item (2 spaces)
-		indent_into(&mut out, &header.encode(), "  ");
-		let blockers_str = String::from(&issue.contents.blockers);
-		indent_into(&mut out, &blockers_str, "  ");
-	}
-
-	out
-}
 /// Parse blockers from an embedded issue section in milestone content.
-/// The section is: title line, then optionally a `# Blockers` header + blocker lines.
+/// The section is the issue's `Display`: title line · body · comments · `# Blockers` + blockers
+/// · child links. We read only the blocker items, stopping at the child-link list (`- [`).
 pub fn parse_blockers_from_embedded(section: &str) -> crate::Blockers {
 	let lines: Vec<&str> = section.lines().collect();
 	if lines.len() < 2 {
@@ -140,12 +122,19 @@ pub fn parse_blockers_from_embedded(section: &str) -> crate::Blockers {
 		return crate::Blockers::default();
 	};
 
-	// Collect blocker lines (strip one level of indent — tab or 2 spaces)
-	let blocker_lines: Vec<String> = lines[start..]
-		.iter()
-		.filter(|l| !l.trim().is_empty())
-		.map(|l| l.strip_prefix('\t').or_else(|| l.strip_prefix("  ")).unwrap_or(l).to_string())
-		.collect();
+	// Collect blocker lines (strip one level of indent — tab or 2 spaces), stopping at the
+	// child-issue link list (a checkbox item `- [`) which follows the blockers in `Display`.
+	let mut blocker_lines: Vec<String> = Vec::new();
+	for line in &lines[start..] {
+		if line.trim().is_empty() {
+			continue;
+		}
+		let stripped = line.strip_prefix('\t').or_else(|| line.strip_prefix("  ")).unwrap_or(line);
+		if stripped.trim_start().starts_with("- [") {
+			break;
+		}
+		blocker_lines.push(stripped.to_string());
+	}
 
 	let mut seq = crate::Blockers::parse(&blocker_lines.join("\n"));
 	if select_blockers {
@@ -648,6 +637,7 @@ mod tests {
 	use std::path::PathBuf;
 
 	use super::*;
+	use crate::Issue;
 
 	#[test]
 	fn test_parse_serialize_basic_structure() {
@@ -769,7 +759,7 @@ mod tests {
 	}
 
 	#[test]
-	fn test_serialize_blockers_view() {
+	fn test_display_embed_and_parse_blockers() {
 		use crate::{Blockers, IssueContents, IssueIdentity, IssueTimestamps};
 
 		let link = IssueLink::parse("https://github.com/owner/repo/issues/42").unwrap();
@@ -785,7 +775,7 @@ mod tests {
 			children: std::collections::HashMap::new(),
 		};
 
-		let serialized = serialize_blockers_view(&issue);
+		let serialized = issue.to_string();
 		insta::assert_snapshot!(serialized, @"
 		- [ ] My Issue <!-- https://github.com/owner/repo/issues/42 -->
 		  # Blockers
@@ -801,7 +791,7 @@ mod tests {
 	}
 
 	#[test]
-	fn test_serialize_blockers_view_no_blockers() {
+	fn test_display_embed_no_blockers() {
 		use crate::{IssueContents, IssueIdentity, IssueTimestamps};
 
 		let link = IssueLink::parse("https://github.com/owner/repo/issues/42").unwrap();
@@ -814,11 +804,11 @@ mod tests {
 			},
 			children: std::collections::HashMap::new(),
 		};
-		insta::assert_snapshot!(serialize_blockers_view(&issue), @"- [ ] No Blockers <!-- https://github.com/owner/repo/issues/42 -->");
+		insta::assert_snapshot!(issue.to_string(), @"- [ ] No Blockers <!-- https://github.com/owner/repo/issues/42 -->");
 	}
 
 	#[test]
-	fn test_serialize_blockers_view_with_labels() {
+	fn test_display_embed_with_labels() {
 		use crate::{Blockers, IssueContents, IssueIdentity, IssueTimestamps};
 
 		let link = IssueLink::parse("https://github.com/owner/repo/issues/42").unwrap();
@@ -834,7 +824,7 @@ mod tests {
 			},
 			children: std::collections::HashMap::new(),
 		};
-		insta::assert_snapshot!(serialize_blockers_view(&issue), @"
+		insta::assert_snapshot!(issue.to_string(), @"
 		- [ ] (bug, urgent) Labeled <!-- https://github.com/owner/repo/issues/42 -->
 		  # Blockers
 		  - do thing
@@ -1210,7 +1200,7 @@ mod tests {
 
 	/// Simulates the full cross-session milestones open cycle:
 	/// 1. Local issue file → parse → get blockers
-	/// 2. serialize_blockers_view → view string
+	/// 2. issue `Display` → view string
 	/// 3. Milestone::parse → expand_with → serialize → user sees expanded
 	/// 4. User saves → Milestone::parse → embedded_issues → parse_blockers_from_embedded
 	/// 5. sync_blocker_changes writes new Blockers to issue
@@ -1232,7 +1222,7 @@ mod tests {
 				// Step 1: Parse local issue file
 				let vi = crate::VirtualIssue::parse(&file_content, PathBuf::from("/tmp/test.md")).unwrap();
 
-				// Step 2: Build Issue and serialize_blockers_view
+				// Step 2: Build Issue and render via `Display`
 				let link = crate::IssueLink::parse("https://github.com/o/r/issues/42").unwrap();
 				let identity = crate::IssueIdentity::new_linked(None, None, link, crate::IssueTimestamps::default());
 				let issue = crate::Issue {
@@ -1240,7 +1230,7 @@ mod tests {
 					contents: vi.contents.clone(),
 					children: std::collections::HashMap::new(),
 				};
-				let view = serialize_blockers_view(&issue);
+				let view = issue.to_string();
 
 				// Step 3: expand_and_refresh (parse the view, which is the expanded form)
 				let doc = Milestone::parse(&view);
@@ -1256,8 +1246,7 @@ mod tests {
 				let mut new_vi = vi;
 				new_vi.contents.blockers = new_blockers;
 
-				// Step 6: Serialize to filesystem (new local file content)
-				// Rebuild as Issue for serialize_filesystem
+				// Step 6: Render the issue file (new local file content) via `Display`
 				let link2 = crate::IssueLink::parse("https://github.com/o/r/issues/42").unwrap();
 				let identity2 = crate::IssueIdentity::new_linked(None, None, link2, crate::IssueTimestamps::default());
 				let new_issue = crate::Issue {
@@ -1265,7 +1254,7 @@ mod tests {
 					contents: new_vi.contents,
 					children: std::collections::HashMap::new(),
 				};
-				let new_file = new_issue.serialize_filesystem();
+				let new_file = new_issue.to_string();
 
 				if new_file.trim() == file_content.trim() {
 					break;

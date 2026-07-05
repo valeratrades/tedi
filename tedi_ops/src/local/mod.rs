@@ -96,33 +96,7 @@ impl LocalIssueSource<GitReader> {
 
 impl Local {
 	/// The filename used for the main issue file when it has a directory for sub-issues.
-	pub const MAIN_ISSUE_FILENAME: &'static str = "__main__";
-
-	/// Get the virtual edit path for an issue.
-	///
-	/// Returns a path in `{base}/{index}.md` where:
-	/// - In tests: base is derived from the mock issues_dir's parent (the XDG data dir)
-	/// - In production: base is `/tmp/{CARGO_PKG_NAME}`
-	///
-	/// The index is the Display representation of the issue's full index (e.g. `owner/repo/123/456`).
-	/// This path is used when opening an editor for the user to edit the issue.
-	pub fn virtual_edit_path(issue: &crate::Issue) -> PathBuf {
-		// In tests, MockIssuesDir is set. Derive virtual edit path from the same temp dir.
-		// In subprocesses spawned by tests, MockIssuesDir won't be set but XDG env vars will be,
-		// so issues_dir() will return the test's temp dir, and we derive from its parent.
-		let base: PathBuf = if crate::mocks::MockIssuesDir::get().is_some() || std::env::var("__IS_INTEGRATION_TEST").is_ok() {
-			// Either thread_local is set (in-process test code) or we're a subprocess of a test
-			Self::issues_dir().parent().unwrap().parent().unwrap().parent().unwrap().to_path_buf()
-		} else {
-			PathBuf::from("/tmp").join("tedi")
-		};
-		let index_path = issue.full_index().to_string();
-		let vpath = base.join(format!("{index_path}.md"));
-		if let Some(parent) = vpath.parent() {
-			std::fs::create_dir_all(parent).unwrap();
-		}
-		vpath
-	}
+	pub const MAIN_ISSUE_FILENAME: &'static str = tedi_core::MAIN_ISSUE_FILENAME;
 
 	/// Returns the base directory for issue storage: XDG_DATA_HOME/todo/issues/
 	///
@@ -144,47 +118,19 @@ impl Local {
 	/// Sanitize a title for use in filenames.
 	/// Converts spaces to underscores and removes special characters.
 	pub fn sanitize_title(title: &str) -> String {
-		title
-			.chars()
-			.map(|c| {
-				if c.is_alphanumeric() || c == '-' || c == '_' {
-					c
-				} else if c == ' ' {
-					'_'
-				} else {
-					'\0'
-				}
-			})
-			.filter(|&c| c != '\0')
-			.collect::<String>()
-			.trim_matches('_')
-			.to_string()
-	}
-
-	/// Format: {number}_-_{sanitized_title} or just {sanitized_title} if no number
-	fn __issue_base_name(issue_number: Option<u64>, sanitized: &str) -> String {
-		match issue_number {
-			Some(num) if sanitized.is_empty() => format!("{num}"),
-			Some(num) => format!("{num}_-_{sanitized}"),
-			None if sanitized.is_empty() => "untitled".to_string(),
-			None => sanitized.to_string(),
-		}
+		tedi_core::sanitize_title(title)
 	}
 
 	/// Format an issue filename from number and title.
 	/// Format: {number}_-_{sanitized_title}.md[.bak]
 	fn format_issue_filename(issue_number: Option<u64>, title: &str, closed: bool) -> String {
-		let sanitized = Self::sanitize_title(title);
-		let base = format!("{}.md", Self::__issue_base_name(issue_number, &sanitized));
-		if closed { format!("{base}.bak") } else { base }
+		tedi_core::issue_file_name(issue_number, title, closed)
 	}
 
 	/// Get the directory name for an issue (used when it has sub-issues).
 	/// Format: {number}_-_{sanitized_title}[.bak]
 	pub fn issue_dir_name(issue_number: Option<u64>, title: &str, closed: bool) -> String {
-		let sanitized = Self::sanitize_title(title);
-		let base = Self::__issue_base_name(issue_number, &sanitized);
-		if closed { format!("{base}.bak") } else { base }
+		tedi_core::issue_dir_name(issue_number, title, closed)
 	}
 
 	/// Get the path for the main issue file when stored inside a directory.

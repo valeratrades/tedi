@@ -28,7 +28,7 @@ use v_utils::elog;
 
 use super::merge::Merge;
 use crate::{
-	HollowIssue, Issue, IssueIndex, IssueLink, IssueSelector, LazyIssue, RepoInfo, VirtualIssue,
+	Issue, IssueIndex, IssueLink, IssueSelector, LazyIssue, RepoInfo, VirtualIssue,
 	local::{
 		Consensus, FsReader, Local, LocalFs, LocalIssueSource, LocalPath,
 		conflict::{ConflictOutcome, initiate_conflict_merge},
@@ -295,6 +295,42 @@ mod types {
 		pub file_modified: bool,
 	}
 
+	/// Fold an edited parent buffer back into the in-memory issue.
+	///
+	/// The buffer carries this node's own contents plus its children as one-line links (shallow —
+	/// state/title/labels only). The children's real subtrees stay as loaded; we apply link-level
+	/// changes, drop links the user removed, and add newly-typed pending children.
+	fn apply_edited_buffer(issue: &mut Issue, old: &Issue, edited: VirtualIssue) {
+		use std::collections::HashMap;
+
+		issue.contents = edited.contents;
+		let child_parent_idx = IssueIndex::from(&*issue);
+
+		let mut children = HashMap::new();
+		for (selector, edited_child) in edited.children {
+			let child = match old.children.get(&selector) {
+				Some(existing) => {
+					let mut child = existing.clone();
+					child.contents.title = edited_child.contents.title;
+					child.contents.labels = edited_child.contents.labels;
+					child.contents.state = edited_child.contents.state;
+					child
+				}
+				None => Issue {
+					identity: if issue.identity.is_virtual {
+						crate::IssueIdentity::virtual_issue(child_parent_idx)
+					} else {
+						crate::IssueIdentity::pending(child_parent_idx)
+					},
+					contents: edited_child.contents,
+					children: HashMap::new(),
+				},
+			};
+			children.insert(selector, child);
+		}
+		issue.children = children;
+	}
+
 	/// A modifier that can be applied to an issue file.
 	#[derive(Debug)]
 	pub enum Modifier {
@@ -326,14 +362,19 @@ mod types {
 		#[tracing::instrument(skip_all)]
 		pub(super) async fn apply(&self, issue: &mut Issue) -> Result<ModifyResult> {
 			let old_issue = issue.clone();
-			let vpath = Local::virtual_edit_path(issue);
 
 			let result = match self {
 				Modifier::Editor { open_at_blocker } => {
-					let content = issue.serialize_virtual();
-					std::fs::write(&vpath, &content)?;
+					// Open the issue's real source file and edit it in place; children show as links.
+					let title = issue.contents.title.clone();
+					let closed = issue.contents.state.is_closed();
+					let has_children = !issue.children.is_empty();
+					let path = LocalPath::from(&*issue).resolve_parent(FsReader)?.deterministic(&title, closed, has_children).path();
+					let pre_existed = path.exists();
+					std::fs::create_dir_all(path.parent().expect("issue file path always has a parent"))?;
+					std::fs::write(&path, issue.to_string())?;
 
-					let mtime_before = std::fs::metadata(&vpath)?.modified()?;
+					let mtime_before = std::fs::metadata(&path)?.modified()?;
 
 					let position = if *open_at_blocker {
 						issue.find_last_blocker_position().map(|(line, col)| crate::utils::Position::new(line, Some(col)))
@@ -341,35 +382,41 @@ mod types {
 						None
 					};
 
-					crate::utils::open_file(&vpath, position).await?;
+					crate::utils::open_file(&path, position).await?;
 
-					let mtime_after = std::fs::metadata(&vpath)?.modified()?;
+					let mtime_after = std::fs::metadata(&path)?.modified()?;
 					let file_modified = mtime_after != mtime_before;
 
-					let content = std::fs::read_to_string(&vpath)?;
+					let content = std::fs::read_to_string(&path)?;
 
-					// `!u` on the last line means "undo": treat as if no changes were made
-					let (content, file_modified) = {
-						let trimmed = content.trim_end();
-						let undo = trimmed.strip_suffix("!u").or_else(|| trimmed.strip_suffix("!U"));
-						match undo {
-							Some(before) if before.is_empty() || before.ends_with('\n') => (before.trim_end_matches('\n').to_string(), false),
-							_ => (content, file_modified),
+					// `!u` on its own last line means "undo": treat as if no changes were made
+					let trimmed = content.trim_end();
+					let undo = matches!(
+						trimmed.strip_suffix("!u").or_else(|| trimmed.strip_suffix("!U")),
+						Some(before) if before.is_empty() || before.ends_with('\n')
+					);
+
+					if undo || !file_modified {
+						// No effective change. If the file existed before, restore it to mirror the issue
+						// (an undo leaves raw editor text on disk). If we created it just to open the editor
+						// for a brand-new issue, remove it — an aborted touch must not create anything.
+						if pre_existed {
+							std::fs::write(&path, issue.to_string())?;
+						} else {
+							std::fs::remove_file(&path)?;
+							if let Some(parent) = path.parent() {
+								let _ = std::fs::remove_dir(parent); // only succeeds if we left it empty
+							}
 						}
-					};
-
-					tracing::Span::current().record("vpath", tracing::field::debug(&vpath));
-					tracing::Span::current().record("content", content.as_str());
-					let parent_idx = issue.identity.parent_index;
-					let is_virtual = issue.identity.is_virtual;
-					let hollow: HollowIssue = old_issue.clone().into();
-					let virtual_issue = VirtualIssue::parse(&content, vpath.clone()).map_err(|e| {
-						crate::utils::persist_rejected_changes(&content);
-						RejectedEdit(e)
-					})?;
-					*issue = Issue::from_combined(hollow, virtual_issue, parent_idx, is_virtual)?;
-
-					ModifyResult { output: None, file_modified }
+						ModifyResult { output: None, file_modified: false }
+					} else {
+						let edited = VirtualIssue::parse(&content, path.clone()).map_err(|e| {
+							crate::utils::persist_rejected_changes(&content);
+							RejectedEdit(e)
+						})?;
+						apply_edited_buffer(issue, &old_issue, edited);
+						ModifyResult { output: None, file_modified: true }
+					}
 				}
 				Modifier::BlockerPop { parents } => {
 					use crate::blocker_interactions::BlockersExt;

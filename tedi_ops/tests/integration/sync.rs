@@ -514,6 +514,8 @@ async fn test_duplicate_sub_issues_filtered_from_remote() {
 	//- /o/r/1_-_Parent_Issue/__main__.md
 	- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
 	  parent body
+
+	  - [x] [Normal Closed Sub](./2_-_Normal_Closed_Sub.md.bak) <!-- @mock_user https://github.com/o/r/issues/2 -->
 	");
 }
 
@@ -666,8 +668,11 @@ async fn test_comment_shorthand_creates_comment() {
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
 	  issue body
 
+	  <!--omitted {{{always-->
 	  <!-- new comment -->
 	  My new comment content
+
+	  <!--,}}}-->
 	||||||| [hash]
 	=======
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
@@ -748,6 +753,9 @@ async fn test_force_merge_preserves_both_sub_issues(#[case] args: &[&str], #[cas
 		- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
 		  parent body
 		  extra line from local
+
+		  - [ ] [Local Sub](./2_-_Local_Sub.md) <!-- @mock_user https://github.com/o/r/issues/2 -->
+		  - [ ] [Remote Sub](./3_-_Remote_Sub.md) <!-- @mock_user https://github.com/o/r/issues/3 -->
 		");
 	} else {
 		// --pull --force: remote wins conflicts, so "extra local line" should NOT be present
@@ -761,6 +769,9 @@ async fn test_force_merge_preserves_both_sub_issues(#[case] args: &[&str], #[cas
 		//- /o/r/1_-_Parent_Issue/__main__.md
 		- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
 		  parent body
+
+		  - [ ] [Local Sub](./2_-_Local_Sub.md) <!-- @mock_user https://github.com/o/r/issues/2 -->
+		  - [ ] [Remote Sub](./3_-_Remote_Sub.md) <!-- @mock_user https://github.com/o/r/issues/3 -->
 		");
 	}
 }

@@ -149,15 +149,19 @@ async fn test_reset_discards_local_subissue_modifications() {
 	let out = ctx.open_url(("o", "r").into(), 1).args(&["--reset"]).edit(&edited).run();
 
 	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().skip_meta(), &out), @"
-	//- /o/r/1_-_Grandparent/2_-_Parent/3_-_Child.md.bak
-	- [x] Child <!-- @mock_user https://github.com/o/r/issues/3 -->
+	//- /o/r/1_-_Grandparent/2_-_Parent/3_-_Child.md
+	- [ ] Child <!-- @mock_user https://github.com/o/r/issues/3 -->
 	  child body
 	//- /o/r/1_-_Grandparent/2_-_Parent/__main__.md
 	- [ ] Parent <!-- @mock_user https://github.com/o/r/issues/2 -->
 	  original parent body
+
+	  - [ ] [Child](./3_-_Child.md) <!-- @mock_user https://github.com/o/r/issues/3 -->
 	//- /o/r/1_-_Grandparent/__main__.md
 	- [ ] Grandparent <!-- @mock_user https://github.com/o/r/issues/1 -->
 	  grandparent body
+
+	  - [ ] [Parent](./2_-_Parent/__main__.md) <!-- @mock_user https://github.com/o/r/issues/2 -->
 	");
 
 	assert!(

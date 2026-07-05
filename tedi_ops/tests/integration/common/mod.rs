@@ -508,20 +508,30 @@ impl<'a> OpenBuilder<'a> {
 				// Give process time to reach pipe wait
 				std::thread::sleep(std::time::Duration::from_millis(100));
 
-				// Edit the file while "editor is open" if requested
-				if let Some(EditOperation::FullIssue(virtual_issue)) = &edit_op {
-					let issue = with_timestamps(virtual_issue, None, is_virtual);
-					let vpath = tedi_ops::local::Local::virtual_edit_path(&issue);
-					let content = issue.serialize_virtual();
-					eprintln!("[test:OpenBuilder] submitting user input // writing to {vpath:?}:\n{content}");
-					std::fs::write(&vpath, &content).unwrap();
-				}
+				// Edit the issue's real file (written by the editor flow before it opens) while
+				// "editor is open". Retry until the file exists — never signal before editing.
+				let edit_applied = match &edit_op {
+					Some(EditOperation::FullIssue(virtual_issue)) => {
+						let issue = with_timestamps(virtual_issue, None, is_virtual);
+						match tedi_ops::local::LocalPath::from(&issue).resolve_parent(tedi_ops::local::FsReader).and_then(|r| r.search()) {
+							Ok(resolved) => {
+								let path = resolved.path();
+								let content = issue.to_string();
+								eprintln!("[test:OpenBuilder] submitting user input // writing to {path:?}:\n{content}");
+								std::fs::write(&path, &content).unwrap();
+								true
+							}
+							Err(_) => false, // file not created by editor flow yet, retry next loop
+						}
+					}
+					None => true,
+				};
 
 				// Try to signal the pipe (use nix O_NONBLOCK to avoid blocking)
-				// Only mark as signaled if we successfully wrote to the pipe.
+				// Only mark as signaled if the edit was applied AND we wrote to the pipe.
 				// The pipe open will fail if no reader is waiting yet.
 				#[cfg(unix)]
-				{
+				if edit_applied {
 					use std::os::unix::fs::OpenOptionsExt;
 					if let Ok(mut pipe) = std::fs::OpenOptions::new().write(true).custom_flags(0x800).open(&pipe_path)
 						&& pipe.write_all(b"x").is_ok()
@@ -809,7 +819,7 @@ pub(crate) fn get_binary_path() -> PathBuf {
 /// Type of edit operation for the builder.
 #[derive(Clone)]
 enum EditOperation {
-	/// Edit using a full VirtualIssue (converted to Issue at run time, writes serialize_virtual)
+	/// Edit using a full VirtualIssue (converted to Issue at run time, written to the real file as `Display`)
 	FullIssue(Box<tedi_ops::VirtualIssue>),
 }
 
