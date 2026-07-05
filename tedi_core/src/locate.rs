@@ -127,6 +127,66 @@ impl IssueLink {
 	}
 }
 
+/// A Github milestone identifier. Wraps a URL and derives properties on demand.
+/// Format: `https://github.com/{owner}/{repo}/milestone/{number}`
+#[derive(Clone, Debug, derive_more::Deref, Eq, Hash, PartialEq)]
+pub struct MilestoneLink(Url);
+
+impl MilestoneLink {
+	/// Create from a URL. Returns None if not a valid Github milestone URL.
+	pub fn new(mut url: Url) -> Option<Self> {
+		if url.host_str() != Some("github.com") {
+			return None;
+		}
+		let segments: Vec<_> = url.path_segments()?.collect();
+		if segments.len() < 4 || segments[2] != "milestone" {
+			return None;
+		}
+		segments[3].parse::<u64>().ok()?;
+		let normalized: Vec<String> = segments.iter().enumerate().map(|(i, s)| if i < 2 { s.to_lowercase() } else { s.to_string() }).collect();
+		url.path_segments_mut().ok()?.clear().extend(normalized.iter().map(String::as_str));
+		Some(Self(url))
+	}
+
+	pub fn parse(url: &str) -> Option<Self> {
+		Self::new(Url::parse(url).ok()?)
+	}
+
+	pub fn repo_info(&self) -> RepoInfo {
+		let mut segments = self.0.path_segments().unwrap();
+		RepoInfo::new(segments.next().unwrap(), segments.next().unwrap())
+	}
+
+	pub fn number(&self) -> u64 {
+		self.0.path_segments().unwrap().nth(3).unwrap().parse().unwrap()
+	}
+
+	pub fn as_str(&self) -> &str {
+		self.0.as_str()
+	}
+}
+
+/// A parsed milestone reference. URL-only for now (no established shorthand syntax).
+#[derive(Clone, Debug, PartialEq)]
+pub struct MilestoneRef(pub MilestoneLink);
+
+impl MilestoneRef {
+	/// Try to parse a single word as a milestone reference (a bare milestone URL).
+	pub fn parse_word(word: &str) -> Option<Self> {
+		MilestoneLink::parse(word).map(Self)
+	}
+
+	pub fn to_milestone_link(&self) -> MilestoneLink {
+		self.0.clone()
+	}
+}
+
+impl fmt::Display for MilestoneRef {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		write!(f, "{}", self.0.as_str())
+	}
+}
+
 /// Selector for identifying an issue within a repo.
 /// GitId is preferred when available, as title can change.
 /// Uses `ArrayString` for `Copy` semantics.

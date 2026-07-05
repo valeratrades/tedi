@@ -7,7 +7,7 @@
 use color_eyre::eyre::{Result, bail, eyre};
 
 use crate::{
-	Issue, IssueLink, LazyIssue, Milestone,
+	Issue, IssueLink, LazyIssue, TaskView,
 	local::{Consensus, FsReader, Local, LocalFs, LocalIssueSource},
 	parse_blockers_from_embedded,
 	remote::RemoteSource,
@@ -20,7 +20,7 @@ use crate::{
 /// ref (shorthand, bare URL, or embedded), loads the local issue and replaces the
 /// item with the issue's fresh `Display`.
 pub async fn expand_and_refresh(content: &str) -> Result<String> {
-	let mut doc = Milestone::parse(content);
+	let mut doc = TaskView::parse(content);
 	doc.resolve_bare_refs();
 
 	let links = doc.issue_links();
@@ -43,14 +43,13 @@ pub async fn expand_and_refresh(content: &str) -> Result<String> {
 		expansions.insert(link.clone(), issue.to_string());
 	}
 
-	doc.expand_with(&expansions);
-	Ok(doc.serialize())
+	Ok(doc.render(&expansions))
 }
 /// Parse blocker changes from an edited sprint description and sync them back to issue files.
 pub async fn sync_blocker_changes(content: &str, offline: bool) -> Result<()> {
 	use crate::open_interactions::{Modifier, SyncOptions, modify_and_sync_issue};
 
-	let doc = Milestone::parse(content);
+	let doc = TaskView::parse(content);
 
 	for (link, section_text) in doc.embedded_issues() {
 		let edited_blockers = parse_blockers_from_embedded(&section_text);

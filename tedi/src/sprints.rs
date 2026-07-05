@@ -3,7 +3,7 @@ use jiff::Timestamp;
 use tedi_adapters::github::GithubMilestone;
 use tedi_core::RepoInfo;
 use tedi_ops::{
-	IssueLink, Milestone,
+	IssueLink, TaskView,
 	local::MilestoneBlockerCache,
 	sprints::{expand_and_refresh, sync_blocker_changes},
 };
@@ -288,16 +288,16 @@ async fn edit_milestone(settings: &LiveSettings, tf: Timeframe, offline: bool, m
 	}
 
 	// Collapse expanded issues back to bare links for storage
-	let mut edited_doc = Milestone::parse(&edited_content);
+	let mut edited_doc = TaskView::parse(&edited_content);
 	edited_doc.collapse_to_links();
 	let new_description = edited_doc.serialize();
 
 	// Sync milestone assignments on GitHub: assign new issues, unassign removed ones
 	if !mock && !offline {
-		let mut orig_doc = Milestone::parse(&original_description);
+		let mut orig_doc = TaskView::parse(&original_description);
 		orig_doc.resolve_bare_refs();
 		let old_links = orig_doc.issue_links();
-		let new_doc = Milestone::parse(&new_description);
+		let new_doc = TaskView::parse(&new_description);
 		let new_links = new_doc.issue_links();
 		sync_milestone_assignments(settings, milestone_number, &old_links, &new_links).await?;
 	}
