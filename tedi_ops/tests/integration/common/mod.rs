@@ -122,6 +122,57 @@ impl TestContext {
 		}
 	}
 
+	/// Run a command that ends up in the mock editor (e.g. `sprints selected open`),
+	/// signaling the editor pipe with no edit made once the binary is parked in it.
+	pub fn run_with_editor(&self, args: &[&str]) -> RunOutput {
+		self.set_issues_dir_override();
+		let mut cmd = Command::new(get_binary_path());
+		cmd.args(args);
+		cmd.env("__IS_INTEGRATION_TEST", "1");
+		cmd.env(ENV_GITHUB_TOKEN, "test_token");
+		for (key, value) in self.xdg.env_vars() {
+			cmd.env(key, value);
+		}
+		cmd.env(ENV_MOCK_STATE, &self.mock_state_path);
+		cmd.env(ENV_MOCK_PIPE, &self.pipe_path);
+		cmd.stdout(std::process::Stdio::piped());
+		cmd.stderr(std::process::Stdio::piped());
+
+		let mut child = cmd.spawn().unwrap();
+		let mut stdout = child.stdout.take().unwrap();
+		let mut stderr = child.stderr.take().unwrap();
+		set_nonblocking(&stdout);
+		set_nonblocking(&stderr);
+		let mut stdout_buf = Vec::new();
+		let mut stderr_buf = Vec::new();
+
+		// A non-blocking write-open of the FIFO succeeds only once the binary is parked in
+		// `read()` — signal then, so we never race the editor flow.
+		let mut signaled = false;
+		while child.try_wait().unwrap().is_none() {
+			drain_pipe(&mut stdout, &mut stdout_buf);
+			drain_pipe(&mut stderr, &mut stderr_buf);
+			if !signaled {
+				use std::os::unix::fs::OpenOptionsExt;
+				if let Ok(mut pipe) = std::fs::OpenOptions::new().write(true).custom_flags(libc::O_NONBLOCK).open(&self.pipe_path)
+					&& pipe.write_all(b"x").is_ok()
+				{
+					signaled = true;
+				}
+			}
+			std::thread::sleep(std::time::Duration::from_millis(10));
+		}
+
+		let status = child.wait().unwrap();
+		drain_pipe(&mut stdout, &mut stdout_buf);
+		drain_pipe(&mut stderr, &mut stderr_buf);
+		RunOutput {
+			status,
+			stdout: String::from_utf8_lossy(&stdout_buf).into_owned(),
+			stderr: String::from_utf8_lossy(&stderr_buf).into_owned(),
+		}
+	}
+
 	/// Create an OpenBuilder for running the `open` command with an Issue reference.
 	///
 	/// Takes an `&Issue` and uses `IssueIndex::from(issue).to_string()` as the selector

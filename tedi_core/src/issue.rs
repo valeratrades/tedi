@@ -877,50 +877,43 @@ impl Issue /*{{{1*/ {
 		self.body()
 	}
 
-	/// parse_virtual but ignore
-	///
-	/// Find the position (line, col) of the last blocker item in the serialized content.
-	/// Returns None if there are no blockers.
-	/// Line numbers are 1-indexed to match editor conventions.
-	/// Column points to the first character of the item text (after `- `).
-	pub fn find_last_blocker_position(&self) -> Option<(u32, u32)> {
-		if self.contents.blockers.is_empty() {
-			return None;
-		}
-
-		// Serialize and find the last blocker item line
+	/// Editor cursor position (1-indexed line, col) in the serialized content: the last
+	/// blocker item, or — with no blockers — where the section would be inserted
+	/// (below comments, above children).
+	pub fn editor_position(&self) -> (u32, u32) {
 		let serialized = self.render();
 		let lines: Vec<&str> = serialized.lines().collect();
 
-		// Find where blockers section starts
-		let blockers_header = crate::Header::new(1, "Blockers").encode();
-		let blockers_start_idx = lines.iter().position(|line| line.trim() == blockers_header)?;
+		if !self.contents.blockers.is_empty() {
+			let blockers_header = crate::Header::new(1, "Blockers").encode();
+			let blockers_start_idx = lines
+				.iter()
+				.position(|line| line.trim() == blockers_header)
+				.expect("render() emits the header for non-empty blockers");
 
-		// Track the last line that's a blocker item (starts with `- ` but not `- [` which is sub-issue)
-		let mut last_item_line_num: Option<u32> = None;
-		let mut last_item_col: Option<u32> = None;
-
-		for (offset, line) in lines[blockers_start_idx + 1..].iter().enumerate() {
-			let trimmed = line.trim();
-
-			// Check if we've reached sub-issues (they start with `- [`)
-			if trimmed.starts_with("- [") {
-				break;
+			let mut last_item: Option<(u32, u32)> = None;
+			for (offset, line) in lines[blockers_start_idx + 1..].iter().enumerate() {
+				let trimmed = line.trim();
+				// Child links (`- [`) terminate the blockers section
+				if trimmed.starts_with("- [") {
+					break;
+				}
+				if trimmed.starts_with("- ") {
+					let dash_pos = line.find("- ").expect("trimmed starts with it") as u32;
+					// col points to the first character of the item text (after `- `)
+					last_item = Some(((blockers_start_idx + 1 + offset + 1) as u32, dash_pos + 3));
+				}
 			}
-
-			// A blocker item starts with `- ` (but not `- [`)
-			if trimmed.starts_with("- ") {
-				// Line number is 1-indexed
-				let line_num = (blockers_start_idx + 1 + offset + 1) as u32;
-				// Column: find where `- ` starts, then add 2 to skip past it
-				let dash_pos = line.find("- ").unwrap_or(0);
-				let col = (dash_pos + 3) as u32; // +2 for "- ", +1 for 1-indexing
-				last_item_line_num = Some(line_num);
-				last_item_col = Some(col);
-			}
+			return last_item.expect("non-empty blockers render at least one `- ` item");
 		}
 
-		last_item_line_num.zip(last_item_col)
+		// Each child renders as exactly one line at the end, preceded by a blank line —
+		// the cursor goes on that blank line; with no children, one past the last line.
+		let line = match self.children.is_empty() {
+			true => lines.len() + 1,
+			false => lines.len() - self.children.len(),
+		};
+		(line as u32, 1)
 	}
 
 	/// Get a reference to a descendant by lineage (chain of issue numbers).
@@ -1884,38 +1877,45 @@ mod tests {
 	}
 
 	#[test]
-	fn test_find_last_blocker_position_empty() {
+	fn test_editor_position_no_blockers() {
 		let content = "- [ ] Issue <!-- https://github.com/owner/repo/issues/1 -->\n\n  Body\n";
 		let issue = unsafe_mock_parse_virtual(content);
-		assert!(issue.find_last_blocker_position().is_none());
+		insta::assert_snapshot!(format!("{:?}", issue.editor_position()), @"(3, 1)");
 	}
 
 	#[test]
-	fn test_find_last_blocker_position_single_item() {
+	fn test_editor_position_no_blockers_with_sub_issues() {
+		let content = "- [ ] Issue <!-- https://github.com/owner/repo/issues/1 -->\n\n  Body\n\n  - [ ] Sub issue <!--sub https://github.com/owner/repo/issues/2 -->\n";
+		let issue = unsafe_mock_parse_virtual(content);
+		insta::assert_snapshot!(format!("{:?}", issue.editor_position()), @"(3, 1)");
+	}
+
+	#[test]
+	fn test_editor_position_single_item() {
 		let content = "- [ ] Issue <!-- https://github.com/owner/repo/issues/1 -->\n\n  Body\n\n  # Blockers\n  - task 1\n";
 		let issue = unsafe_mock_parse_virtual(content);
-		insta::assert_snapshot!(format!("{:?}", issue.find_last_blocker_position()), @"Some((5, 5))");
+		insta::assert_snapshot!(format!("{:?}", issue.editor_position()), @"(5, 5)");
 	}
 
 	#[test]
-	fn test_find_last_blocker_position_multiple_items() {
+	fn test_editor_position_multiple_items() {
 		let content = "- [ ] Issue <!-- https://github.com/owner/repo/issues/1 -->\n\n  Body\n\n  # Blockers\n  - task 1\n  - task 2\n  - task 3\n";
 		let issue = unsafe_mock_parse_virtual(content);
-		insta::assert_snapshot!(format!("{:?}", issue.find_last_blocker_position()), @"Some((7, 5))");
+		insta::assert_snapshot!(format!("{:?}", issue.editor_position()), @"(7, 5)");
 	}
 
 	#[test]
-	fn test_find_last_blocker_position_with_nesting() {
+	fn test_editor_position_with_nesting() {
 		let content = "- [ ] Issue <!-- https://github.com/owner/repo/issues/1 -->\n\n  Body\n\n  # Blockers\n  - Phase 1\n    - task a\n  - Phase 2\n    - task b\n";
 		let issue = unsafe_mock_parse_virtual(content);
-		insta::assert_snapshot!(format!("{:?}", issue.find_last_blocker_position()), @"Some((8, 7))");
+		insta::assert_snapshot!(format!("{:?}", issue.editor_position()), @"(8, 7)");
 	}
 
 	#[test]
-	fn test_find_last_blocker_position_before_sub_issues() {
+	fn test_editor_position_before_sub_issues() {
 		let content = "- [ ] Issue <!-- https://github.com/owner/repo/issues/1 -->\n\n  Body\n\n  # Blockers\n  - blocker task\n\n  - [ ] Sub issue <!--sub https://github.com/owner/repo/issues/2 -->\n";
 		let issue = unsafe_mock_parse_virtual(content);
-		insta::assert_snapshot!(format!("{:?}", issue.find_last_blocker_position()), @"Some((5, 5))");
+		insta::assert_snapshot!(format!("{:?}", issue.editor_position()), @"(5, 5)");
 	}
 
 	#[test]

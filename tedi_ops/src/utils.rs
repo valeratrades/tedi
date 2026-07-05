@@ -20,6 +20,10 @@ const REJECTED_CHANGES_PATH: &str = "/tmp/tedi/rejected-changes.md";
 pub async fn open_file<P: AsRef<Path> + std::fmt::Debug>(path: P, position: Option<Position>) -> Result<()> {
 	// Check for integration test pipe-based mock mode
 	if let Ok(pipe_path) = std::env::var(ENV_MOCK_PIPE) {
+		if let Some(pos) = &position {
+			// parsed by integration tests to snapshot cursor placement
+			eprintln!("[mock] position: {}:{}", pos.line, pos.col.unwrap_or(1));
+		}
 		// Wait for signal on the pipe (any data or EOF when writer closes)
 		eprintln!("[mock] Waiting for signal on pipe: {pipe_path}");
 		let mut buf = [0u8; 1];

@@ -33,6 +33,105 @@ fn write_selection(ctx: &TestContext, titles: &[(&str, &str, &str)]) {
 	ctx.xdg.write_cache("sprints_selection.json", &selection_cache_json(titles, None));
 }
 
+/// rust-analyzer-style cursor encoding: `$0` inserted into `content` at the position the
+/// mock editor reported on stderr, so cursor placement is part of the snapshot.
+fn with_cursor(content: &str, stderr: &str) -> String {
+	let pos = stderr.lines().find_map(|l| l.strip_prefix("[mock] position: ")).expect("mock editor must report a position");
+	let (line, col) = pos.split_once(':').expect("position format is line:col");
+	let (line, col): (usize, usize) = (line.parse().unwrap(), col.parse().unwrap());
+
+	let mut lines: Vec<String> = content.lines().map(str::to_string).collect();
+	while lines.len() < line {
+		lines.push(String::new()); // a position past EOF renders as the line the editor would create
+	}
+	let target = &mut lines[line - 1];
+	let byte = target.char_indices().nth(col - 1).map(|(i, _)| i).unwrap_or(target.len());
+	target.insert_str(byte, "$0");
+	lines.join("\n") + "\n"
+}
+
+#[tokio::test]
+async fn test_selected_open_cursor_at_last_blocker() {
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+
+	let vi = parse_virtual(
+		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+
+  Body text.
+
+  # Blockers
+  - First task
+  - Second task
+"#,
+	);
+	let issue = ctx.local(&vi, None).await;
+	let issue_path = ctx.resolve_issue_path(&issue);
+	write_selection(&ctx, &[("Test Issue", "mock_user", "https://github.com/o/r/issues/1")]);
+
+	let out = ctx.run_with_editor(&["--offline", "sprints", "selected", "open"]);
+	assert!(out.status.success(), "selected open should succeed. stderr: {}", out.stderr);
+
+	insta::assert_snapshot!(with_cursor(&read_issue_file(&issue_path), &out.stderr), @"
+	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+	    Body text.
+
+	  # Blockers
+	  - First task
+	  - $0Second task
+	");
+}
+
+#[tokio::test]
+async fn test_selected_open_cursor_without_blockers_above_children() {
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+
+	let vi = parse_virtual(
+		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+
+  Body text.
+
+  - [ ] Sub Issue <!--sub @mock_user https://github.com/o/r/issues/2 -->
+"#,
+	);
+	let issue = ctx.local(&vi, None).await;
+	let issue_path = ctx.resolve_issue_path(&issue);
+	write_selection(&ctx, &[("Test Issue", "mock_user", "https://github.com/o/r/issues/1")]);
+
+	let out = ctx.run_with_editor(&["--offline", "sprints", "selected", "open"]);
+	assert!(out.status.success(), "selected open should succeed. stderr: {}", out.stderr);
+
+	insta::assert_snapshot!(with_cursor(&read_issue_file(&issue_path), &out.stderr), @"
+	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+	    Body text.
+	$0
+	  - [ ] [Sub Issue](./2_-_Sub_Issue.md) <!-- @mock_user https://github.com/o/r/issues/2 -->
+	");
+}
+
+#[tokio::test]
+async fn test_selected_open_cursor_without_blockers_below_body() {
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+
+	let vi = parse_virtual(
+		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+
+  Body text.
+"#,
+	);
+	let issue = ctx.local(&vi, None).await;
+	let issue_path = ctx.resolve_issue_path(&issue);
+	write_selection(&ctx, &[("Test Issue", "mock_user", "https://github.com/o/r/issues/1")]);
+
+	let out = ctx.run_with_editor(&["--offline", "sprints", "selected", "open"]);
+	assert!(out.status.success(), "selected open should succeed. stderr: {}", out.stderr);
+
+	insta::assert_snapshot!(with_cursor(&read_issue_file(&issue_path), &out.stderr), @"
+	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+	    Body text.
+	$0
+	");
+}
+
 #[tokio::test]
 async fn test_selected_pop() {
 	let ctx = TestContext::build_with_preexisting_state_unsafe("");

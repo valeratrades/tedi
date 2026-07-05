@@ -90,18 +90,67 @@ pub async fn sprints_command(settings: &LiveSettings, args: SprintsArgs, mock: O
 		}
 		SprintsCommands::Edit { tf, offline } => edit_milestone(settings, tf, offline, mock.is_some()).await,
 		SprintsCommands::Healthcheck => healthcheck(settings).await,
-		SprintsCommands::Select { pattern, next, prev } => ops::select(pattern, next, prev, yes()).await,
-		SprintsCommands::Selected { op } => match op {
-			SelectedOp::Open => ops::selected_open(offline, yes()).await,
-			SelectedOp::List => ops::selected_list(),
-			SelectedOp::Add { text, nest } => ops::selected_add(text, nest, offline, yes()).await,
-			SelectedOp::Pop { parents } => ops::selected_pop(parents as usize, offline, yes()).await,
-			SelectedOp::Set { text } => ops::selected_set(text, offline, yes()).await,
-			SelectedOp::Resume(resume_args) => ops::selected_resume(resume_args, yes()).await,
-			SelectedOp::Halt(halt_args) => ops::selected_halt(halt_args).await,
-		},
+		SprintsCommands::Select { pattern, next, prev } => {
+			// A bare timeframe (`sprints select 1d`) focuses that sprint precision; anything else
+			// is an issue pattern within the currently-active sprint. The alpha-designator guard
+			// keeps numeric issue patterns (`select 2`) from parsing as a timeframe.
+			if !offline
+				&& !next && !prev
+				&& let Some(p) = pattern.as_deref()
+				&& p.chars().any(|c| c.is_ascii_alphabetic())
+				&& let Ok(tf) = p.parse::<Timeframe>()
+			{
+				focus_sprint(settings, tf, yes()).await
+			} else {
+				ensure_selection_cache(settings, offline).await?;
+				ops::select(pattern, next, prev, yes()).await
+			}
+		}
+		SprintsCommands::Selected { op } => {
+			ensure_selection_cache(settings, offline).await?;
+			match op {
+				SelectedOp::Open => ops::selected_open(offline, yes()).await,
+				SelectedOp::List => ops::selected_list(),
+				SelectedOp::Add { text, nest } => ops::selected_add(text, nest, offline, yes()).await,
+				SelectedOp::Pop { parents } => ops::selected_pop(parents as usize, offline, yes()).await,
+				SelectedOp::Set { text } => ops::selected_set(text, offline, yes()).await,
+				SelectedOp::Resume(resume_args) => ops::selected_resume(resume_args, yes()).await,
+				SelectedOp::Halt(halt_args) => ops::selected_halt(halt_args).await,
+			}
+		}
 		SprintsCommands::Search { query } => ops::search(&query).await,
 	}
+}
+
+/// Ensure an active sprint is resolvable for selection. Urgent (a local file) needs nothing;
+/// otherwise, when cold and online, fetch the lowest normal sprint (`blocker_tf`) into the cache.
+async fn ensure_selection_cache(settings: &LiveSettings, offline: bool) -> Result<()> {
+	if offline || tedi_ops::local::Selected::active_ready() {
+		return Ok(());
+	}
+	let config = settings.config()?;
+	let blocker_tf = config.milestones.as_ref().map(|m| m.blocker_tf()).unwrap_or("1d").to_string();
+	let milestones = request_milestones(settings).await?;
+	let desc = milestones
+		.iter()
+		.find(|m| m.title == blocker_tf)
+		.and_then(|m| m.description.clone())
+		.ok_or_else(|| eyre!("No `{blocker_tf}` sprint on GitHub yet. Add issues to the '{blocker_tf}' milestone (or create an urgent list)."))?;
+	tedi_ops::sprints::refresh_selection_cache(&blocker_tf, &desc);
+	Ok(())
+}
+
+/// `sprints select <tf>` — focus a sprint precision: cache its content and show its selection
+/// (persisted, or auto-set to the top open issue).
+async fn focus_sprint(settings: &LiveSettings, tf: Timeframe, yes: bool) -> Result<()> {
+	let milestones = request_milestones(settings).await?;
+	let desc = milestones
+		.iter()
+		.find(|m| m.title == tf.to_string())
+		.and_then(|m| m.description.clone())
+		.ok_or_else(|| eyre!("Sprint '{tf}' not found on GitHub (or it has no description)."))?;
+	tedi_ops::sprints::refresh_selection_cache(&tf.to_string(), &desc);
+	tedi_ops::sprints::selected_show(yes).await
 }
 async fn request_milestones(settings: &LiveSettings) -> Result<Vec<GithubMilestone>> {
 	let config = settings.config()?;

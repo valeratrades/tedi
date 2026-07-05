@@ -200,7 +200,14 @@ impl Selected {
 		}
 	}
 
-	/// Cache the lowest normal sprint's content (called by `sprints edit`/`healthcheck`).
+	/// Whether an active sprint is resolvable without a network fetch — an urgent file
+	/// exists, or a normal sprint's content is already cached.
+	pub fn active_ready() -> bool {
+		urgent_path().exists() || Self::load().normal.is_some()
+	}
+
+	/// Cache the (currently-focused) normal sprint's content (called by `sprints edit`,
+	/// `healthcheck`, and `sprints select <tf>`).
 	pub fn refresh_normal(key: &str, content: &str) -> std::io::Result<()> {
 		let mut sel = Self::load();
 		sel.normal = Some(NormalSprint {

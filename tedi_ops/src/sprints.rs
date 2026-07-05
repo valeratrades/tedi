@@ -148,12 +148,20 @@ pub async fn select(pattern: Option<String>, next: bool, prev: bool, yes: bool) 
 	retrack_if_changed(yes).await;
 	Ok(())
 }
+/// Print the active sprint's current selection (auto-defaulting to the top open item).
+pub async fn selected_show(yes: bool) -> Result<()> {
+	let (link, _) = selected_link_path()?;
+	println!("Selected: {}", issue_key(&link));
+	retrack_if_changed(yes).await;
+	Ok(())
+}
+
 /// `sprints selected open` — edit the selected issue file.
 pub async fn selected_open(offline: bool, yes: bool) -> Result<()> {
 	let (_, path) = selected_link_path()?;
 	let local = LocalIssueSource::<FsReader>::build_from_path(&path).await?;
 	let issue = Issue::load(local).await?;
-	modify_and_sync_issue(issue, offline, Modifier::Editor { open_at_blocker: false }, SyncOptions::default()).await?;
+	modify_and_sync_issue(issue, offline, Modifier::Editor { open_at_blocker: true }, SyncOptions::default()).await?;
 	retrack_if_changed(yes).await;
 	Ok(())
 }

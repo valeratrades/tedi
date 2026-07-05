@@ -376,11 +376,10 @@ mod types {
 
 					let mtime_before = std::fs::metadata(&path)?.modified()?;
 
-					let position = if *open_at_blocker {
-						issue.find_last_blocker_position().map(|(line, col)| crate::utils::Position::new(line, Some(col)))
-					} else {
-						None
-					};
+					let position = open_at_blocker.then(|| {
+						let (line, col) = issue.editor_position();
+						crate::utils::Position::new(line, Some(col))
+					});
 
 					crate::utils::open_file(&path, position).await?;
 
