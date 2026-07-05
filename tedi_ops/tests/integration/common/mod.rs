@@ -416,18 +416,25 @@ impl<'a> OpenBuilder<'a> {
 		let pipe_path = self.ctx.pipe_path.clone();
 		let virtual_edit_base = self.ctx.xdg.inner.root.clone();
 
-		// Wait for virtual file to appear
-		let vpath = loop {
-			std::thread::sleep(std::time::Duration::from_millis(50));
-			if let Some(vpath) = find_virtual_edit_file(&virtual_edit_base) {
-				break vpath;
+		// Race-free barrier: `open_file()` opens the FIFO for reading only AFTER the binary has
+		// fully written the virtual file. A non-blocking write-open of the FIFO returns ENXIO
+		// until a reader is present, then succeeds — at which point the binary is provably parked
+		// in `read()` with the file complete. Holding this write end keeps it parked until resume.
+		use std::os::unix::fs::OpenOptionsExt;
+		let pipe = loop {
+			match std::fs::OpenOptions::new().write(true).custom_flags(libc::O_NONBLOCK).open(&pipe_path) {
+				Ok(f) => break f,
+				Err(e) if e.raw_os_error() == Some(libc::ENXIO) => {} // no reader yet — binary hasn't reached the edit point
+				Err(e) => panic!("failed to open editor pipe: {e}"),
 			}
 			if child.try_wait().unwrap().is_some() {
-				panic!("Process exited before creating virtual file");
+				panic!("Process exited before reaching the edit point");
 			}
+			std::thread::sleep(std::time::Duration::from_millis(5));
 		};
 
-		(vpath, PausedEdit { child, stdout, stderr, pipe_path })
+		let vpath = find_virtual_edit_file(&virtual_edit_base).expect("virtual file must exist once the binary is parked at the edit point");
+		(vpath, PausedEdit { child, stdout, stderr, pipe })
 	}
 
 	/// Run the command and return RunOutput.
@@ -562,16 +569,11 @@ impl PausedEdit {
 		let mut stdout_buf = Vec::new();
 		let mut stderr_buf = Vec::new();
 
-		#[cfg(unix)]
-		{
-			use std::os::unix::fs::OpenOptionsExt;
-			let mut pipe = std::fs::OpenOptions::new()
-				.write(true)
-				.custom_flags(0x800) // O_NONBLOCK
-				.open(&self.pipe_path)
-				.expect("failed to open pipe");
-			pipe.write_all(b"x").expect("failed to signal pipe");
-		}
+		// Unblock the binary's `read()` via the write end held open since the barrier, then close
+		// it (EOF) so the binary never waits on a second byte.
+		let mut pipe = self.pipe;
+		pipe.write_all(b"x").expect("failed to signal editor pipe");
+		drop(pipe);
 
 		while self.child.try_wait().unwrap().is_none() {
 			drain_pipe(&mut self.stdout, &mut stdout_buf);
@@ -720,7 +722,9 @@ pub struct PausedEdit {
 	child: std::process::Child,
 	stdout: std::process::ChildStdout,
 	stderr: std::process::ChildStderr,
-	pipe_path: PathBuf,
+	/// Held write end of the editor FIFO. Keeping it open parks the binary in `read()`;
+	/// `resume()` writes to it to unblock. Opened only once the binary is a confirmed reader.
+	pipe: std::fs::File,
 }
 
 /// Output from running a command.
