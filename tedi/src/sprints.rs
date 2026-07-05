@@ -4,7 +4,7 @@ use tedi_adapters::github::GithubMilestone;
 use tedi_core::RepoInfo;
 use tedi_ops::{
 	IssueLink, TaskView,
-	local::MilestoneBlockerCache,
+	clockify_tracking::{HaltArgs, ResumeArgs},
 	sprints::{expand_and_refresh, sync_blocker_changes},
 };
 use v_utils::prelude::*;
@@ -25,6 +25,48 @@ pub enum SprintsCommands {
 	/// Ensures all milestones up to date, if yes - writes "OK" to $XDG_DATA_HOME/todo/healthcheck.status
 	/// Can get outdated easily, so printed output of the command is prepended with the filename
 	Healthcheck,
+	/// Change the active sprint's selected issue (circular with --next/--prev, else fzf/pattern)
+	Select {
+		pattern: Option<String>,
+		#[arg(long)]
+		next: bool,
+		#[arg(long)]
+		prev: bool,
+	},
+	/// Operate on the selected issue in the active sprint
+	Selected {
+		#[command(subcommand)]
+		op: SelectedOp,
+	},
+	/// Build a task view of local issues matching a label or text
+	Search {
+		query: String,
+	},
+}
+#[derive(clap::Subcommand)]
+pub enum SelectedOp {
+	/// Open the selected issue file in $EDITOR
+	Open,
+	/// List the selected issue's blockers
+	List,
+	/// Append a blocker to the selected issue
+	Add {
+		text: String,
+		/// Nest as a child of the current deepest blocker
+		#[arg(short = 'n', long)]
+		nest: bool,
+	},
+	/// Pop the current blocker (repeat `-p` to also pop ancestors)
+	Pop {
+		#[arg(short = 'p', long = "parent", action = clap::ArgAction::Count)]
+		parents: u8,
+	},
+	/// Replace the current blocker in-place
+	Set { text: String },
+	/// Start a Clockify timer on the selected issue
+	Resume(ResumeArgs),
+	/// Stop the Clockify timer
+	Halt(HaltArgs),
 }
 #[derive(Args)]
 pub struct SprintsArgs {
@@ -34,7 +76,10 @@ pub struct SprintsArgs {
 pub static HEALTHCHECK_REL_PATH: &str = "healthcheck.status";
 pub static SPRINT_HEADER_REL_PATH: &str = "sprint_header.md";
 
-pub async fn sprints_command(settings: &LiveSettings, args: SprintsArgs, mock: Option<tedi_ops::MockType>) -> Result<()> {
+pub async fn sprints_command(settings: &LiveSettings, args: SprintsArgs, mock: Option<tedi_ops::MockType>, offline: bool) -> Result<()> {
+	use tedi_ops::sprints as ops;
+
+	let yes = || settings.config().map(|c| c.yes).unwrap_or(false);
 	match args.command {
 		SprintsCommands::Get { tf } => {
 			let retrieved_milestones = request_milestones(settings).await?;
@@ -45,6 +90,17 @@ pub async fn sprints_command(settings: &LiveSettings, args: SprintsArgs, mock: O
 		}
 		SprintsCommands::Edit { tf, offline } => edit_milestone(settings, tf, offline, mock.is_some()).await,
 		SprintsCommands::Healthcheck => healthcheck(settings).await,
+		SprintsCommands::Select { pattern, next, prev } => ops::select(pattern, next, prev, yes()).await,
+		SprintsCommands::Selected { op } => match op {
+			SelectedOp::Open => ops::selected_open(offline, yes()).await,
+			SelectedOp::List => ops::selected_list(),
+			SelectedOp::Add { text, nest } => ops::selected_add(text, nest, offline, yes()).await,
+			SelectedOp::Pop { parents } => ops::selected_pop(parents as usize, offline, yes()).await,
+			SelectedOp::Set { text } => ops::selected_set(text, offline, yes()).await,
+			SelectedOp::Resume(resume_args) => ops::selected_resume(resume_args, yes()).await,
+			SelectedOp::Halt(halt_args) => ops::selected_halt(halt_args).await,
+		},
+		SprintsCommands::Search { query } => ops::search(&query).await,
 	}
 }
 async fn request_milestones(settings: &LiveSettings) -> Result<Vec<GithubMilestone>> {
@@ -224,9 +280,8 @@ fn cache_blocker_milestone(settings: &LiveSettings, milestones: &[GithubMileston
 
 	if let Some(ms) = milestones.iter().find(|m| m.title == blocker_tf)
 		&& let Some(ref desc) = ms.description
-		&& let Err(e) = MilestoneBlockerCache::update_from_description(desc)
 	{
-		tracing::warn!("failed to cache blocker milestone: {e}");
+		tedi_ops::sprints::refresh_selection_cache(blocker_tf, desc);
 	}
 }
 
@@ -313,10 +368,8 @@ async fn edit_milestone(settings: &LiveSettings, tf: Timeframe, offline: bool, m
 	// Update the blocker cache if this is the blocker timeframe milestone
 	let config = settings.config()?;
 	let blocker_tf = config.milestones.as_ref().map(|m| m.blocker_tf()).unwrap_or("1d");
-	if tf.to_string() == blocker_tf
-		&& let Err(e) = MilestoneBlockerCache::update_from_description(&new_description)
-	{
-		tracing::warn!("failed to update blocker cache: {e}");
+	if tf.to_string() == blocker_tf {
+		tedi_ops::sprints::refresh_selection_cache(blocker_tf, &new_description);
 	}
 
 	// If outdated, archive old contents and update date

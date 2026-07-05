@@ -53,15 +53,22 @@ For normal Milestones, we choose to prohibit explicit inclusion of other [Milest
 
 ### TaskView
 a primitive exposing a view into a slice of task space. Can contain Milestones and Issues (never blockers).
+Absorbs the parsing/serialization AST: a markdown document whose `#`..`######` headers partition it into sections (`BTreeMap<header-path, Vec<TaskItem>>`), each holding recursively-nested components (`TaskItem` = `Milestone(MilestoneRef) | Issue(IssueRef) | Virtual(text)`). Expansion — replacing an issue ref with the issue's full `Display` — is a render concern (`render(expansions)`); collapse turns any expanded component back into a bare link.
 
 Many user-facing interfaces are implemented at this level, - Sprints, Bottlenecks, Searches (eg all issues with `bug` label), etc
 
 #### Sprints
-a selection of work, to be done in the given time period. 
+a selection of work, to be done in the given time period.
 
 here we have a series of durations, like `1d`, `2w`, `1Q`, `1y` etc.
 This is less so a fundamental building component of the system, and rather a view into it, - our compiled selection of the tasks for each period.
 They assume top-down priority ordering, - as we admit impossibility of consistent 100% completion of the period's selection.
+
+Normal sprints store their `TaskView` in the GitHub milestone `description` (keyed by timeframe). **Urgent** is the special lowest-precision sprint: stored locally (`sprints/urgent.md`, no GitHub sync), issues-only, section-less, and auto-deleted once no open issues remain (so it repopulates from zero).
+
+##### Selection
+`Selected` holds one selected issue per sprint (`sprints_selection.json`); the *active* selection is that of the lowest existing sprint (urgent if present, else `1d`, …). `sprints select [pattern|--next|--prev]` moves it — circular, skipping issues whose current blocker delegates to another issue (a blocker ref). When the selection closes or leaves the view it auto-advances to the top open item; when the view empties the selection is cleared (and urgent's file removed).
+The selected issue is where day-to-day blocker work lands: `sprints selected add/pop/set/list/open` route through the issue coordinator (`modify_and_sync_issue` + `Modifier::Blocker*`) — blockers keep zero runtime, the issue owns save/sync. `sprints selected resume/halt` drive a per-issue Clockify timer (keyed by the selected `repo#number`, description = title + current blocker); a selection change restarts it on the new issue.
 
 #### Bottlenecks
 a primitive over Milestones; name is immutable, can contain other milestones. In many ways it's much like [sprints](#sprints), - except it reasons in terms of current global priorities, serving as guideline for compiling the latter.
@@ -78,7 +85,7 @@ tedi_md → tedi_core → tedi_ops → tedi
 - `tedi_md` — markdown primitives: owned pulldown_cmark `Events` ⇄ `String`.
 - `tedi_core` — the pure model: the primitives above (Issue/Blockers/Milestone), their locators/markers, and parse/serialize over `Events`. No IO, no async, no transport. A primitive cannot reach fs/network/app-state — the crate boundary enforces it.
 - `tedi_adapters` — transport at the edge: `GithubClient` (+ mock lives with ops), Clockify. Depends on core for the domain locator (`RepoInfo`).
-- `tedi_ops` — operations over the primitives: local/remote sources+sinks, sync/merge/touch/conflict, blocker stack, sprint flows, the `LazyIssue` loading protocol.
+- `tedi_ops` — operations over the primitives: local/remote sources+sinks, sync/merge/touch/conflict, sprint flows + per-sprint selection, per-issue Clockify, the `LazyIssue` loading protocol.
 - `tedi` — interface only: clap enums/dispatch, config, shell init. Parses args, resolves config, calls ops. Owns `config` (v_utils `LiveSettings` binds app identity to the crate that derives it).
 
 ## Sources
@@ -207,13 +214,15 @@ Each issue is one file under `issues/{owner}/{repo}/…`; a node with children i
 | Type | File |
 |------|------|
 | `Issue`, `IssueContents`, `CloseState`, `IssueIdentity`, `Display`/`TitleLine`/segmenter | `tedi_core/src/issue.rs` |
-| `RepoInfo`, `IssueLink`, `IssueRef`, `IssueIndex`, `IssueSelector` | `tedi_core/src/locate.rs` |
-| `Blockers`, `split_blockers()` | `tedi_core/src/blockers.rs` |
-| `Milestone`, `serialize_blockers_view()`, `parse_blockers_from_embedded()` | `tedi_core/src/milestone.rs` |
+| `RepoInfo`, `IssueLink`, `IssueRef`, `IssueIndex`, `IssueSelector`, `MilestoneRef`, `MilestoneLink` | `tedi_core/src/locate.rs` |
+| `Blockers` (+ `add`/`pop`/`set`/`current`), `split_blockers()` | `tedi_core/src/blockers.rs` |
+| `TaskView`, `TaskItem`, `parse_blockers_from_embedded()` | `tedi_core/src/taskview.rs` |
 | `IssueMarker`, `Marker` | `tedi_core/src/marker.rs` |
 | `GithubIssue`, `GithubComment`, `CreatedIssue`, `GithubMilestone`, `list/create/update_milestone` | `tedi_adapters/src/github.rs` |
 | `LazyIssue<S>` trait | `tedi_ops/src/lazy.rs` |
 | `LazyIssue<Remote>` impl | `tedi_ops/src/remote/mod.rs` |
-| `LazyIssue<Local>` impl, `MilestoneBlockerCache` | `tedi_ops/src/local/mod.rs` |
+| `LazyIssue<Local>` impl | `tedi_ops/src/local/mod.rs` |
+| `Selected` (per-sprint selection + auto-advance/cleanup) | `tedi_ops/src/local/selection.rs` |
+| per-issue Clockify timer | `tedi_ops/src/clockify_tracking.rs` |
 | `sync_local_issue_to_github()` | `tedi_ops/src/open_interactions/sync.rs` |
-| sprint expand/refresh + blocker sync | `tedi_ops/src/sprints.rs` |
+| sprint expand/refresh, blocker sync, `select`/`selected`/`search` | `tedi_ops/src/sprints.rs` |

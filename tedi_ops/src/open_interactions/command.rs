@@ -52,17 +52,6 @@ pub struct OpenArgs {
 	#[arg(long)] // no short version, as it introduces ambiguity against `--parent`
 	pub pull: bool,
 
-	/// Use the current blocker issue file (from `todo blocker set`)
-	/// If no pattern provided, opens the current blocker issue.
-	#[arg(short, long)]
-	pub blocker: bool,
-
-	/// Like --blocker, but also sets the opened issue as active if different from current.
-	/// Opens the current blocker issue (or pattern match), and if that issue belongs to
-	/// a different project than the currently active one, sets it as the active project.
-	#[arg(long)]
-	pub blocker_set: bool,
-
 	/// Force through conflicts by taking the source side.
 	/// When opening via local path: takes local version.
 	/// When opening via Github URL: takes remote version.
@@ -97,20 +86,17 @@ pub enum ProjectType {
 #[tracing::instrument(level = "debug", skip_all, fields(
 	url_or_pattern = ?args.url_or_pattern,
 	touch = args.touch,
-	blocker = args.blocker,
 	force = args.force,
 	reset = args.reset,
 	offline,
 	mock = ?mock,
 ))]
 pub async fn open_command(args: OpenArgs, offline: bool, mock: Option<MockType>) -> Result<()> {
-	tracing::debug!("open_command entered, blocker={}", args.blocker);
-
 	// Helper to create the appropriate modifier based on mock type
-	let make_modifier = |open_at_blocker: bool| -> Modifier {
+	let make_modifier = || -> Modifier {
 		match mock {
 			Some(MockType::GhostEdit) => Modifier::MockGhostEdit,
-			_ => Modifier::Editor { open_at_blocker },
+			_ => Modifier::Editor { open_at_blocker: false },
 		}
 	};
 
@@ -142,22 +128,7 @@ pub async fn open_command(args: OpenArgs, offline: bool, mock: Option<MockType>)
 	// URL mode and explicit --pull: prefer Remote
 	let remote_sync_opts = || make_sync_opts(true);
 
-	// Handle --blocker and --blocker-set modes: use current blocker issue file if no pattern provided
-	let open_at_blocker = args.blocker || args.blocker_set;
-	let input = if open_at_blocker && args.url_or_pattern.is_none() {
-		// Get current blocker issue path if it exists
-		// --blocker requires it to exist; --blocker-set just opens fzf if not set
-		if let Some(source) = crate::blocker_interactions::integration::BlockerIssueSource::current() {
-			source.display_relative()
-		} else if args.blocker {
-			bail!("No blocker issue set. Use `todo blocker set <pattern>` first.")
-		} else {
-			// --blocker-set without current blocker: use empty pattern for fzf
-			String::new()
-		}
-	} else {
-		args.url_or_pattern.as_deref().unwrap_or("").trim().to_string()
-	};
+	let input = args.url_or_pattern.as_deref().unwrap_or("").trim().to_string();
 	let input = input.as_str();
 
 	// Handle --touch mode first and separately
@@ -187,7 +158,7 @@ pub async fn open_command(args: OpenArgs, offline: bool, mock: Option<MockType>)
 			println!("Found existing issue: {}", issue.contents.title);
 		}
 
-		modify_and_sync_issue(issue, offline || project_is_virtual, make_modifier(open_at_blocker), local_sync_opts()).await?;
+		modify_and_sync_issue(issue, offline || project_is_virtual, make_modifier(), local_sync_opts()).await?;
 		return Ok(());
 	}
 
@@ -276,13 +247,7 @@ pub async fn open_command(args: OpenArgs, offline: bool, mock: Option<MockType>)
 	};
 
 	// Open the issue for editing
-	modify_and_sync_issue(issue, effective_offline, make_modifier(open_at_blocker), sync_opts).await?;
-
-	// TODO: --blocker-set needs issue file path, but we no longer track it here
-	// if args.blocker_set {
-	// 	crate::blocker_interactions::integration::set_current_blocker_issue(&issue_file_path)?;
-	// 	println!("Set current blocker issue to: {}", issue_file_path.display());
-	// }
+	modify_and_sync_issue(issue, effective_offline, make_modifier(), sync_opts).await?;
 
 	Ok(())
 }

@@ -1,7 +1,5 @@
-//! Integration tests for blocker commands in integrated mode (issue files).
-//!
-//! These tests verify that `blocker add` and `blocker pop` work correctly
-//! when operating on issue files (integrated mode) rather than standalone blocker files.
+//! Integration tests for the `sprints selected` blocker operations and `sprints select`
+//! rotation over the active sprint's issues.
 
 use crate::common::{
 	TestContext,
@@ -9,16 +7,10 @@ use crate::common::{
 	parse_virtual,
 };
 
-/// Build a MilestoneBlockerCache JSON from embedded issue title lines.
-/// `titles` is a list of `(title, user, url)` tuples.
-fn milestone_cache_json(titles: &[(&str, &str, &str)], current_index: usize) -> String {
-	milestone_cache_json_with_refs(titles, current_index, &[])
-}
-
-/// Build a MilestoneBlockerCache JSON with ref_targets annotations.
-/// `ref_targets` is a list of `(source_url, target_url)` tuples.
-fn milestone_cache_json_with_refs(titles: &[(&str, &str, &str)], current_index: usize, ref_targets: &[(&str, &str)]) -> String {
-	let description: String = titles
+/// Build a `sprints_selection.json` whose active (normal) sprint embeds `titles`.
+/// `titles` is a list of `(title, user, url)`; `selected` optionally pins the selection.
+fn selection_cache_json(titles: &[(&str, &str, &str)], selected: Option<&str>) -> String {
+	let content: String = titles
 		.iter()
 		.enumerate()
 		.map(|(i, (title, user, url))| {
@@ -26,20 +18,25 @@ fn milestone_cache_json_with_refs(titles: &[(&str, &str, &str)], current_index: 
 			format!("- [ ] {title} <!-- @{user} {url} -->{sep}")
 		})
 		.collect();
-	let refs: serde_json::Map<String, serde_json::Value> = ref_targets.iter().map(|(src, tgt)| (src.to_string(), serde_json::Value::String(tgt.to_string()))).collect();
+	let mut selections = serde_json::Map::new();
+	if let Some(sel) = selected {
+		selections.insert("1d".to_string(), serde_json::Value::String(sel.to_string()));
+	}
 	serde_json::json!({
-		"current_index": current_index,
-		"milestone_description": description,
-		"ref_targets": refs
+		"selections": selections,
+		"normal": { "key": "1d", "content": content }
 	})
 	.to_string()
 }
 
+fn write_selection(ctx: &TestContext, titles: &[(&str, &str, &str)]) {
+	ctx.xdg.write_cache("sprints_selection.json", &selection_cache_json(titles, None));
+}
+
 #[tokio::test]
-async fn test_blocker_pop_in_integrated_mode() {
+async fn test_selected_pop() {
 	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 
-	// Create issue with multiple blockers
 	let vi = parse_virtual(
 		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
 
@@ -52,25 +49,15 @@ async fn test_blocker_pop_in_integrated_mode() {
 "#,
 	);
 
-	// Set up: local issue file exists
 	let issue = ctx.local(&vi, None).await;
 	let issue_path = ctx.resolve_issue_path(&issue);
 
-	// Set this issue as the current blocker issue via milestone cache
-	ctx.xdg.write_cache(
-		"milestone_blockers.json",
-		&milestone_cache_json(&[("Test Issue", "mock_user", "https://github.com/o/r/issues/1")], 0),
-	);
+	write_selection(&ctx, &[("Test Issue", "mock_user", "https://github.com/o/r/issues/1")]);
 
-	// Run blocker pop in integrated mode (no --individual-files flag)
-	let out = ctx.run(&["--offline", "blocker", "pop"]);
+	let out = ctx.run(&["--offline", "sprints", "selected", "pop"]);
+	eprintln!("stdout: {}\nstderr: {}", out.stdout, out.stderr);
+	assert!(out.status.success(), "selected pop should succeed. stderr: {}", out.stderr);
 
-	eprintln!("stdout: {}", out.stdout);
-	eprintln!("stderr: {}", out.stderr);
-
-	assert!(out.status.success(), "blocker pop should succeed in integrated mode. stderr: {}", out.stderr);
-
-	// Third task popped, First and Second remain
 	insta::assert_snapshot!(read_issue_file(&issue_path), @"
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
 	    Body text.
@@ -82,35 +69,24 @@ async fn test_blocker_pop_in_integrated_mode() {
 }
 
 #[tokio::test]
-async fn test_blocker_add_creates_blockers_section_if_missing() {
+async fn test_selected_add_creates_blockers_section_if_missing() {
 	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 
-	// Create issue WITHOUT blockers section
 	let vi = parse_virtual(
 		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
 	Body text without blockers section.
 "#,
 	);
 
-	// Set up: local issue file exists
 	let issue = ctx.local(&vi, None).await;
 	let issue_path = ctx.resolve_issue_path(&issue);
 
-	// Set this issue as the current blocker issue via milestone cache
-	ctx.xdg.write_cache(
-		"milestone_blockers.json",
-		&milestone_cache_json(&[("Test Issue", "mock_user", "https://github.com/o/r/issues/1")], 0),
-	);
+	write_selection(&ctx, &[("Test Issue", "mock_user", "https://github.com/o/r/issues/1")]);
 
-	// Run blocker add in integrated mode
-	let out = ctx.run(&["--offline", "blocker", "add", "New task"]);
+	let out = ctx.run(&["--offline", "sprints", "selected", "add", "New task"]);
+	eprintln!("stdout: {}\nstderr: {}", out.stdout, out.stderr);
+	assert!(out.status.success(), "selected add should succeed. stderr: {}", out.stderr);
 
-	eprintln!("stdout: {}", out.stdout);
-	eprintln!("stderr: {}", out.stderr);
-
-	assert!(out.status.success(), "blocker add should succeed even without existing blockers section. stderr: {}", out.stderr);
-
-	// blockers section created with new task
 	insta::assert_snapshot!(read_issue_file(&issue_path), @"
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
 	    Body text without blockers section.
@@ -121,33 +97,9 @@ async fn test_blocker_add_creates_blockers_section_if_missing() {
 }
 
 #[tokio::test]
-async fn test_blocker_add_urgent_without_blocker_file_set() {
-	// Regression test: `blocker add --urgent` should work even without a blocker file set.
-	// The urgent file is owner-independent and doesn't need blocker file context.
-	// Previously this errored with "No blocker file set. Use `todo blocker set <pattern>` first."
+async fn test_selected_add_with_nested_context() {
 	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 
-	// NO blocker file set - this is the key part of the test
-
-	// Run blocker add --urgent
-	let out = ctx.run(&["--offline", "blocker", "add", "--urgent", "manage through 'urgent' until tool is working"]);
-
-	eprintln!("stdout: {}", out.stdout);
-	eprintln!("stderr: {}", out.stderr);
-
-	assert!(
-		out.status.success() && out.stdout.contains("urgent"),
-		"Should succeed and confirm urgent add. stdout: {}, stderr: {}",
-		out.stdout,
-		out.stderr
-	);
-}
-
-#[tokio::test]
-async fn test_blocker_add_with_nested_context() {
-	let ctx = TestContext::build_with_preexisting_state_unsafe("");
-
-	// Create issue with blockers section containing nested items
 	let vi = parse_virtual(
 		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
 description
@@ -160,25 +112,15 @@ description
 "#,
 	);
 
-	// Set up: local issue file exists
 	let issue = ctx.local(&vi, None).await;
 	let issue_path = ctx.resolve_issue_path(&issue);
 
-	// Set this issue as the current blocker issue via milestone cache
-	ctx.xdg.write_cache(
-		"milestone_blockers.json",
-		&milestone_cache_json(&[("Test Issue", "mock_user", "https://github.com/o/r/issues/1")], 0),
-	);
+	write_selection(&ctx, &[("Test Issue", "mock_user", "https://github.com/o/r/issues/1")]);
 
-	// Run blocker add in integrated mode
-	let out = ctx.run(&["--offline", "blocker", "add", "New sub-task"]);
+	let out = ctx.run(&["--offline", "sprints", "selected", "add", "New sub-task"]);
+	eprintln!("stdout: {}\nstderr: {}", out.stdout, out.stderr);
+	assert!(out.status.success(), "selected add should succeed. stderr: {}", out.stderr);
 
-	eprintln!("stdout: {}", out.stdout);
-	eprintln!("stderr: {}", out.stderr);
-
-	assert!(out.status.success(), "blocker add should succeed. stderr: {}", out.stderr);
-
-	// new sub-task added under Phase 2
 	insta::assert_snapshot!(read_issue_file(&issue_path), @"
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
 	    description
@@ -193,205 +135,81 @@ description
 }
 
 #[tokio::test]
-async fn test_blocker_move_up_cycles_between_entries() {
+async fn test_select_next_cycles_between_entries() {
 	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 
-	// Create two issues
-	let vi1 = parse_virtual(
-		r#"- [ ] Issue A <!-- @mock_user https://github.com/o/r/issues/1 -->
-
-  # Blockers
-  - task A
-"#,
-	);
-	let vi2 = parse_virtual(
-		r#"- [ ] Issue B <!-- @mock_user https://github.com/o/r/issues/2 -->
-
-  # Blockers
-  - task B
-"#,
-	);
-
-	let issue1 = ctx.local(&vi1, None).await;
-	let issue2 = ctx.local(&vi2, None).await;
-	let _path1 = ctx.resolve_issue_path(&issue1);
-	let _path2 = ctx.resolve_issue_path(&issue2);
-
-	// Set up milestone cache with two embedded issues, pointing at first
-	ctx.xdg.write_cache(
-		"milestone_blockers.json",
-		&milestone_cache_json(
-			&[
-				("Issue A", "mock_user", "https://github.com/o/r/issues/1"),
-				("Issue B", "mock_user", "https://github.com/o/r/issues/2"),
-			],
-			0,
-		),
-	);
-
-	// Current should show task A
-	let out = ctx.run(&["--offline", "blocker", "current"]);
-	assert!(out.stdout.contains("task A"), "Before move, current should be task A. stdout: {}", out.stdout);
-
-	// Move up should switch to issue B
-	let out = ctx.run(&["--offline", "blocker", "move", "up"]);
-	assert!(out.status.success(), "move up should succeed. stderr: {}", out.stderr);
-	assert!(
-		out.stdout.contains("Issue B") || out.stdout.contains("task B"),
-		"move up should switch to B. stdout: {}",
-		out.stdout
-	);
-
-	// Current should now show task B
-	let out = ctx.run(&["--offline", "blocker", "current"]);
-	assert!(out.stdout.contains("task B"), "After move up, current should be task B. stdout: {}", out.stdout);
-
-	// Move up again should wrap back to issue A
-	let out = ctx.run(&["--offline", "blocker", "move", "up"]);
-	assert!(out.status.success(), "second move up should succeed. stderr: {}", out.stderr);
-
-	let out = ctx.run(&["--offline", "blocker", "current"]);
-	assert!(out.stdout.contains("task A"), "After second move up, should be back to task A. stdout: {}", out.stdout);
-}
-
-#[tokio::test]
-async fn test_blocker_move_up_with_three_entries_cycles() {
-	let ctx = TestContext::build_with_preexisting_state_unsafe("");
-
-	let vi1 = parse_virtual(
-		r#"- [ ] Issue A <!-- @mock_user https://github.com/o/r/issues/1 -->
-
-  # Blockers
-  - task A
-"#,
-	);
-	let vi2 = parse_virtual(
-		r#"- [ ] Issue B <!-- @mock_user https://github.com/o/r/issues/2 -->
-
-  # Blockers
-  - task B
-"#,
-	);
-	let vi3 = parse_virtual(
-		r#"- [ ] Issue C <!-- @mock_user https://github.com/o/r/issues/3 -->
-
-  # Blockers
-  - task C
-"#,
-	);
-
+	let vi1 = parse_virtual("- [ ] Issue A <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n  # Blockers\n  - task A\n");
+	let vi2 = parse_virtual("- [ ] Issue B <!-- @mock_user https://github.com/o/r/issues/2 -->\n\n  # Blockers\n  - task B\n");
 	ctx.local(&vi1, None).await;
 	ctx.local(&vi2, None).await;
-	ctx.local(&vi3, None).await;
 
-	// Set up milestone cache with three embedded issues, pointing at first
-	ctx.xdg.write_cache(
-		"milestone_blockers.json",
-		&milestone_cache_json(
-			&[
-				("Issue A", "mock_user", "https://github.com/o/r/issues/1"),
-				("Issue B", "mock_user", "https://github.com/o/r/issues/2"),
-				("Issue C", "mock_user", "https://github.com/o/r/issues/3"),
-			],
-			0,
-		),
+	write_selection(
+		&ctx,
+		&[
+			("Issue A", "mock_user", "https://github.com/o/r/issues/1"),
+			("Issue B", "mock_user", "https://github.com/o/r/issues/2"),
+		],
 	);
 
-	// Move up A→B
-	let out = ctx.run(&["--offline", "blocker", "move", "up"]);
-	assert!(out.status.success(), "move up should succeed. stderr: {}", out.stderr);
-	let out = ctx.run(&["--offline", "blocker", "current"]);
-	assert!(out.stdout.contains("task B"), "After first move up, should be B. stdout: {}", out.stdout);
+	// Before any select, the top item (A) is selected.
+	let out = ctx.run(&["--offline", "sprints", "selected", "list"]);
+	assert!(out.stdout.contains("task A"), "initial selection should be A. stdout: {}", out.stdout);
 
-	// Move up B→C
-	let out = ctx.run(&["--offline", "blocker", "move", "up"]);
-	assert!(out.status.success());
-	let out = ctx.run(&["--offline", "blocker", "current"]);
-	assert!(out.stdout.contains("task C"), "After second move up, should be C. stdout: {}", out.stdout);
+	let out = ctx.run(&["--offline", "sprints", "select", "--next"]);
+	assert!(out.status.success(), "select --next should succeed. stderr: {}", out.stderr);
 
-	// Move up C→A (wrap)
-	let out = ctx.run(&["--offline", "blocker", "move", "up"]);
-	assert!(out.status.success());
-	let out = ctx.run(&["--offline", "blocker", "current"]);
-	assert!(out.stdout.contains("task A"), "After third move up, should wrap to A. stdout: {}", out.stdout);
+	let out = ctx.run(&["--offline", "sprints", "selected", "list"]);
+	assert!(out.stdout.contains("task B"), "after --next, selection should be B. stdout: {}", out.stdout);
+
+	// Wrap back to A.
+	ctx.run(&["--offline", "sprints", "select", "--next"]);
+	let out = ctx.run(&["--offline", "sprints", "selected", "list"]);
+	assert!(out.stdout.contains("task A"), "after wrapping, should be back to A. stdout: {}", out.stdout);
 }
 
 #[tokio::test]
-async fn test_blocker_move_single_entry_errors() {
+async fn test_select_single_entry_errors() {
 	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 
-	let vi = parse_virtual(
-		r#"- [ ] Issue A <!-- @mock_user https://github.com/o/r/issues/1 -->
-
-  # Blockers
-  - task A
-"#,
-	);
-
+	let vi = parse_virtual("- [ ] Issue A <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n  # Blockers\n  - task A\n");
 	ctx.local(&vi, None).await;
 
-	// Single entry in milestone cache
-	ctx.xdg.write_cache(
-		"milestone_blockers.json",
-		&milestone_cache_json(&[("Issue A", "mock_user", "https://github.com/o/r/issues/1")], 0),
-	);
+	write_selection(&ctx, &[("Issue A", "mock_user", "https://github.com/o/r/issues/1")]);
 
-	// Move up should fail with single entry
-	let out = ctx.run(&["--offline", "blocker", "move", "up"]);
-	assert!(!out.status.success(), "move with single entry should fail. stdout: {}", out.stdout);
+	let out = ctx.run(&["--offline", "sprints", "select", "--next"]);
+	assert!(!out.status.success(), "select with single entry should fail. stdout: {}", out.stdout);
 	assert!(out.stderr.contains("Only one issue"), "error should mention single issue. stderr: {}", out.stderr);
 }
 
 #[tokio::test]
-async fn test_blocker_add_works_after_move() {
+async fn test_selected_add_works_after_select() {
 	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 
-	let vi1 = parse_virtual(
-		r#"- [ ] Issue A <!-- @mock_user https://github.com/o/r/issues/1 -->
-
-  # Blockers
-  - task A
-"#,
-	);
-	let vi2 = parse_virtual(
-		r#"- [ ] Issue B <!-- @mock_user https://github.com/o/r/issues/2 -->
-
-  # Blockers
-  - task B
-"#,
-	);
-
+	let vi1 = parse_virtual("- [ ] Issue A <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n  # Blockers\n  - task A\n");
+	let vi2 = parse_virtual("- [ ] Issue B <!-- @mock_user https://github.com/o/r/issues/2 -->\n\n  # Blockers\n  - task B\n");
 	let issue1 = ctx.local(&vi1, None).await;
 	let issue2 = ctx.local(&vi2, None).await;
 	let path1 = ctx.resolve_issue_path(&issue1);
 	let path2 = ctx.resolve_issue_path(&issue2);
 
-	// Start on A, move up to B
-	ctx.xdg.write_cache(
-		"milestone_blockers.json",
-		&milestone_cache_json(
-			&[
-				("Issue A", "mock_user", "https://github.com/o/r/issues/1"),
-				("Issue B", "mock_user", "https://github.com/o/r/issues/2"),
-			],
-			0,
-		),
+	write_selection(
+		&ctx,
+		&[
+			("Issue A", "mock_user", "https://github.com/o/r/issues/1"),
+			("Issue B", "mock_user", "https://github.com/o/r/issues/2"),
+		],
 	);
-	ctx.run(&["--offline", "blocker", "move", "up"]);
+	ctx.run(&["--offline", "sprints", "select", "--next"]);
 
-	// Add a blocker - should go into Issue B (the now-current one)
-	let out = ctx.run(&["--offline", "blocker", "add", "new task on B"]);
-	assert!(out.status.success(), "add should succeed after move. stderr: {}", out.stderr);
+	let out = ctx.run(&["--offline", "sprints", "selected", "add", "new task on B"]);
+	assert!(out.status.success(), "add should succeed after select. stderr: {}", out.stderr);
 
-	// Verify it went into issue B
 	insta::assert_snapshot!(read_issue_file(&path2), @"
 	- [ ] Issue B <!-- @mock_user https://github.com/o/r/issues/2 -->
 	  # Blockers
 	  - task B
 	  - new task on B
 	");
-
-	// Issue A should be untouched
 	insta::assert_snapshot!(read_issue_file(&path1), @"
 	- [ ] Issue A <!-- @mock_user https://github.com/o/r/issues/1 -->
 	  # Blockers
@@ -400,100 +218,53 @@ async fn test_blocker_add_works_after_move() {
 }
 
 #[tokio::test]
-async fn test_blocker_move_skips_ref_annotated_issues() {
+async fn test_select_skips_delegating_issues() {
 	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 
-	// Create three issues: A (real task), B (delegates to C via ref), C (real task)
-	let vi1 = parse_virtual(
-		r#"- [ ] Issue A <!-- @mock_user https://github.com/o/r/issues/1 -->
-
-  # Blockers
-  - task A
-"#,
-	);
-	let vi2 = parse_virtual(
-		r#"- [ ] Issue B <!-- @mock_user https://github.com/o/r/issues/2 -->
-
-  # Blockers
-  - o/r#3
-"#,
-	);
-	let vi3 = parse_virtual(
-		r#"- [ ] Issue C <!-- @mock_user https://github.com/o/r/issues/3 -->
-
-  # Blockers
-  - task C
-"#,
-	);
-
+	// A (real task), B (delegates to C via ref blocker), C (real task).
+	let vi1 = parse_virtual("- [ ] Issue A <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n  # Blockers\n  - task A\n");
+	let vi2 = parse_virtual("- [ ] Issue B <!-- @mock_user https://github.com/o/r/issues/2 -->\n\n  # Blockers\n  - o/r#3\n");
+	let vi3 = parse_virtual("- [ ] Issue C <!-- @mock_user https://github.com/o/r/issues/3 -->\n\n  # Blockers\n  - task C\n");
 	ctx.local(&vi1, None).await;
 	ctx.local(&vi2, None).await;
 	ctx.local(&vi3, None).await;
 
-	// Set up milestone cache with ref_targets: B points at C
-	ctx.xdg.write_cache(
-		"milestone_blockers.json",
-		&milestone_cache_json_with_refs(
-			&[
-				("Issue A", "mock_user", "https://github.com/o/r/issues/1"),
-				("Issue B", "mock_user", "https://github.com/o/r/issues/2"),
-				("Issue C", "mock_user", "https://github.com/o/r/issues/3"),
-			],
-			0,
-			&[("https://github.com/o/r/issues/2", "https://github.com/o/r/issues/3")],
-		),
+	write_selection(
+		&ctx,
+		&[
+			("Issue A", "mock_user", "https://github.com/o/r/issues/1"),
+			("Issue B", "mock_user", "https://github.com/o/r/issues/2"),
+			("Issue C", "mock_user", "https://github.com/o/r/issues/3"),
+		],
 	);
 
-	// Starting at A (index 0), move up should skip B (ref-annotated) and land on C
-	let out = ctx.run(&["--offline", "blocker", "move", "up"]);
-	assert!(out.status.success(), "move up should succeed. stderr: {}", out.stderr);
+	// From A, --next skips B (delegates) and lands on C.
+	let out = ctx.run(&["--offline", "sprints", "select", "--next"]);
+	assert!(out.status.success(), "select --next should succeed. stderr: {}", out.stderr);
 
-	let out = ctx.run(&["--offline", "blocker", "current"]);
-	assert!(out.stdout.contains("task C"), "Should skip B and land on C. stdout: {}", out.stdout);
+	let out = ctx.run(&["--offline", "sprints", "selected", "list"]);
+	assert!(out.stdout.contains("task C"), "should skip B and land on C. stdout: {}", out.stdout);
 }
 
 #[tokio::test]
-async fn test_blocker_move_all_refs_errors() {
+async fn test_select_all_delegating_errors() {
 	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 
-	// Create two issues, both with ref blockers
-	let vi1 = parse_virtual(
-		r#"- [ ] Issue A <!-- @mock_user https://github.com/o/r/issues/1 -->
-
-  # Blockers
-  - o/r#2
-"#,
-	);
-	let vi2 = parse_virtual(
-		r#"- [ ] Issue B <!-- @mock_user https://github.com/o/r/issues/2 -->
-
-  # Blockers
-  - o/r#1
-"#,
-	);
-
+	let vi1 = parse_virtual("- [ ] Issue A <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n  # Blockers\n  - o/r#2\n");
+	let vi2 = parse_virtual("- [ ] Issue B <!-- @mock_user https://github.com/o/r/issues/2 -->\n\n  # Blockers\n  - o/r#1\n");
 	ctx.local(&vi1, None).await;
 	ctx.local(&vi2, None).await;
 
-	// Both issues are ref-annotated
-	ctx.xdg.write_cache(
-		"milestone_blockers.json",
-		&milestone_cache_json_with_refs(
-			&[
-				("Issue A", "mock_user", "https://github.com/o/r/issues/1"),
-				("Issue B", "mock_user", "https://github.com/o/r/issues/2"),
-			],
-			0,
-			&[
-				("https://github.com/o/r/issues/1", "https://github.com/o/r/issues/2"),
-				("https://github.com/o/r/issues/2", "https://github.com/o/r/issues/1"),
-			],
-		),
+	write_selection(
+		&ctx,
+		&[
+			("Issue A", "mock_user", "https://github.com/o/r/issues/1"),
+			("Issue B", "mock_user", "https://github.com/o/r/issues/2"),
+		],
 	);
 
-	// Move should error: all issues have refs
-	let out = ctx.run(&["--offline", "blocker", "move", "up"]);
-	assert!(!out.status.success(), "move should fail when all issues have refs. stdout: {}", out.stdout);
+	let out = ctx.run(&["--offline", "sprints", "select", "--next"]);
+	assert!(!out.status.success(), "select should fail when all issues delegate. stdout: {}", out.stdout);
 	assert!(
 		out.stderr.contains("All issues") || out.stderr.contains("Nothing to stop at"),
 		"error should mention all refs. stderr: {}",
@@ -502,120 +273,59 @@ async fn test_blocker_move_all_refs_errors() {
 }
 
 #[tokio::test]
-async fn test_blocker_move_to_unique_pattern_selects_directly() {
+async fn test_select_unique_pattern_selects_directly() {
 	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 
-	let vi1 = parse_virtual(
-		r#"- [ ] Issue Alpha <!-- @mock_user https://github.com/o/r/issues/1 -->
-
-  # Blockers
-  - task alpha
-"#,
-	);
-	let vi2 = parse_virtual(
-		r#"- [ ] Issue Beta <!-- @mock_user https://github.com/o/r/issues/2 -->
-
-  # Blockers
-  - task beta
-"#,
-	);
-
+	let vi1 = parse_virtual("- [ ] Issue Alpha <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n  # Blockers\n  - task alpha\n");
+	let vi2 = parse_virtual("- [ ] Issue Beta <!-- @mock_user https://github.com/o/r/issues/2 -->\n\n  # Blockers\n  - task beta\n");
 	ctx.local(&vi1, None).await;
 	ctx.local(&vi2, None).await;
 
-	ctx.xdg.write_cache(
-		"milestone_blockers.json",
-		&milestone_cache_json(
-			&[
-				("Issue Alpha", "mock_user", "https://github.com/o/r/issues/1"),
-				("Issue Beta", "mock_user", "https://github.com/o/r/issues/2"),
-			],
-			0,
-		),
+	write_selection(
+		&ctx,
+		&[
+			("Issue Alpha", "mock_user", "https://github.com/o/r/issues/1"),
+			("Issue Beta", "mock_user", "https://github.com/o/r/issues/2"),
+		],
 	);
 
-	// "beta" uniquely matches Issue Beta — should succeed without fzf
-	let out = ctx.run(&["--offline", "blocker", "move", "to", "beta"]);
+	// "2" uniquely matches Beta's local path — succeeds without fzf.
+	let out = ctx.run(&["--offline", "sprints", "select", "2"]);
 	assert!(out.status.success(), "unique match should succeed. stderr: {}", out.stderr);
-	assert!(
-		out.stdout.contains("Beta") || out.stdout.contains("beta"),
-		"output should mention the selected issue. stdout: {}",
-		out.stdout
-	);
 
-	// Current should now be task beta
-	let out = ctx.run(&["--offline", "blocker", "current"]);
-	assert!(out.stdout.contains("task beta"), "after move to beta, current should be task beta. stdout: {}", out.stdout);
+	let out = ctx.run(&["--offline", "sprints", "selected", "list"]);
+	assert!(out.stdout.contains("task beta"), "after select beta, current should be task beta. stdout: {}", out.stdout);
 }
 
 #[tokio::test]
-async fn test_blocker_move_to_no_match_errors() {
+async fn test_select_no_match_errors() {
 	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 
-	let vi1 = parse_virtual(
-		r#"- [ ] Issue Alpha <!-- @mock_user https://github.com/o/r/issues/1 -->
-
-  # Blockers
-  - task alpha
-"#,
-	);
-
+	let vi1 = parse_virtual("- [ ] Issue Alpha <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n  # Blockers\n  - task alpha\n");
 	ctx.local(&vi1, None).await;
 
-	ctx.xdg.write_cache(
-		"milestone_blockers.json",
-		&milestone_cache_json(&[("Issue Alpha", "mock_user", "https://github.com/o/r/issues/1")], 0),
-	);
+	write_selection(&ctx, &[("Issue Alpha", "mock_user", "https://github.com/o/r/issues/1")]);
 
-	let out = ctx.run(&["--offline", "blocker", "move", "to", "zzznomatch"]);
+	let out = ctx.run(&["--offline", "sprints", "select", "zzznomatch"]);
 	assert!(!out.status.success(), "no-match should fail. stdout: {}", out.stdout);
 	assert!(out.stderr.contains("zzznomatch"), "error should mention the pattern. stderr: {}", out.stderr);
 }
 
 #[tokio::test]
-async fn test_blocker_move_to_ambiguous_pattern_does_not_silently_pick_first() {
-	// Regression test: before the fix, `move to issue` on a milestone with two issues
-	// whose display paths both contain "issue" would silently select the first match.
-	// After the fix, multiple matches trigger fzf; since there's no TTY in tests,
-	// fzf exits with an error rather than silently returning the wrong issue.
+async fn test_search_finds_matching_issue() {
 	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 
-	let vi1 = parse_virtual(
-		r#"- [ ] Issue One <!-- @mock_user https://github.com/o/r/issues/1 -->
-
-  # Blockers
-  - task one
-"#,
-	);
-	let vi2 = parse_virtual(
-		r#"- [ ] Issue Two <!-- @mock_user https://github.com/o/r/issues/2 -->
-
-  # Blockers
-  - task two
-"#,
-	);
-
+	let vi1 = parse_virtual("- [ ] Fix the crash <!-- @mock_user https://github.com/o/r/issues/1 -->\n\n  # Blockers\n  - repro\n");
+	let vi2 = parse_virtual("- [ ] Unrelated thing <!-- @mock_user https://github.com/o/r/issues/2 -->\n");
 	ctx.local(&vi1, None).await;
 	ctx.local(&vi2, None).await;
 
-	ctx.xdg.write_cache(
-		"milestone_blockers.json",
-		&milestone_cache_json(
-			&[
-				("Issue One", "mock_user", "https://github.com/o/r/issues/1"),
-				("Issue Two", "mock_user", "https://github.com/o/r/issues/2"),
-			],
-			0,
-		),
-	);
-
-	// "issue" matches both entries — must NOT silently select the first one
-	let out = ctx.run(&["--offline", "blocker", "move", "to", "issue"]);
-	// In a non-interactive context fzf fails (no TTY), so the command should fail
-	// rather than silently return the first matching issue (the pre-fix behavior).
+	let out = ctx.run(&["--offline", "sprints", "search", "crash"]);
+	assert!(out.status.success(), "search should succeed. stderr: {}", out.stderr);
 	assert!(
-		!out.status.success(),
-		"ambiguous pattern without a TTY should not silently pick the first match. stdout: {}",
+		out.stdout.contains("Fix the crash") || out.stdout.contains("issues/1"),
+		"should surface issue 1. stdout: {}",
 		out.stdout
 	);
+	assert!(!out.stdout.contains("Unrelated"), "should not surface unrelated issue. stdout: {}", out.stdout);
 }

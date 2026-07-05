@@ -9,7 +9,7 @@
 
 use clap::ValueEnum;
 pub use tedi_adapters::github;
-pub mod blocker_interactions;
+pub mod clockify_tracking;
 mod lazy;
 pub mod local;
 pub mod mock_github;

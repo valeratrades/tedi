@@ -175,6 +175,58 @@ impl Blockers {
 		walk(&self.items)
 	}
 
+	/// The current (deepest, rightmost) blocker item.
+	pub fn current(&self) -> Option<&BlockerItem> {
+		last_item_in_list(&self.items)
+	}
+
+	/// The current blocker with its ancestor context prepended (joined by `": "`).
+	pub fn current_with_context(&self, ownership_hierarchy: &[String]) -> Option<String> {
+		let current = self.current()?;
+		let path = path_to_last(&self.items);
+		let mut parts: Vec<&str> = ownership_hierarchy.iter().map(|s| s.as_str()).collect();
+		parts.extend(path.iter().map(|s| s.as_str()));
+		if parts.is_empty() {
+			Some(current.text.clone())
+		} else {
+			Some(format!("{}: {}", parts.join(": "), current.text))
+		}
+	}
+
+	/// Append a blocker at the current (deepest) position.
+	pub fn add(&mut self, text: &str) {
+		add_item_to_current(
+			&mut self.items,
+			BlockerItem {
+				text: text.to_string(),
+				..Default::default()
+			},
+		);
+	}
+
+	/// Append a blocker as a child of the current deepest item.
+	pub fn add_child(&mut self, text: &str) {
+		add_child_to_current(
+			&mut self.items,
+			BlockerItem {
+				text: text.to_string(),
+				..Default::default()
+			},
+		);
+	}
+
+	/// Remove the current (deepest) blocker plus `parents` ancestors along its path.
+	/// Returns the text of the topmost popped item, or None if empty / `parents` exceeds depth.
+	pub fn pop(&mut self, parents: usize) -> Option<String> {
+		pop_last(&mut self.items, parents).map(|item| item.text)
+	}
+
+	/// Replace the current (deepest) blocker's text in-place, preserving its tree position.
+	/// Clears the item's comments. Returns the previous text, or None if empty.
+	pub fn set(&mut self, text: &str) -> Option<String> {
+		replace_last(&mut self.items, text.to_string())
+	}
+
 	/// Build cmark event stream representing this blocker sequence as a list.
 	pub fn to_events(&self) -> Events {
 		if self.items.is_empty() {
@@ -226,6 +278,87 @@ fn render_item_text(out: &mut String, item: &BlockerItem, indent: usize) {
 impl PartialEq for Blockers {
 	fn eq(&self, other: &Self) -> bool {
 		self.items == other.items
+	}
+}
+
+// ─── Blocker-tree navigation/mutation helpers ─────────────────────────────────
+
+/// The last item in a list (depth-first, rightmost).
+fn last_item_in_list(items: &[BlockerItem]) -> Option<&BlockerItem> {
+	let last = items.last()?;
+	last_item_in_list(&last.children).or(Some(last))
+}
+
+/// Parent item texts leading to the last item (excluding the leaf itself).
+fn path_to_last(items: &[BlockerItem]) -> Vec<String> {
+	let mut path = Vec::new();
+	path_to_last_inner(items, &mut path);
+	path
+}
+
+fn path_to_last_inner(items: &[BlockerItem], path: &mut Vec<String>) {
+	let Some(last) = items.last() else { return };
+	if !last.children.is_empty() {
+		path.push(last.text.clone());
+		path_to_last_inner(&last.children, path);
+	}
+}
+
+/// Replace the deepest leaf's text in-place, clearing its comments. Returns the old text.
+fn replace_last(items: &mut [BlockerItem], new_text: String) -> Option<String> {
+	let last = items.last_mut()?;
+	if !last.children.is_empty() {
+		return replace_last(&mut last.children, new_text);
+	}
+	let old = std::mem::replace(&mut last.text, new_text);
+	last.comments.clear();
+	Some(old)
+}
+
+/// Pop the deepest (rightmost) item plus `parents` ancestors along its path.
+/// Returns None if empty or `parents` exceeds the available chain depth.
+fn pop_last(items: &mut Vec<BlockerItem>, parents: usize) -> Option<BlockerItem> {
+	let last = items.last()?;
+	let depth = chain_depth(last);
+	if parents > depth {
+		return None;
+	}
+	if parents == depth {
+		return items.pop();
+	}
+	let last = items.last_mut().expect("just inspected via .last()");
+	pop_last(&mut last.children, parents)
+}
+
+/// Additional levels reachable by descending the last-child chain (leaf = 0).
+fn chain_depth(item: &BlockerItem) -> usize {
+	match item.children.last() {
+		Some(child) => 1 + chain_depth(child),
+		None => 0,
+	}
+}
+
+/// Add an item at the deepest current section (sibling of the deepest leaf).
+fn add_item_to_current(items: &mut Vec<BlockerItem>, item: BlockerItem) {
+	if let Some(last) = items.last_mut()
+		&& !last.children.is_empty()
+	{
+		add_item_to_current(&mut last.children, item);
+		return;
+	}
+	items.push(item);
+}
+
+/// Add an item as a child of the deepest current item.
+fn add_child_to_current(items: &mut Vec<BlockerItem>, item: BlockerItem) {
+	let Some(last) = items.last_mut() else {
+		items.push(item);
+		return;
+	};
+	if !last.children.is_empty() {
+		add_child_to_current(&mut last.children, item);
+	} else {
+		last.children.push(item);
 	}
 }
 
@@ -414,5 +547,109 @@ mod tests {
 		- #13
 		- #42
 		");
+	}
+
+	#[test]
+	fn test_current() {
+		let seq = Blockers::parse("- task 1\n- task 2\n- task 3");
+		assert_eq!(seq.current().map(|i| i.text.as_str()), Some("task 3"));
+	}
+
+	#[test]
+	fn test_current_skips_comments() {
+		let seq = Blockers::parse("- task 1\n  comment\n- task 2\n  another comment");
+		assert_eq!(seq.current().map(|i| i.text.as_str()), Some("task 2"));
+		assert_eq!(seq.current().map(|i| i.comments.len()), Some(1));
+	}
+
+	#[test]
+	fn test_current_with_context_no_hierarchy() {
+		let seq = Blockers::parse("- Phase 1\n  - task 1\n- Phase 2\n  - task 2");
+		assert_eq!(seq.current_with_context(&[]), Some("Phase 2: task 2".to_string()));
+	}
+
+	#[test]
+	fn test_current_with_context_with_hierarchy() {
+		let seq = Blockers::parse("- Phase 1\n  - task 1");
+		let hierarchy = vec!["project".to_string()];
+		assert_eq!(seq.current_with_context(&hierarchy), Some("project: Phase 1: task 1".to_string()));
+	}
+
+	#[test]
+	fn test_add_to_section() {
+		let mut seq = Blockers::parse("- Section\n  - task 1");
+		seq.add("task 2");
+		assert_eq!(String::from(&seq), "- Section\n  - task 1\n  - task 2");
+	}
+
+	#[test]
+	fn test_pop_from_section() {
+		let mut seq = Blockers::parse("- Section\n  - task 1\n  - task 2");
+		let popped = seq.pop(0);
+		assert_eq!(popped, Some("task 2".to_string()));
+		assert_eq!(String::from(&seq), "- Section\n  - task 1");
+	}
+
+	#[test]
+	fn test_multiple_top_sections() {
+		let content = "- A\n  - task a\n- B\n  - task b\n- C\n  - task c";
+		let mut seq = Blockers::parse(content);
+		assert_eq!(seq.current_with_context(&[]), Some("C: task c".to_string()));
+		seq.pop(0);
+		assert_eq!(seq.current_with_context(&[]), Some("C".to_string()));
+		seq.pop(0);
+		assert_eq!(seq.current_with_context(&[]), Some("B: task b".to_string()));
+	}
+
+	#[test]
+	fn test_add_child_flat() {
+		let mut seq = Blockers::parse("- task 1");
+		seq.add_child("subtask");
+		insta::assert_snapshot!(String::from(&seq), @"
+		- task 1
+		  - subtask
+		");
+	}
+
+	#[test]
+	fn test_set_only_child_preserves_nesting() {
+		let mut seq = Blockers::parse("- Section\n  - lonely task");
+		seq.set("replacement");
+		insta::assert_snapshot!(String::from(&seq), @"
+		- Section
+		  - replacement
+		");
+	}
+
+	#[test]
+	fn test_set_clears_comments() {
+		let mut seq = Blockers::parse("- task\n  comment 1\n  comment 2");
+		seq.set("replaced");
+		assert_eq!(String::from(&seq), "- replaced");
+	}
+
+	#[test]
+	fn test_pop_with_one_parent_linear_chain() {
+		let mut seq = Blockers::parse("- farm tasks\n  - shave yak\n    - get a stool\n      - remember where I left it");
+		let popped = seq.pop(1);
+		assert_eq!(popped, Some("get a stool".to_string()));
+		assert_eq!(seq.current_with_context(&[]), Some("farm tasks: shave yak".to_string()));
+	}
+
+	#[test]
+	fn test_pop_with_two_parents_linear_chain() {
+		let mut seq = Blockers::parse("- farm tasks\n  - shave yak\n    - get a stool\n      - remember where I left it");
+		let popped = seq.pop(2);
+		assert_eq!(popped, Some("shave yak".to_string()));
+		assert_eq!(seq.current_with_context(&[]), Some("farm tasks".to_string()));
+	}
+
+	#[test]
+	fn test_pop_parents_exceeds_chain() {
+		let mut seq = Blockers::parse("- only");
+		let before: String = (&seq).into();
+		assert!(seq.pop(1).is_none());
+		let after: String = (&seq).into();
+		assert_eq!(before, after, "sequence must be unchanged when pop fails");
 	}
 }

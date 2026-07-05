@@ -1077,17 +1077,17 @@ mod local_path {
 }
 pub use local_path::{LocalPath, LocalPathError, LocalPathErrorKind, LocalPathResolved};
 
-mod blocker_cache;
 mod fs_sink;
+mod selection;
 use std::path::{Path, PathBuf};
 
-pub use blocker_cache::MilestoneBlockerCache;
 pub use consensus::Consensus;
 pub use fs_sink::{LocalFs, LocalFsSinkError};
 //==============================================================================
 // Error Types
 //==============================================================================
 use regex::Regex;
+pub use selection::{ActiveSprint, Selected, URGENT_KEY, urgent_path};
 use serde::{Deserialize, Serialize};
 use v_utils::{macros::wrap_err, prelude::*};
 

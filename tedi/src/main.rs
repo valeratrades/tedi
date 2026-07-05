@@ -39,8 +39,6 @@ enum Commands {
 	Sprints(sprints::SprintsArgs),
 	/// Shell aliases and hooks. Usage: `todos init <shell> | source`
 	Init(shell_init::ShellInitArgs),
-	/// Blockers tree (use --integrated flag for issue files)
-	Blocker(tedi_ops::blocker_interactions::BlockerArgs),
 	/// Clockify time tracking
 	Clockify(tedi_adapters::clockify::ClockifyArgs),
 	/// Performance evaluation with screenshots
@@ -58,7 +56,7 @@ async fn main() {
 	let settings = Arc::new(exit_on_error(config::LiveSettings::new(cli.settings_flags.clone(), Duration::from_secs(3))));
 
 	// Commands that may need GitHub client (always construct it - offline only skips network calls)
-	let has_github_commands = matches!(cli.command, Commands::Open(_) | Commands::Blocker(_) | Commands::Sprints(_));
+	let has_github_commands = matches!(cli.command, Commands::Open(_) | Commands::Sprints(_));
 
 	let github_client: Option<tedi_adapters::github::BoxedGithubClient> = if cli.mock.is_some() {
 		Some(Arc::new(tedi_ops::mock_github::MockGithubClient::new("mock_user")))
@@ -102,12 +100,11 @@ async fn main() {
 			let date_format = config.manual_stats.as_ref().map(|m| m.date_format.as_str()).filter(|s| !s.is_empty()).unwrap_or("%Y-%m-%d");
 			tedi_eval::manual_stats::update_or_open(date_format, manual_args).await
 		}
-		Commands::Sprints(sprints_command) => sprints::sprints_command(&*settings, sprints_command, cli.mock).await,
+		Commands::Sprints(sprints_command) => sprints::sprints_command(&*settings, sprints_command, cli.mock, cli.offline).await,
 		Commands::Init(args) => {
 			shell_init::output(&*settings, args);
 			Ok(())
 		}
-		Commands::Blocker(args) => tedi_ops::blocker_interactions::main(args, cli.offline, exit_on_error(settings.config()).yes).await,
 		Commands::Clockify(args) => tedi_adapters::clockify::main(exit_on_error(settings.config()).yes, args).await,
 		Commands::PerfEval(args) => tedi_eval::perf_eval::main(args).await,
 		Commands::Monitors(args) => tedi_eval::watch_monitors::main(args).await,
