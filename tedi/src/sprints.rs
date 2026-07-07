@@ -11,14 +11,31 @@ use v_utils::prelude::*;
 
 use crate::config::LiveSettings;
 
+/// A sprint designator: a milestone timeframe, or the local urgent list.
+#[derive(Clone)]
+pub enum SprintRef {
+	Urgent,
+	Tf(Timeframe),
+}
+impl std::str::FromStr for SprintRef {
+	type Err = Report;
+
+	fn from_str(s: &str) -> Result<Self> {
+		match s {
+			"urgent" => Ok(Self::Urgent),
+			_ => s.parse().map(Self::Tf),
+		}
+	}
+}
+
 #[derive(clap::Subcommand)]
 pub enum SprintsCommands {
 	Get {
-		tf: Timeframe,
+		sprint: SprintRef,
 	},
-	/// Edit a milestone's description in your $EDITOR
+	/// Edit a sprint (milestone description, or the local urgent list) in your $EDITOR
 	Edit {
-		tf: Timeframe,
+		sprint: SprintRef,
 		#[arg(long)]
 		offline: bool,
 	},
@@ -81,14 +98,26 @@ pub async fn sprints_command(settings: &LiveSettings, args: SprintsArgs, mock: O
 
 	let yes = || settings.config().map(|c| c.yes).unwrap_or(false);
 	match args.command {
-		SprintsCommands::Get { tf } => {
-			let retrieved_milestones = request_milestones(settings).await?;
-			let raw = get_milestone(tf, &retrieved_milestones)?;
+		SprintsCommands::Get { sprint } => {
+			let raw = match sprint {
+				SprintRef::Urgent => match std::fs::read_to_string(tedi_ops::local::urgent_path()) {
+					Ok(c) => c,
+					Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(eyre!("No urgent sprint. Create one with `sprints edit urgent`.")),
+					Err(e) => return Err(e.into()),
+				},
+				SprintRef::Tf(tf) => {
+					let retrieved_milestones = request_milestones(settings).await?;
+					get_milestone(tf, &retrieved_milestones)?
+				}
+			};
 			let expanded = expand_and_refresh(&raw).await?;
 			println!("{expanded}");
 			Ok(())
 		}
-		SprintsCommands::Edit { tf, offline } => edit_milestone(settings, tf, offline, mock.is_some()).await,
+		SprintsCommands::Edit { sprint, offline } => match sprint {
+			SprintRef::Urgent => edit_urgent(offline).await,
+			SprintRef::Tf(tf) => edit_milestone(settings, tf, offline, mock.is_some()).await,
+		},
 		SprintsCommands::Healthcheck => healthcheck(settings).await,
 		SprintsCommands::Select { pattern, next, prev } => {
 			// A bare timeframe (`sprints select 1d`) focuses that sprint precision; anything else
@@ -332,6 +361,53 @@ fn cache_blocker_milestone(settings: &LiveSettings, milestones: &[GithubMileston
 	{
 		tedi_ops::sprints::refresh_selection_cache(blocker_tf, desc);
 	}
+}
+
+/// Edit the local urgent list (creating it if absent). Same expand/sync/collapse cycle as
+/// milestones, but the storage is `urgent_path()` — no GitHub involved.
+async fn edit_urgent(offline: bool) -> Result<()> {
+	use std::fs;
+
+	use fs2::FileExt;
+
+	let lock_path = v_utils::xdg_cache_file!("milestones_urgent.lock");
+	let lock_file = fs::File::create(&lock_path)?;
+	lock_file
+		.try_lock_exclusive()
+		.map_err(|_| eyre!("Another instance is already editing the urgent sprint. Only one editor at a time is allowed."))?;
+
+	let path = tedi_ops::local::urgent_path();
+	let original = match fs::read_to_string(&path) {
+		Ok(c) => c,
+		Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+		Err(e) => return Err(e.into()),
+	};
+	let expanded = expand_and_refresh(&original).await?;
+
+	let tmp_path = tempfile::tempdir()?.keep().join("milestone_urgent.md");
+	fs::write(&tmp_path, &expanded)?;
+	eprintln!("[milestone] tmp_path: {}", tmp_path.display());
+
+	tedi_ops::utils::open_file(&tmp_path, None).await?;
+
+	let edited_content = fs::read_to_string(&tmp_path)?;
+	if edited_content == expanded {
+		println!("No changes made to urgent sprint");
+		return Ok(());
+	}
+
+	if let Err(e) = sync_blocker_changes(&edited_content, offline).await {
+		tedi_ops::utils::persist_rejected_changes(&edited_content);
+		eprintln!("Your changes were saved to /tmp/tedi/rejected-changes.md — you can recover them from there.");
+		return Err(e);
+	}
+
+	let mut edited_doc = TaskView::parse(&edited_content);
+	edited_doc.collapse_to_links();
+	fs::create_dir_all(path.parent().expect("urgent_path is always nested under data dir"))?;
+	fs::write(&path, edited_doc.serialize())?;
+	println!("Updated urgent sprint");
+	Ok(())
 }
 
 async fn edit_milestone(settings: &LiveSettings, tf: Timeframe, offline: bool, mock: bool) -> Result<()> {
