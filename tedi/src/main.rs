@@ -1,3 +1,4 @@
+#![feature(default_field_values)]
 #![allow(clippy::len_zero)]
 #![allow(clippy::doc_lazy_continuation)]
 mod config;

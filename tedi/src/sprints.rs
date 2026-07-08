@@ -11,23 +11,6 @@ use v_utils::prelude::*;
 
 use crate::config::LiveSettings;
 
-/// A sprint designator: a milestone timeframe, or the local urgent list.
-#[derive(Clone)]
-pub enum SprintRef {
-	Urgent,
-	Tf(Timeframe),
-}
-impl std::str::FromStr for SprintRef {
-	type Err = Report;
-
-	fn from_str(s: &str) -> Result<Self> {
-		match s {
-			"urgent" => Ok(Self::Urgent),
-			_ => s.parse().map(Self::Tf),
-		}
-	}
-}
-
 #[derive(clap::Subcommand)]
 pub enum SprintsCommands {
 	Get {
@@ -66,6 +49,8 @@ pub enum SelectedOp {
 	Open,
 	/// List the selected issue's blockers
 	List,
+	/// Compactly show the current blocker
+	Current,
 	/// Append a blocker to the selected issue
 	Add {
 		text: String,
@@ -90,6 +75,23 @@ pub struct SprintsArgs {
 	#[command(subcommand)]
 	command: SprintsCommands,
 }
+/// A sprint designator: a milestone timeframe, or the local urgent list.
+#[derive(Clone)]
+pub enum SprintRef {
+	Urgent,
+	Tf(Timeframe),
+}
+impl std::str::FromStr for SprintRef {
+	type Err = Report;
+
+	fn from_str(s: &str) -> Result<Self> {
+		match s {
+			"urgent" => Ok(Self::Urgent),
+			_ => s.parse().map(Self::Tf),
+		}
+	}
+}
+
 pub static HEALTHCHECK_REL_PATH: &str = "healthcheck.status";
 pub static SPRINT_HEADER_REL_PATH: &str = "sprint_header.md";
 
@@ -102,7 +104,7 @@ pub async fn sprints_command(settings: &LiveSettings, args: SprintsArgs, mock: O
 			let raw = match sprint {
 				SprintRef::Urgent => match std::fs::read_to_string(tedi_ops::local::urgent_path()) {
 					Ok(c) => c,
-					Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(eyre!("No urgent sprint. Create one with `sprints edit urgent`.")),
+					Err(e) if e.kind() == std::io::ErrorKind::NotFound => bail!("No urgent sprint. Create one with `sprints edit urgent`."),
 					Err(e) => return Err(e.into()),
 				},
 				SprintRef::Tf(tf) => {
@@ -140,6 +142,7 @@ pub async fn sprints_command(settings: &LiveSettings, args: SprintsArgs, mock: O
 			match op {
 				SelectedOp::Open => ops::selected_open(offline, yes()).await,
 				SelectedOp::List => ops::selected_list(),
+				SelectedOp::Current => ops::selected_current(),
 				SelectedOp::Add { text, nest } => ops::selected_add(text, nest, offline, yes()).await,
 				SelectedOp::Pop { parents } => ops::selected_pop(parents as usize, offline, yes()).await,
 				SelectedOp::Set { text } => ops::selected_set(text, offline, yes()).await,

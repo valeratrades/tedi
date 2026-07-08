@@ -177,6 +177,25 @@ pub fn selected_list() -> Result<()> {
 	}
 	Ok(())
 }
+/// `sprints selected current` — compactly print the current (deepest) blocker.
+pub fn selected_current() -> Result<()> {
+	let (_, path) = selected_link_path()?;
+	let content = std::fs::read_to_string(&path)?;
+	let blockers = VirtualIssue::parse(&content, path)?.contents.blockers;
+	match blockers.current_with_context(&[]) {
+		Some(current) => {
+			// Truncated for status-bar consumers (eww polls this).
+			const MAX_LEN: usize = 70;
+			if current.chars().count() <= MAX_LEN {
+				println!("{current}");
+			} else {
+				println!("{}...", current.chars().take(MAX_LEN - 3).collect::<String>());
+			}
+		}
+		None => println!("No blockers."),
+	}
+	Ok(())
+}
 pub async fn selected_add(text: String, nest: bool, offline: bool, yes: bool) -> Result<()> {
 	modify_selected(offline, Modifier::BlockerAdd { text, nest }, yes).await
 }
