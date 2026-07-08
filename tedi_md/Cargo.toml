@@ -1,0 +1,19 @@
+[package]
+name = "tedi_md"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Markdown primitives (owned pulldown_cmark events) for tedi"
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+derive_more.workspace = true
+pulldown-cmark.workspace = true
+pulldown-cmark-to-cmark.workspace = true
+
+[dev-dependencies]
+insta.workspace = true
+
+[lints]
+workspace = true

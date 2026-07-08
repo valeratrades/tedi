@@ -1,0 +1,48 @@
+[package]
+name = "tedi"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Personal productivity CLI for task tracking, time management, and GitHub issue integration"
+license.workspace = true
+repository.workspace = true
+keywords = ["productivity", "task-management", "github", "time-tracking"]
+categories = ["command-line-utilities"]
+
+[package.metadata]
+
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }.tar.gz"
+bin-dir = "{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
+
+[features]
+default = []
+
+[dependencies]
+clap.workspace = true
+clap_complete.workspace = true
+color-eyre.workspace = true
+config.workspace = true
+derive_more.workspace = true
+fs2.workspace = true
+jiff.workspace = true
+miette.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+smart-default.workspace = true
+tedi_adapters.workspace = true
+tedi_core.workspace = true
+tedi_eval.workspace = true
+tedi_ops.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-error.workspace = true
+tracing-subscriber.workspace = true
+v_utils.workspace = true
+xdg.workspace = true
+
+[lints]
+workspace = true

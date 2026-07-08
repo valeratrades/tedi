@@ -15,7 +15,8 @@
           };
           rust = v-utils.rs.default_nightly system;
           pre-commit-check = pre-commit-hooks.lib.${system}.run (v-utils.files.preCommit { inherit pkgs; });
-          manifest = (pkgs.lib.importTOML ./Cargo.toml).package;
+          manifest = (pkgs.lib.importTOML ./tedi/Cargo.toml).package;
+          workspaceManifest = (pkgs.lib.importTOML ./Cargo.toml).workspace.package;
           pname = manifest.name;
           stdenv = pkgs.stdenvAdapters.useMoldLinker pkgs.stdenv;
 
@@ -31,7 +32,7 @@
             tracey = true;
             style = {
               modules = {
-                ignored_error_comment = false;
+                ignored_error = false;
               };
             };
           };
@@ -76,13 +77,15 @@
             {
               default = rustPlatform.buildRustPackage {
                 inherit pname;
-                version = manifest.version;
+                version = workspaceManifest.version;
 
                 buildInputs = alwaysPkgs;
                 nativeBuildInputs = with pkgs; [ pkg-config ];
 
                 cargoLock.lockFile = ./Cargo.lock;
                 src = pkgs.lib.cleanSource ./.;
+
+                RUSTC_WRAPPER = ""; # .cargo/config.toml sets sccache, absent in sandbox
               };
             };
 
@@ -114,7 +117,7 @@
           inherit (lib) mkEnableOption mkOption mkIf;
           inherit (lib.types) package;
           cfg = config.services.todo-monitors-watch;
-          manifest = (lib.importTOML ./Cargo.toml).package;
+          manifest = (lib.importTOML ./tedi/Cargo.toml).package;
           pname = manifest.name;
         in
         {

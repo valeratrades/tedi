@@ -1,0 +1,26 @@
+[package]
+name = "tedi_eval"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Performance evaluation and manual-stats tracking for tedi"
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+ask_llm.workspace = true
+base64.workspace = true
+clap.workspace = true
+color-eyre.workspace = true
+derive-new.workspace = true
+image.workspace = true
+jiff.workspace = true
+libwayshot.workspace = true
+png.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+v_utils.workspace = true
+
+[lints]
+workspace = true

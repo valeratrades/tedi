@@ -3741,13 +3741,109 @@ dependencies = [
 name = "tedi"
 version = "0.16.3"
 dependencies = [
- "arrayvec",
- "ask_llm",
- "async-trait",
- "async_from",
- "base64",
  "clap",
  "clap_complete",
+ "color-eyre",
+ "config",
+ "derive_more",
+ "fs2",
+ "jiff",
+ "miette",
+ "serde",
+ "serde_json",
+ "smart-default",
+ "tedi_adapters",
+ "tedi_core",
+ "tedi_eval",
+ "tedi_ops",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "tracing-error",
+ "tracing-subscriber",
+ "v_utils",
+ "xdg",
+]
+
+[[package]]
+name = "tedi_adapters"
+version = "0.16.3"
+dependencies = [
+ "arrayvec",
+ "async-trait",
+ "clap",
+ "color-eyre",
+ "jiff",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tedi_core",
+ "thiserror 2.0.18",
+ "tracing",
+ "tracing-error",
+ "urlencoding",
+ "v_utils",
+]
+
+[[package]]
+name = "tedi_core"
+version = "0.16.3"
+dependencies = [
+ "arrayvec",
+ "copy_arrayvec",
+ "derive-new",
+ "derive_more",
+ "insta",
+ "jiff",
+ "miette",
+ "pulldown-cmark",
+ "serde",
+ "tedi_md",
+ "thiserror 2.0.18",
+ "tracing",
+ "tracing-error",
+ "url",
+ "v_utils",
+]
+
+[[package]]
+name = "tedi_eval"
+version = "0.16.3"
+dependencies = [
+ "ask_llm",
+ "base64",
+ "clap",
+ "color-eyre",
+ "derive-new",
+ "image",
+ "jiff",
+ "libwayshot",
+ "png",
+ "serde",
+ "serde_json",
+ "tracing",
+ "v_utils",
+]
+
+[[package]]
+name = "tedi_md"
+version = "0.16.3"
+dependencies = [
+ "derive_more",
+ "insta",
+ "pulldown-cmark",
+ "pulldown-cmark-to-cmark",
+]
+
+[[package]]
+name = "tedi_ops"
+version = "0.16.3"
+dependencies = [
+ "arrayvec",
+ "async-trait",
+ "async_from",
+ "clap",
  "color-eyre",
  "config",
  "copy_arrayvec",
@@ -3757,28 +3853,26 @@ dependencies = [
  "derive_more",
  "fs2",
  "futures",
- "image",
  "insta",
  "jiff",
  "libc",
- "libwayshot",
  "miette",
  "pandoc",
- "png",
  "pulldown-cmark",
- "pulldown-cmark-to-cmark",
  "regex",
  "reqwest",
  "rstest",
  "serde",
  "serde_json",
  "smart-default",
+ "tedi_adapters",
+ "tedi_core",
+ "tedi_md",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
  "tracing-error",
- "tracing-subscriber",
  "url",
  "urlencoding",
  "v_fixtures",

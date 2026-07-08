@@ -1,25 +1,21 @@
-[package]
-name = "tedi"
+[workspace]
+resolver = "3"
+members = ["tedi", "tedi_adapters", "tedi_core", "tedi_eval", "tedi_md", "tedi_ops"]
+
+[workspace.package]
 version = "0.16.3"
 edition = "2024"
 authors = ["Valeriy Sakharov <valeratrades@gmail.com>"]
-description = "Personal productivity CLI for task tracking, time management, and GitHub issue integration"
 license = "BlueOak-1.0.0"
 repository = "https://github.com/valeratrades/tedi"
-keywords = ["productivity", "task-management", "github", "time-tracking"]
-categories = ["command-line-utilities"]
 
-[package.metadata]
+[workspace.dependencies]
+tedi_adapters = { path = "tedi_adapters", version = "0.16.3" }
+tedi_core = { path = "tedi_core", version = "0.16.3" }
+tedi_eval = { path = "tedi_eval", version = "0.16.3" }
+tedi_md = { path = "tedi_md", version = "0.16.3" }
+tedi_ops = { path = "tedi_ops", version = "0.16.3" }
 
-[package.metadata.binstall]
-pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }.tar.gz"
-bin-dir = "{ bin }{ binary-ext }"
-pkg-fmt = "tgz"
-
-[features]
-default = []
-
-[dependencies]
 arrayvec = "0.7"
 ask_llm = { version = "^2.2.2" }
 async-trait = "^0.1.89"
@@ -31,7 +27,7 @@ color-eyre = "0.6.5"
 config = "^0.15.22"
 copy_arrayvec = "0.1"
 derive-new = "^0"
-derive_more = { version = "2.1.1", features = ["from_str", "display", "from", "into_iterator"] }
+derive_more = { version = "2.1.1", features = ["from_str", "display", "from", "into_iterator", "deref"] }
 fs2 = "0.4.3"
 futures = "0.3.32"
 image = "0.25.10"
@@ -58,7 +54,7 @@ urlencoding = "^2.1.3"
 v_utils = { version = "^2.15.41", features = ["io", "async-io", "macros", "trades", "xdg", "cli"] }
 xdg = "3.0.0"
 
-[dev-dependencies]
+# dev
 ctor = "0.11"
 derive_builder = "0.20"
 insta = "1.47"
@@ -71,12 +67,7 @@ walkdir = "2"
 #v_utils = { path = "../v_utils/v_utils" }
 #v_fixtures = { path = "../v_fixtures" }
 
-[[test]]
-name = "integration"
-path = "tests/integration/main.rs"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-[lints.clippy]
+[workspace.lints.clippy]
 float_cmp = "allow" # is bad for `==` direct comparisons, but `<` and `>` should be allowed
 #get_first = "allow" # const fn, so actually more performant
 len_zero = "allow" # `.empty()` is O(1) but on &str only
@@ -85,5 +76,5 @@ doc_lazy_continuation = "allow"
 
 tabs_in_doc_comments = "allow"
 
-[lints.rust]
+[workspace.lints.rust]
 unused_features = "allow"
