@@ -49,6 +49,7 @@
               jobs.warnings.install = jobDeps;
               jobs.warnings.augment = [ "code-duplication" ];
               release.default = true;
+              release.cargoTomlPath = "tedi/Cargo.toml";
               labels.extra = [
                 { name = "milestones"; color = "0000ff"; }
                 { name = "nuke"; color = "0000ff"; description = "remove something. Basically `chore` but strictly subtractive"; }
