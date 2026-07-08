@@ -38,9 +38,25 @@ impl TestContext {
 
 		let mut cmd = Command::new(get_binary_path());
 		cmd.args(args);
+		cmd.env(ENV_MOCK_MILESTONE, &milestone_path);
+		let out = self.drive_editor_session(cmd, edit_fn);
+		let result = std::fs::read_to_string(&milestone_path).unwrap_or_default();
+		(out, result)
+	}
+
+	/// Run `sprints edit urgent --offline`, modifying the temp file before signaling the pipe.
+	fn urgent_edit(&self, edit_fn: impl FnOnce(&Path) + 'static) -> RunOutput {
+		self.set_issues_dir_override();
+		let mut cmd = Command::new(get_binary_path());
+		cmd.args(["--offline", "sprints", "edit", "urgent", "--offline"]);
+		self.drive_editor_session(cmd, Some(Box::new(edit_fn) as EditFn))
+	}
+
+	/// Spawn the binary with the mock-editor pipe attached, apply `edit_fn` to the tmp file
+	/// once the binary is parked in the editor, then signal the pipe and collect output.
+	fn drive_editor_session(&self, mut cmd: Command, edit_fn: Option<EditFn>) -> RunOutput {
 		cmd.env("__IS_INTEGRATION_TEST", "1");
 		cmd.env(concat!("tedi", "__GITHUB_TOKEN"), "test_token");
-		cmd.env(ENV_MOCK_MILESTONE, &milestone_path);
 		cmd.env(ENV_MOCK_PIPE, &self.pipe_path);
 		for (key, value) in self.xdg.env_vars() {
 			cmd.env(key, value);
@@ -96,15 +112,11 @@ impl TestContext {
 		drain_pipe(&mut stderr, &mut stderr_buf);
 		child.wait().unwrap();
 
-		let result = std::fs::read_to_string(&milestone_path).unwrap_or_default();
-
-		let out = RunOutput {
+		RunOutput {
 			status: child.try_wait().unwrap().unwrap(),
 			stdout: String::from_utf8_lossy(&stdout_buf).into_owned(),
 			stderr: String::from_utf8_lossy(&stderr_buf).into_owned(),
-		};
-
-		(out, result)
+		}
 	}
 }
 
@@ -203,4 +215,119 @@ async fn test_milestone_edit_adds_blockers() {
 	  # Blockers
 	  - todo
 	");
+}
+
+/// `sprints edit urgent`: adding issues and plain-text items persists to
+/// `$XDG_DATA_HOME/tedi/issues/urgent.md`, and the file survives selection polling.
+#[tokio::test]
+async fn test_urgent_edit_persists() {
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+
+	let vi = parse_virtual("- [ ] My Issue <!-- @mock_user https://github.com/o/r/issues/10 -->\n\tbody\n");
+	ctx.local(&vi, Some(Seed::new(0))).await;
+
+	let out = ctx.urgent_edit(|tmp_path| {
+		std::fs::write(tmp_path, "- equilibre people research\n  - linkedin token\n- o/r#10\n- pay for Tokyo server\n").unwrap();
+	});
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+	assert!(out.stdout.contains("Updated urgent sprint"), "stdout: {}", out.stdout);
+
+	insta::assert_snapshot!(ctx.xdg.read_data("issues/urgent.md"), @"
+	- equilibre people research
+	  - linkedin token
+	- https://github.com/o/r/issues/10
+	- pay for Tokyo server
+	");
+
+	// eww polls `sprints selected current` every 0.5s — it must never eat the urgent file
+	let poll = ctx.run(&["--offline", "sprints", "selected", "current"]);
+	assert!(ctx.xdg.data_exists("issues/urgent.md"), "urgent.md was deleted by selection polling");
+	assert!(poll.status.success(), "stderr: {}", poll.stderr);
+}
+
+/// A text-only urgent file (no issue links at all) must survive selection polling —
+/// regression test for the auto-clear wiping freshly saved urgent content.
+#[tokio::test]
+async fn test_urgent_text_only_survives_selection_polling() {
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+
+	let out = ctx.urgent_edit(|tmp_path| {
+		std::fs::write(tmp_path, "- pay for Tokyo server\n- extend tba -u\n").unwrap();
+	});
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+
+	let _ = ctx.run(&["--offline", "sprints", "selected", "current"]);
+	insta::assert_snapshot!(ctx.xdg.read_data("issues/urgent.md"), @"
+	- pay for Tokyo server
+	- extend tba -u
+	");
+}
+
+/// Once every issue in urgent is closed, selection polling prunes the closed links
+/// but keeps plain-text items.
+#[tokio::test]
+async fn test_urgent_prunes_closed_issues() {
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+
+	let vi = parse_virtual("- [x] Done Issue <!-- @mock_user https://github.com/o/r/issues/60 -->\n\tbody\n");
+	ctx.local(&vi, Some(Seed::new(0))).await;
+	ctx.xdg.write_data("issues/urgent.md", "- https://github.com/o/r/issues/60\n- pay for Tokyo server\n");
+
+	let _ = ctx.run(&["--offline", "sprints", "selected", "current"]);
+	insta::assert_snapshot!(ctx.xdg.read_data("issues/urgent.md"), @"- pay for Tokyo server");
+}
+
+/// An urgent file holding nothing but closed issues gets deleted by selection polling.
+#[tokio::test]
+async fn test_urgent_deleted_when_all_issues_closed() {
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+
+	let vi = parse_virtual("- [x] Done Issue <!-- @mock_user https://github.com/o/r/issues/60 -->\n\tbody\n");
+	ctx.local(&vi, Some(Seed::new(0))).await;
+	ctx.xdg.write_data("issues/urgent.md", "- https://github.com/o/r/issues/60\n");
+
+	let _ = ctx.run(&["--offline", "sprints", "selected", "current"]);
+	assert!(!ctx.xdg.data_exists("issues/urgent.md"), "fully-closed urgent file should be deleted");
+}
+
+/// While an edit session holds the urgent lock, selection polling must not clean up the file.
+#[tokio::test]
+async fn test_urgent_cleanup_deferred_during_edit() {
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+
+	let vi = parse_virtual("- [x] Done Issue <!-- @mock_user https://github.com/o/r/issues/60 -->\n\tbody\n");
+	ctx.local(&vi, Some(Seed::new(0))).await;
+	ctx.xdg.write_data("issues/urgent.md", "- https://github.com/o/r/issues/60\n");
+
+	let envs: Vec<(&'static str, PathBuf)> = ctx.xdg.env_vars();
+	let urgent_host = ctx.xdg.data_dir().join("issues/urgent.md");
+	let out = ctx.urgent_edit(move |tmp_path| {
+		// the binary is parked in the editor holding the lock — polling now would have
+		// deleted the fully-closed urgent file if cleanup didn't defer to the lock
+		let mut cmd = Command::new(get_binary_path());
+		cmd.args(["--offline", "sprints", "selected", "current"]);
+		cmd.env("__IS_INTEGRATION_TEST", "1");
+		for (key, value) in &envs {
+			cmd.env(key, value);
+		}
+		cmd.output().unwrap();
+		assert!(urgent_host.exists(), "urgent.md was cleaned up mid-edit");
+
+		std::fs::write(tmp_path, "- kept through the edit\n").unwrap();
+	});
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+	insta::assert_snapshot!(ctx.xdg.read_data("issues/urgent.md"), @"- kept through the edit");
+}
+
+/// Urgent is local-only: milestone refs are rejected and nothing is saved.
+#[tokio::test]
+async fn test_urgent_edit_rejects_milestone_refs() {
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+
+	let out = ctx.urgent_edit(|tmp_path| {
+		std::fs::write(tmp_path, "- https://github.com/o/r/milestone/3\n").unwrap();
+	});
+	assert!(!out.status.success(), "expected failure, stdout: {}", out.stdout);
+	assert!(out.stderr.contains("cannot contain milestone refs"), "stderr: {}", out.stderr);
+	assert!(!ctx.xdg.data_exists("issues/urgent.md"), "rejected edit must not be saved");
 }

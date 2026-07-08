@@ -371,13 +371,7 @@ fn cache_blocker_milestone(settings: &LiveSettings, milestones: &[GithubMileston
 async fn edit_urgent(offline: bool) -> Result<()> {
 	use std::fs;
 
-	use fs2::FileExt;
-
-	let lock_path = v_utils::xdg_cache_file!("milestones_urgent.lock");
-	let lock_file = fs::File::create(&lock_path)?;
-	lock_file
-		.try_lock_exclusive()
-		.map_err(|_| eyre!("Another instance is already editing the urgent sprint. Only one editor at a time is allowed."))?;
+	let _lock = tedi_ops::local::try_lock_urgent()?.ok_or_else(|| eyre!("Another instance is already editing the urgent sprint. Only one editor at a time is allowed."))?;
 
 	let path = tedi_ops::local::urgent_path();
 	let original = match fs::read_to_string(&path) {
@@ -399,13 +393,24 @@ async fn edit_urgent(offline: bool) -> Result<()> {
 		return Ok(());
 	}
 
+	let mut edited_doc = TaskView::parse(&edited_content);
+	// urgent is local-only: milestone refs live on GitHub and have no meaning here
+	let milestone_links = edited_doc.milestone_links();
+	if !milestone_links.is_empty() {
+		tedi_ops::utils::persist_rejected_changes(&edited_content);
+		eprintln!("Your changes were saved to /tmp/tedi/rejected-changes.md — you can recover them from there.");
+		bail!(
+			"urgent sprint cannot contain milestone refs: {}",
+			milestone_links.iter().map(|l| l.as_str()).collect::<Vec<_>>().join(", ")
+		);
+	}
+
 	if let Err(e) = sync_blocker_changes(&edited_content, offline).await {
 		tedi_ops::utils::persist_rejected_changes(&edited_content);
 		eprintln!("Your changes were saved to /tmp/tedi/rejected-changes.md — you can recover them from there.");
 		return Err(e);
 	}
 
-	let mut edited_doc = TaskView::parse(&edited_content);
 	edited_doc.collapse_to_links();
 	fs::create_dir_all(path.parent().expect("urgent_path is always nested under data dir"))?;
 	fs::write(&path, edited_doc.serialize())?;
@@ -416,13 +421,13 @@ async fn edit_urgent(offline: bool) -> Result<()> {
 async fn edit_milestone(settings: &LiveSettings, tf: Timeframe, offline: bool, mock: bool) -> Result<()> {
 	use std::fs;
 
-	use fs2::FileExt;
-
 	let lock_path = v_utils::xdg_cache_file!(format!("milestones_{tf}.lock"));
 	let lock_file = fs::File::create(&lock_path)?;
-	lock_file
-		.try_lock_exclusive()
-		.map_err(|_| eyre!("Another instance is already editing milestone '{tf}'. Only one editor at a time is allowed."))?;
+	match lock_file.try_lock() {
+		Ok(()) => {}
+		Err(std::fs::TryLockError::WouldBlock) => bail!("Another instance is already editing milestone '{tf}'. Only one editor at a time is allowed."),
+		Err(std::fs::TryLockError::Error(e)) => return Err(e.into()),
+	}
 
 	let (original_description, milestone_number, is_outdated) = if mock {
 		// In mock mode, read milestone content from env-specified file

@@ -28,7 +28,6 @@ config = "^0.15.22"
 copy_arrayvec = "0.1"
 derive-new = "^0"
 derive_more = { version = "2.1.1", features = ["from_str", "display", "from", "into_iterator", "deref"] }
-fs2 = "0.4.3"
 futures = "0.3.32"
 image = "0.25.10"
 jiff = { version = "^0.2", features = ["serde"] }

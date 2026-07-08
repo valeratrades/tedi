@@ -1,10 +1,12 @@
 //! Per-sprint selection state: which issue is "selected" in the active sprint.
 //!
 //! Replaces the old rotating `MilestoneBlockerCache`. The active sprint is the lowest
-//! existing one — the local urgent sprint if present, else the cached lowest normal
-//! sprint. Selection is stored per sprint key and by issue link (stable across edits),
-//! auto-advancing to the top open item when the selection is closed or removed, and
-//! clearing (deleting the urgent file) when no open issues remain.
+//! existing one — the local urgent sprint while it has open issues, else the cached
+//! lowest normal sprint. Selection is stored per sprint key and by issue link (stable
+//! across edits), auto-advancing to the top open item when the selection is closed or
+//! removed. Once every issue in urgent is closed, the closed links are pruned (the file
+//! is deleted when nothing else remains) — plain-text items are never cleanup fodder,
+//! and cleanup defers to a running edit session via the urgent lock.
 
 use std::{
 	collections::HashMap,
@@ -19,9 +21,20 @@ use super::{FsReader, Local};
 /// Sprint key for the local urgent sprint.
 pub const URGENT_KEY: &str = "urgent";
 
-/// `$XDG_DATA_HOME/tedi/sprints/urgent.md` — the local, GitHub-unsynced urgent sprint.
+/// `$XDG_DATA_HOME/tedi/issues/urgent.md` — the local, GitHub-unsynced urgent sprint.
 pub fn urgent_path() -> PathBuf {
-	crate::paths::data_dir("sprints").join("urgent.md")
+	Local::issues_dir().join("urgent.md")
+}
+
+/// Exclusive cross-process lock over urgent-file mutation (edit sessions and auto-cleanup).
+/// `None` — another session holds it. Keep the returned handle alive for the whole session.
+pub fn try_lock_urgent() -> std::io::Result<Option<std::fs::File>> {
+	let file = std::fs::File::create(crate::paths::cache_file("milestones_urgent.lock"))?;
+	match file.try_lock() {
+		Ok(()) => Ok(Some(file)),
+		Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+		Err(std::fs::TryLockError::Error(e)) => Err(e),
+	}
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -54,41 +67,33 @@ impl Selected {
 		std::fs::write(path, serde_json::to_string_pretty(self).expect("Selected serialization"))
 	}
 
-	/// The lowest existing sprint: urgent (local file) if it exists, else the cached normal sprint.
+	/// The lowest existing sprint: urgent while it has an open issue, else the cached normal
+	/// sprint. A text-only (or fully-closed) urgent never shadows the normal sprint.
 	pub fn active(&self) -> Option<ActiveSprint> {
 		let urgent = urgent_path();
 		if urgent.exists() {
 			let content = std::fs::read_to_string(&urgent).ok()?;
 			let mut view = TaskView::parse(&content);
 			view.resolve_bare_refs();
-			return Some(ActiveSprint {
-				key: URGENT_KEY.to_string(),
-				view,
-				urgent_file: Some(urgent),
-			});
+			if view.issue_links().iter().any(link_is_open) {
+				return Some(ActiveSprint { key: URGENT_KEY.to_string(), view });
+			}
 		}
 		let normal = self.normal.as_ref()?;
 		let mut view = TaskView::parse(&normal.content);
 		view.resolve_bare_refs();
-		Some(ActiveSprint {
-			key: normal.key.clone(),
-			view,
-			urgent_file: None,
-		})
+		Some(ActiveSprint { key: normal.key.clone(), view })
 	}
 
 	/// The selected issue link in the active sprint, auto-advancing to the top open item
-	/// when the selection is closed/removed, and clearing (deleting the urgent file) when
-	/// no open issues remain.
+	/// when the selection is closed/removed.
 	pub fn current_link(&mut self) -> Option<IssueLink> {
+		cleanup_urgent();
 		let active = self.active()?;
 		let open: Vec<IssueLink> = active.view.issue_links().into_iter().filter(link_is_open).collect();
 
 		if open.is_empty() {
 			self.selections.remove(&active.key);
-			if let Some(file) = &active.urgent_file {
-				let _ = std::fs::remove_file(file);
-			}
 			let _ = self.save();
 			return None;
 		}
@@ -200,10 +205,10 @@ impl Selected {
 		}
 	}
 
-	/// Whether an active sprint is resolvable without a network fetch — an urgent file
-	/// exists, or a normal sprint's content is already cached.
+	/// Whether an active sprint is resolvable without a network fetch — urgent has an open
+	/// issue, or a normal sprint's content is already cached.
 	pub fn active_ready() -> bool {
-		urgent_path().exists() || Self::load().normal.is_some()
+		Self::load().active().is_some()
 	}
 
 	/// Cache the (currently-focused) normal sprint's content (called by `sprints edit`,
@@ -222,9 +227,34 @@ impl Selected {
 pub struct ActiveSprint {
 	pub key: String,
 	pub view: TaskView,
-	/// Present only for urgent — the local file to remove when the view empties.
-	urgent_file: Option<PathBuf>,
 }
+/// Once every issue in urgent is closed, prune the closed links; delete the file when
+/// nothing else remains. Skipped while an edit session holds the urgent lock.
+fn cleanup_urgent() {
+	let path = urgent_path();
+	if !path.exists() {
+		return;
+	}
+	let Ok(Some(_lock)) = try_lock_urgent() else { return };
+	let Ok(content) = std::fs::read_to_string(&path) else { return }; // deleted between exists() and here
+	let mut view = TaskView::parse(&content);
+	view.resolve_bare_refs();
+	let links = view.issue_links();
+	if links.is_empty() || links.iter().any(link_is_open) {
+		return;
+	}
+	view.remove_issues();
+	let remaining = view.serialize();
+	let result = if remaining.trim().is_empty() {
+		std::fs::remove_file(&path)
+	} else {
+		std::fs::write(&path, remaining)
+	};
+	if let Err(e) = result {
+		tracing::warn!("failed to clean up urgent file: {e}");
+	}
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct NormalSprint {
 	key: String,

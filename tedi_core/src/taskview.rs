@@ -107,6 +107,13 @@ impl TaskView {
 		result
 	}
 
+	/// Drop every issue component (with its children) — prunes a fully-closed sprint.
+	pub fn remove_issues(&mut self) {
+		for items in self.sections.values_mut() {
+			remove_issue_items(items);
+		}
+	}
+
 	/// Collapse every issue/milestone component to a bare link for storage.
 	pub fn collapse_to_links(&mut self) {
 		for items in self.sections.values_mut() {
@@ -510,6 +517,17 @@ fn collect_embedded(items: &[TaskItem], out: &mut Vec<(IssueLink, String)>) {
 		for section in &item.children {
 			if let Section::List(list) = section {
 				collect_embedded(list, out);
+			}
+		}
+	}
+}
+
+fn remove_issue_items(items: &mut Vec<TaskItem>) {
+	items.retain(|item| !matches!(item.content, TaskContent::Issue { .. }));
+	for item in items.iter_mut() {
+		for section in &mut item.children {
+			if let Section::List(list) = section {
+				remove_issue_items(list);
 			}
 		}
 	}
