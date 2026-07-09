@@ -19,6 +19,8 @@ use crate::{Events, IssueLink, IssueMarker, IssueRef, MilestoneLink, MilestoneRe
 pub struct TaskView {
 	sections: BTreeMap<Vec<String>, Vec<TaskItem>>,
 	prose: BTreeMap<Vec<String>, Vec<OwnedEvent>>,
+	/// Header paths in document order — render must not alphabetize.
+	order: Vec<Vec<String>>,
 }
 impl TaskView {
 	pub fn parse(content: &str) -> Self {
@@ -26,6 +28,7 @@ impl TaskView {
 		let mut view = Self {
 			sections: BTreeMap::new(),
 			prose: BTreeMap::new(),
+			order: Vec::new(),
 		};
 		let mut stack: Vec<(usize, String)> = Vec::new();
 		let mut prose_buf: Vec<OwnedEvent> = Vec::new();
@@ -41,12 +44,16 @@ impl TaskView {
 						stack.pop();
 					}
 					stack.push((level, text));
-					view.sections.entry(stack_key(&stack)).or_default();
+					let key = stack_key(&stack);
+					view.touch(&key);
+					view.sections.entry(key).or_default();
 				}
 				OwnedEvent::Start(OwnedTag::List(_)) => {
 					view.flush_prose(&stack, &mut prose_buf);
 					let items = parse_list(&events, &mut pos, 0);
-					view.sections.entry(stack_key(&stack)).or_default().extend(items);
+					let key = stack_key(&stack);
+					view.touch(&key);
+					view.sections.entry(key).or_default().extend(items);
 				}
 				_ => {
 					prose_buf.push(events[pos].clone());
@@ -59,9 +66,17 @@ impl TaskView {
 		view
 	}
 
+	fn touch(&mut self, key: &Vec<String>) {
+		if !self.order.contains(key) {
+			self.order.push(key.clone());
+		}
+	}
+
 	fn flush_prose(&mut self, stack: &[(usize, String)], buf: &mut Vec<OwnedEvent>) {
 		if !buf.is_empty() {
-			self.prose.entry(stack_key(stack)).or_default().extend(buf.drain(..));
+			let key = stack_key(stack);
+			self.touch(&key);
+			self.prose.entry(key).or_default().extend(buf.drain(..));
 		}
 	}
 
@@ -125,13 +140,14 @@ impl TaskView {
 	/// Render to markdown, substituting each issue ref (whose link is in `expansions`)
 	/// with the pre-rendered issue `Display`. An empty map yields the collapsed form.
 	pub fn render(&self, expansions: &HashMap<IssueLink, String>) -> String {
-		let mut keys: Vec<Vec<String>> = self.sections.keys().chain(self.prose.keys()).cloned().collect();
-		keys.sort();
-		keys.dedup();
+		debug_assert!(
+			self.sections.keys().chain(self.prose.keys()).all(|k| self.order.contains(k)),
+			"every key is registered in `order` on insertion"
+		);
 
 		let mut output = String::new();
 		let mut prev: Vec<String> = Vec::new();
-		for key in &keys {
+		for key in &self.order {
 			let common = prev.iter().zip(key).take_while(|(a, b)| a == b).count();
 			for (i, seg) in key.iter().enumerate().skip(common) {
 				if !output.is_empty() {
@@ -818,6 +834,27 @@ mod tests {
 	fn test_parse_blockers_from_embedded_no_blockers() {
 		let section = "- [ ] My Issue <!-- @user https://github.com/owner/repo/issues/42 -->";
 		assert!(parse_blockers_from_embedded(section).is_empty());
+	}
+
+	#[test]
+	fn test_sections_keep_document_order() {
+		let content = "# zebra\n- z item\n\n# alpha\n\n## beta\n- b item\n\n# middle\n- m item\n";
+		let doc = TaskView::parse(content);
+		insta::assert_snapshot!(doc.serialize(), @r"
+		# zebra
+
+		- z item
+
+		# alpha
+
+		## beta
+
+		- b item
+
+		# middle
+
+		- m item
+		");
 	}
 
 	#[test]
