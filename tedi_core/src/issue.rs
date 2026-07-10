@@ -541,12 +541,12 @@ impl Issue /*{{{1*/ {
 	pub fn pending_from_descriptor(descriptor: &IssueIndex, virtual_project: bool) -> Self {
 		let index = descriptor.index();
 		let (title, parent_selectors): (String, Vec<IssueSelector>) = match index.last() {
-			Some(IssueSelector::Title(t)) => {
+			// Exact is accepted as a title source: filesystem-derived indexes round-trip through build_from_path
+			Some(IssueSelector::Title(t) | IssueSelector::Exact(t)) => {
 				let selectors = index[..index.len() - 1].to_vec();
 				(t.to_string(), selectors)
 			}
 			Some(IssueSelector::GitId(_)) => panic!("pending_from_descriptor requires last selector to be Title"),
-			Some(IssueSelector::Regex(_)) => panic!("pending_from_descriptor requires last selector to be Title, not Regex"),
 			None => panic!("pending_from_descriptor requires non-empty index"),
 		};
 		let parent_index = IssueIndex::with_index(descriptor.repo_info(), parent_selectors);
@@ -1734,7 +1734,7 @@ mod tests {
 				let link = IssueLink::parse(&format!("https://github.com/owner/repo/issues/{n}")).unwrap();
 				Some(Box::new(LinkedIssueMeta::new(None, link, IssueTimestamps::default())))
 			}
-			IssueSelector::Title(_) | IssueSelector::Regex(_) => None,
+			IssueSelector::Title(_) | IssueSelector::Exact(_) => None,
 		};
 		let children = v.children.iter().map(|(sel, child)| (*sel, hollow_from_virtual(child))).collect();
 		HollowIssue::new(remote, children)

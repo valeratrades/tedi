@@ -152,8 +152,8 @@ impl Selected {
 		Ok(link)
 	}
 
-	/// Select the sprint issue whose display matches `pattern` (case-insensitive substring).
-	/// With no unique match (or no pattern) opens fzf on the sprint's issues.
+	/// Select the sprint issue whose display matches `pattern` (smartcase regex over the
+	/// full display string). With no unique match (or no pattern) opens fzf on the sprint's issues.
 	pub fn select_pattern(pattern: Option<&str>) -> Result<IssueLink, String> {
 		let mut sel = Self::load();
 		let active = sel.active().ok_or("No active sprint. Run `todo sprints edit 1d` first.")?;
@@ -162,25 +162,19 @@ impl Selected {
 			return Err("No issues in the active sprint.".into());
 		}
 
-		let matches: Vec<IssueLink> = match pattern {
-			None => links,
-			Some(p) => {
-				let needle = p.to_lowercase();
-				links.into_iter().filter(|l| display_for_link(l).to_lowercase().contains(&needle)).collect()
-			}
+		let displays: Vec<String> = links.iter().map(display_for_link).collect();
+		let selected = match pattern {
+			None => Local::fzf_select(&displays, "").map_err(|e| format!("fzf failed: {e}"))?,
+			Some(p) => Local::resolve_pattern(&displays, p)
+				.map_err(|e| format!("fzf failed: {e}"))?
+				.ok_or_else(|| format!("No issue matching '{p}' in the sprint."))?,
 		};
-		let link = match matches.len() {
-			0 => return Err(format!("No issue matching '{}' in the sprint.", pattern.unwrap_or(""))),
-			1 if pattern.is_some() => matches.into_iter().next().unwrap(),
-			_ => {
-				let displays: Vec<String> = matches.iter().map(display_for_link).collect();
-				let selected = Local::fzf_select(&displays, pattern.unwrap_or("")).map_err(|e| format!("fzf failed: {e}"))?;
-				matches
-					.into_iter()
-					.find(|l| display_for_link(l) == selected)
-					.ok_or_else(|| format!("fzf returned unknown entry: {selected}"))?
-			}
-		};
+		let link = links
+			.into_iter()
+			.zip(displays)
+			.find_map(|(l, d)| (d == selected).then_some(l))
+			.ok_or_else(|| format!("fzf returned unknown entry: {selected}"))?;
+
 		sel.selections.insert(active.key.clone(), link.as_str().to_string());
 		sel.save().map_err(|e| format!("Failed to save selection: {e}"))?;
 		Ok(link)

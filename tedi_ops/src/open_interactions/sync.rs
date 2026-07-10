@@ -93,7 +93,12 @@ pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Mo
 				false => {
 					// New issue - check if parent needs syncing first
 					let parent_index = issue.identity.parent_index;
-					if let Some((i, _)) = parent_index.index().iter().enumerate().find(|(_, s)| matches!(s, IssueSelector::Title(_))) {
+					if let Some((i, _)) = parent_index
+						.index()
+						.iter()
+						.enumerate()
+						.find(|(_, s)| matches!(s, IssueSelector::Title(_) | IssueSelector::Exact(_)))
+					{
 						// 1. Sink current issue to local so ancestor can find it
 						<Issue as Sink<LocalFs>>::sink(&mut issue, None).await?;
 

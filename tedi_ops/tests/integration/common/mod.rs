@@ -974,7 +974,7 @@ fn build_hollow_from_virtual(virtual_issue: &tedi_ops::VirtualIssue, timestamps:
 			let link = tedi_ops::IssueLink::parse(&format!("https://github.com/{OWNER}/{REPO}/issues/{n}")).unwrap();
 			Some(Box::new(tedi_ops::LinkedIssueMeta::new(Some(USER.to_string()), link, timestamps.clone())))
 		}
-		tedi_ops::IssueSelector::Title(_) | tedi_ops::IssueSelector::Regex(_) => None,
+		tedi_ops::IssueSelector::Title(_) | tedi_ops::IssueSelector::Exact(_) => None,
 	};
 
 	let children = virtual_issue

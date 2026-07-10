@@ -191,8 +191,7 @@ impl Local {
 	/// Parse an IssueSelector from a filename or directory name.
 	/// Format: `{number}_-_{title}[.md[.bak]]` or just `{title}[.md[.bak]]` for pending issues.
 	///
-	/// Returns `GitId` if an issue number is found, `Title` for title-only .md files.
-	/// Returns `None` for non-issue files (directories without numbers, non-.md files).
+	/// Returns `GitId` if an issue number is found, `Exact` (entry name) otherwise.
 	pub fn parse_issue_selector_from_name(name: &str) -> Option<IssueSelector> {
 		// Strip file extensions if present
 		let base = name.strip_suffix(".md.bak").or_else(|| name.strip_suffix(".md")).unwrap_or(name);
@@ -206,8 +205,8 @@ impl Local {
 			return Some(IssueSelector::GitId(num));
 		}
 
-		// No number - return Title for both .md files and directories (pending/unsynced issues)
-		IssueSelector::try_title(base)
+		// No number - pending/unsynced issue, addressed by its exact entry name
+		IssueSelector::try_exact(base)
 	}
 
 	/// Extract the full IssueIndex from an issue file path (including the issue itself).
@@ -318,20 +317,13 @@ impl Local {
 		bail!("No item selected")
 	}
 
-	/// Interactive issue file selection using fzf.
-	/// Collects all issue files and presents them in fzf for selection.
-	pub fn fzf_issue(initial_query: &str, exact: ExactMatchLevel) -> Result<PathBuf> {
-		use std::{
-			io::Write,
-			process::{Command, Stdio},
-		};
-
-		fn collect_issue_files(dir: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<()> {
+	/// All issue files under the issues dir, as paths relative to it.
+	pub(crate) fn issue_file_relpaths() -> Result<Vec<PathBuf>> {
+		fn walk(dir: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<()> {
 			for entry in std::fs::read_dir(dir)? {
-				let entry = entry?;
-				let path = entry.path();
+				let path = entry?.path();
 				if path.is_dir() {
-					collect_issue_files(&path, files)?;
+					walk(&path, files)?;
 				} else if path.is_file()
 					&& let Some(name) = path.file_name().and_then(|n| n.to_str())
 					&& (name.ends_with(".md") || name.ends_with(".md.bak"))
@@ -342,14 +334,48 @@ impl Local {
 			Ok(())
 		}
 
-		let issues_base = Self::issues_dir();
-		if !issues_base.exists() {
-			bail!("No issue files found. Use a Github URL to fetch an issue first.");
-		}
-
+		let base = Self::issues_dir();
 		let mut files = Vec::new();
-		collect_issue_files(&issues_base, &mut files)?;
+		if base.exists() {
+			walk(&base, &mut files)?;
+		}
+		Ok(files.into_iter().map(|p| p.strip_prefix(&base).expect("walk stays under base").to_path_buf()).collect())
+	}
 
+	/// Resolve a user pattern against candidate strings.
+	///
+	/// The pattern is a regex over the full candidate string, smartcase (case-insensitive
+	/// unless the pattern contains an uppercase character). Invalid regex is never an error:
+	/// the pattern is handed to fzf as a fuzzy query instead.
+	/// 0 matches → `Ok(None)`; 1 → that candidate; N → fzf over the matched subset.
+	pub(crate) fn resolve_pattern(candidates: &[String], pattern: &str) -> Result<Option<String>> {
+		let smartcase = if pattern.chars().any(char::is_uppercase) {
+			pattern.to_string()
+		} else {
+			format!("(?i){pattern}")
+		};
+		let Ok(re) = Regex::new(&smartcase) else {
+			return Self::fzf_select(candidates, pattern).map(Some);
+		};
+		let mut matched: Vec<String> = candidates.iter().filter(|c| re.is_match(c)).cloned().collect();
+		match matched.len() {
+			0 => Ok(None),
+			1 => Ok(Some(matched.remove(0))),
+			// regex syntax isn't fzf syntax, so no query prefill
+			_ => Self::fzf_select(&matched, "").map(Some),
+		}
+	}
+
+	/// Interactive issue file selection using fzf.
+	/// Collects all issue files and presents them in fzf for selection.
+	pub fn fzf_issue(initial_query: &str, exact: ExactMatchLevel) -> Result<PathBuf> {
+		use std::{
+			io::Write,
+			process::{Command, Stdio},
+		};
+
+		let issues_base = Self::issues_dir();
+		let mut files = Self::issue_file_relpaths()?;
 		if files.is_empty() {
 			bail!("No issue files found. Use a Github URL to fetch an issue first.");
 		}
@@ -358,32 +384,18 @@ impl Local {
 		// to match GitHub's default sort order. In fuzzy mode, preserve filesystem order.
 		if !matches!(exact, ExactMatchLevel::Fuzzy) {
 			files.sort_by(|a, b| {
-				let a_time = std::fs::metadata(a).and_then(|m| m.modified()).ok();
-				let b_time = std::fs::metadata(b).and_then(|m| m.modified()).ok();
+				let a_time = std::fs::metadata(issues_base.join(a)).and_then(|m| m.modified()).ok();
+				let b_time = std::fs::metadata(issues_base.join(b)).and_then(|m| m.modified()).ok();
 				b_time.cmp(&a_time)
 			});
 		}
 
-		let file_list: Vec<String> = files
-			.iter()
-			.filter_map(|p| p.strip_prefix(&issues_base).ok().map(|rel| rel.to_string_lossy().to_string()))
-			.collect();
+		let file_list: Vec<String> = files.iter().map(|p| p.to_string_lossy().to_string()).collect();
 
-		let (filtered_list, fzf_query): (Vec<&String>, String) = match exact {
-			ExactMatchLevel::Fuzzy | ExactMatchLevel::ExactTerms => (file_list.iter().collect(), initial_query.to_string()),
-			ExactMatchLevel::RegexSubstring =>
-				if initial_query.is_empty() {
-					(file_list.iter().collect(), String::new())
-				} else {
-					let re = Regex::new(initial_query).map_err(|e| eyre!("Invalid regex pattern: {e}"))?;
-					let filtered: Vec<&String> = file_list.iter().filter(|f| re.is_match(f)).collect();
-					(filtered, String::new())
-				},
-			ExactMatchLevel::RegexLine =>
-				if initial_query.is_empty() {
-					(file_list.iter().collect(), String::new())
-				} else {
-					let pattern = {
+		match exact {
+			ExactMatchLevel::RegexSubstring | ExactMatchLevel::RegexLine if !initial_query.is_empty() => {
+				let pattern = match exact {
+					ExactMatchLevel::RegexLine => {
 						let has_start = initial_query.starts_with('^');
 						let has_end = initial_query.ends_with('$');
 						match (has_start, has_end) {
@@ -392,45 +404,47 @@ impl Local {
 							(false, true) => format!("^{initial_query}"),
 							(false, false) => format!("^{initial_query}$"),
 						}
-					};
-					let re = Regex::new(&pattern).map_err(|e| eyre!("Invalid regex pattern: {e}"))?;
-					let filtered: Vec<&String> = file_list.iter().filter(|f| re.is_match(f)).collect();
-					(filtered, String::new())
-				},
-		};
-
-		let owned: Vec<String> = filtered_list.iter().map(|s| s.to_string()).collect();
-		if matches!(exact, ExactMatchLevel::ExactTerms) {
-			// Need --exact flag: spawn fzf directly
-			let mut cmd = Command::new("fzf");
-			cmd.arg("--query")
-				.arg(&fzf_query)
-				.arg("--exact")
-				.arg("--select-1")
-				.arg("--preview")
-				.arg("cat {}")
-				.arg("--preview-window")
-				.arg("right:50%:wrap")
-				.current_dir(&issues_base)
-				.stdin(Stdio::piped())
-				.stdout(Stdio::piped());
-			let mut child = cmd.spawn()?;
-			if let Some(stdin) = child.stdin.as_mut() {
-				for file in &owned {
-					writeln!(stdin, "{file}")?;
+					}
+					_ => initial_query.to_string(),
+				};
+				match Self::resolve_pattern(&file_list, &pattern)? {
+					Some(selected) => Ok(issues_base.join(selected)),
+					None => bail!("No issue matching '{initial_query}'"),
 				}
 			}
-			let output = child.wait_with_output()?;
-			if output.status.success() {
-				let selected = String::from_utf8_lossy(&output.stdout).trim().to_string();
-				if !selected.is_empty() {
-					return Ok(issues_base.join(selected));
+			ExactMatchLevel::ExactTerms => {
+				// Need --exact flag: spawn fzf directly
+				let mut cmd = Command::new("fzf");
+				cmd.arg("--query")
+					.arg(initial_query)
+					.arg("--exact")
+					.arg("--select-1")
+					.arg("--preview")
+					.arg("cat {}")
+					.arg("--preview-window")
+					.arg("right:50%:wrap")
+					.current_dir(&issues_base)
+					.stdin(Stdio::piped())
+					.stdout(Stdio::piped());
+				let mut child = cmd.spawn()?;
+				if let Some(stdin) = child.stdin.as_mut() {
+					for file in &file_list {
+						writeln!(stdin, "{file}")?;
+					}
 				}
+				let output = child.wait_with_output()?;
+				if output.status.success() {
+					let selected = String::from_utf8_lossy(&output.stdout).trim().to_string();
+					if !selected.is_empty() {
+						return Ok(issues_base.join(selected));
+					}
+				}
+				bail!("No issue selected")
 			}
-			bail!("No issue selected")
-		} else {
-			let selected = Self::fzf_select(&owned, &fzf_query)?;
-			Ok(issues_base.join(selected))
+			_ => {
+				let selected = Self::fzf_select(&file_list, initial_query)?;
+				Ok(issues_base.join(selected))
+			}
 		}
 	}
 
@@ -776,11 +790,9 @@ mod local_path {
 						let sanitized = Local::sanitize_title(title.as_str());
 						name.contains(&sanitized)
 					}
-					IssueSelector::Regex(pattern) => {
+					IssueSelector::Exact(target) => {
 						let base = name.strip_suffix(".md.bak").or_else(|| name.strip_suffix(".md")).unwrap_or(name);
-						regex::Regex::new(pattern.as_str())
-							.map(|re| re.is_match(base))
-							.unwrap_or_else(|_| base.contains(pattern.as_str()))
+						base == target.as_str()
 					}
 				};
 

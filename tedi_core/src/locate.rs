@@ -197,8 +197,8 @@ pub enum IssueSelector {
 	GitId(u64),
 	/// Issue title (for pending issues not yet synced to Github)
 	Title(ArrayString<MAX_TITLE_LENGTH>),
-	/// Regex pattern for fuzzy matching (touch mode only, lower priority than Title)
-	Regex(ArrayString<MAX_TITLE_LENGTH>),
+	/// Exact entry name (filesystem-derived, after stripping `.md`/`.md.bak`)
+	Exact(ArrayString<MAX_TITLE_LENGTH>),
 }
 
 impl IssueSelector {
@@ -208,15 +208,10 @@ impl IssueSelector {
 		Self::Title(ArrayString::from(title).unwrap_or_else(|_| panic!("title too long (max {MAX_TITLE_LENGTH} chars): {}", title.len())))
 	}
 
-	/// Try to create a Title selector from a string.
-	/// Returns None if title exceeds MAX_TITLE_LENGTH.
-	pub fn try_title(title: &str) -> Option<Self> {
-		ArrayString::from(title).ok().map(Self::Title)
-	}
-
-	/// Create a Regex selector from a pattern string.
-	pub fn regex(pattern: &str) -> Self {
-		Self::Regex(ArrayString::from(pattern).unwrap_or_else(|_| panic!("pattern too long (max {MAX_TITLE_LENGTH} chars): {}", pattern.len())))
+	/// Try to create an Exact selector from an entry name.
+	/// Returns None if the name exceeds MAX_TITLE_LENGTH.
+	pub fn try_exact(name: &str) -> Option<Self> {
+		ArrayString::from(name).ok().map(Self::Exact)
 	}
 }
 
@@ -302,7 +297,7 @@ impl IssueIndex {
 					offset += s.len();
 					result.push(*n);
 				}
-				IssueSelector::Title(title) | IssueSelector::Regex(title) => {
+				IssueSelector::Title(title) | IssueSelector::Exact(title) => {
 					let span: SourceSpan = (offset + 1, title.len()).into(); // +1 to skip the '/'
 					return Err(TitleInGitPathError::new(NamedSource::new("IssueIndex", self.to_string()), span));
 				}
@@ -338,7 +333,7 @@ impl fmt::Display for IssueIndex {
 		for selector in self.index() {
 			match selector {
 				IssueSelector::GitId(n) => write!(f, "/{n}")?,
-				IssueSelector::Title(t) | IssueSelector::Regex(t) => write!(f, "/{t}")?,
+				IssueSelector::Title(t) | IssueSelector::Exact(t) => write!(f, "/{t}")?,
 			}
 		}
 		Ok(())

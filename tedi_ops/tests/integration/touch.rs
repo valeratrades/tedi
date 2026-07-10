@@ -43,6 +43,82 @@ fn test_touch_matches_issue_by_substring() {
 	assert!(out.status.success(), "Expected success, got stderr: {}", out.stderr);
 }
 
+/// Test that the touch pattern is a regex over the full relative path, so it can span
+/// path separators: `testrepo/.*anc.*ind` matches `testowner/testrepo/99_-_ancestry_resolve_for_ind`.
+#[test]
+fn test_touch_full_path_regex_spans_segments() {
+	let ctx = TestContext::build_with_preexisting_state_unsafe(
+		r#"
+		//- /data/issues/testowner/testrepo/.meta.json
+		{
+		  "virtual_project": false,
+		  "next_virtual_issue_number": 0,
+		  "issues": {
+		    "99": {
+		      "timestamps": {
+		        "title": null,
+		        "description": null,
+		        "labels": null,
+		        "state": null,
+		        "comments": []
+		      }
+		    }
+		  }
+		}
+		//- /data/issues/testowner/testrepo/99_-_ancestry_resolve_for_ind.md
+		- [ ] ancestry resolve for ind <!--https://github.com/testowner/testrepo/issues/99-->
+			body content here
+	"#,
+	);
+
+	let out = ctx.open_touch("testrepo/.*anc.*ind").run();
+
+	assert!(out.status.success(), "Expected success, got stderr: {}", out.stderr);
+	assert!(
+		out.stdout.contains("Found existing issue"),
+		"Expected unique regex match to open the existing issue, got stdout: {}",
+		out.stdout
+	);
+}
+
+/// Test that a unique full-path match opens the existing issue instead of entering the
+/// creation flow, even when the last segment only partially matches the filename.
+#[test]
+fn test_touch_unique_match_opens_instead_of_creating() {
+	let ctx = TestContext::build_with_preexisting_state_unsafe(
+		r#"
+		//- /data/issues/testowner/testrepo/.meta.json
+		{
+		  "virtual_project": false,
+		  "next_virtual_issue_number": 0,
+		  "issues": {
+		    "99": {
+		      "timestamps": {
+		        "title": null,
+		        "description": null,
+		        "labels": null,
+		        "state": null,
+		        "comments": []
+		      }
+		    }
+		  }
+		}
+		//- /data/issues/testowner/testrepo/99_-_ancestry_resolve_for_ind.md
+		- [ ] ancestry resolve for ind <!--https://github.com/testowner/testrepo/issues/99-->
+			body content here
+	"#,
+	);
+
+	let out = ctx.open_touch("testowner/testrepo/ancestry").run();
+
+	assert!(out.status.success(), "Expected success, got stderr: {}", out.stderr);
+	assert!(
+		out.stdout.contains("Found existing issue"),
+		"Expected unique match to open the existing issue, got stdout: {}",
+		out.stdout
+	);
+}
+
 /// Test that touch mode correctly handles paths where middle segments match flat files.
 ///
 /// When `ancestry` matches flat file `99_-_ancestry_resolve_for_ind.md`:
