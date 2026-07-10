@@ -434,6 +434,230 @@ async fn test_urgent_edit_skips_category_headers_and_half_typed() {
 	");
 }
 
+/// Seed `sprints_selection.json` with a normal ("1d") sprint, cached milestones
+/// (`(url, title, closed, content)`), and an optional pre-set selection path.
+fn seed_selection(ctx: &TestContext, sprint_content: &str, milestones: &[(&str, &str, bool, &str)], path: &[&str]) {
+	let mut ms = serde_json::Map::new();
+	for (url, title, closed, content) in milestones {
+		ms.insert(url.to_string(), serde_json::json!({ "title": title, "closed": closed, "content": content }));
+	}
+	let mut paths = serde_json::Map::new();
+	if !path.is_empty() {
+		paths.insert("1d".to_string(), serde_json::json!(path));
+	}
+	ctx.xdg.write_cache(
+		"sprints_selection.json",
+		&serde_json::json!({
+			"paths": paths,
+			"normal": { "key": "1d", "content": sprint_content },
+			"milestones": ms,
+		})
+		.to_string(),
+	);
+}
+
+/// Milestone as a select target: `--next` lands on it (output shows the cached title and
+/// the auto-resolved top open issue), `selected *` ops act on the resolved issue, and
+/// `--down`/`--next`/`--up` navigate inside the milestone and back out.
+#[tokio::test]
+async fn test_select_tree_navigation_through_milestone() {
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+
+	let vi10 = parse_virtual("- [ ] Sprint Issue <!-- @mock_user https://github.com/o/r/issues/10 -->\n\n  # Blockers\n  - sprint task\n");
+	let vi20 = parse_virtual("- [ ] Ms Twenty <!-- @mock_user https://github.com/o/r/issues/20 -->\n\n  # Blockers\n  - milestone task one\n");
+	let vi21 = parse_virtual("- [ ] Ms TwentyOne <!-- @mock_user https://github.com/o/r/issues/21 -->\n\n  # Blockers\n  - milestone task two\n");
+	ctx.local(&vi10, Some(Seed::new(0))).await;
+	ctx.local(&vi20, Some(Seed::new(0))).await;
+	ctx.local(&vi21, Some(Seed::new(0))).await;
+
+	seed_selection(
+		&ctx,
+		"- https://github.com/o/r/issues/10\n- https://github.com/o/r/milestone/3\n",
+		&[(
+			"https://github.com/o/r/milestone/3",
+			"big_feature",
+			false,
+			"- https://github.com/o/r/issues/20\n- https://github.com/o/r/issues/21\n",
+		)],
+		&[],
+	);
+
+	// default selection is the top open root node (#10); --next lands on the milestone
+	let out = ctx.run(&["--offline", "sprints", "select", "--next"]);
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+	assert!(out.stdout.contains("Selected milestone: big_feature → o/r#20"), "stdout: {}", out.stdout);
+
+	// selected ops act on the auto-resolved issue
+	let out = ctx.run(&["--offline", "sprints", "selected", "current"]);
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+	assert!(out.stdout.contains("milestone task one"), "stdout: {}", out.stdout);
+
+	// explicit descent pins the resolved issue in the path
+	let out = ctx.run(&["--offline", "sprints", "select", "--down"]);
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+	assert!(out.stdout.contains("Selected: o/r#20"), "stdout: {}", out.stdout);
+
+	// --next now moves among the milestone's issues, not the sprint's
+	let out = ctx.run(&["--offline", "sprints", "select", "--next"]);
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+	assert!(out.stdout.contains("Selected: o/r#21"), "stdout: {}", out.stdout);
+	let out = ctx.run(&["--offline", "sprints", "selected", "current"]);
+	assert!(out.stdout.contains("milestone task two"), "stdout: {}", out.stdout);
+
+	// --up pops back out to the milestone
+	let out = ctx.run(&["--offline", "sprints", "select", "--up"]);
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+	assert!(out.stdout.contains("Selected milestone: big_feature → o/r#20"), "stdout: {}", out.stdout);
+
+	// back at root level, --next wraps to the sprint issue
+	let out = ctx.run(&["--offline", "sprints", "select", "--next"]);
+	assert!(out.stdout.contains("Selected: o/r#10"), "stdout: {}", out.stdout);
+}
+
+/// A directory issue in a sprint: `--down` selects its top open child, then `--next`
+/// moves among the children rather than the sprint items.
+#[tokio::test]
+async fn test_select_descends_into_directory_issue() {
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+
+	let parent = parse_virtual(
+		"- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
+		 \tparent body\n\
+		 \n\
+		 \t## Sub-issues\n\
+		 \t- [ ] Child One <!-- @mock_user https://github.com/o/r/issues/2 -->\n\
+		 \t- [ ] Child Two <!-- @mock_user https://github.com/o/r/issues/3 -->\n",
+	);
+	ctx.local(&parent, Some(Seed::new(0))).await;
+
+	seed_selection(&ctx, "- https://github.com/o/r/issues/1\n", &[], &[]);
+
+	let out = ctx.run(&["--offline", "sprints", "select", "--down"]);
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+	assert!(out.stdout.contains("Selected: o/r#2"), "stdout: {}", out.stdout);
+
+	let out = ctx.run(&["--offline", "sprints", "select", "--next"]);
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+	assert!(out.stdout.contains("Selected: o/r#3"), "stdout: {}", out.stdout);
+
+	let out = ctx.run(&["--offline", "sprints", "select", "--up"]);
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+	assert!(out.stdout.contains("Selected: o/r#1"), "stdout: {}", out.stdout);
+}
+
+/// Offline movement past an uncached milestone skips it with a warning.
+#[tokio::test]
+async fn test_select_skips_uncached_milestone_with_warning() {
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+
+	let vi10 = parse_virtual("- [ ] Issue Ten <!-- @mock_user https://github.com/o/r/issues/10 -->\n\n  # Blockers\n  - task ten\n");
+	let vi11 = parse_virtual("- [ ] Issue Eleven <!-- @mock_user https://github.com/o/r/issues/11 -->\n\n  # Blockers\n  - task eleven\n");
+	ctx.local(&vi10, Some(Seed::new(0))).await;
+	ctx.local(&vi11, Some(Seed::new(0))).await;
+
+	seed_selection(
+		&ctx,
+		"- https://github.com/o/r/issues/10\n- https://github.com/o/r/milestone/9\n- https://github.com/o/r/issues/11\n",
+		&[],
+		&[],
+	);
+
+	let out = ctx.run(&["--offline", "sprints", "select", "--next"]);
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+	assert!(out.stdout.contains("Selected: o/r#11"), "stdout: {}", out.stdout);
+	assert!(out.stderr.contains("uncached milestone"), "stderr: {}", out.stderr);
+}
+
+/// Explicit descent into an uncached milestone errors loudly, naming the fix.
+#[tokio::test]
+async fn test_select_down_onto_uncached_milestone_errors() {
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+
+	let vi10 = parse_virtual("- [ ] Issue Ten <!-- @mock_user https://github.com/o/r/issues/10 -->\n\n  # Blockers\n  - task ten\n");
+	ctx.local(&vi10, Some(Seed::new(0))).await;
+
+	seed_selection(
+		&ctx,
+		"- https://github.com/o/r/issues/10\n- https://github.com/o/r/milestone/9\n",
+		&[],
+		&["https://github.com/o/r/milestone/9"],
+	);
+
+	let out = ctx.run(&["--offline", "sprints", "select", "--down"]);
+	assert!(!out.status.success(), "expected failure, stdout: {}", out.stdout);
+	assert!(out.stderr.contains("not cached"), "stderr: {}", out.stderr);
+}
+
+/// A cached milestone ref expands inline in `sprints edit`; blocker edits on an issue
+/// embedded *inside* the milestone block sync to that issue's file; collapse stores only
+/// the bare milestone link — inner issues never leak into assignment sync.
+#[tokio::test]
+async fn test_milestone_edit_expands_milestone_ref_and_syncs_inner_blockers() {
+	use crate::common::are_you_sure::read_issue_file;
+
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+
+	let vi = parse_virtual("- [ ] Inner Issue <!-- @mock_user https://github.com/o/r/issues/20 -->\n\tinner body\n");
+	ctx.local(&vi, Some(Seed::new(0))).await;
+
+	// mock mode never fetches: the milestone cache is seeded directly
+	seed_selection(
+		&ctx,
+		"",
+		&[("https://github.com/o/r/milestone/3", "big_feature", false, "- https://github.com/o/r/issues/20")],
+		&[],
+	);
+
+	let (out, result_milestone) = ctx.milestone_edit_with_changes("# Sprint\n\n- https://github.com/o/r/milestone/3\n", |tmp_path| {
+		let content = std::fs::read_to_string(tmp_path).unwrap();
+		assert!(
+			content.contains("big_feature <!-- https://github.com/o/r/milestone/3 -->"),
+			"expanded milestone block missing:\n{content}"
+		);
+		assert!(
+			content.contains("<!-- @mock_user https://github.com/o/r/issues/20 -->"),
+			"inner issue must be expanded inside the milestone block:\n{content}"
+		);
+		std::fs::write(tmp_path, content.trim_end().to_string() + "\n    # Blockers\n    - inner step\n").unwrap();
+	});
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+
+	insta::assert_snapshot!(result_milestone, @"
+	# Sprint
+
+	- https://github.com/o/r/milestone/3
+	");
+
+	ctx.set_issues_dir_override();
+	let path = tedi_ops::local::Local::find_by_number(tedi_ops::RepoInfo::new("o", "r"), 20, tedi_ops::local::FsReader).expect("issue #20 should still exist");
+	insta::assert_snapshot!(read_issue_file(&path), @"
+	- [ ] Inner Issue <!-- @mock_user https://github.com/o/r/issues/20 -->
+	  inner body
+
+	  # Blockers
+	  - inner step
+	");
+}
+
+/// Old-format cache (flat string `selections`) loads with `normal` intact; the dropped
+/// field is silently ignored and the selection re-derives from the top open item.
+#[tokio::test]
+async fn test_selection_cache_format_upgrade() {
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+
+	let vi = parse_virtual("- [ ] My Issue <!-- @mock_user https://github.com/o/r/issues/10 -->\n\n  # Blockers\n  - old task\n");
+	ctx.local(&vi, Some(Seed::new(0))).await;
+
+	ctx.xdg.write_cache(
+		"sprints_selection.json",
+		r#"{"selections":{"1d":"https://github.com/o/r/issues/10"},"normal":{"key":"1d","content":"- https://github.com/o/r/issues/10"}}"#,
+	);
+
+	let out = ctx.run(&["--offline", "sprints", "selected", "current"]);
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+	assert!(out.stdout.contains("old task"), "stdout: {}", out.stdout);
+}
+
 /// Urgent is local-only: milestone refs are rejected and nothing is saved.
 #[tokio::test]
 async fn test_urgent_edit_rejects_milestone_refs() {

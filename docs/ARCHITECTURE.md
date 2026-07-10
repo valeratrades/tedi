@@ -37,6 +37,7 @@ objective: good times
 - make enough money
 ```
 
+> NB: read *bottom* -> *top*, not the other way around. The current task is the one at the bottom, and gets `pop`ed once finished.
 
 ### Composition Rules
 how the system components interact with each other.

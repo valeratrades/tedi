@@ -7,9 +7,9 @@ use crate::common::{
 	parse_virtual,
 };
 
-/// Build a `sprints_selection.json` whose active (normal) sprint embeds `titles`.
-/// `titles` is a list of `(title, user, url)`; `selected` optionally pins the selection.
-fn selection_cache_json(titles: &[(&str, &str, &str)], selected: Option<&str>) -> String {
+/// Build a `sprints_selection.json` whose active (normal) sprint embeds `titles`
+/// (a list of `(title, user, url)`), with no selection path pinned.
+fn selection_cache_json(titles: &[(&str, &str, &str)]) -> String {
 	let content: String = titles
 		.iter()
 		.enumerate()
@@ -18,19 +18,14 @@ fn selection_cache_json(titles: &[(&str, &str, &str)], selected: Option<&str>) -
 			format!("- [ ] {title} <!-- @{user} {url} -->{sep}")
 		})
 		.collect();
-	let mut selections = serde_json::Map::new();
-	if let Some(sel) = selected {
-		selections.insert("1d".to_string(), serde_json::Value::String(sel.to_string()));
-	}
 	serde_json::json!({
-		"selections": selections,
 		"normal": { "key": "1d", "content": content }
 	})
 	.to_string()
 }
 
 fn write_selection(ctx: &TestContext, titles: &[(&str, &str, &str)]) {
-	ctx.xdg.write_cache("sprints_selection.json", &selection_cache_json(titles, None));
+	ctx.xdg.write_cache("sprints_selection.json", &selection_cache_json(titles));
 }
 
 /// rust-analyzer-style cursor encoding: `$0` inserted into `content` at the position the
@@ -277,7 +272,7 @@ async fn test_select_single_entry_errors() {
 
 	let out = ctx.run(&["--offline", "sprints", "select", "--next"]);
 	assert!(!out.status.success(), "select with single entry should fail. stdout: {}", out.stdout);
-	assert!(out.stderr.contains("Only one issue"), "error should mention single issue. stderr: {}", out.stderr);
+	assert!(out.stderr.contains("Only one item"), "error should mention single item. stderr: {}", out.stderr);
 }
 
 #[tokio::test]

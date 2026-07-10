@@ -166,6 +166,37 @@ impl MilestoneLink {
 	}
 }
 
+/// A link to either node kind of task space: an issue or a milestone.
+/// The unit of selection paths — (de)serializes as the bare URL, disambiguated
+/// by the `issues`/`milestone` path segment.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub enum NodeLink {
+	Issue(IssueLink),
+	Milestone(MilestoneLink),
+}
+
+impl NodeLink {
+	pub fn parse(url: &str) -> Option<Self> {
+		if let Some(link) = IssueLink::parse(url) {
+			return Some(Self::Issue(link));
+		}
+		MilestoneLink::parse(url).map(Self::Milestone)
+	}
+
+	pub fn as_str(&self) -> &str {
+		match self {
+			Self::Issue(link) => link.as_str(),
+			Self::Milestone(link) => link.as_str(),
+		}
+	}
+}
+
+impl fmt::Display for NodeLink {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		write!(f, "{}", self.as_str())
+	}
+}
+
 /// A parsed milestone reference. URL-only for now (no established shorthand syntax).
 #[derive(Clone, Debug, PartialEq)]
 pub struct MilestoneRef(pub MilestoneLink);

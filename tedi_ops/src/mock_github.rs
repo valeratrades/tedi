@@ -752,6 +752,16 @@ impl GithubClient for MockGithubClient {
 		Ok(Vec::new())
 	}
 
+	async fn get_milestone(&self, _repo: RepoInfo, number: u64) -> Result<crate::github::GithubMilestone, GithubError> {
+		self.log_call(&format!("get_milestone({number})"));
+		Err(GithubError::new_other(format!("mock has no milestone #{number}")))
+	}
+
+	async fn list_milestone_issues(&self, _repo: RepoInfo, milestone_number: u64) -> Result<Vec<GithubIssue>, GithubError> {
+		self.log_call(&format!("list_milestone_issues({milestone_number})"));
+		Ok(Vec::new())
+	}
+
 	async fn create_milestone(&self, _repo: RepoInfo, title: &str, _description: &str, _closed: bool) -> Result<(), GithubError> {
 		self.log_call(&format!("create_milestone({title})"));
 		Ok(())

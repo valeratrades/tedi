@@ -1099,7 +1099,7 @@ pub use fs_sink::{LocalFs, LocalFsSinkError};
 // Error Types
 //==============================================================================
 use regex::Regex;
-pub use selection::{ActiveSprint, Selected, URGENT_KEY, try_lock_urgent, urgent_path};
+pub use selection::{CachedMilestone, Landing, Selected, URGENT_KEY, try_lock_urgent, urgent_path};
 use serde::{Deserialize, Serialize};
 use v_utils::{macros::wrap_err, prelude::*};
 

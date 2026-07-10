@@ -76,6 +76,12 @@ pub trait GithubClient: Send + Sync {
 	/// List all milestones (open and closed) for a repository.
 	async fn list_milestones(&self, repo: RepoInfo) -> Result<Vec<GithubMilestone>, GithubError>;
 
+	/// Fetch a single milestone by number.
+	async fn get_milestone(&self, repo: RepoInfo, number: u64) -> Result<GithubMilestone, GithubError>;
+
+	/// List all issues (open and closed) assigned to a milestone.
+	async fn list_milestone_issues(&self, repo: RepoInfo, milestone_number: u64) -> Result<Vec<GithubIssue>, GithubError>;
+
 	/// Create a milestone. `closed` opens it in the `closed` state (used for archival).
 	async fn create_milestone(&self, repo: RepoInfo, title: &str, description: &str, closed: bool) -> Result<(), GithubError>;
 
@@ -559,6 +565,32 @@ impl GithubClient for RealGithubClient {
 			return Err(GithubError::new_api(status, body, "list milestones".to_string()));
 		}
 		Ok(res.json::<Vec<GithubMilestone>>().await?)
+	}
+
+	async fn get_milestone(&self, repo: RepoInfo, number: u64) -> Result<GithubMilestone, GithubError> {
+		let url = format!("https://api.github.com/repos/{}/{}/milestones/{number}", repo.owner(), repo.repo());
+		let res = self.get(&url).send().await?;
+		if !res.status().is_success() {
+			let status = res.status();
+			let body = res.text().await.unwrap_or_default();
+			return Err(GithubError::new_api(status, body, "get milestone".to_string()));
+		}
+		Ok(res.json::<GithubMilestone>().await?)
+	}
+
+	async fn list_milestone_issues(&self, repo: RepoInfo, milestone_number: u64) -> Result<Vec<GithubIssue>, GithubError> {
+		let url = format!(
+			"https://api.github.com/repos/{}/{}/issues?milestone={milestone_number}&state=all&per_page=100",
+			repo.owner(),
+			repo.repo()
+		);
+		let res = self.get(&url).send().await?;
+		if !res.status().is_success() {
+			let status = res.status();
+			let body = res.text().await.unwrap_or_default();
+			return Err(GithubError::new_api(status, body, "list milestone issues".to_string()));
+		}
+		Ok(res.json::<Vec<GithubIssue>>().await?)
 	}
 
 	async fn create_milestone(&self, repo: RepoInfo, title: &str, description: &str, closed: bool) -> Result<(), GithubError> {

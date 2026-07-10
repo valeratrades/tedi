@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use tedi_md::indent_into;
 
-use crate::{Events, IssueLink, IssueMarker, IssueRef, MilestoneLink, MilestoneRef, OwnedEvent, OwnedTag, OwnedTagEnd};
+use crate::{Events, IssueLink, IssueMarker, IssueRef, MilestoneLink, MilestoneRef, NodeLink, OwnedEvent, OwnedTag, OwnedTagEnd};
 
 /// A parsed task view: header-path → ordered components, plus un-itemized prose per section.
 pub struct TaskView {
@@ -111,6 +111,17 @@ impl TaskView {
 		links
 	}
 
+	/// Collect all node links (issues and milestones), in document order.
+	pub fn nodes(&self) -> Vec<NodeLink> {
+		let mut nodes = Vec::new();
+		for key in &self.order {
+			if let Some(items) = self.sections.get(key) {
+				collect_nodes(items, &mut nodes);
+			}
+		}
+		nodes
+	}
+
 	/// The expanded (`Title <!-- marker -->` + blockers) issue sections in this view.
 	/// Returns each `IssueLink` and the serialized component text (for blocker sync).
 	/// Bare links are excluded — only genuinely-expanded issues are synced.
@@ -137,9 +148,9 @@ impl TaskView {
 		self.normalize();
 	}
 
-	/// Render to markdown, substituting each issue ref (whose link is in `expansions`)
-	/// with the pre-rendered issue `Display`. An empty map yields the collapsed form.
-	pub fn render(&self, expansions: &HashMap<IssueLink, String>) -> String {
+	/// Render to markdown, substituting each issue/milestone ref (whose canonical URL is
+	/// in `expansions`) with its pre-rendered block. An empty map yields the collapsed form.
+	pub fn render(&self, expansions: &HashMap<String, String>) -> String {
 		debug_assert!(
 			self.sections.keys().chain(self.prose.keys()).all(|k| self.order.contains(k)),
 			"every key is registered in `order` on insertion"
@@ -290,8 +301,9 @@ pub fn parse_blockers_from_embedded(section: &str) -> crate::Blockers {
 /// Semantic classification of a component's inline text. Blockers are never a
 /// top-level component here — they live inside the individual issues.
 enum TaskContent {
-	/// A milestone reference (`…/milestone/N`).
-	Milestone(MilestoneRef),
+	/// A milestone reference (`…/milestone/N`). `embedded` mirrors the issue variant:
+	/// the expanded form (`Title <!-- url -->`), cleared on collapse.
+	Milestone { r#ref: MilestoneRef, embedded: bool },
 	/// An issue reference. `embedded` marks the expanded form (`Title <!-- marker -->`)
 	/// as opposed to a bare link; it is a transient parse artifact, cleared on collapse.
 	Issue { r#ref: IssueRef, embedded: bool },
@@ -459,17 +471,24 @@ fn split_inline_at_ref_softbreak(events: Vec<OwnedEvent>) -> (TaskContent, Vec<S
 
 /// Classify a component's inline events into a `TaskContent`.
 fn classify_inline_events(events: Vec<OwnedEvent>) -> TaskContent {
-	// A numbered issue marker (linked or numbered-virtual) → embedded (expanded) issue.
-	// Title text is a render concern; drop it.
+	// A numbered issue marker (linked or numbered-virtual) or a milestone-URL marker →
+	// embedded (expanded) component. Title text is a render concern; drop it.
 	for event in &events {
 		if let OwnedEvent::InlineHtml(html) = event
 			&& let Some(inner) = html.strip_prefix("<!--").and_then(|s| s.strip_suffix("-->"))
-			&& let IssueMarker::Linked { link, .. } | IssueMarker::Virtual { link: Some(link) } = IssueMarker::decode(inner.trim())
 		{
-			return TaskContent::Issue {
-				r#ref: IssueRef::Url(link),
-				embedded: true,
-			};
+			if let Some(link) = MilestoneLink::parse(inner.trim()) {
+				return TaskContent::Milestone {
+					r#ref: MilestoneRef(link),
+					embedded: true,
+				};
+			}
+			if let IssueMarker::Linked { link, .. } | IssueMarker::Virtual { link: Some(link) } = IssueMarker::decode(inner.trim()) {
+				return TaskContent::Issue {
+					r#ref: IssueRef::Url(link),
+					embedded: true,
+				};
+			}
 		}
 	}
 
@@ -478,7 +497,7 @@ fn classify_inline_events(events: Vec<OwnedEvent>) -> TaskContent {
 
 	if !trimmed.is_empty() && !trimmed.contains(' ') {
 		if let Some(mr) = MilestoneRef::parse_word(trimmed) {
-			return TaskContent::Milestone(mr);
+			return TaskContent::Milestone { r#ref: mr, embedded: false };
 		}
 		if let Some(ir) = IssueRef::parse_word(trimmed) {
 			return TaskContent::Issue { r#ref: ir, embedded: false };
@@ -544,12 +563,30 @@ fn collect_issue_links(items: &[TaskItem], out: &mut Vec<IssueLink>) {
 
 fn collect_milestone_links(items: &[TaskItem], out: &mut Vec<MilestoneLink>) {
 	for item in items {
-		if let TaskContent::Milestone(mr) = &item.content {
-			out.push(mr.to_milestone_link());
+		if let TaskContent::Milestone { r#ref, .. } = &item.content {
+			out.push(r#ref.to_milestone_link());
 		}
 		for section in &item.children {
 			if let Section::List(list) = section {
 				collect_milestone_links(list, out);
+			}
+		}
+	}
+}
+
+fn collect_nodes(items: &[TaskItem], out: &mut Vec<NodeLink>) {
+	for item in items {
+		match &item.content {
+			TaskContent::Issue { r#ref, .. } =>
+				if let Some(link) = r#ref.to_issue_link() {
+					out.push(NodeLink::Issue(link));
+				},
+			TaskContent::Milestone { r#ref, .. } => out.push(NodeLink::Milestone(r#ref.to_milestone_link())),
+			TaskContent::Virtual(_) => {}
+		}
+		for section in &item.children {
+			if let Section::List(list) = section {
+				collect_nodes(list, out);
 			}
 		}
 	}
@@ -590,7 +627,11 @@ fn collapse_items(items: &mut [TaskItem]) {
 				r#ref: IssueRef::Url(link),
 				embedded: false,
 			}),
-			TaskContent::Milestone(_) => None, // milestone refs are already bare links
+			TaskContent::Milestone { r#ref, embedded: true } => Some(TaskContent::Milestone {
+				r#ref: r#ref.clone(),
+				embedded: false,
+			}),
+			TaskContent::Milestone { embedded: false, .. } => None, // bare milestone refs stay as-is (children preserved)
 			TaskContent::Virtual(_) => None,
 		};
 		if let Some(content) = collapsed {
@@ -655,7 +696,7 @@ fn has_ref_descendant(item: &TaskItem) -> bool {
 	item.children.iter().any(|sec| match sec {
 		Section::List(list) => list
 			.iter()
-			.any(|child| matches!(child.content, TaskContent::Issue { .. } | TaskContent::Milestone(_)) || has_ref_descendant(child)),
+			.any(|child| matches!(child.content, TaskContent::Issue { .. } | TaskContent::Milestone { .. }) || has_ref_descendant(child)),
 		Section::FreeContent(_) => false,
 	})
 }
@@ -680,15 +721,24 @@ fn ensure_blank_line(output: &mut String) {
 	}
 }
 
-/// Whether a list should render loose (blank lines between items): checkbox lists,
-/// or any list whose issue refs are being expanded.
-fn items_are_loose(items: &[TaskItem], expansions: &HashMap<IssueLink, String>) -> bool {
-	items
-		.iter()
-		.any(|item| item.checkbox.is_some() || matches!(&item.content, TaskContent::Issue { r#ref, .. } if r#ref.to_issue_link().is_some_and(|l| expansions.contains_key(&l))))
+/// Canonical URL of an item's ref, the key into the expansions map.
+fn expansion_key(content: &TaskContent) -> Option<String> {
+	match content {
+		TaskContent::Issue { r#ref, .. } => r#ref.to_issue_link().map(|l| l.as_str().to_string()),
+		TaskContent::Milestone { r#ref, .. } => Some(r#ref.to_milestone_link().as_str().to_string()),
+		TaskContent::Virtual(_) => None,
+	}
 }
 
-fn serialize_items(items: &[TaskItem], expansions: &HashMap<IssueLink, String>, output: &mut String) {
+/// Whether a list should render loose (blank lines between items): checkbox lists,
+/// or any list whose issue/milestone refs are being expanded.
+fn items_are_loose(items: &[TaskItem], expansions: &HashMap<String, String>) -> bool {
+	items
+		.iter()
+		.any(|item| item.checkbox.is_some() || expansion_key(&item.content).is_some_and(|k| expansions.contains_key(&k)))
+}
+
+fn serialize_items(items: &[TaskItem], expansions: &HashMap<String, String>, output: &mut String) {
 	let loose = items_are_loose(items, expansions);
 	for (i, item) in items.iter().enumerate() {
 		if i > 0 && loose {
@@ -700,7 +750,7 @@ fn serialize_items(items: &[TaskItem], expansions: &HashMap<IssueLink, String>, 
 	}
 }
 
-fn serialize_section(section: &Section, expansions: &HashMap<IssueLink, String>, output: &mut String) {
+fn serialize_section(section: &Section, expansions: &HashMap<String, String>, output: &mut String) {
 	match section {
 		Section::FreeContent(owned) => {
 			if !output.is_empty() {
@@ -712,11 +762,10 @@ fn serialize_section(section: &Section, expansions: &HashMap<IssueLink, String>,
 	}
 }
 
-fn serialize_item(item: &TaskItem, expansions: &HashMap<IssueLink, String>, output: &mut String) {
-	// Expansion substitution: emit the issue's pre-rendered `Display` block verbatim.
-	if let TaskContent::Issue { r#ref, .. } = &item.content
-		&& let Some(link) = r#ref.to_issue_link()
-		&& let Some(expansion) = expansions.get(&link)
+fn serialize_item(item: &TaskItem, expansions: &HashMap<String, String>, output: &mut String) {
+	// Expansion substitution: emit the component's pre-rendered block verbatim.
+	if let Some(key) = expansion_key(&item.content)
+		&& let Some(expansion) = expansions.get(&key)
 	{
 		output.push_str(expansion.trim_matches('\n'));
 		return;
@@ -750,7 +799,7 @@ fn serialize_item(item: &TaskItem, expansions: &HashMap<IssueLink, String>, outp
 
 fn item_content_to_events(content: &TaskContent) -> Vec<OwnedEvent> {
 	match content {
-		TaskContent::Milestone(mr) => vec![OwnedEvent::Text(mr.to_string())],
+		TaskContent::Milestone { r#ref, .. } => vec![OwnedEvent::Text(r#ref.to_string())],
 		TaskContent::Issue { r#ref, .. } => vec![OwnedEvent::Text(r#ref.to_string())],
 		TaskContent::Virtual(events) => events.clone(),
 	}
@@ -773,8 +822,8 @@ mod tests {
 	use super::*;
 	use crate::Issue;
 
-	fn expansions(pairs: &[(&str, &str)]) -> HashMap<IssueLink, String> {
-		pairs.iter().map(|(url, view)| (IssueLink::parse(url).unwrap(), view.to_string())).collect()
+	fn expansions(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+		pairs.iter().map(|(url, view)| (NodeLink::parse(url).unwrap().as_str().to_string(), view.to_string())).collect()
 	}
 
 	#[test]
@@ -1211,6 +1260,109 @@ mod tests {
 		- https://github.com/local/virtual/issues/1
 		- https://github.com/o/r/issues/42
 		");
+	}
+
+	#[test]
+	fn test_embedded_milestone_collapses_to_bare_link() {
+		let content = "\
+# Sprint
+
+- [ ] big_feature <!-- https://github.com/o/r/milestone/3 -->
+  Milestone description text
+
+  - [ ] Inner <!-- @user https://github.com/o/r/issues/5 -->
+    # Blockers
+    - inner task
+";
+		let mut doc = TaskView::parse(content);
+		doc.collapse_to_links();
+		insta::assert_snapshot!(doc.serialize(), @r"
+		# Sprint
+
+		- https://github.com/o/r/milestone/3
+		");
+	}
+
+	#[test]
+	fn test_render_milestone_expansion() {
+		let stored = "\
+# Sprint
+- https://github.com/o/r/issues/1
+- https://github.com/o/r/milestone/3
+";
+		let exp = expansions(&[
+			("https://github.com/o/r/issues/1", "- [ ] First <!-- @user https://github.com/o/r/issues/1 -->"),
+			(
+				"https://github.com/o/r/milestone/3",
+				"- [ ] big_feature <!-- https://github.com/o/r/milestone/3 -->\n  desc line\n\n  - [ ] Inner <!-- @user https://github.com/o/r/issues/5 -->",
+			),
+		]);
+		let doc = TaskView::parse(stored);
+		insta::assert_snapshot!(doc.render(&exp), @"
+		# Sprint
+
+		- [ ] First <!-- @user https://github.com/o/r/issues/1 -->
+
+		- [ ] big_feature <!-- https://github.com/o/r/milestone/3 -->
+		  desc line
+
+		  - [ ] Inner <!-- @user https://github.com/o/r/issues/5 -->
+		");
+	}
+
+	#[test]
+	fn test_milestone_expansion_roundtrip() {
+		// expanded → parse → collapse must recover the stored form exactly
+		let stored = "- https://github.com/o/r/issues/1\n- https://github.com/o/r/milestone/3\n";
+		let exp = expansions(&[
+			("https://github.com/o/r/issues/1", "- [ ] First <!-- @user https://github.com/o/r/issues/1 -->"),
+			(
+				"https://github.com/o/r/milestone/3",
+				"- [x] big_feature <!-- https://github.com/o/r/milestone/3 -->\n  - [ ] Inner <!-- @user https://github.com/o/r/issues/5 -->",
+			),
+		]);
+		let rendered = TaskView::parse(stored).render(&exp);
+		let mut reparsed = TaskView::parse(&rendered);
+		reparsed.collapse_to_links();
+		insta::assert_snapshot!(reparsed.serialize(), @r"
+		- https://github.com/o/r/issues/1
+		- https://github.com/o/r/milestone/3
+		");
+	}
+
+	#[test]
+	fn test_nodes_document_order() {
+		let content = "- [ ] o/r#1\n- https://github.com/o/r/milestone/3\n  - [ ] o/r#2\n- [ ] o/r#4\n";
+		let doc = TaskView::parse(content);
+		let nodes = doc.nodes();
+		let urls: Vec<&str> = nodes.iter().map(NodeLink::as_str).collect();
+		assert_eq!(
+			urls,
+			[
+				"https://github.com/o/r/issues/1",
+				"https://github.com/o/r/milestone/3",
+				"https://github.com/o/r/issues/2",
+				"https://github.com/o/r/issues/4",
+			]
+		);
+	}
+
+	#[test]
+	fn test_embedded_issue_inside_milestone_block() {
+		// blocker sync must see issues embedded inside an expanded milestone block
+		let content = "\
+- [ ] big_feature <!-- https://github.com/o/r/milestone/3 -->
+  - [ ] Inner <!-- @user https://github.com/o/r/issues/5 -->
+    # Blockers
+    - inner task
+";
+		let doc = TaskView::parse(content);
+		let embedded = doc.embedded_issues();
+		assert_eq!(embedded.len(), 1);
+		assert_eq!(embedded[0].0.number(), 5);
+		let blockers = parse_blockers_from_embedded(&embedded[0].1);
+		assert_eq!(blockers.items.len(), 1);
+		assert_eq!(blockers.items[0].text, "inner task");
 	}
 
 	#[test]

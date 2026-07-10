@@ -10,29 +10,51 @@ use std::path::{Path, PathBuf};
 use color_eyre::eyre::{Result, bail, eyre};
 
 use crate::{
-	HollowIssue, Issue, IssueIdentity, IssueIndex, IssueLink, LazyIssue, RepoInfo, TaskView, VirtualIssue,
+	HollowIssue, Issue, IssueIdentity, IssueIndex, IssueLink, LazyIssue, MilestoneLink, RepoInfo, TaskView, VirtualIssue,
 	clockify_tracking::{self, HaltArgs, ResumeArgs},
-	local::{Consensus, FsReader, Local, LocalFs, LocalIssueSource, Selected},
+	local::{CachedMilestone, Consensus, FsReader, Landing, Local, LocalFs, LocalIssueSource, Selected},
 	open_interactions::{Modifier, SyncOptions, modify_and_sync_issue},
 	parse_blockers_from_embedded,
 	remote::RemoteSource,
 	sink::Sink,
 };
 
-/// Expand shorthand refs and refresh all embedded issue sections from local state.
+/// Expand shorthand refs and refresh all embedded sections from local state.
 ///
-/// Parses the content into a `TaskView`, resolves bare refs, then for each issue
-/// ref (shorthand, bare URL, or embedded), loads the local issue and renders the
-/// item as the issue's fresh `Display`.
+/// Parses the content into a `TaskView`, resolves bare refs, then renders each issue
+/// ref as the issue's fresh `Display`, and each *cached* milestone ref as an inline
+/// block (title line + materialized content, its own issue refs expanded the same way —
+/// one level, inner milestone refs stay bare links). Uncached milestones stay bare.
 pub async fn expand_and_refresh(content: &str) -> Result<String> {
 	let mut doc = TaskView::parse(content);
 	doc.resolve_bare_refs();
 
-	let links = doc.issue_links();
-	let mut expansions: std::collections::HashMap<IssueLink, String> = std::collections::HashMap::new();
+	let milestone_cache = Selected::cached_milestones();
+	let mut milestones: Vec<(String, &CachedMilestone, TaskView)> = Vec::new();
+	for link in doc.milestone_links() {
+		let url = link.as_str().to_string();
+		if milestones.iter().any(|(u, ..)| *u == url) {
+			continue;
+		}
+		match milestone_cache.get(&url) {
+			Some(cached) => {
+				let mut inner = TaskView::parse(&cached.content);
+				inner.resolve_bare_refs();
+				milestones.push((url, cached, inner));
+			}
+			None => tracing::warn!("milestone {url} not cached; leaving as bare link (run `sprints get/edit` online to cache it)"),
+		}
+	}
 
+	let mut links = doc.issue_links();
+	for (_, _, inner) in &milestones {
+		links.extend(inner.issue_links());
+	}
+
+	let mut expansions: std::collections::HashMap<String, String> = std::collections::HashMap::new();
 	for link in &links {
-		if expansions.contains_key(link) {
+		let key = link.as_str().to_string();
+		if expansions.contains_key(&key) {
 			continue;
 		}
 		let issue = match load_local_issue(link).await {
@@ -50,10 +72,70 @@ pub async fn expand_and_refresh(content: &str) -> Result<String> {
 				}
 			},
 		};
-		expansions.insert(link.clone(), issue.to_string());
+		expansions.insert(key, issue.to_string());
+	}
+
+	for (url, cached, inner) in milestones {
+		let checkbox = if cached.closed { 'x' } else { ' ' };
+		let mut block = format!("- [{checkbox}] {} <!-- {url} -->\n", cached.title);
+		let inner_rendered = inner.render(&expansions);
+		if !inner_rendered.trim().is_empty() {
+			tedi_md::indent_into(&mut block, &inner_rendered, "  ");
+		}
+		expansions.insert(url, block);
 	}
 
 	Ok(doc.render(&expansions))
+}
+
+/// Fetch, materialize and cache each milestone (deduped). Content is the milestone's
+/// description with `- <url>` lines appended for issues assigned on GitHub but absent
+/// from it; the issues themselves are stored locally so offline resolution can see them.
+pub async fn refresh_milestone_cache(links: &[MilestoneLink]) -> Result<()> {
+	let client = crate::github::client::get()?;
+	let mut seen = std::collections::HashSet::new();
+	for link in links {
+		if !seen.insert(link.as_str().to_string()) {
+			continue;
+		}
+		let repo = link.repo_info();
+		let milestone = client.get_milestone(repo, link.number()).await?;
+		let assigned = client.list_milestone_issues(repo, link.number()).await?;
+
+		let description = milestone.description.unwrap_or_default();
+		let mut described = TaskView::parse(&description);
+		described.resolve_bare_refs();
+		let mut known = described.issue_links();
+
+		let mut content = description.trim_end().to_string();
+		for issue in &assigned {
+			let url = format!("https://github.com/{}/{}/issues/{}", repo.owner(), repo.repo(), issue.number);
+			let assigned_link = IssueLink::parse(&url).expect("constructed URL must be valid");
+			if !known.contains(&assigned_link) {
+				content.push_str(&format!("\n- {url}"));
+				known.push(assigned_link);
+			}
+		}
+
+		for child in &known {
+			if load_local_issue(child).await.is_ok() || Local::is_virtual_project(child.repo_info()) {
+				continue;
+			}
+			if let Err(e) = fetch_and_store_remote_issue(child).await {
+				tracing::warn!("failed to store milestone issue {}/{}/#{}: {e}", child.owner(), child.repo(), child.number());
+			}
+		}
+
+		Selected::refresh_milestone(
+			link.as_str(),
+			CachedMilestone {
+				title: milestone.title,
+				closed: milestone.state == "closed",
+				content: content.trim().to_string(),
+			},
+		)?;
+	}
+	Ok(())
 }
 
 /// Home project for sprint-born virtual issues.
@@ -194,18 +276,26 @@ pub fn refresh_selection_cache(key: &str, content: &str) {
 		tracing::warn!("failed to refresh selection cache: {e}");
 	}
 }
-/// `sprints select [pattern] [--next|--prev]` — change the active sprint's selection.
-pub async fn select(pattern: Option<String>, next: bool, prev: bool, yes: bool) -> Result<()> {
-	let link = if next {
+/// `sprints select [pattern] [--next|--prev|--down|--up]` — change the active sprint's selection.
+pub async fn select(pattern: Option<String>, next: bool, prev: bool, down: bool, up: bool, yes: bool) -> Result<()> {
+	let landing = if next {
 		Selected::select_move(1)
 	} else if prev {
 		Selected::select_move(-1)
+	} else if down {
+		Selected::select_down()
+	} else if up {
+		Selected::select_up()
 	} else {
 		Selected::select_pattern(pattern.as_deref())
 	}
 	.map_err(|e| eyre!("{e}"))?;
 
-	println!("Selected: {}", issue_key(&link));
+	match landing {
+		Landing::Issue(link) => println!("Selected: {}", issue_key(&link)),
+		Landing::Milestone { title, resolved: Some(link) } => println!("Selected milestone: {title} → {}", issue_key(&link)),
+		Landing::Milestone { title, resolved: None } => println!("Selected milestone: {title} (no workable issue)"),
+	}
 	retrack_if_changed(yes).await;
 	Ok(())
 }

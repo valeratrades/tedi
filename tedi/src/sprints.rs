@@ -25,13 +25,20 @@ pub enum SprintsCommands {
 	/// Ensures all milestones up to date, if yes - writes "OK" to $XDG_DATA_HOME/todo/healthcheck.status
 	/// Can get outdated easily, so printed output of the command is prepended with the filename
 	Healthcheck,
-	/// Change the active sprint's selected issue (circular with --next/--prev, else fzf/pattern)
+	/// Change the active sprint's selected issue (circular with --next/--prev, tree descent
+	/// with --down/--up, else fzf/pattern over the whole reachable tree)
 	Select {
 		pattern: Option<String>,
 		#[arg(long)]
 		next: bool,
 		#[arg(long)]
 		prev: bool,
+		/// Descend into the selected milestone (its top workable issue) or issue (its top open child)
+		#[arg(long)]
+		down: bool,
+		/// Ascend one level in the selection path
+		#[arg(long)]
+		up: bool,
 	},
 	/// Operate on the selected issue in the active sprint
 	Selected {
@@ -109,7 +116,9 @@ pub async fn sprints_command(settings: &LiveSettings, args: SprintsArgs, mock: O
 				},
 				SprintRef::Tf(tf) => {
 					let retrieved_milestones = request_milestones(settings).await?;
-					get_milestone(tf, &retrieved_milestones)?
+					let raw = get_milestone(tf, &retrieved_milestones)?;
+					refresh_sprint_milestones(&raw).await;
+					raw
 				}
 			};
 			let expanded = expand_and_refresh(&raw).await?;
@@ -121,12 +130,13 @@ pub async fn sprints_command(settings: &LiveSettings, args: SprintsArgs, mock: O
 			SprintRef::Tf(tf) => edit_milestone(settings, tf, offline, mock.is_some()).await,
 		},
 		SprintsCommands::Healthcheck => healthcheck(settings).await,
-		SprintsCommands::Select { pattern, next, prev } => {
+		SprintsCommands::Select { pattern, next, prev, down, up } => {
 			// A bare timeframe (`sprints select 1d`) focuses that sprint precision; anything else
 			// is an issue pattern within the currently-active sprint. The alpha-designator guard
 			// keeps numeric issue patterns (`select 2`) from parsing as a timeframe.
 			if !offline
 				&& !next && !prev
+				&& !down && !up
 				&& let Some(p) = pattern.as_deref()
 				&& p.chars().any(|c| c.is_ascii_alphabetic())
 				&& let Ok(tf) = p.parse::<Timeframe>()
@@ -134,7 +144,7 @@ pub async fn sprints_command(settings: &LiveSettings, args: SprintsArgs, mock: O
 				focus_sprint(settings, tf, yes()).await
 			} else {
 				ensure_selection_cache(settings, offline).await?;
-				ops::select(pattern, next, prev, yes()).await
+				ops::select(pattern, next, prev, down, up, yes()).await
 			}
 		}
 		SprintsCommands::Selected { op } => {
@@ -154,9 +164,32 @@ pub async fn sprints_command(settings: &LiveSettings, args: SprintsArgs, mock: O
 	}
 }
 
+/// Refresh the milestone-content cache for every milestone ref in `content` (best-effort:
+/// select ops serve stale cache; freshness is bounded by the fetching commands).
+async fn refresh_sprint_milestones(content: &str) {
+	let links = TaskView::parse(content).milestone_links();
+	if links.is_empty() {
+		return;
+	}
+	if let Err(e) = tedi_ops::sprints::refresh_milestone_cache(&links).await {
+		tracing::warn!("failed to refresh milestone cache: {e}");
+		eprintln!("warning: failed to refresh milestone cache: {e}");
+	}
+}
+
 /// Ensure an active sprint is resolvable for selection. Urgent (a local file) needs nothing;
 /// otherwise, when cold and online, fetch the lowest normal sprint (`blocker_tf`) into the cache.
+/// When online, also fetch any milestone in the active view missing from the milestone cache.
 async fn ensure_selection_cache(settings: &LiveSettings, offline: bool) -> Result<()> {
+	if !offline {
+		let missing = tedi_ops::local::Selected::uncached_active_milestones();
+		if !missing.is_empty()
+			&& let Err(e) = tedi_ops::sprints::refresh_milestone_cache(&missing).await
+		{
+			tracing::warn!("failed to refresh milestone cache: {e}");
+			eprintln!("warning: failed to refresh milestone cache: {e}");
+		}
+	}
 	if offline || tedi_ops::local::Selected::active_ready() {
 		return Ok(());
 	}
@@ -169,6 +202,7 @@ async fn ensure_selection_cache(settings: &LiveSettings, offline: bool) -> Resul
 		.and_then(|m| m.description.clone())
 		.ok_or_else(|| eyre!("No `{blocker_tf}` sprint on GitHub yet. Add issues to the '{blocker_tf}' milestone (or create an urgent list)."))?;
 	tedi_ops::sprints::refresh_selection_cache(&blocker_tf, &desc);
+	refresh_sprint_milestones(&desc).await;
 	Ok(())
 }
 
@@ -182,6 +216,7 @@ async fn focus_sprint(settings: &LiveSettings, tf: Timeframe, yes: bool) -> Resu
 		.and_then(|m| m.description.clone())
 		.ok_or_else(|| eyre!("Sprint '{tf}' not found on GitHub (or it has no description)."))?;
 	tedi_ops::sprints::refresh_selection_cache(&tf.to_string(), &desc);
+	refresh_sprint_milestones(&desc).await;
 	tedi_ops::sprints::selected_show(yes).await
 }
 async fn request_milestones(settings: &LiveSettings) -> Result<Vec<GithubMilestone>> {
@@ -346,13 +381,14 @@ async fn healthcheck(settings: &LiveSettings) -> Result<()> {
 	}
 
 	// Cache the blocker timeframe milestone for blocker commands
-	cache_blocker_milestone(settings, &retrieved_milestones);
+	cache_blocker_milestone(settings, &retrieved_milestones).await;
 
 	Ok(())
 }
 
-/// Cache the blocker timeframe milestone description for synchronous blocker commands.
-fn cache_blocker_milestone(settings: &LiveSettings, milestones: &[GithubMilestone]) {
+/// Cache the blocker timeframe milestone description for synchronous blocker commands,
+/// plus the contents of any milestone it references.
+async fn cache_blocker_milestone(settings: &LiveSettings, milestones: &[GithubMilestone]) {
 	let config = match settings.config() {
 		Ok(c) => c,
 		Err(_) => return,
@@ -363,6 +399,7 @@ fn cache_blocker_milestone(settings: &LiveSettings, milestones: &[GithubMileston
 		&& let Some(ref desc) = ms.description
 	{
 		tedi_ops::sprints::refresh_selection_cache(blocker_tf, desc);
+		refresh_sprint_milestones(desc).await;
 	}
 }
 
@@ -453,7 +490,10 @@ async fn edit_milestone(settings: &LiveSettings, tf: Timeframe, offline: bool, m
 		(desc, num, outdated)
 	};
 
-	// Expand shorthand refs and refresh embedded issues before editing
+	// Refresh milestone contents so their refs expand inline, then expand for editing
+	if !mock {
+		refresh_sprint_milestones(&original_description).await;
+	}
 	let expanded_description = expand_and_refresh(&original_description).await?;
 
 	// Write to temp file
