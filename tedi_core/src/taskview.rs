@@ -186,6 +186,39 @@ impl TaskView {
 	pub fn serialize(&self) -> String {
 		self.render(&HashMap::new())
 	}
+
+	/// Open-checkbox virtual items that read as new tasks, in document order, each with its
+	/// serialized block. Skipped: items with an issue/milestone ref among their list
+	/// descendants (category headers — we descend into those instead), and single-word
+	/// childless items (repo-context headers / half-typed input).
+	pub fn homeless_tasks(&self) -> Vec<(TaskItemId, String)> {
+		let mut out = Vec::new();
+		for key in &self.order {
+			if let Some(items) = self.sections.get(key) {
+				collect_homeless(items, key, &mut Vec::new(), &mut out);
+			}
+		}
+		out
+	}
+
+	/// Replace the item at `id` with a bare link to its materialized issue.
+	pub fn assign_link(&mut self, id: &TaskItemId, link: IssueLink) {
+		let items = self.sections.get_mut(&id.section).expect("TaskItemId produced by homeless_tasks on this view");
+		let item = resolve_item_mut(items, &id.path);
+		item.content = TaskContent::Issue {
+			r#ref: IssueRef::Url(link),
+			embedded: false,
+		};
+		item.checkbox = None;
+		item.children.clear();
+	}
+}
+
+/// Address of a task item within a `TaskView`: section header-path + positional path
+/// (item index, then alternating child-section/item indices for nesting).
+pub struct TaskItemId {
+	section: Vec<String>,
+	path: Vec<usize>,
 }
 
 /// A single task-space component: a list item classified as an issue ref, a milestone
@@ -426,11 +459,12 @@ fn split_inline_at_ref_softbreak(events: Vec<OwnedEvent>) -> (TaskContent, Vec<S
 
 /// Classify a component's inline events into a `TaskContent`.
 fn classify_inline_events(events: Vec<OwnedEvent>) -> TaskContent {
-	// A linked issue marker → embedded (expanded) issue. Title text is a render concern; drop it.
+	// A numbered issue marker (linked or numbered-virtual) → embedded (expanded) issue.
+	// Title text is a render concern; drop it.
 	for event in &events {
 		if let OwnedEvent::InlineHtml(html) = event
 			&& let Some(inner) = html.strip_prefix("<!--").and_then(|s| s.strip_suffix("-->"))
-			&& let IssueMarker::Linked { link, .. } = IssueMarker::decode(inner.trim())
+			&& let IssueMarker::Linked { link, .. } | IssueMarker::Virtual { link: Some(link) } = IssueMarker::decode(inner.trim())
 		{
 			return TaskContent::Issue {
 				r#ref: IssueRef::Url(link),
@@ -571,6 +605,70 @@ fn collapse_items(items: &mut [TaskItem]) {
 			}
 		}
 	}
+}
+
+fn collect_homeless(items: &[TaskItem], section: &[String], path: &mut Vec<usize>, out: &mut Vec<(TaskItemId, String)>) {
+	for (i, item) in items.iter().enumerate() {
+		path.push(i);
+		if is_new_task(item) {
+			// A candidate's subtree is the issue's own content — no candidates inside it.
+			let mut block = String::new();
+			serialize_item(item, &HashMap::new(), &mut block);
+			out.push((
+				TaskItemId {
+					section: section.to_vec(),
+					path: path.clone(),
+				},
+				block,
+			));
+		} else {
+			for (si, sec) in item.children.iter().enumerate() {
+				if let Section::List(list) = sec {
+					path.push(si);
+					collect_homeless(list, section, path, out);
+					path.pop();
+				}
+			}
+		}
+		path.pop();
+	}
+}
+
+fn is_new_task(item: &TaskItem) -> bool {
+	let Some(checkbox) = &item.checkbox else { return false };
+	if !matches!(crate::CloseState::from_checkbox(checkbox), Ok(crate::CloseState::Open)) {
+		return false;
+	}
+	let TaskContent::Virtual(events) = &item.content else { return false };
+	let text = events_to_plain_text(events);
+	let trimmed = text.trim();
+	if trimmed.is_empty() {
+		return false;
+	}
+	if !trimmed.contains(' ') && item.children.is_empty() {
+		return false;
+	}
+	!has_ref_descendant(item)
+}
+
+fn has_ref_descendant(item: &TaskItem) -> bool {
+	item.children.iter().any(|sec| match sec {
+		Section::List(list) => list
+			.iter()
+			.any(|child| matches!(child.content, TaskContent::Issue { .. } | TaskContent::Milestone(_)) || has_ref_descendant(child)),
+		Section::FreeContent(_) => false,
+	})
+}
+
+fn resolve_item_mut<'a>(items: &'a mut [TaskItem], path: &[usize]) -> &'a mut TaskItem {
+	let item = &mut items[path[0]];
+	if path.len() == 1 {
+		return item;
+	}
+	let Section::List(list) = &mut item.children[path[1]] else {
+		panic!("TaskItemId path points into a non-list section")
+	};
+	resolve_item_mut(list, &path[2..])
 }
 
 // ─── Serialization ───────────────────────────────────────────────────────────
@@ -1055,6 +1153,64 @@ mod tests {
 			let sn = re.serialize();
 			assert_eq!(s1, sn, "serialize must be idempotent at cycle {cycle}");
 		}
+	}
+
+	#[test]
+	fn test_homeless_tasks_candidates_and_skips() {
+		crate::current_user::set("myowner".to_string());
+		let content = "\
+# important today
+- [ ] OpenClaw
+  # Blockers
+  - wait on Vincent
+- [ ] discretionary_engine
+  - [ ] #77
+  - [ ] some new task
+    # Blockers
+    - first step
+- [ ] halftyped
+- [x] already done task
+- [ ] pay for Tokyo server
+";
+		let mut doc = TaskView::parse(content);
+		doc.resolve_bare_refs();
+		let found: Vec<String> = doc.homeless_tasks().into_iter().map(|(_, block)| block).collect();
+		// OpenClaw (single-word but has blockers) and the two multi-word tasks materialize;
+		// the category header (ref descendant), single-word childless, and closed items don't.
+		insta::assert_snapshot!(found.join("~~~\n"), @r"
+		- [ ] OpenClaw
+		  # Blockers
+		  - wait on Vincent
+		~~~
+		- [ ] some new task
+		  # Blockers
+		  - first step
+		~~~
+		- [ ] pay for Tokyo server
+		");
+	}
+
+	#[test]
+	fn test_homeless_plain_list_untouched() {
+		let content = "- equilibre people research\n  - linkedin token\n- pay for Tokyo server\n";
+		let doc = TaskView::parse(content);
+		assert!(doc.homeless_tasks().is_empty(), "plain non-checkbox lists must not materialize");
+	}
+
+	#[test]
+	fn test_assign_link_collapses_to_bare_link() {
+		let content = "- [ ] some new task\n  # Blockers\n  - first step\n- [ ] o/r#42\n";
+		let mut doc = TaskView::parse(content);
+		doc.resolve_bare_refs();
+		let homeless = doc.homeless_tasks();
+		assert_eq!(homeless.len(), 1);
+		let link = IssueLink::parse("https://github.com/local/virtual/issues/1").unwrap();
+		doc.assign_link(&homeless[0].0, link);
+		doc.collapse_to_links();
+		insta::assert_snapshot!(doc.serialize(), @r"
+		- https://github.com/local/virtual/issues/1
+		- https://github.com/o/r/issues/42
+		");
 	}
 
 	#[test]

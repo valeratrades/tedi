@@ -39,8 +39,9 @@ pub use issue::{
 	issue_file_name, sanitize_title,
 };
 pub use locate::{
-	IssueChildren, IssueIndex, IssueIndexParseError, IssueLink, IssueRef, IssueSelector, MAX_INDEX_DEPTH, MAX_LINEAGE_DEPTH, MAX_TITLE_LENGTH, MilestoneLink, MilestoneRef, RepoInfo, parse_repo_context,
+	IssueChildren, IssueIndex, IssueIndexParseError, IssueLink, IssueRef, IssueSelector, MAX_INDEX_DEPTH, MAX_LINEAGE_DEPTH, MAX_TITLE_LENGTH, MilestoneLink, MilestoneRef, RepoInfo,
+	parse_repo_context,
 };
 pub use marker::{IssueMarker, Marker};
-pub use taskview::{TaskView, parse_blockers_from_embedded};
+pub use taskview::{TaskItemId, TaskView, parse_blockers_from_embedded};
 pub use tedi_md::{Events, Header, OwnedCodeBlockKind, OwnedEvent, OwnedTag, OwnedTagEnd};

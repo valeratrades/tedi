@@ -53,7 +53,8 @@ pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Mo
 	let issue_index = IssueIndex::from(&issue);
 
 	// if linked, check if local diverges from consensus. If yes, - need to sync the two. And while at it, let's pull remote too.
-	if !offline && issue.is_linked() {
+	// Virtual issues carry a fabricated link — never fetch it.
+	if !offline && issue.is_linked() && !issue.identity.is_virtual {
 		let consensus = load_consensus_issue(issue_index).await?;
 		let local_differs = consensus.as_ref().map(|c| *c != issue).unwrap_or(false); //IGNORED_ERROR: if consensus doesn't exist, then local doesn't need to think about it
 

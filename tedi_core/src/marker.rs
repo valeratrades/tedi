@@ -15,15 +15,16 @@ use crate::{IssueLink, IssueSelector};
 /// Formats:
 /// - Linked: `<!-- @user url -->`
 /// - Pending: `<!-- pending -->` or no marker (default)
-/// - Virtual: `<!-- virtual -->`
+/// - Virtual: `<!-- virtual -->` or `<!-- virtual url -->` (numbered, fabricated link)
 #[derive(Clone, Debug, PartialEq)]
 pub enum IssueMarker {
 	/// Linked to GitHub: `<!-- @user url -->` or `<!-- url -->` (user unknown)
 	Linked { user: Option<String>, link: IssueLink },
 	/// Pending creation on GitHub (will be created on first sync)
 	Pending,
-	/// Virtual (local-only, never syncs to GitHub)
-	Virtual,
+	/// Virtual (local-only, never syncs to GitHub). Numbered virtual issues carry a
+	/// fabricated link so they're addressable by number like any linked issue.
+	Virtual { link: Option<IssueLink> },
 }
 
 impl IssueMarker {
@@ -42,9 +43,14 @@ impl IssueMarker {
 			return Self::Pending;
 		}
 
-		// Virtual
+		// Virtual: bare, legacy `virtual:...`, or numbered `virtual <url>`
 		if s == "virtual" || s.starts_with("virtual:") {
-			return Self::Virtual;
+			return Self::Virtual { link: None };
+		}
+		if let Some(rest) = s.strip_prefix("virtual ") {
+			return Self::Virtual {
+				link: IssueLink::parse(rest.trim()),
+			};
 		}
 
 		// Linked format: `@user url` or just `url`
@@ -118,16 +124,17 @@ impl IssueMarker {
 			Self::Linked { user: Some(user), link } => format!("@{user} {}", link.as_str()),
 			Self::Linked { user: None, link } => link.as_str().to_string(),
 			Self::Pending => "pending".to_string(),
-			Self::Virtual => "virtual".to_string(),
+			Self::Virtual { link: None } => "virtual".to_string(),
+			Self::Virtual { link: Some(link) } => format!("virtual {}", link.as_str()),
 		}
 	}
 
 	/// Get the selector for this marker.
-	/// For linked issues, returns GitId. For pending/virtual, returns Title.
+	/// Numbered issues (linked or numbered-virtual) select by GitId; the rest by title.
 	pub fn selector(&self, title: &str) -> IssueSelector {
 		match self {
-			Self::Linked { link, .. } => IssueSelector::GitId(link.number()),
-			Self::Pending | Self::Virtual => IssueSelector::title(title),
+			Self::Linked { link, .. } | Self::Virtual { link: Some(link) } => IssueSelector::GitId(link.number()),
+			Self::Pending | Self::Virtual { link: None } => IssueSelector::title(title),
 		}
 	}
 }
@@ -274,14 +281,23 @@ mod tests {
 
 	#[test]
 	fn test_issue_marker_decode_virtual() {
-		assert_eq!(IssueMarker::decode("virtual"), IssueMarker::Virtual);
-		assert_eq!(IssueMarker::decode("virtual:"), IssueMarker::Virtual);
+		assert_eq!(IssueMarker::decode("virtual"), IssueMarker::Virtual { link: None });
+		assert_eq!(IssueMarker::decode("virtual:"), IssueMarker::Virtual { link: None });
+
+		let link = IssueLink::parse("https://github.com/local/virtual/issues/3").unwrap();
+		assert_eq!(
+			IssueMarker::decode("virtual https://github.com/local/virtual/issues/3"),
+			IssueMarker::Virtual { link: Some(link) }
+		);
 	}
 
 	#[test]
 	fn test_issue_marker_encode() {
 		assert_eq!(IssueMarker::Pending.encode(), "pending");
-		assert_eq!(IssueMarker::Virtual.encode(), "virtual");
+		assert_eq!(IssueMarker::Virtual { link: None }.encode(), "virtual");
+
+		let link = IssueLink::parse("https://github.com/local/virtual/issues/3").unwrap();
+		assert_eq!(IssueMarker::Virtual { link: Some(link) }.encode(), "virtual https://github.com/local/virtual/issues/3");
 
 		let link = IssueLink::parse("https://github.com/owner/repo/issues/123").unwrap();
 		let linked = IssueMarker::Linked {
@@ -296,7 +312,8 @@ mod tests {
 		let link = IssueLink::parse("https://github.com/owner/repo/issues/123").unwrap();
 		let markers = vec![
 			IssueMarker::Pending,
-			IssueMarker::Virtual,
+			IssueMarker::Virtual { link: None },
+			IssueMarker::Virtual { link: Some(link.clone()) },
 			IssueMarker::Linked {
 				user: Some("owner".to_string()),
 				link,
@@ -319,7 +336,10 @@ mod tests {
 		assert!(matches!(m, Some(Marker::Issue(IssueMarker::Pending))));
 
 		let m = Marker::decode("<!-- virtual -->");
-		assert!(matches!(m, Some(Marker::Issue(IssueMarker::Virtual))));
+		assert!(matches!(m, Some(Marker::Issue(IssueMarker::Virtual { link: None }))));
+
+		let m = Marker::decode("<!-- virtual https://github.com/local/virtual/issues/3 -->");
+		assert!(matches!(m, Some(Marker::Issue(IssueMarker::Virtual { link: Some(l) })) if l.number() == 3));
 
 		let m = Marker::decode("<!-- local: -->");
 		assert!(matches!(m, Some(Marker::Issue(IssueMarker::Pending))));
@@ -379,7 +399,7 @@ mod tests {
 	#[test]
 	fn test_encode() {
 		assert_eq!(Marker::Issue(IssueMarker::Pending).encode(), "<!-- pending -->");
-		assert_eq!(Marker::Issue(IssueMarker::Virtual).encode(), "<!-- virtual -->");
+		assert_eq!(Marker::Issue(IssueMarker::Virtual { link: None }).encode(), "<!-- virtual -->");
 		assert_eq!(Marker::BlockersSection(Header::new(1, "Blockers")).encode(), "# Blockers");
 		assert_eq!(Marker::BlockersSection(Header::new(2, "Blockers")).encode(), "## Blockers");
 		assert_eq!(Marker::NewComment.encode(), "<!-- new comment -->");
@@ -392,7 +412,8 @@ mod tests {
 		let link = IssueLink::parse("https://github.com/owner/repo/issues/123").unwrap();
 		let markers = vec![
 			Marker::Issue(IssueMarker::Pending),
-			Marker::Issue(IssueMarker::Virtual),
+			Marker::Issue(IssueMarker::Virtual { link: None }),
+			Marker::Issue(IssueMarker::Virtual { link: Some(link.clone()) }),
 			Marker::Issue(IssueMarker::Linked {
 				user: Some("owner".to_string()),
 				link: link.clone(),
@@ -429,7 +450,11 @@ mod tests {
 		assert_eq!(title, "My title");
 
 		let (marker, title) = IssueMarker::parse_from_end("My title <!-- virtual -->").unwrap();
-		assert_eq!(marker, IssueMarker::Virtual);
+		assert_eq!(marker, IssueMarker::Virtual { link: None });
+		assert_eq!(title, "My title");
+
+		let (marker, title) = IssueMarker::parse_from_end("My title <!-- virtual https://github.com/local/virtual/issues/7 -->").unwrap();
+		assert!(matches!(marker, IssueMarker::Virtual { link: Some(ref l) } if l.number() == 7));
 		assert_eq!(title, "My title");
 
 		let (marker, title) = IssueMarker::parse_from_end("My title <!-- @owner https://github.com/owner/repo/issues/123 -->").unwrap();

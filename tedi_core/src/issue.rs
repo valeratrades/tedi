@@ -279,6 +279,21 @@ impl IssueIdentity {
 		}
 	}
 
+	/// Create a numbered virtual issue identity: local-only, but addressable by number
+	/// through its fabricated link (never synced to Github).
+	pub fn virtual_linked(parent_index: IssueIndex, link: IssueLink) -> Self {
+		Self {
+			parent_index,
+			is_virtual: true,
+			// direct construction: virtual issues have no user by definition, `new`'s missing-user warn doesn't apply
+			remote: Some(Box::new(LinkedIssueMeta {
+				user: None,
+				link,
+				timestamps: IssueTimestamps::now(),
+			})),
+		}
+	}
+
 	/// Check if this issue is linked to Github.
 	pub fn is_linked(&self) -> bool {
 		self.remote.is_some()
@@ -370,13 +385,15 @@ impl IssueIdentity {
 /// Marker view of an issue's identity — how it serializes to a title-line marker.
 impl From<&IssueIdentity> for IssueMarker {
 	fn from(identity: &IssueIdentity) -> Self {
-		if let Some(meta) = identity.as_linked() {
+		// virtual takes precedence over linked: a numbered virtual issue holds a fabricated
+		// link that must stay visibly distinct from real Github links
+		if identity.is_virtual {
+			IssueMarker::Virtual { link: identity.link().cloned() }
+		} else if let Some(meta) = identity.as_linked() {
 			IssueMarker::Linked {
 				user: meta.user.clone(),
 				link: meta.link().clone(),
 			}
-		} else if identity.is_virtual {
-			IssueMarker::Virtual
 		} else {
 			IssueMarker::Pending
 		}

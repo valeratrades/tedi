@@ -5,7 +5,7 @@ use tedi_core::RepoInfo;
 use tedi_ops::{
 	IssueLink, TaskView,
 	clockify_tracking::{HaltArgs, ResumeArgs},
-	sprints::{expand_and_refresh, sync_blocker_changes},
+	sprints::{expand_and_refresh, materialize_new_tasks, sync_blocker_changes},
 };
 use v_utils::prelude::*;
 
@@ -411,6 +411,12 @@ async fn edit_urgent(offline: bool) -> Result<()> {
 		return Err(e);
 	}
 
+	if let Err(e) = materialize_new_tasks(&mut edited_doc).await {
+		tedi_ops::utils::persist_rejected_changes(&edited_content);
+		eprintln!("Your changes were saved to /tmp/tedi/rejected-changes.md — you can recover them from there.");
+		return Err(e);
+	}
+
 	edited_doc.collapse_to_links();
 	fs::create_dir_all(path.parent().expect("urgent_path is always nested under data dir"))?;
 	fs::write(&path, edited_doc.serialize())?;
@@ -475,8 +481,14 @@ async fn edit_milestone(settings: &LiveSettings, tf: Timeframe, offline: bool, m
 		return Err(e);
 	}
 
-	// Collapse expanded issues back to bare links for storage
 	let mut edited_doc = TaskView::parse(&edited_content);
+	if let Err(e) = materialize_new_tasks(&mut edited_doc).await {
+		tedi_ops::utils::persist_rejected_changes(&edited_content);
+		eprintln!("Your changes were saved to /tmp/tedi/rejected-changes.md — you can recover them from there.");
+		return Err(e);
+	}
+
+	// Collapse expanded issues back to bare links for storage
 	edited_doc.collapse_to_links();
 	let new_description = edited_doc.serialize();
 

@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use color_eyre::eyre::{Result, bail, eyre};
 
 use crate::{
-	Issue, IssueLink, LazyIssue, TaskView, VirtualIssue,
+	HollowIssue, Issue, IssueIdentity, IssueIndex, IssueLink, LazyIssue, RepoInfo, TaskView, VirtualIssue,
 	clockify_tracking::{self, HaltArgs, ResumeArgs},
 	local::{Consensus, FsReader, Local, LocalFs, LocalIssueSource, Selected},
 	open_interactions::{Modifier, SyncOptions, modify_and_sync_issue},
@@ -37,6 +37,11 @@ pub async fn expand_and_refresh(content: &str) -> Result<String> {
 		}
 		let issue = match load_local_issue(link).await {
 			Ok(issue) => issue,
+			// virtual projects have no remote: the fabricated URL must never be fetched
+			Err(e) if Local::is_virtual_project(link.repo_info()) => {
+				tracing::warn!("failed to expand virtual issue {}/{}/#{}: {e}", link.owner(), link.repo(), link.number());
+				continue;
+			}
 			Err(_) => match fetch_and_store_remote_issue(link).await {
 				Ok(issue) => issue,
 				Err(e) => {
@@ -49,6 +54,62 @@ pub async fn expand_and_refresh(content: &str) -> Result<String> {
 	}
 
 	Ok(doc.render(&expansions))
+}
+
+/// Home project for sprint-born virtual issues.
+//Q: `{current_user or "local"}/virtual` is a provisional naming pick — isolated here so it's trivially changeable
+pub fn virtual_home() -> RepoInfo {
+	// current_user can be unset in offline urgent edits
+	let owner = crate::current_user::get().unwrap_or_else(|| "local".to_string());
+	RepoInfo::new(&owner, "virtual")
+}
+
+/// Materialize each unlinked open `- [ ]` item of an edited sprint into a numbered local
+/// virtual issue file, replacing the sprint item with the issue's link. Returns the created links.
+pub async fn materialize_new_tasks(doc: &mut TaskView) -> Result<Vec<IssueLink>> {
+	let candidates = doc.homeless_tasks();
+	if candidates.is_empty() {
+		return Ok(Vec::new());
+	}
+	let home = virtual_home();
+	Local::ensure_virtual_project(home)?;
+
+	let mut created = Vec::new();
+	for (id, block) in candidates {
+		let n = Local::allocate_virtual_issue_number(home)?;
+		let url = format!("https://github.com/{}/{}/issues/{n}", home.owner(), home.repo());
+		let link = IssueLink::parse(&url).expect("constructed URL must be valid");
+
+		// `VirtualIssue::parse` errors on marker-less title lines — mark before parsing.
+		let mut lines = block.lines();
+		let first = lines.next().expect("serialized block always has a title line");
+		let marked: String = std::iter::once(format!("{first} <!-- virtual {url} -->"))
+			.chain(lines.map(str::to_string))
+			.collect::<Vec<_>>()
+			.join("\n");
+
+		let vi = match VirtualIssue::parse(&marked, PathBuf::from("<sprint item>")) {
+			Ok(vi) => vi,
+			Err(e) => {
+				// non-destructive: the item stays as plain text in the sprint; the burned number is harmless
+				tracing::warn!("skipping materialization of sprint item:\n{block}\n{e}");
+				continue;
+			}
+		};
+		let title = vi.contents.title.clone();
+
+		let identity = IssueIdentity::virtual_linked(IssueIndex::repo_only(home), link.clone());
+		// hollow carries the remote so children get parent_index rooted under this issue's number
+		let hollow = HollowIssue::new(identity.remote.clone(), std::collections::HashMap::new());
+		let mut issue = Issue::from_combined(hollow, vi, IssueIndex::repo_only(home), true)?;
+		issue.identity = identity;
+		<Issue as Sink<LocalFs>>::sink(&mut issue, None).await?;
+
+		doc.assign_link(&id, link.clone());
+		println!("Created virtual issue {}/{}#{n}: {title}", home.owner(), home.repo());
+		created.push(link);
+	}
+	Ok(created)
 }
 /// Parse blocker changes from an edited sprint description and sync them back to issue files.
 pub async fn sync_blocker_changes(content: &str, offline: bool) -> Result<()> {

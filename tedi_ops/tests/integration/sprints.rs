@@ -45,10 +45,11 @@ impl TestContext {
 	}
 
 	/// Run `sprints edit urgent --offline`, modifying the temp file before signaling the pipe.
+	/// `--mock` pins `current_user` to `mock_user` so materialized virtual issues land deterministically.
 	fn urgent_edit(&self, edit_fn: impl FnOnce(&Path) + 'static) -> RunOutput {
 		self.set_issues_dir_override();
 		let mut cmd = Command::new(get_binary_path());
-		cmd.args(["--offline", "sprints", "edit", "urgent", "--offline"]);
+		cmd.args(["--mock", "--offline", "sprints", "edit", "urgent", "--offline"]);
 		self.drive_editor_session(cmd, Some(Box::new(edit_fn) as EditFn))
 	}
 
@@ -317,6 +318,120 @@ async fn test_urgent_cleanup_deferred_during_edit() {
 	});
 	assert!(out.status.success(), "stderr: {}", out.stderr);
 	insta::assert_snapshot!(ctx.xdg.read_data("issues/urgent.md"), @"- kept through the edit");
+}
+
+/// A new `- [ ] task` in the urgent list becomes a numbered local virtual issue,
+/// and the urgent list stores its link.
+#[tokio::test]
+async fn test_urgent_new_task_materializes_virtual_issue() {
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+
+	let out = ctx.urgent_edit(|tmp_path| {
+		std::fs::write(tmp_path, "- [ ] some new task\n  # Blockers\n  - first step\n").unwrap();
+	});
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+	assert!(out.stdout.contains("Created virtual issue mock_user/virtual#1"), "stdout: {}", out.stdout);
+
+	insta::assert_snapshot!(ctx.xdg.read_data("issues/urgent.md"), @"- https://github.com/mock_user/virtual/issues/1");
+
+	ctx.set_issues_dir_override();
+	let path = tedi_ops::local::Local::find_by_number(tedi_ops::RepoInfo::new("mock_user", "virtual"), 1, tedi_ops::local::FsReader).expect("materialized issue must be findable by number");
+	insta::assert_snapshot!(std::fs::read_to_string(&path).unwrap(), @"
+	- [ ] some new task <!-- virtual https://github.com/mock_user/virtual/issues/1 -->
+	  # Blockers
+	  - first step
+	");
+
+	let meta: serde_json::Value = serde_json::from_str(&ctx.xdg.read_data("issues/mock_user/virtual/.meta.json")).unwrap();
+	assert_eq!(meta["virtual_project"], serde_json::json!(true));
+	assert_eq!(meta["next_virtual_issue_number"], serde_json::json!(2));
+
+	// selection plumbing: the materialized issue's blocker is the current selection
+	let poll = ctx.run(&["--offline", "sprints", "selected", "current"]);
+	assert!(poll.status.success(), "stderr: {}", poll.stderr);
+	assert!(poll.stdout.contains("first step"), "stdout: {}", poll.stdout);
+}
+
+/// A materialized virtual issue re-expands on the next urgent edit, and blocker
+/// edits sync back to its file.
+#[tokio::test]
+async fn test_urgent_virtual_issue_reexpands_and_syncs_blockers() {
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+
+	let out = ctx.urgent_edit(|tmp_path| {
+		std::fs::write(tmp_path, "- [ ] some new task\n  # Blockers\n  - first step\n").unwrap();
+	});
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+
+	let out = ctx.urgent_edit(|tmp_path| {
+		let content = std::fs::read_to_string(tmp_path).unwrap();
+		assert!(
+			content.contains("<!-- virtual https://github.com/mock_user/virtual/issues/1 -->"),
+			"second edit must open on the expanded virtual issue, got:\n{content}"
+		);
+		std::fs::write(tmp_path, content.trim_end().to_string() + "\n  - second step\n").unwrap();
+	});
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+
+	insta::assert_snapshot!(ctx.xdg.read_data("issues/urgent.md"), @"- https://github.com/mock_user/virtual/issues/1");
+
+	ctx.set_issues_dir_override();
+	let path = tedi_ops::local::Local::find_by_number(tedi_ops::RepoInfo::new("mock_user", "virtual"), 1, tedi_ops::local::FsReader).expect("issue #1 should still exist");
+	insta::assert_snapshot!(std::fs::read_to_string(&path).unwrap(), @"
+	- [ ] some new task <!-- virtual https://github.com/mock_user/virtual/issues/1 -->
+	  # Blockers
+	  - first step
+	  - second step
+	");
+}
+
+/// A new `- [ ] task` added to a milestone materializes the same way.
+#[tokio::test]
+async fn test_milestone_edit_materializes_virtual_issue() {
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+
+	let (out, result_milestone) = ctx.milestone_edit_with_changes("# Sprint", |tmp_path| {
+		let content = std::fs::read_to_string(tmp_path).unwrap();
+		std::fs::write(tmp_path, content.trim_end().to_string() + "\n\n- [ ] milestone task\n  # Blockers\n  - step one\n").unwrap();
+	});
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+
+	insta::assert_snapshot!(result_milestone, @"
+	# Sprint
+
+	- https://github.com/mock_user/virtual/issues/1
+	");
+
+	ctx.set_issues_dir_override();
+	let path = tedi_ops::local::Local::find_by_number(tedi_ops::RepoInfo::new("mock_user", "virtual"), 1, tedi_ops::local::FsReader).expect("materialized issue must be findable by number");
+	insta::assert_snapshot!(std::fs::read_to_string(&path).unwrap(), @"
+	- [ ] milestone task <!-- virtual https://github.com/mock_user/virtual/issues/1 -->
+	  # Blockers
+	  - step one
+	");
+}
+
+/// Category headers (with an issue ref among children) and single-word childless
+/// items stay plain text — no virtual project gets created for them.
+#[tokio::test]
+async fn test_urgent_edit_skips_category_headers_and_half_typed() {
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+
+	let vi = parse_virtual("- [ ] My Issue <!-- @mock_user https://github.com/o/r/issues/10 -->\n\tbody\n");
+	ctx.local(&vi, Some(Seed::new(0))).await;
+
+	let out = ctx.urgent_edit(|tmp_path| {
+		std::fs::write(tmp_path, "- [ ] discretionary_engine\n  - [ ] o/r#10\n- [ ] halftyped\n").unwrap();
+	});
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+
+	assert!(!ctx.xdg.data_exists("issues/mock_user/virtual"), "no virtual project should be created for skipped items");
+	insta::assert_snapshot!(ctx.xdg.read_data("issues/urgent.md"), @"
+	- [ ] discretionary_engine
+	  - https://github.com/o/r/issues/10
+
+	- [ ] halftyped
+	");
 }
 
 /// Urgent is local-only: milestone refs are rejected and nothing is saved.
