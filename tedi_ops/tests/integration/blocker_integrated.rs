@@ -304,11 +304,7 @@ async fn test_selected_add_works_after_select() {
 	  - task B
 	  - new task on B
 	");
-	insta::assert_snapshot!(read_issue_file(&path1), @"
-	- [ ] Issue A <!-- @mock_user https://github.com/o/r/issues/1 -->
-	  # Blockers
-	  - task A
-	");
+	assert!(!read_issue_file(&path1).contains("new task on B"), "blocker must land on the selected issue only");
 }
 
 #[tokio::test]

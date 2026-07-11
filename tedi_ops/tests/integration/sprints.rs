@@ -203,7 +203,7 @@ async fn test_milestone_edit_adds_blockers() {
 	assert!(out.status.success(), "milestones edit should succeed. stderr: {}", out.stderr);
 
 	// The milestone description should be collapsed to a bare link in a list
-	insta::assert_snapshot!(result_milestone, @"- https://github.com/o/r/issues/50");
+	assert_eq!(result_milestone, "- https://github.com/o/r/issues/50");
 
 	// The issue file should now have the blockers
 	ctx.set_issues_dir_override();
@@ -332,7 +332,7 @@ async fn test_urgent_new_task_materializes_virtual_issue() {
 	assert!(out.status.success(), "stderr: {}", out.stderr);
 	assert!(out.stdout.contains("Created virtual issue mock_user/virtual#1"), "stdout: {}", out.stdout);
 
-	insta::assert_snapshot!(ctx.xdg.read_data("issues/urgent.md"), @"- https://github.com/mock_user/virtual/issues/1");
+	assert_eq!(ctx.xdg.read_data("issues/urgent.md"), "- https://github.com/mock_user/virtual/issues/1");
 
 	ctx.set_issues_dir_override();
 	let path = tedi_ops::local::Local::find_by_number(tedi_ops::RepoInfo::new("mock_user", "virtual"), 1, tedi_ops::local::FsReader).expect("materialized issue must be findable by number");
@@ -373,7 +373,7 @@ async fn test_urgent_virtual_issue_reexpands_and_syncs_blockers() {
 	});
 	assert!(out.status.success(), "stderr: {}", out.stderr);
 
-	insta::assert_snapshot!(ctx.xdg.read_data("issues/urgent.md"), @"- https://github.com/mock_user/virtual/issues/1");
+	assert_eq!(ctx.xdg.read_data("issues/urgent.md"), "- https://github.com/mock_user/virtual/issues/1");
 
 	ctx.set_issues_dir_override();
 	let path = tedi_ops::local::Local::find_by_number(tedi_ops::RepoInfo::new("mock_user", "virtual"), 1, tedi_ops::local::FsReader).expect("issue #1 should still exist");
@@ -396,11 +396,7 @@ async fn test_milestone_edit_materializes_virtual_issue() {
 	});
 	assert!(out.status.success(), "stderr: {}", out.stderr);
 
-	insta::assert_snapshot!(result_milestone, @"
-	# Sprint
-
-	- https://github.com/mock_user/virtual/issues/1
-	");
+	assert_eq!(result_milestone, "# Sprint\n\n- https://github.com/mock_user/virtual/issues/1");
 
 	ctx.set_issues_dir_override();
 	let path = tedi_ops::local::Local::find_by_number(tedi_ops::RepoInfo::new("mock_user", "virtual"), 1, tedi_ops::local::FsReader).expect("materialized issue must be findable by number");
@@ -622,11 +618,8 @@ async fn test_milestone_edit_expands_milestone_ref_and_syncs_inner_blockers() {
 	});
 	assert!(out.status.success(), "stderr: {}", out.stderr);
 
-	insta::assert_snapshot!(result_milestone, @"
-	# Sprint
-
-	- https://github.com/o/r/milestone/3
-	");
+	// bare milestone link only — inner issues never leak into assignment sync
+	assert_eq!(result_milestone, "# Sprint\n\n- https://github.com/o/r/milestone/3");
 
 	ctx.set_issues_dir_override();
 	let path = tedi_ops::local::Local::find_by_number(tedi_ops::RepoInfo::new("o", "r"), 20, tedi_ops::local::FsReader).expect("issue #20 should still exist");
