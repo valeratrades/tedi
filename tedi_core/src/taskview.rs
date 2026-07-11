@@ -199,14 +199,28 @@ impl TaskView {
 	}
 
 	/// Open-checkbox virtual items that read as new tasks, in document order, each with its
-	/// serialized block. Skipped: items with an issue/milestone ref among their list
-	/// descendants (category headers — we descend into those instead), and single-word
-	/// childless items (repo-context headers / half-typed input).
-	pub fn homeless_tasks(&self) -> Vec<(TaskItemId, String)> {
+	/// serialized block and the inlined milestone it lives under (if any). Skipped: items with
+	/// an issue/milestone ref among their list descendants (category headers — we descend into
+	/// those instead), and single-word childless items (repo-context headers / half-typed input).
+	pub fn homeless_tasks(&self) -> Vec<(TaskItemId, String, Option<MilestoneLink>)> {
 		let mut out = Vec::new();
 		for key in &self.order {
 			if let Some(items) = self.sections.get(key) {
-				collect_homeless(items, key, &mut Vec::new(), &mut out);
+				collect_homeless(items, key, &mut Vec::new(), None, &mut out);
+			}
+		}
+		out
+	}
+
+	/// Each inlined (embedded) milestone's body — its child sections collapsed to bare links
+	/// and serialized as a milestone description. Lets edits made inside an inlined milestone
+	/// (e.g. tasks materialized into virtual issues) be pushed back to its own node. Must be
+	/// read before `collapse_to_links`, which discards embedded-milestone bodies.
+	pub fn embedded_milestone_bodies(&self) -> Vec<(MilestoneLink, String)> {
+		let mut out = Vec::new();
+		for key in &self.order {
+			if let Some(items) = self.sections.get(key) {
+				collect_milestone_bodies(items, &mut out);
 			}
 		}
 		out
@@ -234,6 +248,7 @@ pub struct TaskItemId {
 
 /// A single task-space component: a list item classified as an issue ref, a milestone
 /// ref, or unlinked virtual text, plus any nested sub-content.
+#[derive(Clone)]
 pub struct TaskItem {
 	/// The checkbox contents (between `[` and `]`), or None for plain items.
 	checkbox: Option<String>,
@@ -300,6 +315,7 @@ pub fn parse_blockers_from_embedded(section: &str) -> crate::Blockers {
 }
 /// Semantic classification of a component's inline text. Blockers are never a
 /// top-level component here — they live inside the individual issues.
+#[derive(Clone)]
 enum TaskContent {
 	/// A milestone reference (`…/milestone/N`). `embedded` mirrors the issue variant:
 	/// the expanded form (`Title <!-- url -->`), cleared on collapse.
@@ -312,6 +328,7 @@ enum TaskContent {
 }
 
 /// A child block under a component: free-form markdown or a nested list.
+#[derive(Clone)]
 enum Section {
 	FreeContent(Vec<OwnedEvent>),
 	List(Vec<TaskItem>),
@@ -648,7 +665,7 @@ fn collapse_items(items: &mut [TaskItem]) {
 	}
 }
 
-fn collect_homeless(items: &[TaskItem], section: &[String], path: &mut Vec<usize>, out: &mut Vec<(TaskItemId, String)>) {
+fn collect_homeless(items: &[TaskItem], section: &[String], path: &mut Vec<usize>, milestone: Option<&MilestoneLink>, out: &mut Vec<(TaskItemId, String, Option<MilestoneLink>)>) {
 	for (i, item) in items.iter().enumerate() {
 		path.push(i);
 		if is_new_task(item) {
@@ -661,17 +678,46 @@ fn collect_homeless(items: &[TaskItem], section: &[String], path: &mut Vec<usize
 					path: path.clone(),
 				},
 				block,
+				milestone.cloned(),
 			));
 		} else {
+			// descending into an inlined milestone scopes its subtree to that milestone
+			let scope = match &item.content {
+				TaskContent::Milestone { r#ref, .. } => Some(r#ref.to_milestone_link()),
+				_ => milestone.cloned(),
+			};
 			for (si, sec) in item.children.iter().enumerate() {
 				if let Section::List(list) = sec {
 					path.push(si);
-					collect_homeless(list, section, path, out);
+					collect_homeless(list, section, path, scope.as_ref(), out);
 					path.pop();
 				}
 			}
 		}
 		path.pop();
+	}
+}
+
+fn collect_milestone_bodies(items: &[TaskItem], out: &mut Vec<(MilestoneLink, String)>) {
+	for item in items {
+		if let TaskContent::Milestone { r#ref, embedded: true } = &item.content {
+			let mut children = item.children.clone();
+			for sec in &mut children {
+				if let Section::List(list) = sec {
+					collapse_items(list);
+				}
+			}
+			let mut body = String::new();
+			for sec in &children {
+				serialize_section(sec, &HashMap::new(), &mut body);
+			}
+			out.push((r#ref.to_milestone_link(), body.trim_matches('\n').to_string()));
+		}
+		for sec in &item.children {
+			if let Section::List(list) = sec {
+				collect_milestone_bodies(list, out);
+			}
+		}
 	}
 }
 
@@ -1223,7 +1269,7 @@ mod tests {
 ";
 		let mut doc = TaskView::parse(content);
 		doc.resolve_bare_refs();
-		let found: Vec<String> = doc.homeless_tasks().into_iter().map(|(_, block)| block).collect();
+		let found: Vec<String> = doc.homeless_tasks().into_iter().map(|(_, block, _)| block).collect();
 		// OpenClaw (single-word but has blockers) and the two multi-word tasks materialize;
 		// the category header (ref descendant), single-word childless, and closed items don't.
 		insta::assert_snapshot!(found.join("~~~\n"), @r"
@@ -1259,6 +1305,39 @@ mod tests {
 		insta::assert_snapshot!(doc.serialize(), @r"
 		- https://github.com/local/virtual/issues/1
 		- https://github.com/o/r/issues/42
+		");
+	}
+
+	#[test]
+	fn test_homeless_task_inside_inlined_milestone_routes_to_milestone_body() {
+		let content = "\
+# Sprint
+
+- [ ] big_feature <!-- https://github.com/o/r/milestone/3 -->
+  - [ ] hit 500 connections
+  - [ ] o/r#5
+";
+		let mut doc = TaskView::parse(content);
+		doc.resolve_bare_refs();
+		let homeless = doc.homeless_tasks();
+		assert_eq!(homeless.len(), 1, "only the unlinked task materializes");
+		assert_eq!(
+			homeless[0].2.as_ref().map(|m| m.as_str()),
+			Some("https://github.com/o/r/milestone/3"),
+			"the task is attributed to the inlined milestone it lives under"
+		);
+
+		let link = IssueLink::parse("https://github.com/local/virtual/issues/1").unwrap();
+		doc.assign_link(&homeless[0].0, link);
+
+		// the milestone body (collapsed to links) now carries the virtual link — this is what
+		// gets pushed back to the milestone, so it never re-materializes.
+		let bodies = doc.embedded_milestone_bodies();
+		assert_eq!(bodies.len(), 1);
+		assert_eq!(bodies[0].0.as_str(), "https://github.com/o/r/milestone/3");
+		insta::assert_snapshot!(bodies[0].1, @r"
+		- https://github.com/local/virtual/issues/1
+		- https://github.com/o/r/issues/5
 		");
 	}
 

@@ -448,7 +448,7 @@ async fn edit_urgent(offline: bool) -> Result<()> {
 		return Err(e);
 	}
 
-	if let Err(e) = materialize_new_tasks(&mut edited_doc).await {
+	if let Err(e) = materialize_new_tasks(&mut edited_doc, offline).await {
 		tedi_ops::utils::persist_rejected_changes(&edited_content);
 		eprintln!("Your changes were saved to /tmp/tedi/rejected-changes.md — you can recover them from there.");
 		return Err(e);
@@ -522,7 +522,7 @@ async fn edit_milestone(settings: &LiveSettings, tf: Timeframe, offline: bool, m
 	}
 
 	let mut edited_doc = TaskView::parse(&edited_content);
-	if let Err(e) = materialize_new_tasks(&mut edited_doc).await {
+	if let Err(e) = materialize_new_tasks(&mut edited_doc, offline).await {
 		tedi_ops::utils::persist_rejected_changes(&edited_content);
 		eprintln!("Your changes were saved to /tmp/tedi/rejected-changes.md — you can recover them from there.");
 		return Err(e);

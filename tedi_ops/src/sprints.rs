@@ -147,8 +147,10 @@ pub fn virtual_home() -> RepoInfo {
 }
 
 /// Materialize each unlinked open `- [ ]` item of an edited sprint into a numbered local
-/// virtual issue file, replacing the sprint item with the issue's link. Returns the created links.
-pub async fn materialize_new_tasks(doc: &mut TaskView) -> Result<Vec<IssueLink>> {
+/// virtual issue file, replacing the sprint item with the issue's link. Tasks that live inside
+/// an inlined milestone are also pushed back into that milestone's own description (online),
+/// so they don't re-materialize on the next edit. Returns the created links.
+pub async fn materialize_new_tasks(doc: &mut TaskView, offline: bool) -> Result<Vec<IssueLink>> {
 	let candidates = doc.homeless_tasks();
 	if candidates.is_empty() {
 		return Ok(Vec::new());
@@ -157,7 +159,8 @@ pub async fn materialize_new_tasks(doc: &mut TaskView) -> Result<Vec<IssueLink>>
 	Local::ensure_virtual_project(home)?;
 
 	let mut created = Vec::new();
-	for (id, block) in candidates {
+	let mut touched_milestones: std::collections::HashSet<MilestoneLink> = std::collections::HashSet::new();
+	for (id, block, milestone) in candidates {
 		let n = Local::allocate_virtual_issue_number(home)?;
 		let url = format!("https://github.com/{}/{}/issues/{n}", home.owner(), home.repo());
 		let link = IssueLink::parse(&url).expect("constructed URL must be valid");
@@ -188,8 +191,30 @@ pub async fn materialize_new_tasks(doc: &mut TaskView) -> Result<Vec<IssueLink>>
 		<Issue as Sink<LocalFs>>::sink(&mut issue, None).await?;
 
 		doc.assign_link(&id, link.clone());
+		if let Some(ms) = milestone {
+			touched_milestones.insert(ms);
+		}
 		println!("Created virtual issue {}/{}#{n}: {title}", home.owner(), home.repo());
 		created.push(link);
+	}
+
+	if !touched_milestones.is_empty() {
+		if offline {
+			tracing::warn!(
+				"materialized {} task(s) inside inlined milestone(s) offline; their descriptions will sync on the next online milestone edit",
+				touched_milestones.len()
+			);
+		} else {
+			let bodies: std::collections::HashMap<MilestoneLink, String> = doc.embedded_milestone_bodies().into_iter().collect();
+			let client = crate::github::client::get()?;
+			for ms in touched_milestones {
+				let body = bodies
+					.get(&ms)
+					.ok_or_else(|| eyre!("materialized task's milestone {} vanished from the edited doc", ms.as_str()))?;
+				client.update_milestone(ms.repo_info(), ms.number(), body, None).await?;
+				println!("Updated inlined milestone {}", ms.as_str());
+			}
+		}
 	}
 	Ok(created)
 }
