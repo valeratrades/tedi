@@ -31,6 +31,12 @@ impl TestContext {
 		self.milestone_edit_impl(milestone_content, &["--mock", "--offline", "sprints", "edit", "1d"], Some(Box::new(edit_fn) as EditFn))
 	}
 
+	/// Run `milestones edit` in mock mode ONLINE (no `--offline`), so a task belonging to a milestone
+	/// is created upstream as a real Github issue (via the mock client) instead of being deferred.
+	fn milestone_edit_online(&self, milestone_content: &str, edit_fn: impl FnOnce(&Path) + 'static) -> (RunOutput, String) {
+		self.milestone_edit_impl(milestone_content, &["--mock", "sprints", "edit", "1d"], Some(Box::new(edit_fn) as EditFn))
+	}
+
 	fn milestone_edit_impl(&self, milestone_content: &str, args: &[&str], edit_fn: Option<EditFn>) -> (RunOutput, String) {
 		self.set_issues_dir_override();
 		let milestone_path = self.xdg.inner.root.join("mock_milestone.md");
@@ -385,9 +391,11 @@ async fn test_urgent_virtual_issue_reexpands_and_syncs_blockers() {
 	");
 }
 
-/// A new `- [ ] task` added to a milestone materializes the same way.
+/// With no milestones repo configured (mock, offline), a top-level task in an edited milestone
+/// body has no known upstream repo, so it degrades to a local virtual issue. Real usage (with a
+/// milestones repo) creates it upstream instead — see `test_inlined_milestone_task_creates_real_issue`.
 #[tokio::test]
-async fn test_milestone_edit_materializes_virtual_issue() {
+async fn test_milestone_edit_without_repo_falls_back_to_virtual() {
 	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 
 	let (out, result_milestone) = ctx.milestone_edit_with_changes("# Sprint", |tmp_path| {
@@ -648,17 +656,18 @@ async fn test_milestone_edit_expands_milestone_ref_and_syncs_inner_blockers() {
 	");
 }
 
-/// Regression for #41…#46: a task materialized *inside* an inlined milestone must be
-/// written back into that milestone's durable local file, so re-editing the sprint sees
-/// it linked (not homeless) and never spawns a duplicate virtual issue.
+/// Regression for #41…#46, updated for the milestone-hosts-only-real-issues rule: a task typed
+/// *inside* an inlined milestone is created upstream as a real Github issue (never a virtual),
+/// its link written back into that milestone's durable local file, so re-editing sees it linked
+/// (not homeless) and never spawns a duplicate.
 #[tokio::test]
-async fn test_inlined_milestone_task_persists_and_does_not_rematerialize() {
+async fn test_inlined_milestone_task_creates_real_issue_and_does_not_rematerialize() {
 	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 
 	// milestone/3 starts empty; the sprint inlines it and holds a fresh task under it.
 	seed_selection(&ctx, "", &[("https://github.com/o/r/milestone/3", "big_feature", false, "")], &[]);
 
-	let (out, _result) = ctx.milestone_edit_with_changes("# Sprint\n\n- https://github.com/o/r/milestone/3\n", |tmp_path| {
+	let (out, _result) = ctx.milestone_edit_online("# Sprint\n\n- https://github.com/o/r/milestone/3\n", |tmp_path| {
 		std::fs::write(
 			tmp_path,
 			"# Sprint\n\n- [ ] big_feature <!-- https://github.com/o/r/milestone/3 -->\n  - [ ] hit 500 connections\n",
@@ -669,24 +678,25 @@ async fn test_inlined_milestone_task_persists_and_does_not_rematerialize() {
 
 	ctx.set_issues_dir_override();
 
-	// the materialized virtual issue exists...
+	// the task became a real issue in the milestone's repo (o/r#1) — not a local virtual
 	assert!(
-		tedi_ops::local::Local::find_by_number(tedi_ops::RepoInfo::new("mock_user", "virtual"), 1, tedi_ops::local::FsReader).is_some(),
-		"the milestone task should have materialized into virtual issue #1"
+		tedi_ops::local::Local::find_by_number(tedi_ops::RepoInfo::new("o", "r"), 1, tedi_ops::local::FsReader).is_some(),
+		"the milestone task should have been created upstream as o/r#1"
 	);
-	// ...and #2 does NOT — no re-materialization
+	assert!(!ctx.xdg.data_exists("issues/mock_user/virtual"), "a milestone task must never spawn a virtual project");
+	// no duplicate: #2 does NOT exist — no re-materialization
 	assert!(
-		tedi_ops::local::Local::find_by_number(tedi_ops::RepoInfo::new("mock_user", "virtual"), 2, tedi_ops::local::FsReader).is_none(),
-		"no duplicate virtual issue should be created"
+		tedi_ops::local::Local::find_by_number(tedi_ops::RepoInfo::new("o", "r"), 2, tedi_ops::local::FsReader).is_none(),
+		"no duplicate issue should be created"
 	);
 
-	// the crux: the milestone's durable local file now hosts the virtual link, so the task
+	// the crux: the milestone's durable local file now hosts the real link, so the task
 	// is linked (not homeless) on the next expansion.
 	let ms_file = tedi_ops::local::Local::milestone_file_path(tedi_ops::RepoInfo::new("o", "r"), 3, "big_feature");
 	let ms_content = std::fs::read_to_string(&ms_file).expect("milestone file must exist");
 	assert!(
-		ms_content.contains("https://github.com/mock_user/virtual/issues/1"),
-		"milestone body must persist the materialized task's link, got:\n{ms_content}"
+		ms_content.contains("https://github.com/o/r/issues/1"),
+		"milestone body must persist the created task's link, got:\n{ms_content}"
 	);
 }
 

@@ -15,7 +15,7 @@ use crate::{
 	local::{Consensus, FsReader, GitReader, Landing, Local, LocalFs, LocalIssueSource, Selected},
 	open_interactions::{MilestoneModifier, Modifier, SyncOptions, modify_and_sync_issue, modify_and_sync_milestone},
 	parse_blockers_from_embedded,
-	remote::{RemoteSource, load_remote_milestone},
+	remote::{Remote, RemoteSource, load_remote_milestone},
 	sink::Sink,
 };
 
@@ -136,51 +136,43 @@ pub fn virtual_home() -> RepoInfo {
 	RepoInfo::new(&owner, "virtual")
 }
 
-/// Materialize each unlinked open `- [ ]` item of an edited sprint into a numbered local
-/// virtual issue file, replacing the sprint item with the issue's link. Returns the created
-/// links. Tasks living inside an inlined milestone leave their new link in that milestone's
-/// body; persisting it upstream is `sync_milestone_changes`'s job (call it after this).
-pub async fn materialize_new_tasks(doc: &mut TaskView) -> Result<Vec<IssueLink>> {
+/// Materialize each unlinked open `- [ ]` item of an edited task view into a real issue,
+/// replacing the item with the issue's link. Returns the created links.
+///
+/// A task's home decides its kind: a task belonging to a milestone (its own inlined milestone
+/// ref, else `ambient` — the milestone whose body is being edited) is created upstream as a
+/// pending (`!n`) Github issue, since milestones host only real issues. A task with no milestone
+/// (a plain sprint item) becomes a local-only numbered virtual issue.
+///
+/// Offline, a milestone task can't be uploaded — it's left as text and retried on the next online
+/// edit. Tasks living inside an inlined milestone leave their new link in that milestone's body;
+/// persisting it upstream is `sync_milestone_changes`'s job (call it after this).
+pub async fn materialize_new_tasks(doc: &mut TaskView, ambient: Option<MilestoneLink>, offline: bool) -> Result<Vec<IssueLink>> {
 	let candidates = doc.homeless_tasks();
 	if candidates.is_empty() {
 		return Ok(Vec::new());
 	}
-	let home = virtual_home();
-	Local::ensure_virtual_project(home)?;
 
 	let mut created = Vec::new();
-	for (id, block, _milestone) in candidates {
-		let n = Local::allocate_virtual_issue_number(home)?;
-		let url = format!("https://github.com/{}/{}/issues/{n}", home.owner(), home.repo());
-		let link = IssueLink::parse(&url).expect("constructed URL must be valid");
-
-		// `VirtualIssue::parse` errors on marker-less title lines — mark before parsing.
-		let mut lines = block.lines();
-		let first = lines.next().expect("serialized block always has a title line");
-		let marked: String = std::iter::once(format!("{first} <!-- virtual {url} -->"))
-			.chain(lines.map(str::to_string))
-			.collect::<Vec<_>>()
-			.join("\n");
-
-		let vi = match VirtualIssue::parse(&marked, PathBuf::from("<sprint item>")) {
-			Ok(vi) => vi,
-			Err(e) => {
-				// non-destructive: the item stays as plain text in the sprint; the burned number is harmless
-				tracing::warn!("skipping materialization of sprint item:\n{block}\n{e}");
+	for (id, block, task_milestone) in candidates {
+		let link = match task_milestone.or_else(|| ambient.clone()) {
+			Some(milestone) if offline => {
+				tracing::warn!(
+					"new milestone task can't be created offline; left as text, will upload on next online edit ({}):\n{block}",
+					milestone.as_str()
+				);
 				continue;
 			}
+			Some(milestone) => match create_pending_upstream(&block, &milestone).await? {
+				Some(link) => link,
+				None => continue,
+			},
+			None => match materialize_virtual(&block).await? {
+				Some(link) => link,
+				None => continue,
+			},
 		};
-		let title = vi.contents.title.clone();
-
-		let identity = IssueIdentity::virtual_linked(IssueIndex::repo_only(home), link.clone());
-		// hollow carries the remote so children get parent_index rooted under this issue's number
-		let hollow = HollowIssue::new(identity.remote.clone(), std::collections::HashMap::new());
-		let mut issue = Issue::from_combined(hollow, vi, IssueIndex::repo_only(home), true)?;
-		issue.identity = identity;
-		<Issue as Sink<LocalFs>>::sink(&mut issue, None).await?;
-
 		doc.assign_link(&id, link.clone());
-		println!("Created virtual issue {}/{}#{n}: {title}", home.owner(), home.repo());
 		created.push(link);
 	}
 
@@ -326,7 +318,6 @@ pub async fn selected_show(yes: bool) -> Result<()> {
 	retrack_if_changed(yes).await;
 	Ok(())
 }
-
 /// `sprints selected open` — edit the selected node. A milestone terminal opens the
 /// milestone's own file (synced as a milestone); an issue terminal opens the issue.
 pub async fn selected_open(offline: bool, yes: bool) -> Result<()> {
@@ -405,6 +396,69 @@ pub async fn selected_halt(halt_args: HaltArgs) -> Result<()> {
 	println!("Tracking halted.");
 	Ok(())
 }
+/// Mark a homeless task block with `marker` on its title line so `VirtualIssue::parse` accepts it.
+fn mark_task_block(block: &str, marker: &str) -> String {
+	let mut lines = block.lines();
+	let first = lines.next().expect("serialized block always has a title line");
+	std::iter::once(format!("{first} {marker}")).chain(lines.map(str::to_string)).collect::<Vec<_>>().join("\n")
+}
+
+/// Sprint task → local-only numbered virtual issue. `Ok(None)` if the block failed to parse
+/// (already warned; the item stays as text, the burned number is harmless).
+async fn materialize_virtual(block: &str) -> Result<Option<IssueLink>> {
+	let home = virtual_home();
+	Local::ensure_virtual_project(home)?;
+	let n = Local::allocate_virtual_issue_number(home)?;
+	let url = format!("https://github.com/{}/{}/issues/{n}", home.owner(), home.repo());
+	let link = IssueLink::parse(&url).expect("constructed URL must be valid");
+
+	let vi = match VirtualIssue::parse(&mark_task_block(block, &format!("<!-- virtual {url} -->")), PathBuf::from("<sprint item>")) {
+		Ok(vi) => vi,
+		Err(e) => {
+			tracing::warn!("skipping materialization of sprint item:\n{block}\n{e}");
+			return Ok(None);
+		}
+	};
+	let title = vi.contents.title.clone();
+
+	let identity = IssueIdentity::virtual_linked(IssueIndex::repo_only(home), link.clone());
+	// hollow carries the remote so children get parent_index rooted under this issue's number
+	let hollow = HollowIssue::new(identity.remote.clone(), std::collections::HashMap::new());
+	let mut issue = Issue::from_combined(hollow, vi, IssueIndex::repo_only(home), true)?;
+	issue.identity = identity;
+	<Issue as Sink<LocalFs>>::sink(&mut issue, None).await?;
+
+	println!("Created virtual issue {}/{}#{n}: {title}", home.owner(), home.repo());
+	Ok(Some(link))
+}
+
+/// Milestone task → pending (`!n`) issue created upstream in the milestone's repo, then synced
+/// to local + consensus. Returns the created issue's real link. `Ok(None)` if the block failed
+/// to parse (already warned; the item stays as text).
+async fn create_pending_upstream(block: &str, milestone: &MilestoneLink) -> Result<Option<IssueLink>> {
+	let repo = milestone.repo_info();
+
+	let vi = match VirtualIssue::parse(&mark_task_block(block, "!n"), PathBuf::from("<milestone item>")) {
+		Ok(vi) => vi,
+		Err(e) => {
+			tracing::warn!("skipping materialization of milestone item:\n{block}\n{e}");
+			return Ok(None);
+		}
+	};
+	let title = vi.contents.title.clone();
+
+	let parent_index = IssueIndex::repo_only(repo);
+	let mut issue = Issue::from_combined(HollowIssue::new(None, std::collections::HashMap::new()), vi, parent_index, false)?;
+
+	<Issue as Sink<Remote>>::sink(&mut issue, None).await?;
+	<Issue as Sink<LocalFs>>::sink(&mut issue, None).await?;
+	<Issue as Sink<Consensus>>::sink(&mut issue, None).await?;
+
+	let link = issue.identity.link().expect("issue is linked after remote sink").clone();
+	println!("Created issue {}/{}#{}: {title}", repo.owner(), repo.repo(), link.number());
+	Ok(Some(link))
+}
+
 /// Load a local issue by its IssueLink.
 async fn load_local_issue(link: &IssueLink) -> Result<Issue> {
 	let path = Local::find_by_number(link.repo_info(), link.number(), FsReader).ok_or_else(|| eyre!("issue #{} not found locally", link.number()))?;
