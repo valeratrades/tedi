@@ -323,6 +323,10 @@ impl Local {
 			for entry in std::fs::read_dir(dir)? {
 				let path = entry?.path();
 				if path.is_dir() {
+					// milestones live under a sentinel subdir and are not issue files
+					if path.file_name().is_some_and(|n| n == "__milestones__") {
+						continue;
+					}
 					walk(&path, files)?;
 				} else if path.is_file()
 					&& let Some(name) = path.file_name().and_then(|n| n.to_str())
@@ -1090,16 +1094,18 @@ mod local_path {
 pub use local_path::{LocalPath, LocalPathError, LocalPathErrorKind, LocalPathResolved};
 
 mod fs_sink;
+mod milestone;
 mod selection;
 use std::path::{Path, PathBuf};
 
 pub use consensus::Consensus;
 pub use fs_sink::{LocalFs, LocalFsSinkError};
+pub use milestone::{MilestoneMeta, MilestoneProjectMeta};
 //==============================================================================
 // Error Types
 //==============================================================================
 use regex::Regex;
-pub use selection::{CachedMilestone, Landing, Selected, URGENT_KEY, try_lock_urgent, urgent_path};
+pub use selection::{Landing, Selected, URGENT_KEY, try_lock_urgent, urgent_path};
 use serde::{Deserialize, Serialize};
 use v_utils::{macros::wrap_err, prelude::*};
 

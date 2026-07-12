@@ -10,12 +10,12 @@ use std::path::{Path, PathBuf};
 use color_eyre::eyre::{Result, bail, eyre};
 
 use crate::{
-	HollowIssue, Issue, IssueIdentity, IssueIndex, IssueLink, LazyIssue, MilestoneLink, RepoInfo, TaskView, VirtualIssue,
+	HollowIssue, Issue, IssueIdentity, IssueIndex, IssueLink, LazyIssue, Milestone, MilestoneLink, NodeLink, RepoInfo, TaskView, VirtualIssue,
 	clockify_tracking::{self, HaltArgs, ResumeArgs},
-	local::{CachedMilestone, Consensus, FsReader, Landing, Local, LocalFs, LocalIssueSource, Selected},
-	open_interactions::{Modifier, SyncOptions, modify_and_sync_issue},
+	local::{Consensus, FsReader, GitReader, Landing, Local, LocalFs, LocalIssueSource, Selected},
+	open_interactions::{MilestoneModifier, Modifier, SyncOptions, modify_and_sync_issue, modify_and_sync_milestone},
 	parse_blockers_from_embedded,
-	remote::RemoteSource,
+	remote::{RemoteSource, load_remote_milestone},
 	sink::Sink,
 };
 
@@ -29,20 +29,19 @@ pub async fn expand_and_refresh(content: &str) -> Result<String> {
 	let mut doc = TaskView::parse(content);
 	doc.resolve_bare_refs();
 
-	let milestone_cache = Selected::cached_milestones();
-	let mut milestones: Vec<(String, &CachedMilestone, TaskView)> = Vec::new();
+	let mut milestones: Vec<(String, Milestone, TaskView)> = Vec::new();
 	for link in doc.milestone_links() {
 		let url = link.as_str().to_string();
 		if milestones.iter().any(|(u, ..)| *u == url) {
 			continue;
 		}
-		match milestone_cache.get(&url) {
-			Some(cached) => {
-				let mut inner = TaskView::parse(&cached.content);
+		match Local::load_milestone(&link, &FsReader)? {
+			Some(milestone) => {
+				let mut inner = TaskView::parse(&milestone.to_string());
 				inner.resolve_bare_refs();
-				milestones.push((url, cached, inner));
+				milestones.push((url, milestone, inner));
 			}
-			None => tracing::warn!("milestone {url} not cached; leaving as bare link (run `sprints get/edit` online to cache it)"),
+			None => tracing::warn!("milestone {url} not stored locally; leaving as bare link (run `sprints get/edit` online to fetch it)"),
 		}
 	}
 
@@ -75,9 +74,12 @@ pub async fn expand_and_refresh(content: &str) -> Result<String> {
 		expansions.insert(key, issue.to_string());
 	}
 
-	for (url, cached, inner) in milestones {
-		let checkbox = if cached.closed { 'x' } else { ' ' };
-		let mut block = format!("- [{checkbox}] {} <!-- {url} -->\n", cached.title);
+	for (url, milestone, inner) in milestones {
+		let checkbox = if milestone.is_closed() { 'x' } else { ' ' };
+		// markdown-link title → `gf`-jumpable to the milestone's own local file from the edit buffer;
+		// the marker still carries identity, so this collapses back to the bare URL on save.
+		let abspath = Local::milestone_file_path(milestone.identity.link.repo_info(), milestone.number(), &milestone.identity.title);
+		let mut block = format!("- [{checkbox}] [{}]({}) <!-- {url} -->\n", milestone.identity.title, abspath.display());
 		let inner_rendered = inner.render(&expansions);
 		if !inner_rendered.trim().is_empty() {
 			tedi_md::indent_into(&mut block, &inner_rendered, "  ");
@@ -88,36 +90,18 @@ pub async fn expand_and_refresh(content: &str) -> Result<String> {
 	Ok(doc.render(&expansions))
 }
 
-/// Fetch, materialize and cache each milestone (deduped). Content is the milestone's
-/// description with `- <url>` lines appended for issues assigned on GitHub but absent
-/// from it; the issues themselves are stored locally so offline resolution can see them.
+/// Fetch each milestone (deduped) and store it as a durable local file, along with its
+/// hosted issues, so navigation and inline expansion resolve offline. A local copy carrying
+/// unsynced edits is left untouched (it syncs on the next milestone edit).
 pub async fn refresh_milestone_cache(links: &[MilestoneLink]) -> Result<()> {
-	let client = crate::github::client::get()?;
 	let mut seen = std::collections::HashSet::new();
 	for link in links {
 		if !seen.insert(link.as_str().to_string()) {
 			continue;
 		}
-		let repo = link.repo_info();
-		let milestone = client.get_milestone(repo, link.number()).await?;
-		let assigned = client.list_milestone_issues(repo, link.number()).await?;
+		let remote = load_remote_milestone(link).await?;
 
-		let description = milestone.description.unwrap_or_default();
-		let mut described = TaskView::parse(&description);
-		described.resolve_bare_refs();
-		let mut known = described.issue_links();
-
-		let mut content = description.trim_end().to_string();
-		for issue in &assigned {
-			let url = format!("https://github.com/{}/{}/issues/{}", repo.owner(), repo.repo(), issue.number);
-			let assigned_link = IssueLink::parse(&url).expect("constructed URL must be valid");
-			if !known.contains(&assigned_link) {
-				content.push_str(&format!("\n- {url}"));
-				known.push(assigned_link);
-			}
-		}
-
-		for child in &known {
+		for child in &remote.body.hosted {
 			if load_local_issue(child).await.is_ok() || Local::is_virtual_project(child.repo_info()) {
 				continue;
 			}
@@ -126,14 +110,20 @@ pub async fn refresh_milestone_cache(links: &[MilestoneLink]) -> Result<()> {
 			}
 		}
 
-		Selected::refresh_milestone(
-			link.as_str(),
-			CachedMilestone {
-				title: milestone.title,
-				closed: milestone.state == "closed",
-				content: content.trim().to_string(),
-			},
-		)?;
+		let local = Local::load_milestone(link, &FsReader)?;
+		let consensus = Local::load_milestone(link, &GitReader)?;
+		let has_unsynced_local = match (&local, &consensus) {
+			(Some(l), Some(c)) => l.to_string() != c.to_string(),
+			(Some(_), None) => true,
+			_ => false,
+		};
+		if has_unsynced_local {
+			tracing::debug!("milestone {} has unsynced local edits; keeping local copy until next sync", link.as_str());
+		} else {
+			let mut milestone = remote;
+			<Milestone as Sink<LocalFs>>::sink(&mut milestone, None).await?;
+			<Milestone as Sink<Consensus>>::sink(&mut milestone, None).await?;
+		}
 	}
 	Ok(())
 }
@@ -147,10 +137,10 @@ pub fn virtual_home() -> RepoInfo {
 }
 
 /// Materialize each unlinked open `- [ ]` item of an edited sprint into a numbered local
-/// virtual issue file, replacing the sprint item with the issue's link. Tasks that live inside
-/// an inlined milestone are also pushed back into that milestone's own description (online),
-/// so they don't re-materialize on the next edit. Returns the created links.
-pub async fn materialize_new_tasks(doc: &mut TaskView, offline: bool) -> Result<Vec<IssueLink>> {
+/// virtual issue file, replacing the sprint item with the issue's link. Returns the created
+/// links. Tasks living inside an inlined milestone leave their new link in that milestone's
+/// body; persisting it upstream is `sync_milestone_changes`'s job (call it after this).
+pub async fn materialize_new_tasks(doc: &mut TaskView) -> Result<Vec<IssueLink>> {
 	let candidates = doc.homeless_tasks();
 	if candidates.is_empty() {
 		return Ok(Vec::new());
@@ -159,8 +149,7 @@ pub async fn materialize_new_tasks(doc: &mut TaskView, offline: bool) -> Result<
 	Local::ensure_virtual_project(home)?;
 
 	let mut created = Vec::new();
-	let mut touched_milestones: std::collections::HashSet<MilestoneLink> = std::collections::HashSet::new();
-	for (id, block, milestone) in candidates {
+	for (id, block, _milestone) in candidates {
 		let n = Local::allocate_virtual_issue_number(home)?;
 		let url = format!("https://github.com/{}/{}/issues/{n}", home.owner(), home.repo());
 		let link = IssueLink::parse(&url).expect("constructed URL must be valid");
@@ -191,32 +180,38 @@ pub async fn materialize_new_tasks(doc: &mut TaskView, offline: bool) -> Result<
 		<Issue as Sink<LocalFs>>::sink(&mut issue, None).await?;
 
 		doc.assign_link(&id, link.clone());
-		if let Some(ms) = milestone {
-			touched_milestones.insert(ms);
-		}
 		println!("Created virtual issue {}/{}#{n}: {title}", home.owner(), home.repo());
 		created.push(link);
 	}
 
-	if !touched_milestones.is_empty() {
-		if offline {
-			tracing::warn!(
-				"materialized {} task(s) inside inlined milestone(s) offline; their descriptions will sync on the next online milestone edit",
-				touched_milestones.len()
-			);
-		} else {
-			let bodies: std::collections::HashMap<MilestoneLink, String> = doc.embedded_milestone_bodies().into_iter().collect();
-			let client = crate::github::client::get()?;
-			for ms in touched_milestones {
-				let body = bodies
-					.get(&ms)
-					.ok_or_else(|| eyre!("materialized task's milestone {} vanished from the edited doc", ms.as_str()))?;
-				client.update_milestone(ms.repo_info(), ms.number(), body, None).await?;
-				println!("Updated inlined milestone {}", ms.as_str());
-			}
-		}
-	}
 	Ok(created)
+}
+
+/// Propagate edits made inside inlined milestone blocks of a sprint back to each milestone's
+/// own durable store + upstream. The general form of the old materialize-only push: every
+/// inlined milestone whose body changed is routed through `modify_and_sync_milestone`, so
+/// materialized tasks (and any body edit) persist and never re-materialize.
+pub async fn sync_milestone_changes(doc: &TaskView, offline: bool) -> Result<()> {
+	for (link, body_text) in doc.embedded_milestone_bodies() {
+		let new_body = crate::MilestoneBody::parse(&body_text);
+
+		let milestone = match Local::load_milestone(&link, &FsReader)? {
+			Some(m) => m,
+			None if offline => {
+				tracing::warn!("milestone {} not stored locally; its inline edits will sync on the next online edit", link.as_str());
+				continue;
+			}
+			None => load_remote_milestone(&link).await?,
+		};
+
+		if milestone.body == new_body {
+			continue;
+		}
+
+		println!("Syncing milestone changes for {}", link.as_str());
+		modify_and_sync_milestone(milestone, offline, MilestoneModifier::BodyWrite { body: new_body }, SyncOptions::default()).await?;
+	}
+	Ok(())
 }
 /// Parse blocker changes from an edited sprint description and sync them back to issue files.
 pub async fn sync_blocker_changes(content: &str, offline: bool) -> Result<()> {
@@ -332,12 +327,22 @@ pub async fn selected_show(yes: bool) -> Result<()> {
 	Ok(())
 }
 
-/// `sprints selected open` — edit the selected issue file.
+/// `sprints selected open` — edit the selected node. A milestone terminal opens the
+/// milestone's own file (synced as a milestone); an issue terminal opens the issue.
 pub async fn selected_open(offline: bool, yes: bool) -> Result<()> {
-	let (_, path) = selected_link_path()?;
-	let local = LocalIssueSource::<FsReader>::build_from_path(&path).await?;
-	let issue = Issue::load(local).await?;
-	modify_and_sync_issue(issue, offline, Modifier::Editor { open_at_blocker: true }, SyncOptions::default()).await?;
+	match Selected::load().current_node() {
+		Some(NodeLink::Milestone(ml)) => {
+			let milestone = Local::load_milestone(&ml, &FsReader)?.ok_or_else(|| eyre!("milestone {} is not stored locally", ml.as_str()))?;
+			modify_and_sync_milestone(milestone, offline, MilestoneModifier::Editor, SyncOptions::default()).await?;
+		}
+		Some(NodeLink::Issue(link)) => {
+			let path = Local::find_by_number(link.repo_info(), link.number(), FsReader).ok_or_else(|| eyre!("issue #{} not found locally", link.number()))?;
+			let local = LocalIssueSource::<FsReader>::build_from_path(&path).await?;
+			let issue = Issue::load(local).await?;
+			modify_and_sync_issue(issue, offline, Modifier::Editor { open_at_blocker: true }, SyncOptions::default()).await?;
+		}
+		None => bail!("No selected issue. Edit a sprint (`todo sprints edit 1d`) or the urgent list first."),
+	}
 	retrack_if_changed(yes).await;
 	Ok(())
 }

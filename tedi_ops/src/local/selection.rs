@@ -23,12 +23,10 @@ use super::{FsReader, Local};
 
 /// Sprint key for the local urgent sprint.
 pub const URGENT_KEY: &str = "urgent";
-
 /// `$XDG_DATA_HOME/tedi/issues/urgent.md` — the local, GitHub-unsynced urgent sprint.
 pub fn urgent_path() -> PathBuf {
 	Local::issues_dir().join("urgent.md")
 }
-
 /// Exclusive cross-process lock over urgent-file mutation (edit sessions and auto-cleanup).
 /// `None` — another session holds it. Keep the returned handle alive for the whole session.
 pub fn try_lock_urgent() -> std::io::Result<Option<std::fs::File>> {
@@ -39,16 +37,6 @@ pub fn try_lock_urgent() -> std::io::Result<Option<std::fs::File>> {
 		Err(std::fs::TryLockError::Error(e)) => Err(e),
 	}
 }
-
-/// A cached milestone: `title`/`closed` for display and validation, materialized
-/// `content` (description + assigned-issue links) for offline tree resolution.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct CachedMilestone {
-	pub title: String,
-	pub closed: bool,
-	pub content: String,
-}
-
 /// Where a selection operation landed. A milestone landing keeps the milestone as the
 /// stored terminal while `selected *` ops act on the auto-resolved issue.
 #[derive(Clone, Debug)]
@@ -56,7 +44,6 @@ pub enum Landing {
 	Issue(IssueLink),
 	Milestone { title: String, resolved: Option<IssueLink> },
 }
-
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct Selected {
 	/// sprint key ("urgent" or a timeframe like "1d") → selection path of node URLs.
@@ -67,9 +54,6 @@ pub struct Selected {
 	/// `sprints edit`/`healthcheck`; urgent needs no cache (it is a local file).
 	#[serde(default)]
 	normal: Option<NormalSprint>,
-	/// milestone URL → cached milestone, refreshed on every online milestone fetch.
-	#[serde(default)]
-	milestones: HashMap<String, CachedMilestone>,
 }
 impl Selected {
 	fn cache_path() -> PathBuf {
@@ -131,6 +115,25 @@ impl Selected {
 		}
 	}
 
+	/// The selected node itself (the validated path's terminal), *without* resolving a
+	/// milestone to a child — so `selected open` can act on the milestone as a first-class node.
+	pub fn current_node(&mut self) -> Option<NodeLink> {
+		cleanup_urgent();
+		let active = self.active()?;
+		if let Err(e) = guard_urgent(&active) {
+			panic!("{e}");
+		}
+		let path = self.validate_path(&active);
+		if path.is_empty() {
+			if self.paths.remove(&active.key).is_some() {
+				let _ = self.save();
+			}
+			return None;
+		}
+		self.persist_path(&active.key, &path);
+		path.last().cloned()
+	}
+
 	/// Move the selection by `delta` among the terminal's siblings (circular), skipping
 	/// closed/delegating issues and milestones that resolve to nothing.
 	pub fn select_move(delta: isize) -> Result<Landing, String> {
@@ -174,11 +177,7 @@ impl Selected {
 		};
 		let child = match &terminal {
 			NodeLink::Milestone(ml) => {
-				let title = sel
-					.milestones
-					.get(ml.as_str())
-					.map(|cm| cm.title.clone())
-					.ok_or_else(|| format!("milestone {} is not cached — run `todo sprints get/edit` online first", ml.as_str()))?;
+				let title = milestone_title(ml);
 				sel.resolve_milestone(ml).ok_or_else(|| format!("no open non-delegating issue in milestone '{title}'"))?
 			}
 			NodeLink::Issue(link) => match issue_children(link).first() {
@@ -277,23 +276,16 @@ impl Selected {
 		sel.save()
 	}
 
-	/// Cache a milestone's materialized content (called on every online milestone fetch).
-	pub fn refresh_milestone(url: &str, milestone: CachedMilestone) -> std::io::Result<()> {
-		let mut sel = Self::load();
-		sel.milestones.insert(url.to_string(), milestone);
-		sel.save()
-	}
-
-	/// The milestone content cache (URL → cached milestone).
-	pub(crate) fn cached_milestones() -> HashMap<String, CachedMilestone> {
-		Self::load().milestones
-	}
-
-	/// Milestone links in the active view that are missing from the cache.
+	/// Milestone links in the active view that are not yet stored in the local milestone tree.
 	pub fn uncached_active_milestones() -> Vec<MilestoneLink> {
 		let sel = Self::load();
 		let Some(active) = sel.active() else { return Vec::new() };
-		active.view.milestone_links().into_iter().filter(|l| !sel.milestones.contains_key(l.as_str())).collect()
+		active
+			.view
+			.milestone_links()
+			.into_iter()
+			.filter(|l| Local::find_milestone_path(l.repo_info(), l.number(), &FsReader).is_none())
+			.collect()
 	}
 
 	// ─── Tree resolution ───────────────────────────────────────────────────────
@@ -331,18 +323,11 @@ impl Selected {
 		}
 	}
 
-	/// A node's children: a milestone's cached issue nodes (one milestone level only —
-	/// inner milestone refs stay bare links), or a directory issue's open child issues.
+	/// A node's children: a milestone's hosted issue nodes and any inner milestone refs
+	/// (read from its durable local file), or a directory issue's open child issues.
 	fn children(&self, node: &NodeLink) -> Vec<NodeLink> {
 		match node {
-			NodeLink::Milestone(ml) => match self.milestones.get(ml.as_str()) {
-				Some(cm) => {
-					let mut view = TaskView::parse(&cm.content);
-					view.resolve_bare_refs();
-					view.nodes().into_iter().filter(|n| matches!(n, NodeLink::Issue(_))).collect()
-				}
-				None => Vec::new(),
-			},
+			NodeLink::Milestone(ml) => milestone_nodes(ml),
 			NodeLink::Issue(link) => issue_children(link),
 		}
 	}
@@ -350,8 +335,8 @@ impl Selected {
 	fn node_is_open(&self, node: &NodeLink) -> bool {
 		match node {
 			NodeLink::Issue(link) => link_is_open(link),
-			// uncached milestones count as open: closed-ness is only knowable from the cache
-			NodeLink::Milestone(ml) => !self.milestones.get(ml.as_str()).is_some_and(|cm| cm.closed),
+			// milestones not stored locally count as open: closed-ness is only knowable from the file
+			NodeLink::Milestone(ml) => !milestone_local(ml).is_some_and(|m| m.is_closed()),
 		}
 	}
 
@@ -369,17 +354,17 @@ impl Selected {
 		match node {
 			NodeLink::Issue(l) => (link_is_open(l) && !link_delegates(l)).then(|| Landing::Issue(l.clone())),
 			NodeLink::Milestone(ml) => {
-				let Some(cm) = self.milestones.get(ml.as_str()) else {
+				let Some(milestone) = milestone_local(ml) else {
 					// hot-path movement must stay usable offline: skip, but tell the user
-					tracing::warn!(milestone = ml.as_str(), "skipping uncached milestone during selection movement");
-					eprintln!("skipping uncached milestone {} — run `todo sprints get/edit` online to cache it", ml.as_str());
+					tracing::warn!(milestone = ml.as_str(), "skipping milestone not stored locally during selection movement");
+					eprintln!("skipping milestone {} — run `todo sprints get/edit` online to fetch it", ml.as_str());
 					return None;
 				};
-				if cm.closed {
+				if milestone.is_closed() {
 					return None;
 				}
 				self.resolve_milestone(ml).map(|resolved| Landing::Milestone {
-					title: cm.title.clone(),
+					title: milestone.identity.title.clone(),
 					resolved: Some(resolved),
 				})
 			}
@@ -390,7 +375,7 @@ impl Selected {
 		match node {
 			NodeLink::Issue(l) => Landing::Issue(l.clone()),
 			NodeLink::Milestone(ml) => Landing::Milestone {
-				title: self.milestones.get(ml.as_str()).map(|cm| cm.title.clone()).unwrap_or_else(|| ml.as_str().to_string()),
+				title: milestone_title(ml),
 				resolved: self.resolve_milestone(ml),
 			},
 		}
@@ -437,7 +422,7 @@ impl Selected {
 	fn display(&self, node: &NodeLink) -> String {
 		match node {
 			NodeLink::Issue(link) => display_for_link(link),
-			NodeLink::Milestone(ml) => self.milestones.get(ml.as_str()).map(|cm| cm.title.clone()).unwrap_or_else(|| ml.as_str().to_string()),
+			NodeLink::Milestone(ml) => milestone_title(ml),
 		}
 	}
 }
@@ -446,6 +431,25 @@ impl Selected {
 pub struct ActiveSprint {
 	pub key: String,
 	pub view: TaskView,
+}
+/// The durable local milestone at `ml`, if stored. Milestones are first-class local
+/// files now (no in-memory cache), so navigation reads them straight off disk.
+fn milestone_local(ml: &MilestoneLink) -> Option<crate::Milestone> {
+	Local::load_milestone(ml, &FsReader).ok().flatten()
+}
+
+/// A milestone's child nodes: its body parsed as a task view (hosted issues and any inner
+/// milestone refs), in document order.
+fn milestone_nodes(ml: &MilestoneLink) -> Vec<NodeLink> {
+	let Some(milestone) = milestone_local(ml) else { return Vec::new() };
+	let mut view = TaskView::parse(&milestone.to_string());
+	view.resolve_bare_refs();
+	view.nodes()
+}
+
+/// A milestone's display title: its stored title, else the bare URL.
+fn milestone_title(ml: &MilestoneLink) -> String {
+	milestone_local(ml).map(|m| m.identity.title).unwrap_or_else(|| ml.as_str().to_string())
 }
 
 /// The urgent sprint is local-only: a hand-edited milestone ref in it is never navigated.

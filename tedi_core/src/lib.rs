@@ -31,6 +31,7 @@ pub mod error;
 pub mod issue;
 pub mod locate;
 pub mod marker;
+pub mod milestone;
 pub mod taskview;
 pub use blockers::{BlockerItem, BlockerSetState, Blockers, split_blockers};
 pub use error::{IssueError, ParseContext, ParseError, TitleInGitPathError};
@@ -43,5 +44,6 @@ pub use locate::{
 	RepoInfo, parse_repo_context,
 };
 pub use marker::{IssueMarker, Marker};
+pub use milestone::{Milestone, MilestoneBody, MilestoneIdentity, MilestoneTimestamps};
 pub use taskview::{TaskItemId, TaskView, parse_blockers_from_embedded};
 pub use tedi_md::{Events, Header, OwnedCodeBlockKind, OwnedEvent, OwnedTag, OwnedTagEnd};

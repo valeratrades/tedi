@@ -430,13 +430,30 @@ async fn test_urgent_edit_skips_category_headers_and_half_typed() {
 	");
 }
 
-/// Seed `sprints_selection.json` with a normal ("1d") sprint, cached milestones
-/// (`(url, title, closed, content)`), and an optional pre-set selection path.
+/// Seed `sprints_selection.json` with a normal ("1d") sprint and an optional pre-set
+/// selection path, plus durable local milestone files (`(url, title, closed, content)`)
+/// — milestones are now first-class local files, not an in-memory cache.
 fn seed_selection(ctx: &TestContext, sprint_content: &str, milestones: &[(&str, &str, bool, &str)], path: &[&str]) {
-	let mut ms = serde_json::Map::new();
+	use std::collections::BTreeMap;
+
+	let mut metas: BTreeMap<(String, String), serde_json::Map<String, serde_json::Value>> = BTreeMap::new();
 	for (url, title, closed, content) in milestones {
-		ms.insert(url.to_string(), serde_json::json!({ "title": title, "closed": closed, "content": content }));
+		let link = tedi_ops::MilestoneLink::parse(url).unwrap();
+		let repo = link.repo_info();
+		let file = tedi_ops::local::Local::milestone_file_path(repo, link.number(), title);
+		std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+		std::fs::write(&file, format!("{}\n", content.trim_end())).unwrap();
+		metas
+			.entry((repo.owner().to_string(), repo.repo().to_string()))
+			.or_default()
+			.insert(link.number().to_string(), serde_json::json!({ "title": title, "state": if *closed { "Closed" } else { "Open" } }));
 	}
+	for ((owner, name), ms) in metas {
+		let repo = tedi_ops::RepoInfo::new(&owner, &name);
+		let meta_path = tedi_ops::local::Local::milestone_project_dir(repo).join(".meta.json");
+		std::fs::write(&meta_path, serde_json::json!({ "milestones": ms }).to_string()).unwrap();
+	}
+
 	let mut paths = serde_json::Map::new();
 	if !path.is_empty() {
 		paths.insert("1d".to_string(), serde_json::json!(path));
@@ -446,7 +463,6 @@ fn seed_selection(ctx: &TestContext, sprint_content: &str, milestones: &[(&str, 
 		&serde_json::json!({
 			"paths": paths,
 			"normal": { "key": "1d", "content": sprint_content },
-			"milestones": ms,
 		})
 		.to_string(),
 	);
@@ -561,7 +577,7 @@ async fn test_select_skips_uncached_milestone_with_warning() {
 	let out = ctx.run(&["--offline", "sprints", "select", "--next"]);
 	assert!(out.status.success(), "stderr: {}", out.stderr);
 	assert!(out.stdout.contains("Selected: o/r#11"), "stdout: {}", out.stdout);
-	assert!(out.stderr.contains("uncached milestone"), "stderr: {}", out.stderr);
+	assert!(out.stderr.contains("skipping milestone"), "stderr: {}", out.stderr);
 }
 
 /// Explicit descent into an uncached milestone errors loudly, naming the fix.
@@ -581,7 +597,7 @@ async fn test_select_down_onto_uncached_milestone_errors() {
 
 	let out = ctx.run(&["--offline", "sprints", "select", "--down"]);
 	assert!(!out.status.success(), "expected failure, stdout: {}", out.stdout);
-	assert!(out.stderr.contains("not cached"), "stderr: {}", out.stderr);
+	assert!(out.stderr.contains("no open non-delegating issue"), "stderr: {}", out.stderr);
 }
 
 /// A cached milestone ref expands inline in `sprints edit`; blocker edits on an issue
@@ -607,8 +623,8 @@ async fn test_milestone_edit_expands_milestone_ref_and_syncs_inner_blockers() {
 	let (out, result_milestone) = ctx.milestone_edit_with_changes("# Sprint\n\n- https://github.com/o/r/milestone/3\n", |tmp_path| {
 		let content = std::fs::read_to_string(tmp_path).unwrap();
 		assert!(
-			content.contains("big_feature <!-- https://github.com/o/r/milestone/3 -->"),
-			"expanded milestone block missing:\n{content}"
+			content.contains("[big_feature](") && content.contains("<!-- https://github.com/o/r/milestone/3 -->"),
+			"expanded milestone block missing markdown-link title:\n{content}"
 		);
 		assert!(
 			content.contains("<!-- @mock_user https://github.com/o/r/issues/20 -->"),
@@ -630,6 +646,48 @@ async fn test_milestone_edit_expands_milestone_ref_and_syncs_inner_blockers() {
 	  # Blockers
 	  - inner step
 	");
+}
+
+/// Regression for #41…#46: a task materialized *inside* an inlined milestone must be
+/// written back into that milestone's durable local file, so re-editing the sprint sees
+/// it linked (not homeless) and never spawns a duplicate virtual issue.
+#[tokio::test]
+async fn test_inlined_milestone_task_persists_and_does_not_rematerialize() {
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+
+	// milestone/3 starts empty; the sprint inlines it and holds a fresh task under it.
+	seed_selection(&ctx, "", &[("https://github.com/o/r/milestone/3", "big_feature", false, "")], &[]);
+
+	let (out, _result) = ctx.milestone_edit_with_changes("# Sprint\n\n- https://github.com/o/r/milestone/3\n", |tmp_path| {
+		std::fs::write(
+			tmp_path,
+			"# Sprint\n\n- [ ] big_feature <!-- https://github.com/o/r/milestone/3 -->\n  - [ ] hit 500 connections\n",
+		)
+		.unwrap();
+	});
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+
+	ctx.set_issues_dir_override();
+
+	// the materialized virtual issue exists...
+	assert!(
+		tedi_ops::local::Local::find_by_number(tedi_ops::RepoInfo::new("mock_user", "virtual"), 1, tedi_ops::local::FsReader).is_some(),
+		"the milestone task should have materialized into virtual issue #1"
+	);
+	// ...and #2 does NOT — no re-materialization
+	assert!(
+		tedi_ops::local::Local::find_by_number(tedi_ops::RepoInfo::new("mock_user", "virtual"), 2, tedi_ops::local::FsReader).is_none(),
+		"no duplicate virtual issue should be created"
+	);
+
+	// the crux: the milestone's durable local file now hosts the virtual link, so the task
+	// is linked (not homeless) on the next expansion.
+	let ms_file = tedi_ops::local::Local::milestone_file_path(tedi_ops::RepoInfo::new("o", "r"), 3, "big_feature");
+	let ms_content = std::fs::read_to_string(&ms_file).expect("milestone file must exist");
+	assert!(
+		ms_content.contains("https://github.com/mock_user/virtual/issues/1"),
+		"milestone body must persist the materialized task's link, got:\n{ms_content}"
+	);
 }
 
 /// Old-format cache (flat string `selections`) loads with `normal` intact; the dropped

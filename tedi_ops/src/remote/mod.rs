@@ -22,6 +22,9 @@ use crate::{
 	split_blockers,
 };
 
+mod milestone;
+pub use milestone::load_remote_milestone;
+
 /// Error type for remote GitHub operations.
 #[wrap_err]
 #[derive(Debug, thiserror::Error)]

@@ -71,6 +71,12 @@ pub fn conflict_file_path(owner: &str) -> PathBuf {
 	Local::issues_dir().join(owner).join("__conflict.md")
 }
 
+/// Milestone conflict file — distinct from the issue one so the two never collide.
+/// Format: `{issues_dir}/{owner}/__milestone_conflict.md`
+pub fn milestone_conflict_file_path(owner: &str) -> PathBuf {
+	Local::issues_dir().join(owner).join("__milestone_conflict.md")
+}
+
 //==============================================================================
 // Conflict Detection & Resolution
 //==============================================================================
@@ -120,9 +126,51 @@ pub async fn check_for_existing_conflict(issue_index: IssueIndex) -> Result<Opti
 			<Issue as Sink<LocalFs>>::sink(&mut new_issue, None).await?;
 			<Issue as Sink<Remote>>::sink(&mut new_issue, None).await?;
 		}
-		conflict_resolution_cleanup(issue_index.owner())?;
+		conflict_resolution_cleanup(conflict_file_path(issue_index.owner()))?;
 		Ok(None)
 	}
+}
+
+/// Milestone counterpart to `check_for_existing_conflict`: if the resolution file's markers
+/// are gone, rebuild the milestone from it (identity from meta, timestamps bumped against
+/// consensus) and sink to local + remote, then clean up.
+pub async fn check_for_existing_milestone_conflict(link: &crate::MilestoneLink) -> Result<Option<PathBuf>> {
+	let owner = link.repo_info().owner().to_string();
+	let conflict_fpath = milestone_conflict_file_path(&owner);
+	if !conflict_fpath.exists() {
+		return Ok(None);
+	}
+	let content = std::fs::read_to_string(&conflict_fpath)?;
+	if has_conflict_markers(&content) {
+		return Ok(Some(conflict_fpath));
+	}
+
+	let mut milestone = {
+		let body = crate::MilestoneBody::parse(&content);
+		let meta = Local::load_milestone_project_meta(link.repo_info(), &super::FsReader)
+			.milestones
+			.remove(&link.number())
+			.unwrap_or_default();
+		let mut m = crate::Milestone {
+			identity: crate::MilestoneIdentity {
+				link: link.clone(),
+				state: meta.state,
+				due_on: meta.due_on,
+				title: meta.title,
+				timestamps: meta.timestamps,
+			},
+			body,
+		};
+		if let Some(consensus) = Local::load_milestone(link, &GitReader)? {
+			m.post_update(&consensus);
+		}
+		m
+	};
+
+	<crate::Milestone as Sink<LocalFs>>::sink(&mut milestone, None).await?;
+	<crate::Milestone as Sink<Remote>>::sink(&mut milestone, None).await?;
+	conflict_resolution_cleanup(conflict_fpath)?;
+	Ok(None)
 }
 
 /// Check if file content contains git conflict markers.
@@ -144,15 +192,17 @@ pub fn is_merge_in_progress() -> bool {
 // Conflict Creation (Git Branch Merge)
 //==============================================================================
 
-/// Initiate a git merge conflict between local and remote issue states.
+/// Initiate a git merge conflict between local and remote node states.
 ///
 /// This creates a real git conflict by:
 /// 1. Committing current local state
 /// 2. Creating a `remote-state` branch with remote's state
 /// 3. Merging that branch (which may produce conflicts)
 ///
-/// Both local and remote are written to `{owner}/__conflict.md` in virtual format.
-pub fn initiate_conflict_merge(repo_info: RepoInfo, issue_number: u64, local_issue: &Issue, remote_issue: &Issue) -> Result<ConflictOutcome, ConflictError> {
+/// Both `local_serialized` and `remote_serialized` are written to `conflict_file`.
+/// Node-agnostic: the caller serializes (issue or milestone) and picks the conflict path.
+pub fn initiate_conflict_merge(repo_info: RepoInfo, node_number: u64, local_serialized: &str, remote_serialized: &str, conflict_file: PathBuf) -> Result<ConflictOutcome, ConflictError> {
+	let issue_number = node_number;
 	if !is_git_initialized() {
 		return Err(ConflictError::new_git_not_initialized());
 	}
@@ -163,11 +213,11 @@ pub fn initiate_conflict_merge(repo_info: RepoInfo, issue_number: u64, local_iss
 	let data_dir = Local::issues_dir();
 	let data_dir_str = data_dir.to_str().ok_or_else(|| ConflictError::new_git_error("Invalid data directory path".into()))?;
 
-	// Ensure owner directory exists
-	let owner_dir = data_dir.join(owner);
-	std::fs::create_dir_all(&owner_dir)?;
+	// Ensure the conflict file's parent directory exists
+	if let Some(parent) = conflict_file.parent() {
+		std::fs::create_dir_all(parent)?;
+	}
 
-	let conflict_file = conflict_file_path(owner);
 	let conflict_file_rel = conflict_file.strip_prefix(&data_dir).unwrap_or(&conflict_file);
 	let conflict_file_rel_str = conflict_file_rel.to_string_lossy();
 
@@ -176,8 +226,7 @@ pub fn initiate_conflict_merge(repo_info: RepoInfo, issue_number: u64, local_iss
 	let current_branch = String::from_utf8_lossy(&branch_output.stdout).trim().to_string();
 
 	// Write local state to conflict file (node + child links)
-	let local_virtual = local_issue.to_string();
-	std::fs::write(&conflict_file, &local_virtual)?;
+	std::fs::write(&conflict_file, local_serialized)?;
 
 	// Stage and commit local state
 	let add_status = Command::new("git").args(["-C", data_dir_str, "add", "-A"]).status()?;
@@ -224,8 +273,7 @@ pub fn initiate_conflict_merge(repo_info: RepoInfo, issue_number: u64, local_iss
 	}
 
 	// Write remote state to conflict file (node + child links)
-	let remote_virtual = remote_issue.to_string();
-	std::fs::write(&conflict_file, &remote_virtual)?;
+	std::fs::write(&conflict_file, remote_serialized)?;
 
 	// Stage and commit remote state
 	let add_status = Command::new("git").args(["-C", data_dir_str, "add", "-A"]).status()?;
@@ -297,7 +345,7 @@ pub fn initiate_conflict_merge(repo_info: RepoInfo, issue_number: u64, local_iss
 ///
 /// Call this after user has resolved conflicts and committed.
 /// Cleans up the remote-state branch.
-pub fn conflict_resolution_cleanup(owner: &str) -> Result<()> {
+pub fn conflict_resolution_cleanup(conflict_file: PathBuf) -> Result<()> {
 	let data_dir = Local::issues_dir();
 	let data_dir_str = data_dir.to_str().ok_or_else(|| eyre!("Invalid data directory path"))?;
 
@@ -310,11 +358,8 @@ pub fn conflict_resolution_cleanup(owner: &str) -> Result<()> {
 	let _ = Command::new("git").args(["-C", data_dir_str, "branch", "-D", "remote-state"]).output();
 
 	// Remove the conflict file after successful resolution.
-	{
-		let conflict_file = conflict_file_path(owner);
-		if conflict_file.exists() {
-			std::fs::remove_file(&conflict_file)?;
-		}
+	if conflict_file.exists() {
+		std::fs::remove_file(&conflict_file)?;
 	}
 
 	Ok(())

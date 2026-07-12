@@ -97,6 +97,9 @@ pub struct GithubMilestone {
 	pub state: String,
 	pub due_on: Option<jiff::Timestamp>,
 	pub description: Option<String>,
+	/// Last modification time (coarse: GitHub exposes no per-field milestone timestamps).
+	#[serde(default)]
+	pub updated_at: Option<jiff::Timestamp>,
 }
 /// Error type for GitHub API operations.
 #[wrap_err]

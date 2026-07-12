@@ -31,7 +31,7 @@ use crate::{
 	Issue, IssueIndex, IssueLink, IssueSelector, LazyIssue, RepoInfo, VirtualIssue,
 	local::{
 		Consensus, FsReader, Local, LocalFs, LocalIssueSource, LocalPath,
-		conflict::{ConflictOutcome, initiate_conflict_merge},
+		conflict::{ConflictOutcome, conflict_file_path, initiate_conflict_merge},
 		consensus::load_consensus_issue,
 	},
 	remote::{Remote, RemoteSource},
@@ -197,7 +197,13 @@ mod core {
 			}
 			false => {
 				// Conflict - initiate git merge
-				match initiate_conflict_merge(repo_info, issue_number, &local_merged, &remote_merged)? {
+				match initiate_conflict_merge(
+					repo_info,
+					issue_number,
+					&local_merged.to_string(),
+					&remote_merged.to_string(),
+					conflict_file_path(repo_info.owner()),
+				)? {
 					ConflictOutcome::AutoMerged => {
 						unreachable!(
 							"AutoMerged means when we triggered a merge of local against remote (which we've already checked are divergent), it succeeded. Which would be an implementation error, - whole point of the call is to record the conflict before getting user to resolve it manually."

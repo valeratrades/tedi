@@ -35,7 +35,7 @@ pub trait Sink<S> {
 	/// Error type for this sink implementation.
 	type Error: std::fmt::Debug + std::fmt::Display;
 
-	/// Sink this issue to the destination, comparing against `old` state.
+	/// Sink this node to the destination, comparing against `old` state.
 	///
 	///NB: `&mut self` because `Sink<Remote>` mutates the issue: pending identities
 	/// become linked (with the new GitHub number), and children's `parent_index`
@@ -48,7 +48,7 @@ pub trait Sink<S> {
 	/// * `Ok(true)` if any changes were made
 	/// * `Ok(false)` if already in sync
 	/// * `Err(_)` on failure
-	async fn sink(&mut self, old: Option<&Issue>) -> Result<bool, Self::Error>;
+	async fn sink(&mut self, old: Option<&Self>) -> Result<bool, Self::Error>;
 }
 /// Result of comparing an issue node with its old state.
 #[derive(Clone, Debug, Default)]
