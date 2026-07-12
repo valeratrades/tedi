@@ -538,7 +538,13 @@ impl Local {
 	#[instrument(skip(meta), fields(issue_number))]
 	pub fn save_issue_meta(repo_info: RepoInfo, issue_number: u64, meta: &IssueMeta) -> std::io::Result<()> {
 		let mut project_meta = Self::load_project_meta(repo_info);
-		project_meta.issues.insert(issue_number, meta.clone());
+		let mut meta = meta.clone();
+		// a known author is only ever learned from a live fetch; local reconstructions carry None.
+		// never let that None erase an author we already know.
+		if meta.user.is_none() {
+			meta.user = project_meta.issues.get(&issue_number).and_then(|m| m.user.clone());
+		}
+		project_meta.issues.insert(issue_number, meta);
 		Self::save_project_meta(repo_info, &project_meta)
 	}
 

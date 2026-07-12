@@ -207,9 +207,6 @@ pub struct LinkedIssueMeta {
 }
 impl LinkedIssueMeta {
 	pub fn new(user: Option<String>, link: IssueLink, timestamps: IssueTimestamps) -> Self {
-		if user.is_none() {
-			tracing::warn!("LinkedIssueMeta created without user");
-		}
 		Self { user, link, timestamps }
 	}
 
@@ -285,12 +282,7 @@ impl IssueIdentity {
 		Self {
 			parent_index,
 			is_virtual: true,
-			// direct construction: virtual issues have no user by definition, `new`'s missing-user warn doesn't apply
-			remote: Some(Box::new(LinkedIssueMeta {
-				user: None,
-				link,
-				timestamps: IssueTimestamps::now(),
-			})),
+			remote: Some(Box::new(LinkedIssueMeta::new(None, link, IssueTimestamps::now()))),
 		}
 	}
 
