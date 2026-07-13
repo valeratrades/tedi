@@ -422,7 +422,7 @@ impl Selected {
 	fn display(&self, node: &NodeLink) -> String {
 		match node {
 			NodeLink::Issue(link) => display_for_link(link),
-			NodeLink::Milestone(ml) => milestone_title(ml),
+			NodeLink::Milestone(ml) => display_for_milestone(ml),
 		}
 	}
 }
@@ -552,8 +552,17 @@ fn link_delegates(link: &IssueLink) -> bool {
 }
 
 /// Display string for a link: local relative path if resolvable, else `owner/repo#number`.
+/// The path doubles as fzf's `cat {}` preview target, so it must stay relative to `issues_dir`.
 fn display_for_link(link: &IssueLink) -> String {
 	resolve(link)
 		.and_then(|p| p.strip_prefix(Local::issues_dir()).ok().map(|rel| rel.to_string_lossy().to_string()))
 		.unwrap_or_else(|| format!("{}/{}#{}", link.owner(), link.repo(), link.number()))
+}
+
+/// Display string for a milestone: its local relative file path (so fzf's `cat {}` previews it),
+/// falling back to the title when the file is not stored locally.
+fn display_for_milestone(ml: &MilestoneLink) -> String {
+	Local::find_milestone_path(ml.repo_info(), ml.number(), &FsReader)
+		.and_then(|p| p.strip_prefix(Local::issues_dir()).ok().map(|rel| rel.to_string_lossy().to_string()))
+		.unwrap_or_else(|| milestone_title(ml))
 }
