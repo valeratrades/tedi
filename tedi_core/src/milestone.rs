@@ -9,7 +9,7 @@
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
-use crate::{CloseState, Events, IssueLink, MilestoneLink, TaskView};
+use crate::{CloseState, IssueLink, MilestoneLink, TaskView};
 
 /// Timestamps tracking when individual milestone fields last changed. A milestone-shaped
 /// sibling of `IssueTimestamps`, used for field-level sync conflict resolution.
@@ -61,30 +61,38 @@ pub struct MilestoneIdentity {
 	pub timestamps: MilestoneTimestamps,
 }
 
-/// A milestone's body: free prose plus a flat list of hosted issue links.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct MilestoneBody {
-	/// Structural description (headers/prose/non-issue lists), issue refs removed.
-	pub description: Events,
-	/// Hosted issue links, in first-seen order, deduplicated.
-	pub hosted: Vec<IssueLink>,
-}
+/// A milestone's body: the lossless task-view document itself. Hosted issue links are
+/// derived on demand, never a stored projection.
+#[derive(Clone, Default)]
+pub struct MilestoneBody(pub TaskView);
 impl MilestoneBody {
-	/// Parse a milestone body (a task-view document) into prose + hosted issue links.
 	pub fn parse(content: &str) -> Self {
 		let mut doc = TaskView::parse(content);
 		doc.resolve_bare_refs();
+		Self(doc)
+	}
 
-		let mut hosted = Vec::new();
-		for link in doc.issue_links() {
-			if !hosted.contains(&link) {
-				hosted.push(link);
+	/// Hosted issue links, first-seen order, deduplicated (derived, not stored).
+	pub fn hosted(&self) -> Vec<IssueLink> {
+		let mut out = Vec::new();
+		for link in self.0.issue_links() {
+			if !out.contains(&link) {
+				out.push(link);
 			}
 		}
-
-		doc.remove_issues();
-		let description = Events::parse(doc.serialize().trim());
-		Self { description, hosted }
+		out
+	}
+}
+// Semantic equality is "renders identically" — what change-detection and the sink care about.
+// Hand-impl avoids forcing deep PartialEq/Debug across every TaskView node type.
+impl PartialEq for MilestoneBody {
+	fn eq(&self, other: &Self) -> bool {
+		self.0.serialize() == other.0.serialize()
+	}
+}
+impl std::fmt::Debug for MilestoneBody {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.debug_tuple("MilestoneBody").field(&self.0.serialize()).finish()
 	}
 }
 
@@ -140,14 +148,19 @@ impl Milestone {
 		if dominated(s.due_on, o.due_on) {
 			self.identity.due_on = other.identity.due_on;
 		}
-		if dominated(s.description, o.description) {
-			self.body.description = other.body.description.clone();
-		}
-		for link in &other.body.hosted {
-			if !self.body.hosted.contains(link) {
-				self.body.hosted.push(link.clone());
+		// hosted is a set union regardless of which doc wins — no GitHub-assigned issue is dropped.
+		let mut union = self.body.hosted();
+		for link in other.body.hosted() {
+			if !union.contains(&link) {
+				union.push(link);
 			}
 		}
+		if dominated(s.description, o.description) {
+			self.body = other.body.clone();
+		}
+		let present = self.body.hosted();
+		let missing: Vec<IssueLink> = union.into_iter().filter(|l| !present.contains(l)).collect();
+		self.body.0.push_issue_links(&missing);
 
 		// Winning value carries the winning (newer) timestamp — keeps stamps consistent with values.
 		self.identity.timestamps = MilestoneTimestamps {
@@ -159,22 +172,11 @@ impl Milestone {
 	}
 }
 
-/// Canonical file form: description prose, then `- <issue-url>` lines for hosted issues.
+/// Canonical file form: the lossless task-view render — checkboxes, order, nested headings
+/// and blank lines all survive.
 impl std::fmt::Display for Milestone {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		let mut out = String::new();
-		let desc = String::from(self.body.description.clone());
-		let desc = desc.trim();
-		if !desc.is_empty() {
-			out.push_str(desc);
-			out.push('\n');
-		}
-		for link in &self.body.hosted {
-			out.push_str("- ");
-			out.push_str(link.as_str());
-			out.push('\n');
-		}
-		f.write_str(out.trim_start_matches('\n'))
+		f.write_str(&self.body.0.serialize())
 	}
 }
 
@@ -185,10 +187,7 @@ mod tests {
 	fn ml(n: u64) -> MilestoneLink {
 		MilestoneLink::parse(&format!("https://github.com/o/r/milestone/{n}")).unwrap()
 	}
-	fn il(n: u64) -> IssueLink {
-		IssueLink::parse(&format!("https://github.com/o/r/issues/{n}")).unwrap()
-	}
-	fn milestone(desc: &str, hosted: &[u64], title: &str, ts: MilestoneTimestamps) -> Milestone {
+	fn milestone(body: &str, title: &str, ts: MilestoneTimestamps) -> Milestone {
 		Milestone {
 			identity: MilestoneIdentity {
 				link: ml(3),
@@ -197,27 +196,32 @@ mod tests {
 				title: title.to_string(),
 				timestamps: ts,
 			},
-			body: MilestoneBody {
-				description: Events::parse(desc),
-				hosted: hosted.iter().map(|n| il(*n)).collect(),
-			},
+			body: MilestoneBody::parse(body),
 		}
 	}
 
 	#[test]
-	fn parse_splits_prose_and_hosted() {
+	fn parse_and_hosted() {
 		let body = MilestoneBody::parse("# Goals\n\nship it\n\n- o/r#5\n- https://github.com/o/r/issues/6\n");
-		let hosted: Vec<u64> = body.hosted.iter().map(|l| l.number()).collect();
+		let hosted: Vec<u64> = body.hosted().iter().map(|l| l.number()).collect();
 		assert_eq!(hosted, [5, 6]);
-		insta::assert_snapshot!(String::from(body.description), @"
+		insta::assert_snapshot!(body.0.serialize(), @"
 		# Goals
+
 		ship it
+
+		- o/r#5
+		- https://github.com/o/r/issues/6
 		");
 	}
 
 	#[test]
 	fn display_roundtrip() {
-		let m = milestone("# Goals\n\nship it", &[5, 6], "big", MilestoneTimestamps::now());
+		let m = milestone(
+			"# Goals\n\nship it\n\n- https://github.com/o/r/issues/5\n- https://github.com/o/r/issues/6",
+			"big",
+			MilestoneTimestamps::now(),
+		);
 		let s1 = m.to_string();
 		let reparsed = MilestoneBody::parse(&s1);
 		let m2 = Milestone {
@@ -227,7 +231,9 @@ mod tests {
 		assert_eq!(s1, m2.to_string(), "Display must be idempotent through parse");
 		insta::assert_snapshot!(s1, @"
 		# Goals
+
 		ship it
+
 		- https://github.com/o/r/issues/5
 		- https://github.com/o/r/issues/6
 		");
@@ -245,11 +251,12 @@ mod tests {
 			description: Some(new),
 			..Default::default()
 		};
-		let mut a = milestone("old desc", &[5], "t", self_ts);
-		let b = milestone("new desc", &[6], "t", other_ts);
+		let mut a = milestone("old desc\n\n- https://github.com/o/r/issues/5", "t", self_ts);
+		let b = milestone("new desc\n\n- https://github.com/o/r/issues/6", "t", other_ts);
 		a.merge(&b, false);
-		assert_eq!(String::from(a.body.description.clone()).trim(), "new desc");
-		let hosted: Vec<u64> = a.body.hosted.iter().map(|l| l.number()).collect();
+		assert!(a.body.0.serialize().contains("new desc"));
+		let mut hosted: Vec<u64> = a.body.hosted().iter().map(|l| l.number()).collect();
+		hosted.sort_unstable();
 		assert_eq!(hosted, [5, 6], "hosted is a set union regardless of which description won");
 	}
 
@@ -259,7 +266,6 @@ mod tests {
 		let new = Timestamp::from_second(2000).unwrap();
 		let mut a = milestone(
 			"newer",
-			&[],
 			"self",
 			MilestoneTimestamps {
 				title: Some(new),
@@ -269,7 +275,6 @@ mod tests {
 		);
 		let b = milestone(
 			"older",
-			&[],
 			"other",
 			MilestoneTimestamps {
 				title: Some(old),
@@ -279,7 +284,7 @@ mod tests {
 		);
 		a.merge(&b, false);
 		assert_eq!(a.identity.title, "self");
-		assert_eq!(String::from(a.body.description.clone()).trim(), "newer");
+		assert_eq!(a.body.0.serialize().trim(), "newer");
 	}
 
 	#[test]
@@ -287,14 +292,13 @@ mod tests {
 		let new = Timestamp::from_second(2000).unwrap();
 		let mut a = milestone(
 			"self",
-			&[],
 			"self",
 			MilestoneTimestamps {
 				title: Some(new),
 				..Default::default()
 			},
 		);
-		let b = milestone("other", &[], "other", MilestoneTimestamps::default());
+		let b = milestone("other", "other", MilestoneTimestamps::default());
 		a.merge(&b, true);
 		assert_eq!(a.identity.title, "other");
 	}

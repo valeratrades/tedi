@@ -101,7 +101,7 @@ pub async fn refresh_milestone_cache(links: &[MilestoneLink]) -> Result<()> {
 		}
 		let remote = load_remote_milestone(link).await?;
 
-		for child in &remote.body.hosted {
+		for child in &remote.body.hosted() {
 			if load_local_issue(child).await.is_ok() || Local::is_virtual_project(child.repo_info()) {
 				continue;
 			}

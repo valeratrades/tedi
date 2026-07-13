@@ -170,11 +170,20 @@ async fn resolve_merge(local: Milestone, consensus: Option<Milestone>, remote: M
 /// Merge equality that treats `hosted` as an order-independent set — the two merge sides
 /// build the union in opposite orders, so a Vec `==` would spuriously flag a conflict.
 fn milestones_agree(a: &Milestone, b: &Milestone) -> bool {
-	if a.identity != b.identity || a.body.description != b.body.description {
+	if a.identity != b.identity {
 		return false;
 	}
-	let mut ah: Vec<&str> = a.body.hosted.iter().map(|l| l.as_str()).collect();
-	let mut bh: Vec<&str> = b.body.hosted.iter().map(|l| l.as_str()).collect();
+	// Compare prose skeleton (issues removed) so the order-independent hosted set is judged separately.
+	let skeleton = |m: &Milestone| {
+		let mut doc = m.body.0.clone();
+		doc.remove_issues();
+		doc.serialize()
+	};
+	if skeleton(a) != skeleton(b) {
+		return false;
+	}
+	let mut ah: Vec<String> = a.body.hosted().iter().map(|l| l.as_str().to_string()).collect();
+	let mut bh: Vec<String> = b.body.hosted().iter().map(|l| l.as_str().to_string()).collect();
 	ah.sort_unstable();
 	bh.sort_unstable();
 	ah == bh

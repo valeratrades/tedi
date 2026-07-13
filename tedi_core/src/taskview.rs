@@ -16,6 +16,7 @@ use tedi_md::indent_into;
 use crate::{Events, IssueLink, IssueMarker, IssueRef, MilestoneLink, MilestoneRef, NodeLink, OwnedEvent, OwnedTag, OwnedTagEnd};
 
 /// A parsed task view: header-path → ordered components, plus un-itemized prose per section.
+#[derive(Clone, Default)]
 pub struct TaskView {
 	sections: BTreeMap<Vec<String>, Vec<TaskItem>>,
 	prose: BTreeMap<Vec<String>, Vec<OwnedEvent>>,
@@ -137,6 +138,27 @@ impl TaskView {
 	pub fn remove_issues(&mut self) {
 		for items in self.sections.values_mut() {
 			remove_issue_items(items);
+		}
+	}
+
+	/// Append bare, unchecked issue items for any link not already present, so a
+	/// GitHub-assigned issue survives merge/remote-load even when it never appeared in the prose.
+	pub fn push_issue_links(&mut self, links: &[IssueLink]) {
+		let mut present: std::collections::HashSet<String> = self.issue_links().iter().map(|l| l.as_str().to_string()).collect();
+		let root: Vec<String> = vec![];
+		for link in links {
+			if !present.insert(link.as_str().to_string()) {
+				continue;
+			}
+			self.touch(&root);
+			self.sections.entry(root.clone()).or_default().push(TaskItem {
+				checkbox: None,
+				content: TaskContent::Issue {
+					r#ref: IssueRef::Url(link.clone()),
+					embedded: false,
+				},
+				children: Vec::new(),
+			});
 		}
 	}
 

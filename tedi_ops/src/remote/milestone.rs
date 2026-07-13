@@ -18,13 +18,14 @@ pub async fn load_remote_milestone(link: &MilestoneLink) -> Result<Milestone, gi
 	let assigned = gh.list_milestone_issues(repo, number).await?;
 
 	let mut body = MilestoneBody::parse(milestone.description.as_deref().unwrap_or(""));
-	for issue in &assigned {
-		let url = format!("https://github.com/{}/{}/issues/{}", repo.owner(), repo.repo(), issue.number);
-		let link = IssueLink::parse(&url).expect("constructed URL must be valid");
-		if !body.hosted.contains(&link) {
-			body.hosted.push(link);
-		}
-	}
+	let assigned_links: Vec<IssueLink> = assigned
+		.iter()
+		.map(|issue| {
+			let url = format!("https://github.com/{}/{}/issues/{}", repo.owner(), repo.repo(), issue.number);
+			IssueLink::parse(&url).expect("constructed URL must be valid")
+		})
+		.collect();
+	body.0.push_issue_links(&assigned_links);
 
 	// GitHub exposes no per-field milestone timestamps — stamp every field with `updated_at`.
 	let ts = milestone.updated_at;
@@ -71,8 +72,8 @@ impl Sink<Remote> for Milestone {
 
 		// Assignment diff: only issues in the milestone's own repo can carry its milestone field.
 		let in_repo = |l: &&IssueLink| l.owner() == repo.owner() && l.repo() == repo.repo();
-		let new_nums: HashSet<u64> = self.body.hosted.iter().filter(in_repo).map(|l| l.number()).collect();
-		let old_nums: HashSet<u64> = old.map(|o| o.body.hosted.iter().filter(in_repo).map(|l| l.number()).collect()).unwrap_or_default();
+		let new_nums: HashSet<u64> = self.body.hosted().iter().filter(in_repo).map(|l| l.number()).collect();
+		let old_nums: HashSet<u64> = old.map(|o| o.body.hosted().iter().filter(in_repo).map(|l| l.number()).collect()).unwrap_or_default();
 
 		for num in new_nums.difference(&old_nums) {
 			println!("Assigning #{num} to milestone {number}");
