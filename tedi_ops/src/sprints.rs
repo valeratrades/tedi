@@ -353,18 +353,14 @@ pub fn selected_list() -> Result<()> {
 pub fn selected_current() -> Result<()> {
 	let (_, path) = selected_link_path()?;
 	let content = std::fs::read_to_string(&path)?;
-	let blockers = VirtualIssue::parse(&content, path)?.contents.blockers;
-	match blockers.current_with_context(&[]) {
-		Some(current) => {
-			// Truncated for status-bar consumers (eww polls this).
-			const MAX_LEN: usize = 70;
-			if current.chars().count() <= MAX_LEN {
-				println!("{current}");
-			} else {
-				println!("{}...", current.chars().take(MAX_LEN - 3).collect::<String>());
-			}
-		}
-		None => println!("No blockers."),
+	let contents = VirtualIssue::parse(&content, path)?.contents;
+	let current = contents.blockers.current_with_context(&[]).unwrap_or(contents.title);
+	// Truncated for status-bar consumers (eww polls this).
+	const MAX_LEN: usize = 70;
+	if current.chars().count() <= MAX_LEN {
+		println!("{current}");
+	} else {
+		println!("{}...", current.chars().take(MAX_LEN - 3).collect::<String>());
 	}
 	Ok(())
 }
