@@ -1,0 +1,58 @@
+[package]
+name = "tedi_task_operations"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "What we do with tedi issues: sync, merge, conflict resolution, sprints, selection"
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+arrayvec.workspace = true
+async-trait.workspace = true
+async_from.workspace = true
+clap.workspace = true
+color-eyre.workspace = true
+config.workspace = true
+copy_arrayvec.workspace = true
+derive-new.workspace = true
+derive_more.workspace = true
+futures.workspace = true
+jiff.workspace = true
+miette.workspace = true
+pandoc.workspace = true
+pulldown-cmark.workspace = true
+regex.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+smart-default.workspace = true
+tedi_adapters.workspace = true
+tedi_core.workspace = true
+tedi_md.workspace = true
+tedi_task_primitives.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-error.workspace = true
+url.workspace = true
+urlencoding.workspace = true
+v_utils.workspace = true
+xdg.workspace = true
+
+[dev-dependencies]
+ctor.workspace = true
+derive_builder.workspace = true
+insta.workspace = true
+libc.workspace = true
+rstest.workspace = true
+v_fixtures.workspace = true
+walkdir.workspace = true
+
+[[test]]
+name = "integration"
+path = "tests/integration/main.rs"
+
+[lints]
+workspace = true

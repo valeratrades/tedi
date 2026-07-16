@@ -144,10 +144,10 @@ impl TaskView {
 	/// Append bare, unchecked issue items for any link not already present, so a
 	/// GitHub-assigned issue survives merge/remote-load even when it never appeared in the prose.
 	pub fn push_issue_links(&mut self, links: &[IssueLink]) {
-		let mut present: std::collections::HashSet<String> = self.issue_links().iter().map(|l| l.as_str().to_string()).collect();
+		let mut present: std::collections::HashSet<String> = self.issue_links().iter().map(|l| l.to_string()).collect();
 		let root: Vec<String> = vec![];
 		for link in links {
-			if !present.insert(link.as_str().to_string()) {
+			if !present.insert(link.to_string()) {
 				continue;
 			}
 			self.touch(&root);
@@ -792,7 +792,7 @@ fn ensure_blank_line(output: &mut String) {
 /// Canonical URL of an item's ref, the key into the expansions map.
 fn expansion_key(content: &TaskContent) -> Option<String> {
 	match content {
-		TaskContent::Issue { r#ref, .. } => r#ref.to_issue_link().map(|l| l.as_str().to_string()),
+		TaskContent::Issue { r#ref, .. } => r#ref.to_issue_link().map(|l| l.to_string()),
 		TaskContent::Milestone { r#ref, .. } => Some(r#ref.to_milestone_link().as_str().to_string()),
 		TaskContent::Virtual(_) => None,
 	}
@@ -891,7 +891,7 @@ mod tests {
 	use crate::Issue;
 
 	fn expansions(pairs: &[(&str, &str)]) -> HashMap<String, String> {
-		pairs.iter().map(|(url, view)| (NodeLink::parse(url).unwrap().as_str().to_string(), view.to_string())).collect()
+		pairs.iter().map(|(url, view)| (NodeLink::parse(url).unwrap().to_string(), view.to_string())).collect()
 	}
 
 	#[test]
@@ -1436,7 +1436,7 @@ mod tests {
 		let content = "- [ ] o/r#1\n- https://github.com/o/r/milestone/3\n  - [ ] o/r#2\n- [ ] o/r#4\n";
 		let doc = TaskView::parse(content);
 		let nodes = doc.nodes();
-		let urls: Vec<&str> = nodes.iter().map(NodeLink::as_str).collect();
+		let urls: Vec<String> = nodes.iter().map(NodeLink::to_string).collect();
 		assert_eq!(
 			urls,
 			[

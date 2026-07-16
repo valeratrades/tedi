@@ -1,0 +1,173 @@
+//! Integration tests for file naming and placement.
+//!
+//! Tests the file naming conventions:
+//! - Flat format: `{number}_-_{title}.md` for issues without sub-issues
+//! - Directory format: `{number}_-_{title}/__main__.md` for issues with sub-issues
+//!
+//! Also tests that old file placements are automatically cleaned up when the
+//! format changes (e.g., when an issue gains sub-issues).
+
+use v_fixtures::FixtureRenderer;
+
+use crate::{
+	FixtureIssuesExt as _,
+	common::{TestContext, are_you_sure::UnsafePathExt, parse_virtual},
+};
+
+#[tokio::test]
+async fn test_flat_format_preserved_when_no_sub_issues() {
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+
+	let vi = parse_virtual("- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tparent body\n");
+	let parent = ctx.consensus(&vi, None).await;
+	ctx.remote(&vi, None);
+
+	let out = ctx.open_issue(&parent).run();
+
+	eprintln!("stdout: {}", out.stdout);
+	eprintln!("stderr: {}", out.stderr);
+
+	assert!(out.status.success(), "Should succeed. stderr: {}", out.stderr);
+
+	// flat preserved, no directory created
+	let flat = ctx.flat_issue_path(("o", "r").into(), 1, "Parent Issue").exists();
+	let dir = ctx.dir_issue_path(("o", "r").into(), 1, "Parent Issue").exists();
+	insta::assert_snapshot!(format!("flat: {flat}\ndir: {dir}"), @"
+	flat: true
+	dir: false
+	");
+}
+
+#[tokio::test]
+async fn test_old_flat_file_removed_when_sub_issues_appear() {
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+
+	// Start with a flat issue locally
+	let parent_vi = parse_virtual("- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tparent body\n");
+	let parent = ctx.consensus(&parent_vi, None).await;
+
+	// Remote now has sub-issues - create a version with children for mock
+	let with_children = parse_virtual(
+		"- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
+		 \tparent body\n\
+		 \n\
+		 \t- [ ] Child Issue <!--sub @mock_user https://github.com/o/r/issues/2 -->\n\
+		 \t\tchild body\n",
+	);
+	// Remote has the version with children
+	ctx.remote(&with_children, None);
+
+	// Need --pull since local == consensus (no uncommitted changes)
+	let out = ctx.open_issue(&parent).args(&["--pull"]).run();
+
+	eprintln!("stdout: {}", out.stdout);
+	eprintln!("stderr: {}", out.stderr);
+
+	assert!(out.status.success(), "Should succeed. stderr: {}", out.stderr);
+
+	// flat removed, directory created
+	let flat = ctx.flat_issue_path(("o", "r").into(), 1, "Parent Issue").exists();
+	let dir = ctx.dir_issue_path(("o", "r").into(), 1, "Parent Issue").exists();
+	insta::assert_snapshot!(format!("flat: {flat}\ndir: {dir}"), @"
+	flat: false
+	dir: true
+	");
+}
+
+#[tokio::test]
+async fn test_old_placement_discarded_with_pull() {
+	// This test verifies that when remote gains sub-issues and we use --pull,
+	// the old flat file is cleaned up and replaced with the directory format.
+
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+
+	// Set up a flat issue locally, committed to git
+	let parent_vi = parse_virtual("- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tparent body\n");
+	let parent = ctx.consensus(&parent_vi, None).await;
+
+	// Remote has sub-issues now (simulating someone else adding them)
+	let with_children = parse_virtual(
+		"- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\
+		 \tparent body\n\
+		 \n\
+		 \t- [ ] Child Issue <!--sub @mock_user https://github.com/o/r/issues/2 -->\n\
+		 \t\tchild body\n",
+	);
+	ctx.remote(&with_children, None);
+
+	// Need --pull since local == consensus (no uncommitted local changes)
+	let out = ctx.open_issue(&parent).args(&["--pull"]).run();
+
+	eprintln!("stdout: {}", out.stdout);
+	eprintln!("stderr: {}", out.stderr);
+
+	assert!(out.status.success(), "Should succeed. stderr: {}", out.stderr);
+
+	// flat removed, directory created, sub-issue dir exists
+	let flat = ctx.flat_issue_path(("o", "r").into(), 1, "Parent Issue").exists();
+	let dir = ctx.dir_issue_path(("o", "r").into(), 1, "Parent Issue").exists();
+	let sub_dir = ctx.xdg.data_dir().join("issues/o/r/1_-_Parent_Issue").is_dir();
+	insta::assert_snapshot!(format!("flat: {flat}\ndir: {dir}\nsub_dir: {sub_dir}"), @"
+	flat: false
+	dir: true
+	sub_dir: true
+	");
+}
+
+#[tokio::test]
+async fn test_duplicate_removes_local_file() {
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+
+	// Set up a local issue
+	let original_vi = parse_virtual("- [ ] Some Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tbody\n");
+	let original = ctx.consensus(&original_vi, None).await;
+	ctx.remote(&original_vi, None);
+
+	// Modify the issue to mark it as duplicate
+	let mut duplicate = original_vi.clone();
+	duplicate.contents.state = tedi_task_operations::CloseState::Duplicate(999);
+
+	// Sync the duplicate state
+	let out = ctx.open_issue(&original).edit(&duplicate).run();
+
+	eprintln!("stdout: {}", out.stdout);
+	eprintln!("stderr: {}", out.stderr);
+
+	assert!(
+		out.status.success() && !ctx.flat_issue_path(("o", "r").into(), 1, "Some Issue").exists(),
+		"Should succeed and remove issue file after marking as duplicate. stderr: {}",
+		out.stderr
+	);
+}
+
+#[tokio::test]
+async fn test_duplicate_reference_to_existing_issue_succeeds() {
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+
+	// Set up a local issue and a target duplicate issue
+	let original = parse_virtual("- [ ] Some Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n\tbody\n");
+	let original_issue = ctx.consensus(&original, None).await; // takes care of sinking local too
+	ctx.remote(&original, None);
+
+	insta::assert_snapshot!(FixtureRenderer::try_new(&ctx).unwrap().skip_meta().render(), r"", @"
+	- [ ] Some Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+	  body
+	");
+
+	let dup_target = parse_virtual("- [ ] New Duplicate <!-- @mock_user https://github.com/o/r/issues/2 -->\n\tduplicate's body\n");
+	ctx.remote(&dup_target, None);
+
+	// Modify the issue to mark it as duplicate of #2 (which exists)
+	let mut duplicate = original.clone();
+	duplicate.contents.state = tedi_task_operations::CloseState::Duplicate(2);
+	let out = ctx.open_issue(&original_issue).edit(&duplicate).run();
+
+	eprintln!("stdout: {}", out.stdout);
+	eprintln!("stderr: {}", out.stderr);
+
+	assert!(
+		out.status.success() && !ctx.flat_issue_path(("o", "r").into(), 1, "Some Issue").exists(),
+		"Should succeed and remove issue file after duplicate marking. stderr: {}",
+		out.stderr
+	);
+}

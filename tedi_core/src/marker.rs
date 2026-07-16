@@ -15,15 +15,15 @@ use crate::{IssueLink, IssueSelector};
 /// Formats:
 /// - Linked: `<!-- @user url -->`
 /// - Pending: `<!-- pending -->` or no marker (default)
-/// - Virtual: `<!-- virtual -->` or `<!-- virtual url -->` (numbered, fabricated link)
+/// - Virtual: `<!-- virtual -->` or `<!-- virtual /path/to/file.md -->` (local file path)
 #[derive(Clone, Debug, PartialEq)]
 pub enum IssueMarker {
 	/// Linked to GitHub: `<!-- @user url -->` or `<!-- url -->` (user unknown)
 	Linked { user: Option<String>, link: IssueLink },
 	/// Pending creation on GitHub (will be created on first sync)
 	Pending,
-	/// Virtual (local-only, never syncs to GitHub). Numbered virtual issues carry a
-	/// fabricated link so they're addressable by number like any linked issue.
+	/// Virtual (local-only, never syncs to GitHub). Materialized virtual issues carry an
+	/// `IssueLink::Virtual(path)` — the file path that is both their id and their location.
 	Virtual { link: Option<IssueLink> },
 }
 
@@ -43,13 +43,13 @@ impl IssueMarker {
 			return Self::Pending;
 		}
 
-		// Virtual: bare, legacy `virtual:...`, or numbered `virtual <url>`
+		// Virtual: bare, legacy `virtual:...`, or `virtual <path>`
 		if s == "virtual" || s.starts_with("virtual:") {
 			return Self::Virtual { link: None };
 		}
 		if let Some(rest) = s.strip_prefix("virtual ") {
 			return Self::Virtual {
-				link: IssueLink::parse(rest.trim()),
+				link: Some(IssueLink::Virtual(rest.trim().into())),
 			};
 		}
 
@@ -121,11 +121,20 @@ impl IssueMarker {
 	/// Encode the issue marker to HTML comment inner content.
 	pub fn encode(&self) -> String {
 		match self {
-			Self::Linked { user: Some(user), link } => format!("@{user} {}", link.as_str()),
-			Self::Linked { user: None, link } => link.as_str().to_string(),
+			Self::Linked { user: Some(user), link } => {
+				assert!(matches!(link, IssueLink::Owned(_)), "linked marker must carry an owned link");
+				format!("@{user} {link}")
+			}
+			Self::Linked { user: None, link } => {
+				assert!(matches!(link, IssueLink::Owned(_)), "linked marker must carry an owned link");
+				link.to_string()
+			}
 			Self::Pending => "pending".to_string(),
 			Self::Virtual { link: None } => "virtual".to_string(),
-			Self::Virtual { link: Some(link) } => format!("virtual {}", link.as_str()),
+			Self::Virtual { link: Some(link) } => {
+				assert!(matches!(link, IssueLink::Virtual(_)), "virtual marker must carry a virtual link");
+				format!("virtual {link}")
+			}
 		}
 	}
 
@@ -284,10 +293,12 @@ mod tests {
 		assert_eq!(IssueMarker::decode("virtual"), IssueMarker::Virtual { link: None });
 		assert_eq!(IssueMarker::decode("virtual:"), IssueMarker::Virtual { link: None });
 
-		let link = IssueLink::parse("https://github.com/local/virtual/issues/3").unwrap();
+		let path = "/data/issues/virtual/3_-_t.md";
 		assert_eq!(
-			IssueMarker::decode("virtual https://github.com/local/virtual/issues/3"),
-			IssueMarker::Virtual { link: Some(link) }
+			IssueMarker::decode(&format!("virtual {path}")),
+			IssueMarker::Virtual {
+				link: Some(IssueLink::Virtual(path.into()))
+			}
 		);
 	}
 
@@ -296,8 +307,13 @@ mod tests {
 		assert_eq!(IssueMarker::Pending.encode(), "pending");
 		assert_eq!(IssueMarker::Virtual { link: None }.encode(), "virtual");
 
-		let link = IssueLink::parse("https://github.com/local/virtual/issues/3").unwrap();
-		assert_eq!(IssueMarker::Virtual { link: Some(link) }.encode(), "virtual https://github.com/local/virtual/issues/3");
+		assert_eq!(
+			IssueMarker::Virtual {
+				link: Some(IssueLink::Virtual("/data/issues/virtual/3_-_t.md".into()))
+			}
+			.encode(),
+			"virtual /data/issues/virtual/3_-_t.md"
+		);
 
 		let link = IssueLink::parse("https://github.com/owner/repo/issues/123").unwrap();
 		let linked = IssueMarker::Linked {
@@ -313,7 +329,9 @@ mod tests {
 		let markers = vec![
 			IssueMarker::Pending,
 			IssueMarker::Virtual { link: None },
-			IssueMarker::Virtual { link: Some(link.clone()) },
+			IssueMarker::Virtual {
+				link: Some(IssueLink::Virtual("/data/issues/virtual/3_-_t.md".into())),
+			},
 			IssueMarker::Linked {
 				user: Some("owner".to_string()),
 				link,
@@ -338,7 +356,7 @@ mod tests {
 		let m = Marker::decode("<!-- virtual -->");
 		assert!(matches!(m, Some(Marker::Issue(IssueMarker::Virtual { link: None }))));
 
-		let m = Marker::decode("<!-- virtual https://github.com/local/virtual/issues/3 -->");
+		let m = Marker::decode("<!-- virtual /data/issues/virtual/3_-_t.md -->");
 		assert!(matches!(m, Some(Marker::Issue(IssueMarker::Virtual { link: Some(l) })) if l.number() == 3));
 
 		let m = Marker::decode("<!-- local: -->");
@@ -413,7 +431,9 @@ mod tests {
 		let markers = vec![
 			Marker::Issue(IssueMarker::Pending),
 			Marker::Issue(IssueMarker::Virtual { link: None }),
-			Marker::Issue(IssueMarker::Virtual { link: Some(link.clone()) }),
+			Marker::Issue(IssueMarker::Virtual {
+				link: Some(IssueLink::Virtual("/data/issues/virtual/3_-_t.md".into())),
+			}),
 			Marker::Issue(IssueMarker::Linked {
 				user: Some("owner".to_string()),
 				link: link.clone(),
@@ -453,7 +473,7 @@ mod tests {
 		assert_eq!(marker, IssueMarker::Virtual { link: None });
 		assert_eq!(title, "My title");
 
-		let (marker, title) = IssueMarker::parse_from_end("My title <!-- virtual https://github.com/local/virtual/issues/7 -->").unwrap();
+		let (marker, title) = IssueMarker::parse_from_end("My title <!-- virtual /d/virtual/7_-_t.md -->").unwrap();
 		assert!(matches!(marker, IssueMarker::Virtual { link: Some(ref l) } if l.number() == 7));
 		assert_eq!(title, "My title");
 

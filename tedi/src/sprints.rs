@@ -2,7 +2,7 @@ use clap::Args;
 use jiff::Timestamp;
 use tedi_adapters::github::GithubMilestone;
 use tedi_core::RepoInfo;
-use tedi_ops::{
+use tedi_task_operations::{
 	IssueLink, MilestoneLink, TaskView,
 	clockify_tracking::{HaltArgs, ResumeArgs},
 	sprints::{expand_and_refresh, materialize_new_tasks, sync_blocker_changes, sync_milestone_changes},
@@ -102,14 +102,14 @@ impl std::str::FromStr for SprintRef {
 pub static HEALTHCHECK_REL_PATH: &str = "healthcheck.status";
 pub static SPRINT_HEADER_REL_PATH: &str = "sprint_header.md";
 
-pub async fn sprints_command(settings: &LiveSettings, args: SprintsArgs, mock: Option<tedi_ops::MockType>, offline: bool) -> Result<()> {
-	use tedi_ops::sprints as ops;
+pub async fn sprints_command(settings: &LiveSettings, args: SprintsArgs, mock: Option<tedi_task_operations::MockType>, offline: bool) -> Result<()> {
+	use tedi_task_operations::sprints as ops;
 
 	let yes = || settings.config().map(|c| c.yes).unwrap_or(false);
 	match args.command {
 		SprintsCommands::Get { sprint } => {
 			let raw = match sprint {
-				SprintRef::Urgent => match std::fs::read_to_string(tedi_ops::local::urgent_path()) {
+				SprintRef::Urgent => match std::fs::read_to_string(tedi_task_operations::selection::urgent_path()) {
 					Ok(c) => c,
 					Err(e) if e.kind() == std::io::ErrorKind::NotFound => bail!("No urgent sprint. Create one with `sprints edit urgent`."),
 					Err(e) => return Err(e.into()),
@@ -171,7 +171,7 @@ async fn refresh_sprint_milestones(content: &str) {
 	if links.is_empty() {
 		return;
 	}
-	if let Err(e) = tedi_ops::sprints::refresh_milestone_cache(&links).await {
+	if let Err(e) = tedi_task_operations::sprints::refresh_milestone_cache(&links).await {
 		tracing::warn!("failed to refresh milestone cache: {e}");
 		eprintln!("warning: failed to refresh milestone cache: {e}");
 	}
@@ -182,15 +182,15 @@ async fn refresh_sprint_milestones(content: &str) {
 /// When online, also fetch any milestone in the active view missing from the milestone cache.
 async fn ensure_selection_cache(settings: &LiveSettings, offline: bool) -> Result<()> {
 	if !offline {
-		let missing = tedi_ops::local::Selected::uncached_active_milestones();
+		let missing = tedi_task_operations::selection::Selected::uncached_active_milestones();
 		if !missing.is_empty()
-			&& let Err(e) = tedi_ops::sprints::refresh_milestone_cache(&missing).await
+			&& let Err(e) = tedi_task_operations::sprints::refresh_milestone_cache(&missing).await
 		{
 			tracing::warn!("failed to refresh milestone cache: {e}");
 			eprintln!("warning: failed to refresh milestone cache: {e}");
 		}
 	}
-	if offline || tedi_ops::local::Selected::active_ready() {
+	if offline || tedi_task_operations::selection::Selected::active_ready() {
 		return Ok(());
 	}
 	let config = settings.config()?;
@@ -201,7 +201,7 @@ async fn ensure_selection_cache(settings: &LiveSettings, offline: bool) -> Resul
 		.find(|m| m.title == blocker_tf)
 		.and_then(|m| m.description.clone())
 		.ok_or_else(|| eyre!("No `{blocker_tf}` sprint on GitHub yet. Add issues to the '{blocker_tf}' milestone (or create an urgent list)."))?;
-	tedi_ops::sprints::refresh_selection_cache(&blocker_tf, &desc);
+	tedi_task_operations::sprints::refresh_selection_cache(&blocker_tf, &desc);
 	refresh_sprint_milestones(&desc).await;
 	Ok(())
 }
@@ -215,9 +215,9 @@ async fn focus_sprint(settings: &LiveSettings, tf: Timeframe, yes: bool) -> Resu
 		.find(|m| m.title == tf.to_string())
 		.and_then(|m| m.description.clone())
 		.ok_or_else(|| eyre!("Sprint '{tf}' not found on GitHub (or it has no description)."))?;
-	tedi_ops::sprints::refresh_selection_cache(&tf.to_string(), &desc);
+	tedi_task_operations::sprints::refresh_selection_cache(&tf.to_string(), &desc);
 	refresh_sprint_milestones(&desc).await;
-	tedi_ops::sprints::selected_show(yes).await
+	tedi_task_operations::sprints::selected_show(yes).await
 }
 async fn request_milestones(settings: &LiveSettings) -> Result<Vec<GithubMilestone>> {
 	let config = settings.config()?;
@@ -398,7 +398,7 @@ async fn cache_blocker_milestone(settings: &LiveSettings, milestones: &[GithubMi
 	if let Some(ms) = milestones.iter().find(|m| m.title == blocker_tf)
 		&& let Some(ref desc) = ms.description
 	{
-		tedi_ops::sprints::refresh_selection_cache(blocker_tf, desc);
+		tedi_task_operations::sprints::refresh_selection_cache(blocker_tf, desc);
 		refresh_sprint_milestones(desc).await;
 	}
 }
@@ -408,9 +408,9 @@ async fn cache_blocker_milestone(settings: &LiveSettings, milestones: &[GithubMi
 async fn edit_urgent(offline: bool) -> Result<()> {
 	use std::fs;
 
-	let _lock = tedi_ops::local::try_lock_urgent()?.ok_or_else(|| eyre!("Another instance is already editing the urgent sprint. Only one editor at a time is allowed."))?;
+	let _lock = tedi_task_operations::selection::try_lock_urgent()?.ok_or_else(|| eyre!("Another instance is already editing the urgent sprint. Only one editor at a time is allowed."))?;
 
-	let path = tedi_ops::local::urgent_path();
+	let path = tedi_task_operations::selection::urgent_path();
 	let original = match fs::read_to_string(&path) {
 		Ok(c) => c,
 		Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
@@ -422,7 +422,7 @@ async fn edit_urgent(offline: bool) -> Result<()> {
 	fs::write(&tmp_path, &expanded)?;
 	eprintln!("[milestone] tmp_path: {}", tmp_path.display());
 
-	tedi_ops::utils::open_file(&tmp_path, None).await?;
+	tedi_task_operations::utils::open_file(&tmp_path, None).await?;
 
 	let edited_content = fs::read_to_string(&tmp_path)?;
 	if edited_content == expanded {
@@ -434,7 +434,7 @@ async fn edit_urgent(offline: bool) -> Result<()> {
 	// urgent is local-only: milestone refs live on GitHub and have no meaning here
 	let milestone_links = edited_doc.milestone_links();
 	if !milestone_links.is_empty() {
-		tedi_ops::utils::persist_rejected_changes(&edited_content);
+		tedi_task_operations::utils::persist_rejected_changes(&edited_content);
 		eprintln!("Your changes were saved to /tmp/tedi/rejected-changes.md — you can recover them from there.");
 		bail!(
 			"urgent sprint cannot contain milestone refs: {}",
@@ -443,13 +443,13 @@ async fn edit_urgent(offline: bool) -> Result<()> {
 	}
 
 	if let Err(e) = sync_blocker_changes(&edited_content, offline).await {
-		tedi_ops::utils::persist_rejected_changes(&edited_content);
+		tedi_task_operations::utils::persist_rejected_changes(&edited_content);
 		eprintln!("Your changes were saved to /tmp/tedi/rejected-changes.md — you can recover them from there.");
 		return Err(e);
 	}
 
 	if let Err(e) = materialize_new_tasks(&mut edited_doc, None, offline).await {
-		tedi_ops::utils::persist_rejected_changes(&edited_content);
+		tedi_task_operations::utils::persist_rejected_changes(&edited_content);
 		eprintln!("Your changes were saved to /tmp/tedi/rejected-changes.md — you can recover them from there.");
 		return Err(e);
 	}
@@ -503,7 +503,7 @@ async fn edit_milestone(settings: &LiveSettings, tf: Timeframe, offline: bool, m
 	eprintln!("[milestone] tmp_path: {}", tmp_path.display());
 
 	// Open in editor
-	tedi_ops::utils::open_file(&tmp_path, None).await?;
+	tedi_task_operations::utils::open_file(&tmp_path, None).await?;
 
 	// Read back
 	let edited_content = fs::read_to_string(&tmp_path)?;
@@ -516,7 +516,7 @@ async fn edit_milestone(settings: &LiveSettings, tf: Timeframe, offline: bool, m
 
 	// Sync blocker changes back to individual issue files
 	if let Err(e) = sync_blocker_changes(&edited_content, offline).await {
-		tedi_ops::utils::persist_rejected_changes(&edited_content);
+		tedi_task_operations::utils::persist_rejected_changes(&edited_content);
 		eprintln!("Your changes were saved to /tmp/tedi/rejected-changes.md — you can recover them from there.");
 		return Err(e);
 	}
@@ -530,7 +530,7 @@ async fn edit_milestone(settings: &LiveSettings, tf: Timeframe, offline: bool, m
 
 	let mut edited_doc = TaskView::parse(&edited_content);
 	if let Err(e) = materialize_new_tasks(&mut edited_doc, ambient, offline).await {
-		tedi_ops::utils::persist_rejected_changes(&edited_content);
+		tedi_task_operations::utils::persist_rejected_changes(&edited_content);
 		eprintln!("Your changes were saved to /tmp/tedi/rejected-changes.md — you can recover them from there.");
 		return Err(e);
 	}
@@ -538,7 +538,7 @@ async fn edit_milestone(settings: &LiveSettings, tf: Timeframe, offline: bool, m
 	// Persist edits made inside inlined milestone blocks (incl. materialized tasks) to their own
 	// nodes. Mock mode forces local-only (never reaches the network).
 	if let Err(e) = sync_milestone_changes(&edited_doc, offline || mock).await {
-		tedi_ops::utils::persist_rejected_changes(&edited_content);
+		tedi_task_operations::utils::persist_rejected_changes(&edited_content);
 		eprintln!("Your changes were saved to /tmp/tedi/rejected-changes.md — you can recover them from there.");
 		return Err(e);
 	}
@@ -569,7 +569,7 @@ async fn edit_milestone(settings: &LiveSettings, tf: Timeframe, offline: bool, m
 	let config = settings.config()?;
 	let blocker_tf = config.milestones.as_ref().map(|m| m.blocker_tf()).unwrap_or("1d");
 	if tf.to_string() == blocker_tf {
-		tedi_ops::sprints::refresh_selection_cache(blocker_tf, &new_description);
+		tedi_task_operations::sprints::refresh_selection_cache(blocker_tf, &new_description);
 	}
 
 	// If outdated, archive old contents and update date
@@ -638,8 +638,9 @@ async fn sync_milestone_assignments(settings: &LiveSettings, milestone_number: u
 	let milestones_config = config.milestones.as_ref().ok_or_else(|| eyre!("milestones config section is required"))?;
 	let (ms_owner, ms_repo) = parse_github_repo(&milestones_config.url)?;
 
-	let old_numbers: HashSet<u64> = old_links.iter().filter(|l| l.owner() == ms_owner && l.repo() == ms_repo).map(|l| l.number()).collect();
-	let new_numbers: HashSet<u64> = new_links.iter().filter(|l| l.owner() == ms_owner && l.repo() == ms_repo).map(|l| l.number()).collect();
+	let ms_repo_info: tedi_core::RepoInfo = (ms_owner.as_str(), ms_repo.as_str()).into();
+	let old_numbers: HashSet<u64> = old_links.iter().filter(|l| l.project() == ms_repo_info).map(|l| l.number()).collect();
+	let new_numbers: HashSet<u64> = new_links.iter().filter(|l| l.project() == ms_repo_info).map(|l| l.number()).collect();
 
 	let to_assign: Vec<u64> = new_numbers.difference(&old_numbers).copied().collect();
 	let to_unassign: Vec<u64> = old_numbers.difference(&new_numbers).copied().collect();

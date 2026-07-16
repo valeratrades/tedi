@@ -1,11 +1,11 @@
 experimental = ["setup-scripts"]
 
-# Integration tests exec `target/debug/tedi` (see get_binary_path); `cargo t -p tedi_ops`
+# Integration tests exec `target/debug/tedi` (see get_binary_path); `cargo t -p tedi_task_operations`
 # alone doesn't rebuild it, leaving tests running a stale binary. This rebuilds it once
 # per test run — a no-op freshness check when nothing changed.
 [scripts.setup.build-tedi-bin]
 command = 'cargo build -p tedi'
 
 [[profile.default.scripts]]
-filter = 'package(tedi_ops)'
+filter = 'package(tedi_task_operations)'
 setup = 'build-tedi-bin'

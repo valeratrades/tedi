@@ -275,7 +275,7 @@ impl GithubClient for RealGithubClient {
 	}
 
 	async fn fetch_issue(&self, repo: RepoInfo, issue_number: u64) -> Result<GithubIssue, GithubError> {
-		let url = format!("https://api.github.com/repos/{}/{}/issues/{issue_number}", repo.owner(), repo.repo());
+		let url = format!("https://api.github.com/repos/{}/{}/issues/{issue_number}", repo.owner().expect("github repo"), repo.repo());
 		let res = self.get(&url).send().await?;
 
 		if !res.status().is_success() {
@@ -289,7 +289,7 @@ impl GithubClient for RealGithubClient {
 	}
 
 	async fn fetch_comments(&self, repo: RepoInfo, issue_number: u64) -> Result<Vec<GithubComment>, GithubError> {
-		let url = format!("https://api.github.com/repos/{}/{}/issues/{issue_number}/comments", repo.owner(), repo.repo());
+		let url = format!("https://api.github.com/repos/{}/{}/issues/{issue_number}/comments", repo.owner().expect("github repo"), repo.repo());
 		let res = self.get(&url).send().await?;
 
 		if !res.status().is_success() {
@@ -303,7 +303,7 @@ impl GithubClient for RealGithubClient {
 	}
 
 	async fn fetch_sub_issues(&self, repo: RepoInfo, issue_number: u64) -> Result<Vec<GithubIssue>, GithubError> {
-		let url = format!("https://api.github.com/repos/{}/{}/issues/{issue_number}/sub_issues", repo.owner(), repo.repo());
+		let url = format!("https://api.github.com/repos/{}/{}/issues/{issue_number}/sub_issues", repo.owner().expect("github repo"), repo.repo());
 		let res = self.get(&url).send().await?;
 
 		if !res.status().is_success() {
@@ -317,38 +317,38 @@ impl GithubClient for RealGithubClient {
 	}
 
 	async fn update_issue_body(&self, repo: RepoInfo, issue_number: u64, body: &str) -> Result<(), GithubError> {
-		let url = format!("https://api.github.com/repos/{}/{}/issues/{issue_number}", repo.owner(), repo.repo());
+		let url = format!("https://api.github.com/repos/{}/{}/issues/{issue_number}", repo.owner().expect("github repo"), repo.repo());
 		self.patch_json(&url, &serde_json::json!({ "body": body }), "Failed to update issue body").await
 	}
 
 	async fn update_issue_state(&self, repo: RepoInfo, issue_number: u64, state: &str) -> Result<(), GithubError> {
-		let url = format!("https://api.github.com/repos/{}/{}/issues/{issue_number}", repo.owner(), repo.repo());
+		let url = format!("https://api.github.com/repos/{}/{}/issues/{issue_number}", repo.owner().expect("github repo"), repo.repo());
 		self.patch_json(&url, &serde_json::json!({ "state": state }), "Failed to update issue state").await
 	}
 
 	async fn set_labels(&self, repo: RepoInfo, issue_number: u64, labels: &[String]) -> Result<(), GithubError> {
-		let url = format!("https://api.github.com/repos/{}/{}/issues/{issue_number}", repo.owner(), repo.repo());
+		let url = format!("https://api.github.com/repos/{}/{}/issues/{issue_number}", repo.owner().expect("github repo"), repo.repo());
 		self.patch_json(&url, &serde_json::json!({ "labels": labels }), "Failed to set labels").await
 	}
 
 	async fn set_issue_milestone(&self, repo: RepoInfo, issue_number: u64, milestone: Option<u64>) -> Result<(), GithubError> {
-		let url = format!("https://api.github.com/repos/{}/{}/issues/{issue_number}", repo.owner(), repo.repo());
+		let url = format!("https://api.github.com/repos/{}/{}/issues/{issue_number}", repo.owner().expect("github repo"), repo.repo());
 		let json = serde_json::json!({ "milestone": milestone });
 		self.patch_json(&url, &json, "Failed to set issue milestone").await
 	}
 
 	async fn update_comment(&self, repo: RepoInfo, comment_id: u64, body: &str) -> Result<(), GithubError> {
-		let url = format!("https://api.github.com/repos/{}/{}/issues/comments/{comment_id}", repo.owner(), repo.repo());
+		let url = format!("https://api.github.com/repos/{}/{}/issues/comments/{comment_id}", repo.owner().expect("github repo"), repo.repo());
 		self.patch_json(&url, &serde_json::json!({ "body": body }), "Failed to update comment").await
 	}
 
 	async fn create_comment(&self, repo: RepoInfo, issue_number: u64, body: &str) -> Result<(), GithubError> {
-		let url = format!("https://api.github.com/repos/{}/{}/issues/{issue_number}/comments", repo.owner(), repo.repo());
+		let url = format!("https://api.github.com/repos/{}/{}/issues/{issue_number}/comments", repo.owner().expect("github repo"), repo.repo());
 		self.post_json(&url, &serde_json::json!({ "body": body }), "Failed to create comment").await
 	}
 
 	async fn delete_comment(&self, repo: RepoInfo, comment_id: u64) -> Result<(), GithubError> {
-		let url = format!("https://api.github.com/repos/{}/{}/issues/comments/{comment_id}", repo.owner(), repo.repo());
+		let url = format!("https://api.github.com/repos/{}/{}/issues/comments/{comment_id}", repo.owner().expect("github repo"), repo.repo());
 		let res = self.delete(&url).send().await?;
 
 		if !res.status().is_success() {
@@ -361,7 +361,7 @@ impl GithubClient for RealGithubClient {
 	}
 
 	async fn create_issue(&self, repo: RepoInfo, title: &str, body: &str) -> Result<CreatedIssue, GithubError> {
-		let url = format!("https://api.github.com/repos/{}/{}/issues", repo.owner(), repo.repo());
+		let url = format!("https://api.github.com/repos/{}/{}/issues", repo.owner().expect("github repo"), repo.repo());
 		let res = self.post(&url).json(&serde_json::json!({ "title": title, "body": body })).send().await?;
 
 		if !res.status().is_success() {
@@ -375,14 +375,14 @@ impl GithubClient for RealGithubClient {
 	}
 
 	async fn add_sub_issue(&self, repo: RepoInfo, parent_issue_number: u64, child_issue_id: u64) -> Result<(), GithubError> {
-		let url = format!("https://api.github.com/repos/{}/{}/issues/{parent_issue_number}/sub_issues", repo.owner(), repo.repo());
+		let url = format!("https://api.github.com/repos/{}/{}/issues/{parent_issue_number}/sub_issues", repo.owner().expect("github repo"), repo.repo());
 		self.post_json(&url, &serde_json::json!({ "sub_issue_id": child_issue_id }), "Failed to add sub-issue").await
 	}
 
 	async fn find_issue_by_title(&self, repo: RepoInfo, title: &str) -> Result<Option<u64>, GithubError> {
 		// Search for issues with this title (search in open and closed)
 		let encoded_title = urlencoding::encode(title);
-		let url = format!("https://api.github.com/search/issues?q=repo:{}/{}+in:title+{encoded_title}", repo.owner(), repo.repo());
+		let url = format!("https://api.github.com/search/issues?q=repo:{}/{}+in:title+{encoded_title}", repo.owner().expect("github repo"), repo.repo());
 		let res = self.get(&url).send().await?;
 
 		if !res.status().is_success() {
@@ -412,13 +412,13 @@ impl GithubClient for RealGithubClient {
 	}
 
 	async fn issue_exists(&self, repo: RepoInfo, issue_number: u64) -> Result<bool, GithubError> {
-		let url = format!("https://api.github.com/repos/{}/{}/issues/{issue_number}", repo.owner(), repo.repo());
+		let url = format!("https://api.github.com/repos/{}/{}/issues/{issue_number}", repo.owner().expect("github repo"), repo.repo());
 		let res = self.get(&url).send().await?;
 		Ok(res.status().is_success())
 	}
 
 	async fn fetch_parent_issue(&self, repo: RepoInfo, issue_number: u64) -> Result<Option<GithubIssue>, GithubError> {
-		let url = format!("https://api.github.com/repos/{}/{}/issues/{issue_number}/parent", repo.owner(), repo.repo());
+		let url = format!("https://api.github.com/repos/{}/{}/issues/{issue_number}/parent", repo.owner().expect("github repo"), repo.repo());
 		let res = self.get(&url).send().await?;
 
 		if res.status() == reqwest::StatusCode::NOT_FOUND {
@@ -478,7 +478,7 @@ impl GithubClient for RealGithubClient {
 		"#;
 
 		let variables = serde_json::json!({
-			"owner": repo.owner(),
+			"owner": repo.owner().expect("github repo"),
 			"repo": repo.repo(),
 			"number": issue_number as i64
 		});
@@ -554,13 +554,13 @@ impl GithubClient for RealGithubClient {
 	}
 
 	async fn repo_exists(&self, repo: RepoInfo) -> Result<bool, GithubError> {
-		let url = format!("https://api.github.com/repos/{}/{}", repo.owner(), repo.repo());
+		let url = format!("https://api.github.com/repos/{}/{}", repo.owner().expect("github repo"), repo.repo());
 		let res = self.get(&url).send().await?;
 		Ok(res.status().is_success())
 	}
 
 	async fn list_milestones(&self, repo: RepoInfo) -> Result<Vec<GithubMilestone>, GithubError> {
-		let url = format!("https://api.github.com/repos/{}/{}/milestones", repo.owner(), repo.repo());
+		let url = format!("https://api.github.com/repos/{}/{}/milestones", repo.owner().expect("github repo"), repo.repo());
 		let res = self.get(&url).send().await?;
 		if !res.status().is_success() {
 			let status = res.status();
@@ -571,7 +571,7 @@ impl GithubClient for RealGithubClient {
 	}
 
 	async fn get_milestone(&self, repo: RepoInfo, number: u64) -> Result<GithubMilestone, GithubError> {
-		let url = format!("https://api.github.com/repos/{}/{}/milestones/{number}", repo.owner(), repo.repo());
+		let url = format!("https://api.github.com/repos/{}/{}/milestones/{number}", repo.owner().expect("github repo"), repo.repo());
 		let res = self.get(&url).send().await?;
 		if !res.status().is_success() {
 			let status = res.status();
@@ -584,7 +584,7 @@ impl GithubClient for RealGithubClient {
 	async fn list_milestone_issues(&self, repo: RepoInfo, milestone_number: u64) -> Result<Vec<GithubIssue>, GithubError> {
 		let url = format!(
 			"https://api.github.com/repos/{}/{}/issues?milestone={milestone_number}&state=all&per_page=100",
-			repo.owner(),
+			repo.owner().expect("github repo"),
 			repo.repo()
 		);
 		let res = self.get(&url).send().await?;
@@ -597,7 +597,7 @@ impl GithubClient for RealGithubClient {
 	}
 
 	async fn create_milestone(&self, repo: RepoInfo, title: &str, description: &str, closed: bool) -> Result<(), GithubError> {
-		let url = format!("https://api.github.com/repos/{}/{}/milestones", repo.owner(), repo.repo());
+		let url = format!("https://api.github.com/repos/{}/{}/milestones", repo.owner().expect("github repo"), repo.repo());
 		let mut body = serde_json::json!({ "title": title, "description": description });
 		if closed {
 			body["state"] = serde_json::Value::String("closed".to_string());
@@ -606,7 +606,7 @@ impl GithubClient for RealGithubClient {
 	}
 
 	async fn update_milestone(&self, repo: RepoInfo, number: u64, description: &str, due_on: Option<jiff::Timestamp>) -> Result<(), GithubError> {
-		let url = format!("https://api.github.com/repos/{}/{}/milestones/{number}", repo.owner(), repo.repo());
+		let url = format!("https://api.github.com/repos/{}/{}/milestones/{number}", repo.owner().expect("github repo"), repo.repo());
 		let mut body = serde_json::json!({ "description": description });
 		if let Some(date) = due_on {
 			body["due_on"] = serde_json::Value::String(date.to_string());

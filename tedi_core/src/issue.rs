@@ -215,16 +215,6 @@ impl LinkedIssueMeta {
 		&self.link
 	}
 
-	/// Get the repository owner from the link.
-	pub fn owner(&self) -> &str {
-		self.link.owner()
-	}
-
-	/// Get the repository name from the link.
-	pub fn repo(&self) -> &str {
-		self.link.repo()
-	}
-
 	/// Get the issue number from the link.
 	pub fn number(&self) -> u64 {
 		self.link.number()
@@ -247,10 +237,7 @@ impl IssueIdentity {
 	/// Create a new linked Github issue identity.
 	/// If `parent_index` is None, derives repo_only from the link.
 	pub fn new_linked(parent_index: Option<IssueIndex>, user: Option<String>, link: IssueLink, timestamps: IssueTimestamps) -> Self {
-		let parent_index = parent_index.unwrap_or_else(|| {
-			let repo_info = link.repo_info();
-			IssueIndex::repo_only(repo_info)
-		});
+		let parent_index = parent_index.unwrap_or_else(|| IssueIndex::repo_only(link.project()));
 		Self {
 			parent_index,
 			is_virtual: false,
@@ -277,8 +264,9 @@ impl IssueIdentity {
 	}
 
 	/// Create a numbered virtual issue identity: local-only, but addressable by number
-	/// through its fabricated link (never synced to Github).
+	/// through its owner-less `IssueLink::Virtual` (never synced to Github).
 	pub fn virtual_linked(parent_index: IssueIndex, link: IssueLink) -> Self {
+		assert!(matches!(link, IssueLink::Virtual(_)), "virtual_linked requires a virtual link");
 		Self {
 			parent_index,
 			is_virtual: true,
@@ -317,9 +305,9 @@ impl IssueIdentity {
 		self.link().map(|l| l.number())
 	}
 
-	/// Get the URL string if linked.
+	/// Get the remote URL string if linked to Github. Panics on a virtual link.
 	pub fn url_str(&self) -> Option<&str> {
-		self.link().map(|l| l.as_str())
+		self.link().map(|l| l.url().as_str())
 	}
 
 	/// Get the user who created this issue if linked and known.
@@ -329,7 +317,7 @@ impl IssueIdentity {
 
 	/// Check if this issue is owned by the current user.
 	/// True if: virtual, or linked with unknown user (None), or linked with matching user.
-	pub fn is_owned(&self) -> bool {
+	pub fn is_mine(&self) -> bool {
 		self.is_virtual
 			|| match self.as_linked() {
 				None => false,
@@ -347,8 +335,8 @@ impl IssueIdentity {
 		self.parent_index.repo_info()
 	}
 
-	/// Get owner.
-	pub fn owner(&self) -> &str {
+	/// Get owner, or `None` for a virtual issue.
+	pub fn owner(&self) -> Option<&str> {
 		self.parent_index.owner()
 	}
 
@@ -377,7 +365,7 @@ impl IssueIdentity {
 /// Marker view of an issue's identity — how it serializes to a title-line marker.
 impl From<&IssueIdentity> for IssueMarker {
 	fn from(identity: &IssueIdentity) -> Self {
-		// virtual takes precedence over linked: a numbered virtual issue holds a fabricated
+		// virtual takes precedence over linked: a numbered virtual issue holds a virtual
 		// link that must stay visibly distinct from real Github links
 		if identity.is_virtual {
 			IssueMarker::Virtual { link: identity.link().cloned() }
@@ -740,7 +728,7 @@ impl Issue /*{{{1*/ {
 			out.push('\n');
 		}
 
-		let is_owned = self.identity.is_owned();
+		let is_owned = self.identity.is_mine();
 		let mut content = String::new();
 
 		// === Body (first comment) ===
