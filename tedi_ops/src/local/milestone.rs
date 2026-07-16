@@ -52,7 +52,7 @@ impl Local {
 
 	/// `{milestones_dir}/{owner}/{repo}/`
 	pub fn milestone_project_dir(repo: RepoInfo) -> PathBuf {
-		Self::milestones_dir().join(repo.owner()).join(repo.repo())
+		Self::milestones_dir().join(repo.owner().expect("milestones are github-only")).join(repo.repo())
 	}
 
 	fn milestone_meta_path(repo: RepoInfo) -> PathBuf {
@@ -183,7 +183,7 @@ impl Sink<Consensus> for Milestone {
 		if diff.success() {
 			return Ok(false);
 		}
-		let msg = format!("sync milestone: {}/{}#{}", repo.owner(), repo.repo(), self.number());
+		let msg = format!("sync milestone: {repo}#{}", self.number());
 		let commit = Command::new("git").args(["-C", data_dir_str, "commit", "-m", &msg]).output()?;
 		if !commit.status.success() {
 			return Err(crate::local::ConsensusSinkError::new_git_commit(String::from_utf8_lossy(&commit.stderr).into_owned()));

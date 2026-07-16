@@ -143,10 +143,9 @@ async fn test_only_local_changed_pushes_local() {
 	assert!(out.status.success(), "Should succeed when only local changed. stderr: {}", out.stderr);
 
 	// Capture the resulting directory state
-	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().redact_timestamps(&[10]), &out), @r#"
+	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().redact_timestamps(&[9]), &out), @r#"
 	//- /o/r/.meta.json
 	{
-	  "virtual_project": false,
 	  "next_virtual_issue_number": 0,
 	  "issues": {
 	    "1": {
@@ -406,7 +405,6 @@ async fn test_pull_with_divergence_runs_sync_before_editor() {
 	>>>>>>> remote-state
 	//- /o/r/.meta.json
 	{
-	  "virtual_project": false,
 	  "next_virtual_issue_number": 0,
 	  "issues": {
 	    "1": {
@@ -448,12 +446,11 @@ async fn test_closing_issue_syncs_state_change() {
 	let out = ctx.open_issue(&open_issue).edit(&closed_issue).run();
 
 	// Line 11 contains `state` timestamp set via Timestamp::now() when detecting state change
-	let result_str = render_fixture(FixtureRenderer::try_new(&ctx).unwrap().redact_timestamps(&[12]), &out);
+	let result_str = render_fixture(FixtureRenderer::try_new(&ctx).unwrap().redact_timestamps(&[11]), &out);
 
 	insta::assert_snapshot!(result_str, @r#"
 	//- /o/r/.meta.json
 	{
-	  "virtual_project": false,
 	  "next_virtual_issue_number": 0,
 	  "issues": {
 	    "1": {
@@ -601,10 +598,9 @@ async fn test_reset_syncs_changes_after_editor() {
 	let out = ctx.open_url(("o", "r").into(), 1).args(&["--reset"]).edit(&modified_issue).run();
 
 	// want to see the issue closed here
-	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().redact_timestamps(&[12]), &out), @r#"
+	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().redact_timestamps(&[11]), &out), @r#"
 	//- /o/r/.meta.json
 	{
-	  "virtual_project": false,
 	  "next_virtual_issue_number": 0,
 	  "issues": {
 	    "1": {
@@ -835,10 +831,9 @@ async fn test_consensus_sink_writes_meta_json_with_timestamps() {
 	assert!(out.status.success(), "Fetch should succeed. stderr: {}", out.stderr);
 
 	// Capture the resulting directory state (includes .meta.json with timestamps)
-	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().redact_timestamps(&[10]), &out), @r#"
+	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().redact_timestamps(&[9]), &out), @r#"
 	//- /o/r/.meta.json
 	{
-	  "virtual_project": false,
 	  "next_virtual_issue_number": 0,
 	  "issues": {
 	    "1": {

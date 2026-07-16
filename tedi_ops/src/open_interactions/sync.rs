@@ -30,7 +30,7 @@ use super::merge::Merge;
 use crate::{
 	Issue, IssueIndex, IssueLink, IssueSelector, LazyIssue, RepoInfo, VirtualIssue,
 	local::{
-		Consensus, FsReader, Local, LocalFs, LocalIssueSource, LocalPath,
+		Consensus, FsReader, LocalFs, LocalIssueSource, LocalPath,
 		conflict::{ConflictOutcome, conflict_file_path, initiate_conflict_merge},
 		consensus::load_consensus_issue,
 	},
@@ -53,7 +53,7 @@ pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Mo
 	let issue_index = IssueIndex::from(&issue);
 
 	// if linked, check if local diverges from consensus. If yes, - need to sync the two. And while at it, let's pull remote too.
-	// Virtual issues carry a fabricated link — never fetch it.
+	// Virtual issues have no remote — never fetch them.
 	if !offline && issue.is_linked() && !issue.identity.is_virtual {
 		let consensus = load_consensus_issue(issue_index).await?;
 		let local_differs = consensus.as_ref().map(|c| *c != issue).unwrap_or(false); //IGNORED_ERROR: if consensus doesn't exist, then local doesn't need to think about it
@@ -77,7 +77,7 @@ pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Mo
 		result
 	};
 
-	match offline || Local::is_virtual_project(repo_info) {
+	match offline || repo_info.is_virtual() {
 		true => {
 			<Issue as Sink<LocalFs>>::sink(&mut issue, None).await?;
 			println!("Offline: saved locally and exiting.");
@@ -202,7 +202,7 @@ mod core {
 					issue_number,
 					&local_merged.to_string(),
 					&remote_merged.to_string(),
-					conflict_file_path(repo_info.owner()),
+					conflict_file_path(repo_info.owner().expect("github project")),
 				)? {
 					ConflictOutcome::AutoMerged => {
 						unreachable!(
@@ -212,10 +212,8 @@ mod core {
 					ConflictOutcome::NeedsResolution => {
 						//TODO!: switch to a preview Error return type. This branch is EXPECTED to be reached during real-world usage, and must have first-class formatting and a miette error nicely propagated to user.
 						bail!(
-							"Conflict detected for {}/{}#{issue_number}.\n\
-							Resolve using standard git tools, then re-run.",
-							repo_info.owner(),
-							repo_info.repo()
+							"Conflict detected for {repo_info}#{issue_number}.\n\
+							Resolve using standard git tools, then re-run."
 						);
 					}
 					ConflictOutcome::NoChanges => {
@@ -235,8 +233,7 @@ mod core {
 		);
 		let repo_info = current_issue.repo_info();
 
-		let url = format!("https://github.com/{}/{}/issues/{issue_number}", repo_info.owner(), repo_info.repo());
-		let link = IssueLink::parse(&url).expect("valid URL");
+		let link = IssueLink::in_project(repo_info, issue_number);
 		let remote_source = RemoteSource::build(link, Some(&current_issue.identity.git_lineage()?))?; //DEPENDS: git_lineage() will error if any parent is not synced. //Q: should I move the logic for traversing IssueIndex in search of pending parents right here?
 		let remote = Issue::load(remote_source).await?;
 

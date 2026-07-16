@@ -156,13 +156,9 @@ async fn resolve_merge(local: Milestone, consensus: Option<Milestone>, remote: M
 
 	let repo = local.identity.link.repo_info();
 	let number = local.number();
-	match initiate_conflict_merge(repo, number, &local_merged.to_string(), &remote_merged.to_string(), milestone_conflict_file_path(repo.owner()))? {
+	match initiate_conflict_merge(repo, number, &local_merged.to_string(), &remote_merged.to_string(), milestone_conflict_file_path(repo.owner().expect("github project")))? {
 		ConflictOutcome::AutoMerged => unreachable!("divergent states cannot auto-merge; the conflict must be recorded for manual resolution"),
-		ConflictOutcome::NeedsResolution => bail!(
-			"Conflict detected for milestone {}/{}#{number}.\nResolve using standard git tools, then re-run.",
-			repo.owner(),
-			repo.repo()
-		),
+		ConflictOutcome::NeedsResolution => bail!("Conflict detected for milestone {repo}#{number}.\nResolve using standard git tools, then re-run."),
 		ConflictOutcome::NoChanges => Ok((local_merged, false)),
 	}
 }
@@ -182,8 +178,8 @@ fn milestones_agree(a: &Milestone, b: &Milestone) -> bool {
 	if skeleton(a) != skeleton(b) {
 		return false;
 	}
-	let mut ah: Vec<String> = a.body.hosted().iter().map(|l| l.as_str().to_string()).collect();
-	let mut bh: Vec<String> = b.body.hosted().iter().map(|l| l.as_str().to_string()).collect();
+	let mut ah: Vec<String> = a.body.hosted().iter().map(|l| l.to_string()).collect();
+	let mut bh: Vec<String> = b.body.hosted().iter().map(|l| l.to_string()).collect();
 	ah.sort_unstable();
 	bh.sort_unstable();
 	ah == bh

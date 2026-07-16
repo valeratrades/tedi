@@ -96,7 +96,11 @@ pub enum ConflictOutcome {
 /// Returns `Some(path)` if conflict markers are still present, `None` if resolved (or no conflict).
 /// When the file exists but markers are gone, syncs the resolved content to local + remote sinks.
 pub async fn check_for_existing_conflict(issue_index: IssueIndex) -> Result<Option<PathBuf>> {
-	let conflict_fpath = conflict_file_path(issue_index.owner());
+	// virtual issues never sync, so they can never conflict
+	if issue_index.repo_info().is_virtual() {
+		return Ok(None);
+	}
+	let conflict_fpath = conflict_file_path(issue_index.owner().expect("github project"));
 
 	if !conflict_fpath.exists() {
 		return Ok(None);
@@ -113,8 +117,7 @@ pub async fn check_for_existing_conflict(issue_index: IssueIndex) -> Result<Opti
 				let mut new_issue_but_old_local_timestamps = {
 					let virtual_issue = VirtualIssue::parse(&content, conflict_fpath)?;
 					let hollow = Local::read_hollow_from_project_meta(issue_index)?;
-					let project_meta = Local::load_project_meta(issue_index.repo_info());
-					Issue::from_combined(hollow, virtual_issue, issue_index.parent().unwrap(), project_meta.virtual_project)?
+					Issue::from_combined(hollow, virtual_issue, issue_index.parent().unwrap(), issue_index.repo_info().is_virtual())?
 				};
 
 				let last_consensus_issue = Issue::load(LocalIssueSource::<GitReader>::build(LocalPath::from(issue_index))?).await?;
@@ -126,7 +129,7 @@ pub async fn check_for_existing_conflict(issue_index: IssueIndex) -> Result<Opti
 			<Issue as Sink<LocalFs>>::sink(&mut new_issue, None).await?;
 			<Issue as Sink<Remote>>::sink(&mut new_issue, None).await?;
 		}
-		conflict_resolution_cleanup(conflict_file_path(issue_index.owner()))?;
+		conflict_resolution_cleanup(conflict_file_path(issue_index.owner().expect("github project")))?;
 		Ok(None)
 	}
 }
@@ -135,7 +138,7 @@ pub async fn check_for_existing_conflict(issue_index: IssueIndex) -> Result<Opti
 /// are gone, rebuild the milestone from it (identity from meta, timestamps bumped against
 /// consensus) and sink to local + remote, then clean up.
 pub async fn check_for_existing_milestone_conflict(link: &crate::MilestoneLink) -> Result<Option<PathBuf>> {
-	let owner = link.repo_info().owner().to_string();
+	let owner = link.repo_info().owner().expect("github project").to_string();
 	let conflict_fpath = milestone_conflict_file_path(&owner);
 	if !conflict_fpath.exists() {
 		return Ok(None);
@@ -207,7 +210,7 @@ pub fn initiate_conflict_merge(repo_info: RepoInfo, node_number: u64, local_seri
 		return Err(ConflictError::new_git_not_initialized());
 	}
 
-	let owner = repo_info.owner();
+	let owner = repo_info.owner().expect("github project");
 	let repo = repo_info.repo();
 
 	let data_dir = Local::issues_dir();

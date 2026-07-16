@@ -52,21 +52,21 @@ pub async fn expand_and_refresh(content: &str) -> Result<String> {
 
 	let mut expansions: std::collections::HashMap<String, String> = std::collections::HashMap::new();
 	for link in &links {
-		let key = link.as_str().to_string();
+		let key = link.to_string();
 		if expansions.contains_key(&key) {
 			continue;
 		}
 		let issue = match load_local_issue(link).await {
 			Ok(issue) => issue,
-			// virtual projects have no remote: the fabricated URL must never be fetched
-			Err(e) if Local::is_virtual_project(link.repo_info()) => {
-				tracing::warn!("failed to expand virtual issue {}/{}/#{}: {e}", link.owner(), link.repo(), link.number());
+			// virtual issues have no remote: they must never be fetched
+			Err(e) if matches!(link, IssueLink::Virtual(_)) => {
+				tracing::warn!("failed to expand virtual issue {link}: {e}");
 				continue;
 			}
 			Err(_) => match fetch_and_store_remote_issue(link).await {
 				Ok(issue) => issue,
 				Err(e) => {
-					tracing::warn!("failed to expand {}/{}/#{}: {e}", link.owner(), link.repo(), link.number());
+					tracing::warn!("failed to expand {link}: {e}");
 					continue;
 				}
 			},
@@ -102,11 +102,11 @@ pub async fn refresh_milestone_cache(links: &[MilestoneLink]) -> Result<()> {
 		let remote = load_remote_milestone(link).await?;
 
 		for child in &remote.body.hosted() {
-			if load_local_issue(child).await.is_ok() || Local::is_virtual_project(child.repo_info()) {
+			if load_local_issue(child).await.is_ok() || matches!(child, IssueLink::Virtual(_)) {
 				continue;
 			}
 			if let Err(e) = fetch_and_store_remote_issue(child).await {
-				tracing::warn!("failed to store milestone issue {}/{}/#{}: {e}", child.owner(), child.repo(), child.number());
+				tracing::warn!("failed to store milestone issue {child}: {e}");
 			}
 		}
 
@@ -126,14 +126,6 @@ pub async fn refresh_milestone_cache(links: &[MilestoneLink]) -> Result<()> {
 		}
 	}
 	Ok(())
-}
-
-/// Home project for sprint-born virtual issues.
-//Q: `{current_user or "local"}/virtual` is a provisional naming pick — isolated here so it's trivially changeable
-pub fn virtual_home() -> RepoInfo {
-	// current_user can be unset in offline urgent edits
-	let owner = crate::current_user::get().unwrap_or_else(|| "local".to_string());
-	RepoInfo::new(&owner, "virtual")
 }
 
 /// Materialize each unlinked open `- [ ]` item of an edited task view into a real issue,
@@ -215,18 +207,15 @@ pub async fn sync_blocker_changes(content: &str, offline: bool) -> Result<()> {
 		let edited_blockers = parse_blockers_from_embedded(&section_text);
 		if edited_blockers.had_orphans {
 			bail!(
-				"blocker section for {}/{}/#{} contains lines that don't belong to any blocker item — \
+				"blocker section for {link} contains lines that don't belong to any blocker item — \
 				fix the format (all text must be under a `- ` blocker line)",
-				link.owner(),
-				link.repo(),
-				link.number()
 			);
 		}
 
 		let issue = match load_local_issue(&link).await {
 			Ok(issue) => issue,
 			Err(e) => {
-				tracing::warn!("failed to load {}/{}/#{} for sync: {e}", link.owner(), link.repo(), link.number());
+				tracing::warn!("failed to load {link} for sync: {e}");
 				continue;
 			}
 		};
@@ -236,7 +225,7 @@ pub async fn sync_blocker_changes(content: &str, offline: bool) -> Result<()> {
 			continue;
 		}
 
-		println!("Syncing blocker changes for {}/{}#{}", link.owner(), link.repo(), link.number());
+		println!("Syncing blocker changes for {link}");
 
 		let modifier = Modifier::BlockerWrite { blockers: edited_blockers };
 		modify_and_sync_issue(issue, offline, modifier, SyncOptions::default()).await?;
@@ -266,19 +255,18 @@ pub async fn search(query: &str) -> Result<()> {
 		};
 		if let Ok(index) = Local::extract_index_from_path(&index_path)
 			&& let Some(number) = index.issue_number()
-			&& let Some(link) = IssueLink::parse(&format!("https://github.com/{}/{}/issues/{number}", index.owner(), index.repo()))
 		{
-			links.push(link);
+			links.push(Local::issue_link(index.repo_info(), number));
 		}
 	}
-	links.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+	links.sort_by_key(|l| l.to_string());
 	links.dedup();
 
 	if links.is_empty() {
 		println!("No issues matching '{query}'.");
 		return Ok(());
 	}
-	let content: String = links.iter().map(|l| format!("- {}\n", l.as_str())).collect();
+	let content: String = links.iter().map(|l| format!("- {l}\n")).collect();
 	println!("{}", expand_and_refresh(&content).await?);
 	Ok(())
 }
@@ -327,7 +315,7 @@ pub async fn selected_open(offline: bool, yes: bool) -> Result<()> {
 			modify_and_sync_milestone(milestone, offline, MilestoneModifier::Editor, SyncOptions::default()).await?;
 		}
 		Some(NodeLink::Issue(link)) => {
-			let path = Local::find_by_number(link.repo_info(), link.number(), FsReader).ok_or_else(|| eyre!("issue #{} not found locally", link.number()))?;
+			let path = Local::find_by_number(link.project(), link.number(), FsReader).ok_or_else(|| eyre!("issue #{} not found locally", link.number()))?;
 			let local = LocalIssueSource::<FsReader>::build_from_path(&path).await?;
 			let issue = Issue::load(local).await?;
 			modify_and_sync_issue(issue, offline, Modifier::Editor { open_at_blocker: true }, SyncOptions::default()).await?;
@@ -402,13 +390,11 @@ fn mark_task_block(block: &str, marker: &str) -> String {
 /// Sprint task → local-only numbered virtual issue. `Ok(None)` if the block failed to parse
 /// (already warned; the item stays as text, the burned number is harmless).
 async fn materialize_virtual(block: &str) -> Result<Option<IssueLink>> {
-	let home = virtual_home();
-	Local::ensure_virtual_project(home)?;
-	let n = Local::allocate_virtual_issue_number(home)?;
-	let url = format!("https://github.com/{}/{}/issues/{n}", home.owner(), home.repo());
-	let link = IssueLink::parse(&url).expect("constructed URL must be valid");
+	Local::ensure_virtual_project()?;
+	let n = Local::allocate_virtual_issue_number()?;
 
-	let vi = match VirtualIssue::parse(&mark_task_block(block, &format!("<!-- virtual {url} -->")), PathBuf::from("<sprint item>")) {
+	// parse first to learn the title, which the deterministic file path depends on
+	let vi = match VirtualIssue::parse(&mark_task_block(block, "<!-- virtual -->"), PathBuf::from("<sprint item>")) {
 		Ok(vi) => vi,
 		Err(e) => {
 			tracing::warn!("skipping materialization of sprint item:\n{block}\n{e}");
@@ -417,14 +403,19 @@ async fn materialize_virtual(block: &str) -> Result<Option<IssueLink>> {
 	};
 	let title = vi.contents.title.clone();
 
-	let identity = IssueIdentity::virtual_linked(IssueIndex::repo_only(home), link.clone());
+	// the file path is the virtual issue's id; compute where the sink will deterministically write it
+	let path = Local::project_dir(RepoInfo::Virtual).join(tedi_core::issue_file_name(Some(n), &title, false));
+	let link = IssueLink::Virtual(path);
+
+	let home = IssueIndex::repo_only(RepoInfo::Virtual);
+	let identity = IssueIdentity::virtual_linked(home, link.clone());
 	// hollow carries the remote so children get parent_index rooted under this issue's number
 	let hollow = HollowIssue::new(identity.remote.clone(), std::collections::HashMap::new());
-	let mut issue = Issue::from_combined(hollow, vi, IssueIndex::repo_only(home), true)?;
+	let mut issue = Issue::from_combined(hollow, vi, home, true)?;
 	issue.identity = identity;
 	<Issue as Sink<LocalFs>>::sink(&mut issue, None).await?;
 
-	println!("Created virtual issue {}/{}#{n}: {title}", home.owner(), home.repo());
+	println!("Created virtual issue virtual#{n}: {title}");
 	Ok(Some(link))
 }
 
@@ -451,13 +442,17 @@ async fn create_pending_upstream(block: &str, milestone: &MilestoneLink) -> Resu
 	<Issue as Sink<Consensus>>::sink(&mut issue, None).await?;
 
 	let link = issue.identity.link().expect("issue is linked after remote sink").clone();
-	println!("Created issue {}/{}#{}: {title}", repo.owner(), repo.repo(), link.number());
+	println!("Created issue {repo}#{}: {title}", link.number());
 	Ok(Some(link))
 }
 
-/// Load a local issue by its IssueLink.
+/// Load a local issue by its IssueLink. A virtual link's path is the file directly; a remote
+/// link is resolved by number under its project.
 async fn load_local_issue(link: &IssueLink) -> Result<Issue> {
-	let path = Local::find_by_number(link.repo_info(), link.number(), FsReader).ok_or_else(|| eyre!("issue #{} not found locally", link.number()))?;
+	let path = match link {
+		IssueLink::Virtual(p) => p.clone(),
+		IssueLink::Remote(_) => Local::find_by_number(link.project(), link.number(), FsReader).ok_or_else(|| eyre!("issue #{} not found locally", link.number()))?,
+	};
 	let local_source = LocalIssueSource::<FsReader>::build_from_path(&path).await?;
 	Issue::load(local_source).await.map_err(Into::into)
 }
@@ -491,7 +486,7 @@ fn selected_link_path() -> Result<(IssueLink, PathBuf)> {
 	let link = selected
 		.current_link()
 		.ok_or_else(|| eyre!("No selected issue. Edit a sprint (`todo sprints edit 1d`) or the urgent list first."))?;
-	let path = Local::find_by_number(link.repo_info(), link.number(), FsReader).ok_or_else(|| eyre!("issue #{} not found locally", link.number()))?;
+	let path = Local::find_by_number(link.project(), link.number(), FsReader).ok_or_else(|| eyre!("issue #{} not found locally", link.number()))?;
 	Ok((link, path))
 }
 
@@ -521,7 +516,7 @@ fn track_info(path: &Path) -> Result<TrackInfo> {
 }
 
 fn issue_key(link: &IssueLink) -> String {
-	format!("{}/{}#{}", link.owner(), link.repo(), link.number())
+	format!("{}#{}", link.project(), link.number())
 }
 
 /// After a selection/edit, restart the Clockify timer on the newly-selected issue if it
@@ -541,7 +536,7 @@ async fn retrack_if_changed(yes: bool) {
 	}
 
 	let _ = clockify_tracking::stop_current_tracking(None).await;
-	if let Some(path) = Local::find_by_number(link.repo_info(), link.number(), FsReader)
+	if let Some(path) = Local::find_by_number(link.project(), link.number(), FsReader)
 		&& let Ok(info) = track_info(&path)
 	{
 		let resume = ResumeArgs {

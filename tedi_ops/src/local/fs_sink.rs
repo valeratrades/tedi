@@ -11,7 +11,7 @@ use tracing::{debug, info, instrument, trace, warn};
 use v_utils::{macros::wrap_err, prelude::*};
 
 use super::{FsReader, IssueMeta, Local, LocalPath, LocalReader, local_path::LocalPathError};
-use crate::{Issue, RepoInfo, local::LocalPathErrorKind, sink::Sink};
+use crate::{Issue, local::LocalPathErrorKind, sink::Sink};
 
 /// Marker type for sinking to filesystem (submitted state).
 pub struct LocalFs;
@@ -105,9 +105,7 @@ fn sink_issue_node<R: LocalReader>(new: &Issue, maybe_old: Option<&Issue>, reade
 	let old_has_children = maybe_old.map(|o| !o.children.is_empty()).unwrap_or(false); //IGNORED_ERROR: if doesn't exist, then it doesn't have children
 	let format_changed = has_children != old_has_children;
 
-	// Extract owner/repo directly from issue
-	let owner = new.identity.owner().to_string();
-	let repo = new.identity.repo().to_string();
+	let repo_info = new.identity.repo_info();
 
 	let issue_file_path = LocalPath::from(new).resolve_parent(*reader)?.deterministic(title, closed, has_children).path();
 	debug!(issue_file_path = %issue_file_path.display(), "computed target path");
@@ -168,7 +166,7 @@ fn sink_issue_node<R: LocalReader>(new: &Issue, maybe_old: Option<&Issue>, reade
 			user: new.user().map(str::to_owned),
 			timestamps: timestamps.clone(),
 		};
-		Local::save_issue_meta(RepoInfo::new(&owner, &repo), issue_num, &meta)?;
+		Local::save_issue_meta(repo_info, issue_num, &meta)?;
 	}
 
 	// Recursively sink children - match by selector
@@ -184,7 +182,7 @@ fn sink_issue_node<R: LocalReader>(new: &Issue, maybe_old: Option<&Issue>, reade
 		if !new.children.contains_key(selector) {
 			remove_issue_files(old_child, reader)?;
 			if let Some(old_num) = old_child.git_id() {
-				Local::remove_issue_meta(RepoInfo::new(&owner, &repo), old_num)?;
+				Local::remove_issue_meta(repo_info, old_num)?;
 			}
 		}
 	}
@@ -302,8 +300,7 @@ fn cleanup_old_locations(issue: &Issue, has_children: bool, closed: bool) -> Res
 /// Remove all file variants for an issue.
 #[instrument(skip_all)]
 fn remove_issue_files<R: LocalReader>(issue: &Issue, reader: &R) -> Result<bool, LocalFsSinkError> {
-	let owner = issue.identity.owner().to_string();
-	let repo = issue.identity.repo().to_string();
+	let repo_info = issue.identity.repo_info();
 
 	match LocalPath::from(issue).resolve_parent(*reader)?.search() {
 		Ok(resolved_path) =>
@@ -324,7 +321,7 @@ fn remove_issue_files<R: LocalReader>(issue: &Issue, reader: &R) -> Result<bool,
 	// Remove metadata
 	if let Some(num) = issue.git_id() {
 		trace!(num, "removing issue metadata");
-		Local::remove_issue_meta(RepoInfo::new(&owner, &repo), num)?;
+		Local::remove_issue_meta(repo_info, num)?;
 	}
 
 	info!(issue_number = ?issue.git_id(), "removed issue");

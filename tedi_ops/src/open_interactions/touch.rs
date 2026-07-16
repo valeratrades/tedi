@@ -72,23 +72,28 @@ pub async fn parse_touch_path(user_input: &str, parent: Option<ProjectType>, off
 	if segments.len() < 3 {
 		return Err(TouchError::new_creation_path_too_short(user_input.to_string()));
 	}
-	let repo_info = RepoInfo::new(segments[0], segments[1]);
+	let github_repo = RepoInfo::new(segments[0], segments[1]);
 	let titles = &segments[2..];
 
-	let repo_known = Local::project_dir(repo_info).exists() || {
+	let repo_known = Local::project_dir(github_repo).exists() || {
 		!offline && {
 			let client = exit_on_error(github::client::get());
-			exit_on_error(client.repo_exists(repo_info).await)
+			exit_on_error(client.repo_exists(github_repo).await)
 		}
 	};
-	if !repo_known {
+	// The virtual store is a single owner-less project; a virtual touch lands there regardless
+	// of the owner/repo the user typed (kept in the path only for the shared `owner/repo/title` shape).
+	let repo_info = if repo_known {
+		github_repo
+	} else {
 		match parent {
 			Some(ProjectType::Virtual) => {
-				Local::ensure_virtual_project(repo_info).expect("failed to create virtual project");
+				Local::ensure_virtual_project().expect("failed to create virtual project");
+				RepoInfo::Virtual
 			}
 			Some(ProjectType::Default) | None => return Err(TouchError::new_repo_not_accessible(segments[0].to_string(), segments[1].to_string())),
 		}
-	}
+	};
 
 	let selectors: Vec<IssueSelector> = titles.iter().map(|t| IssueSelector::title(t)).collect();
 	let index = IssueIndex::with_index(repo_info, selectors);

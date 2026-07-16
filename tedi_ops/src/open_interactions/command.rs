@@ -138,7 +138,7 @@ pub async fn open_command(args: OpenArgs, offline: bool, mock: Option<MockType>)
 
 		let issue = if is_create {
 			let index = *source.index();
-			let project_is_virtual = Local::is_virtual_project(index.repo_info());
+			let project_is_virtual = index.repo_info().is_virtual();
 			Issue::pending_from_descriptor(&index, project_is_virtual)
 		} else {
 			Issue::load(source).await?

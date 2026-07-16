@@ -23,8 +23,6 @@ impl Sink<Consensus> for Issue {
 	/// to write the actual files.
 	async fn sink(&mut self, _old: Option<&Issue>) -> Result<bool, Self::Error> {
 		let repo_info = self.repo_info();
-		let owner = repo_info.owner();
-		let repo = repo_info.repo();
 		let git_id = self.git_id().expect("calling this before having had linked the issue means invalid implementation somewhere");
 
 		let data_dir = Local::issues_dir();
@@ -54,7 +52,7 @@ impl Sink<Consensus> for Issue {
 		}
 
 		// Commit
-		let commit_msg = format!("sync: {owner}/{repo}#{git_id}");
+		let commit_msg = format!("sync: {repo_info}#{git_id}");
 		let commit_output = Command::new("git").args(["-C", data_dir_str, "commit", "-m", &commit_msg]).output()?;
 		if !commit_output.status.success() {
 			return Err(ConsensusSinkError::new_git_commit(String::from_utf8_lossy(&commit_output.stderr).into_owned()));

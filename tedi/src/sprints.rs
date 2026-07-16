@@ -638,8 +638,9 @@ async fn sync_milestone_assignments(settings: &LiveSettings, milestone_number: u
 	let milestones_config = config.milestones.as_ref().ok_or_else(|| eyre!("milestones config section is required"))?;
 	let (ms_owner, ms_repo) = parse_github_repo(&milestones_config.url)?;
 
-	let old_numbers: HashSet<u64> = old_links.iter().filter(|l| l.owner() == ms_owner && l.repo() == ms_repo).map(|l| l.number()).collect();
-	let new_numbers: HashSet<u64> = new_links.iter().filter(|l| l.owner() == ms_owner && l.repo() == ms_repo).map(|l| l.number()).collect();
+	let ms_repo_info: tedi_core::RepoInfo = (ms_owner.as_str(), ms_repo.as_str()).into();
+	let old_numbers: HashSet<u64> = old_links.iter().filter(|l| l.project() == ms_repo_info).map(|l| l.number()).collect();
+	let new_numbers: HashSet<u64> = new_links.iter().filter(|l| l.project() == ms_repo_info).map(|l| l.number()).collect();
 
 	let to_assign: Vec<u64> = new_numbers.difference(&old_numbers).copied().collect();
 	let to_unassign: Vec<u64> = old_numbers.difference(&new_numbers).copied().collect();

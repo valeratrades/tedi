@@ -249,11 +249,11 @@ impl MockGithubClient {
 	fn with_issue_mut<F, R>(&self, repo: RepoInfo, issue_number: u64, f: F) -> Result<R, GithubError>
 	where
 		F: FnOnce(&mut MockIssueData) -> R, {
-		let key = RepoKey::new(repo.owner(), repo.repo());
+		let key = RepoKey::new(repo.owner().expect("github repo"), repo.repo());
 		let mut issues = self.issues.lock().unwrap();
 		let repo_issues = issues
 			.get_mut(&key)
-			.ok_or_else(|| GithubError::new_other(format!("Repository not found: {}/{}", repo.owner(), repo.repo())))?;
+			.ok_or_else(|| GithubError::new_other(format!("Repository not found: {}/{}", repo.owner().expect("github repo"), repo.repo())))?;
 		let issue = repo_issues
 			.get_mut(&issue_number)
 			.ok_or_else(|| GithubError::new_other(format!("Issue not found: #{issue_number}")))?;
@@ -264,11 +264,11 @@ impl MockGithubClient {
 	fn with_comment_mut<F, R>(&self, repo: RepoInfo, comment_id: u64, f: F) -> Result<R, GithubError>
 	where
 		F: FnOnce(&mut MockCommentData) -> R, {
-		let key = RepoKey::new(repo.owner(), repo.repo());
+		let key = RepoKey::new(repo.owner().expect("github repo"), repo.repo());
 		let mut comments = self.comments.lock().unwrap();
 		let repo_comments = comments
 			.get_mut(&key)
-			.ok_or_else(|| GithubError::new_other(format!("Repository not found: {}/{}", repo.owner(), repo.repo())))?;
+			.ok_or_else(|| GithubError::new_other(format!("Repository not found: {}/{}", repo.owner().expect("github repo"), repo.repo())))?;
 		let comment = repo_comments
 			.get_mut(&comment_id)
 			.ok_or_else(|| GithubError::new_other(format!("Comment not found: {comment_id}")))?;
@@ -380,7 +380,7 @@ impl RepoKey {
 
 impl From<RepoInfo> for RepoKey {
 	fn from(info: RepoInfo) -> Self {
-		Self::new(info.owner(), info.repo())
+		Self::new(info.owner().expect("github repo"), info.repo())
 	}
 }
 
@@ -395,7 +395,7 @@ impl GithubClient for MockGithubClient {
 
 	#[instrument(skip_all, fields(issue_number))]
 	async fn fetch_issue(&self, repo: RepoInfo, issue_number: u64) -> Result<GithubIssue, GithubError> {
-		let owner = repo.owner();
+		let owner = repo.owner().expect("github repo");
 		let repo_name = repo.repo();
 		tracing::info!(target: "mock_github", owner, repo_name, issue_number, "fetch_issue");
 		self.log_call(&format!("fetch_issue({owner}, {repo_name}, {issue_number})"));
@@ -414,7 +414,7 @@ impl GithubClient for MockGithubClient {
 
 	#[instrument(skip_all, fields(issue_number))]
 	async fn fetch_comments(&self, repo: RepoInfo, issue_number: u64) -> Result<Vec<GithubComment>, GithubError> {
-		let owner = repo.owner();
+		let owner = repo.owner().expect("github repo");
 		let repo_name = repo.repo();
 		tracing::info!(target: "mock_github", owner, repo_name, issue_number, "fetch_comments");
 		self.log_call(&format!("fetch_comments({owner}, {repo_name}, {issue_number})"));
@@ -444,7 +444,7 @@ impl GithubClient for MockGithubClient {
 
 	#[instrument(skip_all, fields(issue_number))]
 	async fn fetch_sub_issues(&self, repo: RepoInfo, issue_number: u64) -> Result<Vec<GithubIssue>, GithubError> {
-		let owner = repo.owner();
+		let owner = repo.owner().expect("github repo");
 		let repo_name = repo.repo();
 		tracing::info!(target: "mock_github", owner, repo_name, issue_number, "fetch_sub_issues");
 		self.log_call(&format!("fetch_sub_issues({owner}, {repo_name}, {issue_number})"));
@@ -475,7 +475,7 @@ impl GithubClient for MockGithubClient {
 
 	#[instrument(skip_all, fields(issue_number))]
 	async fn update_issue_body(&self, repo: RepoInfo, issue_number: u64, body: &str) -> Result<(), GithubError> {
-		let owner = repo.owner();
+		let owner = repo.owner().expect("github repo");
 		let repo_name = repo.repo();
 		tracing::info!(target: "mock_github", owner, repo_name, issue_number, "update_issue_body");
 		self.log_call(&format!("update_issue_body({owner}, {repo_name}, {issue_number}, <body>)"));
@@ -484,7 +484,7 @@ impl GithubClient for MockGithubClient {
 
 	#[instrument(skip_all, fields(issue_number, state))]
 	async fn update_issue_state(&self, repo: RepoInfo, issue_number: u64, state: &str) -> Result<(), GithubError> {
-		let owner = repo.owner();
+		let owner = repo.owner().expect("github repo");
 		let repo_name = repo.repo();
 		tracing::info!(target: "mock_github", owner, repo_name, issue_number, state, "update_issue_state");
 		self.log_call(&format!("update_issue_state({owner}, {repo_name}, {issue_number}, {state})"));
@@ -493,7 +493,7 @@ impl GithubClient for MockGithubClient {
 
 	#[instrument(skip_all, fields(issue_number))]
 	async fn set_labels(&self, repo: RepoInfo, issue_number: u64, labels: &[String]) -> Result<(), GithubError> {
-		let owner = repo.owner();
+		let owner = repo.owner().expect("github repo");
 		let repo_name = repo.repo();
 		tracing::info!(target: "mock_github", owner, repo_name, issue_number, ?labels, "set_labels");
 		self.log_call(&format!("set_labels({owner}, {repo_name}, {issue_number}, {labels:?})"));
@@ -502,7 +502,7 @@ impl GithubClient for MockGithubClient {
 
 	#[instrument(skip_all, fields(comment_id))]
 	async fn update_comment(&self, repo: RepoInfo, comment_id: u64, body: &str) -> Result<(), GithubError> {
-		let owner = repo.owner();
+		let owner = repo.owner().expect("github repo");
 		let repo_name = repo.repo();
 		tracing::info!(target: "mock_github", owner, repo_name, comment_id, "update_comment");
 		self.log_call(&format!("update_comment({owner}, {repo_name}, {comment_id}, <body>)"));
@@ -511,7 +511,7 @@ impl GithubClient for MockGithubClient {
 
 	#[instrument(skip_all, fields(issue_number))]
 	async fn create_comment(&self, repo: RepoInfo, issue_number: u64, body: &str) -> Result<(), GithubError> {
-		let owner = repo.owner();
+		let owner = repo.owner().expect("github repo");
 		let repo_name = repo.repo();
 		tracing::info!(target: "mock_github", owner, repo_name, issue_number, "create_comment");
 		self.log_call(&format!("create_comment({owner}, {repo_name}, {issue_number}, <body>)"));
@@ -537,7 +537,7 @@ impl GithubClient for MockGithubClient {
 
 	#[instrument(skip_all, fields(comment_id))]
 	async fn delete_comment(&self, repo: RepoInfo, comment_id: u64) -> Result<(), GithubError> {
-		let owner = repo.owner();
+		let owner = repo.owner().expect("github repo");
 		let repo_name = repo.repo();
 		tracing::info!(target: "mock_github", owner, repo_name, comment_id, "delete_comment");
 		self.log_call(&format!("delete_comment({owner}, {repo_name}, {comment_id})"));
@@ -554,7 +554,7 @@ impl GithubClient for MockGithubClient {
 
 	#[instrument(skip_all, fields(title))]
 	async fn create_issue(&self, repo: RepoInfo, title: &str, body: &str) -> Result<CreatedIssue, GithubError> {
-		let owner = repo.owner();
+		let owner = repo.owner().expect("github repo");
 		let repo_name = repo.repo();
 		tracing::info!(target: "mock_github", owner, repo_name, title, "create_issue");
 		self.log_call(&format!("create_issue({owner}, {repo_name}, {title}, <body>)"));
@@ -599,7 +599,7 @@ impl GithubClient for MockGithubClient {
 
 	#[instrument(skip_all, fields(parent_issue_number, child_issue_id))]
 	async fn add_sub_issue(&self, repo: RepoInfo, parent_issue_number: u64, child_issue_id: u64) -> Result<(), GithubError> {
-		let owner = repo.owner();
+		let owner = repo.owner().expect("github repo");
 		let repo_name = repo.repo();
 		tracing::info!(target: "mock_github", owner, repo_name, parent_issue_number, child_issue_id, "add_sub_issue");
 		self.log_call(&format!("add_sub_issue({owner}, {repo_name}, parent={parent_issue_number}, child_id={child_issue_id})"));
@@ -626,7 +626,7 @@ impl GithubClient for MockGithubClient {
 
 	#[instrument(skip_all, fields(title))]
 	async fn find_issue_by_title(&self, repo: RepoInfo, title: &str) -> Result<Option<u64>, GithubError> {
-		let owner = repo.owner();
+		let owner = repo.owner().expect("github repo");
 		let repo_name = repo.repo();
 		tracing::info!(target: "mock_github", owner, repo_name, title, "find_issue_by_title");
 		self.log_call(&format!("find_issue_by_title({owner}, {repo_name}, {title})"));
@@ -650,7 +650,7 @@ impl GithubClient for MockGithubClient {
 
 	#[instrument(skip_all, fields(issue_number))]
 	async fn issue_exists(&self, repo: RepoInfo, issue_number: u64) -> Result<bool, GithubError> {
-		let owner = repo.owner();
+		let owner = repo.owner().expect("github repo");
 		let repo_name = repo.repo();
 		tracing::info!(target: "mock_github", owner, repo_name, issue_number, "issue_exists");
 		self.log_call(&format!("issue_exists({owner}, {repo_name}, {issue_number})"));
@@ -667,7 +667,7 @@ impl GithubClient for MockGithubClient {
 
 	#[instrument(skip_all, fields(issue_number))]
 	async fn fetch_parent_issue(&self, repo: RepoInfo, issue_number: u64) -> Result<Option<GithubIssue>, GithubError> {
-		let owner = repo.owner();
+		let owner = repo.owner().expect("github repo");
 		let repo_name = repo.repo();
 		tracing::info!(target: "mock_github", owner, repo_name, issue_number, "fetch_parent_issue");
 		self.log_call(&format!("fetch_parent_issue({owner}, {repo_name}, {issue_number})"));
@@ -702,7 +702,7 @@ impl GithubClient for MockGithubClient {
 
 	#[instrument(skip_all, fields(issue_number))]
 	async fn fetch_timeline_timestamps(&self, repo: RepoInfo, issue_number: u64) -> Result<crate::github::GraphqlTimelineTimestamps, GithubError> {
-		let owner = repo.owner();
+		let owner = repo.owner().expect("github repo");
 		let repo_name = repo.repo();
 		tracing::info!(target: "mock_github", owner, repo_name, issue_number, "fetch_timeline_timestamps");
 		self.log_call(&format!("fetch_timeline_timestamps({owner}, {repo_name}, {issue_number})"));
@@ -726,7 +726,7 @@ impl GithubClient for MockGithubClient {
 
 	#[instrument(skip_all, fields(issue_number, ?milestone))]
 	async fn set_issue_milestone(&self, repo: RepoInfo, issue_number: u64, milestone: Option<u64>) -> Result<(), GithubError> {
-		let owner = repo.owner();
+		let owner = repo.owner().expect("github repo");
 		let repo_name = repo.repo();
 		tracing::info!(target: "mock_github", owner, repo_name, issue_number, ?milestone, "set_issue_milestone");
 		self.log_call(&format!("set_issue_milestone({owner}, {repo_name}, {issue_number}, {milestone:?})"));
@@ -735,7 +735,7 @@ impl GithubClient for MockGithubClient {
 
 	#[instrument(skip_all)]
 	async fn repo_exists(&self, repo: RepoInfo) -> Result<bool, GithubError> {
-		let owner = repo.owner();
+		let owner = repo.owner().expect("github repo");
 		let repo_name = repo.repo();
 		tracing::info!(target: "mock_github", owner, repo_name, "repo_exists");
 		self.log_call(&format!("repo_exists({owner}, {repo_name})"));

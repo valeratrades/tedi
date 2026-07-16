@@ -30,7 +30,7 @@ pub use milestone::load_remote_milestone;
 #[derive(Debug, thiserror::Error)]
 pub enum RemoteError {
 	/// Failed to fetch issue from GitHub.
-	#[error("failed to fetch issue #{number} from {}/{}", repo.owner(), repo.repo())]
+	#[error("failed to fetch issue #{number} from {repo}")]
 	FetchIssue {
 		repo: RepoInfo,
 		number: u64,
@@ -40,7 +40,7 @@ pub enum RemoteError {
 	},
 
 	/// Failed to fetch issue comments from GitHub.
-	#[error("failed to fetch comments for issue #{number} from {}/{}", repo.owner(), repo.repo())]
+	#[error("failed to fetch comments for issue #{number} from {repo}")]
 	FetchComments {
 		repo: RepoInfo,
 		number: u64,
@@ -50,7 +50,7 @@ pub enum RemoteError {
 	},
 
 	/// Failed to fetch sub-issues from GitHub.
-	#[error("failed to fetch sub-issues for issue #{number} from {}/{}", repo.owner(), repo.repo())]
+	#[error("failed to fetch sub-issues for issue #{number} from {repo}")]
 	FetchSubIssues {
 		repo: RepoInfo,
 		number: u64,
@@ -60,7 +60,7 @@ pub enum RemoteError {
 	},
 
 	/// Failed to resolve ancestry (parent issue chain).
-	#[error("failed to resolve ancestry for issue #{number} in {}/{}", repo.owner(), repo.repo())]
+	#[error("failed to resolve ancestry for issue #{number} in {repo}")]
 	ResolveAncestry {
 		repo: RepoInfo,
 		number: u64,
@@ -70,7 +70,7 @@ pub enum RemoteError {
 	},
 
 	/// Failed to fetch timestamps from GitHub GraphQL API.
-	#[error("failed to fetch timestamps for issue #{number} from {}/{}", repo.owner(), repo.repo())]
+	#[error("failed to fetch timestamps for issue #{number} from {repo}")]
 	FetchTimestamps {
 		repo: RepoInfo,
 		number: u64,
@@ -81,7 +81,7 @@ pub enum RemoteError {
 
 	/// Issue not found on GitHub (404).
 	#[leaf]
-	#[error("issue #{number} not found in {}/{}", repo.owner(), repo.repo())]
+	#[error("issue #{number} not found in {repo}")]
 	NotFound { repo: RepoInfo, number: u64 },
 
 	/// Required executable not found.
@@ -132,7 +132,7 @@ impl RemoteSource {
 
 	/// Resolve parent_index, fetching lineage from GitHub if not provided.
 	pub async fn resolve_parent_index(&self) -> Result<Option<IssueIndex>, RemoteError> {
-		let repo_info = self.link.repo_info();
+		let repo_info = self.link.project();
 		let number = self.link.number();
 
 		let lineage = match self.lineage_slice() {
@@ -194,7 +194,7 @@ impl crate::LazyIssue<RemoteSource> for Issue {
 		}
 
 		let gh = github::client::get().map_err(RemoteError::NoClient)?;
-		let repo_info = source.link.repo_info();
+		let repo_info = source.link.project();
 		let number = source.link.number();
 
 		// Fetch issue and timeline timestamps in parallel
@@ -228,7 +228,7 @@ impl crate::LazyIssue<RemoteSource> for Issue {
 		}
 
 		let gh = github::client::get().map_err(RemoteError::NoClient)?;
-		let repo_info = source.link.repo_info();
+		let repo_info = source.link.project();
 		let number = source.link.number();
 
 		let issue_fut = gh.fetch_issue(repo_info, number);
@@ -273,7 +273,7 @@ impl crate::LazyIssue<RemoteSource> for Issue {
 		}
 
 		let gh = github::client::get().map_err(RemoteError::NoClient)?;
-		let repo_info = source.link.repo_info();
+		let repo_info = source.link.project();
 		let number = source.link.number();
 
 		let sub_issues = gh
@@ -292,8 +292,7 @@ impl crate::LazyIssue<RemoteSource> for Issue {
 
 		let mut children = HashMap::new();
 		for sub_issue in filtered {
-			let child_url = format!("https://github.com/{}/{}/issues/{}", repo_info.owner(), repo_info.repo(), sub_issue.number);
-			let child_link = IssueLink::parse(&child_url).expect("valid URL");
+			let child_link = IssueLink::in_project(repo_info, sub_issue.number);
 			let child_source = source.child(child_link, parent_number);
 			let mut child = Issue::empty_local(child_parent_index);
 
@@ -402,8 +401,7 @@ impl Sink<Remote> for Issue {
 			}
 
 			// Update identity - keep same parent_index, just add linking info
-			let url = format!("https://github.com/{}/{}/issues/{}", repo_info.owner(), repo_info.repo(), created.number);
-			let link = IssueLink::parse(&url).expect("just constructed valid URL");
+			let link = IssueLink::in_project(repo_info, created.number);
 			let user = gh.fetch_authenticated_user().await?;
 			self.identity = IssueIdentity::new_linked(Some(parent_index), Some(user), link, crate::IssueTimestamps::now());
 			changed = true;

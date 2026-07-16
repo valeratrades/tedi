@@ -336,20 +336,21 @@ async fn test_urgent_new_task_materializes_virtual_issue() {
 		std::fs::write(tmp_path, "- [ ] some new task\n  # Blockers\n  - first step\n").unwrap();
 	});
 	assert!(out.status.success(), "stderr: {}", out.stderr);
-	assert!(out.stdout.contains("Created virtual issue mock_user/virtual#1"), "stdout: {}", out.stdout);
+	assert!(out.stdout.contains("Created virtual issue virtual#1"), "stdout: {}", out.stdout);
 
-	assert_eq!(ctx.xdg.read_data("issues/urgent.md"), "- https://github.com/mock_user/virtual/issues/1");
+	// a virtual issue's link is its own (absolute) file path; redact the tmp prefix for a stable snapshot
+	let issues_str = ctx.xdg.data_dir().join("issues").display().to_string();
+	assert_eq!(ctx.xdg.read_data("issues/urgent.md").replace(&issues_str, "<ISSUES>"), "- <ISSUES>/virtual/1_-_some_new_task.md");
 
 	ctx.set_issues_dir_override();
-	let path = tedi_ops::local::Local::find_by_number(tedi_ops::RepoInfo::new("mock_user", "virtual"), 1, tedi_ops::local::FsReader).expect("materialized issue must be findable by number");
-	insta::assert_snapshot!(std::fs::read_to_string(&path).unwrap(), @"
-	- [ ] some new task <!-- virtual https://github.com/mock_user/virtual/issues/1 -->
+	let path = tedi_ops::local::Local::find_by_number(tedi_ops::RepoInfo::Virtual, 1, tedi_ops::local::FsReader).expect("materialized issue must be findable by number");
+	insta::assert_snapshot!(std::fs::read_to_string(&path).unwrap().replace(&issues_str, "<ISSUES>"), @"
+	- [ ] some new task <!-- virtual <ISSUES>/virtual/1_-_some_new_task.md -->
 	  # Blockers
 	  - first step
 	");
 
-	let meta: serde_json::Value = serde_json::from_str(&ctx.xdg.read_data("issues/mock_user/virtual/.meta.json")).unwrap();
-	assert_eq!(meta["virtual_project"], serde_json::json!(true));
+	let meta: serde_json::Value = serde_json::from_str(&ctx.xdg.read_data("issues/virtual/.meta.json")).unwrap();
 	assert_eq!(meta["next_virtual_issue_number"], serde_json::json!(2));
 
 	// selection plumbing: the materialized issue's blocker is the current selection
@@ -372,19 +373,20 @@ async fn test_urgent_virtual_issue_reexpands_and_syncs_blockers() {
 	let out = ctx.urgent_edit(|tmp_path| {
 		let content = std::fs::read_to_string(tmp_path).unwrap();
 		assert!(
-			content.contains("<!-- virtual https://github.com/mock_user/virtual/issues/1 -->"),
+			content.contains("<!-- virtual ") && content.contains("virtual/1_-_some_new_task.md -->"),
 			"second edit must open on the expanded virtual issue, got:\n{content}"
 		);
 		std::fs::write(tmp_path, content.trim_end().to_string() + "\n  - second step\n").unwrap();
 	});
 	assert!(out.status.success(), "stderr: {}", out.stderr);
 
-	assert_eq!(ctx.xdg.read_data("issues/urgent.md"), "- https://github.com/mock_user/virtual/issues/1");
+	let issues_str = ctx.xdg.data_dir().join("issues").display().to_string();
+	assert_eq!(ctx.xdg.read_data("issues/urgent.md").replace(&issues_str, "<ISSUES>"), "- <ISSUES>/virtual/1_-_some_new_task.md");
 
 	ctx.set_issues_dir_override();
-	let path = tedi_ops::local::Local::find_by_number(tedi_ops::RepoInfo::new("mock_user", "virtual"), 1, tedi_ops::local::FsReader).expect("issue #1 should still exist");
-	insta::assert_snapshot!(std::fs::read_to_string(&path).unwrap(), @"
-	- [ ] some new task <!-- virtual https://github.com/mock_user/virtual/issues/1 -->
+	let path = tedi_ops::local::Local::find_by_number(tedi_ops::RepoInfo::Virtual, 1, tedi_ops::local::FsReader).expect("issue #1 should still exist");
+	insta::assert_snapshot!(std::fs::read_to_string(&path).unwrap().replace(&issues_str, "<ISSUES>"), @"
+	- [ ] some new task <!-- virtual <ISSUES>/virtual/1_-_some_new_task.md -->
 	  # Blockers
 	  - first step
 	  - second step
@@ -404,12 +406,13 @@ async fn test_milestone_edit_without_repo_falls_back_to_virtual() {
 	});
 	assert!(out.status.success(), "stderr: {}", out.stderr);
 
-	assert_eq!(result_milestone, "# Sprint\n\n- https://github.com/mock_user/virtual/issues/1");
+	let issues_str = ctx.xdg.data_dir().join("issues").display().to_string();
+	assert_eq!(result_milestone.replace(&issues_str, "<ISSUES>"), "# Sprint\n\n- <ISSUES>/virtual/1_-_milestone_task.md");
 
 	ctx.set_issues_dir_override();
-	let path = tedi_ops::local::Local::find_by_number(tedi_ops::RepoInfo::new("mock_user", "virtual"), 1, tedi_ops::local::FsReader).expect("materialized issue must be findable by number");
-	insta::assert_snapshot!(std::fs::read_to_string(&path).unwrap(), @"
-	- [ ] milestone task <!-- virtual https://github.com/mock_user/virtual/issues/1 -->
+	let path = tedi_ops::local::Local::find_by_number(tedi_ops::RepoInfo::Virtual, 1, tedi_ops::local::FsReader).expect("materialized issue must be findable by number");
+	insta::assert_snapshot!(std::fs::read_to_string(&path).unwrap().replace(&issues_str, "<ISSUES>"), @"
+	- [ ] milestone task <!-- virtual <ISSUES>/virtual/1_-_milestone_task.md -->
 	  # Blockers
 	  - step one
 	");
@@ -429,7 +432,7 @@ async fn test_urgent_edit_skips_category_headers_and_half_typed() {
 	});
 	assert!(out.status.success(), "stderr: {}", out.stderr);
 
-	assert!(!ctx.xdg.data_exists("issues/mock_user/virtual"), "no virtual project should be created for skipped items");
+	assert!(!ctx.xdg.data_exists("issues/virtual"), "no virtual project should be created for skipped items");
 	insta::assert_snapshot!(ctx.xdg.read_data("issues/urgent.md"), @"
 	- [ ] discretionary_engine
 	  - https://github.com/o/r/issues/10
@@ -452,7 +455,7 @@ fn seed_selection(ctx: &TestContext, sprint_content: &str, milestones: &[(&str, 
 		std::fs::create_dir_all(file.parent().unwrap()).unwrap();
 		std::fs::write(&file, format!("{}\n", content.trim_end())).unwrap();
 		metas
-			.entry((repo.owner().to_string(), repo.repo().to_string()))
+			.entry((repo.owner().expect("github project").to_string(), repo.repo().to_string()))
 			.or_default()
 			.insert(link.number().to_string(), serde_json::json!({ "title": title, "state": if *closed { "Closed" } else { "Open" } }));
 	}
@@ -683,7 +686,7 @@ async fn test_inlined_milestone_task_creates_real_issue_and_does_not_remateriali
 		tedi_ops::local::Local::find_by_number(tedi_ops::RepoInfo::new("o", "r"), 1, tedi_ops::local::FsReader).is_some(),
 		"the milestone task should have been created upstream as o/r#1"
 	);
-	assert!(!ctx.xdg.data_exists("issues/mock_user/virtual"), "a milestone task must never spawn a virtual project");
+	assert!(!ctx.xdg.data_exists("issues/virtual"), "a milestone task must never spawn a virtual project");
 	// no duplicate: #2 does NOT exist — no re-materialization
 	assert!(
 		tedi_ops::local::Local::find_by_number(tedi_ops::RepoInfo::new("o", "r"), 2, tedi_ops::local::FsReader).is_none(),

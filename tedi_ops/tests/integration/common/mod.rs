@@ -190,7 +190,7 @@ impl TestContext {
 
 	/// Create an OpenBuilder for running the `open` command with a Github URL.
 	pub fn open_url(&self, repo_info: tedi_ops::RepoInfo, number: u64) -> OpenBuilder<'_> {
-		let url = format!("https://github.com/{}/{}/issues/{number}", repo_info.owner(), repo_info.repo());
+		let url = format!("https://github.com/{}/{}/issues/{number}", repo_info.owner().expect("github project"), repo_info.repo());
 		OpenBuilder {
 			ctx: self,
 			target: BuilderTarget::Url(url),
@@ -682,14 +682,14 @@ pub mod are_you_sure {
 	impl UnsafePathExt for TestContext {
 		fn flat_issue_path(&self, repo_info: tedi_ops::RepoInfo, number: u64, title: &str) -> PathBuf {
 			let sanitized = title.replace(' ', "_");
-			self.xdg.data_dir().join(format!("issues/{}/{}/{number}_-_{sanitized}.md", repo_info.owner(), repo_info.repo()))
+			self.xdg.data_dir().join(format!("issues/{}/{}/{number}_-_{sanitized}.md", repo_info.owner().expect("github project"), repo_info.repo()))
 		}
 
 		fn dir_issue_path(&self, repo_info: tedi_ops::RepoInfo, number: u64, title: &str) -> PathBuf {
 			let sanitized = title.replace(' ', "_");
 			self.xdg
 				.data_dir()
-				.join(format!("issues/{}/{}/{number}_-_{sanitized}/__main__.md", repo_info.owner(), repo_info.repo()))
+				.join(format!("issues/{}/{}/{number}_-_{sanitized}/__main__.md", repo_info.owner().expect("github project"), repo_info.repo()))
 		}
 
 		fn resolve_issue_path(&self, issue: &tedi_ops::Issue) -> PathBuf {
@@ -994,7 +994,8 @@ fn build_hollow_from_virtual(virtual_issue: &tedi_ops::VirtualIssue, timestamps:
 /// for unlinked issues (owner="owner", repo="repo", number=1).
 fn extract_issue_coords(issue: &Issue) -> (String, String, u64) {
 	if let Some(link) = issue.identity.link() {
-		(link.owner().to_string(), link.repo().to_string(), link.number())
+		let p = link.project();
+		(p.owner().expect("github project").to_string(), p.repo().to_string(), link.number())
 	} else {
 		(DEFAULT_OWNER.to_string(), DEFAULT_REPO.to_string(), DEFAULT_NUMBER)
 	}
@@ -1003,7 +1004,7 @@ fn extract_issue_coords(issue: &Issue) -> (String, String, u64) {
 /// Recursively add an issue and all its children to the mock state.
 /// Transforms library `Issue` types into mock JSON state for the test mock server.
 fn add_issue_recursive(state: &mut GitState, repo_info: tedi_ops::RepoInfo, number: u64, parent_number: Option<u64>, issue: &Issue, timestamps: Option<&IssueTimestamps>) {
-	let owner = repo_info.owner();
+	let owner = repo_info.owner().expect("github project");
 	let repo = repo_info.repo();
 	let key = (owner.to_string(), repo.to_string(), number);
 

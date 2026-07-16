@@ -182,7 +182,7 @@ impl Selected {
 			}
 			NodeLink::Issue(link) => match issue_children(link).first() {
 				Some(NodeLink::Issue(l)) => l.clone(),
-				_ => return Err(format!("{}/{}#{} has no open children", link.owner(), link.repo(), link.number())),
+				_ => return Err(format!("{}#{} has no open children", link.project(), link.number())),
 			},
 		};
 		path.push(NodeLink::Issue(child.clone()));
@@ -249,7 +249,7 @@ impl Selected {
 		});
 		match found {
 			Some(path) => {
-				sel.paths.insert(active.key.clone(), path.iter().map(|n| n.as_str().to_string()).collect());
+				sel.paths.insert(active.key.clone(), path.iter().map(|n| n.to_string()).collect());
 				sel.save()
 			}
 			None => {
@@ -314,7 +314,7 @@ impl Selected {
 	}
 
 	fn persist_path(&mut self, key: &str, path: &[NodeLink]) {
-		let urls: Vec<String> = path.iter().map(|n| n.as_str().to_string()).collect();
+		let urls: Vec<String> = path.iter().map(|n| n.to_string()).collect();
 		if self.paths.get(key) != Some(&urls) {
 			self.paths.insert(key.to_string(), urls);
 			if let Err(e) = self.save() {
@@ -495,7 +495,7 @@ struct NormalSprint {
 
 /// Resolve an issue link to its local path.
 fn resolve(link: &IssueLink) -> Option<PathBuf> {
-	Local::find_by_number(link.repo_info(), link.number(), FsReader)
+	Local::find_by_number(link.project(), link.number(), FsReader)
 }
 
 /// Open child issues of a directory issue, ordered like `Issue::Display` (by selector).
@@ -524,10 +524,7 @@ fn issue_children(link: &IssueLink) -> Vec<NodeLink> {
 	numbers.sort_unstable();
 	numbers
 		.into_iter()
-		.map(|n| {
-			let url = format!("https://github.com/{}/{}/issues/{n}", link.owner(), link.repo());
-			NodeLink::Issue(IssueLink::parse(&url).expect("constructed URL must be valid"))
-		})
+		.map(|n| NodeLink::Issue(Local::issue_link(link.project(), n)))
 		.collect()
 }
 
@@ -556,7 +553,7 @@ fn link_delegates(link: &IssueLink) -> bool {
 fn display_for_link(link: &IssueLink) -> String {
 	resolve(link)
 		.and_then(|p| p.strip_prefix(Local::issues_dir()).ok().map(|rel| rel.to_string_lossy().to_string()))
-		.unwrap_or_else(|| format!("{}/{}#{}", link.owner(), link.repo(), link.number()))
+		.unwrap_or_else(|| format!("{}#{}", link.project(), link.number()))
 }
 
 /// Display string for a milestone: its local relative file path (so fzf's `cat {}` previews it),

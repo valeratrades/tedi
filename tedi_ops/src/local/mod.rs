@@ -110,9 +110,12 @@ impl Local {
 	}
 
 	/// Get the project directory path (where .meta.json lives).
-	/// Structure: issues/{owner}/{repo}/
+	/// Structure: `issues/{owner}/{repo}/` for Github, `issues/virtual/` for the virtual store.
 	pub fn project_dir(repo_info: RepoInfo) -> PathBuf {
-		Self::issues_dir().join(repo_info.owner()).join(repo_info.repo())
+		match repo_info {
+			RepoInfo::Github { .. } => Self::issues_dir().join(repo_info.owner().expect("github project")).join(repo_info.repo()),
+			RepoInfo::Virtual => Self::issues_dir().join("virtual"),
+		}
 	}
 
 	/// Sanitize a title for use in filenames.
@@ -188,6 +191,16 @@ impl Local {
 		}
 	}
 
+	/// The link addressing issue `n` in `repo_info`: a Github URL for a real repo, or the
+	/// virtual issue's own file path (the path *is* a virtual issue's id). Panics if a virtual
+	/// issue file for `n` isn't on disk.
+	pub fn issue_link(repo_info: RepoInfo, n: u64) -> IssueLink {
+		match repo_info {
+			RepoInfo::Virtual => IssueLink::Virtual(Self::find_by_number(RepoInfo::Virtual, n, FsReader).unwrap_or_else(|| panic!("virtual issue #{n} has no file on disk"))),
+			_ => IssueLink::in_project(repo_info, n),
+		}
+	}
+
 	/// Parse an IssueSelector from a filename or directory name.
 	/// Format: `{number}_-_{title}[.md[.bak]]` or just `{title}[.md[.bak]]` for pending issues.
 	///
@@ -218,17 +231,28 @@ impl Local {
 		let rel_path = path.strip_prefix(&issues_base).map_err(|_| eyre!("Issue file is not in issues directory: {path:?}"))?;
 
 		let components: Vec<_> = rel_path.components().collect();
-		if components.len() < 3 {
+
+		// The virtual store is a single-segment project (`virtual/…`); every Github project is
+		// `owner/repo/…`. `virtual` is reserved as an owner name so this can't be ambiguous.
+		let first = components.first().map(|c| c.as_os_str().to_str().unwrap_or_default());
+		let (repo_info, project_prefix) = if first == Some("virtual") {
+			(RepoInfo::Virtual, 1)
+		} else {
+			if components.len() < 3 {
+				bail!("Path too short to extract issue: {path:?}");
+			}
+			let owner = components[0].as_os_str().to_str().ok_or_else(|| eyre!("Could not extract owner from path: {path:?}"))?;
+			let repo = components[1].as_os_str().to_str().ok_or_else(|| eyre!("Could not extract repo from path: {path:?}"))?;
+			(RepoInfo::new(owner, repo), 2)
+		};
+		if components.len() <= project_prefix {
 			bail!("Path too short to extract issue: {path:?}");
 		}
-
-		let owner = components[0].as_os_str().to_str().ok_or_else(|| eyre!("Could not extract owner from path: {path:?}"))?;
-		let repo = components[1].as_os_str().to_str().ok_or_else(|| eyre!("Could not extract repo from path: {path:?}"))?;
 
 		// Check if this is a directory format file (__main__.md or __main__.md.bak)
 		let filename = components
 			.last()
-			.expect("components verified to have at least 3 elements")
+			.expect("components verified to be longer than the project prefix")
 			.as_os_str()
 			.to_str()
 			.ok_or_else(|| eyre!("Could not convert filename to str: {path:?}"))?;
@@ -237,20 +261,14 @@ impl Local {
 		// Collect all issue selectors including the target issue
 		let mut selectors = Vec::new();
 
-		// For directory format: path is owner/repo/dir1/dir2/.../issue_dir/__main__.md
-		//   - Loop processes dir1..issue_dir (index 2 to len-2 exclusive)
-		//   - Then add issue_dir (index len-2) separately
-		// For flat format: path is owner/repo/dir1/dir2/.../issue.md
-		//   - Loop processes dir1.. (index 2 to len-1 exclusive)
-		//   - Then add issue from filename
 		let dir_end = if is_dir_format {
 			components.len() - 2 // Stop before the issue directory (will be added separately)
 		} else {
 			components.len() - 1 // Stop before the filename
 		};
 
-		// Process ancestor issue directories (skip owner and repo)
-		for component in &components[2..dir_end] {
+		// Process ancestor issue directories (skip the project prefix)
+		for component in &components[project_prefix..dir_end] {
 			let name = component.as_os_str().to_str().ok_or_else(|| eyre!("Invalid path component: {component:?}"))?;
 
 			// Skip if this looks like a file (has .md extension)
@@ -278,7 +296,7 @@ impl Local {
 			}
 		}
 
-		Ok(IssueIndex::with_index(RepoInfo::new(owner, repo), selectors))
+		Ok(IssueIndex::with_index(repo_info, selectors))
 	}
 
 	/// Spawn fzf with a given list of items and a pre-filled query, return the selected item.
@@ -452,37 +470,24 @@ impl Local {
 		}
 	}
 
-	/// Check if a project is virtual (has no Github remote)
-	pub fn is_virtual_project(repo_info: RepoInfo) -> bool {
-		Self::load_project_meta(repo_info).virtual_project
-	}
-
-	/// Ensure a virtual project exists (creates if needed).
-	pub fn ensure_virtual_project(repo_info: RepoInfo) -> Result<ProjectMeta> {
-		let meta_path = Self::project_meta_path(repo_info);
+	/// Ensure the virtual project exists (creates its `.meta.json` if needed).
+	pub fn ensure_virtual_project() -> Result<ProjectMeta> {
+		let meta_path = Self::project_meta_path(RepoInfo::Virtual);
 		if meta_path.exists() {
-			let project_meta = Self::load_project_meta(repo_info);
-			if !project_meta.virtual_project {
-				bail!("Project {}/{} exists but is not a virtual project", repo_info.owner(), repo_info.repo());
-			}
-			Ok(project_meta)
+			Ok(Self::load_project_meta(RepoInfo::Virtual))
 		} else {
 			let project_meta = ProjectMeta {
-				virtual_project: true,
 				next_virtual_issue_number: 1,
 				issues: BTreeMap::new(),
 			};
-			Self::save_project_meta(repo_info, &project_meta)?;
+			Self::save_project_meta(RepoInfo::Virtual, &project_meta)?;
 			Ok(project_meta)
 		}
 	}
 
-	/// Allocate the next issue number for a virtual project.
-	pub fn allocate_virtual_issue_number(repo_info: RepoInfo) -> Result<u64> {
-		let mut project_meta = Self::load_project_meta(repo_info);
-		if !project_meta.virtual_project {
-			bail!("Cannot allocate virtual issue number for non-virtual project {}/{}", repo_info.owner(), repo_info.repo());
-		}
+	/// Allocate the next issue number for the virtual project.
+	pub fn allocate_virtual_issue_number() -> Result<u64> {
+		let mut project_meta = Self::load_project_meta(RepoInfo::Virtual);
 
 		if project_meta.next_virtual_issue_number == 0 {
 			project_meta.next_virtual_issue_number = 1;
@@ -490,7 +495,7 @@ impl Local {
 
 		let issue_number = project_meta.next_virtual_issue_number;
 		project_meta.next_virtual_issue_number += 1;
-		Self::save_project_meta(repo_info, &project_meta)?;
+		Self::save_project_meta(RepoInfo::Virtual, &project_meta)?;
 
 		Ok(issue_number)
 	}
@@ -574,7 +579,7 @@ impl Local {
 			let issue_meta = project_meta.issues.get(n);
 			let user = issue_meta.and_then(|m| m.user.clone());
 			let timestamps = issue_meta.map(|m| m.timestamps.clone()).unwrap_or_default();
-			let link = crate::IssueLink::parse(&format!("https://github.com/{}/{}/issues/{n}", repo_info.owner(), repo_info.repo())).expect("constructed link must be valid");
+			let link = Self::issue_link(repo_info, *n);
 			Some(Box::new(crate::LinkedIssueMeta::new(user, link, timestamps)))
 		} else {
 			None
@@ -1132,8 +1137,6 @@ pub struct IssueMeta {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct ProjectMeta {
 	#[serde(default)]
-	pub virtual_project: bool,
-	#[serde(default)]
 	pub next_virtual_issue_number: u64,
 	#[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
 	pub issues: BTreeMap<u64, IssueMeta>,
@@ -1300,13 +1303,14 @@ impl<R: LocalReader> crate::LazyIssue<LocalIssueSource<R>> for Issue {
 		if self.contents.title.is_empty() {
 			let file_path = source.local_path.clone().resolve_parent(source.reader)?.search()?.path();
 			let content = source.reader.read_content(&file_path)?;
-			let parsed = crate::VirtualIssue::parse(&content, file_path)?;
+			let parsed = crate::VirtualIssue::parse(&content, file_path.clone())?;
 			self.contents = parsed.contents;
 			let remote = match parsed.selector {
 				IssueSelector::GitId(n) => {
 					let repo_info = index.repo_info();
 					let meta = Local::load_project_meta(repo_info).issues.remove(&n);
-					let link = IssueLink::parse(&format!("https://github.com/{}/{}/issues/{n}", repo_info.owner(), repo_info.repo())).expect("constructed URL must be valid");
+					// a virtual issue's link is its own file path (which we've just resolved)
+					let link = if repo_info.is_virtual() { IssueLink::Virtual(file_path.clone()) } else { IssueLink::in_project(repo_info, n) };
 					Some(Box::new(LinkedIssueMeta::new(
 						meta.as_ref().and_then(|m| m.user.clone()),
 						link,
@@ -1316,7 +1320,7 @@ impl<R: LocalReader> crate::LazyIssue<LocalIssueSource<R>> for Issue {
 				_ => None,
 			};
 			self.identity.parent_index = index.parent().unwrap_or_else(|| IssueIndex::repo_only(index.repo_info()));
-			self.identity.is_virtual = Local::is_virtual_project(index.repo_info());
+			self.identity.is_virtual = index.repo_info().is_virtual();
 			self.identity.remote = remote;
 		}
 
@@ -1335,7 +1339,7 @@ impl<R: LocalReader> crate::LazyIssue<LocalIssueSource<R>> for Issue {
 		let parsed = crate::VirtualIssue::parse(&content, file_path)?;
 		self.contents = parsed.contents;
 		self.identity.parent_index = index.parent().unwrap_or_else(|| IssueIndex::repo_only(index.repo_info()));
-		self.identity.is_virtual = Local::is_virtual_project(index.repo_info());
+		self.identity.is_virtual = index.repo_info().is_virtual();
 
 		Ok(self.contents.clone())
 	}

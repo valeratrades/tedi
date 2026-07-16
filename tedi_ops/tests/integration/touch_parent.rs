@@ -18,15 +18,14 @@ fn test_parent_virtual_creates_virtual_project() {
 	// Touch with --parent=virtual should create a virtual project
 	let out = ctx.open_touch("newowner/newrepo/my-issue").args(&["--parent=virtual"]).ghost_edit().run();
 
-	// Verify: virtual project created with the issue
-	// Note: virtual projects are offline-only, so ghost_edit doesn't trigger sync - issue stays pending
+	// Verify: the issue lands in the single owner-less `virtual` store (the typed owner/repo is
+	// discarded). Virtual projects are offline-only, so ghost_edit doesn't sync - issue stays pending.
 	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap(), &out), @r#"
-	//- /newowner/newrepo/.meta.json
+	//- /virtual/.meta.json
 	{
-	  "virtual_project": true,
 	  "next_virtual_issue_number": 1
 	}
-	//- /newowner/newrepo/my-issue.md
+	//- /virtual/my-issue.md
 	- [ ] my-issue <!-- virtual -->
 	"#);
 
