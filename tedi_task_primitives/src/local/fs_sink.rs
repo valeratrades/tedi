@@ -49,31 +49,9 @@ impl Sink<LocalFs> for Issue {
 	type Error = LocalFsSinkError;
 
 	async fn sink(&mut self, old: Option<&Issue>) -> Result<bool, Self::Error> {
-		let result = sink_issue_node(self, old, &FsReader)?;
-
-		// Handle `!s` blocker selection: persist the cache file now that we know the issue file path.
-		if matches!(self.contents.blockers.set_state, Some(crate::BlockerSetState::Pending)) {
-			let title = &self.contents.title;
-			let closed = self.contents.state.is_closed();
-			let has_children = !self.children.is_empty();
-			match LocalPath::from(&*self).resolve_parent(FsReader) {
-				Ok(resolved) => {
-					let issue_file_path = resolved.deterministic(title, closed, has_children).path();
-					match super::Selected::set_by_path(&issue_file_path) {
-						Ok(()) => {
-							tracing::info!(path = %issue_file_path.display(), "blocker selection persisted via !s");
-							self.contents.blockers.set_state = Some(crate::BlockerSetState::Applied);
-						}
-						Err(e) => tracing::warn!("failed to persist blocker selection: {e}"),
-					}
-				}
-				Err(e) => {
-					tracing::warn!("!s: failed to resolve issue path for blocker selection: {e}");
-				}
-			}
-		}
-
-		Ok(result)
+		// The `!s` blocker-selection side-effect lives in the operation layer
+		// (`tedi_task_operations::open_interactions::sync`); this just writes the file.
+		sink_issue_node(self, old, &FsReader)
 	}
 }
 

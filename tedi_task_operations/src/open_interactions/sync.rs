@@ -28,13 +28,15 @@ use v_utils::elog;
 
 use super::merge::Merge;
 use crate::{
-	Issue, IssueIndex, IssueLink, IssueSelector, LazyIssue, RepoInfo, VirtualIssue,
+	BlockerSetState, Issue, IssueIndex, IssueLink, IssueSelector, LazyIssue, RepoInfo, VirtualIssue,
+	conflict_resolve::initiate_conflict_merge,
 	local::{
 		Consensus, FsReader, LocalFs, LocalIssueSource, LocalPath,
-		conflict::{ConflictOutcome, conflict_file_path, initiate_conflict_merge},
+		conflict_detect::{ConflictOutcome, conflict_file_path},
 		consensus::load_consensus_issue,
 	},
 	remote::{Remote, RemoteSource},
+	selection::Selected,
 	sink::Sink,
 };
 
@@ -80,6 +82,7 @@ pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Mo
 	match offline || repo_info.is_virtual() {
 		true => {
 			<Issue as Sink<LocalFs>>::sink(&mut issue, None).await?;
+			persist_blocker_selection(&mut issue);
 			println!("Offline: saved locally and exiting.");
 			return Ok(new_modified);
 		}
@@ -123,8 +126,34 @@ pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Mo
 				}
 			}
 
+			persist_blocker_selection(&mut issue);
 			Ok(new_modified)
 		}
+	}
+}
+
+/// `!s` blocker selection: once the edited issue is sunk (and its final path known), point the
+/// active-sprint selection at it. Relocated here from the `Sink<LocalFs>` impl so storage stays
+/// selection-free. Best-effort — a failure to resolve the path only warns.
+fn persist_blocker_selection(issue: &mut Issue) {
+	if !matches!(issue.contents.blockers.set_state, Some(BlockerSetState::Pending)) {
+		return;
+	}
+	let title = &issue.contents.title;
+	let closed = issue.contents.state.is_closed();
+	let has_children = !issue.children.is_empty();
+	match LocalPath::from(&*issue).resolve_parent(FsReader) {
+		Ok(resolved) => {
+			let issue_file_path = resolved.deterministic(title, closed, has_children).path();
+			match Selected::set_by_path(&issue_file_path) {
+				Ok(()) => {
+					tracing::info!(path = %issue_file_path.display(), "blocker selection persisted via !s");
+					issue.contents.blockers.set_state = Some(BlockerSetState::Applied);
+				}
+				Err(e) => tracing::warn!("failed to persist blocker selection: {e}"),
+			}
+		}
+		Err(e) => tracing::warn!("!s: failed to resolve issue path for blocker selection: {e}"),
 	}
 }
 #[derive(Debug, miette::Diagnostic, thiserror::Error)]

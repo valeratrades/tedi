@@ -317,7 +317,7 @@ impl IssueIdentity {
 
 	/// Check if this issue is owned by the current user.
 	/// True if: virtual, or linked with unknown user (None), or linked with matching user.
-	pub fn is_owned(&self) -> bool {
+	pub fn is_mine(&self) -> bool {
 		self.is_virtual
 			|| match self.as_linked() {
 				None => false,
@@ -728,7 +728,7 @@ impl Issue /*{{{1*/ {
 			out.push('\n');
 		}
 
-		let is_owned = self.identity.is_owned();
+		let is_owned = self.identity.is_mine();
 		let mut content = String::new();
 
 		// === Body (first comment) ===

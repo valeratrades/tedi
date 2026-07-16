@@ -3744,7 +3744,8 @@ dependencies = [
  "tedi_adapters",
  "tedi_core",
  "tedi_eval",
- "tedi_ops",
+ "tedi_task_operations",
+ "tedi_task_primitives",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -3826,7 +3827,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "tedi_ops"
+name = "tedi_task_operations"
 version = "0.16.3"
 dependencies = [
  "arrayvec",
@@ -3856,6 +3857,7 @@ dependencies = [
  "tedi_adapters",
  "tedi_core",
  "tedi_md",
+ "tedi_task_primitives",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -3866,6 +3868,45 @@ dependencies = [
  "v_fixtures",
  "v_utils",
  "walkdir",
+ "xdg",
+]
+
+[[package]]
+name = "tedi_task_primitives"
+version = "0.16.3"
+dependencies = [
+ "arrayvec",
+ "async-trait",
+ "async_from",
+ "clap",
+ "color-eyre",
+ "config",
+ "copy_arrayvec",
+ "ctor",
+ "derive-new",
+ "derive_more",
+ "futures",
+ "insta",
+ "jiff",
+ "miette",
+ "pandoc",
+ "pulldown-cmark",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "smart-default",
+ "tedi_adapters",
+ "tedi_core",
+ "tedi_md",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "tracing-error",
+ "url",
+ "urlencoding",
+ "v_utils",
  "xdg",
 ]
 

@@ -1,101 +1,64 @@
-//! Conflict handling for issue sync.
+//! Conflict resolution: the operation-layer counterpart to `conflict_detect`.
 //!
-//! When local and remote diverge and cannot be auto-resolved, we create a real git merge conflict:
+//! Opens the editor on an unresolved conflict, sinks the resolved state to local + remote, and
+//! drives the git branch-merge that *creates* a conflict when local and remote diverge.
+//!
 //! 1. Commit local state to current branch
 //! 2. Create `remote-state` branch from parent commit
-//! 3. Write remote state (as virtual format) to `{owner}/__conflict.md`
-//! 4. Attempt git merge - if conflicts, user resolves with standard git tools
-//!
-//! Using `__conflict.md` in virtual format (all children inlined) ensures:
-//! - Single file to resolve, not a tree of files
-//! - Standard git merge tools work (mergetool, checkout --ours/--theirs)
-//! - Easy to see the full issue structure in conflict markers
+//! 3. Write remote state (virtual format) to `{owner}/__conflict.md`
+//! 4. Attempt git merge — if conflicts, user resolves with standard git tools
 
-use std::{path::PathBuf, process::Command};
+use std::{path::Path, process::Command};
 
-use miette::Diagnostic;
-use thiserror::Error;
-use v_utils::{macros::wrap_err, prelude::*};
+use v_utils::prelude::*;
 
-use super::{GitReader, Local, LocalFs, LocalIssueSource, LocalPath, consensus::is_git_initialized};
-use crate::{Issue, IssueIndex, LazyIssue as _, RepoInfo, VirtualIssue, remote::Remote, sink::Sink};
+use crate::{
+	Issue, IssueIndex, LazyIssue as _, RepoInfo, VirtualIssue,
+	local::{
+		FsReader, GitReader, Local, LocalFs, LocalIssueSource, LocalPath,
+		conflict_detect::{ConflictBlockedError, ConflictError, ConflictOutcome, conflict_file_path, has_conflict_markers, is_merge_in_progress, milestone_conflict_file_path},
+		consensus::is_git_initialized,
+	},
+	remote::Remote,
+	sink::Sink,
+};
 
-//==============================================================================
-// Error Types
-//==============================================================================
-
-/// Error returned when there are unresolved conflicts blocking operations.
-#[wrap_err]
-#[derive(Debug, Diagnostic, Error)]
-#[error("Unresolved merge conflict")]
-#[diagnostic(
-	code(tedi::conflict::unresolved),
-	help(
-		"Resolve the conflict in:\n  {0}\n\n\
-		 Options:\n\
-		 1. Edit the file to resolve conflict markers (<<<<<<< ======= >>>>>>>)\n\
-		 2. Use: git checkout --ours {0} (keep local)\n\
-		 3. Use: git checkout --theirs {0} (keep remote)\n\
-		 4. Use: git mergetool\n\n\
-		 Then: git add {0} && git commit",
-		conflict_file.display()
-	)
-)]
-pub struct ConflictBlockedError {
-	pub conflict_file: PathBuf,
+/// Load a local source at `index`, first resolving any pending conflict via the editor.
+/// Use at user-facing load sites; ancestor/internal loads use the pure `LocalIssueSource::build`.
+pub async fn build_resolving(index: IssueIndex) -> Result<LocalIssueSource<FsReader>> {
+	resolve_pending_conflict(index).await?;
+	Ok(LocalIssueSource::<FsReader>::build(LocalPath::new(index)).await?)
 }
 
-/// Error from conflict operations.
-#[wrap_err]
-#[derive(Debug, Error)]
-pub enum ConflictError {
-	#[leaf]
-	#[error("git is not initialized in issues directory")]
-	GitNotInitialized,
-
-	#[leaf]
-	#[error("git operation failed: {message}")]
-	GitError { message: String },
-
-	#[foreign]
-	Io(std::io::Error),
+/// `build_resolving` for a filesystem path (extracts the index first).
+pub async fn build_resolving_from_path(path: &Path) -> Result<LocalIssueSource<FsReader>> {
+	let index = Local::extract_index_from_path(path)?;
+	build_resolving(index).await
 }
 
-//==============================================================================
-// Conflict File Path
-//==============================================================================
-
-/// Get the conflict file path for a given owner.
-/// Format: `{issues_dir}/{owner}/__conflict.md`
-pub fn conflict_file_path(owner: &str) -> PathBuf {
-	Local::issues_dir().join(owner).join("__conflict.md")
-}
-
-/// Milestone conflict file — distinct from the issue one so the two never collide.
-/// Format: `{issues_dir}/{owner}/__milestone_conflict.md`
-pub fn milestone_conflict_file_path(owner: &str) -> PathBuf {
-	Local::issues_dir().join(owner).join("__milestone_conflict.md")
-}
-
-//==============================================================================
-// Conflict Detection & Resolution
-//==============================================================================
-
-/// Outcome of initiating a conflict merge.
-pub enum ConflictOutcome {
-	/// Merge succeeded automatically (no conflicts).
-	AutoMerged,
-	/// Merge has conflicts that need user resolution.
-	NeedsResolution,
-	/// Both sides are identical, no merge needed.
-	NoChanges,
+/// If a pending conflict blocks `index`, open it for resolution and re-check.
+/// Errors with `ConflictBlockedError` if markers still remain after the editor exits.
+pub async fn resolve_pending_conflict(index: IssueIndex) -> Result<()> {
+	if let Some(conflict_file) = check_for_existing_conflict(index).await? {
+		eprintln!("Unresolved merge conflict in: {}", conflict_file.display());
+		eprintln!("Opening for resolution...");
+		let modified = v_utils::io::file_open::open(&conflict_file).await?;
+		if !modified {
+			return Err(ConflictBlockedError::new(conflict_file).into());
+		}
+		// Re-check after user exits editor
+		if let Some(conflict_file) = check_for_existing_conflict(index).await? {
+			return Err(ConflictBlockedError::new(conflict_file).into());
+		}
+	}
+	Ok(())
 }
 
 /// Check for conflict file. If user fixed it, sinks.
 ///
 /// Returns `Some(path)` if conflict markers are still present, `None` if resolved (or no conflict).
 /// When the file exists but markers are gone, syncs the resolved content to local + remote sinks.
-pub async fn check_for_existing_conflict(issue_index: IssueIndex) -> Result<Option<PathBuf>> {
+pub async fn check_for_existing_conflict(issue_index: IssueIndex) -> Result<Option<std::path::PathBuf>> {
 	// virtual issues never sync, so they can never conflict
 	if issue_index.repo_info().is_virtual() {
 		return Ok(None);
@@ -137,7 +100,7 @@ pub async fn check_for_existing_conflict(issue_index: IssueIndex) -> Result<Opti
 /// Milestone counterpart to `check_for_existing_conflict`: if the resolution file's markers
 /// are gone, rebuild the milestone from it (identity from meta, timestamps bumped against
 /// consensus) and sink to local + remote, then clean up.
-pub async fn check_for_existing_milestone_conflict(link: &crate::MilestoneLink) -> Result<Option<PathBuf>> {
+pub async fn check_for_existing_milestone_conflict(link: &crate::MilestoneLink) -> Result<Option<std::path::PathBuf>> {
 	let owner = link.repo_info().owner().expect("github project").to_string();
 	let conflict_fpath = milestone_conflict_file_path(&owner);
 	if !conflict_fpath.exists() {
@@ -150,7 +113,7 @@ pub async fn check_for_existing_milestone_conflict(link: &crate::MilestoneLink) 
 
 	let mut milestone = {
 		let body = crate::MilestoneBody::parse(&content);
-		let meta = Local::load_milestone_project_meta(link.repo_info(), &super::FsReader)
+		let meta = Local::load_milestone_project_meta(link.repo_info(), &FsReader)
 			.milestones
 			.remove(&link.number())
 			.unwrap_or_default();
@@ -176,21 +139,6 @@ pub async fn check_for_existing_milestone_conflict(link: &crate::MilestoneLink) 
 	Ok(None)
 }
 
-/// Check if file content contains git conflict markers.
-pub fn has_conflict_markers(content: &str) -> bool {
-	let has_ours = content.contains("<<<<<<<");
-	let has_separator = content.contains("=======");
-	let has_theirs = content.contains(">>>>>>>");
-	has_ours && has_separator && has_theirs
-}
-
-/// Check if we're in the middle of a git merge.
-pub fn is_merge_in_progress() -> bool {
-	let data_dir = Local::issues_dir();
-	let merge_head = data_dir.join(".git/MERGE_HEAD");
-	merge_head.exists()
-}
-
 //==============================================================================
 // Conflict Creation (Git Branch Merge)
 //==============================================================================
@@ -204,7 +152,13 @@ pub fn is_merge_in_progress() -> bool {
 ///
 /// Both `local_serialized` and `remote_serialized` are written to `conflict_file`.
 /// Node-agnostic: the caller serializes (issue or milestone) and picks the conflict path.
-pub fn initiate_conflict_merge(repo_info: RepoInfo, node_number: u64, local_serialized: &str, remote_serialized: &str, conflict_file: PathBuf) -> Result<ConflictOutcome, ConflictError> {
+pub fn initiate_conflict_merge(
+	repo_info: RepoInfo,
+	node_number: u64,
+	local_serialized: &str,
+	remote_serialized: &str,
+	conflict_file: std::path::PathBuf,
+) -> Result<ConflictOutcome, ConflictError> {
 	let issue_number = node_number;
 	if !is_git_initialized() {
 		return Err(ConflictError::new_git_not_initialized());
@@ -348,7 +302,7 @@ pub fn initiate_conflict_merge(repo_info: RepoInfo, node_number: u64, local_seri
 ///
 /// Call this after user has resolved conflicts and committed.
 /// Cleans up the remote-state branch.
-pub fn conflict_resolution_cleanup(conflict_file: PathBuf) -> Result<()> {
+pub fn conflict_resolution_cleanup(conflict_file: std::path::PathBuf) -> Result<()> {
 	let data_dir = Local::issues_dir();
 	let data_dir_str = data_dir.to_str().ok_or_else(|| eyre!("Invalid data directory path"))?;
 
@@ -371,39 +325,4 @@ pub fn conflict_resolution_cleanup(conflict_file: PathBuf) -> Result<()> {
 /// Cleanup the remote-state branch after merge completes.
 fn cleanup_branch(data_dir_str: &str, _current_branch: &str) {
 	let _ = Command::new("git").args(["-C", data_dir_str, "branch", "-D", "remote-state"]).output();
-}
-
-#[cfg(test)]
-mod tests {
-	use super::*;
-
-	#[test]
-	fn test_has_conflict_markers() {
-		// No markers
-		assert!(!has_conflict_markers("# Normal issue\n\nSome body text."));
-
-		// All three markers
-		let content = r#"# Issue title
-
-<<<<<<< HEAD
-Local changes
-=======
-Remote changes
->>>>>>> remote-state
-"#;
-		assert!(has_conflict_markers(content));
-
-		// Just separator (like markdown divider)
-		assert!(!has_conflict_markers("# Issue\n\n=======\n\nSome divider"));
-
-		// Two of three markers
-		assert!(!has_conflict_markers("<<<<<<< HEAD\nSome text\n======="));
-	}
-
-	#[test]
-	fn test_conflict_file_path() {
-		let path = conflict_file_path("myowner");
-		assert!(path.to_string_lossy().contains("myowner"));
-		assert!(path.to_string_lossy().ends_with("__conflict.md"));
-	}
 }

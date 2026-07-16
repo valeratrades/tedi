@@ -33,17 +33,16 @@ pub mod locate;
 pub mod marker;
 pub mod milestone;
 pub mod taskview;
+pub mod uri;
 pub use blockers::{BlockerItem, BlockerSetState, Blockers, split_blockers};
 pub use error::{IssueError, ParseContext, ParseError, TitleInGitPathError};
 pub use issue::{
 	CloseState, Comment, CommentIdentity, Comments, HollowIssue, Issue, IssueContents, IssueIdentity, IssueTimestamps, LinkedIssueMeta, MAIN_ISSUE_FILENAME, VirtualIssue, issue_dir_name,
 	issue_file_name, sanitize_title,
 };
-pub use locate::{
-	IssueChildren, IssueIndex, IssueIndexParseError, IssueLink, IssueRef, IssueSelector, MAX_INDEX_DEPTH, MAX_LINEAGE_DEPTH, MAX_TITLE_LENGTH, MilestoneLink, MilestoneRef, NodeLink,
-	RepoInfo, parse_repo_context,
-};
+pub use locate::{IssueChildren, IssueIndex, IssueIndexParseError, IssueSelector, MAX_INDEX_DEPTH, MAX_LINEAGE_DEPTH, MAX_TITLE_LENGTH};
 pub use marker::{IssueMarker, Marker};
 pub use milestone::{Milestone, MilestoneBody, MilestoneIdentity, MilestoneTimestamps};
 pub use taskview::{TaskItemId, TaskView, parse_blockers_from_embedded};
 pub use tedi_md::{Events, Header, OwnedCodeBlockKind, OwnedEvent, OwnedTag, OwnedTagEnd};
+pub use uri::{IssueLink, IssueRef, MilestoneLink, MilestoneRef, NodeLink, RepoInfo, parse_repo_context};

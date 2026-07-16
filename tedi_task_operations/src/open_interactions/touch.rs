@@ -64,7 +64,7 @@ pub async fn parse_touch_path(user_input: &str, parent: Option<ProjectType>, off
 	let names: Vec<String> = candidates.iter().map(|(logical, _)| logical.clone()).collect();
 	if let Some(matched) = Local::resolve_pattern(&names, pattern)? {
 		let (_, rel) = candidates.iter().find(|(logical, _)| *logical == matched).expect("resolve_pattern returns one of its inputs");
-		return Ok(LocalIssueSource::<FsReader>::build_from_path(&Local::issues_dir().join(rel)).await?);
+		return Ok(crate::conflict_resolve::build_resolving_from_path(&Local::issues_dir().join(rel)).await?);
 	}
 
 	// No existing issue matches — creation: interpret segments literally as owner/repo/…/title.
@@ -103,11 +103,11 @@ pub async fn parse_touch_path(user_input: &str, parent: Option<ProjectType>, off
 	// ≠ sanitized filename, e.g. `o/r/parent` addressing `99_-_parent_issue.md`.
 	// HACK: clone before search() since search() consumes self
 	match resolved.clone().search() {
-		Ok(found) => Ok(LocalIssueSource::<FsReader>::build_from_path(&found.path()).await?),
+		Ok(found) => Ok(crate::conflict_resolve::build_resolving_from_path(&found.path()).await?),
 		Err(e) => match e.kind {
 			LocalPathErrorKind::NotFound | LocalPathErrorKind::ParentIsFlat => {
 				let create_path = resolved.deterministic(titles.last().expect("segments.len() >= 3"), false, false).path();
-				Ok(LocalIssueSource::<FsReader>::build_from_path(&create_path).await?)
+				Ok(crate::conflict_resolve::build_resolving_from_path(&create_path).await?)
 			}
 			LocalPathErrorKind::MissingParent | LocalPathErrorKind::NotUnique | LocalPathErrorKind::Reader => Err(e.into()),
 		},

@@ -7,7 +7,7 @@ mod sprints;
 use std::{sync::Arc, time::Duration};
 
 use clap::Parser;
-use tedi_ops::MockType;
+use tedi_task_operations::MockType;
 use v_utils::utils::exit_on_error;
 
 #[derive(clap::Parser)]
@@ -47,7 +47,7 @@ enum Commands {
 	/// Monitor screenshots: watch daemon and annotation
 	Monitors(tedi_eval::watch_monitors::MonitorsArgs),
 	/// Open a Github issue in $EDITOR
-	Open(tedi_ops::open_interactions::OpenArgs),
+	Open(tedi_task_operations::open_interactions::OpenArgs),
 }
 #[tokio::main]
 async fn main() {
@@ -60,7 +60,7 @@ async fn main() {
 	let has_github_commands = matches!(cli.command, Commands::Open(_) | Commands::Sprints(_));
 
 	let github_client: Option<tedi_adapters::github::BoxedGithubClient> = if cli.mock.is_some() {
-		Some(Arc::new(tedi_ops::mock_github::MockGithubClient::new("mock_user")))
+		Some(Arc::new(tedi_task_operations::mock_github::MockGithubClient::new("mock_user")))
 	} else if has_github_commands {
 		let config = exit_on_error(settings.config());
 		let client = tedi_adapters::github::RealGithubClient::new(config.github_token.clone());
@@ -76,19 +76,19 @@ async fn main() {
 				tracing::info!("Authenticated as: {user}");
 				let cache_path = v_utils::xdg_cache_file!("authenticated_user.txt");
 				let _ = std::fs::write(&cache_path, &user);
-				tedi_ops::current_user::set(user);
+				tedi_task_operations::current_user::set(user);
 			}
 		}
 		tedi_adapters::github::client::set(client.clone());
 	}
 	// Load cached user if not fetched from network
-	if tedi_ops::current_user::get().is_none() {
+	if tedi_task_operations::current_user::get().is_none() {
 		let cache_path = v_utils::xdg_cache_file!("authenticated_user.txt");
 		if let Ok(user) = std::fs::read_to_string(&cache_path) {
 			let user = user.trim().to_string();
 			if !user.is_empty() {
 				tracing::info!("Loaded cached user: {user}");
-				tedi_ops::current_user::set(user);
+				tedi_task_operations::current_user::set(user);
 			}
 		}
 	}
@@ -109,7 +109,7 @@ async fn main() {
 		Commands::Clockify(args) => tedi_adapters::clockify::main(exit_on_error(settings.config()).yes, args).await,
 		Commands::PerfEval(args) => tedi_eval::perf_eval::main(args).await,
 		Commands::Monitors(args) => tedi_eval::watch_monitors::main(args).await,
-		Commands::Open(args) => tedi_ops::open_interactions::open_command(args, cli.offline, cli.mock).await,
+		Commands::Open(args) => tedi_task_operations::open_interactions::open_command(args, cli.offline, cli.mock).await,
 	});
 }
 

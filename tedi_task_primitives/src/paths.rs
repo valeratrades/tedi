@@ -1,6 +1,6 @@
 //! App-identity paths. The runtime lives under the `tedi` app name regardless of
 //! which crate the IO code compiles in — the `v_utils` xdg macros would otherwise
-//! bake in `CARGO_PKG_NAME` (`tedi_ops`) and split the app's data directory.
+//! bake in `CARGO_PKG_NAME` (`tedi_task_primitives`) and split the app's data directory.
 
 use std::path::{Path, PathBuf};
 

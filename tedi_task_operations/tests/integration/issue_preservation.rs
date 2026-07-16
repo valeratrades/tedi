@@ -3,7 +3,7 @@
 //! Tests that nested issues, blockers, and other content survive the
 //! parse -> edit -> serialize -> sync cycle intact.
 
-use tedi_ops::CloseState;
+use tedi_task_operations::CloseState;
 use v_fixtures::FixtureRenderer;
 
 use crate::{

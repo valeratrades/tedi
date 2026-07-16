@@ -1,24 +1,22 @@
 #![feature(default_field_values)]
-//! Operations over the tedi primitives: local/remote sources and sinks,
-//! sync/merge/touch/conflict flows, blocker stack operations, mocks.
+//! What a local/remote tedi issue *is*: local/remote sources and sinks, storage
+//! layout, path resolution, conflict detection, and mocks.
 //!
-//! Depends on `tedi_core` (pure model) and `tedi_adapters` (transport).
+//! Depends on `tedi_core` (pure model) and `tedi_adapters` (transport). Never depends
+//! on `tedi_task_operations` — the directional boundary is compiler-enforced.
 #![feature(error_generic_member_access)]
 #![allow(clippy::len_zero)]
 #![allow(clippy::doc_lazy_continuation)]
 
 use clap::ValueEnum;
 pub use tedi_adapters::github;
-pub mod clockify_tracking;
 mod lazy;
 pub mod local;
 pub mod mock_github;
 pub mod mocks;
-pub mod open_interactions;
 pub mod paths;
 pub mod remote;
 pub mod sink;
-pub mod sprints;
 pub mod utils;
 
 pub use lazy::LazyIssue;

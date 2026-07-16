@@ -1,48 +1,48 @@
 [package]
-name = "tedi"
+name = "tedi_task_primitives"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
-description = "Personal productivity CLI for task tracking, time management, and GitHub issue integration"
+description = "What a local/remote tedi issue is: sources, sinks, storage layout, path resolution"
 license.workspace = true
 repository.workspace = true
-keywords = ["productivity", "task-management", "github", "time-tracking"]
-categories = ["command-line-utilities"]
-
-[package.metadata]
-
-[package.metadata.binstall]
-pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }.tar.gz"
-bin-dir = "{ bin }{ binary-ext }"
-pkg-fmt = "tgz"
-
-[features]
-default = []
 
 [dependencies]
+arrayvec.workspace = true
+async-trait.workspace = true
+async_from.workspace = true
 clap.workspace = true
-clap_complete.workspace = true
 color-eyre.workspace = true
 config.workspace = true
+copy_arrayvec.workspace = true
+derive-new.workspace = true
 derive_more.workspace = true
+futures.workspace = true
 jiff.workspace = true
 miette.workspace = true
+pandoc.workspace = true
+pulldown-cmark.workspace = true
+regex.workspace = true
+reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 smart-default.workspace = true
 tedi_adapters.workspace = true
 tedi_core.workspace = true
-tedi_eval.workspace = true
-tedi_task_operations.workspace = true
-tedi_task_primitives.workspace = true
+tedi_md.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-error.workspace = true
-tracing-subscriber.workspace = true
+url.workspace = true
+urlencoding.workspace = true
 v_utils.workspace = true
 xdg.workspace = true
+
+[dev-dependencies]
+ctor.workspace = true
+insta.workspace = true
 
 [lints]
 workspace = true

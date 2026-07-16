@@ -213,7 +213,8 @@ async fn test_milestone_edit_adds_blockers() {
 
 	// The issue file should now have the blockers
 	ctx.set_issues_dir_override();
-	let issue_path = tedi_ops::local::Local::find_by_number(tedi_ops::RepoInfo::new("o", "r"), 50, tedi_ops::local::FsReader).expect("issue #50 should still exist");
+	let issue_path =
+		tedi_task_operations::local::Local::find_by_number(tedi_task_operations::RepoInfo::new("o", "r"), 50, tedi_task_operations::local::FsReader).expect("issue #50 should still exist");
 	let issue_content = read_issue_file(&issue_path);
 	insta::assert_snapshot!(issue_content, @"
 	- [ ] Empty Issue <!-- @mock_user https://github.com/o/r/issues/50 -->
@@ -343,7 +344,8 @@ async fn test_urgent_new_task_materializes_virtual_issue() {
 	assert_eq!(ctx.xdg.read_data("issues/urgent.md").replace(&issues_str, "<ISSUES>"), "- <ISSUES>/virtual/1_-_some_new_task.md");
 
 	ctx.set_issues_dir_override();
-	let path = tedi_ops::local::Local::find_by_number(tedi_ops::RepoInfo::Virtual, 1, tedi_ops::local::FsReader).expect("materialized issue must be findable by number");
+	let path = tedi_task_operations::local::Local::find_by_number(tedi_task_operations::RepoInfo::Virtual, 1, tedi_task_operations::local::FsReader)
+		.expect("materialized issue must be findable by number");
 	insta::assert_snapshot!(std::fs::read_to_string(&path).unwrap().replace(&issues_str, "<ISSUES>"), @"
 	- [ ] some new task <!-- virtual <ISSUES>/virtual/1_-_some_new_task.md -->
 	  # Blockers
@@ -384,7 +386,7 @@ async fn test_urgent_virtual_issue_reexpands_and_syncs_blockers() {
 	assert_eq!(ctx.xdg.read_data("issues/urgent.md").replace(&issues_str, "<ISSUES>"), "- <ISSUES>/virtual/1_-_some_new_task.md");
 
 	ctx.set_issues_dir_override();
-	let path = tedi_ops::local::Local::find_by_number(tedi_ops::RepoInfo::Virtual, 1, tedi_ops::local::FsReader).expect("issue #1 should still exist");
+	let path = tedi_task_operations::local::Local::find_by_number(tedi_task_operations::RepoInfo::Virtual, 1, tedi_task_operations::local::FsReader).expect("issue #1 should still exist");
 	insta::assert_snapshot!(std::fs::read_to_string(&path).unwrap().replace(&issues_str, "<ISSUES>"), @"
 	- [ ] some new task <!-- virtual <ISSUES>/virtual/1_-_some_new_task.md -->
 	  # Blockers
@@ -410,7 +412,8 @@ async fn test_milestone_edit_without_repo_falls_back_to_virtual() {
 	assert_eq!(result_milestone.replace(&issues_str, "<ISSUES>"), "# Sprint\n\n- <ISSUES>/virtual/1_-_milestone_task.md");
 
 	ctx.set_issues_dir_override();
-	let path = tedi_ops::local::Local::find_by_number(tedi_ops::RepoInfo::Virtual, 1, tedi_ops::local::FsReader).expect("materialized issue must be findable by number");
+	let path = tedi_task_operations::local::Local::find_by_number(tedi_task_operations::RepoInfo::Virtual, 1, tedi_task_operations::local::FsReader)
+		.expect("materialized issue must be findable by number");
 	insta::assert_snapshot!(std::fs::read_to_string(&path).unwrap().replace(&issues_str, "<ISSUES>"), @"
 	- [ ] milestone task <!-- virtual <ISSUES>/virtual/1_-_milestone_task.md -->
 	  # Blockers
@@ -449,9 +452,9 @@ fn seed_selection(ctx: &TestContext, sprint_content: &str, milestones: &[(&str, 
 
 	let mut metas: BTreeMap<(String, String), serde_json::Map<String, serde_json::Value>> = BTreeMap::new();
 	for (url, title, closed, content) in milestones {
-		let link = tedi_ops::MilestoneLink::parse(url).unwrap();
+		let link = tedi_task_operations::MilestoneLink::parse(url).unwrap();
 		let repo = link.repo_info();
-		let file = tedi_ops::local::Local::milestone_file_path(repo, link.number(), title);
+		let file = tedi_task_operations::local::Local::milestone_file_path(repo, link.number(), title);
 		std::fs::create_dir_all(file.parent().unwrap()).unwrap();
 		std::fs::write(&file, format!("{}\n", content.trim_end())).unwrap();
 		metas
@@ -460,8 +463,8 @@ fn seed_selection(ctx: &TestContext, sprint_content: &str, milestones: &[(&str, 
 			.insert(link.number().to_string(), serde_json::json!({ "title": title, "state": if *closed { "Closed" } else { "Open" } }));
 	}
 	for ((owner, name), ms) in metas {
-		let repo = tedi_ops::RepoInfo::new(&owner, &name);
-		let meta_path = tedi_ops::local::Local::milestone_project_dir(repo).join(".meta.json");
+		let repo = tedi_task_operations::RepoInfo::new(&owner, &name);
+		let meta_path = tedi_task_operations::local::Local::milestone_project_dir(repo).join(".meta.json");
 		std::fs::write(&meta_path, serde_json::json!({ "milestones": ms }).to_string()).unwrap();
 	}
 
@@ -649,7 +652,8 @@ async fn test_milestone_edit_expands_milestone_ref_and_syncs_inner_blockers() {
 	assert_eq!(result_milestone, "# Sprint\n\n- https://github.com/o/r/milestone/3");
 
 	ctx.set_issues_dir_override();
-	let path = tedi_ops::local::Local::find_by_number(tedi_ops::RepoInfo::new("o", "r"), 20, tedi_ops::local::FsReader).expect("issue #20 should still exist");
+	let path =
+		tedi_task_operations::local::Local::find_by_number(tedi_task_operations::RepoInfo::new("o", "r"), 20, tedi_task_operations::local::FsReader).expect("issue #20 should still exist");
 	insta::assert_snapshot!(read_issue_file(&path), @"
 	- [ ] Inner Issue <!-- @mock_user https://github.com/o/r/issues/20 -->
 	  inner body
@@ -683,19 +687,19 @@ async fn test_inlined_milestone_task_creates_real_issue_and_does_not_remateriali
 
 	// the task became a real issue in the milestone's repo (o/r#1) — not a local virtual
 	assert!(
-		tedi_ops::local::Local::find_by_number(tedi_ops::RepoInfo::new("o", "r"), 1, tedi_ops::local::FsReader).is_some(),
+		tedi_task_operations::local::Local::find_by_number(tedi_task_operations::RepoInfo::new("o", "r"), 1, tedi_task_operations::local::FsReader).is_some(),
 		"the milestone task should have been created upstream as o/r#1"
 	);
 	assert!(!ctx.xdg.data_exists("issues/virtual"), "a milestone task must never spawn a virtual project");
 	// no duplicate: #2 does NOT exist — no re-materialization
 	assert!(
-		tedi_ops::local::Local::find_by_number(tedi_ops::RepoInfo::new("o", "r"), 2, tedi_ops::local::FsReader).is_none(),
+		tedi_task_operations::local::Local::find_by_number(tedi_task_operations::RepoInfo::new("o", "r"), 2, tedi_task_operations::local::FsReader).is_none(),
 		"no duplicate issue should be created"
 	);
 
 	// the crux: the milestone's durable local file now hosts the real link, so the task
 	// is linked (not homeless) on the next expansion.
-	let ms_file = tedi_ops::local::Local::milestone_file_path(tedi_ops::RepoInfo::new("o", "r"), 3, "big_feature");
+	let ms_file = tedi_task_operations::local::Local::milestone_file_path(tedi_task_operations::RepoInfo::new("o", "r"), 3, "big_feature");
 	let ms_content = std::fs::read_to_string(&ms_file).expect("milestone file must exist");
 	assert!(
 		ms_content.contains("https://github.com/o/r/issues/1"),

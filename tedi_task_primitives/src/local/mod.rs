@@ -20,7 +20,7 @@ use std::collections::BTreeMap;
 
 use HashMap;
 
-pub mod conflict;
+pub mod conflict_detect;
 pub mod consensus;
 
 impl<R: LocalReader> LocalIssueSource<R> {
@@ -44,6 +44,9 @@ impl<R: LocalReader> LocalIssueSource<R> {
 impl LocalIssueSource<FsReader> {
 	/// Build a source for reading from filesystem (submitted state).
 	///
+	/// Pure detection: errors on an unresolved conflict, never opens an editor or sinks.
+	/// The editor-resolve flow lives in the operation layer (`conflict_resolve`).
+	///
 	/// Checks:
 	/// - `fd` executable is available (for file searches)
 	/// - No unresolved merge conflicts exist
@@ -53,19 +56,8 @@ impl LocalIssueSource<FsReader> {
 			return Err(LocalError::new_missing_executable("fd", "local filesystem operations"));
 		}
 
-		// Check for unresolved conflicts (resolves if user already fixed markers)
-		if let Some(conflict_file) = conflict::check_for_existing_conflict(local_path.index).await? {
-			eprintln!("Unresolved merge conflict in: {}", conflict_file.display());
-			eprintln!("Opening for resolution...");
-			let modified = v_utils::io::file_open::open(&conflict_file).await?;
-			if !modified {
-				return Err(ConflictBlockedError::new(conflict_file).into());
-			}
-
-			// Re-check after user exits editor
-			if let Some(conflict_file) = conflict::check_for_existing_conflict(local_path.index).await? {
-				return Err(ConflictBlockedError::new(conflict_file).into());
-			}
+		if let Some(conflict_file) = conflict_detect::pending_conflict(local_path.index)? {
+			return Err(ConflictBlockedError::new(conflict_file).into());
 		}
 
 		Ok(Self::new(local_path, FsReader))
@@ -301,7 +293,7 @@ impl Local {
 
 	/// Spawn fzf with a given list of items and a pre-filled query, return the selected item.
 	/// Uses `--select-1` so a single-entry list resolves without interaction.
-	pub(crate) fn fzf_select(items: &[String], query: &str) -> Result<String> {
+	pub fn fzf_select(items: &[String], query: &str) -> Result<String> {
 		use std::{
 			io::Write,
 			process::{Command, Stdio},
@@ -336,7 +328,7 @@ impl Local {
 	}
 
 	/// All issue files under the issues dir, as paths relative to it.
-	pub(crate) fn issue_file_relpaths() -> Result<Vec<PathBuf>> {
+	pub fn issue_file_relpaths() -> Result<Vec<PathBuf>> {
 		fn walk(dir: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<()> {
 			for entry in std::fs::read_dir(dir)? {
 				let path = entry?.path();
@@ -370,7 +362,7 @@ impl Local {
 	/// unless the pattern contains an uppercase character). Invalid regex is never an error:
 	/// the pattern is handed to fzf as a fuzzy query instead.
 	/// 0 matches → `Ok(None)`; 1 → that candidate; N → fzf over the matched subset.
-	pub(crate) fn resolve_pattern(candidates: &[String], pattern: &str) -> Result<Option<String>> {
+	pub fn resolve_pattern(candidates: &[String], pattern: &str) -> Result<Option<String>> {
 		let smartcase = if pattern.chars().any(char::is_uppercase) {
 			pattern.to_string()
 		} else {
@@ -1106,7 +1098,6 @@ pub use local_path::{LocalPath, LocalPathError, LocalPathErrorKind, LocalPathRes
 
 mod fs_sink;
 mod milestone;
-mod selection;
 use std::path::{Path, PathBuf};
 
 pub use consensus::Consensus;
@@ -1116,11 +1107,10 @@ pub use milestone::{MilestoneMeta, MilestoneProjectMeta};
 // Error Types
 //==============================================================================
 use regex::Regex;
-pub use selection::{Landing, Selected, URGENT_KEY, try_lock_urgent, urgent_path};
 use serde::{Deserialize, Serialize};
 use v_utils::{macros::wrap_err, prelude::*};
 
-use crate::{Issue, IssueIndex, IssueLink, IssueSelector, LinkedIssueMeta, RepoInfo, local::conflict::ConflictBlockedError};
+use crate::{Issue, IssueIndex, IssueLink, IssueSelector, LinkedIssueMeta, RepoInfo, local::conflict_detect::ConflictBlockedError};
 
 /// Per-issue metadata stored in .meta.json.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -1237,7 +1227,7 @@ pub enum LocalError {
 
 	/// Unresolved merge conflict blocks operation.
 	#[own]
-	ConflictBlocked(conflict::ConflictBlockedError),
+	ConflictBlocked(conflict_detect::ConflictBlockedError),
 
 	/// Required executable not found.
 	#[leaf]
@@ -1310,7 +1300,11 @@ impl<R: LocalReader> crate::LazyIssue<LocalIssueSource<R>> for Issue {
 					let repo_info = index.repo_info();
 					let meta = Local::load_project_meta(repo_info).issues.remove(&n);
 					// a virtual issue's link is its own file path (which we've just resolved)
-					let link = if repo_info.is_virtual() { IssueLink::Virtual(file_path.clone()) } else { IssueLink::in_project(repo_info, n) };
+					let link = if repo_info.is_virtual() {
+						IssueLink::Virtual(file_path.clone())
+					} else {
+						IssueLink::in_project(repo_info, n)
+					};
 					Some(Box::new(LinkedIssueMeta::new(
 						meta.as_ref().and_then(|m| m.user.clone()),
 						link,

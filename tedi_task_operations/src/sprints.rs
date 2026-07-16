@@ -12,10 +12,11 @@ use color_eyre::eyre::{Result, bail, eyre};
 use crate::{
 	HollowIssue, Issue, IssueIdentity, IssueIndex, IssueLink, LazyIssue, Milestone, MilestoneLink, NodeLink, RepoInfo, TaskView, VirtualIssue,
 	clockify_tracking::{self, HaltArgs, ResumeArgs},
-	local::{Consensus, FsReader, GitReader, Landing, Local, LocalFs, LocalIssueSource, Selected},
+	local::{Consensus, FsReader, GitReader, Local, LocalFs},
 	open_interactions::{MilestoneModifier, Modifier, SyncOptions, modify_and_sync_issue, modify_and_sync_milestone},
 	parse_blockers_from_embedded,
 	remote::{Remote, RemoteSource, load_remote_milestone},
+	selection::{Landing, Selected},
 	sink::Sink,
 };
 
@@ -316,7 +317,7 @@ pub async fn selected_open(offline: bool, yes: bool) -> Result<()> {
 		}
 		Some(NodeLink::Issue(link)) => {
 			let path = Local::find_by_number(link.project(), link.number(), FsReader).ok_or_else(|| eyre!("issue #{} not found locally", link.number()))?;
-			let local = LocalIssueSource::<FsReader>::build_from_path(&path).await?;
+			let local = crate::conflict_resolve::build_resolving_from_path(&path).await?;
 			let issue = Issue::load(local).await?;
 			modify_and_sync_issue(issue, offline, Modifier::Editor { open_at_blocker: true }, SyncOptions::default()).await?;
 		}
@@ -451,9 +452,9 @@ async fn create_pending_upstream(block: &str, milestone: &MilestoneLink) -> Resu
 async fn load_local_issue(link: &IssueLink) -> Result<Issue> {
 	let path = match link {
 		IssueLink::Virtual(p) => p.clone(),
-		IssueLink::Remote(_) => Local::find_by_number(link.project(), link.number(), FsReader).ok_or_else(|| eyre!("issue #{} not found locally", link.number()))?,
+		IssueLink::Owned(_) => Local::find_by_number(link.project(), link.number(), FsReader).ok_or_else(|| eyre!("issue #{} not found locally", link.number()))?,
 	};
-	let local_source = LocalIssueSource::<FsReader>::build_from_path(&path).await?;
+	let local_source = crate::conflict_resolve::build_resolving_from_path(&path).await?;
 	Issue::load(local_source).await.map_err(Into::into)
 }
 
@@ -470,7 +471,7 @@ async fn fetch_and_store_remote_issue(link: &IssueLink) -> Result<Issue> {
 
 async fn modify_selected(offline: bool, modifier: Modifier, yes: bool) -> Result<()> {
 	let (_, path) = selected_link_path()?;
-	let local = LocalIssueSource::<FsReader>::build_from_path(&path).await?;
+	let local = crate::conflict_resolve::build_resolving_from_path(&path).await?;
 	let issue = Issue::load(local).await?;
 	let result = modify_and_sync_issue(issue, offline, modifier, SyncOptions::default()).await?;
 	if let Some(output) = result.output {

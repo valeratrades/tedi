@@ -1,6 +1,14 @@
 [workspace]
 resolver = "3"
-members = ["tedi", "tedi_adapters", "tedi_core", "tedi_eval", "tedi_md", "tedi_ops"]
+members = [
+    "tedi",
+    "tedi_adapters",
+    "tedi_core",
+    "tedi_eval",
+    "tedi_md",
+    "tedi_task_operations",
+    "tedi_task_primitives",
+]
 
 [workspace.package]
 version = "0.16.3"
@@ -14,7 +22,8 @@ tedi_adapters = { path = "tedi_adapters", version = "0.16.3" }
 tedi_core = { path = "tedi_core", version = "0.16.3" }
 tedi_eval = { path = "tedi_eval", version = "0.16.3" }
 tedi_md = { path = "tedi_md", version = "0.16.3" }
-tedi_ops = { path = "tedi_ops", version = "0.16.3" }
+tedi_task_operations = { path = "tedi_task_operations", version = "0.16.3" }
+tedi_task_primitives = { path = "tedi_task_primitives", version = "0.16.3" }
 
 arrayvec = "0.7"
 ask_llm = { version = "^2.2.2" }

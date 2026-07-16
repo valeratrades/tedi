@@ -1,9 +1,9 @@
 [package]
-name = "tedi_ops"
+name = "tedi_task_operations"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
-description = "Operations over tedi primitives: local/remote sources+sinks, sync/merge/blocker flows"
+description = "What we do with tedi issues: sync, merge, conflict resolution, sprints, selection"
 license.workspace = true
 repository.workspace = true
 
@@ -30,6 +30,7 @@ smart-default.workspace = true
 tedi_adapters.workspace = true
 tedi_core.workspace = true
 tedi_md.workspace = true
+tedi_task_primitives.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
 tokio.workspace = true

@@ -73,7 +73,7 @@ impl Local {
 		Some(dir.join(name))
 	}
 
-	pub(crate) fn load_milestone_project_meta<R: LocalReader>(repo: RepoInfo, reader: &R) -> MilestoneProjectMeta {
+	pub fn load_milestone_project_meta<R: LocalReader>(repo: RepoInfo, reader: &R) -> MilestoneProjectMeta {
 		let path = Self::milestone_meta_path(repo);
 		match reader.read_content(&path) {
 			Ok(c) if c.trim().is_empty() => MilestoneProjectMeta::default(),

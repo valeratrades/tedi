@@ -19,7 +19,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use tedi_core::{IssueLink, IssueSelector, MilestoneLink, NodeLink, TaskView, VirtualIssue};
 
-use super::{FsReader, Local};
+use crate::local::{FsReader, Local};
 
 /// Sprint key for the local urgent sprint.
 pub const URGENT_KEY: &str = "urgent";
@@ -522,10 +522,7 @@ fn issue_children(link: &IssueLink) -> Vec<NodeLink> {
 		})
 		.collect();
 	numbers.sort_unstable();
-	numbers
-		.into_iter()
-		.map(|n| NodeLink::Issue(Local::issue_link(link.project(), n)))
-		.collect()
+	numbers.into_iter().map(|n| NodeLink::Issue(Local::issue_link(link.project(), n))).collect()
 }
 
 /// Whether an issue is resolvable locally and open.

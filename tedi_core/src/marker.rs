@@ -122,11 +122,11 @@ impl IssueMarker {
 	pub fn encode(&self) -> String {
 		match self {
 			Self::Linked { user: Some(user), link } => {
-				assert!(matches!(link, IssueLink::Remote(_)), "linked marker must carry a remote link");
+				assert!(matches!(link, IssueLink::Owned(_)), "linked marker must carry an owned link");
 				format!("@{user} {link}")
 			}
 			Self::Linked { user: None, link } => {
-				assert!(matches!(link, IssueLink::Remote(_)), "linked marker must carry a remote link");
+				assert!(matches!(link, IssueLink::Owned(_)), "linked marker must carry an owned link");
 				link.to_string()
 			}
 			Self::Pending => "pending".to_string(),
@@ -294,7 +294,12 @@ mod tests {
 		assert_eq!(IssueMarker::decode("virtual:"), IssueMarker::Virtual { link: None });
 
 		let path = "/data/issues/virtual/3_-_t.md";
-		assert_eq!(IssueMarker::decode(&format!("virtual {path}")), IssueMarker::Virtual { link: Some(IssueLink::Virtual(path.into())) });
+		assert_eq!(
+			IssueMarker::decode(&format!("virtual {path}")),
+			IssueMarker::Virtual {
+				link: Some(IssueLink::Virtual(path.into()))
+			}
+		);
 	}
 
 	#[test]
@@ -324,7 +329,9 @@ mod tests {
 		let markers = vec![
 			IssueMarker::Pending,
 			IssueMarker::Virtual { link: None },
-			IssueMarker::Virtual { link: Some(IssueLink::Virtual("/data/issues/virtual/3_-_t.md".into())) },
+			IssueMarker::Virtual {
+				link: Some(IssueLink::Virtual("/data/issues/virtual/3_-_t.md".into())),
+			},
 			IssueMarker::Linked {
 				user: Some("owner".to_string()),
 				link,
@@ -424,7 +431,9 @@ mod tests {
 		let markers = vec![
 			Marker::Issue(IssueMarker::Pending),
 			Marker::Issue(IssueMarker::Virtual { link: None }),
-			Marker::Issue(IssueMarker::Virtual { link: Some(IssueLink::Virtual("/data/issues/virtual/3_-_t.md".into())) }),
+			Marker::Issue(IssueMarker::Virtual {
+				link: Some(IssueLink::Virtual("/data/issues/virtual/3_-_t.md".into())),
+			}),
 			Marker::Issue(IssueMarker::Linked {
 				user: Some("owner".to_string()),
 				link: link.clone(),

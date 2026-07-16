@@ -11,7 +11,7 @@ use super::{
 };
 use crate::{
 	Issue, IssueIndex, IssueLink, LazyIssue, MockType, RepoInfo, github,
-	local::{Consensus, ExactMatchLevel, FsReader, Local, LocalFs, LocalIssueSource, LocalPath},
+	local::{Consensus, ExactMatchLevel, FsReader, Local, LocalFs},
 	remote::RemoteSource,
 	sink::Sink,
 };
@@ -168,7 +168,7 @@ pub async fn open_command(args: OpenArgs, offline: bool, mock: Option<MockType>)
 		let cache_path = crate::paths::cache_file("last_modified_issue");
 		let index_str = std::fs::read_to_string(&cache_path).map_err(|_| eyre!("No last modified issue recorded. Open an issue first."))?;
 		let index: IssueIndex = index_str.parse()?;
-		let source = LocalIssueSource::<FsReader>::build(LocalPath::new(index)).await?;
+		let source = crate::conflict_resolve::build_resolving(index).await?;
 		let issue = Issue::load(source).await?;
 		(issue, local_sync_opts(), offline)
 	} else if github::is_github_issue_url(input) {
@@ -196,7 +196,7 @@ pub async fn open_command(args: OpenArgs, offline: bool, mock: Option<MockType>)
 			<Issue as Sink<Consensus>>::sink(&mut issue, None).await?;
 
 			// Clean up conflict file if it exists
-			let conflict_path = crate::local::conflict::conflict_file_path(&owner);
+			let conflict_path = crate::local::conflict_detect::conflict_file_path(&owner);
 			if conflict_path.exists() {
 				std::fs::remove_file(&conflict_path)?;
 			}
@@ -205,7 +205,7 @@ pub async fn open_command(args: OpenArgs, offline: bool, mock: Option<MockType>)
 		} else if let Some(path) = existing_path {
 			// File exists locally - proceed with unified sync (like --pull)
 			println!("Found existing local file, will sync with remote...");
-			let source = LocalIssueSource::<FsReader>::build_from_path(&path).await?;
+			let source = crate::conflict_resolve::build_resolving_from_path(&path).await?;
 			Issue::load(source).await?
 		} else {
 			// File doesn't exist - fetch and create it
@@ -241,7 +241,7 @@ pub async fn open_command(args: OpenArgs, offline: bool, mock: Option<MockType>)
 			Local::fzf_issue(input, exact)?
 		};
 
-		let source = LocalIssueSource::<FsReader>::build_from_path(&issue_file_path).await?;
+		let source = crate::conflict_resolve::build_resolving_from_path(&issue_file_path).await?;
 		let issue = Issue::load(source).await?;
 		(issue, local_sync_opts(), offline)
 	};
