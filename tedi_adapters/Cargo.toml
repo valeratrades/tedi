@@ -18,6 +18,7 @@ serde.workspace = true
 serde_json.workspace = true
 tedi_core.workspace = true
 thiserror.workspace = true
+tokio = { workspace = true, features = ["time"] }
 tracing.workspace = true
 tracing-error.workspace = true
 urlencoding.workspace = true

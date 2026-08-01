@@ -40,6 +40,14 @@ use crate::{
 	sink::Sink,
 };
 
+/// Is a bailed sync error a transient GitHub outage (5xx/429/network)? Walks the error chain so it
+/// catches a `GithubError` surfaced directly (e.g. `load_remote_*`) or nested in a `RemoteSinkError`.
+/// A `true` means the online sync can safely defer to a local save, leaving the divergence for the
+/// pre-open sync to reflush on the next online edit.
+pub(crate) fn is_transient_sync_error(e: &color_eyre::Report) -> bool {
+	e.chain().any(|cause| cause.downcast_ref::<crate::github::GithubError>().map(|g| g.is_transient()).unwrap_or(false))
+}
+
 /// Modify a local issue, then sync changes back to Github.
 ///
 /// Caller is responsible for loading the issue (via `Issue::load(LocalIssueSource)`).
@@ -62,7 +70,12 @@ pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Mo
 
 		if sync_opts.pull || local_differs {
 			elog!("triggered pre-open sync");
-			core::sync(&mut issue, consensus, sync_opts.take_merge_mode()).await?;
+			if let Err(e) = core::sync(&mut issue, consensus, sync_opts.take_merge_mode()).await {
+				if !is_transient_sync_error(&e) {
+					return Err(e);
+				}
+				tracing::warn!("GitHub transient during pre-open issue sync — proceeding with local: {e}");
+			}
 		}
 	}
 
@@ -92,7 +105,14 @@ pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Mo
 			match issue.is_linked() {
 				true => {
 					let consensus = load_consensus_issue(issue_index).await?;
-					core::sync(&mut issue, consensus, mode).await?;
+					if let Err(e) = core::sync(&mut issue, consensus, mode).await {
+						if !is_transient_sync_error(&e) {
+							return Err(e);
+						}
+						tracing::warn!("GitHub transient during issue sync — deferring to local: {e}");
+						eprintln!("GitHub unreachable; edit saved locally (will sync next online edit).");
+						<Issue as Sink<LocalFs>>::sink(&mut issue, None).await?;
+					}
 				}
 				false => {
 					// New issue - check if parent needs syncing first

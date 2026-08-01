@@ -13,6 +13,8 @@ use crate::common::{RunOutput, Seed, TestContext, drain_pipe, get_binary_path, p
 
 const ENV_MOCK_MILESTONE: &str = concat!("tedi", "_MOCK_MILESTONE");
 const ENV_MOCK_PIPE: &str = concat!("tedi", "_MOCK_PIPE");
+const ENV_MOCK_STATE: &str = concat!("tedi", "_MOCK_STATE");
+const ENV_MOCK_FAIL_GET_MILESTONE: &str = concat!("tedi", "_MOCK_FAIL_GET_MILESTONE");
 
 type EditFn = Box<dyn FnOnce(&Path)>;
 
@@ -57,6 +59,20 @@ impl TestContext {
 		let mut cmd = Command::new(get_binary_path());
 		cmd.args(["--mock", "--offline", "sprints", "edit", "urgent", "--offline"]);
 		self.drive_editor_session(cmd, Some(Box::new(edit_fn) as EditFn))
+	}
+
+	/// Drive `sprints edit` through the mock *client* (not the `MOCK_MILESTONE` file shortcut): sets
+	/// `MOCK_STATE` so `list`/`get_milestone` are served from the seeded milestones, optionally injects
+	/// a GitHub outage via the fail toggle, and applies `edit_fn` once the editor is parked.
+	fn milestone_client_edit(&self, args: &[&str], fail_status: Option<&str>, edit_fn: Option<EditFn>) -> RunOutput {
+		self.set_issues_dir_override();
+		let mut cmd = Command::new(get_binary_path());
+		cmd.args(args);
+		cmd.env(ENV_MOCK_STATE, &self.mock_state_path);
+		if let Some(status) = fail_status {
+			cmd.env(ENV_MOCK_FAIL_GET_MILESTONE, status);
+		}
+		self.drive_editor_session(cmd, edit_fn)
 	}
 
 	/// Spawn the binary with the mock-editor pipe attached, apply `edit_fn` to the tmp file
@@ -737,4 +753,91 @@ async fn test_urgent_edit_rejects_milestone_refs() {
 	assert!(!out.status.success(), "expected failure, stdout: {}", out.stdout);
 	assert!(out.stderr.contains("cannot contain milestone refs"), "stderr: {}", out.stderr);
 	assert!(!ctx.xdg.data_exists("issues/urgent.md"), "rejected edit must not be saved");
+}
+
+/// A GitHub outage during a top-level milestone-body edit must NOT throw the edit away: it degrades
+/// to a local save (LocalFs diverges from Consensus, no `rejected-changes.md`), and the next online
+/// `tme <tf>` reflushes it via the pre-open sync (LocalFs == Consensus). Drives through the mock
+/// *client* (not the `MOCK_MILESTONE` shortcut) so the real deferral path runs; the 503 toggle fails
+/// `get_milestone`, so the outage surfaces at the sync boundary inside `modify_and_sync_milestone`.
+#[tokio::test]
+async fn test_milestone_body_edit_defers_on_outage_then_reflushes() {
+	use tedi_task_operations::{RepoInfo, local::Local};
+
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+	ctx.set_issues_dir_override();
+
+	ctx.xdg.write_config("config.toml", "github_token = \"test_token\"\n\n[milestones]\nurl = \"o/r\"\n");
+
+	let repo = RepoInfo::new("o", "r");
+	let (title, number) = ("2w", 3u64);
+	let original_body = "# Sprint 2w\n\nship the thing";
+
+	// Seed the mock *remote* milestone (served by list_milestones / get_milestone).
+	std::fs::write(
+		&ctx.mock_state_path,
+		serde_json::json!({
+			"milestones": [{
+				"owner": "o", "repo": "r", "number": number, "title": title, "state": "open",
+				"description": original_body,
+				"due_on": "2099-01-01T00:00:00Z",
+				"updated_at": "2001-09-11T12:00:00Z",
+			}]
+		})
+		.to_string(),
+	)
+	.unwrap();
+
+	// Seed the LOCAL milestone file + meta, then commit as consensus (git HEAD) — local == consensus.
+	let ms_file = Local::milestone_file_path(repo, number, title);
+	std::fs::create_dir_all(ms_file.parent().unwrap()).unwrap();
+	std::fs::write(&ms_file, format!("{original_body}\n")).unwrap();
+	let meta_path = Local::milestone_project_dir(repo).join(".meta.json");
+	std::fs::write(
+		&meta_path,
+		serde_json::json!({
+			"milestones": { "3": {
+				"title": title, "state": "Open",
+				"due_on": "2099-01-01T00:00:00Z",
+				"timestamps": { "description": "2001-09-11T12:00:00Z" }
+			}}
+		})
+		.to_string(),
+	)
+	.unwrap();
+	let issues_dir = ctx.xdg.data_dir().join("issues");
+	Command::new("git").arg("-C").arg(&issues_dir).args(["add", "-A"]).output().unwrap();
+	Command::new("git").arg("-C").arg(&issues_dir).args(["commit", "-m", "seed milestone consensus"]).output().unwrap();
+
+	let rel = ms_file.strip_prefix(&issues_dir).unwrap().to_string_lossy().into_owned();
+	let head_body = || {
+		let out = Command::new("git").arg("-C").arg(&issues_dir).args(["show", &format!("HEAD:{rel}")]).output().unwrap();
+		String::from_utf8_lossy(&out.stdout).into_owned()
+	};
+
+	// ---- Run 1: GitHub down (503 on get_milestone) — edit the body prose. ----
+	let out1 = ctx.milestone_client_edit(
+		&["--mock", "sprints", "edit", "2w"],
+		Some("503"),
+		Some(Box::new(|tmp: &Path| {
+			let c = std::fs::read_to_string(tmp).unwrap();
+			std::fs::write(tmp, c.replace("ship the thing", "ship the thing NOW")).unwrap();
+		}) as EditFn),
+	);
+	assert!(out1.status.success(), "run1 should exit Ok (deferred). stderr: {}", out1.stderr);
+	assert!(!out1.stderr.contains("rejected-changes.md"), "run1 must NOT dump rejected changes. stderr: {}", out1.stderr);
+
+	let local_after_1 = std::fs::read_to_string(&ms_file).unwrap();
+	assert!(local_after_1.contains("ship the thing NOW"), "run1 local must hold the edit: {local_after_1}");
+	assert!(!head_body().contains("NOW"), "run1 consensus must NOT hold the edit (diverged): {}", head_body());
+
+	// ---- Run 2: GitHub back — no editor change; pre-open sync reflushes the deferral. ----
+	let out2 = ctx.milestone_client_edit(&["--mock", "sprints", "edit", "2w"], None, None);
+	assert!(out2.status.success(), "run2 should exit Ok. stderr: {}", out2.stderr);
+
+	let local_after_2 = std::fs::read_to_string(&ms_file).unwrap();
+	let head_after_2 = head_body();
+	assert!(local_after_2.contains("ship the thing NOW"), "run2 local retains edit: {local_after_2}");
+	assert!(head_after_2.contains("ship the thing NOW"), "run2 reflushed edit to consensus: {head_after_2}");
+	assert_eq!(local_after_2.trim(), head_after_2.trim(), "run2: LocalFs == Consensus (converged)");
 }

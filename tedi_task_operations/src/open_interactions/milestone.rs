@@ -43,7 +43,12 @@ pub async fn modify_and_sync_milestone(mut milestone: Milestone, offline: bool, 
 		let consensus = load_consensus_milestone(&link).await?;
 		let local_differs = consensus.as_ref().map(|c| *c != milestone).unwrap_or(false);
 		if sync_opts.pull || local_differs {
-			sync(&mut milestone, consensus, sync_opts.take_merge_mode()).await?;
+			if let Err(e) = sync(&mut milestone, consensus, sync_opts.take_merge_mode()).await {
+				if !super::sync::is_transient_sync_error(&e) {
+					return Err(e);
+				}
+				tracing::warn!("GitHub transient during pre-open milestone sync — proceeding with local: {e}");
+			}
 		}
 	}
 
@@ -61,7 +66,14 @@ pub async fn modify_and_sync_milestone(mut milestone: Milestone, offline: bool, 
 		false => {
 			let mode = sync_opts.take_merge_mode();
 			let consensus = load_consensus_milestone(&link).await?;
-			sync(&mut milestone, consensus, mode).await?;
+			if let Err(e) = sync(&mut milestone, consensus, mode).await {
+				if !super::sync::is_transient_sync_error(&e) {
+					return Err(e);
+				}
+				tracing::warn!("GitHub transient during milestone sync — deferring to local: {e}");
+				eprintln!("GitHub unreachable; milestone edit saved locally (will sync next online edit).");
+				<Milestone as Sink<LocalFs>>::sink(&mut milestone, None).await?;
+			}
 			Ok(true)
 		}
 	}

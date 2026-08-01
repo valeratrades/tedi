@@ -464,6 +464,13 @@ async fn edit_urgent(offline: bool) -> Result<()> {
 async fn edit_milestone(settings: &LiveSettings, tf: Timeframe, offline: bool, mock: bool) -> Result<()> {
 	use std::fs;
 
+	use tedi_task_operations::{
+		MilestoneBody,
+		local::{FsReader, Local},
+		open_interactions::{MilestoneModifier, SyncOptions, modify_and_sync_milestone},
+		remote::load_remote_milestone,
+	};
+
 	let lock_path = v_utils::xdg_cache_file!(format!("milestones_{tf}.lock"));
 	let lock_file = fs::File::create(&lock_path)?;
 	match lock_file.try_lock() {
@@ -472,134 +479,183 @@ async fn edit_milestone(settings: &LiveSettings, tf: Timeframe, offline: bool, m
 		Err(std::fs::TryLockError::Error(e)) => return Err(e.into()),
 	}
 
-	let (original_description, milestone_number, is_outdated) = if mock {
-		// In mock mode, read milestone content from env-specified file
-		let mock_milestone_path =
-			std::env::var(concat!(env!("CARGO_PKG_NAME"), "_MOCK_MILESTONE")).map_err(|_| eyre!("mock mode requires {}_MOCK_MILESTONE env var", env!("CARGO_PKG_NAME")))?;
-		let content = fs::read_to_string(&mock_milestone_path)?;
-		(content, 0, false)
-	} else {
-		let retrieved_milestones = request_milestones(settings).await?;
-		let milestone = retrieved_milestones.iter().find(|m| m.title == tf.to_string()).ok_or_else(|| {
-			let existing = retrieved_milestones.iter().map(|m| m.title.clone()).collect::<Vec<_>>();
-			eyre!("Milestone '{tf}' not found. Existing milestones: {existing:?}")
-		})?;
-		let desc = milestone.description.clone().unwrap_or_default();
-		let num = milestone.number;
-		let outdated = milestone.due_on.map(|d| d + tedi_eval::same_day_buffer() < Timestamp::now()).unwrap_or(true);
-		(desc, num, outdated)
-	};
+	// GitHub unreachable → degrade the whole run to offline: every edit persists to LocalFs as a
+	// divergence from Consensus, reconciled by the pre-open sync on the next online `tme <tf>`.
+	let offline = offline || (!mock && !tedi_adapters::github::reachable().await);
 
-	// Refresh milestone contents so their refs expand inline, then expand for editing
-	if !mock {
+	// The {app}_MOCK_MILESTONE file shortcut (existing mock tests) bypasses the client + three-way model.
+	if let Ok(mock_milestone_path) = std::env::var(concat!(env!("CARGO_PKG_NAME"), "_MOCK_MILESTONE")) {
+		return edit_milestone_mock_file(&mock_milestone_path, tf, offline).await;
+	}
+
+	// Resolve the milestone number: from GitHub when online, from the local cache when offline.
+	let (owner, repo) = milestone_repo(settings)?;
+	let repo_info = RepoInfo::new(&owner, &repo);
+	let number = if offline {
+		Local::load_milestone_project_meta(repo_info, &FsReader)
+			.milestones
+			.iter()
+			.find(|(_, m)| m.title == tf.to_string())
+			.map(|(n, _)| *n)
+			.ok_or_else(|| eyre!("Cannot edit '{tf}' offline — it was never fetched while online (no local milestone cache)."))?
+	} else {
+		let retrieved = request_milestones(settings).await?;
+		retrieved.iter().find(|m| m.title == tf.to_string()).map(|m| m.number).ok_or_else(|| {
+			let existing = retrieved.iter().map(|m| m.title.clone()).collect::<Vec<_>>();
+			eyre!("Milestone '{tf}' not found. Existing milestones: {existing:?}")
+		})?
+	};
+	let link = MilestoneLink::parse(&format!("https://github.com/{owner}/{repo}/milestone/{number}")).expect("well-formed milestone url");
+
+	// Local-first load (mirrors `sync_milestone_changes`): a diverged local body seeds the editor so a
+	// prior deferred edit stays visible and is preserved in the new body; the pre-open sync inside
+	// `modify_and_sync_milestone` reflushes it. Fall back to remote only when never cached (online only).
+	let milestone = match Local::load_milestone(&link, &FsReader)? {
+		Some(m) => m,
+		None if offline => bail!("Cannot edit '{tf}' offline — it was never fetched while online (no local milestone cache)."),
+		None => load_remote_milestone(&link).await?,
+	};
+	let milestone_number = milestone.number();
+	let original_description = milestone.to_string();
+	let is_outdated = milestone.identity.due_on.map(|d| d + tedi_eval::same_day_buffer() < Timestamp::now()).unwrap_or(true);
+
+	// Refresh inlined milestone contents so their refs expand inline, then expand for editing.
+	if !offline {
 		refresh_sprint_milestones(&original_description).await;
 	}
 	let expanded_description = expand_and_refresh(&original_description).await?;
 
-	// Write to temp file
-	// Use into_path() to prevent TempDir from auto-deleting on drop (survives panics/errors)
+	// Use keep() so the temp file survives panics/errors.
 	let tmp_path = tempfile::tempdir()?.keep().join(format!("milestone_{tf}.md"));
 	fs::write(&tmp_path, &expanded_description)?;
 	eprintln!("[milestone] tmp_path: {}", tmp_path.display());
 
-	// Open in editor
 	tedi_task_operations::utils::open_file(&tmp_path, None).await?;
 
-	// Read back
 	let edited_content = fs::read_to_string(&tmp_path)?;
+	// Compare against expanded (not original) — expansion itself is not a user edit.
+	let changed = edited_content != expanded_description;
 
-	// Check if changed (compare against expanded, not original — expansion itself is not a user edit)
+	let mut edited_doc = TaskView::parse(&edited_content);
+	if changed {
+		// Sync blocker changes back to individual issue files.
+		if let Err(e) = sync_blocker_changes(&edited_content, offline).await {
+			// Parts #1–#3 route transient GitHub errors elsewhere (retried, probed to offline, or deferred
+			// at the sync boundary), so a bail reaching here is a genuine non-transient parse/logic failure.
+			return dump_rejected(&edited_content, e);
+		}
+		// Top-level new tasks belong to this milestone → materialize as real issues in the milestones repo.
+		if let Err(e) = materialize_new_tasks(&mut edited_doc, Some(link.clone()), offline).await {
+			return dump_rejected(&edited_content, e);
+		}
+		// Persist edits inside inlined milestone blocks (incl. materialized tasks) to their own nodes.
+		if let Err(e) = sync_milestone_changes(&edited_doc, offline).await {
+			return dump_rejected(&edited_content, e);
+		}
+		edited_doc.collapse_to_links();
+	}
+
+	// No editor change → reuse the loaded body verbatim (so `collapse(expand(x)) != x` formatting jitter
+	// can't spuriously push); the pre-open sync below still reflushes any prior divergence.
+	let new_body = if changed { MilestoneBody::parse(&edited_doc.serialize()) } else { milestone.body.clone() };
+	let new_description = new_body.0.serialize();
+
+	// Sync issue↔milestone assignments (incl. unassignments, which the set-union merge can't express).
+	// Best-effort: a failure is reconciled on the next online edit rather than throwing hands.
+	if !offline && changed {
+		let mut orig_doc = TaskView::parse(&original_description);
+		orig_doc.resolve_bare_refs();
+		let old_links = orig_doc.issue_links();
+		let new_links = TaskView::parse(&new_description).issue_links();
+		if let Err(e) = sync_milestone_assignments(settings, milestone_number, &old_links, &new_links).await {
+			tracing::warn!("failed to sync milestone assignments (will reconcile next online edit): {e}");
+			eprintln!("warning: failed to sync milestone assignments: {e}");
+		}
+	}
+
+	// Route the top-level body through the three-way model: pre-open sync (reflush a prior deferral),
+	// apply the new body, then sink to LocalFs + Consensus (+ Remote when online).
+	modify_and_sync_milestone(milestone, offline, MilestoneModifier::BodyWrite { body: new_body }, SyncOptions::default()).await?;
+
+	// Update the blocker cache if this is the blocker timeframe milestone.
+	let blocker_tf = settings.config()?.milestones.as_ref().map(|m| m.blocker_tf().to_string()).unwrap_or_else(|| "1d".to_string());
+	if tf.to_string() == blocker_tf {
+		tedi_task_operations::sprints::refresh_selection_cache(&blocker_tf, &new_description);
+	}
+
+	// Outdated milestones get a due-date bump + an archived snapshot. Direct API, online only, best-effort.
+	if !offline && is_outdated {
+		let new_date = Timestamp::now() + tf.signed_duration();
+		println!("Milestone was outdated, updating due date to {}", new_date.strftime("%Y-%m-%d"));
+		let archive_title = format!("{}_{tf}", Timestamp::now().strftime("%Y/%m/%d"));
+		let (update_result, archive_result) = tokio::join!(
+			update_milestone(settings, milestone_number, &new_description, Some(new_date)),
+			create_closed_milestone(settings, &archive_title, &original_description)
+		);
+		if let Err(e) = update_result {
+			tracing::warn!("failed to bump milestone due date (will reconcile next online edit): {e}");
+		}
+		if let Err(e) = archive_result {
+			tracing::warn!("Failed to archive old milestone contents: {e}");
+		}
+	}
+
+	println!("Updated milestone '{tf}'");
+
+	// The edit is already saved above; the trailing healthcheck is informational. It hard-requires the
+	// `2w` sprint, so never let its absence abort a completed edit and make it read as discarded.
+	if !offline
+		&& let Err(e) = healthcheck(settings).await
+	{
+		tracing::warn!("post-edit healthcheck failed (your edit was already saved): {e}");
+		eprintln!("warning: post-edit healthcheck failed (your edit was already saved): {e}");
+	}
+
+	Ok(())
+}
+
+/// Persist an editor buffer that failed a genuine (non-transient) sync/parse, and surface the path.
+fn dump_rejected(edited_content: &str, e: Report) -> Result<()> {
+	tedi_task_operations::utils::persist_rejected_changes(edited_content);
+	eprintln!("Your changes were saved to /tmp/tedi/rejected-changes.md — you can recover them from there.");
+	Err(e)
+}
+
+/// The {app}_MOCK_MILESTONE file shortcut: read/edit/write the milestone body from a plain file,
+/// bypassing the client and the three-way model. Used by the simplest mock integration tests.
+async fn edit_milestone_mock_file(mock_milestone_path: &str, tf: Timeframe, offline: bool) -> Result<()> {
+	use std::fs;
+
+	let original_description = fs::read_to_string(mock_milestone_path)?;
+	let expanded_description = expand_and_refresh(&original_description).await?;
+
+	let tmp_path = tempfile::tempdir()?.keep().join(format!("milestone_{tf}.md"));
+	fs::write(&tmp_path, &expanded_description)?;
+	eprintln!("[milestone] tmp_path: {}", tmp_path.display());
+
+	tedi_task_operations::utils::open_file(&tmp_path, None).await?;
+
+	let edited_content = fs::read_to_string(&tmp_path)?;
 	if edited_content == expanded_description {
 		println!("No changes made to milestone '{tf}'");
 		return Ok(());
 	}
 
-	// Sync blocker changes back to individual issue files
 	if let Err(e) = sync_blocker_changes(&edited_content, offline).await {
-		tedi_task_operations::utils::persist_rejected_changes(&edited_content);
-		eprintln!("Your changes were saved to /tmp/tedi/rejected-changes.md — you can recover them from there.");
-		return Err(e);
+		return dump_rejected(&edited_content, e);
 	}
-
-	// The edited doc is this milestone's body: its top-level new tasks belong to it, so they
-	// materialize as real upstream issues (never virtuals) hosted in the milestones repo. Absent
-	// a milestones config (only reachable in mock), ambient is unset and tasks fall back to virtual.
-	let ambient = milestone_repo(settings)
-		.ok()
-		.and_then(|(owner, repo)| MilestoneLink::parse(&format!("https://github.com/{owner}/{repo}/milestone/{milestone_number}")));
-
 	let mut edited_doc = TaskView::parse(&edited_content);
-	if let Err(e) = materialize_new_tasks(&mut edited_doc, ambient, offline).await {
-		tedi_task_operations::utils::persist_rejected_changes(&edited_content);
-		eprintln!("Your changes were saved to /tmp/tedi/rejected-changes.md — you can recover them from there.");
-		return Err(e);
+	if let Err(e) = materialize_new_tasks(&mut edited_doc, None, offline).await {
+		return dump_rejected(&edited_content, e);
+	}
+	// Mock file mode never reaches the network.
+	if let Err(e) = sync_milestone_changes(&edited_doc, true).await {
+		return dump_rejected(&edited_content, e);
 	}
 
-	// Persist edits made inside inlined milestone blocks (incl. materialized tasks) to their own
-	// nodes. Mock mode forces local-only (never reaches the network).
-	if let Err(e) = sync_milestone_changes(&edited_doc, offline || mock).await {
-		tedi_task_operations::utils::persist_rejected_changes(&edited_content);
-		eprintln!("Your changes were saved to /tmp/tedi/rejected-changes.md — you can recover them from there.");
-		return Err(e);
-	}
-
-	// Collapse expanded issues back to bare links for storage
 	edited_doc.collapse_to_links();
-	let new_description = edited_doc.serialize();
-
-	// Sync milestone assignments on GitHub: assign new issues, unassign removed ones
-	if !mock && !offline {
-		let mut orig_doc = TaskView::parse(&original_description);
-		orig_doc.resolve_bare_refs();
-		let old_links = orig_doc.issue_links();
-		let new_doc = TaskView::parse(&new_description);
-		let new_links = new_doc.issue_links();
-		sync_milestone_assignments(settings, milestone_number, &old_links, &new_links).await?;
-	}
-
-	if mock {
-		// In mock mode, write result back to the milestone file
-		let mock_milestone_path = std::env::var(concat!(env!("CARGO_PKG_NAME"), "_MOCK_MILESTONE")).unwrap();
-		fs::write(&mock_milestone_path, &new_description)?;
-		println!("Updated milestone '{tf}'");
-		return Ok(());
-	}
-
-	// Update the blocker cache if this is the blocker timeframe milestone
-	let config = settings.config()?;
-	let blocker_tf = config.milestones.as_ref().map(|m| m.blocker_tf()).unwrap_or("1d");
-	if tf.to_string() == blocker_tf {
-		tedi_task_operations::sprints::refresh_selection_cache(blocker_tf, &new_description);
-	}
-
-	// If outdated, archive old contents and update date
-	if is_outdated {
-		let new_date = Timestamp::now() + tf.signed_duration();
-		println!("Milestone was outdated, updating due date to {}", new_date.strftime("%Y-%m-%d"));
-
-		// Archive title: "2025/12/17_1d"
-		let archive_title = format!("{}_{tf}", Timestamp::now().strftime("%Y/%m/%d"));
-
-		// Run both API calls in parallel: update current milestone and create archived one
-		let (update_result, archive_result) = tokio::join!(
-			update_milestone(settings, milestone_number, &new_description, Some(new_date)),
-			create_closed_milestone(settings, &archive_title, &original_description)
-		);
-
-		update_result?;
-		if let Err(e) = archive_result {
-			tracing::warn!("Failed to archive old milestone contents: {e}");
-		}
-	} else {
-		// Not outdated, just update description
-		update_milestone(settings, milestone_number, &new_description, None).await?;
-	}
-
+	fs::write(mock_milestone_path, edited_doc.serialize())?;
 	println!("Updated milestone '{tf}'");
-
-	// Run healthcheck after update
-	healthcheck(settings).await?;
-
 	Ok(())
 }
 

@@ -130,6 +130,19 @@ pub enum GithubError {
 	Other { msg: String },
 }
 
+impl GithubError {
+	/// Transient = worth retrying / deferring to a local save: a network/TLS/timeout drop, or a
+	/// 5xx / 429 from the API. Everything else (4xx, GraphQL, NotInitialized, Other) is permanent —
+	/// surface it loudly rather than silently deferring.
+	pub fn is_transient(&self) -> bool {
+		match self {
+			GithubError::Request { .. } => true,
+			GithubError::Api { status, .. } => status.is_server_error() || *status == reqwest::StatusCode::TOO_MANY_REQUESTS,
+			_ => false,
+		}
+	}
+}
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct GithubIssue {
 	pub number: u64,
@@ -616,8 +629,78 @@ impl GithubClient for RealGithubClient {
 }
 
 //==============================================================================
-// Convenience type alias for boxed client
+// Retrying decorator
 //==============================================================================
+
+/// Re-run `$call` up to three extra times on a transient error, backing off 200→400→800ms.
+/// `$call` is re-evaluated each attempt (all our arg types are `Copy` or `&`-borrowed).
+macro_rules! retrying {
+	($call:expr) => {{
+		let mut result = $call.await;
+		for delay_ms in [200u64, 400, 800] {
+			match &result {
+				Err(e) if GithubError::is_transient(e) => {
+					tracing::warn!("transient GitHub error, retrying in {delay_ms}ms: {e}");
+					tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+					result = $call.await;
+				}
+				_ => break,
+			}
+		}
+		result
+	}};
+}
+
+/// Decorates any `GithubClient`, absorbing momentary blips (5xx/429/network) by retrying before
+/// they surface. Wrapping the client once covers every method — no per-call site edits.
+pub struct RetryingGithubClient {
+	inner: BoxedGithubClient,
+}
+impl RetryingGithubClient {
+	pub fn new(inner: BoxedGithubClient) -> Self {
+		Self { inner }
+	}
+}
+
+#[async_trait]
+impl GithubClient for RetryingGithubClient {
+	async fn fetch_authenticated_user(&self) -> Result<String, GithubError> { retrying!(self.inner.fetch_authenticated_user()) }
+	async fn fetch_issue(&self, repo: RepoInfo, issue_number: u64) -> Result<GithubIssue, GithubError> { retrying!(self.inner.fetch_issue(repo, issue_number)) }
+	async fn fetch_comments(&self, repo: RepoInfo, issue_number: u64) -> Result<Vec<GithubComment>, GithubError> { retrying!(self.inner.fetch_comments(repo, issue_number)) }
+	async fn fetch_sub_issues(&self, repo: RepoInfo, issue_number: u64) -> Result<Vec<GithubIssue>, GithubError> { retrying!(self.inner.fetch_sub_issues(repo, issue_number)) }
+	async fn update_issue_body(&self, repo: RepoInfo, issue_number: u64, body: &str) -> Result<(), GithubError> { retrying!(self.inner.update_issue_body(repo, issue_number, body)) }
+	async fn update_issue_state(&self, repo: RepoInfo, issue_number: u64, state: &str) -> Result<(), GithubError> { retrying!(self.inner.update_issue_state(repo, issue_number, state)) }
+	async fn update_comment(&self, repo: RepoInfo, comment_id: u64, body: &str) -> Result<(), GithubError> { retrying!(self.inner.update_comment(repo, comment_id, body)) }
+	async fn create_comment(&self, repo: RepoInfo, issue_number: u64, body: &str) -> Result<(), GithubError> { retrying!(self.inner.create_comment(repo, issue_number, body)) }
+	async fn delete_comment(&self, repo: RepoInfo, comment_id: u64) -> Result<(), GithubError> { retrying!(self.inner.delete_comment(repo, comment_id)) }
+	async fn create_issue(&self, repo: RepoInfo, title: &str, body: &str) -> Result<CreatedIssue, GithubError> { retrying!(self.inner.create_issue(repo, title, body)) }
+	async fn add_sub_issue(&self, repo: RepoInfo, parent_issue_number: u64, child_issue_id: u64) -> Result<(), GithubError> { retrying!(self.inner.add_sub_issue(repo, parent_issue_number, child_issue_id)) }
+	async fn find_issue_by_title(&self, repo: RepoInfo, title: &str) -> Result<Option<u64>, GithubError> { retrying!(self.inner.find_issue_by_title(repo, title)) }
+	async fn issue_exists(&self, repo: RepoInfo, issue_number: u64) -> Result<bool, GithubError> { retrying!(self.inner.issue_exists(repo, issue_number)) }
+	async fn fetch_parent_issue(&self, repo: RepoInfo, issue_number: u64) -> Result<Option<GithubIssue>, GithubError> { retrying!(self.inner.fetch_parent_issue(repo, issue_number)) }
+	async fn fetch_timeline_timestamps(&self, repo: RepoInfo, issue_number: u64) -> Result<GraphqlTimelineTimestamps, GithubError> { retrying!(self.inner.fetch_timeline_timestamps(repo, issue_number)) }
+	async fn set_labels(&self, repo: RepoInfo, issue_number: u64, labels: &[String]) -> Result<(), GithubError> { retrying!(self.inner.set_labels(repo, issue_number, labels)) }
+	async fn set_issue_milestone(&self, repo: RepoInfo, issue_number: u64, milestone: Option<u64>) -> Result<(), GithubError> { retrying!(self.inner.set_issue_milestone(repo, issue_number, milestone)) }
+	async fn repo_exists(&self, repo: RepoInfo) -> Result<bool, GithubError> { retrying!(self.inner.repo_exists(repo)) }
+	async fn list_milestones(&self, repo: RepoInfo) -> Result<Vec<GithubMilestone>, GithubError> { retrying!(self.inner.list_milestones(repo)) }
+	async fn get_milestone(&self, repo: RepoInfo, number: u64) -> Result<GithubMilestone, GithubError> { retrying!(self.inner.get_milestone(repo, number)) }
+	async fn list_milestone_issues(&self, repo: RepoInfo, milestone_number: u64) -> Result<Vec<GithubIssue>, GithubError> { retrying!(self.inner.list_milestone_issues(repo, milestone_number)) }
+	async fn create_milestone(&self, repo: RepoInfo, title: &str, description: &str, closed: bool) -> Result<(), GithubError> { retrying!(self.inner.create_milestone(repo, title, description, closed)) }
+	async fn update_milestone(&self, repo: RepoInfo, number: u64, description: &str, due_on: Option<jiff::Timestamp>) -> Result<(), GithubError> { retrying!(self.inner.update_milestone(repo, number, description, due_on)) }
+}
+
+/// Cheap reachability probe: is GitHub responding? A transient error (5xx/429/network) ⇒ `false`
+/// (defer the run to local offline mode); any HTTP response — even a 4xx — ⇒ `true`. Probes
+/// `/user` (no repo needed) through the global client, so it inherits the retry decorator.
+pub async fn reachable() -> bool {
+	match client::get() {
+		Ok(c) => match c.fetch_authenticated_user().await {
+			Ok(_) => true,
+			Err(e) => !e.is_transient(),
+		},
+		Err(_) => false,
+	}
+}
 
 //==============================================================================
 // Global client storage

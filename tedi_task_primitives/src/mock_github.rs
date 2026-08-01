@@ -16,12 +16,15 @@ use async_trait::async_trait;
 use tracing::instrument;
 
 use crate::{
-	github::{CreatedIssue, GithubClient, GithubComment, GithubError, GithubIssue, GithubLabel, GithubUser, RepoInfo},
+	github::{CreatedIssue, GithubClient, GithubComment, GithubError, GithubIssue, GithubLabel, GithubMilestone, GithubUser, RepoInfo},
 	local::Local,
 };
 
 /// Environment variable name for mock state file (integration tests)
 const ENV_MOCK_STATE: &str = "tedi_MOCK_STATE";
+/// When set to an HTTP status (e.g. `503`), `get_milestone`/`update_milestone` return that status as
+/// an `Api` error — lets tests inject a GitHub outage and exercise the deferral path.
+const ENV_MOCK_FAIL_GET_MILESTONE: &str = "tedi_MOCK_FAIL_GET_MILESTONE";
 /// Mock Github client that stores all state in memory.
 /// Thread-safe for use in async contexts.
 pub struct MockGithubClient {
@@ -43,6 +46,12 @@ pub struct MockGithubClient {
 	/// Sub-issue relationships: parent_issue_number -> vec of child issue numbers
 	sub_issues: Mutex<HashMap<RepoKey, HashMap<u64, Vec<u64>>>>,
 
+	/// All milestones, keyed by (owner, repo) -> number -> milestone
+	milestones: Mutex<HashMap<RepoKey, HashMap<u64, MockMilestoneData>>>,
+
+	/// When set, `get_milestone`/`update_milestone` fail with this status (fault injection).
+	fail_status: Option<reqwest::StatusCode>,
+
 	/// Call log for debugging
 	call_log: Mutex<Vec<String>>,
 }
@@ -56,6 +65,11 @@ impl MockGithubClient {
 			issues: Mutex::new(HashMap::new()),
 			comments: Mutex::new(HashMap::new()),
 			sub_issues: Mutex::new(HashMap::new()),
+			milestones: Mutex::new(HashMap::new()),
+			fail_status: std::env::var(ENV_MOCK_FAIL_GET_MILESTONE)
+				.ok()
+				.and_then(|v| v.parse::<u16>().ok())
+				.and_then(|c| reqwest::StatusCode::from_u16(c).ok()),
 			call_log: Mutex::new(Vec::new()),
 		};
 
@@ -169,6 +183,32 @@ impl MockGithubClient {
 				};
 
 				comments.entry(key).or_default().insert(comment_id, comment_data);
+			}
+		}
+
+		// Load milestones
+		if let Some(ms_arr) = state.get("milestones").and_then(|v| v.as_array()) {
+			let mut milestones = self.milestones.lock().unwrap();
+			for m in ms_arr {
+				let owner = m.get("owner").and_then(|v| v.as_str()).ok_or("missing owner")?;
+				let repo = m.get("repo").and_then(|v| v.as_str()).ok_or("missing repo")?;
+				let number = m.get("number").and_then(|v| v.as_u64()).ok_or("missing number")?;
+				let title = m.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
+				let state_str = m.get("state").and_then(|v| v.as_str()).unwrap_or("open").to_string();
+				let description = m.get("description").and_then(|v| v.as_str()).map(|s| s.to_string());
+				let parse_ts = |field: &str| -> Option<jiff::Timestamp> { m.get(field).and_then(|v| v.as_str()).map(|s| s.parse().expect("valid timestamp in mock JSON")) };
+				let due_on = parse_ts("due_on");
+				let updated_at = parse_ts("updated_at");
+
+				let key = RepoKey::new(owner, repo);
+				milestones.entry(key).or_default().insert(number, MockMilestoneData {
+					number,
+					title,
+					state: state_str,
+					due_on,
+					description,
+					updated_at,
+				});
 			}
 		}
 
@@ -349,6 +389,30 @@ struct MockIssueData {
 	labels_timestamp: Option<jiff::Timestamp>,
 	/// Timestamp for state changes (open/closed)
 	state_timestamp: Option<jiff::Timestamp>,
+}
+
+/// Internal representation of a milestone in the mock
+#[derive(Clone, Debug)]
+struct MockMilestoneData {
+	number: u64,
+	title: String,
+	state: String,
+	due_on: Option<jiff::Timestamp>,
+	description: Option<String>,
+	updated_at: Option<jiff::Timestamp>,
+}
+
+impl MockMilestoneData {
+	fn to_github(&self) -> GithubMilestone {
+		GithubMilestone {
+			number: self.number,
+			title: self.title.clone(),
+			state: self.state.clone(),
+			due_on: self.due_on,
+			description: self.description.clone(),
+			updated_at: self.updated_at,
+		}
+	}
 }
 
 /// Internal representation of a comment in the mock
@@ -745,18 +809,30 @@ impl GithubClient for MockGithubClient {
 		Ok(issues.contains_key(&key))
 	}
 
-	// Milestone editing in mock mode goes through the {app}_MOCK_MILESTONE file (see milestones.rs),
-	// not the client, so these are inert.
-	async fn list_milestones(&self, _repo: RepoInfo) -> Result<Vec<crate::github::GithubMilestone>, GithubError> {
+	// Milestones are served from in-memory state seeded via the `milestones` array of {app}_MOCK_STATE.
+	// The {app}_MOCK_MILESTONE file shortcut (see sprints.rs) bypasses the client for the simplest tests.
+	async fn list_milestones(&self, repo: RepoInfo) -> Result<Vec<GithubMilestone>, GithubError> {
 		self.log_call("list_milestones");
-		Ok(Vec::new())
+		let key = RepoKey::from(repo);
+		let milestones = self.milestones.lock().unwrap();
+		Ok(milestones.get(&key).map(|m| m.values().map(MockMilestoneData::to_github).collect()).unwrap_or_default())
 	}
 
-	async fn get_milestone(&self, _repo: RepoInfo, number: u64) -> Result<crate::github::GithubMilestone, GithubError> {
+	async fn get_milestone(&self, repo: RepoInfo, number: u64) -> Result<GithubMilestone, GithubError> {
 		self.log_call(&format!("get_milestone({number})"));
-		Err(GithubError::new_other(format!("mock has no milestone #{number}")))
+		if let Some(status) = self.fail_status {
+			return Err(GithubError::new_api(status, "mock injected failure".to_string(), "get milestone".to_string()));
+		}
+		let key = RepoKey::from(repo);
+		let milestones = self.milestones.lock().unwrap();
+		milestones
+			.get(&key)
+			.and_then(|m| m.get(&number))
+			.map(MockMilestoneData::to_github)
+			.ok_or_else(|| GithubError::new_other(format!("mock has no milestone #{number}")))
 	}
 
+	// Assignments aren't tracked in the mock; hosted issues come from the milestone description body.
 	async fn list_milestone_issues(&self, _repo: RepoInfo, milestone_number: u64) -> Result<Vec<GithubIssue>, GithubError> {
 		self.log_call(&format!("list_milestone_issues({milestone_number})"));
 		Ok(Vec::new())
@@ -767,8 +843,19 @@ impl GithubClient for MockGithubClient {
 		Ok(())
 	}
 
-	async fn update_milestone(&self, _repo: RepoInfo, number: u64, _description: &str, _due_on: Option<jiff::Timestamp>) -> Result<(), GithubError> {
+	async fn update_milestone(&self, repo: RepoInfo, number: u64, description: &str, due_on: Option<jiff::Timestamp>) -> Result<(), GithubError> {
 		self.log_call(&format!("update_milestone({number})"));
+		if let Some(status) = self.fail_status {
+			return Err(GithubError::new_api(status, "mock injected failure".to_string(), "update milestone".to_string()));
+		}
+		let key = RepoKey::from(repo);
+		let mut milestones = self.milestones.lock().unwrap();
+		if let Some(m) = milestones.get_mut(&key).and_then(|m| m.get_mut(&number)) {
+			m.description = Some(description.to_string());
+			if due_on.is_some() {
+				m.due_on = due_on;
+			}
+		}
 		Ok(())
 	}
 }
