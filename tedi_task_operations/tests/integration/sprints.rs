@@ -679,6 +679,70 @@ async fn test_milestone_edit_expands_milestone_ref_and_syncs_inner_blockers() {
 	");
 }
 
+/// One issue rendered twice in the same buffer (held by the sprint *and* by an inlined milestone):
+/// editing either copy commits, and the next open pulls both copies to the new state.
+#[tokio::test]
+async fn test_issue_rendered_twice_syncs_from_either_copy() {
+	use crate::common::are_you_sure::read_issue_file;
+
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+
+	let vi = parse_virtual("- [ ] Shared Issue <!-- @mock_user https://github.com/o/r/issues/20 -->\n\tshared body\n");
+	ctx.local(&vi, Some(Seed::new(0))).await;
+
+	seed_selection(
+		&ctx,
+		"",
+		&[("https://github.com/o/r/milestone/3", "big_feature", false, "- https://github.com/o/r/issues/20")],
+		&[],
+	);
+
+	let sprint = "# Sprint\n\n- https://github.com/o/r/issues/20\n- https://github.com/o/r/milestone/3\n";
+
+	// 1. both copies are expanded; a blocker typed under the sprint's own copy commits.
+	let (out, sprint) = ctx.milestone_edit_with_changes(sprint, |tmp_path| {
+		let content = std::fs::read_to_string(tmp_path).unwrap();
+		assert_eq!(
+			content.matches("<!-- @mock_user https://github.com/o/r/issues/20 -->").count(),
+			2,
+			"#20 is expanded both at the sprint's level and inside the milestone:\n{content}"
+		);
+		std::fs::write(tmp_path, content.replacen("  shared body\n", "  shared body\n\n  # Blockers\n  - top-level step\n", 1)).unwrap();
+	});
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+
+	// 2. reopening pulls both copies to the new state; a blocker typed under the milestone's copy commits too.
+	let (out, sprint) = ctx.milestone_edit_with_changes(&sprint, |tmp_path| {
+		let content = std::fs::read_to_string(tmp_path).unwrap();
+		assert_eq!(content.matches("- top-level step").count(), 2, "both copies must show the committed blocker:\n{content}");
+		std::fs::write(tmp_path, content.trim_end().to_string() + "\n    - nested step\n").unwrap();
+	});
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+
+	// 3. the edit made in the milestone's copy is likewise visible in both.
+	let (out, _) = ctx.milestone_edit_with_changes(&sprint, |tmp_path| {
+		let content = std::fs::read_to_string(tmp_path).unwrap();
+		assert_eq!(
+			content.matches("- nested step").count(),
+			2,
+			"both copies must show the blocker typed in the milestone's copy:\n{content}"
+		);
+	});
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+
+	ctx.set_issues_dir_override();
+	let path =
+		tedi_task_operations::local::Local::find_by_number(tedi_task_operations::RepoInfo::new("o", "r"), 20, tedi_task_operations::local::FsReader).expect("issue #20 should still exist");
+	insta::assert_snapshot!(read_issue_file(&path), @"
+	- [ ] Shared Issue <!-- @mock_user https://github.com/o/r/issues/20 -->
+	  shared body
+
+	  # Blockers
+	  - top-level step
+	  - nested step
+	");
+}
+
 /// Regression for #41…#46, updated for the milestone-hosts-only-real-issues rule: a task typed
 /// *inside* an inlined milestone is created upstream as a real Github issue (never a virtual),
 /// its link written back into that milestone's durable local file, so re-editing sees it linked
@@ -807,7 +871,12 @@ async fn test_milestone_body_edit_defers_on_outage_then_reflushes() {
 	.unwrap();
 	let issues_dir = ctx.xdg.data_dir().join("issues");
 	Command::new("git").arg("-C").arg(&issues_dir).args(["add", "-A"]).output().unwrap();
-	Command::new("git").arg("-C").arg(&issues_dir).args(["commit", "-m", "seed milestone consensus"]).output().unwrap();
+	Command::new("git")
+		.arg("-C")
+		.arg(&issues_dir)
+		.args(["commit", "-m", "seed milestone consensus"])
+		.output()
+		.unwrap();
 
 	let rel = ms_file.strip_prefix(&issues_dir).unwrap().to_string_lossy().into_owned();
 	let head_body = || {

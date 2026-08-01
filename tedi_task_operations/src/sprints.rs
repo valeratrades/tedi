@@ -204,6 +204,9 @@ pub async fn sync_blocker_changes(content: &str, offline: bool) -> Result<()> {
 
 	let doc = TaskView::parse(content);
 
+	// An issue can be rendered several times in one buffer (held by the sprint *and* by an inlined
+	// milestone). Grouping is what keeps the untouched copies from reverting the edited one.
+	let mut grouped: Vec<(IssueLink, Vec<crate::Blockers>)> = Vec::new();
 	for (link, section_text) in doc.embedded_issues() {
 		let edited_blockers = parse_blockers_from_embedded(&section_text);
 		if edited_blockers.had_orphans {
@@ -212,7 +215,13 @@ pub async fn sync_blocker_changes(content: &str, offline: bool) -> Result<()> {
 				fix the format (all text must be under a `- ` blocker line)",
 			);
 		}
+		match grouped.iter_mut().find(|(l, _)| *l == link) {
+			Some((_, copies)) => copies.push(edited_blockers),
+			None => grouped.push((link, vec![edited_blockers])),
+		}
+	}
 
+	for (link, copies) in grouped {
 		let issue = match load_local_issue(&link).await {
 			Ok(issue) => issue,
 			Err(e) => {
@@ -222,8 +231,12 @@ pub async fn sync_blocker_changes(content: &str, offline: bool) -> Result<()> {
 		};
 
 		// Only sync if the blockers actually differ.
-		if issue.contents.blockers == edited_blockers {
+		let mut edited = copies.into_iter().filter(|b| *b != issue.contents.blockers);
+		let Some(edited_blockers) = edited.next() else {
 			continue;
+		};
+		if edited.any(|b| b != edited_blockers) {
+			bail!("{link} is rendered more than once here and its copies were edited differently — leave a single version of it and retry");
 		}
 
 		println!("Syncing blocker changes for {link}");
