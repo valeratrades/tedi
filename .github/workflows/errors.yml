@@ -1,6 +1,7 @@
 env:
   CARGO_INCREMENTAL: '0'
   CARGO_NET_RETRY: '10'
+  RUSTC_WRAPPER: ''
   RUSTUP_MAX_RETRIES: '10'
   RUST_BACKTRACE: short
 jobs:
@@ -26,7 +27,7 @@ jobs:
 
         '
   pre_ci:
-    uses: valeratrades/.github/.github/workflows/pre_ci.yml@master
+    uses: valeratrades/.github/.github/workflows/pre_ci.yml@main
   rust-tests:
     if: needs.pre_ci.outputs.continue
     name: Rust ${{matrix.rust}}
@@ -161,7 +162,7 @@ jobs:
       matrix:
         rust:
         - nightly
-        - nightly-2025-08-01
+        - nightly-2026-06-29
     timeout-minutes: 45
 name: Errors
 'on':

@@ -1,32 +1,31 @@
 {
   inputs = {
-    flake-utils.url = "github:numtide/flake-utils/11707dc2f618dd54ca8739b309ec4fc024de578b";
-    pre-commit-hooks.url = "github:cachix/git-hooks.nix/f0927703b7b1c8d97511c4116eb9b4ec6645a0fa";
-    v-utils.url = "github:valeratrades/v_flakes?ref=v1.6";
+    v_flakes.url = "github:valeratrades/v_flakes?ref=v1.6";
   };
-  outputs = { self, flake-utils, pre-commit-hooks, v-utils }:
+
+  outputs =
+    { self, v_flakes }:
+    let
+      inherit (v_flakes) flake-utils pre-commit-hooks;
+      manifest = (v_flakes.nixpkgs.lib.importTOML ./tedi/Cargo.toml).package;
+      pname = manifest.name;
+    in
     flake-utils.lib.eachDefaultSystem
       (
         system:
         let
-          pkgs = import v-utils.default_nixpkgs {
-            inherit system;
-            allowUnfree = true;
-          };
-          rust = v-utils.rs.default_nightly system;
-          pre-commit-check = pre-commit-hooks.lib.${system}.run (v-utils.files.preCommit { inherit pkgs; });
-          manifest = (pkgs.lib.importTOML ./tedi/Cargo.toml).package;
+          pkgs = import v_flakes.default_nixpkgs { inherit system; };
+          rust = v_flakes.rs.default_nightly system;
+          pre-commit-check = pre-commit-hooks.lib.${system}.run (v_flakes.files.preCommit { inherit pkgs; });
           workspaceManifest = (pkgs.lib.importTOML ./Cargo.toml).workspace.package;
-          pname = manifest.name;
           stdenv = pkgs.stdenvAdapters.useMoldLinker pkgs.stdenv;
 
-          # Shared runtime dependencies
-          # Note: openssl.out and openssl.dev are auto-added by v-utils for jobs
+          # Note: openssl.out and openssl.dev are auto-added by v_flakes for jobs
           alwaysPkgNames = [ "mold" "egl-wayland" "wayland" "libGL" "libgbm" ];
           alwaysPkgs = map (name: pkgs.${name}) alwaysPkgNames ++ [ pkgs.openssl.dev ];
 
-          # v-utils modules {{{1
-          rs = v-utils.rs {
+          # v_flakes modules {{{1
+          rs = v_flakes.rs {
             inherit pkgs rust;
             deny = true;
             tracey = true;
@@ -40,9 +39,9 @@
             let
               jobDeps = { packages = alwaysPkgNames ++ [ "fd" "pkg-config" ]; debug = true; };
             in
-            v-utils.github {
+            v_flakes.github {
               inherit pkgs pname rs;
-              lastSupportedVersion = "nightly-2025-08-01";
+              lastSupportedVersion = "nightly-${v_flakes.rs.nightly_version}";
               enable = true;
               jobs.default = true;
               jobs.errors.install = jobDeps;
@@ -56,14 +55,14 @@
                 { name = "daily_ev"; color = "0000ff"; description = "everything relevant to the `ev` command"; }
               ];
             };
-          readme = v-utils.readme-fw {
+          readme = v_flakes.readme-fw {
             inherit pkgs pname;
             defaults = true;
             lastSupportedVersion = "nightly-1.90";
             rootDir = ./.;
             badges = [ "msrv" "crates_io" "docs_rs" "loc" "ci" ];
           };
-          combined = v-utils.utils.combine { inherit rust; modules = [ rs github readme ]; };
+          combined = v_flakes.utils.combine { inherit rust; modules = [ rs github readme ]; };
           #,}}}1
         in
         {
@@ -98,7 +97,7 @@
                 pre-commit-check.shellHook +
                 combined.shellHook +
                 ''
-                  cp -f ${(v-utils.files.treefmt) { inherit pkgs; }} ./.treefmt.toml
+                  cp -f ${(v_flakes.files.treefmt) { inherit pkgs; }} ./.treefmt.toml
                 '';
               packages =
                 alwaysPkgs ++
@@ -118,8 +117,6 @@
           inherit (lib) mkEnableOption mkOption mkIf;
           inherit (lib.types) package;
           cfg = config.services.todo-monitors-watch;
-          manifest = (lib.importTOML ./tedi/Cargo.toml).package;
-          pname = manifest.name;
         in
         {
           options.services.todo-monitors-watch = {

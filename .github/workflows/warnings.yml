@@ -1,6 +1,7 @@
 env:
   CARGO_INCREMENTAL: '0'
   CARGO_NET_RETRY: '10'
+  RUSTC_WRAPPER: ''
   RUSTUP_MAX_RETRIES: '10'
   RUST_BACKTRACE: short
 jobs:
@@ -154,7 +155,7 @@ jobs:
 
         '
   pre_ci:
-    uses: valeratrades/.github/.github/workflows/pre_ci.yml@master
+    uses: valeratrades/.github/.github/workflows/pre_ci.yml@main
   rust-clippy:
     if: github.event_name != 'pull_request'
     name: Clippy
@@ -345,29 +346,34 @@ jobs:
       with:
         name: modified-cargo-files
     - uses: dtolnay/install@cargo-docs-rs
-    - run: nix-shell -p mold egl-wayland wayland libGL libgbm fd pkg-config pkg-config
-        openssl.out openssl.dev --command "export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>'
-        -A mold --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export
-        LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A egl-wayland --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A wayland --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A libGL --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A libgbm --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A fd --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.out --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.dev --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && cargo docs-rs"
+    - run: "nix-shell -p mold egl-wayland wayland libGL libgbm fd pkg-config pkg-config\
+        \ openssl.out openssl.dev --command \"export LD_LIBRARY_PATH=\\\"\\$(nix-build\
+        \ '<nixpkgs>' -A mold --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\
+        \" && export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A egl-wayland\
+        \ --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && export\
+        \ LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A wayland --no-out-link)/lib\\\
+        ${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && export LD_LIBRARY_PATH=\\\"\
+        \\$(nix-build '<nixpkgs>' -A libGL --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\\
+        $LD_LIBRARY_PATH\\\" && export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>'\
+        \ -A libgbm --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\"\
+        \ && export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A fd --no-out-link)/lib\\\
+        ${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && export LD_LIBRARY_PATH=\\\"\
+        \\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\\
+        $LD_LIBRARY_PATH\\\" && export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>'\
+        \ -A pkg-config --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\
+        \" && export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A openssl.out\
+        \ --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && export\
+        \ LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A openssl.dev --no-out-link)/lib\\\
+        ${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && for p in \\$(cargo metadata\
+        \ --no-deps --format-version 1 | jq -r '.packages[].name'); do\n  cargo docs-rs\
+        \ -p \\\"\\$p\\\"\ndone\n\""
     timeout-minutes: 45
   rust-machete:
     name: Unused Dependencies
     needs: load_nix
     runs-on: ubuntu-latest
     steps:
-    - name: Installation
-      uses: taiki-e/install-action@v2
-      with:
-        tool: cargo-machete
+    - uses: actions/checkout@v4
     - name: Install Nix
       uses: DeterminateSystems/nix-installer-action@main
       with:
@@ -434,6 +440,7 @@ jobs:
         \ | head -20 || echo \"query failed\"\necho \"\"\necho \"20. System libssl:\"\
         \nldconfig -p 2>/dev/null | grep libssl || echo \"no system libssl\"\necho\
         \ \"\"\necho \"=== END DEBUG ===\"\n"
+    - uses: cachix/install-nix-action@v31
     - name: Cargo Machete
       run: "nix-shell -p mold egl-wayland wayland libGL libgbm fd pkg-config pkg-config\
         \ openssl.out openssl.dev --command \"export LD_LIBRARY_PATH=\\\"\\$(nix-build\
@@ -453,10 +460,10 @@ jobs:
         \" && export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A openssl.out\
         \ --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && export\
         \ LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A openssl.dev --no-out-link)/lib\\\
-        ${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && \t\t\t\t\t\tcargo machete\n\
-        \t\t\t\t\t\texit_code=\\$?\n\t\t\t\t\t\tif [ \\$exit_code = 0 ]; then\n\t\t\
-        \t\t\t\t\techo \\\"Found unused dependencies\\\"\n\t\t\t\t\t\t\texit \\$exit_code\n\
-        \t\t\t\t\t\tfi\n\t\t\t\""
+        ${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && \t\t\t\tnix run github:valeratrades/v_flakes#cargo-machete\n\
+        \t\t\t\texit_code=\\$?\n\t\t\t\tif [ \\$exit_code != 0 ]; then\n\t\t\t\t\t\
+        echo \\\"Found unused dependencies\\\"\n\t\t\t\t\texit \\$exit_code\n\t\t\t\
+        \tfi\n\t\t\t\""
   rust-sorted:
     name: Cargo Sorted
     needs: load_nix
@@ -628,10 +635,7 @@ jobs:
         \ | head -20 || echo \"query failed\"\necho \"\"\necho \"20. System libssl:\"\
         \nldconfig -p 2>/dev/null | grep libssl || echo \"no system libssl\"\necho\
         \ \"\"\necho \"=== END DEBUG ===\"\n"
-    - name: Installation
-      uses: taiki-e/install-action@v2
-      with:
-        tool: cargo-sort-derives
+    - uses: cachix/install-nix-action@v31
     - name: Assert derives are sorted
       run: "nix-shell -p mold egl-wayland wayland libGL libgbm fd pkg-config pkg-config\
         \ openssl.out openssl.dev --command \"export LD_LIBRARY_PATH=\\\"\\$(nix-build\
@@ -651,10 +655,13 @@ jobs:
         \" && export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A openssl.out\
         \ --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && export\
         \ LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A openssl.dev --no-out-link)/lib\\\
-        ${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && \t\t\t\tcargo sort-derives\
-        \ --check\n\t\t\t\texit_code=\\$?\n\t\t\t\tif [ \\$exit_code != 0 ]; then\n\
-        \t\t\t\t\techo \\\"Derives are not sorted. Run \\`cargo sort-derives\\` to\
-        \ fix it.\\\"\n\t\t\t\t\texit \\$exit_code\n\t\t\t\tfi\n\t\t\t\""
+        ${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && \t\t\t\t# `sort-derives` is\
+        \ argv[1] here: the binary is a cargo subcommand, and `nix run` invokes\n\t\
+        \t\t\t# it directly rather than through `cargo`, so nothing else supplies\
+        \ that word.\n\t\t\t\tnix run github:valeratrades/v_flakes#cargo-sort-derives\
+        \ -- sort-derives --check\n\t\t\t\texit_code=\\$?\n\t\t\t\tif [ \\$exit_code\
+        \ != 0 ]; then\n\t\t\t\t\techo \\\"Derives are not sorted. Run \\`cargo sort-derives\\\
+        ` to fix it.\\\"\n\t\t\t\t\texit \\$exit_code\n\t\t\t\tfi\n\t\t\t\""
   tokei:
     name: Reasonable Amount of Comments
     needs: load_nix
