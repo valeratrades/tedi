@@ -26,7 +26,7 @@ tedi_task_operations = { path = "tedi_task_operations", version = "0.16.3" }
 tedi_task_primitives = { path = "tedi_task_primitives", version = "0.16.3" }
 
 arrayvec = "0.7"
-ask_llm = { version = "^2.2.2" }
+ask_llm = { version = "^3.0.1" }
 async-trait = "^0.1.89"
 async_from = "0.2.0"
 base64 = "0.22"
