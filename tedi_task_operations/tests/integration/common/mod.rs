@@ -833,7 +833,7 @@ pub struct TestContext {
 }
 
 /// Seed for deterministic timestamp generation. Must be in range -100..=100.
-#[derive(Clone, Copy, Debug, derive_more::Deref, derive_more::DerefMut, derive_more::Display, Eq, derive_more::Into, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, derive_more::Deref, derive_more::DerefMut, derive_more::Display, derive_more::Into)]
 pub struct Seed(i64);
 
 /// What target the OpenBuilder opens.

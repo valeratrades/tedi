@@ -179,7 +179,7 @@ impl fmt::Display for IssueLink {
 
 /// A Github milestone identifier. Wraps a URL and derives properties on demand.
 /// Format: `https://github.com/{owner}/{repo}/milestone/{number}`
-#[derive(Clone, Debug, derive_more::Deref, Eq, Hash, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq, derive_more::Deref)]
 pub struct MilestoneLink(Url);
 
 impl MilestoneLink {

@@ -396,7 +396,7 @@ impl From<&Issue> for IssueIndex {
 }
 
 /// A comment in the issue conversation (first one is always the issue body)
-#[derive(Clone, Debug, Default, derive_more::Deref, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, derive_more::Deref)]
 pub struct Comment {
 	/// Comment identity - body, linked to Github, or pending creation
 	pub identity: CommentIdentity,
@@ -431,7 +431,7 @@ impl Comment {
 		matches!(self.identity, CommentIdentity::Pending)
 	}
 }
-#[derive(Clone, Debug, derive_more::Deref, derive_more::DerefMut, PartialEq)]
+#[derive(Clone, Debug, PartialEq, derive_more::Deref, derive_more::DerefMut)]
 pub struct Comments(pub Vec<Comment>);
 impl Comments {
 	pub fn description(&self) -> String {

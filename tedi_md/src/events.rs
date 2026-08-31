@@ -316,7 +316,7 @@ impl OwnedCodeBlockKind {
 
 /// A sequence of owned markdown events.
 /// This is the primary type for storing markdown content.
-#[derive(Clone, Debug, Default, derive_more::Deref, derive_more::IntoIterator, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, derive_more::Deref, derive_more::IntoIterator)]
 pub struct Events(Vec<OwnedEvent>);
 impl Events {
 	/// Parse markdown content into events.

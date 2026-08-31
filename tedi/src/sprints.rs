@@ -60,7 +60,12 @@ pub enum SelectedOp {
 	/// List the selected issue's blockers
 	List,
 	/// Compactly show the current blocker
-	Current,
+	Current {
+		/// Emit Pango markup (for eww labels), suffixed with a Clockify-tracking dot:
+		/// blue active, white paused, red tracking-elsewhere.
+		#[arg(long)]
+		markup: bool,
+	},
 	/// Append a blocker to the selected issue
 	Add {
 		text: String,
@@ -155,7 +160,7 @@ pub async fn sprints_command(settings: &LiveSettings, args: SprintsArgs, mock: O
 			match op {
 				SelectedOp::Open => ops::selected_open(offline, yes()).await,
 				SelectedOp::List => ops::selected_list(),
-				SelectedOp::Current => ops::selected_current(),
+				SelectedOp::Current { markup } => ops::selected_current(markup),
 				SelectedOp::Add { text, nest } => ops::selected_add(text, nest, offline, yes()).await,
 				SelectedOp::Pop { parents } => ops::selected_pop(parents as usize, offline, yes()).await,
 				SelectedOp::Set { text } => ops::selected_set(text, offline, yes()).await,

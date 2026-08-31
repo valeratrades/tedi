@@ -354,19 +354,46 @@ pub fn selected_list() -> Result<()> {
 	Ok(())
 }
 /// `sprints selected current` — compactly print the current (deepest) blocker.
-pub fn selected_current() -> Result<()> {
-	let (_, path) = selected_link_path()?;
+///
+/// `markup`: emit Pango markup for eww labels (GTK, not a terminal) and suffix a tracking dot.
+pub fn selected_current(markup: bool) -> Result<()> {
+	let (link, path) = selected_link_path()?;
 	let content = std::fs::read_to_string(&path)?;
 	let contents = VirtualIssue::parse(&content, path)?.contents;
 	let current = contents.blockers.current_with_context(&[]).unwrap_or(contents.title);
 	// Truncated for status-bar consumers (eww polls this).
 	const MAX_LEN: usize = 70;
-	if current.chars().count() <= MAX_LEN {
-		println!("{current}");
+	let current = if current.chars().count() <= MAX_LEN {
+		current
 	} else {
-		println!("{}...", current.chars().take(MAX_LEN - 3).collect::<String>());
+		format!("{}...", current.chars().take(MAX_LEN - 3).collect::<String>())
+	};
+	if markup {
+		println!("{} {}", pango_escape(&current), tracking_dot(&issue_key(&link)));
+	} else {
+		println!("{current}");
 	}
 	Ok(())
+}
+/// Pango-colored hollow dot for the Clockify timer's state on `key`.
+///
+/// Read off the local tracking record rather than the Clockify API: this rides a 0.5s eww poll
+/// that must not touch the network. tedi owns every resume/halt, so the record is authoritative
+/// for tedi-driven transitions — a timer stopped outside tedi still reads active.
+/// ponytail: local record only; poll the API behind a TTL cache if out-of-band stops start biting.
+fn tracking_dot(key: &str) -> String {
+	// #68d4ff/#ffffff/#ff6565 — same palette as the claude_sessions bar widget.
+	let color = match clockify_tracking::tracked_issue() {
+		Some(tracked) if tracked == key => "#68d4ff",
+		None => "#ffffff",
+		Some(_) => "#ff6565", // tracking some other issue: a retrack after selection failed
+	};
+	format!("<span foreground=\"{color}\">○</span>")
+}
+/// Escape text so Pango reads it as literal content. Blocker text carries `<`, `>` and `&`
+/// freely, and one raw bracket blanks the whole eww label.
+fn pango_escape(s: &str) -> String {
+	s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
 }
 pub async fn selected_add(text: String, nest: bool, offline: bool, yes: bool) -> Result<()> {
 	modify_selected(offline, Modifier::BlockerAdd { text, nest }, yes).await
