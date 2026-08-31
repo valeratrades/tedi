@@ -39,6 +39,9 @@ pub enum SprintsCommands {
 		/// Ascend one level in the selection path
 		#[arg(long)]
 		up: bool,
+		/// Reset to the top item of the sprint
+		#[arg(long)]
+		top: bool,
 	},
 	/// Operate on the selected issue in the active sprint
 	Selected {
@@ -130,21 +133,21 @@ pub async fn sprints_command(settings: &LiveSettings, args: SprintsArgs, mock: O
 			SprintRef::Tf(tf) => edit_milestone(settings, tf, offline, mock.is_some()).await,
 		},
 		SprintsCommands::Healthcheck => healthcheck(settings).await,
-		SprintsCommands::Select { pattern, next, prev, down, up } => {
+		SprintsCommands::Select { pattern, next, prev, down, up, top } => {
 			// A bare timeframe (`sprints select 1d`) focuses that sprint precision; anything else
 			// is an issue pattern within the currently-active sprint. The alpha-designator guard
 			// keeps numeric issue patterns (`select 2`) from parsing as a timeframe.
 			if !offline
 				&& !next && !prev
 				&& !down && !up
-				&& let Some(p) = pattern.as_deref()
+				&& !top && let Some(p) = pattern.as_deref()
 				&& p.chars().any(|c| c.is_ascii_alphabetic())
 				&& let Ok(tf) = p.parse::<Timeframe>()
 			{
 				focus_sprint(settings, tf, yes()).await
 			} else {
 				ensure_selection_cache(settings, offline).await?;
-				ops::select(pattern, next, prev, down, up, yes()).await
+				ops::select(pattern, next, prev, down, up, top, yes()).await
 			}
 		}
 		SprintsCommands::Selected { op } => {
@@ -258,7 +261,7 @@ fn parse_github_repo(url: &str) -> Result<(String, String)> {
 	Err(eyre!("Could not parse Github repo from URL: {url}"))
 }
 
-#[derive(Clone, Debug, thiserror::Error, PartialEq)]
+#[derive(Clone, Debug, PartialEq, thiserror::Error)]
 #[error("Error on `{requested_tf}` milestone: {source}")]
 struct GetMilestoneError {
 	requested_tf: Timeframe,
@@ -266,7 +269,7 @@ struct GetMilestoneError {
 	source: MilestoneError,
 }
 
-#[derive(Clone, Debug, thiserror::Error, PartialEq)]
+#[derive(Clone, Debug, PartialEq, thiserror::Error)]
 enum MilestoneError {
 	#[error("Milestone is missing due_on date")]
 	MissingDueOn,
@@ -604,9 +607,7 @@ async fn edit_milestone(settings: &LiveSettings, tf: Timeframe, offline: bool, m
 
 	// The edit is already saved above; the trailing healthcheck is informational. It hard-requires the
 	// `2w` sprint, so never let its absence abort a completed edit and make it read as discarded.
-	if !offline
-		&& let Err(e) = healthcheck(settings).await
-	{
+	if !offline && let Err(e) = healthcheck(settings).await {
 		tracing::warn!("post-edit healthcheck failed (your edit was already saved): {e}");
 		eprintln!("warning: post-edit healthcheck failed (your edit was already saved): {e}");
 	}

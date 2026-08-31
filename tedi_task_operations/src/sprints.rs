@@ -290,8 +290,8 @@ pub fn refresh_selection_cache(key: &str, content: &str) {
 		tracing::warn!("failed to refresh selection cache: {e}");
 	}
 }
-/// `sprints select [pattern] [--next|--prev|--down|--up]` — change the active sprint's selection.
-pub async fn select(pattern: Option<String>, next: bool, prev: bool, down: bool, up: bool, yes: bool) -> Result<()> {
+/// `sprints select [pattern] [--next|--prev|--down|--up|--top]` — change the active sprint's selection.
+pub async fn select(pattern: Option<String>, next: bool, prev: bool, down: bool, up: bool, top: bool, yes: bool) -> Result<()> {
 	let landing = if next {
 		Selected::select_move(1)
 	} else if prev {
@@ -300,6 +300,8 @@ pub async fn select(pattern: Option<String>, next: bool, prev: bool, down: bool,
 		Selected::select_down()
 	} else if up {
 		Selected::select_up()
+	} else if top {
+		Selected::select_top()
 	} else {
 		Selected::select_pattern(pattern.as_deref())
 	}

@@ -190,6 +190,18 @@ impl Selected {
 		Ok(Landing::Issue(child))
 	}
 
+	/// Reset to the sprint's top open root node.
+	pub fn select_top() -> Result<Landing, String> {
+		let mut sel = Self::load();
+		let active = sel.active().ok_or("No active sprint. Run `todo sprints edit 1d` first.")?;
+		guard_urgent(&active)?;
+		sel.paths.remove(&active.key);
+		let path = sel.validate_path(&active);
+		let landing = sel.describe(path.last().ok_or("No open items in the active sprint.")?);
+		sel.persist_path(&active.key, &path);
+		Ok(landing)
+	}
+
 	/// Ascend one level; error at the sprint root.
 	pub fn select_up() -> Result<Landing, String> {
 		let mut sel = Self::load();
