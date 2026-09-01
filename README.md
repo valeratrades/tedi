@@ -81,7 +81,7 @@ eval "$(todo init zsh)"                   # Or: bash, fish
 ### Vim Fold Markers
 Needs `foldmethod=marker` on markdown buffers.
 
-Sprint views wrap each top-level component in a plain `{{{`/`}}}` fold, so `zM` collapses the sprint down to its title lines and `zR` brings the contents back.
+Sprint views wrap each top-level component in a `{{{1`/`}}}1` fold, so `zM` collapses the sprint down to its title lines and `zR` brings the contents back.
 
 Closed issues/sub-issues wrap their content in vim fold markers using `{{{always` suffix (nested one level deeper inside a sprint).
 To auto-close these folds in nvim, add:

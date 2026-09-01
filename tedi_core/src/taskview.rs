@@ -376,8 +376,8 @@ impl std::fmt::Display for TaskView {
 /// Sprint-view folds are a render concern (see `sprints::expand_and_refresh`): an edited buffer
 /// must collapse back to the same stored bytes, so the markers never reach the event stream.
 fn strip_fold_markers(content: &str) -> std::borrow::Cow<'_, str> {
-	let start = crate::Marker::FoldStart.encode();
-	let end = crate::Marker::FoldEnd.encode();
+	let start = crate::Marker::FoldStart(crate::FoldLevel::First).encode();
+	let end = crate::Marker::FoldEnd(crate::FoldLevel::First).encode();
 	if !content.contains(&start) && !content.contains(&end) {
 		return std::borrow::Cow::Borrowed(content);
 	}

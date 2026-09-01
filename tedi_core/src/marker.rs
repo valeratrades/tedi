@@ -10,6 +10,11 @@ use tedi_md::Header;
 
 use crate::{IssueLink, IssueSelector};
 
+/// Vim's default `foldmarker` pair. Kept apart from the string literals below so the markers
+/// can't drift from each other.
+const FOLD_OPEN: &str = "{{{";
+const FOLD_CLOSE: &str = "}}}";
+
 /// Issue identity marker - encodes how an issue relates to GitHub.
 ///
 /// Formats:
@@ -154,6 +159,26 @@ impl fmt::Display for IssueMarker {
 	}
 }
 
+/// Suffix of a vim fold marker. `always` is ours, not a vim level: nvim closes those folds on
+/// open (see README). Vim reads it as unnumbered, so such a fold nests under whatever encloses it.
+#[derive(Clone, Copy, Debug, PartialEq, derive_more::Display)]
+pub enum FoldLevel {
+	#[display("always")]
+	Always,
+	#[display("1")]
+	First,
+}
+
+impl FoldLevel {
+	fn decode(s: &str) -> Option<Self> {
+		match s {
+			"always" => Some(Self::Always),
+			"1" => Some(Self::First),
+			_ => None,
+		}
+	}
+}
+
 /// A marker that can appear in issue files.
 /// All markers normalize whitespace on decode and encode with consistent spacing.
 #[derive(Clone, Debug, PartialEq)]
@@ -172,11 +197,11 @@ pub enum Marker {
 	OmittedStart,
 	/// Omitted end marker: `<!--,}}}-->` (vim fold end)
 	OmittedEnd,
-	/// Sprint-view fold start: `<!--{{{-->`, appended to a top-level component's title line.
+	/// Task-view fold start: `<!--{{{1-->`, appended to a component's title line.
 	/// Presentation only — stripped by `TaskView::parse`, never stored.
-	FoldStart,
-	/// Sprint-view fold end: `<!--}}}-->`, on its own line after the component's last content line.
-	FoldEnd,
+	FoldStart(FoldLevel),
+	/// Task-view fold end: `<!--}}}1-->`, on its own line after the component's last content line.
+	FoldEnd(FoldLevel),
 }
 
 impl Marker {
@@ -233,11 +258,11 @@ impl Marker {
 		if lower.starts_with(",}}}") || lower == ",}}}" {
 			return Some(Marker::OmittedEnd);
 		}
-		if inner == "{{{" {
-			return Some(Marker::FoldStart);
+		if let Some(level) = inner.strip_prefix(FOLD_OPEN).and_then(FoldLevel::decode) {
+			return Some(Marker::FoldStart(level));
 		}
-		if inner == "}}}" {
-			return Some(Marker::FoldEnd);
+		if let Some(level) = inner.strip_prefix(FOLD_CLOSE).and_then(FoldLevel::decode) {
+			return Some(Marker::FoldEnd(level));
 		}
 
 		// Comment marker (contains #issuecomment-)
@@ -268,10 +293,10 @@ impl Marker {
 			Marker::Comment { user, url, .. } => format!("<!-- @{user} {url} -->"),
 			Marker::NewComment => "<!-- new comment -->".to_string(),
 			Marker::BlockersSection(header) => header.encode(),
-			Marker::OmittedStart => "<!--omitted {{{always-->".to_string(),
-			Marker::OmittedEnd => "<!--,}}}-->".to_string(),
-			Marker::FoldStart => "<!--{{{-->".to_string(),
-			Marker::FoldEnd => "<!--}}}-->".to_string(),
+			Marker::OmittedStart => format!("<!--omitted {FOLD_OPEN}{}-->", FoldLevel::Always),
+			Marker::OmittedEnd => format!("<!--,{FOLD_CLOSE}-->"),
+			Marker::FoldStart(level) => format!("<!--{FOLD_OPEN}{level}-->"),
+			Marker::FoldEnd(level) => format!("<!--{FOLD_CLOSE}{level}-->"),
 		}
 	}
 }
@@ -459,8 +484,8 @@ mod tests {
 			Marker::NewComment,
 			Marker::OmittedStart,
 			Marker::OmittedEnd,
-			Marker::FoldStart,
-			Marker::FoldEnd,
+			Marker::FoldStart(FoldLevel::First),
+			Marker::FoldEnd(FoldLevel::First),
 		];
 
 		for marker in markers {

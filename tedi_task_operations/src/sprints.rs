@@ -95,8 +95,8 @@ pub async fn expand_and_refresh(content: &str) -> Result<String> {
 /// whole sprint collapses to its title lines (`zM`) and back (`zR`) with no plugin.
 /// Only the first level is emitted here; deeper folds come from the issues' own markers.
 fn fold_top_level(rendered: &str) -> String {
-	let start = tedi_core::Marker::FoldStart.encode();
-	let end = tedi_core::Marker::FoldEnd.encode();
+	let start = tedi_core::Marker::FoldStart(tedi_core::FoldLevel::First).encode();
+	let end = tedi_core::Marker::FoldEnd(tedi_core::FoldLevel::First).encode();
 	let lines: Vec<&str> = rendered.lines().collect();
 
 	let mut out = String::with_capacity(rendered.len());
@@ -666,16 +666,16 @@ mod tests {
 		insta::assert_snapshot!(fold_top_level(RENDERED), @"
 		# important today
 
-		- [ ] First <!-- @u https://github.com/o/r/issues/1 --> <!--{{{-->
+		- [ ] First <!-- @u https://github.com/o/r/issues/1 --> <!--{{{1-->
 		  # Blockers
 		  - task A
-		  <!--}}}-->
+		  <!--}}}1-->
 
 		- [ ] Second <!-- @u https://github.com/o/r/issues/2 -->
 
-		- [ ] third_repo <!--{{{-->
+		- [ ] third_repo <!--{{{1-->
 		  - [ ] Nested <!-- @u https://github.com/o/r/issues/3 -->
-		  <!--}}}-->
+		  <!--}}}1-->
 		");
 	}
 
