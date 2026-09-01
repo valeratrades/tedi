@@ -172,6 +172,11 @@ pub enum Marker {
 	OmittedStart,
 	/// Omitted end marker: `<!--,}}}-->` (vim fold end)
 	OmittedEnd,
+	/// Sprint-view fold start: `<!--{{{-->`, appended to a top-level component's title line.
+	/// Presentation only — stripped by `TaskView::parse`, never stored.
+	FoldStart,
+	/// Sprint-view fold end: `<!--}}}-->`, on its own line after the component's last content line.
+	FoldEnd,
 }
 
 impl Marker {
@@ -228,6 +233,12 @@ impl Marker {
 		if lower.starts_with(",}}}") || lower == ",}}}" {
 			return Some(Marker::OmittedEnd);
 		}
+		if inner == "{{{" {
+			return Some(Marker::FoldStart);
+		}
+		if inner == "}}}" {
+			return Some(Marker::FoldEnd);
+		}
 
 		// Comment marker (contains #issuecomment-)
 		if inner.contains("#issuecomment-") {
@@ -259,6 +270,8 @@ impl Marker {
 			Marker::BlockersSection(header) => header.encode(),
 			Marker::OmittedStart => "<!--omitted {{{always-->".to_string(),
 			Marker::OmittedEnd => "<!--,}}}-->".to_string(),
+			Marker::FoldStart => "<!--{{{-->".to_string(),
+			Marker::FoldEnd => "<!--}}}-->".to_string(),
 		}
 	}
 }
@@ -446,6 +459,8 @@ mod tests {
 			Marker::NewComment,
 			Marker::OmittedStart,
 			Marker::OmittedEnd,
+			Marker::FoldStart,
+			Marker::FoldEnd,
 		];
 
 		for marker in markers {

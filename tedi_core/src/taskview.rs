@@ -25,7 +25,8 @@ pub struct TaskView {
 }
 impl TaskView {
 	pub fn parse(content: &str) -> Self {
-		let events = Events::parse(content);
+		let content = strip_fold_markers(content);
+		let events = Events::parse(&content);
 		let mut view = Self {
 			sections: BTreeMap::new(),
 			prose: BTreeMap::new(),
@@ -363,6 +364,33 @@ impl std::fmt::Display for TaskView {
 }
 
 // ─── Parsing ─────────────────────────────────────────────────────────────────
+
+/// Sprint-view folds are a render concern (see `sprints::expand_and_refresh`): an edited buffer
+/// must collapse back to the same stored bytes, so the markers never reach the event stream.
+fn strip_fold_markers(content: &str) -> std::borrow::Cow<'_, str> {
+	let start = crate::Marker::FoldStart.encode();
+	let end = crate::Marker::FoldEnd.encode();
+	if !content.contains(&start) && !content.contains(&end) {
+		return std::borrow::Cow::Borrowed(content);
+	}
+
+	let mut out = String::with_capacity(content.len());
+	for line in content.lines() {
+		if !line.contains(&start) && !line.contains(&end) {
+			out.push_str(line);
+			out.push('\n');
+			continue;
+		}
+		let stripped = line.replace(&start, "").replace(&end, "");
+		let stripped = stripped.trim_end();
+		if stripped.is_empty() {
+			continue;
+		}
+		out.push_str(stripped);
+		out.push('\n');
+	}
+	std::borrow::Cow::Owned(out)
+}
 
 fn stack_key(stack: &[(usize, String)]) -> Vec<String> {
 	stack.iter().map(|(_, t)| t.clone()).collect()
