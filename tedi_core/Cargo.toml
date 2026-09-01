@@ -16,6 +16,7 @@ jiff.workspace = true
 miette.workspace = true
 pulldown-cmark.workspace = true
 serde.workspace = true
+strum.workspace = true
 tedi_md.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

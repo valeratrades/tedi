@@ -161,22 +161,21 @@ impl fmt::Display for IssueMarker {
 
 /// Suffix of a vim fold marker. `always` is ours, not a vim level: nvim closes those folds on
 /// open (see README). Vim reads it as unnumbered, so such a fold nests under whatever encloses it.
-#[derive(Clone, Copy, Debug, PartialEq, derive_more::Display)]
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, strum::Display, strum::EnumString, strum::VariantArray)]
 pub enum FoldLevel {
-	#[display("always")]
+	#[strum(serialize = "always")]
 	Always,
-	#[display("1")]
+	#[strum(serialize = "1")]
 	First,
-}
-
-impl FoldLevel {
-	fn decode(s: &str) -> Option<Self> {
-		match s {
-			"always" => Some(Self::Always),
-			"1" => Some(Self::First),
-			_ => None,
-		}
-	}
+	#[strum(serialize = "2")]
+	Second,
+	#[strum(serialize = "3")]
+	Third,
+	#[strum(serialize = "4")]
+	Fourth,
+	#[strum(serialize = "5")]
+	Fifth,
 }
 
 /// A marker that can appear in issue files.
@@ -258,10 +257,10 @@ impl Marker {
 		if lower.starts_with(",}}}") || lower == ",}}}" {
 			return Some(Marker::OmittedEnd);
 		}
-		if let Some(level) = inner.strip_prefix(FOLD_OPEN).and_then(FoldLevel::decode) {
+		if let Some(Ok(level)) = inner.strip_prefix(FOLD_OPEN).map(str::parse) {
 			return Some(Marker::FoldStart(level));
 		}
-		if let Some(level) = inner.strip_prefix(FOLD_CLOSE).and_then(FoldLevel::decode) {
+		if let Some(Ok(level)) = inner.strip_prefix(FOLD_CLOSE).map(str::parse) {
 			return Some(Marker::FoldEnd(level));
 		}
 
@@ -484,9 +483,10 @@ mod tests {
 			Marker::NewComment,
 			Marker::OmittedStart,
 			Marker::OmittedEnd,
-			Marker::FoldStart(FoldLevel::First),
-			Marker::FoldEnd(FoldLevel::First),
 		];
+		let markers = markers
+			.into_iter()
+			.chain(<FoldLevel as strum::VariantArray>::VARIANTS.iter().flat_map(|l| [Marker::FoldStart(*l), Marker::FoldEnd(*l)]));
 
 		for marker in markers {
 			let encoded = marker.encode();
