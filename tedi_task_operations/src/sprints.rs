@@ -26,17 +26,12 @@ use crate::{
 /// block (title line + materialized content, its own issue refs expanded the same way —
 /// one level, inner milestone refs stay bare links). Uncached milestones stay bare.
 ///
-/// The `# Must` header is materialized empty when absent, so every sprint offers the strip.
+/// A sectioned view also gets an empty `# Must` when it has none, so the strip is offered
+/// without the header having to be remembered.
 pub async fn expand_and_refresh(content: &str) -> Result<String> {
-	expand_view(content, true).await
-}
-
-async fn expand_view(content: &str, ensure_must: bool) -> Result<String> {
 	let mut doc = TaskView::parse(content);
 	doc.resolve_bare_refs();
-	if ensure_must {
-		doc.ensure_managed(tedi_core::ManagedSection::Must);
-	}
+	doc.ensure_managed(tedi_core::ManagedSection::Must);
 
 	let mut milestones: Vec<(String, Milestone, TaskView)> = Vec::new();
 	for link in doc.milestone_links() {
@@ -345,7 +340,7 @@ pub async fn search(query: &str) -> Result<()> {
 		return Ok(());
 	}
 	let content: String = links.iter().map(|l| format!("- {l}\n")).collect();
-	println!("{}", expand_view(&content, false).await?); // search results are not a sprint
+	println!("{}", expand_and_refresh(&content).await?);
 	Ok(())
 }
 /// Refresh the cached lowest-normal-sprint content (called by the bin after `edit`/`healthcheck`).

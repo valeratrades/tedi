@@ -467,8 +467,15 @@ async fn edit_urgent(offline: bool) -> Result<()> {
 	}
 
 	edited_doc.collapse_to_links();
+	let stored = edited_doc.serialize();
+	// urgent is section-less by design (ARCHITECTURE.md); a header here is inert, not an error
+	let headers: Vec<&str> = stored.lines().filter(|l| l.starts_with('#')).collect();
+	if !headers.is_empty() {
+		eprintln!("warning: urgent is a flat list — these headers carry no meaning in it: {}", headers.join(", "));
+	}
+
 	fs::create_dir_all(path.parent().expect("urgent_path is always nested under data dir"))?;
-	fs::write(&path, edited_doc.serialize())?;
+	fs::write(&path, stored)?;
 	println!("Updated urgent sprint");
 	Ok(())
 }

@@ -149,11 +149,12 @@ impl TaskView {
 	}
 
 	/// Give the view an empty `section` header at the top if it has none, so a managed section is
-	/// something to fill in rather than something to remember. A view opening with header-less
-	/// content is left alone: the new header would swallow that content on the next parse, and
-	/// anywhere lower is not the top.
+	/// something to fill in rather than something to remember. Only a view that already opens with a
+	/// header takes one: anywhere below the top is not the top, a new top header would swallow
+	/// header-less leading content on the next parse, and a section-less view (urgent, search
+	/// results) has no headers to be managed among.
 	pub fn ensure_managed(&mut self, section: ManagedSection) {
-		if self.managed_index(section).is_some() || self.order.first().is_some_and(|k| k.is_empty()) {
+		if !self.order.first().is_some_and(|key| !key.is_empty()) || self.managed_index(section).is_some() {
 			return;
 		}
 		let key = vec![section.to_string()];

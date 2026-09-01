@@ -350,6 +350,24 @@ async fn test_urgent_edit_persists() {
 	assert!(poll.status.success(), "stderr: {}", poll.stderr);
 }
 
+/// Urgent is section-less: a header typed into it is inert, so it is saved as written and warned
+/// about rather than being silently honoured as a section.
+#[tokio::test]
+async fn test_urgent_headers_warn() {
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+
+	let out = ctx.urgent_edit(|tmp_path| {
+		std::fs::write(tmp_path, "# Must\n\n- pay for Tokyo server\n").unwrap();
+	});
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+	assert!(out.stderr.contains("urgent is a flat list"), "expected a header warning, stderr: {}", out.stderr);
+	insta::assert_snapshot!(ctx.xdg.read_data("issues/urgent.md"), @"
+	# Must
+
+	- pay for Tokyo server
+	");
+}
+
 /// A text-only urgent file (no issue links at all) must survive selection polling —
 /// regression test for the auto-clear wiping freshly saved urgent content.
 #[tokio::test]
