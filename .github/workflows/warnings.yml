@@ -365,8 +365,9 @@ jobs:
         \ --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && export\
         \ LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A openssl.dev --no-out-link)/lib\\\
         ${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && for p in \\$(cargo metadata\
-        \ --no-deps --format-version 1 | jq -r '.packages[].name'); do\n  cargo docs-rs\
-        \ -p \\\"\\$p\\\"\ndone\n\""
+        \ --no-deps --format-version 1 | jq -r '.packages[] | select([.targets[].kind[]]\
+        \ | any(. == \\\"lib\\\" or . == \\\"proc-macro\\\")) | .name'); do\n  cargo\
+        \ docs-rs -p \\\"\\$p\\\"\ndone\n\""
     timeout-minutes: 45
   rust-machete:
     name: Unused Dependencies
@@ -561,8 +562,8 @@ jobs:
         \ LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A openssl.dev --no-out-link)/lib\\\
         ${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && cargo sort --workspace --grouped\
         \ --check\nexit_code=\\$?\nif [ \\$exit_code != 0 ]; then\n  echo \\\"Cargo.toml\
-        \ is not sorted. Run \\`cargo sort -w\\` to fix it.\\\"\n  exit \\$exit_code\n\
-        fi\n\""
+        \ is not sorted. Run \\\\\\`cargo sort -w\\\\\\` to fix it.\\\"\n  exit \\\
+        $exit_code\nfi\n\""
   rust-sorted-derives:
     name: Sorted Derives
     needs: load_nix
@@ -655,13 +656,14 @@ jobs:
         \" && export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A openssl.out\
         \ --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && export\
         \ LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A openssl.dev --no-out-link)/lib\\\
-        ${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && \t\t\t\t# `sort-derives` is\
-        \ argv[1] here: the binary is a cargo subcommand, and `nix run` invokes\n\t\
-        \t\t\t# it directly rather than through `cargo`, so nothing else supplies\
+        ${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && \t\t\t\t# \\`sort-derives\\\
+        ` is argv[1] here: the binary is a cargo subcommand, and \\`nix run\\` invokes\n\
+        \t\t\t\t# it directly rather than through \\`cargo\\`, so nothing else supplies\
         \ that word.\n\t\t\t\tnix run github:valeratrades/v_flakes#cargo-sort-derives\
         \ -- sort-derives --check\n\t\t\t\texit_code=\\$?\n\t\t\t\tif [ \\$exit_code\
-        \ != 0 ]; then\n\t\t\t\t\techo \\\"Derives are not sorted. Run \\`cargo sort-derives\\\
-        ` to fix it.\\\"\n\t\t\t\t\texit \\$exit_code\n\t\t\t\tfi\n\t\t\t\""
+        \ != 0 ]; then\n\t\t\t\t\techo \\\"Derives are not sorted. Run \\\\\\`cargo\
+        \ sort-derives\\\\\\` to fix it.\\\"\n\t\t\t\t\texit \\$exit_code\n\t\t\t\t\
+        fi\n\t\t\t\""
   tokei:
     name: Reasonable Amount of Comments
     needs: load_nix

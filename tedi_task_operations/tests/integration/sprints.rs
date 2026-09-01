@@ -819,6 +819,75 @@ async fn test_urgent_edit_rejects_milestone_refs() {
 	assert!(!ctx.xdg.data_exists("issues/urgent.md"), "rejected edit must not be saved");
 }
 
+/// Dropping an issue link from a sprint body must stick. The hosted set is merged as a union,
+/// so a link still held by consensus/remote was re-appended into the very body that just dropped
+/// it — the deleted item silently came back on the next open.
+#[tokio::test]
+async fn test_milestone_edit_deletion_is_not_resurrected() {
+	use tedi_task_operations::{RepoInfo, local::Local};
+
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+	ctx.set_issues_dir_override();
+	ctx.xdg.write_config("config.toml", "github_token = \"test_token\"\n\n[milestones]\nurl = \"o/r\"\n");
+
+	let repo = RepoInfo::new("o", "r");
+	let (title, number) = ("1d", 7u64);
+	let original_body = "- https://github.com/o/r/issues/10\n- https://github.com/o/r/issues/11";
+
+	std::fs::write(
+		&ctx.mock_state_path,
+		serde_json::json!({
+			"milestones": [{
+				"owner": "o", "repo": "r", "number": number, "title": title, "state": "open",
+				"description": original_body,
+				"due_on": "2099-01-01T00:00:00Z",
+				"updated_at": "2001-09-11T12:00:00Z",
+			}]
+		})
+		.to_string(),
+	)
+	.unwrap();
+
+	let ms_file = Local::milestone_file_path(repo, number, title);
+	std::fs::create_dir_all(ms_file.parent().unwrap()).unwrap();
+	std::fs::write(&ms_file, format!("{original_body}\n")).unwrap();
+	std::fs::write(
+		Local::milestone_project_dir(repo).join(".meta.json"),
+		serde_json::json!({
+			"milestones": { number.to_string(): {
+				"title": title, "state": "Open",
+				"due_on": "2099-01-01T00:00:00Z",
+				"timestamps": { "description": "2001-09-11T12:00:00Z" }
+			}}
+		})
+		.to_string(),
+	)
+	.unwrap();
+	let issues_dir = ctx.xdg.data_dir().join("issues");
+	Command::new("git").arg("-C").arg(&issues_dir).args(["add", "-A"]).output().unwrap();
+	Command::new("git")
+		.arg("-C")
+		.arg(&issues_dir)
+		.args(["commit", "-m", "seed milestone consensus"])
+		.output()
+		.unwrap();
+
+	let out = ctx.milestone_client_edit(
+		&["--mock", "sprints", "edit", "1d"],
+		None,
+		Some(Box::new(|tmp: &Path| {
+			let c = std::fs::read_to_string(tmp).unwrap();
+			let kept: Vec<&str> = c.lines().filter(|l| !l.contains("issues/11")).collect();
+			std::fs::write(tmp, kept.join("\n") + "\n").unwrap();
+		}) as EditFn),
+	);
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+
+	let local_after = std::fs::read_to_string(&ms_file).unwrap();
+	assert!(local_after.contains("issues/10"), "the untouched link must survive: {local_after}");
+	assert!(!local_after.contains("issues/11"), "the deleted link came back: {local_after}");
+}
+
 /// A GitHub outage during a top-level milestone-body edit must NOT throw the edit away: it degrades
 /// to a local save (LocalFs diverges from Consensus, no `rejected-changes.md`), and the next online
 /// `tme <tf>` reflushes it via the pre-open sync (LocalFs == Consensus). Drives through the mock

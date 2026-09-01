@@ -141,6 +141,14 @@ impl TaskView {
 		}
 	}
 
+	/// Drop the issue components (with their children) holding any of `links` — the inverse of
+	/// [`push_issue_links`](Self::push_issue_links), for links a merge side deleted.
+	pub fn remove_issue_links(&mut self, links: &[IssueLink]) {
+		for items in self.sections.values_mut() {
+			remove_linked_issue_items(items, links);
+		}
+	}
+
 	/// Append bare, unchecked issue items for any link not already present, so a
 	/// GitHub-assigned issue survives merge/remote-load even when it never appeared in the prose.
 	pub fn push_issue_links(&mut self, links: &[IssueLink]) {
@@ -654,6 +662,17 @@ fn remove_issue_items(items: &mut Vec<TaskItem>) {
 		for section in &mut item.children {
 			if let Section::List(list) = section {
 				remove_issue_items(list);
+			}
+		}
+	}
+}
+
+fn remove_linked_issue_items(items: &mut Vec<TaskItem>, links: &[IssueLink]) {
+	items.retain(|item| !matches!(&item.content, TaskContent::Issue { r#ref, .. } if r#ref.to_issue_link().is_some_and(|l| links.contains(&l))));
+	for item in items.iter_mut() {
+		for section in &mut item.children {
+			if let Section::List(list) = section {
+				remove_linked_issue_items(list, links);
 			}
 		}
 	}
