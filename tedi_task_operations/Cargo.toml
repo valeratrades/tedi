@@ -6,6 +6,7 @@ authors.workspace = true
 description = "What we do with tedi issues: sync, merge, conflict resolution, sprints, selection"
 license.workspace = true
 repository.workspace = true
+include = ["src/**/*"]
 
 [dependencies]
 arrayvec.workspace = true

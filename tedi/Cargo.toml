@@ -8,6 +8,7 @@ license.workspace = true
 repository.workspace = true
 keywords = ["productivity", "task-management", "github", "time-tracking"]
 categories = ["command-line-utilities"]
+include = ["src/**/*", "build.rs"]
 
 [package.metadata]
 

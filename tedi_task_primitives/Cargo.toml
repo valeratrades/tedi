@@ -6,6 +6,7 @@ authors.workspace = true
 description = "What a local/remote tedi issue is: sources, sinks, storage layout, path resolution"
 license.workspace = true
 repository.workspace = true
+include = ["src/**/*"]
 
 [dependencies]
 arrayvec.workspace = true
