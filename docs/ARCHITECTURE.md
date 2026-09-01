@@ -79,14 +79,16 @@ If a milestone technically covers a wider area of tasks, that could be added und
 
 ## Crates
 ```
-tedi_md → tedi_core → tedi_ops → tedi
-              ↑           ↑
-        tedi_adapters ────┘
+tedi_md → tedi_core → tedi_task_primitives → tedi_task_operations → tedi
+              ↑                 ↑                                     ↑
+        tedi_adapters ──────────┘                                 tedi_eval
 ```
 - `tedi_md` — markdown primitives: owned pulldown_cmark `Events` ⇄ `String`.
 - `tedi_core` — the pure model: the primitives above (Issue/Blockers/Milestone), their locators/markers, and parse/serialize over `Events`. No IO, no async, no transport. A primitive cannot reach fs/network/app-state — the crate boundary enforces it.
-- `tedi_adapters` — transport at the edge: `GithubClient` (+ mock lives with ops), Clockify. Depends on core for the domain locator (`RepoInfo`).
-- `tedi_ops` — operations over the primitives: local/remote sources+sinks, sync/merge/touch/conflict, sprint flows + per-sprint selection, per-issue Clockify, the `LazyIssue` loading protocol.
+- `tedi_adapters` — transport at the edge: `GithubClient`, Clockify. Depends on core for the domain locator (`RepoInfo`).
+- `tedi_task_primitives` — what a stored issue *is*: local/remote sources+sinks, storage layout, path resolution, the `LazyIssue` loading protocol, the GitHub mock.
+- `tedi_task_operations` — what we *do* with issues: sync/merge/touch/conflict, sprint flows + per-sprint selection, per-issue Clockify.
+- `tedi_eval` — performance evaluation and manual-stats tracking.
 - `tedi` — interface only: clap enums/dispatch, config, shell init. Parses args, resolves config, calls ops. Owns `config` (v_utils `LiveSettings` binds app identity to the crate that derives it).
 
 ## Sources
@@ -95,7 +97,7 @@ tedi_md → tedi_core → tedi_ops → tedi
 
 #### Reading from GitHub → Issue
 
-Uses `LazyIssue<Remote>` trait implemented in `remote/mod.rs`:
+Uses the `LazyIssue<Remote>` impl:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -209,21 +211,3 @@ Uses `LazyIssue<Remote>` trait implemented in `remote/mod.rs`:
 ### Local
 
 Each issue is one file under `issues/{owner}/{repo}/…`; a node with children is a directory `{n}_-_{title}/` holding `__main__.md` plus one file per child. `impl Display for Issue` is the single rendering — the exact bytes on disk, in the editor, and embedded in a sprint: title line · body · comments (folded) · `# Blockers` · child issues as `[Title](./rel.md)` links. One level only — a child is a link, and the subtree is loaded from the child files (`LazyIssue<Local>`), never from the buffer. Editing opens the real file in place; `VirtualIssue::parse` is the inverse of `Display` (a link parses to a shallow child).
-
-#### Key Type Locations
-
-| Type | File |
-|------|------|
-| `Issue`, `IssueContents`, `CloseState`, `IssueIdentity`, `Display`/`TitleLine`/segmenter | `tedi_core/src/issue.rs` |
-| `RepoInfo`, `IssueLink`, `IssueRef`, `IssueIndex`, `IssueSelector`, `MilestoneRef`, `MilestoneLink` | `tedi_core/src/locate.rs` |
-| `Blockers` (+ `add`/`pop`/`set`/`current`), `split_blockers()` | `tedi_core/src/blockers.rs` |
-| `TaskView`, `TaskItem`, `parse_blockers_from_embedded()` | `tedi_core/src/taskview.rs` |
-| `IssueMarker`, `Marker` | `tedi_core/src/marker.rs` |
-| `GithubIssue`, `GithubComment`, `CreatedIssue`, `GithubMilestone`, `list/create/update_milestone` | `tedi_adapters/src/github.rs` |
-| `LazyIssue<S>` trait | `tedi_ops/src/lazy.rs` |
-| `LazyIssue<Remote>` impl | `tedi_ops/src/remote/mod.rs` |
-| `LazyIssue<Local>` impl | `tedi_ops/src/local/mod.rs` |
-| `Selected` (per-sprint selection + auto-advance/cleanup) | `tedi_ops/src/local/selection.rs` |
-| per-issue Clockify timer | `tedi_ops/src/clockify_tracking.rs` |
-| `sync_local_issue_to_github()` | `tedi_ops/src/open_interactions/sync.rs` |
-| sprint expand/refresh, blocker sync, `select`/`selected`/`search` | `tedi_ops/src/sprints.rs` |
