@@ -322,8 +322,10 @@ pub enum RemoteSinkError {
 /// Build IssueContents from GitHub API data.
 #[instrument(skip_all, fields(issue_number = issue.number, title = %issue.title))]
 fn build_contents_from_github(issue: &GithubIssue, comments: &[GithubComment]) -> IssueContents {
-	let close_state = CloseState::from_github(&issue.state, issue.state_reason.as_deref());
-	let labels: Vec<String> = issue.labels.iter().map(|l| l.name.clone()).collect();
+	let all_labels: Vec<String> = issue.labels.iter().map(|l| l.name.clone()).collect();
+	let close_state = CloseState::from_github(&issue.state, issue.state_reason.as_deref(), &all_labels);
+	// the `p:` label *is* the state here; leaving it in would also render it in the title line's `(labels)` slot
+	let labels: Vec<String> = all_labels.into_iter().filter(|l| l.parse::<crate::Progress>().is_err()).collect();
 
 	let raw_body = issue.body.as_deref().unwrap_or(""); //IGNORED_ERROR: GitHub API null body is valid (empty issue)
 	let (body, blockers) = split_blockers(raw_body);
@@ -350,6 +352,15 @@ fn build_contents_from_github(issue: &GithubIssue, comments: &[GithubComment]) -
 		comments: issue_comments.into(),
 		blockers,
 	}
+}
+
+/// Labels as Github holds them: the issue's own, plus the managed `p:` label carrying a
+/// progress state Github has no slot for. The only outbound label view — `contents.labels`
+/// alone would let a `[ ] → [.]` flip push nothing.
+pub(crate) fn remote_labels(contents: &IssueContents) -> Vec<String> {
+	let mut labels = contents.labels.clone();
+	labels.extend(contents.state.progress_label());
+	labels
 }
 
 //==============================================================================
@@ -382,8 +393,9 @@ impl Sink<Remote> for Issue {
 			println!("Created issue #{}: {}", created.number, created.html_url);
 
 			// Set labels if any
-			if !self.contents.labels.is_empty() {
-				gh.set_labels(repo_info, created.number, &self.contents.labels).await?;
+			let labels = remote_labels(&self.contents);
+			if !labels.is_empty() {
+				gh.set_labels(repo_info, created.number, &labels).await?;
 			}
 
 			// Close if needed
@@ -423,7 +435,7 @@ impl Sink<Remote> for Issue {
 
 		if diff.labels_changed {
 			println!("Updating issue #{issue_number} labels...");
-			gh.set_labels(repo_info, issue_number, &self.contents.labels).await?;
+			gh.set_labels(repo_info, issue_number, &remote_labels(&self.contents)).await?;
 			changed = true;
 		}
 
@@ -481,5 +493,52 @@ impl Sink<Remote> for Issue {
 		}
 
 		Ok(changed)
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use std::sync::Arc;
+
+	use super::*;
+	use crate::{LazyIssue, mock_github::MockGithubClient};
+
+	fn seeded(labels: Vec<&str>) -> (Arc<MockGithubClient>, RepoInfo) {
+		let client = Arc::new(MockGithubClient::new("testuser"));
+		let repo = RepoInfo::new("o", "r");
+		client.add_issue(repo, 1, "Half done", "body", "open", labels, "testuser", Some(jiff::Timestamp::from_second(1704067200).unwrap()));
+		github::client::set(client.clone());
+		(client, repo)
+	}
+
+	fn source(repo: RepoInfo) -> RemoteSource {
+		RemoteSource {
+			link: IssueLink::in_project(repo, 1),
+			lineage: Some(CopyArrayVec::new()),
+		}
+	}
+
+	/// A `p:` label is the state, not a label: it parses back into `InProgress` and never
+	/// reaches the `(labels)` slot of the title line.
+	#[tokio::test]
+	async fn progress_label_parses_back_into_the_state() {
+		let (_client, repo) = seeded(vec!["bug", "p:partial"]);
+		let issue = Issue::load(source(repo)).await.unwrap();
+		assert_eq!(issue.contents.state, CloseState::InProgress(crate::Progress::Partial));
+		assert_eq!(issue.contents.labels, ["bug"]);
+	}
+
+	/// A pure `[ ] → [.]` flip moves neither `contents.labels` nor the GitHub open/closed state,
+	/// so it must still push — as the managed label.
+	#[tokio::test]
+	async fn progress_flip_pushes_the_managed_label() {
+		let (client, repo) = seeded(vec!["bug"]);
+		let old = Issue::load(source(repo)).await.unwrap();
+		let mut new = old.clone();
+		new.contents.state = CloseState::InProgress(crate::Progress::Partial);
+
+		client.clear_call_log();
+		assert!(<Issue as Sink<Remote>>::sink(&mut new, Some(&old)).await.unwrap());
+		insta::assert_snapshot!(client.get_call_log().join("\n"), @r#"set_labels(o, r, 1, ["bug", "p:partial"])"#);
 	}
 }

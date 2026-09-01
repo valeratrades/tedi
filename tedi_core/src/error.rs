@@ -190,7 +190,7 @@ enum ParseDiagnostic {
 	#[error("invalid checkbox content: '{content}'")]
 	#[diagnostic(
 		code(tedi::parse::invalid_checkbox),
-		help("valid checkbox values are: ' ' (open), 'x' (closed), '-' (not planned), or a number like '123' (duplicate of issue #123)")
+		help("valid checkbox values are: ' ' (open), '.' (partial), '?' (maybe), 'x' (closed), '-' (not planned), or a number like '123' (duplicate of issue #123)")
 	)]
 	InvalidCheckbox {
 		#[source_code]

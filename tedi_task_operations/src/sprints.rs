@@ -393,8 +393,14 @@ pub async fn selected_open(offline: bool, yes: bool) -> Result<()> {
 	retrack_if_changed(yes).await;
 	Ok(())
 }
-/// `sprints selected list` — print the selected issue's blockers.
-pub fn selected_list() -> Result<()> {
+/// `sprints selected list` — print the active sprint's `# Must` strip (one box per item plus
+/// the day's completion), then the selected issue's blockers.
+///
+/// `markup`: emit Pango markup for eww labels (GTK, not a terminal) instead of ANSI color.
+pub fn selected_list(markup: bool) -> Result<()> {
+	if let Some(strip) = must_strip(markup) {
+		println!("{strip}\n---");
+	}
 	let (_, path) = selected_link_path()?;
 	let content = std::fs::read_to_string(&path)?;
 	let blockers = VirtualIssue::parse(&content, path)?.contents.blockers;
@@ -404,6 +410,73 @@ pub fn selected_list() -> Result<()> {
 		println!("{}", String::from(&blockers));
 	}
 	Ok(())
+}
+
+/// One `[state] title` line per `# Must` item of the active sprint, in document order, followed
+/// by the day's completion. `None` when the active sprint has no `# Must` section — the feature
+/// isn't in use, so nothing is prefixed.
+///
+/// Completion weighs `[x]` full and `[.]` half over the items that are still on the table; `[-]`
+/// and `[N]` were taken off it, so they leave the denominator entirely. With nothing left in it
+/// there is no day completion to report and the line is omitted.
+fn must_strip(markup: bool) -> Option<String> {
+	let active = Selected::load().active()?;
+	let musts = active.view.managed_nodes(tedi_core::ManagedSection::Must);
+	if musts.is_empty() {
+		return None;
+	}
+
+	let states: Vec<(crate::CloseState, String)> = musts
+		.iter()
+		.filter_map(|node| match node {
+			NodeLink::Issue(link) => crate::selection::link_local(link).map(|vi| (vi.contents.state, vi.contents.title)),
+			NodeLink::Milestone(_) => None,
+		})
+		.collect();
+
+	let mut out = String::new();
+	for (state, title) in &states {
+		out.push_str(&paint(&format!("[{}]", state.to_checkbox_contents()), weight(state), markup));
+		out.push(' ');
+		out.push_str(&if markup { pango_escape(title) } else { title.clone() });
+		out.push('\n');
+	}
+
+	let counted: Vec<u32> = states.iter().filter_map(|(state, _)| weight(state)).collect();
+	if !counted.is_empty() {
+		let done = f64::from(counted.iter().sum::<u32>()) / f64::from(2 * counted.len() as u32);
+		out.push_str(&format!("{}%", (done * 100.).round()));
+	}
+	Some(out.trim_end_matches('\n').to_string())
+}
+
+/// A Must item's contribution to the day's completion, counted in halves so a `[.]` is exact.
+/// `None` — the item is off the table and leaves the denominator with it.
+fn weight(state: &crate::CloseState) -> Option<u32> {
+	use crate::CloseState as S;
+	match state {
+		S::Closed => Some(2),
+		S::InProgress(tedi_core::Progress::Partial) => Some(1),
+		S::Open | S::InProgress(tedi_core::Progress::Maybe) => Some(0),
+		S::NotPlanned | S::Duplicate(_) => None,
+	}
+}
+
+/// Color a checkbox by how much of it is done. Palette and restraint follow
+/// `~/nix/home/config/tmux/claude_sessions.rs`: only the state cell is painted, and only when
+/// it carries a completion — the off-the-table states stay uncolored.
+fn paint(cell: &str, weight: Option<u32>, markup: bool) -> String {
+	use colored::Colorize as _;
+	match (markup, weight) {
+		(true, Some(2)) => format!("<span foreground=\"#b8d8b4\">{}</span>", pango_escape(cell)),
+		(true, Some(1)) => format!("<span foreground=\"#ba6e3d\">{}</span>", pango_escape(cell)),
+		(true, Some(_)) => format!("<span foreground=\"#ffffff\">{}</span>", pango_escape(cell)),
+		(true, None) => pango_escape(cell),
+		(false, Some(2)) => cell.green().to_string(),
+		(false, Some(1)) => cell.yellow().to_string(),
+		(false, Some(_)) => cell.white().to_string(),
+		(false, None) => cell.to_string(),
+	}
 }
 /// `sprints selected current` — compactly print the current (deepest) blocker.
 ///

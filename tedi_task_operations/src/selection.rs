@@ -145,17 +145,23 @@ impl Selected {
 			return Err("No open items in the active sprint.".into());
 		};
 		let siblings = match path.len() {
-			1 => active.view.nodes(),
+			1 => active.view.cycle_scope(),
 			n => sel.children(&path[n - 2]),
 		};
 		if siblings.len() == 1 {
 			return Err("Only one item at this level. Nothing to move to.".into());
 		}
-		let start = siblings.iter().position(|n| *n == terminal).expect("validate_path keeps the terminal among its siblings");
+		// a pattern/fzf jump can park the terminal outside the cycle scope; then the first
+		// step must land on the scope's first node rather than skip past it
+		let start = match siblings.iter().position(|n| *n == terminal) {
+			Some(i) => i as isize,
+			None => -delta,
+		};
 		let len = siblings.len() as isize;
 		let mut idx = start;
 		for _ in 0..siblings.len() {
-			idx = ((idx as isize + delta).rem_euclid(len)) as usize;
+			idx = (idx + delta).rem_euclid(len);
+			let idx = idx as usize;
 			if let Some(landing) = sel.landing(&siblings[idx]) {
 				*path.last_mut().expect("non-empty checked above") = siblings[idx].clone();
 				sel.persist_path(&active.key, &path);
@@ -537,24 +543,21 @@ fn issue_children(link: &IssueLink) -> Vec<NodeLink> {
 	numbers.into_iter().map(|n| NodeLink::Issue(Local::issue_link(link.project(), n))).collect()
 }
 
+/// The locally-stored issue at `link`, if resolvable and parseable.
+pub(crate) fn link_local(link: &IssueLink) -> Option<VirtualIssue> {
+	let path = resolve(link)?;
+	let content = std::fs::read_to_string(&path).ok()?; //IGNORED_ERROR: an unreadable issue file is indistinguishable from an unresolvable link here
+	VirtualIssue::parse(&content, path).ok() //IGNORED_ERROR: same — a malformed file surfaces when it is opened, not while navigating
+}
+
 /// Whether an issue is resolvable locally and open.
 fn link_is_open(link: &IssueLink) -> bool {
-	let Some(path) = resolve(link) else { return false };
-	let Ok(content) = std::fs::read_to_string(&path) else { return false };
-	match VirtualIssue::parse(&content, path) {
-		Ok(vi) => !vi.contents.state.is_closed(),
-		Err(_) => false,
-	}
+	link_local(link).is_some_and(|vi| !vi.contents.state.is_closed())
 }
 
 /// Whether an issue's current (deepest) blocker delegates to another issue.
 fn link_delegates(link: &IssueLink) -> bool {
-	let Some(path) = resolve(link) else { return false };
-	let Ok(content) = std::fs::read_to_string(&path) else { return false };
-	match VirtualIssue::parse(&content, path) {
-		Ok(vi) => vi.contents.blockers.deepest_issue_ref().is_some(),
-		Err(_) => false,
-	}
+	link_local(link).is_some_and(|vi| vi.contents.blockers.deepest_issue_ref().is_some())
 }
 
 /// Display string for a link: local relative path if resolvable, else `owner/repo#number`.

@@ -57,8 +57,12 @@ pub enum SprintsCommands {
 pub enum SelectedOp {
 	/// Open the selected issue file in $EDITOR
 	Open,
-	/// List the selected issue's blockers
-	List,
+	/// Print the sprint's `# Must` strip and day completion, then the selected issue's blockers
+	List {
+		/// Emit Pango markup (for eww labels) instead of ANSI color.
+		#[arg(long)]
+		markup: bool,
+	},
 	/// Compactly show the current blocker
 	Current {
 		/// Emit Pango markup (for eww labels), suffixed with a Clockify-tracking dot:
@@ -159,7 +163,7 @@ pub async fn sprints_command(settings: &LiveSettings, args: SprintsArgs, mock: O
 			ensure_selection_cache(settings, offline).await?;
 			match op {
 				SelectedOp::Open => ops::selected_open(offline, yes()).await,
-				SelectedOp::List => ops::selected_list(),
+				SelectedOp::List { markup } => ops::selected_list(markup),
 				SelectedOp::Current { markup } => ops::selected_current(markup),
 				SelectedOp::Add { text, nest } => ops::selected_add(text, nest, offline, yes()).await,
 				SelectedOp::Pop { parents } => ops::selected_pop(parents as usize, offline, yes()).await,

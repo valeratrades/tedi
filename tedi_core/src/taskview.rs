@@ -15,6 +15,19 @@ use tedi_md::indent_into;
 
 use crate::{Events, IssueLink, IssueMarker, IssueRef, MilestoneLink, MilestoneRef, NodeLink, OwnedEvent, OwnedTag, OwnedTagEnd};
 
+/// Sprint header sections tedi assigns meaning to. The variant name is the header text.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, strum::EnumString)]
+#[strum(ascii_case_insensitive)]
+pub enum ManagedSection {
+	Must,
+}
+impl ManagedSection {
+	/// Classify a section key's last segment.
+	pub fn of(header_text: &str) -> Option<Self> {
+		header_text.trim().parse().ok()
+	}
+}
+
 /// A parsed task view: header-path → ordered components, plus un-itemized prose per section.
 #[derive(Clone, Default)]
 pub struct TaskView {
@@ -120,6 +133,40 @@ impl TaskView {
 			if let Some(items) = self.sections.get(key) {
 				collect_nodes(items, &mut nodes);
 			}
+		}
+		nodes
+	}
+
+	/// Index into `order` of a managed section's own header path.
+	fn managed_index(&self, section: ManagedSection) -> Option<usize> {
+		self.order.iter().position(|key| key.last().and_then(|h| ManagedSection::of(h)) == Some(section))
+	}
+
+	fn section_nodes(&self, key: &Vec<String>, out: &mut Vec<NodeLink>) {
+		if let Some(items) = self.sections.get(key) {
+			collect_nodes(items, out);
+		}
+	}
+
+	/// Node links held directly by a managed section, in document order.
+	pub fn managed_nodes(&self, section: ManagedSection) -> Vec<NodeLink> {
+		let mut nodes = Vec::new();
+		if let Some(i) = self.managed_index(section) {
+			self.section_nodes(&self.order[i], &mut nodes);
+		}
+		nodes
+	}
+
+	/// Nodes reachable by `--next`/`--prev`: the `# Must` section plus the first section
+	/// below it. Absent a `# Must` section, the whole view.
+	pub fn cycle_scope(&self) -> Vec<NodeLink> {
+		let Some(must) = self.managed_index(ManagedSection::Must) else {
+			return self.nodes();
+		};
+		let next = self.order[must + 1..].iter().find(|key| key.last().and_then(|h| ManagedSection::of(h)).is_none());
+		let mut nodes = Vec::new();
+		for key in std::iter::once(&self.order[must]).chain(next) {
+			self.section_nodes(key, &mut nodes);
 		}
 		nodes
 	}

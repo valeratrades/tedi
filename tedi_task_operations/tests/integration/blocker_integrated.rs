@@ -28,6 +28,12 @@ fn write_selection(ctx: &TestContext, titles: &[(&str, &str, &str)]) {
 	ctx.xdg.write_cache("sprints_selection.json", &selection_cache_json(titles));
 }
 
+/// The command's own stdout: v_utils' tracing preamble shares the stream and carries timestamps.
+/// Its lines are all indented; every line tedi prints itself starts at column 0.
+fn without_tracing(stdout: &str) -> String {
+	stdout.lines().skip_while(|l| l.starts_with(' ') || l.trim().is_empty()).collect::<Vec<_>>().join("\n")
+}
+
 /// rust-analyzer-style cursor encoding: `$0` inserted into `content` at the position the
 /// mock editor reported on stderr, so cursor placement is part of the snapshot.
 fn with_cursor(content: &str, stderr: &str) -> String {
@@ -418,4 +424,52 @@ async fn test_search_finds_matching_issue() {
 		out.stdout
 	);
 	assert!(!out.stdout.contains("Unrelated"), "should not surface unrelated issue. stdout: {}", out.stdout);
+}
+
+/// `sprints selected list` prefixes the day's `# Must` strip: one box per item, the completion
+/// percentage over what is still on the table, then `---` and the selected issue's blockers.
+#[tokio::test]
+async fn test_selected_list_must_strip() {
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+
+	for (n, checkbox, title) in [(1, "x", "ship it"), (2, ".", "write the plan"), (3, " ", "shave yak"), (4, "-", "rewrite the parser")] {
+		let body = match n {
+			2 => "\n  # Blockers\n  - current blocker\n    - nested blocker\n",
+			_ => "\n",
+		};
+		let vi = parse_virtual(&format!("- [{checkbox}] {title} <!-- @mock_user https://github.com/o/r/issues/{n} -->{body}"));
+		ctx.local(&vi, None).await;
+	}
+
+	let content = (1..=4).map(|n| format!("- https://github.com/o/r/issues/{n}\n")).collect::<String>();
+	ctx.xdg.write_cache(
+		"sprints_selection.json",
+		&serde_json::json!({ "normal": { "key": "1d", "content": format!("# Must\n{content}") } }).to_string(),
+	);
+
+	let plain = ctx.run(&["--offline", "sprints", "selected", "list"]);
+	assert!(plain.status.success(), "stderr: {}", plain.stderr);
+	insta::assert_snapshot!(without_tracing(&plain.stdout), @"
+	[x] ship it
+	[.] write the plan
+	[ ] shave yak
+	[-] rewrite the parser
+	50%
+	---
+	- current blocker
+	  - nested blocker
+	");
+
+	let markup = ctx.run(&["--offline", "sprints", "selected", "list", "--markup"]);
+	assert!(markup.status.success(), "stderr: {}", markup.stderr);
+	insta::assert_snapshot!(without_tracing(&markup.stdout), @r##"
+	<span foreground="#b8d8b4">[x]</span> ship it
+	<span foreground="#ba6e3d">[.]</span> write the plan
+	<span foreground="#ffffff">[ ]</span> shave yak
+	[-] rewrite the parser
+	50%
+	---
+	- current blocker
+	  - nested blocker
+	"##);
 }

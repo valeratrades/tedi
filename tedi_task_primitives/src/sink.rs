@@ -129,8 +129,8 @@ pub fn compute_node_diff(new: &Issue, old: Option<&Issue>) -> IssueDiff {
 	// Compare title
 	diff.title_changed = new.contents.title != old.contents.title;
 
-	// Compare labels
-	diff.labels_changed = new.contents.labels != old.contents.labels;
+	// Compare labels as GitHub holds them: a `[ ] → [.]` flip moves only the managed `p:` label
+	diff.labels_changed = crate::remote::remote_labels(&new.contents) != crate::remote::remote_labels(&old.contents);
 
 	// Compare comments (skip first which is body)
 	let old_comments: HashMap<u64, &Comment> = old.contents.comments.iter().skip(1).filter_map(|c| c.id().map(|id| (id, c))).collect();

@@ -26,6 +26,33 @@ pub enum CommentIdentity {
 
 //,}}}1
 
+/// Progress refinement of an *open* issue. Github has no native slot for these,
+/// so they ride as managed `p:`-prefixed labels, cut on inbound and reattached on outbound.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, strum::Display, strum::EnumString)]
+pub enum Progress {
+	// `serialize` (not `prefix`) so the label reads the same in both directions
+	#[strum(serialize = "p:partial")]
+	Partial,
+	#[strum(serialize = "p:maybe")]
+	Maybe,
+}
+impl Progress {
+	fn to_checkbox(self) -> char {
+		match self {
+			Progress::Partial => '.',
+			Progress::Maybe => '?',
+		}
+	}
+
+	fn from_checkbox(content: &str) -> Option<Self> {
+		match content {
+			"." => Some(Progress::Partial),
+			"?" => Some(Progress::Maybe),
+			_ => None,
+		}
+	}
+}
+
 /// Close state of an issue.
 /// Maps to Github's binary open/closed, but locally supports additional variants.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -33,6 +60,8 @@ pub enum CloseState {
 	/// Issue is open: `- [ ]`
 	#[default]
 	Open,
+	/// Issue is open, with a progress refinement: `- [.]` / `- [?]`
+	InProgress(Progress),
 	/// Issue is closed normally: `- [x]`
 	Closed,
 	/// Issue was closed as not planned: `- [-]`
@@ -44,9 +73,9 @@ pub enum CloseState {
 	Duplicate(u64),
 }
 impl CloseState /*{{{1*/ {
-	/// Returns true if the issue is closed (any close variant)
+	/// Returns true if the issue is closed (any close variant). `InProgress` is open work.
 	pub fn is_closed(&self) -> bool {
-		!matches!(self, CloseState::Open)
+		matches!(self, CloseState::Closed | CloseState::NotPlanned | CloseState::Duplicate(_))
 	}
 
 	/// Returns true if this close state means the issue should be removed from local storage
@@ -54,10 +83,18 @@ impl CloseState /*{{{1*/ {
 		matches!(self, CloseState::Duplicate(_))
 	}
 
+	/// The managed `p:` label carrying this state's progress refinement, if any.
+	pub fn progress_label(&self) -> Option<String> {
+		match self {
+			CloseState::InProgress(p) => Some(p.to_string()),
+			_ => None,
+		}
+	}
+
 	/// Convert to Github API state string
 	pub fn to_github_state(&self) -> &'static str {
 		match self {
-			CloseState::Open => "open",
+			CloseState::Open | CloseState::InProgress(_) => "open",
 			_ => "closed",
 		}
 	}
@@ -65,22 +102,30 @@ impl CloseState /*{{{1*/ {
 	/// Convert to Github API state_reason string (for closed issues)
 	pub fn to_github_state_reason(&self) -> Option<&'static str> {
 		match self {
-			CloseState::Open => None,
+			CloseState::Open | CloseState::InProgress(_) => None,
 			CloseState::Closed => Some("completed"),
 			CloseState::NotPlanned => Some("not_planned"),
 			CloseState::Duplicate(_) => Some("duplicate"),
 		}
 	}
 
-	/// Create from Github API state and state_reason.
+	/// Create from Github API state, state_reason and the issue's raw label names.
 	///
 	/// # Panics
 	/// Panics if state_reason is "duplicate" - duplicates must be filtered before calling this.
-	pub fn from_github(state: &str, state_reason: Option<&str>) -> Self {
+	pub fn from_github(state: &str, state_reason: Option<&str>, labels: &[String]) -> Self {
 		assert!(state_reason != Some("duplicate"), "Duplicate issues must be filtered before calling from_github");
 
+		let progress = labels.iter().find_map(|l| l.parse::<Progress>().ok());
+		if progress.is_some() && state != "open" {
+			tracing::warn!("progress label on a closed issue is stale, dropping it");
+		}
+
 		match (state, state_reason) {
-			("open", _) => CloseState::Open,
+			("open", _) => match progress {
+				Some(p) => CloseState::InProgress(p),
+				None => CloseState::Open,
+			},
 			("closed", Some("not_planned")) => CloseState::NotPlanned,
 			("closed", Some("completed") | None) => CloseState::Closed,
 			("closed", Some(unknown)) => {
@@ -106,7 +151,10 @@ impl CloseState /*{{{1*/ {
 			"" | " " => Ok(CloseState::Open),
 			"x" | "X" => Ok(CloseState::Closed),
 			"-" => Ok(CloseState::NotPlanned),
-			s => s.parse::<u64>().map(CloseState::Duplicate).map_err(|_| s.to_string()),
+			s => match Progress::from_checkbox(s) {
+				Some(p) => Ok(CloseState::InProgress(p)),
+				None => s.parse::<u64>().map(CloseState::Duplicate).map_err(|_| s.to_string()),
+			},
 		}
 	}
 
@@ -114,6 +162,7 @@ impl CloseState /*{{{1*/ {
 	pub fn to_checkbox_contents(&self) -> String {
 		match self {
 			CloseState::Open => " ".to_string(),
+			CloseState::InProgress(p) => p.to_checkbox().to_string(),
 			CloseState::Closed => "x".to_string(),
 			CloseState::NotPlanned => "-".to_string(),
 			CloseState::Duplicate(n) => n.to_string(),
@@ -1739,11 +1788,13 @@ mod tests {
 
 	#[test]
 	fn test_close_state_from_checkbox() {
-		let cases = [" ", "", "x", "X", "-", "123", "42", "invalid"];
+		let cases = [" ", "", ".", "?", "x", "X", "-", "123", "42", "invalid"];
 		let results: Vec<_> = cases.iter().map(|c| format!("{c:?} => {:?}", CloseState::from_checkbox(c))).collect();
 		insta::assert_snapshot!(results.join("\n"), @r#"
 		" " => Ok(Open)
 		"" => Ok(Open)
+		"." => Ok(InProgress(Partial))
+		"?" => Ok(InProgress(Maybe))
 		"x" => Ok(Closed)
 		"X" => Ok(Closed)
 		"-" => Ok(NotPlanned)
@@ -1755,10 +1806,19 @@ mod tests {
 
 	#[test]
 	fn test_close_state_to_checkbox() {
-		let cases = [CloseState::Open, CloseState::Closed, CloseState::NotPlanned, CloseState::Duplicate(123)];
+		let cases = [
+			CloseState::Open,
+			CloseState::InProgress(Progress::Partial),
+			CloseState::InProgress(Progress::Maybe),
+			CloseState::Closed,
+			CloseState::NotPlanned,
+			CloseState::Duplicate(123),
+		];
 		let results: Vec<_> = cases.iter().map(|s| format!("{s:?} => {:?}", s.to_checkbox_contents())).collect();
 		insta::assert_snapshot!(results.join("\n"), @r#"
 		Open => " "
+		InProgress(Partial) => "."
+		InProgress(Maybe) => "?"
 		Closed => "x"
 		NotPlanned => "-"
 		Duplicate(123) => "123"
@@ -1767,10 +1827,19 @@ mod tests {
 
 	#[test]
 	fn test_close_state_is_closed() {
-		let cases = [CloseState::Open, CloseState::Closed, CloseState::NotPlanned, CloseState::Duplicate(123)];
+		let cases = [
+			CloseState::Open,
+			CloseState::InProgress(Progress::Partial),
+			CloseState::InProgress(Progress::Maybe),
+			CloseState::Closed,
+			CloseState::NotPlanned,
+			CloseState::Duplicate(123),
+		];
 		let results: Vec<_> = cases.iter().map(|s| format!("{s:?} => {}", s.is_closed())).collect();
 		insta::assert_snapshot!(results.join("\n"), @"
 		Open => false
+		InProgress(Partial) => false
+		InProgress(Maybe) => false
 		Closed => true
 		NotPlanned => true
 		Duplicate(123) => true
@@ -1779,10 +1848,19 @@ mod tests {
 
 	#[test]
 	fn test_close_state_should_remove() {
-		let cases = [CloseState::Open, CloseState::Closed, CloseState::NotPlanned, CloseState::Duplicate(123)];
+		let cases = [
+			CloseState::Open,
+			CloseState::InProgress(Progress::Partial),
+			CloseState::InProgress(Progress::Maybe),
+			CloseState::Closed,
+			CloseState::NotPlanned,
+			CloseState::Duplicate(123),
+		];
 		let results: Vec<_> = cases.iter().map(|s| format!("{s:?} => {}", s.should_remove())).collect();
 		insta::assert_snapshot!(results.join("\n"), @"
 		Open => false
+		InProgress(Partial) => false
+		InProgress(Maybe) => false
 		Closed => false
 		NotPlanned => false
 		Duplicate(123) => true
@@ -1791,10 +1869,19 @@ mod tests {
 
 	#[test]
 	fn test_close_state_to_github_state() {
-		let cases = [CloseState::Open, CloseState::Closed, CloseState::NotPlanned, CloseState::Duplicate(123)];
+		let cases = [
+			CloseState::Open,
+			CloseState::InProgress(Progress::Partial),
+			CloseState::InProgress(Progress::Maybe),
+			CloseState::Closed,
+			CloseState::NotPlanned,
+			CloseState::Duplicate(123),
+		];
 		let results: Vec<_> = cases.iter().map(|s| format!("{s:?} => {}", s.to_github_state())).collect();
 		insta::assert_snapshot!(results.join("\n"), @"
 		Open => open
+		InProgress(Partial) => open
+		InProgress(Maybe) => open
 		Closed => closed
 		NotPlanned => closed
 		Duplicate(123) => closed
@@ -1809,7 +1896,7 @@ mod tests {
 			PathBuf::from("test.md"),
 		)
 		.unwrap_err();
-		insta::assert_snapshot!(format!("root: {root_err}\nsub: {sub_err}"), @r#"
+		insta::assert_snapshot!(format!("root: {root_err}\nsub: {sub_err}"), @"
 		root: tedi::parse::invalid_checkbox
 
 		  × invalid checkbox content: 'abc'
@@ -1819,8 +1906,9 @@ mod tests {
 		   ·                                    ╰── unrecognized checkbox value
 		 2 │ 
 		   ╰────
-		  help: valid checkbox values are: ' ' (open), 'x' (closed), '-' (not
-		        planned), or a number like '123' (duplicate of issue #123)
+		  help: valid checkbox values are: ' ' (open), '.' (partial), '?' (maybe),
+		        'x' (closed), '-' (not planned), or a number like '123' (duplicate of
+		        issue #123)
 
 
 
@@ -1833,9 +1921,10 @@ mod tests {
 		   · ──────────────────────────────────┬─────────────────────────────────
 		   ·                                   ╰── unrecognized checkbox value
 		   ╰────
-		  help: valid checkbox values are: ' ' (open), 'x' (closed), '-' (not
-		        planned), or a number like '123' (duplicate of issue #123)
-		"#);
+		  help: valid checkbox values are: ' ' (open), '.' (partial), '?' (maybe),
+		        'x' (closed), '-' (not planned), or a number like '123' (duplicate of
+		        issue #123)
+		");
 	}
 
 	#[test]

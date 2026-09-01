@@ -241,6 +241,51 @@ async fn test_milestone_edit_adds_blockers() {
 	");
 }
 
+/// `[.]` is a first-class state, not a checkbox tedi merely tolerates: it must survive the
+/// expand → edit → collapse → re-expand cycle of a `# Must` sprint section.
+#[tokio::test]
+async fn test_partial_state_survives_sprint_edit() {
+	use crate::common::are_you_sure::read_issue_file;
+
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+
+	let vi = parse_virtual("- [.] Half Done <!-- @mock_user https://github.com/o/r/issues/10 -->\n\tbody\n");
+	ctx.local(&vi, Some(Seed::new(0))).await;
+
+	let buffer = ctx.xdg.inner.root.join("expanded_buffer.md");
+	let capture = buffer.clone();
+	let (out, milestone) = ctx.milestone_edit_with_changes("# Must\n\n- o/r#10", move |tmp_path| {
+		std::fs::copy(tmp_path, &capture).unwrap();
+		let content = std::fs::read_to_string(tmp_path).unwrap();
+		std::fs::write(tmp_path, content.trim_end().to_string() + "\n\t# Blockers\n\t- keep going\n").unwrap();
+	});
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+
+	insta::assert_snapshot!(std::fs::read_to_string(&buffer).unwrap(), @r"
+	# Must
+
+	- \[.] Half Done <!-- @mock_user https://github.com/o/r/issues/10 --> <!--{{{1-->
+	  body
+	  <!--}}}1-->
+	");
+	insta::assert_snapshot!(milestone, @"
+	# Must
+
+	- https://github.com/o/r/issues/10
+	");
+
+	ctx.set_issues_dir_override();
+	let path =
+		tedi_task_operations::local::Local::find_by_number(tedi_task_operations::RepoInfo::new("o", "r"), 10, tedi_task_operations::local::FsReader).expect("issue #10 should still exist");
+	insta::assert_snapshot!(read_issue_file(&path), @r"
+	- \[.] Half Done <!-- @mock_user https://github.com/o/r/issues/10 -->
+	  body
+
+	  # Blockers
+	  - keep going
+	");
+}
+
 /// `sprints edit urgent`: adding issues and plain-text items persists to
 /// `$XDG_DATA_HOME/tedi/issues/urgent.md`, and the file survives selection polling.
 #[tokio::test]

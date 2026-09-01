@@ -25,10 +25,14 @@ this module a body it has already resolved.
 GITHUB                                       │  what the boundary makes of it
 ─────────────────────────────────────────────┼───────────────────────────────────────────────────
 GET issues/{n}                               │
-    title, labels                            │  IssueContents.title / .labels
+    title                                    │  IssueContents.title
+    labels                                   │  IssueContents.labels, minus the `p:` ones
     state         "open" | "closed"          │  ┐ CloseState::from_github
-    state_reason  completed | not_planned |  │  ┘   → Open | Closed | NotPlanned
-                  duplicate                  │
+    state_reason  completed | not_planned |  │  │   → Open | InProgress | Closed | NotPlanned
+                  duplicate                  │  │ `p:partial` / `p:maybe` are no GitHub concept
+    labels        p:*                        │  ┘ either: they ride as labels, are cut here, and
+                                             │    `remote_labels` reattaches them on the way out.
+                                             │    On a closed issue one is stale — dropped, warned.
     body          Option<String>             │  split_blockers → (body text, Blockers)
                                              │    `# Blockers` is no GitHub concept: it rides the
                                              │    tail of the body, is cut here, and `body()`
@@ -108,10 +112,12 @@ sink(&mut self, old: Option<&Issue>)
                            POST sub_issues    if parented
                            identity becomes linked
   body() != old.body()  ─▶ PATCH issues/{n} { body }     the whole body, text and blockers together
-  labels                ─▶ PATCH issues/{n} { labels }
+  remote_labels()       ─▶ PATCH issues/{n} { labels }   labels + the state's `p:` label; compared
+                                                         over the same view, since a `[ ] → [.]`
+                                                         flip moves nothing else
   to_github_state()     ─▶ PATCH issues/{n} { state }    compared at GitHub's granularity, so the
                                                          local Closed / NotPlanned split does not
-                                                         travel
+                                                         travel, and InProgress reads as open
   comments, pending     ─▶ POST comments, one at a time  sequential: GitHub orders by creation
   comments, changed     ─▶ PATCH comments/{id}           skipped unless the current user wrote it
   comments, dropped     ─▶ DELETE comments/{id}

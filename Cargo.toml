@@ -33,6 +33,7 @@ base64 = "0.22"
 clap = { version = "^4.6.1", features = ["derive"] }
 clap_complete = "4.6.3"
 color-eyre = "0.6.5"
+colored = "3"
 config = "^0.15.22"
 copy_arrayvec = "0.1"
 derive-new = "^0"

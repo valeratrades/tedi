@@ -25,7 +25,7 @@ pub use tedi_core::current_user;
 pub use tedi_core::{
 	BlockerItem, BlockerSetState, Blockers, CloseState, Comment, CommentIdentity, Comments, HollowIssue, Issue, IssueContents, IssueError, IssueIdentity, IssueIndex, IssueLink, IssueMarker,
 	IssueRef, IssueSelector, IssueTimestamps, LinkedIssueMeta, MAX_INDEX_DEPTH, MAX_LINEAGE_DEPTH, MAX_TITLE_LENGTH, Marker, Milestone, MilestoneBody, MilestoneIdentity, MilestoneLink,
-	MilestoneRef, MilestoneTimestamps, NodeLink, ParseError, RepoInfo, TaskItemId, TaskView, TitleInGitPathError, VirtualIssue, parse_blockers_from_embedded, split_blockers,
+	MilestoneRef, MilestoneTimestamps, NodeLink, ParseError, Progress, RepoInfo, TaskItemId, TaskView, TitleInGitPathError, VirtualIssue, parse_blockers_from_embedded, split_blockers,
 };
 pub use tedi_md::{Events, Header, OwnedCodeBlockKind, OwnedEvent, OwnedTag, OwnedTagEnd};
 
