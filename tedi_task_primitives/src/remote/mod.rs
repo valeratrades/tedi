@@ -1,12 +1,9 @@
-//! Remote GitHub operations for issues.
+//! The GitHub boundary: `LazyIssue<RemoteSource>` in, `Sink<Remote>` out.
 //!
-//! This module handles all remote GitHub concerns:
-//! - Fetching issues via `LazyIssue<RemoteSource>`
-//! - Pushing changes via `Sink<Remote>`
+//! Loading takes the same shape as it does locally — `Issue::load(RemoteSource)` against
+//! `Issue::load(LocalIssueSource<FsReader>)`.
 //!
-//! The key insight is that loading mirrors local operations:
-//! - Local: `Issue::load(LocalIssueSource<FsReader>)` - loads from filesystem
-//! - Remote: `Issue::load(RemoteSource)` - loads from GitHub via IssueLink
+//! Both directions, field by field, are drawn in `remote.typ` at the crate root.
 
 use HashMap;
 //==============================================================================
