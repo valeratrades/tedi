@@ -241,6 +241,42 @@ async fn test_milestone_edit_adds_blockers() {
 	");
 }
 
+/// A sprint without a `# Must` section gets one, empty, at the top — and it persists on save,
+/// so the strip is offered without the user having to remember the header.
+#[tokio::test]
+async fn test_must_section_materialized_when_absent() {
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+
+	let vi = parse_virtual("- [ ] My Issue <!-- @mock_user https://github.com/o/r/issues/10 -->\n\tbody\n");
+	ctx.local(&vi, Some(Seed::new(0))).await;
+
+	let buffer = ctx.xdg.inner.root.join("expanded_buffer.md");
+	let capture = buffer.clone();
+	let (out, milestone) = ctx.milestone_edit_with_changes("# important today\n\n- o/r#10", move |tmp_path| {
+		std::fs::copy(tmp_path, &capture).unwrap();
+		let content = std::fs::read_to_string(tmp_path).unwrap();
+		std::fs::write(tmp_path, content.trim_end().to_string() + "\n\t# Blockers\n\t- keep going\n").unwrap();
+	});
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+
+	insta::assert_snapshot!(std::fs::read_to_string(&buffer).unwrap(), @"
+	# Must
+
+	# important today
+
+	- [ ] My Issue <!-- @mock_user https://github.com/o/r/issues/10 --> <!--{{{1-->
+	  body
+	  <!--}}}1-->
+	");
+	insta::assert_snapshot!(milestone, @"
+	# Must
+
+	# important today
+
+	- https://github.com/o/r/issues/10
+	");
+}
+
 /// `[.]` is a first-class state, not a checkbox tedi merely tolerates: it must survive the
 /// expand → edit → collapse → re-expand cycle of a `# Must` sprint section.
 #[tokio::test]
@@ -456,6 +492,140 @@ async fn test_urgent_virtual_issue_reexpands_and_syncs_blockers() {
 	");
 }
 
+/// A body edit typed into an issue expanded inside a sprint must reach the issue's file.
+/// The sprint stores only links, so anything the collapse drops and no sync carries is lost
+/// silently — the edit reads as saved ("Updated urgent sprint") and is gone on the next open.
+#[tokio::test]
+async fn test_urgent_edit_body_change_reaches_issue_file() {
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+
+	let out = ctx.urgent_edit(|tmp_path| {
+		std::fs::write(tmp_path, "- [ ] blast everybody in the group\n  do like 50/day to not get flagged.\n").unwrap();
+	});
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+
+	let out = ctx.urgent_edit(|tmp_path| {
+		let content = std::fs::read_to_string(tmp_path).unwrap();
+		std::fs::write(
+			tmp_path,
+			content.replacen("  do like 50/day to not get flagged.\n", "  do like 50/day to not get flagged.\n  test\n", 1),
+		)
+		.unwrap();
+	});
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+
+	ctx.set_issues_dir_override();
+	let issues_str = ctx.xdg.data_dir().join("issues").display().to_string();
+	let path = tedi_task_operations::local::Local::find_by_number(tedi_task_operations::RepoInfo::Virtual, 1, tedi_task_operations::local::FsReader).expect("issue #1 should still exist");
+	insta::assert_snapshot!(std::fs::read_to_string(&path).unwrap().replace(&issues_str, "<ISSUES>"), @"
+	- [ ] blast everybody in the group <!-- virtual <ISSUES>/virtual/1_-_blast_everybody_in_the_group.md -->
+	  do like 50/day to not get flagged.
+	  test
+	");
+}
+
+/// Same loss on the milestone-sprint path: a body line typed under an expanded issue must land
+/// in the issue's own file, not stop at the sprint that only stores links.
+#[tokio::test]
+async fn test_milestone_edit_body_change_reaches_issue_file() {
+	use crate::common::are_you_sure::read_issue_file;
+
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+
+	let vi = parse_virtual("- [ ] Bodied Issue <!-- @mock_user https://github.com/o/r/issues/50 -->\n\tjust a body\n");
+	ctx.local(&vi, Some(Seed::new(0))).await;
+
+	let (out, _) = ctx.milestone_edit_with_changes("- o/r#50", |tmp_path| {
+		let content = std::fs::read_to_string(tmp_path).unwrap();
+		std::fs::write(tmp_path, content.replacen("  just a body\n", "  just a body\n  and a second line\n", 1)).unwrap();
+	});
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+
+	ctx.set_issues_dir_override();
+	let path =
+		tedi_task_operations::local::Local::find_by_number(tedi_task_operations::RepoInfo::new("o", "r"), 50, tedi_task_operations::local::FsReader).expect("issue #50 should still exist");
+	insta::assert_snapshot!(read_issue_file(&path), @"
+	- [ ] Bodied Issue <!-- @mock_user https://github.com/o/r/issues/50 -->
+	  just a body
+	  and a second line
+	");
+}
+
+/// Ticking an issue's checkbox in a sprint must close the issue. Same loss as the body edit:
+/// nothing but blockers is carried back, so the state reverts on the next open.
+#[tokio::test]
+async fn test_milestone_edit_state_change_reaches_issue_file() {
+	use crate::common::are_you_sure::read_issue_file;
+
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+
+	let vi = parse_virtual("- [ ] Tickable Issue <!-- @mock_user https://github.com/o/r/issues/51 -->\n\tjust a body\n");
+	ctx.local(&vi, Some(Seed::new(0))).await;
+
+	let (out, _) = ctx.milestone_edit_with_changes("- o/r#51", |tmp_path| {
+		let content = std::fs::read_to_string(tmp_path).unwrap();
+		std::fs::write(tmp_path, content.replacen("- [ ] Tickable Issue", "- [x] Tickable Issue", 1)).unwrap();
+	});
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+
+	ctx.set_issues_dir_override();
+	let path =
+		tedi_task_operations::local::Local::find_by_number(tedi_task_operations::RepoInfo::new("o", "r"), 51, tedi_task_operations::local::FsReader).expect("issue #51 should still exist");
+	insta::assert_snapshot!(read_issue_file(&path), @"
+	- [x] Tickable Issue <!-- @mock_user https://github.com/o/r/issues/51 -->
+	  just a body
+	");
+}
+
+/// A folded GitHub comment must survive the sprint round-trip untouched: the sync now writes the
+/// whole issue back, so a comment the render/parse cycle mangled would be rewritten on every
+/// unrelated sprint edit. The edit here touches a *different* issue — this one must not move.
+#[tokio::test]
+async fn test_sprint_edit_leaves_commented_issue_byte_identical() {
+	use crate::common::are_you_sure::read_issue_file;
+
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+
+	let commented = parse_virtual(
+		"- [ ] Commented Issue <!-- @mock_user https://github.com/o/r/issues/60 -->\n\n  body text\n\n  <!-- @mock_user https://github.com/o/r/issues/60#issuecomment-12345 -->\n  someone else's comment\n",
+	);
+	ctx.local(&commented, Some(Seed::new(0))).await;
+	let other = parse_virtual("- [ ] Other Issue <!-- @mock_user https://github.com/o/r/issues/61 -->\n\tuntouched\n");
+	ctx.local(&other, Some(Seed::new(0))).await;
+
+	ctx.set_issues_dir_override();
+	let path = tedi_task_operations::local::Local::find_by_number(tedi_task_operations::RepoInfo::new("o", "r"), 60, tedi_task_operations::local::FsReader).expect("issue #60 should exist");
+	let before = read_issue_file(&path);
+
+	let (out, _) = ctx.milestone_edit_with_changes("- o/r#60\n- o/r#61", |tmp_path| {
+		let content = std::fs::read_to_string(tmp_path).unwrap();
+		std::fs::write(tmp_path, content.replacen("  untouched\n", "  untouched\n  edited\n", 1)).unwrap();
+	});
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+
+	ctx.set_issues_dir_override();
+	let path =
+		tedi_task_operations::local::Local::find_by_number(tedi_task_operations::RepoInfo::new("o", "r"), 60, tedi_task_operations::local::FsReader).expect("issue #60 should still exist");
+	assert_eq!(read_issue_file(&path), before, "an unrelated sprint edit rewrote a commented issue");
+}
+
+/// Stray text under `# Blockers` belongs to no blocker item, so the edit can't be committed
+/// faithfully — it must fail loudly with the buffer preserved, never be silently dropped.
+#[tokio::test]
+async fn test_sprint_edit_orphan_blocker_line_fails_loudly() {
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+
+	let vi = parse_virtual("- [ ] Blocked Issue <!-- @mock_user https://github.com/o/r/issues/62 -->\n\t# Blockers\n\t- real blocker\n");
+	ctx.local(&vi, Some(Seed::new(0))).await;
+
+	let (out, _) = ctx.milestone_edit_with_changes("- o/r#62", |tmp_path| {
+		let content = std::fs::read_to_string(tmp_path).unwrap();
+		std::fs::write(tmp_path, content.replacen("  # Blockers\n", "  # Blockers\n  orphan line\n", 1)).unwrap();
+	});
+	assert!(!out.status.success(), "orphan blocker line must fail the edit. stdout: {}", out.stdout);
+	assert!(out.stderr.contains("rejected-changes.md"), "stderr: {}", out.stderr);
+}
+
 /// With no milestones repo configured (mock, offline), a top-level task in an edited milestone
 /// body has no known upstream repo, so it degrades to a local virtual issue. Real usage (with a
 /// milestones repo) creates it upstream instead — see `test_inlined_milestone_task_creates_real_issue`.
@@ -470,7 +640,10 @@ async fn test_milestone_edit_without_repo_falls_back_to_virtual() {
 	assert!(out.status.success(), "stderr: {}", out.stderr);
 
 	let issues_str = ctx.xdg.data_dir().join("issues").display().to_string();
-	assert_eq!(result_milestone.replace(&issues_str, "<ISSUES>"), "# Sprint\n\n- <ISSUES>/virtual/1_-_milestone_task.md");
+	assert_eq!(
+		result_milestone.replace(&issues_str, "<ISSUES>"),
+		"# Must\n\n# Sprint\n\n- <ISSUES>/virtual/1_-_milestone_task.md"
+	);
 
 	ctx.set_issues_dir_override();
 	let path = tedi_task_operations::local::Local::find_by_number(tedi_task_operations::RepoInfo::Virtual, 1, tedi_task_operations::local::FsReader)
@@ -710,7 +883,7 @@ async fn test_milestone_edit_expands_milestone_ref_and_syncs_inner_blockers() {
 	assert!(out.status.success(), "stderr: {}", out.stderr);
 
 	// bare milestone link only — inner issues never leak into assignment sync
-	assert_eq!(result_milestone, "# Sprint\n\n- https://github.com/o/r/milestone/3");
+	assert_eq!(result_milestone, "# Must\n\n# Sprint\n\n- https://github.com/o/r/milestone/3");
 
 	ctx.set_issues_dir_override();
 	let path =

@@ -65,6 +65,8 @@ here we have a series of durations, like `1d`, `2w`, `1Q`, `1y` etc.
 This is less so a fundamental building component of the system, and rather a view into it, - our compiled selection of the tasks for each period.
 They assume top-down priority ordering, - as we admit impossibility of consistent 100% completion of the period's selection.
 
+A sprint stores links only, so an issue expanded into an edit buffer has no second home there: its block is sliced back out of the buffer verbatim and committed whole through the same `VirtualIssue::parse` its own file goes through (`Modifier::Write`) — body, state, labels, comments and blockers alike. A block that doesn't compose fails the edit rather than being dropped.
+
 Normal sprints store their `TaskView` in the GitHub milestone `description` (keyed by timeframe). **Urgent** is the special lowest-precision sprint: stored locally (`issues/urgent.md`, no GitHub sync), section-less, and free to hold plain-text items alongside issue refs; milestone refs are rejected on edit. Once every issue in it is closed, the closed links are pruned (the file is deleted if nothing else remains) — deferred while an edit session holds the urgent lock. Plain-text items are never cleanup fodder.
 
 ##### Selection

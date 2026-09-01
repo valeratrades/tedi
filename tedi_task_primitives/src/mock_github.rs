@@ -201,14 +201,17 @@ impl MockGithubClient {
 				let updated_at = parse_ts("updated_at");
 
 				let key = RepoKey::new(owner, repo);
-				milestones.entry(key).or_default().insert(number, MockMilestoneData {
+				milestones.entry(key).or_default().insert(
 					number,
-					title,
-					state: state_str,
-					due_on,
-					description,
-					updated_at,
-				});
+					MockMilestoneData {
+						number,
+						title,
+						state: state_str,
+						due_on,
+						description,
+						updated_at,
+					},
+				);
 			}
 		}
 

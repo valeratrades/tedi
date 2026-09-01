@@ -43,6 +43,6 @@ pub use issue::{
 pub use locate::{IssueChildren, IssueIndex, IssueIndexParseError, IssueSelector, MAX_INDEX_DEPTH, MAX_LINEAGE_DEPTH, MAX_TITLE_LENGTH};
 pub use marker::{FoldLevel, IssueMarker, Marker};
 pub use milestone::{Milestone, MilestoneBody, MilestoneIdentity, MilestoneTimestamps};
-pub use taskview::{ManagedSection, TaskItemId, TaskView, parse_blockers_from_embedded};
+pub use taskview::{ManagedSection, TaskItemId, TaskView, embedded_issues};
 pub use tedi_md::{Events, Header, OwnedCodeBlockKind, OwnedEvent, OwnedTag, OwnedTagEnd};
 pub use uri::{IssueLink, IssueRef, MilestoneLink, MilestoneRef, NodeLink, RepoInfo, parse_repo_context};

@@ -1,5 +1,5 @@
-//! Sprint operations: expand/refresh a sprint's embedded issues, sync edited blocker
-//! sections back to issue files, drive the active sprint's selection (`select`), and the
+//! Sprint operations: expand/refresh a sprint's embedded issues, fold edited issue blocks
+//! back into their own files, drive the active sprint's selection (`select`), and the
 //! per-selected-issue operations (`selected add/pop/set/list/open/resume/halt`) plus `search`.
 //!
 //! These are the config-free halves of the sprint command — the bin owns config,
@@ -14,7 +14,6 @@ use crate::{
 	clockify_tracking::{self, HaltArgs, ResumeArgs},
 	local::{Consensus, FsReader, GitReader, Local, LocalFs},
 	open_interactions::{MilestoneModifier, Modifier, SyncOptions, modify_and_sync_issue, modify_and_sync_milestone},
-	parse_blockers_from_embedded,
 	remote::{Remote, RemoteSource, load_remote_milestone},
 	selection::{Landing, Selected},
 	sink::Sink,
@@ -26,9 +25,18 @@ use crate::{
 /// ref as the issue's fresh `Display`, and each *cached* milestone ref as an inline
 /// block (title line + materialized content, its own issue refs expanded the same way —
 /// one level, inner milestone refs stay bare links). Uncached milestones stay bare.
+///
+/// The `# Must` header is materialized empty when absent, so every sprint offers the strip.
 pub async fn expand_and_refresh(content: &str) -> Result<String> {
+	expand_view(content, true).await
+}
+
+async fn expand_view(content: &str, ensure_must: bool) -> Result<String> {
 	let mut doc = TaskView::parse(content);
 	doc.resolve_bare_refs();
+	if ensure_must {
+		doc.ensure_managed(tedi_core::ManagedSection::Must);
+	}
 
 	let mut milestones: Vec<(String, Milestone, TaskView)> = Vec::new();
 	for link in doc.milestone_links() {
@@ -250,26 +258,32 @@ pub async fn sync_milestone_changes(doc: &TaskView, offline: bool) -> Result<()>
 	}
 	Ok(())
 }
-/// Parse blocker changes from an edited sprint description and sync them back to issue files.
-pub async fn sync_blocker_changes(content: &str, offline: bool) -> Result<()> {
-	use crate::open_interactions::{Modifier, SyncOptions, modify_and_sync_issue};
-
-	let doc = TaskView::parse(content);
-
+/// Fold every issue block edited inside a sprint buffer back into its own issue, in full —
+/// the sprint file stores only links, so anything not carried here has no second home.
+///
+/// Each block is parsed by the same `VirtualIssue::parse` an issue's own file goes through, so a
+/// block that doesn't compose (stray text under `# Blockers`, say) is a loud error, not a drop.
+pub async fn sync_embedded_issue_changes(content: &str, offline: bool) -> Result<()> {
 	// An issue can be rendered several times in one buffer (held by the sprint *and* by an inlined
 	// milestone). Grouping is what keeps the untouched copies from reverting the edited one.
-	let mut grouped: Vec<(IssueLink, Vec<crate::Blockers>)> = Vec::new();
-	for (link, section_text) in doc.embedded_issues() {
-		let edited_blockers = parse_blockers_from_embedded(&section_text);
-		if edited_blockers.had_orphans {
+	let mut grouped: Vec<(IssueLink, Vec<VirtualIssue>)> = Vec::new();
+	for (link, block) in tedi_core::embedded_issues(content) {
+		let path = match &link {
+			IssueLink::Virtual(p) => p.clone(),
+			IssueLink::Owned(_) => PathBuf::from(format!("<sprint block for {link}>")),
+		};
+		let edited = VirtualIssue::parse(&block, path)?;
+		// `VirtualIssue::parse` only rejects stray content *after* the blocker list; inside the
+		// section it is `Blockers::parse` that drops what belongs to no item.
+		if edited.contents.blockers.had_orphans {
 			bail!(
 				"blocker section for {link} contains lines that don't belong to any blocker item — \
 				fix the format (all text must be under a `- ` blocker line)",
 			);
 		}
 		match grouped.iter_mut().find(|(l, _)| *l == link) {
-			Some((_, copies)) => copies.push(edited_blockers),
-			None => grouped.push((link, vec![edited_blockers])),
+			Some((_, copies)) => copies.push(edited),
+			None => grouped.push((link, vec![edited])),
 		}
 	}
 
@@ -282,19 +296,17 @@ pub async fn sync_blocker_changes(content: &str, offline: bool) -> Result<()> {
 			}
 		};
 
-		// Only sync if the blockers actually differ.
-		let mut edited = copies.into_iter().filter(|b| *b != issue.contents.blockers);
-		let Some(edited_blockers) = edited.next() else {
+		let mut changed = copies.into_iter().filter(|vi| vi.contents != issue.contents);
+		let Some(edited) = changed.next() else {
 			continue;
 		};
-		if edited.any(|b| b != edited_blockers) {
+		if changed.any(|other| other.contents != edited.contents) {
 			bail!("{link} is rendered more than once here and its copies were edited differently — leave a single version of it and retry");
 		}
 
-		println!("Syncing blocker changes for {link}");
+		println!("Syncing changes for {link}");
 
-		let modifier = Modifier::BlockerWrite { blockers: edited_blockers };
-		modify_and_sync_issue(issue, offline, modifier, SyncOptions::default()).await?;
+		modify_and_sync_issue(issue, offline, Modifier::Write { edited }, SyncOptions::default()).await?;
 	}
 
 	Ok(())
@@ -333,7 +345,7 @@ pub async fn search(query: &str) -> Result<()> {
 		return Ok(());
 	}
 	let content: String = links.iter().map(|l| format!("- {l}\n")).collect();
-	println!("{}", expand_and_refresh(&content).await?);
+	println!("{}", expand_view(&content, false).await?); // search results are not a sprint
 	Ok(())
 }
 /// Refresh the cached lowest-normal-sprint content (called by the bin after `edit`/`healthcheck`).

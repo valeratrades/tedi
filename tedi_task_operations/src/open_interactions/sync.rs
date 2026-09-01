@@ -45,7 +45,8 @@ use crate::{
 /// A `true` means the online sync can safely defer to a local save, leaving the divergence for the
 /// pre-open sync to reflush on the next online edit.
 pub(crate) fn is_transient_sync_error(e: &color_eyre::Report) -> bool {
-	e.chain().any(|cause| cause.downcast_ref::<crate::github::GithubError>().map(|g| g.is_transient()).unwrap_or(false))
+	e.chain()
+		.any(|cause| cause.downcast_ref::<crate::github::GithubError>().map(|g| g.is_transient()).unwrap_or(false))
 }
 
 /// Modify a local issue, then sync changes back to Github.
@@ -407,10 +408,10 @@ mod types {
 		BlockerSet {
 			text: String,
 		},
-		/// Replace the issue's entire blocker sequence.
-		/// Used by milestone editing to sync blocker changes back to individual issues.
-		BlockerWrite {
-			blockers: crate::Blockers,
+		/// Replace an issue's whole content from a buffer that rendered it — the sprint-embedded
+		/// counterpart of `Editor`, which parses the issue's own file the same way.
+		Write {
+			edited: VirtualIssue,
 		},
 		/// Mock modifier that does nothing but reports file as modified. For testing.
 		MockGhostEdit,
@@ -501,10 +502,12 @@ mod types {
 						file_modified: true,
 					}
 				}
-				Modifier::BlockerWrite { blockers } => {
-					let file_modified = issue.contents.blockers != *blockers;
-					issue.contents.blockers = blockers.clone();
-					ModifyResult { output: None, file_modified }
+				Modifier::Write { edited } => {
+					apply_edited_buffer(issue, &old_issue, edited.clone());
+					ModifyResult {
+						output: None,
+						file_modified: *issue != old_issue,
+					}
 				}
 				Modifier::MockGhostEdit => ModifyResult { output: None, file_modified: true },
 			};

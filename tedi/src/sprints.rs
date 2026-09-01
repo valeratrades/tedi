@@ -5,7 +5,7 @@ use tedi_core::RepoInfo;
 use tedi_task_operations::{
 	IssueLink, MilestoneLink, TaskView,
 	clockify_tracking::{HaltArgs, ResumeArgs},
-	sprints::{expand_and_refresh, materialize_new_tasks, sync_blocker_changes, sync_milestone_changes},
+	sprints::{expand_and_refresh, materialize_new_tasks, sync_embedded_issue_changes, sync_milestone_changes},
 };
 use v_utils::prelude::*;
 
@@ -454,7 +454,7 @@ async fn edit_urgent(offline: bool) -> Result<()> {
 		);
 	}
 
-	if let Err(e) = sync_blocker_changes(&edited_content, offline).await {
+	if let Err(e) = sync_embedded_issue_changes(&edited_content, offline).await {
 		tedi_task_operations::utils::persist_rejected_changes(&edited_content);
 		eprintln!("Your changes were saved to /tmp/tedi/rejected-changes.md — you can recover them from there.");
 		return Err(e);
@@ -550,8 +550,8 @@ async fn edit_milestone(settings: &LiveSettings, tf: Timeframe, offline: bool, m
 
 	let mut edited_doc = TaskView::parse(&edited_content);
 	if changed {
-		// Sync blocker changes back to individual issue files.
-		if let Err(e) = sync_blocker_changes(&edited_content, offline).await {
+		// Fold every edited issue block back into its own issue file.
+		if let Err(e) = sync_embedded_issue_changes(&edited_content, offline).await {
 			// Parts #1–#3 route transient GitHub errors elsewhere (retried, probed to offline, or deferred
 			// at the sync boundary), so a bail reaching here is a genuine non-transient parse/logic failure.
 			return dump_rejected(&edited_content, e);
@@ -651,7 +651,7 @@ async fn edit_milestone_mock_file(mock_milestone_path: &str, tf: Timeframe, offl
 		return Ok(());
 	}
 
-	if let Err(e) = sync_blocker_changes(&edited_content, offline).await {
+	if let Err(e) = sync_embedded_issue_changes(&edited_content, offline).await {
 		return dump_rejected(&edited_content, e);
 	}
 	let mut edited_doc = TaskView::parse(&edited_content);

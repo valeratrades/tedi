@@ -16,7 +16,7 @@ use tedi_md::indent_into;
 use crate::{Events, IssueLink, IssueMarker, IssueRef, MilestoneLink, MilestoneRef, NodeLink, OwnedEvent, OwnedTag, OwnedTagEnd};
 
 /// Sprint header sections tedi assigns meaning to. The variant name is the header text.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, strum::EnumString)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, strum::Display, strum::EnumString)]
 #[strum(ascii_case_insensitive)]
 pub enum ManagedSection {
 	Must,
@@ -148,6 +148,19 @@ impl TaskView {
 		}
 	}
 
+	/// Give the view an empty `section` header at the top if it has none, so a managed section is
+	/// something to fill in rather than something to remember. A view opening with header-less
+	/// content is left alone: the new header would swallow that content on the next parse, and
+	/// anywhere lower is not the top.
+	pub fn ensure_managed(&mut self, section: ManagedSection) {
+		if self.managed_index(section).is_some() || self.order.first().is_some_and(|k| k.is_empty()) {
+			return;
+		}
+		let key = vec![section.to_string()];
+		self.order.insert(0, key.clone());
+		self.sections.insert(key, Vec::new());
+	}
+
 	/// Node links held directly by a managed section, in document order.
 	pub fn managed_nodes(&self, section: ManagedSection) -> Vec<NodeLink> {
 		let mut nodes = Vec::new();
@@ -169,17 +182,6 @@ impl TaskView {
 			self.section_nodes(key, &mut nodes);
 		}
 		nodes
-	}
-
-	/// The expanded (`Title <!-- marker -->` + blockers) issue sections in this view.
-	/// Returns each `IssueLink` and the serialized component text (for blocker sync).
-	/// Bare links are excluded — only genuinely-expanded issues are synced.
-	pub fn embedded_issues(&self) -> Vec<(IssueLink, String)> {
-		let mut result = Vec::new();
-		for items in self.sections.values() {
-			collect_embedded(items, &mut result);
-		}
-		result
 	}
 
 	/// Drop every issue component (with its children) — prunes a fully-closed sprint.
@@ -209,10 +211,7 @@ impl TaskView {
 			self.touch(&root);
 			self.sections.entry(root.clone()).or_default().push(TaskItem {
 				checkbox: None,
-				content: TaskContent::Issue {
-					r#ref: IssueRef::Url(link.clone()),
-					embedded: false,
-				},
+				content: TaskContent::Issue { r#ref: IssueRef::Url(link.clone()) },
 				children: Vec::new(),
 			});
 		}
@@ -308,13 +307,79 @@ impl TaskView {
 	pub fn assign_link(&mut self, id: &TaskItemId, link: IssueLink) {
 		let items = self.sections.get_mut(&id.section).expect("TaskItemId produced by homeless_tasks on this view");
 		let item = resolve_item_mut(items, &id.path);
-		item.content = TaskContent::Issue {
-			r#ref: IssueRef::Url(link),
-			embedded: false,
-		};
+		item.content = TaskContent::Issue { r#ref: IssueRef::Url(link) };
 		item.checkbox = None;
 		item.children.clear();
 	}
+}
+
+/// The expanded issue blocks of a rendered task view, sliced out of `content` verbatim and
+/// dedented into the issue's own file format — so the sprint sync folds an edit back through the
+/// same `VirtualIssue::parse` the issue's own file goes through, narrowing nothing on the way.
+///
+/// A block runs from its `- [state] Title <!-- marker -->` line to the next line indented no
+/// deeper. Its interior is not rescanned: a marked line inside a block is that issue's own child
+/// link, which the parent's fold owns. Bare links carry no block and are skipped.
+pub fn embedded_issues(content: &str) -> Vec<(IssueLink, String)> {
+	let content = strip_fold_markers(content);
+	let lines: Vec<&str> = content.lines().collect();
+
+	let mut out = Vec::new();
+	let mut i = 0;
+	while i < lines.len() {
+		let Some(link) = issue_block_start(lines[i]) else {
+			i += 1;
+			continue;
+		};
+		let indent = indent_width(lines[i]);
+		let mut end = i + 1;
+		while end < lines.len() && (lines[end].trim().is_empty() || indent_width(lines[end]) > indent) {
+			end += 1;
+		}
+		while end > i + 1 && lines[end - 1].trim().is_empty() {
+			end -= 1;
+		}
+		out.push((link, lines[i..end].iter().map(|l| format!("{}\n", dedent(l, indent))).collect()));
+		i = end;
+	}
+	out
+}
+
+/// The issue a list line is the expanded block of, read off its identity marker.
+/// Milestone markers and unmarked (bare-link or prose) lines are not block starts.
+fn issue_block_start(line: &str) -> Option<IssueLink> {
+	if !line.trim_start().starts_with("- ") {
+		return None;
+	}
+	let mut rest = line;
+	while let Some(open) = rest.find("<!--") {
+		let after = &rest[open + 4..];
+		let close = after.find("-->")?;
+		let inner = after[..close].trim();
+		if MilestoneLink::parse(inner).is_none()
+			&& let IssueMarker::Linked { link, .. } | IssueMarker::Virtual { link: Some(link) } = IssueMarker::decode(inner)
+		{
+			return Some(link);
+		}
+		rest = &after[close + 3..];
+	}
+	None
+}
+
+/// Leading whitespace in columns, a tab counting as markdown's four.
+fn indent_width(line: &str) -> usize {
+	line.chars().take_while(|c| c.is_whitespace()).map(|c| if c == '\t' { 4 } else { 1 }).sum()
+}
+
+fn dedent(line: &str, width: usize) -> &str {
+	let mut consumed = 0;
+	for (idx, c) in line.char_indices() {
+		if consumed >= width || !c.is_whitespace() {
+			return &line[idx..];
+		}
+		consumed += if c == '\t' { 4 } else { 1 };
+	}
+	""
 }
 
 /// Address of a task item within a `TaskView`: section header-path + positional path
@@ -335,62 +400,6 @@ pub struct TaskItem {
 	children: Vec<Section>,
 }
 
-/// Parse blockers from an embedded issue section in a task view.
-/// The section is the issue's `Display`: title line · body · comments · `# Blockers` + blockers
-/// · child links. We read only the blocker items, stopping at the child-link list (`- [`).
-pub fn parse_blockers_from_embedded(section: &str) -> crate::Blockers {
-	let lines: Vec<&str> = section.lines().collect();
-	if lines.len() < 2 {
-		return crate::Blockers::default();
-	}
-
-	// Find the blockers header (at one level of indent — tab or spaces)
-	let mut blockers_start = None;
-	let mut select_blockers = false;
-	for (idx, line) in lines.iter().enumerate().skip(1) {
-		let content = line.trim_start();
-		// Check for !s suffix
-		let (effective, has_select) = match content.trim_end().strip_suffix("!s").or_else(|| content.trim_end().strip_suffix("!S")) {
-			Some(before) => (before.trim_end(), true),
-			None => (content, false),
-		};
-		if matches!(crate::Marker::decode(effective), Some(crate::Marker::BlockersSection(_))) {
-			blockers_start = Some(idx + 1);
-			if has_select {
-				select_blockers = true;
-			}
-			break;
-		}
-		// Standalone `!s`
-		if content.trim().eq_ignore_ascii_case("!s") {
-			select_blockers = true;
-		}
-	}
-
-	let Some(start) = blockers_start else {
-		return crate::Blockers::default();
-	};
-
-	// Collect blocker lines (strip one level of indent — tab or 2 spaces), stopping at the
-	// child-issue link list (a checkbox item `- [`) which follows the blockers in `Display`.
-	let mut blocker_lines: Vec<String> = Vec::new();
-	for line in &lines[start..] {
-		if line.trim().is_empty() {
-			continue;
-		}
-		let stripped = line.strip_prefix('\t').or_else(|| line.strip_prefix("  ")).unwrap_or(line);
-		if stripped.trim_start().starts_with("- [") {
-			break;
-		}
-		blocker_lines.push(stripped.to_string());
-	}
-
-	let mut seq = crate::Blockers::parse(&blocker_lines.join("\n"));
-	if select_blockers {
-		seq.set_state = Some(crate::BlockerSetState::Pending);
-	}
-	seq
-}
 /// Semantic classification of a component's inline text. Blockers are never a
 /// top-level component here — they live inside the individual issues.
 #[derive(Clone)]
@@ -398,9 +407,10 @@ enum TaskContent {
 	/// A milestone reference (`…/milestone/N`). `embedded` mirrors the issue variant:
 	/// the expanded form (`Title <!-- url -->`), cleared on collapse.
 	Milestone { r#ref: MilestoneRef, embedded: bool },
-	/// An issue reference. `embedded` marks the expanded form (`Title <!-- marker -->`)
-	/// as opposed to a bare link; it is a transient parse artifact, cleared on collapse.
-	Issue { r#ref: IssueRef, embedded: bool },
+	/// An issue reference. The expanded form (`Title <!-- marker -->` + contents) and a bare
+	/// link are the same component here — the stored form is links either way, and the
+	/// expanded block is read off the buffer text by [`embedded_issues`].
+	Issue { r#ref: IssueRef },
 	/// Unlinked text (category headers like `discretionary_engine`, or a homeless local issue).
 	Virtual(Vec<OwnedEvent>),
 }
@@ -606,10 +616,7 @@ fn classify_inline_events(events: Vec<OwnedEvent>) -> TaskContent {
 				};
 			}
 			if let IssueMarker::Linked { link, .. } | IssueMarker::Virtual { link: Some(link) } = IssueMarker::decode(inner.trim()) {
-				return TaskContent::Issue {
-					r#ref: IssueRef::Url(link),
-					embedded: true,
-				};
+				return TaskContent::Issue { r#ref: IssueRef::Url(link) };
 			}
 		}
 	}
@@ -622,7 +629,7 @@ fn classify_inline_events(events: Vec<OwnedEvent>) -> TaskContent {
 			return TaskContent::Milestone { r#ref: mr, embedded: false };
 		}
 		if let Some(ir) = IssueRef::parse_word(trimmed) {
-			return TaskContent::Issue { r#ref: ir, embedded: false };
+			return TaskContent::Issue { r#ref: ir };
 		}
 	}
 
@@ -714,23 +721,6 @@ fn collect_nodes(items: &[TaskItem], out: &mut Vec<NodeLink>) {
 	}
 }
 
-fn collect_embedded(items: &[TaskItem], out: &mut Vec<(IssueLink, String)>) {
-	for item in items {
-		if let TaskContent::Issue { r#ref, embedded: true } = &item.content
-			&& let Some(link) = r#ref.to_issue_link()
-		{
-			let mut section_text = String::new();
-			serialize_item(item, &HashMap::new(), &mut section_text);
-			out.push((link, section_text));
-		}
-		for section in &item.children {
-			if let Section::List(list) = section {
-				collect_embedded(list, out);
-			}
-		}
-	}
-}
-
 fn remove_issue_items(items: &mut Vec<TaskItem>) {
 	items.retain(|item| !matches!(item.content, TaskContent::Issue { .. }));
 	for item in items.iter_mut() {
@@ -756,10 +746,7 @@ fn remove_linked_issue_items(items: &mut Vec<TaskItem>, links: &[IssueLink]) {
 fn collapse_items(items: &mut [TaskItem]) {
 	for item in items.iter_mut() {
 		let collapsed = match &item.content {
-			TaskContent::Issue { r#ref, .. } => r#ref.to_issue_link().map(|link| TaskContent::Issue {
-				r#ref: IssueRef::Url(link),
-				embedded: false,
-			}),
+			TaskContent::Issue { r#ref } => r#ref.to_issue_link().map(|link| TaskContent::Issue { r#ref: IssueRef::Url(link) }),
 			TaskContent::Milestone { r#ref, embedded: true } => Some(TaskContent::Milestone {
 				r#ref: r#ref.clone(),
 				embedded: false,
@@ -1113,39 +1100,6 @@ mod tests {
 	}
 
 	#[test]
-	fn test_parse_blockers_from_embedded() {
-		let section = "\
-- [ ] My Issue <!-- @user https://github.com/owner/repo/issues/42 -->
-\t# Blockers
-\t- task 1
-\t- task 2";
-
-		let blockers = parse_blockers_from_embedded(section);
-		assert_eq!(blockers.items.len(), 2);
-		assert_eq!(blockers.items[0].text, "task 1");
-		assert_eq!(blockers.items[1].text, "task 2");
-		assert!(blockers.set_state.is_none());
-	}
-
-	#[test]
-	fn test_parse_blockers_from_embedded_with_select() {
-		let section = "\
-- [ ] My Issue <!-- @user https://github.com/owner/repo/issues/42 -->
-\t# Blockers !s
-\t- task 1";
-
-		let blockers = parse_blockers_from_embedded(section);
-		assert_eq!(blockers.items.len(), 1);
-		assert!(blockers.set_state.is_some());
-	}
-
-	#[test]
-	fn test_parse_blockers_from_embedded_no_blockers() {
-		let section = "- [ ] My Issue <!-- @user https://github.com/owner/repo/issues/42 -->";
-		assert!(parse_blockers_from_embedded(section).is_empty());
-	}
-
-	#[test]
 	fn test_sections_keep_document_order() {
 		let content = "# zebra\n- z item\n\n# alpha\n\n## beta\n- b item\n\n# middle\n- m item\n";
 		let doc = TaskView::parse(content);
@@ -1289,14 +1243,13 @@ mod tests {
 	#[test]
 	fn test_embedded_issues_detected() {
 		let content = "- [ ] My Issue <!-- @user https://github.com/owner/repo/issues/42 -->\n\t# Blockers\n\t- task 1\n";
-		let doc = TaskView::parse(content);
-		let embedded = doc.embedded_issues();
+		let embedded = embedded_issues(content);
 		assert_eq!(embedded.len(), 1);
 		assert_eq!(embedded[0].0.number(), 42);
 		insta::assert_snapshot!(embedded[0].1, @"
-		- [ ] https://github.com/owner/repo/issues/42
-		  # Blockers
-		  - task 1
+		- [ ] My Issue <!-- @user https://github.com/owner/repo/issues/42 -->
+			# Blockers
+			- task 1
 		");
 	}
 
@@ -1304,10 +1257,9 @@ mod tests {
 	fn test_embedded_issues_after_edit_simulation() {
 		let expanded = "- [ ] Empty Issue <!-- @mock_user https://github.com/o/r/issues/50 -->";
 		let edited = format!("{expanded}\n\t# Blockers\n\t- todo\n");
-		let doc = TaskView::parse(&edited);
-		let embedded = doc.embedded_issues();
+		let embedded = embedded_issues(&edited);
 		assert_eq!(embedded.len(), 1);
-		let blockers = parse_blockers_from_embedded(&embedded[0].1);
+		let blockers = crate::VirtualIssue::parse(&embedded[0].1, PathBuf::from("/tmp/test.md")).unwrap().contents.blockers;
 		assert_eq!(blockers.items.len(), 1);
 		assert_eq!(blockers.items[0].text, "todo");
 	}
@@ -1544,20 +1496,21 @@ mod tests {
 
 	#[test]
 	fn test_embedded_issue_inside_milestone_block() {
-		// blocker sync must see issues embedded inside an expanded milestone block
+		// the sync must see issues embedded inside an expanded milestone block, dedented to their own form
 		let content = "\
 - [ ] big_feature <!-- https://github.com/o/r/milestone/3 -->
   - [ ] Inner <!-- @user https://github.com/o/r/issues/5 -->
     # Blockers
     - inner task
 ";
-		let doc = TaskView::parse(content);
-		let embedded = doc.embedded_issues();
+		let embedded = embedded_issues(content);
 		assert_eq!(embedded.len(), 1);
 		assert_eq!(embedded[0].0.number(), 5);
-		let blockers = parse_blockers_from_embedded(&embedded[0].1);
-		assert_eq!(blockers.items.len(), 1);
-		assert_eq!(blockers.items[0].text, "inner task");
+		insta::assert_snapshot!(embedded[0].1, @"
+		- [ ] Inner <!-- @user https://github.com/o/r/issues/5 -->
+		  # Blockers
+		  - inner task
+		");
 	}
 
 	#[test]
@@ -1581,10 +1534,9 @@ mod tests {
 				};
 				let view = issue.to_string();
 
-				let edited_doc = TaskView::parse(&view);
-				let embedded = edited_doc.embedded_issues();
+				let embedded = embedded_issues(&view);
 				let (_, section_text) = embedded.first().expect("should have embedded issue");
-				let new_blockers = parse_blockers_from_embedded(section_text);
+				let new_blockers = crate::VirtualIssue::parse(section_text, PathBuf::from("/tmp/test.md")).unwrap().contents.blockers;
 
 				let mut new_vi = vi;
 				new_vi.contents.blockers = new_blockers;
