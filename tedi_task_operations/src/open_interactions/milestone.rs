@@ -7,7 +7,7 @@ use color_eyre::eyre::{Result, bail};
 
 use super::sync::{MergeMode, Side, SyncOptions};
 use crate::{
-	Milestone, MilestoneBody, MilestoneLink,
+	IssueLink, Milestone, MilestoneBody, MilestoneLink,
 	conflict_resolve::{check_for_existing_milestone_conflict, initiate_conflict_merge},
 	local::{
 		Consensus, GitReader, Local, LocalFs,
@@ -147,6 +147,21 @@ async fn resolve_merge(local: Milestone, consensus: Option<Milestone>, remote: M
 		_ => (false, false),
 	};
 
+	// `merge` unions the hosted set, which alone can't tell "the other side added it" from "I
+	// deleted it". Against the base, a link one side dropped is a deletion; the losing side of a
+	// `--force` gets no vote. Without a base (never committed) every link reads as an addition.
+	let dropped: Vec<IssueLink> = match consensus.as_ref() {
+		Some(base) => {
+			let (in_local, in_remote) = (local.body.hosted(), remote.body.hosted());
+			base.body
+				.hosted()
+				.into_iter()
+				.filter(|l| (!force_remote_wins && !in_local.contains(l)) || (!force_local_wins && !in_remote.contains(l)))
+				.collect()
+		}
+		None => Vec::new(),
+	};
+
 	let mut local_merged = local.clone();
 	let mut remote_merged = remote.clone();
 
@@ -159,6 +174,9 @@ async fn resolve_merge(local: Milestone, consensus: Option<Milestone>, remote: M
 		remote_merged.merge(&consensus, false);
 	}
 	remote_merged.merge(&local, force_local_wins);
+
+	local_merged.body.0.remove_issue_links(&dropped);
+	remote_merged.body.0.remove_issue_links(&dropped);
 
 	if milestones_agree(&local_merged, &remote_merged) {
 		let mut resolved = local_merged;
