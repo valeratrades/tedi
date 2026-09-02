@@ -76,10 +76,11 @@ pub enum RemoteError {
 		source: crate::github::GithubError,
 	},
 
-	/// Issue not found on GitHub (404).
+	/// A 404 on fetch: the repo or the issue is gone (deleted/renamed/transferred/private), or the
+	/// token lost access. Pre-rendered because the printer at the top is eyre, not miette.
 	#[leaf]
-	#[error("issue #{number} not found in {repo}")]
-	NotFound { repo: RepoInfo, number: u64 },
+	#[error("{rendered}")]
+	Gone { rendered: String },
 
 	/// Required executable not found.
 	#[leaf]
@@ -89,6 +90,29 @@ pub enum RemoteError {
 	/// GitHub client not available.
 	#[own]
 	NoClient(crate::github::GithubError),
+}
+
+#[derive(Debug, miette::Diagnostic, thiserror::Error)]
+#[error("{repo}#{number} is gone from GitHub")]
+#[diagnostic(help(
+	"the repo or the issue was deleted, renamed, transferred or made private — or your token lost access to it.\n\
+		 Your local copy is untouched. Repoint the link (a local-only task is `<!-- virtual <path> -->`, not a github URL) \
+		 or drop it from whatever references it, then re-run."
+))]
+struct Gone {
+	repo: RepoInfo,
+	number: u64,
+}
+
+impl RemoteError {
+	/// A failed issue fetch, with 404 split off — it is not a transport problem to retry but a
+	/// dangling link, and only the caller here knows which issue was behind it.
+	fn fetch_issue(repo: RepoInfo, number: u64, source: crate::github::GithubError) -> Self {
+		match &source {
+			crate::github::GithubError::Api { status, .. } if status.as_u16() == 404 => Self::new_gone(format!("{:?}", miette::Report::new(Gone { repo, number }))),
+			_ => Self::FetchIssue { repo, number, source },
+		}
+	}
 }
 
 /// Marker type for remote GitHub sink operations.
@@ -201,7 +225,7 @@ impl crate::LazyIssue<RemoteSource> for Issue {
 
 		let (issue_result, timeline_result) = tokio::join!(issue_fut, timeline_fut);
 
-		let issue = issue_result.map_err(|e| RemoteError::FetchIssue { repo: repo_info, number, source: e })?;
+		let issue = issue_result.map_err(|e| RemoteError::fetch_issue(repo_info, number, e))?;
 
 		// Build IssueTimestamps from GraphQL timeline (comments will be empty here)
 		let timeline = timeline_result.map_err(|e| RemoteError::FetchTimestamps { repo: repo_info, number, source: e })?;
@@ -234,7 +258,7 @@ impl crate::LazyIssue<RemoteSource> for Issue {
 
 		let (issue_result, comments_result, timeline_result) = tokio::join!(issue_fut, comments_fut, timeline_fut);
 
-		let issue = issue_result.map_err(|e| RemoteError::FetchIssue { repo: repo_info, number, source: e })?;
+		let issue = issue_result.map_err(|e| RemoteError::fetch_issue(repo_info, number, e))?;
 		let comments = comments_result.map_err(|e| RemoteError::FetchComments { repo: repo_info, number, source: e })?;
 
 		self.contents = build_contents_from_github(&issue, &comments);
