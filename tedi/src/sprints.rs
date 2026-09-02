@@ -467,6 +467,7 @@ async fn edit_urgent(offline: bool) -> Result<()> {
 	}
 
 	edited_doc.collapse_to_links();
+	tedi_task_operations::selection::prune_closed(&mut edited_doc); // an issue closed in the buffer leaves urgent with the same save
 	let stored = edited_doc.serialize();
 	// urgent is section-less by design (ARCHITECTURE.md); a header here is inert, not an error
 	let headers: Vec<&str> = stored.lines().filter(|l| l.starts_with('#')).collect();
@@ -474,6 +475,13 @@ async fn edit_urgent(offline: bool) -> Result<()> {
 		eprintln!("warning: urgent is a flat list — these headers carry no meaning in it: {}", headers.join(", "));
 	}
 
+	if stored.trim().is_empty() {
+		if path.exists() {
+			fs::remove_file(&path)?;
+		}
+		println!("Urgent sprint is empty; removed");
+		return Ok(());
+	}
 	fs::create_dir_all(path.parent().expect("urgent_path is always nested under data dir"))?;
 	fs::write(&path, stored)?;
 	println!("Updated urgent sprint");

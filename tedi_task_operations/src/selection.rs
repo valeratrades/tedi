@@ -7,9 +7,9 @@
 //! paths default to the top open root node. A terminal milestone auto-resolves to its
 //! first open, non-delegating issue — a resolution rule, never written back into the path.
 //! Milestone contents are cached here (fetched by `sprints get/edit`/healthcheck) so
-//! resolution works offline. Once every issue in urgent is closed, the closed links are
-//! pruned (the file is deleted when nothing else remains) — plain-text items are never
-//! cleanup fodder, and cleanup defers to a running edit session via the urgent lock.
+//! resolution works offline. Urgent prunes its closed issues on every processing (the file is
+//! deleted when nothing else remains) — plain-text items are never cleanup fodder, and cleanup
+//! defers to a running edit session via the urgent lock.
 
 use std::{
 	collections::HashMap,
@@ -478,8 +478,20 @@ fn guard_urgent(active: &ActiveSprint) -> Result<(), String> {
 	Ok(())
 }
 
-/// Once every issue in urgent is closed, prune the closed links; delete the file when
-/// nothing else remains. Skipped while an edit session holds the urgent lock.
+/// Drop every issue that reached a closed state (done, not planned, duplicate). A link that
+/// doesn't resolve locally is unknown, not done, and stays. `true` when anything was dropped.
+pub fn prune_closed(view: &mut TaskView) -> bool {
+	let closed: Vec<IssueLink> = view.issue_links().into_iter().filter(|l| link_local(l).is_some_and(|vi| vi.contents.state.is_closed())).collect();
+	if closed.is_empty() {
+		return false;
+	}
+	view.remove_issue_links(&closed);
+	true
+}
+
+/// Urgent is the one sprint that prunes itself: closed issues leave it as soon as it is
+/// processed, and the file goes with them when nothing else remains. Plain-text items are never
+/// cleanup fodder. Skipped while an edit session holds the urgent lock.
 fn cleanup_urgent() {
 	let path = urgent_path();
 	if !path.exists() {
@@ -489,11 +501,9 @@ fn cleanup_urgent() {
 	let Ok(content) = std::fs::read_to_string(&path) else { return }; // deleted between exists() and here
 	let mut view = TaskView::parse(&content);
 	view.resolve_bare_refs();
-	let links = view.issue_links();
-	if links.is_empty() || links.iter().any(link_is_open) {
+	if !prune_closed(&mut view) {
 		return;
 	}
-	view.remove_issues();
 	let remaining = view.serialize();
 	let result = if remaining.trim().is_empty() {
 		std::fs::remove_file(&path)

@@ -400,6 +400,30 @@ async fn test_urgent_prunes_closed_issues() {
 	insta::assert_snapshot!(ctx.xdg.read_data("issues/urgent.md"), @"- pay for Tokyo server");
 }
 
+/// Urgent drops a closed (or rejected) issue the moment it is processed, even while open
+/// issues keep the sprint alive — unlike a normal sprint, which keeps them until hand-removed.
+#[tokio::test]
+async fn test_urgent_prunes_closed_beside_open() {
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+
+	let done = parse_virtual("- [x] Done Issue <!-- @mock_user https://github.com/o/r/issues/60 -->\n\tbody\n");
+	ctx.local(&done, Some(Seed::new(0))).await;
+	let rejected = parse_virtual("- \\[-] Rejected Issue <!-- @mock_user https://github.com/o/r/issues/61 -->\n\tbody\n");
+	ctx.local(&rejected, Some(Seed::new(1))).await;
+	let open = parse_virtual("- [ ] Open Issue <!-- @mock_user https://github.com/o/r/issues/62 -->\n\tbody\n");
+	ctx.local(&open, Some(Seed::new(2))).await;
+	ctx.xdg.write_data(
+		"issues/urgent.md",
+		"- https://github.com/o/r/issues/60\n- https://github.com/o/r/issues/61\n- https://github.com/o/r/issues/62\n- pay for Tokyo server\n",
+	);
+
+	let _ = ctx.run(&["--offline", "sprints", "selected", "current"]);
+	insta::assert_snapshot!(ctx.xdg.read_data("issues/urgent.md"), @"
+	- https://github.com/o/r/issues/62
+	- pay for Tokyo server
+	");
+}
+
 /// An urgent file holding nothing but closed issues gets deleted by selection polling.
 #[tokio::test]
 async fn test_urgent_deleted_when_all_issues_closed() {
