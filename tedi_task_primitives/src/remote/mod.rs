@@ -5,12 +5,15 @@
 //!
 //! Both directions, field by field, are drawn in `remote.typ` at the crate root.
 
-use HashMap;
 //==============================================================================
 // Error Types
 //==============================================================================
+use std::{collections::HashMap, str::FromStr as _};
+
+use color_eyre::eyre::Result;
 use copy_arrayvec::CopyArrayVec;
-use v_utils::{macros::wrap_err, prelude::*};
+use tracing::{instrument, warn};
+use v_utils::macros::wrap_err;
 
 use crate::{
 	CloseState, Comment, CommentIdentity, Issue, IssueContents, IssueIdentity, IssueIndex, IssueLink, IssueSelector, IssueTimestamps, MAX_LINEAGE_DEPTH, RepoInfo,

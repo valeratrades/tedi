@@ -18,8 +18,6 @@
 
 use std::collections::BTreeMap;
 
-use HashMap;
-
 pub mod conflict_detect;
 pub mod consensus;
 
@@ -1098,17 +1096,22 @@ pub use local_path::{LocalPath, LocalPathError, LocalPathErrorKind, LocalPathRes
 
 mod fs_sink;
 mod milestone;
-use std::path::{Path, PathBuf};
-
-pub use consensus::Consensus;
-pub use fs_sink::{LocalFs, LocalFsSinkError};
-pub use milestone::{MilestoneMeta, MilestoneProjectMeta};
 //==============================================================================
 // Error Types
 //==============================================================================
+use std::{
+	collections::HashMap,
+	path::{Path, PathBuf},
+};
+
+use color_eyre::eyre::{Report, Result, bail, eyre};
+pub use consensus::Consensus;
+pub use fs_sink::{LocalFs, LocalFsSinkError};
+pub use milestone::{MilestoneMeta, MilestoneProjectMeta};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use v_utils::{macros::wrap_err, prelude::*};
+use tracing::{instrument, warn};
+use v_utils::macros::wrap_err;
 
 use crate::{Issue, IssueIndex, IssueLink, IssueSelector, LinkedIssueMeta, RepoInfo, local::conflict_detect::ConflictBlockedError};
 

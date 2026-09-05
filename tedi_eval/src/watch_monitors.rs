@@ -15,7 +15,7 @@ use color_eyre::eyre::{Context, Result, bail};
 use jiff::{Timestamp, ToSpan, Zoned, civil};
 use libwayshot::WayshotConnection;
 use serde::{Deserialize, Serialize};
-use v_utils::prelude::*;
+use v_utils::Timeframe;
 
 #[derive(Debug, Subcommand)]
 pub enum MonitorsCommands {
@@ -286,7 +286,7 @@ async fn annotate(timeframe: Timeframe, model: Model) -> Result<()> {
 	capture_screenshots_now(&cache_dir)?;
 
 	// Collect all screenshots within the timeframe
-	let cutoff = Timestamp::now() - timeframe.signed_duration();
+	let cutoff = Timestamp::now() - timeframe.duration();
 	let screenshots = collect_screenshots(&cache_dir, cutoff)?;
 
 	if screenshots.is_empty() {

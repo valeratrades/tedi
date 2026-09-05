@@ -1,4 +1,5 @@
 use clap::Args;
+use color_eyre::eyre::{Report, Result, bail, eyre};
 use jiff::Timestamp;
 use tedi_adapters::github::GithubMilestone;
 use tedi_core::RepoInfo;
@@ -7,7 +8,7 @@ use tedi_task_operations::{
 	clockify_tracking::{HaltArgs, ResumeArgs},
 	sprints::{expand_and_refresh, materialize_new_tasks, sync_embedded_issue_changes, sync_milestone_changes},
 };
-use v_utils::prelude::*;
+use v_utils::{Timeframe, TimeframeDesignator};
 
 use crate::config::LiveSettings;
 
@@ -612,7 +613,7 @@ async fn edit_milestone(settings: &LiveSettings, tf: Timeframe, offline: bool, m
 
 	// Outdated milestones get a due-date bump + an archived snapshot. Direct API, online only, best-effort.
 	if !offline && is_outdated {
-		let new_date = Timestamp::now() + tf.signed_duration();
+		let new_date = Timestamp::now() + tf.duration();
 		println!("Milestone was outdated, updating due date to {}", new_date.strftime("%Y-%m-%d"));
 		let archive_title = format!("{}_{tf}", Timestamp::now().strftime("%Y/%m/%d"));
 		let (update_result, archive_result) = tokio::join!(

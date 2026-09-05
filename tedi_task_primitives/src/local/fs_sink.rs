@@ -7,8 +7,9 @@ use std::{
 	path::{Path, PathBuf},
 };
 
+use color_eyre::eyre::Result;
 use tracing::{debug, info, instrument, trace, warn};
-use v_utils::{macros::wrap_err, prelude::*};
+use v_utils::macros::wrap_err;
 
 use super::{FsReader, IssueMeta, Local, LocalPath, LocalReader, local_path::LocalPathError};
 use crate::{Issue, local::LocalPathErrorKind, sink::Sink};

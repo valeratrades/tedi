@@ -10,7 +10,7 @@
 
 use std::{path::Path, process::Command};
 
-use v_utils::prelude::*;
+use color_eyre::eyre::{Result, bail, eyre};
 
 use crate::{
 	Issue, IssueIndex, LazyIssue as _, RepoInfo, VirtualIssue,

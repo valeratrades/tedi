@@ -2,7 +2,8 @@
 
 use std::path::PathBuf;
 
-use v_utils::{macros::wrap_err, prelude::Report, utils::exit_on_error};
+use color_eyre::eyre::Report;
+use v_utils::{macros::wrap_err, utils::exit_on_error};
 
 use super::command::ProjectType;
 use crate::{

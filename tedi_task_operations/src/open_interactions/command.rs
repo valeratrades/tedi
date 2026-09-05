@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use clap::Args;
-use v_utils::prelude::*;
+use color_eyre::eyre::{Result, bail, eyre};
 
 use super::{
 	sync::{MergeMode, Modifier, Side, SyncOptions, modify_and_sync_issue},

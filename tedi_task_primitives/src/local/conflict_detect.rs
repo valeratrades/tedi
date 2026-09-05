@@ -9,9 +9,10 @@
 
 use std::path::PathBuf;
 
+use color_eyre::eyre::Result;
 use miette::Diagnostic;
 use thiserror::Error;
-use v_utils::{macros::wrap_err, prelude::*};
+use v_utils::macros::wrap_err;
 
 use super::Local;
 use crate::IssueIndex;

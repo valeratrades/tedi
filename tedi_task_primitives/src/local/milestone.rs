@@ -12,10 +12,10 @@
 
 use std::{collections::BTreeMap, path::PathBuf};
 
+use color_eyre::eyre::{Result, eyre};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use tedi_core::{CloseState, MilestoneBody, MilestoneIdentity, MilestoneLink, MilestoneTimestamps};
-use v_utils::prelude::*;
 
 use super::{Consensus, FsReader, Local, LocalFs, LocalReader};
 use crate::{Milestone, RepoInfo, sink::Sink};

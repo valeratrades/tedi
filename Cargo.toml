@@ -11,19 +11,19 @@ members = [
 ]
 
 [workspace.package]
-version = "0.16.3"
+version = "0.17.2"
 edition = "2024"
 authors = ["Valeriy Sakharov <valeratrades@gmail.com>"]
 license = "BlueOak-1.0.0"
 repository = "https://github.com/valeratrades/tedi"
 
 [workspace.dependencies]
-tedi_adapters = { path = "tedi_adapters", version = "0.16.3" }
-tedi_core = { path = "tedi_core", version = "0.16.3" }
-tedi_eval = { path = "tedi_eval", version = "0.16.3" }
-tedi_md = { path = "tedi_md", version = "0.16.3" }
-tedi_task_operations = { path = "tedi_task_operations", version = "0.16.3" }
-tedi_task_primitives = { path = "tedi_task_primitives", version = "0.16.3" }
+tedi_adapters = { path = "tedi_adapters", version = "0.17.2" }
+tedi_core = { path = "tedi_core", version = "0.17.2" }
+tedi_eval = { path = "tedi_eval", version = "0.17.2" }
+tedi_md = { path = "tedi_md", version = "0.17.2" }
+tedi_task_operations = { path = "tedi_task_operations", version = "0.17.2" }
+tedi_task_primitives = { path = "tedi_task_primitives", version = "0.17.2" }
 
 arrayvec = "0.7"
 ask_llm = { version = "^3.0.1" }
@@ -61,7 +61,7 @@ tracing-error = "^0.2"
 tracing-subscriber = { version = "^0.3", features = ["env-filter", "json"] }
 url = "^2.5"
 urlencoding = "^2.1.3"
-v_utils = { version = "^2.15.41", features = ["io", "async-io", "macros", "trades", "xdg", "cli"] }
+v_utils = { version = "^2.17.16", features = ["io", "async-io", "macros", "xdg", "cli"] }
 xdg = "3.0.0"
 
 # dev
