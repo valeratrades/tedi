@@ -238,6 +238,32 @@ async fn test_url_open_creates_local_file_from_remote() {
 	assert!(content.contains("remote body content"), "Should have remote content. Got: {content}");
 }
 
+/// A Github body may hold a task list of its own. Indented under the title line it is shaped
+/// exactly like a child item — and the second open has to read back what the first one wrote.
+#[tokio::test]
+async fn test_task_list_in_body_survives_reopen() {
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+
+	let remote_vi = parse_virtual(
+		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+  intro
+
+  - [ ] first step
+  - [ ] second step
+"#,
+	);
+	ctx.remote(&remote_vi, Some(Seed::new(15)));
+
+	let out = ctx.open_url(("o", "r").into(), 1).run();
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+
+	let content = read_issue_file(&ctx.flat_issue_path(("o", "r").into(), 1, "Test Issue"));
+	assert!(content.contains("  - [ ] first step"), "task list must stay in the body. Got: {content}");
+
+	let reopen = ctx.open_url(("o", "r").into(), 1).run();
+	assert!(reopen.status.success(), "reopen must parse the file we just wrote. stderr: {}", reopen.stderr);
+}
+
 /// When opening via URL with --reset, local state should be completely replaced with remote.
 /// No merge conflicts, no prompts - just nuke and replace.
 #[tokio::test]

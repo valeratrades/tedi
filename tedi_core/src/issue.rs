@@ -1301,7 +1301,7 @@ impl VirtualIssue {
 					// After blockers, any checkbox list terminates the blocker section
 					// (split_blockers_from_checkboxes already separated checkbox items out).
 					let has_checkbox = Self::list_has_checkbox(&events[pos..]);
-					let is_child_list = has_checkbox;
+					let is_child_list = has_checkbox && (blocker_list_consumed || Self::first_item_marked(&events[pos..]));
 
 					if is_child_list {
 						// After blockers, checkbox items without markers auto-become Pending
@@ -1433,6 +1433,28 @@ impl VirtualIssue {
 					}
 				}
 				OwnedEvent::CheckBox(_) if depth == 1 => return true,
+				_ => {}
+			}
+		}
+		false
+	}
+
+	/// Whether the first item of a list carries an issue marker on its title line. `Display` always
+	/// emits one for a child, so an unmarked checkbox list is body prose (a Github task list).
+	fn first_item_marked(events: &[crate::OwnedEvent]) -> bool {
+		use super::{OwnedEvent, OwnedTag, OwnedTagEnd};
+		let Some(start) = events.iter().position(|e| matches!(e, OwnedEvent::Start(OwnedTag::Item))) else {
+			return false;
+		};
+		for ev in &events[start + 1..] {
+			match ev {
+				OwnedEvent::InlineHtml(h) =>
+					if matches!(Marker::decode(h), Some(Marker::Issue(_))) {
+						return true;
+					},
+				OwnedEvent::Text(t) if IssueMarker::is_at_end(t) => return true,
+				OwnedEvent::SoftBreak | OwnedEvent::HardBreak | OwnedEvent::End(OwnedTagEnd::Paragraph) | OwnedEvent::End(OwnedTagEnd::Item) | OwnedEvent::Start(OwnedTag::List(_)) =>
+					return false,
 				_ => {}
 			}
 		}

@@ -478,27 +478,36 @@ pub fn wrap_inline_in_paragraphs(events: Vec<OwnedEvent>) -> Vec<OwnedEvent> {
 	}
 	let mut out = Vec::with_capacity(events.len() + 2);
 	let mut in_inline = false;
+	// Wrapping inside items is what `normalize_list_items_tight` just undid — doing it here
+	// turns every list in a body loose on the next render.
+	let mut item_depth = 0usize;
 
 	for ev in events {
-		let is_inline = matches!(
-			&ev,
-			OwnedEvent::Text(_)
-				| OwnedEvent::Code(_)
-				| OwnedEvent::InlineHtml(_)
-				| OwnedEvent::InlineMath(_)
-				| OwnedEvent::SoftBreak
-				| OwnedEvent::HardBreak
-				| OwnedEvent::Start(OwnedTag::Emphasis)
-				| OwnedEvent::End(OwnedTagEnd::Emphasis)
-				| OwnedEvent::Start(OwnedTag::Strong)
-				| OwnedEvent::End(OwnedTagEnd::Strong)
-				| OwnedEvent::Start(OwnedTag::Strikethrough)
-				| OwnedEvent::End(OwnedTagEnd::Strikethrough)
-				| OwnedEvent::Start(OwnedTag::Link { .. })
-				| OwnedEvent::End(OwnedTagEnd::Link)
-				| OwnedEvent::Start(OwnedTag::Image { .. })
-				| OwnedEvent::End(OwnedTagEnd::Image)
-		);
+		match &ev {
+			OwnedEvent::Start(OwnedTag::Item) => item_depth += 1,
+			OwnedEvent::End(OwnedTagEnd::Item) => item_depth -= 1,
+			_ => {}
+		}
+		let is_inline = item_depth == 0
+			&& matches!(
+				&ev,
+				OwnedEvent::Text(_)
+					| OwnedEvent::Code(_)
+					| OwnedEvent::InlineHtml(_)
+					| OwnedEvent::InlineMath(_)
+					| OwnedEvent::SoftBreak
+					| OwnedEvent::HardBreak
+					| OwnedEvent::Start(OwnedTag::Emphasis)
+					| OwnedEvent::End(OwnedTagEnd::Emphasis)
+					| OwnedEvent::Start(OwnedTag::Strong)
+					| OwnedEvent::End(OwnedTagEnd::Strong)
+					| OwnedEvent::Start(OwnedTag::Strikethrough)
+					| OwnedEvent::End(OwnedTagEnd::Strikethrough)
+					| OwnedEvent::Start(OwnedTag::Link { .. })
+					| OwnedEvent::End(OwnedTagEnd::Link)
+					| OwnedEvent::Start(OwnedTag::Image { .. })
+					| OwnedEvent::End(OwnedTagEnd::Image)
+			);
 		if is_inline && !in_inline {
 			out.push(OwnedEvent::Start(OwnedTag::Paragraph));
 			in_inline = true;
