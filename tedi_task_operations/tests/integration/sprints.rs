@@ -651,6 +651,25 @@ async fn test_sprint_edit_leaves_commented_issue_byte_identical() {
 	assert_eq!(read_issue_file(&path), before, "an unrelated sprint edit rewrote a commented issue");
 }
 
+/// A task list living in an issue's own body is that issue's content, expanded into the sprint
+/// under its block. Materialization must not read those lines as fresh sprint tasks and spawn
+/// issues out of them.
+#[tokio::test]
+async fn test_sprint_edit_leaves_body_task_list_alone() {
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+
+	let vi = parse_virtual("- [ ] Listed Issue <!-- @mock_user https://github.com/o/r/issues/62 -->\n\tintro\n\n\t- [ ] first step\n\t- [ ] second step\n");
+	ctx.local(&vi, Some(Seed::new(0))).await;
+
+	let (out, _) = ctx.milestone_edit_with_changes("- o/r#62", |tmp_path| {
+		let content = std::fs::read_to_string(tmp_path).unwrap();
+		std::fs::write(tmp_path, content.replacen("  intro\n", "  intro, edited\n", 1)).unwrap();
+	});
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+	assert!(!out.stdout.contains("Creating issue"), "body task list must not materialize. stdout: {}", out.stdout);
+	assert!(!ctx.xdg.data_exists("issues/virtual"), "body task list must not spawn a virtual project");
+}
+
 /// Stray text under `# Blockers` belongs to no blocker item, so the edit can't be committed
 /// faithfully — it must fail loudly with the buffer preserved, never be silently dropped.
 #[tokio::test]

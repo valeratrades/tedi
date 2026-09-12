@@ -784,7 +784,9 @@ fn collect_homeless(items: &[TaskItem], section: &[String], path: &mut Vec<usize
 				block,
 				milestone.cloned(),
 			));
-		} else {
+		} else if !matches!(item.content, TaskContent::Issue { .. }) {
+			// An expanded issue block's interior is that issue's own content (body, children,
+			// blockers) — `sync_embedded_issue_changes` owns it, see `embedded_issues`.
 			// descending into an inlined milestone scopes its subtree to that milestone
 			let scope = match &item.content {
 				TaskContent::Milestone { r#ref, .. } => Some(r#ref.to_milestone_link()),
