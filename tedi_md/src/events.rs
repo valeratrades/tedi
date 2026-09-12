@@ -820,7 +820,22 @@ fn prepare_for_render(events: &[OwnedEvent]) -> Vec<Event<'_>> {
 		}
 	}
 
+	let mut item_depth = 0usize;
+	let mut after_inline = false;
 	for (i, ev) in events.iter().enumerate() {
+		match ev {
+			OwnedEvent::Start(OwnedTag::Item) => item_depth += 1,
+			OwnedEvent::End(OwnedTagEnd::Item) => item_depth -= 1,
+			_ => {}
+		}
+		// a heading opening right after a title line would otherwise be written onto it
+		if item_depth > 0 && after_inline && matches!(ev, OwnedEvent::Start(OwnedTag::Heading { .. })) {
+			out.push(Event::SoftBreak);
+		}
+		after_inline = matches!(
+			ev,
+			OwnedEvent::Text(_) | OwnedEvent::Code(_) | OwnedEvent::InlineHtml(_) | OwnedEvent::CheckBox(_) | OwnedEvent::SoftBreak
+		);
 		match ev {
 			OwnedEvent::CheckBox(inner) => match inner.as_str() {
 				" " => out.push(Event::TaskListMarker(false)),

@@ -19,8 +19,11 @@ use crate::{IssueRef, Marker};
 pub fn split_blockers(text: &str) -> (String, Blockers) {
 	let lines: Vec<&str> = text.lines().collect();
 
-	// Find the blockers marker
-	let marker_idx = lines.iter().position(|line| matches!(Marker::decode(line), Some(Marker::BlockersSection(_))));
+	// Only a top-level heading opens the section — an indented one belongs to the list item
+	// holding it, and splitting there would drop everything under it.
+	let marker_idx = lines
+		.iter()
+		.position(|line| !line.starts_with([' ', '\t']) && matches!(Marker::decode(line), Some(Marker::BlockersSection(_))));
 
 	match marker_idx {
 		Some(idx) => {
