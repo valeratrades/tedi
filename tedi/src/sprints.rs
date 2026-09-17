@@ -134,7 +134,8 @@ pub async fn sprints_command(settings: &LiveSettings, args: SprintsArgs, mock: O
 					raw
 				}
 			};
-			let expanded = expand_and_refresh(&raw).await?;
+			// read-only print: not worth a round-trip per referenced issue
+			let expanded = expand_and_refresh(&raw, false).await?;
 			println!("{expanded}");
 			Ok(())
 		}
@@ -429,7 +430,7 @@ async fn edit_urgent(offline: bool) -> Result<()> {
 		Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
 		Err(e) => return Err(e.into()),
 	};
-	let expanded = expand_and_refresh(&original).await?;
+	let expanded = expand_and_refresh(&original, !offline).await?;
 
 	let tmp_path = tempfile::tempdir()?.keep().join("milestone_urgent.md");
 	fs::write(&tmp_path, &expanded)?;
@@ -495,7 +496,7 @@ async fn edit_milestone(settings: &LiveSettings, tf: Timeframe, offline: bool, m
 	use tedi_task_operations::{
 		MilestoneBody,
 		local::{FsReader, Local},
-		open_interactions::{MilestoneModifier, SyncOptions, modify_and_sync_milestone},
+		open_interactions::{MergeMode, MilestoneModifier, SyncOptions, modify_and_sync_milestone, pull_milestone},
 		remote::load_remote_milestone,
 	};
 
@@ -536,13 +537,18 @@ async fn edit_milestone(settings: &LiveSettings, tf: Timeframe, offline: bool, m
 	let link = MilestoneLink::parse(&format!("https://github.com/{owner}/{repo}/milestone/{number}")).expect("well-formed milestone url");
 
 	// Local-first load (mirrors `sync_milestone_changes`): a diverged local body seeds the editor so a
-	// prior deferred edit stays visible and is preserved in the new body; the pre-open sync inside
-	// `modify_and_sync_milestone` reflushes it. Fall back to remote only when never cached (online only).
-	let milestone = match Local::load_milestone(&link, &FsReader)? {
+	// prior deferred edit stays visible and is preserved in the new body. Fall back to remote only
+	// when never cached (online only).
+	let mut milestone = match Local::load_milestone(&link, &FsReader)? {
 		Some(m) => m,
 		None if offline => bail!("Cannot edit '{tf}' offline — it was never fetched while online (no local milestone cache)."),
 		None => load_remote_milestone(&link).await?,
 	};
+	// The buffer is what the edit is reasoned against, so reconcile before rendering it — not on the
+	// way out, where whatever Github gained since would already have been typed over.
+	if !offline {
+		pull_milestone(&mut milestone, MergeMode::Normal).await?;
+	}
 	let milestone_number = milestone.number();
 	let original_description = milestone.to_string();
 	let is_outdated = milestone.identity.due_on.map(|d| d + tedi_eval::same_day_buffer() < Timestamp::now()).unwrap_or(true);
@@ -551,7 +557,7 @@ async fn edit_milestone(settings: &LiveSettings, tf: Timeframe, offline: bool, m
 	if !offline {
 		refresh_sprint_milestones(&original_description).await;
 	}
-	let expanded_description = expand_and_refresh(&original_description).await?;
+	let expanded_description = expand_and_refresh(&original_description, !offline).await?;
 
 	// Use keep() so the temp file survives panics/errors.
 	let tmp_path = tempfile::tempdir()?.keep().join(format!("milestone_{tf}.md"));
@@ -653,7 +659,7 @@ async fn edit_milestone_mock_file(mock_milestone_path: &str, tf: Timeframe, offl
 	use std::fs;
 
 	let original_description = fs::read_to_string(mock_milestone_path)?;
-	let expanded_description = expand_and_refresh(&original_description).await?;
+	let expanded_description = expand_and_refresh(&original_description, false).await?;
 
 	let tmp_path = tempfile::tempdir()?.keep().join(format!("milestone_{tf}.md"));
 	fs::write(&tmp_path, &expanded_description)?;

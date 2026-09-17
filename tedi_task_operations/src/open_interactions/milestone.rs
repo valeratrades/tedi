@@ -31,25 +31,29 @@ pub async fn load_consensus_milestone(link: &MilestoneLink) -> Result<Option<Mil
 	Local::load_milestone(link, &GitReader).map_err(Into::into)
 }
 
+/// Reconcile a milestone with GitHub — the milestone mirror of `pull_issue`, and the same reason:
+/// a body rendered into the editor from the local cache alone is a body the user edits blind.
+pub async fn pull_milestone(milestone: &mut Milestone, mode: MergeMode) -> Result<()> {
+	let link = milestone.identity.link.clone();
+	if let Some(conflict_file) = check_for_existing_milestone_conflict(&link).await? {
+		bail!("Unresolved milestone conflict in {}. Resolve with git tools, then re-run.", conflict_file.display());
+	}
+	let consensus = load_consensus_milestone(&link).await?;
+	if let Err(e) = sync(milestone, consensus, mode).await {
+		if !super::sync::is_transient_sync_error(&e) {
+			return Err(e);
+		}
+		tracing::warn!("GitHub transient during pre-open milestone sync — proceeding with local: {e}");
+	}
+	Ok(())
+}
+
 /// Modify a local milestone, then sync back to GitHub (parity with `modify_and_sync_issue`).
 pub async fn modify_and_sync_milestone(mut milestone: Milestone, offline: bool, modifier: MilestoneModifier, sync_opts: SyncOptions) -> Result<bool> {
 	let link = milestone.identity.link.clone();
 
-	// Pre-open sync: pull remote and reconcile if the local file diverges from consensus.
 	if !offline {
-		if let Some(conflict_file) = check_for_existing_milestone_conflict(&link).await? {
-			bail!("Unresolved milestone conflict in {}. Resolve with git tools, then re-run.", conflict_file.display());
-		}
-		let consensus = load_consensus_milestone(&link).await?;
-		let local_differs = consensus.as_ref().map(|c| *c != milestone).unwrap_or(false);
-		if sync_opts.pull || local_differs {
-			if let Err(e) = sync(&mut milestone, consensus, sync_opts.take_merge_mode()).await {
-				if !super::sync::is_transient_sync_error(&e) {
-					return Err(e);
-				}
-				tracing::warn!("GitHub transient during pre-open milestone sync — proceeding with local: {e}");
-			}
-		}
+		pull_milestone(&mut milestone, sync_opts.take_merge_mode()).await?;
 	}
 
 	if !apply_modifier(&mut milestone, modifier).await? {

@@ -13,22 +13,26 @@ use crate::{
 	HollowIssue, Issue, IssueIdentity, IssueIndex, IssueLink, LazyIssue, Milestone, MilestoneLink, NodeLink, RepoInfo, TaskView, VirtualIssue,
 	clockify_tracking::{self, HaltArgs, ResumeArgs},
 	local::{Consensus, FsReader, GitReader, Local, LocalFs},
-	open_interactions::{MilestoneModifier, Modifier, SyncOptions, modify_and_sync_issue, modify_and_sync_milestone},
+	open_interactions::{MergeMode, MilestoneModifier, Modifier, SyncOptions, modify_and_sync_issue, modify_and_sync_milestone, pull_issue},
 	remote::{Remote, RemoteSource, load_remote_milestone},
 	selection::{Landing, Selected},
 	sink::Sink,
 };
 
-/// Expand shorthand refs and refresh all embedded sections from local state.
+/// Expand shorthand refs and refresh all embedded sections.
 ///
 /// Parses the content into a `TaskView`, resolves bare refs, then renders each issue
 /// ref as the issue's fresh `Display`, and each *cached* milestone ref as an inline
 /// block (title line + materialized content, its own issue refs expanded the same way —
 /// one level, inner milestone refs stay bare links). Uncached milestones stay bare.
 ///
+/// `pull` reconciles every referenced issue with Github first. A view about to be edited must
+/// be built from current state — anything typed on top of a superseded body folds back as a
+/// deletion of everything Github gained since. A read-only view (`search`) keeps it off.
+///
 /// A sectioned view also gets an empty `# Must` when it has none, so the strip is offered
 /// without the header having to be remembered.
-pub async fn expand_and_refresh(content: &str) -> Result<String> {
+pub async fn expand_and_refresh(content: &str, pull: bool) -> Result<String> {
 	let mut doc = TaskView::parse(content);
 	doc.resolve_bare_refs();
 	doc.ensure_managed(tedi_core::ManagedSection::Must);
@@ -60,7 +64,7 @@ pub async fn expand_and_refresh(content: &str) -> Result<String> {
 		if expansions.contains_key(&key) {
 			continue;
 		}
-		let issue = match load_local_issue(link).await {
+		let mut issue = match load_local_issue(link).await {
 			Ok(issue) => issue,
 			// virtual issues have no remote: they must never be fetched
 			Err(e) if matches!(link, IssueLink::Virtual(_)) => {
@@ -75,6 +79,15 @@ pub async fn expand_and_refresh(content: &str) -> Result<String> {
 				}
 			},
 		};
+		// ponytail: serial round-trip per issue. The consensus sink shells out to `git add -A` +
+		// `commit`, so concurrent pulls would race the index — prefetch remote concurrently and
+		// merge serially if a sprint ever grows past a tolerable wait.
+		// A failure here stops the whole edit: `initiate_conflict_merge` records the divergence on a
+		// git branch and only handles one per run (a second reaches its `AutoMerged` unreachable),
+		// so there is no continuing past the first.
+		if pull {
+			pull_issue(&mut issue, MergeMode::Normal).await?;
+		}
 		expansions.insert(key, issue.to_string());
 	}
 
@@ -340,7 +353,7 @@ pub async fn search(query: &str) -> Result<()> {
 		return Ok(());
 	}
 	let content: String = links.iter().map(|l| format!("- {l}\n")).collect();
-	println!("{}", expand_and_refresh(&content).await?);
+	println!("{}", expand_and_refresh(&content, false).await?);
 	Ok(())
 }
 /// Refresh the cached lowest-normal-sprint content (called by the bin after `edit`/`healthcheck`).

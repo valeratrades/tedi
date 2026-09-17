@@ -47,8 +47,8 @@ pub struct OpenArgs {
 	#[arg(short, long)]
 	pub last: bool,
 
-	/// Fetch latest from Github before opening. If remote differs from local,
-	/// prompts: [s]kip (use local), [o]verwrite (use remote), [m]erge (attempt merge)
+	/// Read a local path as if it were the Github URL: `--force`/`--reset` then take the remote
+	/// side. Fetching is unconditional either way.
 	#[arg(long)] // no short version, as it introduces ambiguity against `--parent`
 	pub pull: bool,
 
@@ -117,10 +117,7 @@ pub async fn open_command(args: OpenArgs, offline: bool, mock: Option<MockType>)
 	// Helper to create sync opts based on side preference
 	// --pull flag OR URL mode: prefer Remote side for --force/--reset
 	// Local file without --pull: prefer Local side for --force/--reset
-	let make_sync_opts = |prefer_remote: bool| {
-		let prefer = if prefer_remote { Side::Remote } else { Side::Local };
-		SyncOptions::new(build_merge_mode(prefer), prefer_remote || args.pull)
-	};
+	let make_sync_opts = |prefer_remote: bool| SyncOptions::new(build_merge_mode(if prefer_remote { Side::Remote } else { Side::Local }));
 
 	// Local file paths: prefer Local unless --pull is specified
 	let local_sync_opts = || make_sync_opts(args.pull);

@@ -9,6 +9,25 @@ use crate::{
 	render_fixture,
 };
 
+/// The counterpart of the `testowner/testrepo#99` fixture on Github. Opening a linked issue
+/// reconciles it with its remote first, so a fixture that declares the link has to declare the
+/// remote too — without it the open fails on a repo that doesn't exist, not on path matching.
+fn seed_remote_99(ctx: &TestContext) {
+	std::fs::write(
+		&ctx.mock_state_path,
+		serde_json::json!({
+			"issues": [{
+				"owner": "testowner", "repo": "testrepo", "number": 99,
+				"title": "ancestry resolve for ind",
+				"body": "body content here",
+				"state": "open",
+			}]
+		})
+		.to_string(),
+	)
+	.unwrap();
+}
+
 /// Test that touch mode matches issues by substring regex.
 /// Path: owner/repo/partial_title should match 99_-_full_title.md
 #[test]
@@ -37,6 +56,7 @@ fn test_touch_matches_issue_by_substring() {
 	"#,
 	);
 
+	seed_remote_99(&ctx);
 	let out = ctx.open_touch("testowner/testrepo/ancestry").run();
 
 	// Should succeed and find the existing issue
@@ -71,6 +91,7 @@ fn test_touch_full_path_regex_spans_segments() {
 	"#,
 	);
 
+	seed_remote_99(&ctx);
 	let out = ctx.open_touch("testrepo/.*anc.*ind").run();
 
 	assert!(out.status.success(), "Expected success, got stderr: {}", out.stderr);
@@ -109,6 +130,7 @@ fn test_touch_unique_match_opens_instead_of_creating() {
 	"#,
 	);
 
+	seed_remote_99(&ctx);
 	let out = ctx.open_touch("testowner/testrepo/ancestry").run();
 
 	assert!(out.status.success(), "Expected success, got stderr: {}", out.stderr);

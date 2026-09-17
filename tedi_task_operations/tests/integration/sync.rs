@@ -359,10 +359,10 @@ async fn test_reset_with_remote_url_skips_merge_on_divergence() {
 	assert!(content.contains("remote diverged body"), "Should have remote content. Got: {content}");
 }
 
-/// --pull flag should fetch and sync BEFORE opening editor.
-/// This test verifies the fetch actually happens by checking stdout for fetch message.
+/// Remote changes land in the file the editor opens, with local matching consensus — the case the
+/// pre-open sync used to skip, leaving the editor on a body Github had already moved past.
 #[tokio::test]
-async fn test_pull_fetches_before_editor() {
+async fn test_remote_change_reaches_the_editor() {
 	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 
 	let local_vi = parse_virtual(
@@ -381,11 +381,7 @@ async fn test_pull_fetches_before_editor() {
 	let local = ctx.consensus(&local_vi, Some(Seed::new(-20))).await;
 	ctx.remote(&remote_vi, Some(Seed::new(70)));
 
-	// --pull should fetch from Github before opening editor
-	let out = ctx.open_issue(&local).args(&["--pull"]).run();
-
-	// Should show fetch activity
-	assert!(out.stderr.contains("pre-open sync"), "Should show fetch/pull activity with --pull. stdout: {}", out.stderr);
+	let out = ctx.open_issue(&local).run();
 
 	assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().skip_meta(), &out), @"
 	//- /o/r/1_-_Test_Issue.md
@@ -394,9 +390,10 @@ async fn test_pull_fetches_before_editor() {
 	");
 }
 
-/// --pull with diverged state should trigger conflict resolution (or auto-resolve).
+/// A divergence is recorded as a conflict before the editor ever opens — the user never gets to
+/// type onto a body that was already superseded.
 #[tokio::test]
-async fn test_pull_with_divergence_runs_sync_before_editor() {
+async fn test_divergence_conflicts_before_editor() {
 	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 
 	let consensus_vi = parse_virtual(
@@ -420,15 +417,7 @@ async fn test_pull_with_divergence_runs_sync_before_editor() {
 	let local = ctx.local(&local_vi, Some(Seed::new(100))).await;
 	ctx.remote(&remote_vi, Some(Seed::new(100)));
 
-	// --pull should attempt to sync/merge even BEFORE editor opens
-	let out = ctx.open_issue(&local).args(&["--pull"]).run();
-
-	// Ensure we detect the conflict even before the editor is opened for the user
-	assert!(
-		out.stderr.contains("pre-open sync"), //Q: don't like reliance on impl-specific details
-		"Should attempt sync/merge with --pull before editor; stderr:\n{}",
-		out.stderr
-	);
+	let out = ctx.open_issue(&local).run();
 
 	// Ensure conflict is opened
 	assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap(), &out), @r#"

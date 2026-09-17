@@ -266,25 +266,30 @@ impl crate::LazyIssue<RemoteSource> for Issue {
 
 		self.contents = build_contents_from_github(&issue, &comments);
 
-		// Also ensure identity is populated if not already
-		if !self.identity.is_linked() {
-			let parent_index = source.resolve_parent_index().await?;
-			let timeline = timeline_result.map_err(|e| RemoteError::FetchTimestamps { repo: repo_info, number, source: e })?;
+		// Per-comment timestamps from REST API data (updated_at, falling back to created_at).
+		let comments_ts: Vec<_> = comments
+			.iter()
+			.filter_map(|c| jiff::Timestamp::from_str(&c.updated_at).or_else(|_| jiff::Timestamp::from_str(&c.created_at)).ok())
+			.collect();
 
-			// Build per-comment timestamps from REST API data (updated_at, falling back to created_at)
-			let comments_ts: Vec<_> = comments
-				.iter()
-				.filter_map(|c| jiff::Timestamp::from_str(&c.updated_at).or_else(|_| jiff::Timestamp::from_str(&c.created_at)).ok())
-				.collect();
-
-			let timestamps = IssueTimestamps {
-				title: timeline.title,
-				description: timeline.description,
-				labels: timeline.labels,
-				state: timeline.state,
-				comments: comments_ts,
-			};
-			self.identity = IssueIdentity::new_linked(parent_index, Some(issue.user.login.clone()), source.link.clone(), timestamps);
+		match self.identity.mut_linked_issue_meta() {
+			// `identity()` has no comment data of its own, so it can only ever leave `comments`
+			// empty — this is the one place that can fill it. Left empty, a comment posted on
+			// Github since the last sync loses the merge to a local list that never had it, and
+			// the remote sink deletes it upstream as one the user removed.
+			Some(meta) => meta.timestamps.comments = comments_ts,
+			None => {
+				let parent_index = source.resolve_parent_index().await?;
+				let timeline = timeline_result.map_err(|e| RemoteError::FetchTimestamps { repo: repo_info, number, source: e })?;
+				let timestamps = IssueTimestamps {
+					title: timeline.title,
+					description: timeline.description,
+					labels: timeline.labels,
+					state: timeline.state,
+					comments: comments_ts,
+				};
+				self.identity = IssueIdentity::new_linked(parent_index, Some(issue.user.login.clone()), source.link.clone(), timestamps);
+			}
 		}
 
 		Ok(self.contents.clone())

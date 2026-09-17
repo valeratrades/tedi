@@ -24,7 +24,6 @@
 use color_eyre::eyre::{Result, bail};
 use tracing::instrument;
 pub use types::*;
-use v_utils::elog;
 
 use super::merge::Merge;
 use crate::{
@@ -49,6 +48,26 @@ pub(crate) fn is_transient_sync_error(e: &color_eyre::Report) -> bool {
 		.any(|cause| cause.downcast_ref::<crate::github::GithubError>().map(|g| g.is_transient()).unwrap_or(false))
 }
 
+/// Reconcile a linked issue with Github, leaving local, consensus and remote in agreement.
+///
+/// Every read of an issue that a user is about to reason against goes through here first: an edit
+/// applied on top of a body Github has moved past folds back as a deletion of everything it gained
+/// since. A transient outage degrades to the local copy; a genuine divergence is a loud conflict.
+pub async fn pull_issue(issue: &mut Issue, mode: MergeMode) -> Result<()> {
+	// Virtual issues have no remote — never fetch them.
+	if !issue.is_linked() || issue.identity.is_virtual {
+		return Ok(());
+	}
+	let consensus = load_consensus_issue(IssueIndex::from(&*issue)).await?;
+	if let Err(e) = core::sync(issue, consensus, mode).await {
+		if !is_transient_sync_error(&e) {
+			return Err(e);
+		}
+		tracing::warn!("GitHub transient during pre-open issue sync — proceeding with local: {e}");
+	}
+	Ok(())
+}
+
 /// Modify a local issue, then sync changes back to Github.
 ///
 /// Caller is responsible for loading the issue (via `Issue::load(LocalIssueSource)`).
@@ -63,21 +82,8 @@ pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Mo
 	let repo_info = issue.identity.repo_info();
 	let issue_index = IssueIndex::from(&issue);
 
-	// if linked, check if local diverges from consensus. If yes, - need to sync the two. And while at it, let's pull remote too.
-	// Virtual issues have no remote — never fetch them.
-	if !offline && issue.is_linked() && !issue.identity.is_virtual {
-		let consensus = load_consensus_issue(issue_index).await?;
-		let local_differs = consensus.as_ref().map(|c| *c != issue).unwrap_or(false); //IGNORED_ERROR: if consensus doesn't exist, then local doesn't need to think about it
-
-		if sync_opts.pull || local_differs {
-			elog!("triggered pre-open sync");
-			if let Err(e) = core::sync(&mut issue, consensus, sync_opts.take_merge_mode()).await {
-				if !is_transient_sync_error(&e) {
-					return Err(e);
-				}
-				tracing::warn!("GitHub transient during pre-open issue sync — proceeding with local: {e}");
-			}
-		}
+	if !offline {
+		pull_issue(&mut issue, sync_opts.take_merge_mode()).await?;
 	}
 
 	// expose for modification (by user or procedural)
@@ -330,15 +336,12 @@ mod types {
 	#[derive(Debug, Default)]
 	pub struct SyncOptions {
 		merge_mode: std::cell::Cell<Option<MergeMode>>,
-		/// Fetch and sync from remote before opening editor.
-		pub pull: bool,
 	}
 
 	impl SyncOptions {
-		pub fn new(merge_mode: Option<MergeMode>, pull: bool) -> Self {
+		pub fn new(merge_mode: Option<MergeMode>) -> Self {
 			Self {
 				merge_mode: std::cell::Cell::new(merge_mode),
-				pull,
 			}
 		}
 

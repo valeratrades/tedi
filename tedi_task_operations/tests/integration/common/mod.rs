@@ -578,41 +578,29 @@ impl<'a> OpenBuilder<'a> {
 
 			// Process still running
 			if !signaled {
-				// Give process time to reach pipe wait
-				std::thread::sleep(std::time::Duration::from_millis(100));
-
-				// Edit the issue's real file (written by the editor flow before it opens) while
-				// "editor is open". Retry until the file exists — never signal before editing.
-				let edit_applied = match &edit_op {
-					Some(EditOperation::FullIssue(virtual_issue)) => {
-						let issue = with_timestamps(virtual_issue, None, is_virtual);
-						match tedi_task_operations::local::LocalPath::from(&issue)
-							.resolve_parent(tedi_task_operations::local::FsReader)
-							.and_then(|r| r.search())
-						{
-							Ok(resolved) => {
-								let path = resolved.path();
-								let content = issue.to_string();
-								eprintln!("[test:OpenBuilder] submitting user input // writing to {path:?}:\n{content}");
-								std::fs::write(&path, &content).unwrap();
-								true
-							}
-							Err(_) => false, // file not created by editor flow yet, retry next loop
-						}
-					}
-					None => true,
-				};
-
-				// Try to signal the pipe (use nix O_NONBLOCK to avoid blocking)
-				// Only mark as signaled if the edit was applied AND we wrote to the pipe.
-				// The pipe open will fail if no reader is waiting yet.
+				// A non-blocking open of the FIFO for writing only succeeds once the binary holds the
+				// read end — which it opens *after* writing the issue file for the editor. That is the
+				// only point at which the user's edit can be applied: written any earlier it is either
+				// clobbered by that write, or picked up by the pre-open sync as a local divergence the
+				// user never made.
 				#[cfg(unix)]
-				if edit_applied {
+				{
 					use std::os::unix::fs::OpenOptionsExt;
-					if let Ok(mut pipe) = std::fs::OpenOptions::new().write(true).custom_flags(0x800).open(&pipe_path)
-						&& pipe.write_all(b"x").is_ok()
-					{
-						signaled = true;
+					if let Ok(mut pipe) = std::fs::OpenOptions::new().write(true).custom_flags(0x800).open(&pipe_path) {
+						if let Some(EditOperation::FullIssue(virtual_issue)) = &edit_op {
+							let issue = with_timestamps(virtual_issue, None, is_virtual);
+							let path = tedi_task_operations::local::LocalPath::from(&issue)
+								.resolve_parent(tedi_task_operations::local::FsReader)
+								.and_then(|r| r.search())
+								.expect("the editor flow writes the issue file before parking on the pipe")
+								.path();
+							let content = issue.to_string();
+							eprintln!("[test:OpenBuilder] submitting user input // writing to {path:?}:\n{content}");
+							std::fs::write(&path, &content).unwrap();
+						}
+						if pipe.write_all(b"x").is_ok() {
+							signaled = true;
+						}
 					}
 				}
 			}

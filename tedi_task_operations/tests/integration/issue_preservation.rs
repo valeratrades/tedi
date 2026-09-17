@@ -8,7 +8,7 @@ use v_fixtures::FixtureRenderer;
 
 use crate::{
 	common::{
-		FixtureIssuesExt, TestContext,
+		FixtureIssuesExt, Seed, TestContext,
 		are_you_sure::{UnsafePathExt, read_issue_file},
 		parse_virtual,
 	},
@@ -236,4 +236,62 @@ async fn test_closing_nested_issue_creates_bak_file() {
 	let child_content = read_issue_file(&closed_child_path);
 	assert!(child_content.contains("- [x] b"), "nested issue not marked closed");
 	assert!(child_content.contains("nested body content"), "child body should be preserved");
+}
+
+/// A comment posted on Github that the local copy has never seen must survive the sync. The
+/// remote loader leaves its `comments` timestamps empty, so the local list looks authoritative,
+/// and every comment missing from it reads to the remote sink as one the user deleted.
+#[tokio::test]
+async fn test_comment_only_on_remote_is_not_deleted() {
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+
+	let known = parse_virtual(
+		r#"- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->
+
+  body text
+
+  <!-- @mock_user https://github.com/o/r/issues/1#issuecomment-12345 -->
+  the comment local knows about
+"#,
+	);
+	let with_later = parse_virtual(
+		r#"- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->
+
+  body text
+
+  <!-- @mock_user https://github.com/o/r/issues/1#issuecomment-12345 -->
+  the comment local knows about
+
+  <!-- @mock_user https://github.com/o/r/issues/1#issuecomment-12346 -->
+  posted on github after the last sync
+"#,
+	);
+
+	let issue = ctx.consensus(&known, Some(Seed::new(0))).await;
+	ctx.remote(&with_later, Some(Seed::new(50)));
+
+	// A real local copy carries a timestamp per comment it holds; `timestamps_from_seed` leaves the
+	// vec empty, and an empty vec is back-filled with `now` on the first merge — which would hand
+	// the local list a win it never has in practice.
+	{
+		use tedi_task_operations::local::{IssueMeta, Local};
+		let mut timestamps = crate::common::timestamps_from_seed(Seed::new(0));
+		timestamps.comments = vec![jiff::Timestamp::from_second(1_000_000_000).unwrap()];
+		Local::save_issue_meta(
+			tedi_task_operations::RepoInfo::new("o", "r"),
+			1,
+			&IssueMeta {
+				user: Some(crate::common::USER.to_string()),
+				timestamps,
+			},
+		)
+		.unwrap();
+	}
+
+	let out = ctx.open_issue(&issue).run();
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+	assert!(!out.stdout.contains("Deleting comment"), "the sync deleted a comment it never saw:\n{}", out.stdout);
+
+	let content = read_issue_file(&ctx.resolve_issue_path(&issue));
+	assert!(content.contains("posted on github after the last sync"), "the remote-only comment was dropped locally: {content}");
 }
