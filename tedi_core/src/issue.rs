@@ -5,7 +5,7 @@ use std::{collections::HashMap, path::PathBuf};
 
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
-use tedi_md::{indent_into, preserve_paragraph_spacing, wrap_inline_in_paragraphs};
+use tedi_md::{as_standalone_block, indent_into};
 
 use crate::{Blockers, IssueChildren, IssueIndex, IssueLink, IssueMarker, IssueSelector, Marker, ParseContext, ParseError, RepoInfo, TitleInGitPathError};
 
@@ -1064,7 +1064,7 @@ impl VirtualIssue {
 			.into_iter()
 			.map(|(identity, evs)| Comment {
 				identity,
-				body: preserve_paragraph_spacing(wrap_inline_in_paragraphs(evs)).into(),
+				body: as_standalone_block(evs),
 			})
 			.collect();
 

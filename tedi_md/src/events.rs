@@ -438,7 +438,7 @@ impl Events {
 ///
 /// Skipped inside list items — list item spacing is handled by normalization and cmark itself.
 /// Skipped when next event is `End(...)` — that means we're exiting a scope, not starting a new block.
-pub fn preserve_paragraph_spacing(events: Vec<OwnedEvent>) -> Vec<OwnedEvent> {
+fn preserve_paragraph_spacing(events: Vec<OwnedEvent>) -> Vec<OwnedEvent> {
 	let mut out = Vec::with_capacity(events.len());
 	let mut item_depth = 0usize;
 	for i in 0..events.len() {
@@ -467,58 +467,81 @@ pub fn indent_into(out: &mut String, content: &str, prefix: &str) {
 		}
 	}
 }
-/// Wrap runs of inline events in `Start(Paragraph)` / `End(Paragraph)`.
+/// Re-express a span lifted out of a list item as a standalone markdown block.
 ///
-/// Events stored from inside list items have paragraph wrappers stripped (by normalization).
-/// When rendering these events as standalone markdown (e.g., GitHub body), inline content
-/// needs paragraph wrappers for proper block-level separation from subsequent elements.
-pub fn wrap_inline_in_paragraphs(events: Vec<OwnedEvent>) -> Vec<OwnedEvent> {
-	if events.is_empty() {
-		return events;
+/// Item interiors use the tight convention (`normalize_list_items_tight`): paragraph wrappers
+/// stripped, `SoftBreak` standing in for a paragraph boundary. A body that has to render on its
+/// own — a GitHub issue body, a comment — needs the block convention instead, and must land on
+/// exactly the events that parsing that rendered text back would produce, or local and remote
+/// never compare equal.
+pub fn as_standalone_block(events: Vec<OwnedEvent>) -> Events {
+	Events(preserve_paragraph_spacing(wrap_inline_in_paragraphs(events)))
+}
+
+fn wrap_inline_in_paragraphs(events: Vec<OwnedEvent>) -> Vec<OwnedEvent> {
+	// Close the paragraph we opened, dropping the breaks that trail it: a `SoftBreak` before a
+	// block boundary is `normalize_list_items_tight`'s bridge marker, and the boundary itself
+	// already carries that meaning. Keeping both is what grew a blank line per round-trip.
+	fn close(out: &mut Vec<OwnedEvent>) {
+		while matches!(out.last(), Some(OwnedEvent::SoftBreak)) {
+			out.pop();
+		}
+		match out.last() {
+			Some(OwnedEvent::Start(OwnedTag::Paragraph)) => drop(out.pop()),
+			_ => out.push(OwnedEvent::End(OwnedTagEnd::Paragraph)),
+		}
 	}
+
 	let mut out = Vec::with_capacity(events.len() + 2);
 	let mut in_inline = false;
-	// Wrapping inside items is what `normalize_list_items_tight` just undid — doing it here
-	// turns every list in a body loose on the next render.
-	let mut item_depth = 0usize;
+	// Wrapping inside any block container — a list item, or a paragraph the span already carries —
+	// either turns lists loose again on the next render, or nests a paragraph in a paragraph.
+	let mut block_depth = 0usize;
 
 	for ev in events {
-		match &ev {
-			OwnedEvent::Start(OwnedTag::Item) => item_depth += 1,
-			OwnedEvent::End(OwnedTagEnd::Item) => item_depth -= 1,
-			_ => {}
+		let inline = matches!(
+			&ev,
+			OwnedEvent::Text(_)
+				| OwnedEvent::Code(_)
+				| OwnedEvent::InlineHtml(_)
+				| OwnedEvent::InlineMath(_)
+				| OwnedEvent::SoftBreak
+				| OwnedEvent::HardBreak
+				| OwnedEvent::Start(OwnedTag::Emphasis)
+				| OwnedEvent::End(OwnedTagEnd::Emphasis)
+				| OwnedEvent::Start(OwnedTag::Strong)
+				| OwnedEvent::End(OwnedTagEnd::Strong)
+				| OwnedEvent::Start(OwnedTag::Strikethrough)
+				| OwnedEvent::End(OwnedTagEnd::Strikethrough)
+				| OwnedEvent::Start(OwnedTag::Link { .. })
+				| OwnedEvent::End(OwnedTagEnd::Link)
+				| OwnedEvent::Start(OwnedTag::Image { .. })
+				| OwnedEvent::End(OwnedTagEnd::Image)
+		);
+		// A span sliced at a comment marker can start mid-paragraph, leaving an `End` whose `Start`
+		// belongs to the stream we were lifted out of. That scope is not ours to close.
+		if !inline && matches!(ev, OwnedEvent::End(_)) && block_depth == 0 {
+			continue;
 		}
-		let is_inline = item_depth == 0
-			&& matches!(
-				&ev,
-				OwnedEvent::Text(_)
-					| OwnedEvent::Code(_)
-					| OwnedEvent::InlineHtml(_)
-					| OwnedEvent::InlineMath(_)
-					| OwnedEvent::SoftBreak
-					| OwnedEvent::HardBreak
-					| OwnedEvent::Start(OwnedTag::Emphasis)
-					| OwnedEvent::End(OwnedTagEnd::Emphasis)
-					| OwnedEvent::Start(OwnedTag::Strong)
-					| OwnedEvent::End(OwnedTagEnd::Strong)
-					| OwnedEvent::Start(OwnedTag::Strikethrough)
-					| OwnedEvent::End(OwnedTagEnd::Strikethrough)
-					| OwnedEvent::Start(OwnedTag::Link { .. })
-					| OwnedEvent::End(OwnedTagEnd::Link)
-					| OwnedEvent::Start(OwnedTag::Image { .. })
-					| OwnedEvent::End(OwnedTagEnd::Image)
-			);
-		if is_inline && !in_inline {
+		let wrappable = inline && block_depth == 0;
+		if wrappable && !in_inline {
 			out.push(OwnedEvent::Start(OwnedTag::Paragraph));
 			in_inline = true;
-		} else if !is_inline && in_inline {
-			out.push(OwnedEvent::End(OwnedTagEnd::Paragraph));
+		} else if !wrappable && in_inline {
+			close(&mut out);
 			in_inline = false;
+		}
+		if !inline {
+			match &ev {
+				OwnedEvent::Start(_) => block_depth += 1,
+				OwnedEvent::End(_) => block_depth -= 1,
+				_ => {}
+			}
 		}
 		out.push(ev);
 	}
 	if in_inline {
-		out.push(OwnedEvent::End(OwnedTagEnd::Paragraph));
+		close(&mut out);
 	}
 	out
 }

@@ -276,6 +276,39 @@ async fn test_body_shaped_like_ours_survives_reopen() {
 	assert!(reopen.status.success(), "reopen must parse the file we just wrote. stderr: {}", reopen.stderr);
 }
 
+/// Two consecutive plain paragraphs in a body are the one shape where the local file's first
+/// paragraph shares the title line, so the item-interior span reaching `Events` carries both a
+/// paragraph-bridge `SoftBreak` and the paragraph boundary it stands for. Counting both grew a
+/// blank line on every parse→render cycle, which no `--reset` could settle: local and remote
+/// disagreed on a body neither side had touched, and with equal `description` timestamps the
+/// disagreement was a permanent conflict.
+#[tokio::test]
+async fn test_two_paragraph_body_is_a_roundtrip_fixpoint() {
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+
+	let remote_vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n  placeholder\n");
+	ctx.remote(&remote_vi, Some(Seed::new(15)));
+	ctx.set_remote_body(("o", "r").into(), 1, "para one\n\npara two\n");
+
+	let out = ctx.open_url(("o", "r").into(), 1).run();
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+
+	let path = ctx.flat_issue_path(("o", "r").into(), 1, "Test Issue");
+	let first = read_issue_file(&path);
+	assert_snapshot!(first, @"
+	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+	  para one
+
+	  para two
+	");
+
+	let reopen = ctx.open_url(("o", "r").into(), 1).run();
+	assert!(reopen.status.success(), "stderr: {}", reopen.stderr);
+	let conflict = path.parent().unwrap().parent().unwrap().join("__conflict.md");
+	assert!(!conflict.exists(), "a body neither side edited must not conflict");
+	assert_eq!(first, read_issue_file(&path), "reparsing our own render must reproduce it byte for byte");
+}
+
 /// When opening via URL with --reset, local state should be completely replaced with remote.
 /// No merge conflicts, no prompts - just nuke and replace.
 #[tokio::test]

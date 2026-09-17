@@ -2,7 +2,7 @@
 //! Markdown primitives: translating `String` into owned pulldown_cmark [`Events`] and back.
 
 mod events;
-pub use events::{Events, OwnedCodeBlockKind, OwnedEvent, OwnedTag, OwnedTagEnd, indent_into, preserve_paragraph_spacing, wrap_inline_in_paragraphs};
+pub use events::{Events, OwnedCodeBlockKind, OwnedEvent, OwnedTag, OwnedTagEnd, as_standalone_block, indent_into};
 
 /// A header with a level and content.
 ///
