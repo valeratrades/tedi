@@ -108,7 +108,7 @@ impl Local {
 			return Ok(None);
 		};
 		let content = reader.read_content(&path).map_err(|e| eyre!("{e}"))?;
-		let body = MilestoneBody::parse(&content);
+		let body = MilestoneBody::parse(&content, repo);
 		let meta = Self::load_milestone_project_meta(repo, reader).milestones.remove(&number).unwrap_or_default();
 		Ok(Some(Milestone {
 			identity: MilestoneIdentity {

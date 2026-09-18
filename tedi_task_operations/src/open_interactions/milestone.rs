@@ -93,7 +93,7 @@ async fn apply_modifier(milestone: &mut Milestone, modifier: MilestoneModifier) 
 			std::fs::write(&path, format!("{milestone}\n"))?;
 			crate::utils::open_file(&path, None).await?;
 			let content = std::fs::read_to_string(&path)?;
-			let new_body = MilestoneBody::parse(&content);
+			let new_body = MilestoneBody::parse(&content, repo);
 			let changed = new_body != milestone.body;
 			milestone.body = new_body;
 			changed

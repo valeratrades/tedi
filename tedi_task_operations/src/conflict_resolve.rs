@@ -112,7 +112,7 @@ pub async fn check_for_existing_milestone_conflict(link: &crate::MilestoneLink) 
 	}
 
 	let mut milestone = {
-		let body = crate::MilestoneBody::parse(&content);
+		let body = crate::MilestoneBody::parse(&content, link.repo_info());
 		let meta = Local::load_milestone_project_meta(link.repo_info(), &FsReader)
 			.milestones
 			.remove(&link.number())

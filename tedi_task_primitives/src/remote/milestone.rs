@@ -17,7 +17,7 @@ pub async fn load_remote_milestone(link: &MilestoneLink) -> Result<Milestone, gi
 	let milestone = gh.get_milestone(repo, number).await?;
 	let assigned = gh.list_milestone_issues(repo, number).await?;
 
-	let mut body = MilestoneBody::parse(milestone.description.as_deref().unwrap_or(""));
+	let mut body = MilestoneBody::parse(milestone.description.as_deref().unwrap_or(""), repo);
 	let assigned_links: Vec<IssueLink> = assigned.iter().map(|issue| IssueLink::in_project(repo, issue.number)).collect();
 	body.0.push_issue_links(&assigned_links);
 

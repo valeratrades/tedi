@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use tedi_md::indent_into;
 
-use crate::{Events, IssueLink, IssueMarker, IssueRef, MilestoneLink, MilestoneRef, NodeLink, OwnedEvent, OwnedTag, OwnedTagEnd};
+use crate::{Events, IssueLink, IssueMarker, IssueRef, MilestoneLink, MilestoneRef, NodeLink, OwnedEvent, OwnedTag, OwnedTagEnd, RepoInfo};
 
 /// Sprint header sections tedi assigns meaning to. The variant name is the header text.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, strum::Display, strum::EnumString)]
@@ -101,10 +101,11 @@ impl TaskView {
 		}
 	}
 
-	/// Resolve bare `#N` refs using their parent list item's text as repo context.
-	pub fn resolve_bare_refs(&mut self) {
+	/// Resolve bare `#N` refs using their parent list item's text as repo context, falling back
+	/// to `home` — the repo this document itself lives in (a milestone's own).
+	pub fn resolve_bare_refs(&mut self, home: Option<RepoInfo>) {
 		for items in self.sections.values_mut() {
-			resolve_items(items, None);
+			resolve_items(items, None, home);
 		}
 	}
 
@@ -650,7 +651,7 @@ fn normalize_items(items: &mut [TaskItem]) {
 	}
 }
 
-fn resolve_items(items: &mut [TaskItem], parent_context: Option<&str>) {
+fn resolve_items(items: &mut [TaskItem], parent_context: Option<&str>, home: Option<RepoInfo>) {
 	for item in items.iter_mut() {
 		let my_context = match &item.content {
 			TaskContent::Virtual(events) => {
@@ -661,16 +662,14 @@ fn resolve_items(items: &mut [TaskItem], parent_context: Option<&str>) {
 			_ => None,
 		};
 
-		if let TaskContent::Issue { r#ref, .. } = &mut item.content
-			&& let Some(ctx) = parent_context
-		{
-			r#ref.resolve_with_context(ctx);
+		if let TaskContent::Issue { r#ref, .. } = &mut item.content {
+			r#ref.resolve_with_context(parent_context, home);
 		}
 
 		let child_ctx = my_context.as_deref().or(parent_context);
 		for section in &mut item.children {
 			if let Section::List(list) = section {
-				resolve_items(list, child_ctx);
+				resolve_items(list, child_ctx, home);
 			}
 		}
 	}
@@ -1030,7 +1029,7 @@ mod tests {
 		crate::current_user::set("myowner".to_string());
 		let content = "- [ ] discretionary_engine\n    - [ ] #77\n";
 		let mut doc = TaskView::parse(content);
-		doc.resolve_bare_refs();
+		doc.resolve_bare_refs(None);
 		insta::assert_snapshot!(doc.serialize(), @r"
 		- [ ] discretionary_engine
 		  - [ ] myowner/discretionary_engine#77
@@ -1041,7 +1040,7 @@ mod tests {
 	fn test_resolve_bare_refs_owner_repo_parent() {
 		let content = "- valeratrades/tedi\n    - #80\n";
 		let mut doc = TaskView::parse(content);
-		doc.resolve_bare_refs();
+		doc.resolve_bare_refs(None);
 		insta::assert_snapshot!(doc.serialize(), @r"
 		- valeratrades/tedi
 		  - valeratrades/tedi#80
@@ -1053,7 +1052,7 @@ mod tests {
 		crate::current_user::set("myowner".to_string());
 		let content = "- discretionary_engine\n    - tedi\n        - [ ] #80\n";
 		let mut doc = TaskView::parse(content);
-		doc.resolve_bare_refs();
+		doc.resolve_bare_refs(None);
 		insta::assert_snapshot!(doc.serialize(), @r"
 		- discretionary_engine
 		  - tedi
@@ -1066,7 +1065,7 @@ mod tests {
 		crate::current_user::set("myowner".to_string());
 		let content = "- [ ] owner/repo#42\n- [ ] My Issue <!-- @user https://github.com/owner/repo/issues/99 -->\n";
 		let mut doc = TaskView::parse(content);
-		doc.resolve_bare_refs();
+		doc.resolve_bare_refs(None);
 		let links: Vec<_> = doc.issue_links().iter().map(|l| l.number()).collect();
 		assert_eq!(links, [42, 99]);
 	}
@@ -1339,7 +1338,7 @@ mod tests {
 - [ ] pay for Tokyo server
 ";
 		let mut doc = TaskView::parse(content);
-		doc.resolve_bare_refs();
+		doc.resolve_bare_refs(None);
 		let found: Vec<String> = doc.homeless_tasks().into_iter().map(|(_, block, _)| block).collect();
 		// OpenClaw (single-word but has blockers) and the two multi-word tasks materialize;
 		// the category header (ref descendant), single-word childless, and closed items don't.
@@ -1367,7 +1366,7 @@ mod tests {
 	fn test_assign_link_collapses_to_bare_link() {
 		let content = "- [ ] some new task\n  # Blockers\n  - first step\n- [ ] o/r#42\n";
 		let mut doc = TaskView::parse(content);
-		doc.resolve_bare_refs();
+		doc.resolve_bare_refs(None);
 		let homeless = doc.homeless_tasks();
 		assert_eq!(homeless.len(), 1);
 		let link = IssueLink::parse("https://github.com/local/virtual/issues/1").unwrap();
@@ -1389,7 +1388,7 @@ mod tests {
   - [ ] o/r#5
 ";
 		let mut doc = TaskView::parse(content);
-		doc.resolve_bare_refs();
+		doc.resolve_bare_refs(None);
 		let homeless = doc.homeless_tasks();
 		assert_eq!(homeless.len(), 1, "only the unlinked task materializes");
 		assert_eq!(

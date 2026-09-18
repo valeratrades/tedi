@@ -45,4 +45,4 @@ pub use marker::{FoldLevel, IssueMarker, Marker};
 pub use milestone::{Milestone, MilestoneBody, MilestoneIdentity, MilestoneTimestamps};
 pub use taskview::{ManagedSection, TaskItemId, TaskView, embedded_issues};
 pub use tedi_md::{Events, Header, OwnedCodeBlockKind, OwnedEvent, OwnedTag, OwnedTagEnd};
-pub use uri::{IssueLink, IssueRef, MilestoneLink, MilestoneRef, NodeLink, RepoInfo, parse_repo_context};
+pub use uri::{IssueLink, IssueRef, MilestoneLink, MilestoneRef, NodeLink, RepoInfo};

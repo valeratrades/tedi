@@ -9,7 +9,7 @@
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
-use crate::{CloseState, IssueLink, MilestoneLink, TaskView};
+use crate::{CloseState, IssueLink, MilestoneLink, RepoInfo, TaskView};
 
 /// Timestamps tracking when individual milestone fields last changed. A milestone-shaped
 /// sibling of `IssueTimestamps`, used for field-level sync conflict resolution.
@@ -66,9 +66,10 @@ pub struct MilestoneIdentity {
 #[derive(Clone, Default)]
 pub struct MilestoneBody(pub TaskView);
 impl MilestoneBody {
-	pub fn parse(content: &str) -> Self {
+	/// `repo` is the milestone's own — a terse `#N` in its body names an issue right there.
+	pub fn parse(content: &str, repo: RepoInfo) -> Self {
 		let mut doc = TaskView::parse(content);
-		doc.resolve_bare_refs();
+		doc.resolve_bare_refs(Some(repo));
 		Self(doc)
 	}
 
@@ -196,15 +197,17 @@ mod tests {
 				title: title.to_string(),
 				timestamps: ts,
 			},
-			body: MilestoneBody::parse(body),
+			body: MilestoneBody::parse(body, RepoInfo::new("o", "r")),
 		}
 	}
 
 	#[test]
 	fn parse_and_hosted() {
-		let body = MilestoneBody::parse("# Goals\n\nship it\n\n- o/r#5\n- https://github.com/o/r/issues/6\n");
+		// a terse `#7` and a `r2#8` both name issues relative to the milestone's own `o/r`
+		let body = MilestoneBody::parse("# Goals\n\nship it\n\n- o/r#5\n- https://github.com/o/r/issues/6\n- #7\n- r2#8\n", RepoInfo::new("o", "r"));
 		let hosted: Vec<u64> = body.hosted().iter().map(|l| l.number()).collect();
-		assert_eq!(hosted, [5, 6]);
+		assert_eq!(hosted, [5, 6, 7, 8]);
+		assert_eq!(body.hosted()[3].project(), RepoInfo::new("o", "r2"));
 		insta::assert_snapshot!(body.0.serialize(), @"
 		# Goals
 
@@ -212,6 +215,8 @@ mod tests {
 
 		- o/r#5
 		- https://github.com/o/r/issues/6
+		- o/r#7
+		- o/r2#8
 		");
 	}
 
@@ -223,7 +228,7 @@ mod tests {
 			MilestoneTimestamps::now(),
 		);
 		let s1 = m.to_string();
-		let reparsed = MilestoneBody::parse(&s1);
+		let reparsed = MilestoneBody::parse(&s1, RepoInfo::new("o", "r"));
 		let m2 = Milestone {
 			identity: m.identity.clone(),
 			body: reparsed,

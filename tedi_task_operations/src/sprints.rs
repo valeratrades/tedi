@@ -34,7 +34,7 @@ use crate::{
 /// without the header having to be remembered.
 pub async fn expand_and_refresh(content: &str, pull: bool) -> Result<String> {
 	let mut doc = TaskView::parse(content);
-	doc.resolve_bare_refs();
+	doc.resolve_bare_refs(None);
 	doc.ensure_managed(tedi_core::ManagedSection::Must);
 
 	let mut milestones: Vec<(String, Milestone, TaskView)> = Vec::new();
@@ -45,8 +45,7 @@ pub async fn expand_and_refresh(content: &str, pull: bool) -> Result<String> {
 		}
 		match Local::load_milestone(&link, &FsReader)? {
 			Some(milestone) => {
-				let mut inner = TaskView::parse(&milestone.to_string());
-				inner.resolve_bare_refs();
+				let inner = milestone.body.0.clone();
 				milestones.push((url, milestone, inner));
 			}
 			None => tracing::warn!("milestone {url} not stored locally; leaving as bare link (run `sprints get/edit` online to fetch it)"),
@@ -246,7 +245,7 @@ pub async fn materialize_new_tasks(doc: &mut TaskView, ambient: Option<Milestone
 /// materialized tasks (and any body edit) persist and never re-materialize.
 pub async fn sync_milestone_changes(doc: &TaskView, offline: bool) -> Result<()> {
 	for (link, body_text) in doc.embedded_milestone_bodies() {
-		let new_body = crate::MilestoneBody::parse(&body_text);
+		let new_body = crate::MilestoneBody::parse(&body_text, link.repo_info());
 
 		let milestone = match Local::load_milestone(&link, &FsReader)? {
 			Some(m) => m,

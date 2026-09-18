@@ -591,14 +591,18 @@ async fn edit_milestone(settings: &LiveSettings, tf: Timeframe, offline: bool, m
 
 	// No editor change → reuse the loaded body verbatim (so `collapse(expand(x)) != x` formatting jitter
 	// can't spuriously push); the pre-open sync below still reflushes any prior divergence.
-	let new_body = if changed { MilestoneBody::parse(&edited_doc.serialize()) } else { milestone.body.clone() };
+	let new_body = if changed {
+		MilestoneBody::parse(&edited_doc.serialize(), milestone.identity.link.repo_info())
+	} else {
+		milestone.body.clone()
+	};
 	let new_description = new_body.0.serialize();
 
 	// Sync issue↔milestone assignments (incl. unassignments, which the set-union merge can't express).
 	// Best-effort: a failure is reconciled on the next online edit rather than throwing hands.
 	if !offline && changed {
 		let mut orig_doc = TaskView::parse(&original_description);
-		orig_doc.resolve_bare_refs();
+		orig_doc.resolve_bare_refs(None);
 		let old_links = orig_doc.issue_links();
 		let new_links = TaskView::parse(&new_description).issue_links();
 		if let Err(e) = sync_milestone_assignments(settings, milestone_number, &old_links, &new_links).await {

@@ -341,22 +341,22 @@ impl IssueRef {
 		}
 	}
 
-	/// Resolve missing owner/repo from a parent context string.
-	///
-	/// Context can be `"owner/repo"` or just `"repo"` (owner filled from `current_user`).
-	pub fn resolve_with_context(&mut self, context: &str) {
-		if let Self::Shorthand { owner, repo, .. } = self {
-			if repo.is_none() {
-				let (resolved_owner, resolved_repo) = parse_repo_context(context);
-				*owner = Some(resolved_owner);
-				*repo = Some(resolved_repo);
+	/// Resolve missing owner/repo from a parent context string (`"owner/repo"` or `"repo"`),
+	/// falling back to `home` — the repo the document itself lives in — and then `current_user`.
+	pub fn resolve_with_context(&mut self, context: Option<&str>, home: Option<RepoInfo>) {
+		let Self::Shorthand { owner, repo, .. } = self else { return };
+		if repo.is_none() {
+			match context.map(split_context) {
+				Some((ctx_owner, ctx_repo)) => {
+					*owner = ctx_owner.or_else(|| home.and_then(|h| h.owner().map(String::from)).or_else(crate::current_user::get));
+					assert!(owner.is_some(), "no owner available to resolve bare repo context '{ctx_repo}'");
+					*repo = Some(ctx_repo);
+				}
+				None => *repo = home.map(|h| h.repo().to_string()),
 			}
-			if owner.is_none()
-				&& repo.is_some()
-				&& let Some(user) = crate::current_user::get()
-			{
-				*owner = Some(user);
-			}
+		}
+		if owner.is_none() && repo.is_some() {
+			*owner = home.and_then(|h| h.owner().map(String::from)).or_else(crate::current_user::get);
 		}
 	}
 }
@@ -375,16 +375,12 @@ impl fmt::Display for IssueRef {
 	}
 }
 
-/// Parse a context string into (owner, repo).
-///
-/// `"owner/repo"` → `(owner, repo)`.
-/// `"repo"` → `(current_user, repo)`.
-pub fn parse_repo_context(text: &str) -> (String, String) {
-	if let Some(slash) = text.find('/') {
-		(text[..slash].to_string(), text[slash + 1..].to_string())
-	} else {
-		let owner = crate::current_user::get().unwrap_or_else(|| panic!("current_user must be set to resolve bare repo context '{text}'"));
-		(owner, text.to_string())
+/// Split a context string into its optional owner and its repo: `"owner/repo"` → `(Some, repo)`,
+/// `"repo"` → `(None, repo)`.
+fn split_context(text: &str) -> (Option<String>, String) {
+	match text.find('/') {
+		Some(slash) => (Some(text[..slash].to_string()), text[slash + 1..].to_string()),
+		None => (None, text.to_string()),
 	}
 }
 

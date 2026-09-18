@@ -176,7 +176,9 @@ sprint 1d  (stored in the GitHub milestone description, keyed by timeframe:
   sections, and plain-text items are allowed beside refs. Milestone refs are rejected.
   It prunes its own closed issues; plain text is never pruned.
 - A bare `#N` resolves its repo from the parent item's text, so a category line like
-  `- discretionary_engine` above it is meaningful context, not decoration.
+  `- discretionary_engine` above it is meaningful context, not decoration. Inside a
+  milestone body it needs no such line: `#N` means the milestone's own repo, and `repo#N`
+  inherits the milestone's owner. A parent item still overrides both.
 
 While you edit a sprint, each issue ref is expanded in place into that issue's exact file
 bytes, wrapped in `<!--{{{1-->` / `<!--}}}1-->` folds. Edit it there as you would its own

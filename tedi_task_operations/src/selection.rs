@@ -82,14 +82,14 @@ impl Selected {
 		if urgent.exists() {
 			let content = std::fs::read_to_string(&urgent).ok()?;
 			let mut view = TaskView::parse(&content);
-			view.resolve_bare_refs();
+			view.resolve_bare_refs(None);
 			if view.issue_links().iter().any(link_is_open) {
 				return Some(ActiveSprint { key: URGENT_KEY.to_string(), view });
 			}
 		}
 		let normal = self.normal.as_ref()?;
 		let mut view = TaskView::parse(&normal.content);
-		view.resolve_bare_refs();
+		view.resolve_bare_refs(None);
 		Some(ActiveSprint { key: normal.key.clone(), view })
 	}
 
@@ -460,9 +460,7 @@ fn milestone_local(ml: &MilestoneLink) -> Option<crate::Milestone> {
 /// milestone refs), in document order.
 fn milestone_nodes(ml: &MilestoneLink) -> Vec<NodeLink> {
 	let Some(milestone) = milestone_local(ml) else { return Vec::new() };
-	let mut view = TaskView::parse(&milestone.to_string());
-	view.resolve_bare_refs();
-	view.nodes()
+	milestone.body.0.nodes()
 }
 
 /// A milestone's display title: its stored title, else the bare URL.
@@ -500,7 +498,7 @@ fn cleanup_urgent() {
 	let Ok(Some(_lock)) = try_lock_urgent() else { return };
 	let Ok(content) = std::fs::read_to_string(&path) else { return }; // deleted between exists() and here
 	let mut view = TaskView::parse(&content);
-	view.resolve_bare_refs();
+	view.resolve_bare_refs(None);
 	if !prune_closed(&mut view) {
 		return;
 	}

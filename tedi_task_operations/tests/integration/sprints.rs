@@ -835,6 +835,82 @@ async fn test_select_tree_navigation_through_milestone() {
 	assert!(out.stdout.contains("Selected: o/r#10"), "stdout: {}", out.stdout);
 }
 
+/// A bare `#N` in a milestone body names an issue in the milestone's *own* repo — the terse
+/// form needs no `- o/r` category line above it. Escaped `\#` is how the markdown writer stores
+/// a line-leading `#`, so that is what the file holds.
+#[tokio::test]
+async fn test_milestone_bare_ref_resolves_to_own_repo() {
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+
+	let vi10 = parse_virtual("- [ ] Sprint Issue <!-- @mock_user https://github.com/o/r/issues/10 -->\n\n  # Blockers\n  - sprint task\n");
+	let vi20 = parse_virtual("- [ ] Ms Twenty <!-- @mock_user https://github.com/o/r/issues/20 -->\n\n  # Blockers\n  - milestone task one\n");
+	let vi21 = parse_virtual("- [ ] Ms TwentyOne <!-- @mock_user https://github.com/o/r/issues/21 -->\n\n  # Blockers\n  - milestone task two\n");
+	ctx.local(&vi10, Some(Seed::new(0))).await;
+	ctx.local(&vi20, Some(Seed::new(0))).await;
+	ctx.local(&vi21, Some(Seed::new(0))).await;
+
+	seed_selection(
+		&ctx,
+		"- https://github.com/o/r/issues/10\n- https://github.com/o/r/milestone/3\n",
+		&[("https://github.com/o/r/milestone/3", "big_feature", false, "- \\#20\n- \\#21\n")],
+		&[],
+	);
+
+	let out = ctx.run(&["--offline", "sprints", "select", "--next"]);
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+	assert!(out.stdout.contains("Selected milestone: big_feature → o/r#20"), "stdout: {}", out.stdout);
+
+	let out = ctx.run(&["--offline", "sprints", "select", "--down"]);
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+	assert!(out.stdout.contains("Selected: o/r#20"), "stdout: {}", out.stdout);
+
+	let out = ctx.run(&["--offline", "sprints", "select", "--next"]);
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+	assert!(out.stdout.contains("Selected: o/r#21"), "stdout: {}", out.stdout);
+}
+
+/// `repo#N` in a milestone body inherits the *milestone's* owner, not `current_user`
+/// (here `mock_user`): a milestone in `o/r2` reaches `o/r#20` by naming only `r`.
+#[tokio::test]
+async fn test_milestone_repo_shorthand_inherits_owner() {
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+
+	let vi = parse_virtual("- [ ] Sibling Repo <!-- @mock_user https://github.com/o/r/issues/20 -->\n\n  # Blockers\n  - sibling task\n");
+	ctx.local(&vi, Some(Seed::new(0))).await;
+
+	seed_selection(
+		&ctx,
+		"- https://github.com/o/r2/milestone/3\n",
+		&[("https://github.com/o/r2/milestone/3", "big_feature", false, "- r#20\n")],
+		&["https://github.com/o/r2/milestone/3"],
+	);
+
+	let out = ctx.run(&["--offline", "sprints", "select", "--down"]);
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+	assert!(out.stdout.contains("Selected: o/r#20"), "stdout: {}", out.stdout);
+}
+
+/// A bare `#N` inside a milestone expands like any other issue ref when the sprint holding
+/// that milestone is edited.
+#[tokio::test]
+async fn test_milestone_bare_ref_expands_in_sprint_edit() {
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+
+	let vi = parse_virtual("- [ ] Inner Issue <!-- @mock_user https://github.com/o/r/issues/20 -->\n\tinner body\n");
+	ctx.local(&vi, Some(Seed::new(0))).await;
+
+	seed_selection(&ctx, "", &[("https://github.com/o/r/milestone/3", "big_feature", false, "- #20")], &[]);
+
+	let (out, _) = ctx.milestone_edit_with_changes("# Sprint\n\n- https://github.com/o/r/milestone/3\n", |tmp_path| {
+		let content = std::fs::read_to_string(tmp_path).unwrap();
+		assert!(
+			content.contains("<!-- @mock_user https://github.com/o/r/issues/20 -->"),
+			"bare `#20` must expand inside the milestone block:\n{content}"
+		);
+	});
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+}
+
 /// A directory issue in a sprint: `--down` selects its top open child, then `--next`
 /// moves among the children rather than the sprint items.
 #[tokio::test]
