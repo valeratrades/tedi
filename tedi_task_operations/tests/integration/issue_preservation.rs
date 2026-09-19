@@ -295,3 +295,33 @@ async fn test_comment_only_on_remote_is_not_deleted() {
 	let content = read_issue_file(&ctx.resolve_issue_path(&issue));
 	assert!(content.contains("posted on github after the last sync"), "the remote-only comment was dropped locally: {content}");
 }
+
+/// A ref appended below the child links lands *inside* the child list (markdown merges the two),
+/// where nothing carries an issue marker for it. The edit must fail at that line, naming it.
+#[tokio::test]
+async fn test_markerless_item_appended_after_children_reports_its_own_line() {
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+
+	let vi = parse_virtual(
+		r#"- [ ] parent <!-- @mock_user https://github.com/o/r/issues/1 -->
+
+  - [ ] b <!-- @mock_user https://github.com/o/r/issues/2 -->
+
+  - [ ] c <!-- @mock_user https://github.com/o/r/issues/3 -->
+"#,
+	);
+
+	let issue = ctx.consensus(&vi, None).await;
+	ctx.remote(&vi, None);
+
+	let (vpath, paused) = ctx.open_issue(&issue).args(&["--offline"]).break_to_edit();
+	let content = std::fs::read_to_string(&vpath).unwrap();
+	std::fs::write(&vpath, format!("{content}  - [ ] https://github.com/o/r2/milestone/2\n")).unwrap();
+
+	let out = paused.resume();
+	assert!(out.status.success(), "stdout: {}\nstderr: {}", out.stdout, out.stderr);
+	assert!(
+		std::fs::read_to_string(&vpath).unwrap().contains("https://github.com/o/r2/milestone/2"),
+		"the milestone reference should remain issue body content"
+	);
+}

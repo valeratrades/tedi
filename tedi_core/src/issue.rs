@@ -1311,9 +1311,7 @@ impl VirtualIssue {
 						// Collect the full list as a sub-slice and parse each Item
 						let list_end = Self::find_matching_end_list(events, pos);
 						let list_events = &events[pos..list_end];
-
-						// Flush body/comment before children
-						flush(&mut in_body, &mut current_comment_meta, &mut body_events, &mut current_comment_events, &mut comment_spans);
+						let mut body_items = Vec::new();
 
 						// Walk items within this list
 						let mut inner_pos = 1; // skip Start(List)
@@ -1328,7 +1326,11 @@ impl VirtualIssue {
 								child_events.extend(list_events[item_start..item_end].iter().cloned());
 								child_events.push(OwnedEvent::End(OwnedTagEnd::List(false)));
 
-								child_slices.push((child_events, children_default_pending));
+								if children_default_pending || Self::first_item_marked(&child_events) {
+									child_slices.push((child_events, children_default_pending));
+								} else {
+									body_items.extend(list_events[item_start..item_end].iter().cloned());
+								}
 
 								inner_pos = item_end;
 							} else {
@@ -1336,6 +1338,11 @@ impl VirtualIssue {
 							}
 						}
 
+						if !body_items.is_empty() {
+							body_events.push(OwnedEvent::Start(OwnedTag::List(None)));
+							body_events.extend(body_items);
+							body_events.push(OwnedEvent::End(OwnedTagEnd::List(false)));
+						}
 						pos = list_end;
 					} else if in_blockers {
 						if blocker_list_consumed {
@@ -1639,7 +1646,7 @@ impl TitleLine {
 						marker
 					}
 					None if default_pending => IssueMarker::Pending,
-					None => return Err(ParseError::missing_url_marker(ctx.named_source(), ctx.line_span(1))),
+					None => return Err(ParseError::missing_url_marker(ctx.named_source(), ctx.find_line_span(title_text.trim(), 1))),
 				}
 			}
 		};
