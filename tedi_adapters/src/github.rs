@@ -302,7 +302,11 @@ impl GithubClient for RealGithubClient {
 	}
 
 	async fn fetch_comments(&self, repo: RepoInfo, issue_number: u64) -> Result<Vec<GithubComment>, GithubError> {
-		let url = format!("https://api.github.com/repos/{}/{}/issues/{issue_number}/comments", repo.owner().expect("github repo"), repo.repo());
+		let url = format!(
+			"https://api.github.com/repos/{}/{}/issues/{issue_number}/comments",
+			repo.owner().expect("github repo"),
+			repo.repo()
+		);
 		let res = self.get(&url).send().await?;
 
 		if !res.status().is_success() {
@@ -316,7 +320,11 @@ impl GithubClient for RealGithubClient {
 	}
 
 	async fn fetch_sub_issues(&self, repo: RepoInfo, issue_number: u64) -> Result<Vec<GithubIssue>, GithubError> {
-		let url = format!("https://api.github.com/repos/{}/{}/issues/{issue_number}/sub_issues", repo.owner().expect("github repo"), repo.repo());
+		let url = format!(
+			"https://api.github.com/repos/{}/{}/issues/{issue_number}/sub_issues",
+			repo.owner().expect("github repo"),
+			repo.repo()
+		);
 		let res = self.get(&url).send().await?;
 
 		if !res.status().is_success() {
@@ -356,7 +364,11 @@ impl GithubClient for RealGithubClient {
 	}
 
 	async fn create_comment(&self, repo: RepoInfo, issue_number: u64, body: &str) -> Result<(), GithubError> {
-		let url = format!("https://api.github.com/repos/{}/{}/issues/{issue_number}/comments", repo.owner().expect("github repo"), repo.repo());
+		let url = format!(
+			"https://api.github.com/repos/{}/{}/issues/{issue_number}/comments",
+			repo.owner().expect("github repo"),
+			repo.repo()
+		);
 		self.post_json(&url, &serde_json::json!({ "body": body }), "Failed to create comment").await
 	}
 
@@ -388,14 +400,22 @@ impl GithubClient for RealGithubClient {
 	}
 
 	async fn add_sub_issue(&self, repo: RepoInfo, parent_issue_number: u64, child_issue_id: u64) -> Result<(), GithubError> {
-		let url = format!("https://api.github.com/repos/{}/{}/issues/{parent_issue_number}/sub_issues", repo.owner().expect("github repo"), repo.repo());
+		let url = format!(
+			"https://api.github.com/repos/{}/{}/issues/{parent_issue_number}/sub_issues",
+			repo.owner().expect("github repo"),
+			repo.repo()
+		);
 		self.post_json(&url, &serde_json::json!({ "sub_issue_id": child_issue_id }), "Failed to add sub-issue").await
 	}
 
 	async fn find_issue_by_title(&self, repo: RepoInfo, title: &str) -> Result<Option<u64>, GithubError> {
 		// Search for issues with this title (search in open and closed)
 		let encoded_title = urlencoding::encode(title);
-		let url = format!("https://api.github.com/search/issues?q=repo:{}/{}+in:title+{encoded_title}", repo.owner().expect("github repo"), repo.repo());
+		let url = format!(
+			"https://api.github.com/search/issues?q=repo:{}/{}+in:title+{encoded_title}",
+			repo.owner().expect("github repo"),
+			repo.repo()
+		);
 		let res = self.get(&url).send().await?;
 
 		if !res.status().is_success() {
@@ -664,29 +684,97 @@ impl RetryingGithubClient {
 
 #[async_trait]
 impl GithubClient for RetryingGithubClient {
-	async fn fetch_authenticated_user(&self) -> Result<String, GithubError> { retrying!(self.inner.fetch_authenticated_user()) }
-	async fn fetch_issue(&self, repo: RepoInfo, issue_number: u64) -> Result<GithubIssue, GithubError> { retrying!(self.inner.fetch_issue(repo, issue_number)) }
-	async fn fetch_comments(&self, repo: RepoInfo, issue_number: u64) -> Result<Vec<GithubComment>, GithubError> { retrying!(self.inner.fetch_comments(repo, issue_number)) }
-	async fn fetch_sub_issues(&self, repo: RepoInfo, issue_number: u64) -> Result<Vec<GithubIssue>, GithubError> { retrying!(self.inner.fetch_sub_issues(repo, issue_number)) }
-	async fn update_issue_body(&self, repo: RepoInfo, issue_number: u64, body: &str) -> Result<(), GithubError> { retrying!(self.inner.update_issue_body(repo, issue_number, body)) }
-	async fn update_issue_state(&self, repo: RepoInfo, issue_number: u64, state: &str) -> Result<(), GithubError> { retrying!(self.inner.update_issue_state(repo, issue_number, state)) }
-	async fn update_comment(&self, repo: RepoInfo, comment_id: u64, body: &str) -> Result<(), GithubError> { retrying!(self.inner.update_comment(repo, comment_id, body)) }
-	async fn create_comment(&self, repo: RepoInfo, issue_number: u64, body: &str) -> Result<(), GithubError> { retrying!(self.inner.create_comment(repo, issue_number, body)) }
-	async fn delete_comment(&self, repo: RepoInfo, comment_id: u64) -> Result<(), GithubError> { retrying!(self.inner.delete_comment(repo, comment_id)) }
-	async fn create_issue(&self, repo: RepoInfo, title: &str, body: &str) -> Result<CreatedIssue, GithubError> { retrying!(self.inner.create_issue(repo, title, body)) }
-	async fn add_sub_issue(&self, repo: RepoInfo, parent_issue_number: u64, child_issue_id: u64) -> Result<(), GithubError> { retrying!(self.inner.add_sub_issue(repo, parent_issue_number, child_issue_id)) }
-	async fn find_issue_by_title(&self, repo: RepoInfo, title: &str) -> Result<Option<u64>, GithubError> { retrying!(self.inner.find_issue_by_title(repo, title)) }
-	async fn issue_exists(&self, repo: RepoInfo, issue_number: u64) -> Result<bool, GithubError> { retrying!(self.inner.issue_exists(repo, issue_number)) }
-	async fn fetch_parent_issue(&self, repo: RepoInfo, issue_number: u64) -> Result<Option<GithubIssue>, GithubError> { retrying!(self.inner.fetch_parent_issue(repo, issue_number)) }
-	async fn fetch_timeline_timestamps(&self, repo: RepoInfo, issue_number: u64) -> Result<GraphqlTimelineTimestamps, GithubError> { retrying!(self.inner.fetch_timeline_timestamps(repo, issue_number)) }
-	async fn set_labels(&self, repo: RepoInfo, issue_number: u64, labels: &[String]) -> Result<(), GithubError> { retrying!(self.inner.set_labels(repo, issue_number, labels)) }
-	async fn set_issue_milestone(&self, repo: RepoInfo, issue_number: u64, milestone: Option<u64>) -> Result<(), GithubError> { retrying!(self.inner.set_issue_milestone(repo, issue_number, milestone)) }
-	async fn repo_exists(&self, repo: RepoInfo) -> Result<bool, GithubError> { retrying!(self.inner.repo_exists(repo)) }
-	async fn list_milestones(&self, repo: RepoInfo) -> Result<Vec<GithubMilestone>, GithubError> { retrying!(self.inner.list_milestones(repo)) }
-	async fn get_milestone(&self, repo: RepoInfo, number: u64) -> Result<GithubMilestone, GithubError> { retrying!(self.inner.get_milestone(repo, number)) }
-	async fn list_milestone_issues(&self, repo: RepoInfo, milestone_number: u64) -> Result<Vec<GithubIssue>, GithubError> { retrying!(self.inner.list_milestone_issues(repo, milestone_number)) }
-	async fn create_milestone(&self, repo: RepoInfo, title: &str, description: &str, closed: bool) -> Result<(), GithubError> { retrying!(self.inner.create_milestone(repo, title, description, closed)) }
-	async fn update_milestone(&self, repo: RepoInfo, number: u64, description: &str, due_on: Option<jiff::Timestamp>) -> Result<(), GithubError> { retrying!(self.inner.update_milestone(repo, number, description, due_on)) }
+	async fn fetch_authenticated_user(&self) -> Result<String, GithubError> {
+		retrying!(self.inner.fetch_authenticated_user())
+	}
+
+	async fn fetch_issue(&self, repo: RepoInfo, issue_number: u64) -> Result<GithubIssue, GithubError> {
+		retrying!(self.inner.fetch_issue(repo, issue_number))
+	}
+
+	async fn fetch_comments(&self, repo: RepoInfo, issue_number: u64) -> Result<Vec<GithubComment>, GithubError> {
+		retrying!(self.inner.fetch_comments(repo, issue_number))
+	}
+
+	async fn fetch_sub_issues(&self, repo: RepoInfo, issue_number: u64) -> Result<Vec<GithubIssue>, GithubError> {
+		retrying!(self.inner.fetch_sub_issues(repo, issue_number))
+	}
+
+	async fn update_issue_body(&self, repo: RepoInfo, issue_number: u64, body: &str) -> Result<(), GithubError> {
+		retrying!(self.inner.update_issue_body(repo, issue_number, body))
+	}
+
+	async fn update_issue_state(&self, repo: RepoInfo, issue_number: u64, state: &str) -> Result<(), GithubError> {
+		retrying!(self.inner.update_issue_state(repo, issue_number, state))
+	}
+
+	async fn update_comment(&self, repo: RepoInfo, comment_id: u64, body: &str) -> Result<(), GithubError> {
+		retrying!(self.inner.update_comment(repo, comment_id, body))
+	}
+
+	async fn create_comment(&self, repo: RepoInfo, issue_number: u64, body: &str) -> Result<(), GithubError> {
+		retrying!(self.inner.create_comment(repo, issue_number, body))
+	}
+
+	async fn delete_comment(&self, repo: RepoInfo, comment_id: u64) -> Result<(), GithubError> {
+		retrying!(self.inner.delete_comment(repo, comment_id))
+	}
+
+	async fn create_issue(&self, repo: RepoInfo, title: &str, body: &str) -> Result<CreatedIssue, GithubError> {
+		retrying!(self.inner.create_issue(repo, title, body))
+	}
+
+	async fn add_sub_issue(&self, repo: RepoInfo, parent_issue_number: u64, child_issue_id: u64) -> Result<(), GithubError> {
+		retrying!(self.inner.add_sub_issue(repo, parent_issue_number, child_issue_id))
+	}
+
+	async fn find_issue_by_title(&self, repo: RepoInfo, title: &str) -> Result<Option<u64>, GithubError> {
+		retrying!(self.inner.find_issue_by_title(repo, title))
+	}
+
+	async fn issue_exists(&self, repo: RepoInfo, issue_number: u64) -> Result<bool, GithubError> {
+		retrying!(self.inner.issue_exists(repo, issue_number))
+	}
+
+	async fn fetch_parent_issue(&self, repo: RepoInfo, issue_number: u64) -> Result<Option<GithubIssue>, GithubError> {
+		retrying!(self.inner.fetch_parent_issue(repo, issue_number))
+	}
+
+	async fn fetch_timeline_timestamps(&self, repo: RepoInfo, issue_number: u64) -> Result<GraphqlTimelineTimestamps, GithubError> {
+		retrying!(self.inner.fetch_timeline_timestamps(repo, issue_number))
+	}
+
+	async fn set_labels(&self, repo: RepoInfo, issue_number: u64, labels: &[String]) -> Result<(), GithubError> {
+		retrying!(self.inner.set_labels(repo, issue_number, labels))
+	}
+
+	async fn set_issue_milestone(&self, repo: RepoInfo, issue_number: u64, milestone: Option<u64>) -> Result<(), GithubError> {
+		retrying!(self.inner.set_issue_milestone(repo, issue_number, milestone))
+	}
+
+	async fn repo_exists(&self, repo: RepoInfo) -> Result<bool, GithubError> {
+		retrying!(self.inner.repo_exists(repo))
+	}
+
+	async fn list_milestones(&self, repo: RepoInfo) -> Result<Vec<GithubMilestone>, GithubError> {
+		retrying!(self.inner.list_milestones(repo))
+	}
+
+	async fn get_milestone(&self, repo: RepoInfo, number: u64) -> Result<GithubMilestone, GithubError> {
+		retrying!(self.inner.get_milestone(repo, number))
+	}
+
+	async fn list_milestone_issues(&self, repo: RepoInfo, milestone_number: u64) -> Result<Vec<GithubIssue>, GithubError> {
+		retrying!(self.inner.list_milestone_issues(repo, milestone_number))
+	}
+
+	async fn create_milestone(&self, repo: RepoInfo, title: &str, description: &str, closed: bool) -> Result<(), GithubError> {
+		retrying!(self.inner.create_milestone(repo, title, description, closed))
+	}
+
+	async fn update_milestone(&self, repo: RepoInfo, number: u64, description: &str, due_on: Option<jiff::Timestamp>) -> Result<(), GithubError> {
+		retrying!(self.inner.update_milestone(repo, number, description, due_on))
+	}
 }
 
 /// Cheap reachability probe: is GitHub responding? A transient error (5xx/429/network) ⇒ `false`
