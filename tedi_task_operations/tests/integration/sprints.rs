@@ -982,7 +982,7 @@ async fn test_select_down_onto_uncached_milestone_errors() {
 
 	let out = ctx.run(&["--offline", "sprints", "select", "--down"]);
 	assert!(!out.status.success(), "expected failure, stdout: {}", out.stdout);
-	assert!(out.stderr.contains("no open non-delegating issue"), "stderr: {}", out.stderr);
+	assert!(out.stderr.contains("not stored locally"), "stderr: {}", out.stderr);
 }
 
 /// A cached milestone ref expands inline in `sprints edit`; blocker edits on an issue
@@ -1408,4 +1408,74 @@ async fn test_sprint_edit_buffer_is_pulled_before_the_editor() {
 	assert!(buffer.contains("body github gained since"), "buffer must hold the current issue body: {buffer}");
 	assert!(!buffer.contains("stale body"), "buffer must not hold the superseded issue body: {buffer}");
 	assert!(buffer.contains("Late arrival"), "buffer must hold the link the milestone gained: {buffer}");
+}
+
+/// The stored selection path of the "1d" sprint.
+fn stored_path(ctx: &TestContext) -> serde_json::Value {
+	let cache = std::fs::read_to_string(ctx.xdg.cache_dir().join("sprints_selection.json")).unwrap();
+	serde_json::from_str::<serde_json::Value>(&cache).unwrap()["paths"]["1d"].clone()
+}
+
+/// An issue with no local file is unknown, not closed: selecting it fails, and the
+/// selection stays where it was.
+#[tokio::test]
+async fn test_select_onto_unfetched_issue_errors() {
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+
+	let vi10 = parse_virtual("- [ ] Issue Ten <!-- @mock_user https://github.com/o/r/issues/10 -->\n\n  # Blockers\n  - task ten\n");
+	ctx.local(&vi10, Some(Seed::new(0))).await;
+
+	seed_selection(
+		&ctx,
+		"- https://github.com/o/r/issues/10\n- https://github.com/o/r/issues/7\n",
+		&[],
+		&["https://github.com/o/r/issues/10"],
+	);
+
+	let out = ctx.run(&["--offline", "sprints", "select", "r#7"]);
+	assert!(!out.status.success(), "expected failure, stdout: {}", out.stdout);
+	assert_eq!(stored_path(&ctx), serde_json::json!(["https://github.com/o/r/issues/10"]));
+}
+
+/// A stored selection pointing at an issue with no local file is not treated as closed:
+/// reading it fails, naming the issue, and the stored selection survives.
+#[tokio::test]
+async fn test_selected_on_unfetched_issue_errors() {
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+
+	let vi10 = parse_virtual("- [ ] Issue Ten <!-- @mock_user https://github.com/o/r/issues/10 -->\n\n  # Blockers\n  - task ten\n");
+	ctx.local(&vi10, Some(Seed::new(0))).await;
+
+	seed_selection(
+		&ctx,
+		"- https://github.com/o/r/issues/10\n- https://github.com/o/r/issues/7\n",
+		&[],
+		&["https://github.com/o/r/issues/7"],
+	);
+
+	let out = ctx.run(&["--offline", "sprints", "selected", "current"]);
+	assert!(!out.status.success(), "expected failure, stdout: {}", out.stdout);
+	assert!(out.stderr.contains("o/r#7"), "stderr: {}", out.stderr);
+	assert_eq!(stored_path(&ctx), serde_json::json!(["https://github.com/o/r/issues/7"]));
+}
+
+/// A milestone whose issues aren't stored locally doesn't resolve to "nothing selected":
+/// it fails naming the issue that needs fetching.
+#[tokio::test]
+async fn test_selected_on_milestone_with_unfetched_issue_errors() {
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+
+	let vi10 = parse_virtual("- [ ] Issue Ten <!-- @mock_user https://github.com/o/r/issues/10 -->\n\n  # Blockers\n  - task ten\n");
+	ctx.local(&vi10, Some(Seed::new(0))).await;
+
+	seed_selection(
+		&ctx,
+		"- https://github.com/o/r/milestone/2\n- https://github.com/o/r/issues/10\n",
+		&[("https://github.com/o/r/milestone/2", "profitability", false, "- \\#4\n")],
+		&[],
+	);
+
+	let out = ctx.run(&["--offline", "sprints", "selected", "current"]);
+	assert!(!out.status.success(), "expected failure, stdout: {}", out.stdout);
+	assert!(out.stderr.contains("o/r#4"), "stderr: {}", out.stderr);
 }

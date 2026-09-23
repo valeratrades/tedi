@@ -83,7 +83,7 @@ impl Selected {
 			let content = std::fs::read_to_string(&urgent).ok()?;
 			let mut view = TaskView::parse(&content);
 			view.resolve_bare_refs(None);
-			if view.issue_links().iter().any(link_is_open) {
+			if view.issue_links().iter().any(|l| link_local(l).is_some_and(|vi| !vi.contents.state.is_closed())) {
 				return Some(ActiveSprint { key: URGENT_KEY.to_string(), view });
 			}
 		}
@@ -95,43 +95,32 @@ impl Selected {
 
 	/// The selected issue in the active sprint: the validated path's terminal, with a
 	/// terminal milestone auto-resolving to its first open, non-delegating issue.
-	pub fn current_link(&mut self) -> Option<IssueLink> {
-		cleanup_urgent();
-		let active = self.active()?;
-		if let Err(e) = guard_urgent(&active) {
-			panic!("{e}");
-		}
-		let path = self.validate_path(&active);
-		if path.is_empty() {
-			if self.paths.remove(&active.key).is_some() {
-				let _ = self.save(); // best-effort persistence; next load re-derives the same state
-			}
-			return None;
-		}
-		self.persist_path(&active.key, &path);
-		match path.last().expect("emptiness handled above") {
-			NodeLink::Issue(link) => Some(link.clone()),
-			NodeLink::Milestone(ml) => self.resolve_milestone(ml),
+	pub fn current_link(&mut self) -> Result<Option<IssueLink>, String> {
+		match self.current_node()? {
+			None => Ok(None),
+			Some(NodeLink::Issue(link)) => Ok(Some(link)),
+			Some(NodeLink::Milestone(ml)) => self
+				.resolve_milestone(&ml)?
+				.map(Some)
+				.ok_or_else(|| format!("no open non-delegating issue in milestone '{}'", milestone_title(&ml))),
 		}
 	}
 
 	/// The selected node itself (the validated path's terminal), *without* resolving a
 	/// milestone to a child — so `selected open` can act on the milestone as a first-class node.
-	pub fn current_node(&mut self) -> Option<NodeLink> {
+	pub fn current_node(&mut self) -> Result<Option<NodeLink>, String> {
 		cleanup_urgent();
-		let active = self.active()?;
-		if let Err(e) = guard_urgent(&active) {
-			panic!("{e}");
-		}
-		let path = self.validate_path(&active);
+		let Some(active) = self.active() else { return Ok(None) };
+		guard_urgent(&active)?;
+		let path = self.validate_path(&active)?;
 		if path.is_empty() {
 			if self.paths.remove(&active.key).is_some() {
-				let _ = self.save();
+				let _ = self.save(); // best-effort persistence; next load re-derives the same state
 			}
-			return None;
+			return Ok(None);
 		}
 		self.persist_path(&active.key, &path);
-		path.last().cloned()
+		Ok(path.last().cloned())
 	}
 
 	/// Move the selection by `delta` among the terminal's siblings (circular), skipping
@@ -140,7 +129,7 @@ impl Selected {
 		let mut sel = Self::load();
 		let active = sel.active().ok_or("No active sprint. Run `todo sprints edit 1d` first.")?;
 		guard_urgent(&active)?;
-		let mut path = sel.validate_path(&active);
+		let mut path = sel.validate_path(&active)?;
 		let Some(terminal) = path.last().cloned() else {
 			return Err("No open items in the active sprint.".into());
 		};
@@ -177,14 +166,14 @@ impl Selected {
 		let mut sel = Self::load();
 		let active = sel.active().ok_or("No active sprint. Run `todo sprints edit 1d` first.")?;
 		guard_urgent(&active)?;
-		let mut path = sel.validate_path(&active);
+		let mut path = sel.validate_path(&active)?;
 		let Some(terminal) = path.last().cloned() else {
 			return Err("No open items in the active sprint.".into());
 		};
 		let child = match &terminal {
 			NodeLink::Milestone(ml) => {
 				let title = milestone_title(ml);
-				sel.resolve_milestone(ml).ok_or_else(|| format!("no open non-delegating issue in milestone '{title}'"))?
+				sel.resolve_milestone(ml)?.ok_or_else(|| format!("no open non-delegating issue in milestone '{title}'"))?
 			}
 			NodeLink::Issue(link) => match issue_children(link).first() {
 				Some(NodeLink::Issue(l)) => l.clone(),
@@ -202,8 +191,8 @@ impl Selected {
 		let active = sel.active().ok_or("No active sprint. Run `todo sprints edit 1d` first.")?;
 		guard_urgent(&active)?;
 		sel.paths.remove(&active.key);
-		let path = sel.validate_path(&active);
-		let landing = sel.describe(path.last().ok_or("No open items in the active sprint.")?);
+		let path = sel.validate_path(&active)?;
+		let landing = sel.describe(path.last().ok_or("No open items in the active sprint.")?)?;
 		sel.persist_path(&active.key, &path);
 		Ok(landing)
 	}
@@ -213,12 +202,12 @@ impl Selected {
 		let mut sel = Self::load();
 		let active = sel.active().ok_or("No active sprint. Run `todo sprints edit 1d` first.")?;
 		guard_urgent(&active)?;
-		let mut path = sel.validate_path(&active);
+		let mut path = sel.validate_path(&active)?;
 		if path.len() <= 1 {
 			return Err("Already at the sprint root. Nothing to move up to.".into());
 		}
 		path.pop();
-		let landing = sel.describe(path.last().expect("len > 1 checked above"));
+		let landing = sel.describe(path.last().expect("len > 1 checked above"))?;
 		sel.persist_path(&active.key, &path);
 		Ok(landing)
 	}
@@ -244,7 +233,7 @@ impl Selected {
 		// fzf maps back by string equality
 		let idx = displays.iter().position(|d| *d == selected).ok_or_else(|| format!("fzf returned unknown entry: {selected}"))?;
 		let path = candidates[idx].clone();
-		let landing = sel.describe(path.last().expect("candidate paths are non-empty"));
+		let landing = sel.describe(path.last().expect("candidate paths are non-empty"))?;
 		sel.persist_path(&active.key, &path);
 		Ok(landing)
 	}
@@ -310,25 +299,29 @@ impl Selected {
 
 	/// Walk the stored path from the root, truncating at the first segment that is closed
 	/// or no longer a child of the previous level. Empty → the top open root node.
-	fn validate_path(&self, active: &ActiveSprint) -> Vec<NodeLink> {
+	/// An issue not stored locally is unknown rather than closed, so it errors instead of truncating.
+	fn validate_path(&self, active: &ActiveSprint) -> Result<Vec<NodeLink>, String> {
 		let root = active.view.nodes();
 		let stored = self.paths.get(&active.key).cloned().unwrap_or_default();
 		let mut path: Vec<NodeLink> = Vec::new();
 		let mut siblings = root.clone();
 		for url in &stored {
 			let Some(node) = NodeLink::parse(url) else { break };
-			if !siblings.contains(&node) || !self.node_is_open(&node) {
+			if !siblings.contains(&node) || !self.node_is_open(&node)? {
 				break;
 			}
 			siblings = self.children(&node);
 			path.push(node);
 		}
-		if path.is_empty()
-			&& let Some(top) = root.into_iter().find(|n| self.node_is_open(n))
-		{
-			path.push(top);
+		if path.is_empty() {
+			for node in root {
+				if self.node_is_open(&node)? {
+					path.push(node);
+					break;
+				}
+			}
 		}
-		path
+		Ok(path)
 	}
 
 	fn persist_path(&mut self, key: &str, path: &[NodeLink]) {
@@ -350,53 +343,63 @@ impl Selected {
 		}
 	}
 
-	fn node_is_open(&self, node: &NodeLink) -> bool {
+	fn node_is_open(&self, node: &NodeLink) -> Result<bool, String> {
 		match node {
-			NodeLink::Issue(link) => link_is_open(link),
+			NodeLink::Issue(link) => Ok(!load_link(link)?.contents.state.is_closed()),
 			// milestones not stored locally count as open: closed-ness is only knowable from the file
-			NodeLink::Milestone(ml) => !milestone_local(ml).is_some_and(|m| m.is_closed()),
+			NodeLink::Milestone(ml) => Ok(!milestone_local(ml).is_some_and(|m| m.is_closed())),
 		}
 	}
 
 	/// A milestone resolves to its first open, non-delegating issue; falling back to a
-	/// delegating issue is deliberately not allowed.
-	fn resolve_milestone(&self, ml: &MilestoneLink) -> Option<IssueLink> {
-		self.children(&NodeLink::Milestone(ml.clone())).into_iter().find_map(|n| match n {
-			NodeLink::Issue(l) if link_is_open(&l) && !link_delegates(&l) => Some(l),
-			_ => None,
-		})
+	/// delegating issue is deliberately not allowed. An issue not stored locally before it errors.
+	fn resolve_milestone(&self, ml: &MilestoneLink) -> Result<Option<IssueLink>, String> {
+		if milestone_local(ml).is_none() {
+			return Err(format!("milestone {} is not stored locally — run `todo sprints get/edit` online to fetch it", ml.as_str()));
+		}
+		for node in self.children(&NodeLink::Milestone(ml.clone())) {
+			if let NodeLink::Issue(l) = node
+				&& is_workable(&load_link(&l)?)
+			{
+				return Ok(Some(l));
+			}
+		}
+		Ok(None)
 	}
 
 	/// Whether `node` is a valid movement landing target; `None` means skip.
+	/// Hot-path movement must stay usable offline, so what isn't stored locally is skipped with a notice.
 	fn landing(&self, node: &NodeLink) -> Option<Landing> {
-		match node {
-			NodeLink::Issue(l) => (link_is_open(l) && !link_delegates(l)).then(|| Landing::Issue(l.clone())),
-			NodeLink::Milestone(ml) => {
-				let Some(milestone) = milestone_local(ml) else {
-					// hot-path movement must stay usable offline: skip, but tell the user
-					tracing::warn!(milestone = ml.as_str(), "skipping milestone not stored locally during selection movement");
-					eprintln!("skipping milestone {} — run `todo sprints get/edit` online to fetch it", ml.as_str());
-					return None;
-				};
-				if milestone.is_closed() {
-					return None;
-				}
-				self.resolve_milestone(ml).map(|resolved| Landing::Milestone {
-					title: milestone.identity.title.clone(),
-					resolved: Some(resolved),
-				})
-			}
-		}
+		let landing = match node {
+			NodeLink::Issue(l) => load_link(l).map(|vi| is_workable(&vi).then(|| Landing::Issue(l.clone()))),
+			NodeLink::Milestone(ml) => match milestone_local(ml) {
+				Some(milestone) if milestone.is_closed() => Ok(None),
+				_ => self.resolve_milestone(ml).map(|resolved| {
+					resolved.map(|resolved| Landing::Milestone {
+						title: milestone_title(ml),
+						resolved: Some(resolved),
+					})
+				}),
+			},
+		};
+		landing.unwrap_or_else(|e| {
+			tracing::warn!("skipping during selection movement: {e}");
+			eprintln!("skipping {e}");
+			None
+		})
 	}
 
-	fn describe(&self, node: &NodeLink) -> Landing {
-		match node {
-			NodeLink::Issue(l) => Landing::Issue(l.clone()),
+	fn describe(&self, node: &NodeLink) -> Result<Landing, String> {
+		Ok(match node {
+			NodeLink::Issue(l) => {
+				load_link(l)?;
+				Landing::Issue(l.clone())
+			}
 			NodeLink::Milestone(ml) => Landing::Milestone {
 				title: milestone_title(ml),
-				resolved: self.resolve_milestone(ml),
+				resolved: self.resolve_milestone(ml)?,
 			},
-		}
+		})
 	}
 
 	/// Every reachable node with its full path, in document order: root nodes,
@@ -553,19 +556,19 @@ fn issue_children(link: &IssueLink) -> Vec<NodeLink> {
 
 /// The locally-stored issue at `link`, if resolvable and parseable.
 pub(crate) fn link_local(link: &IssueLink) -> Option<VirtualIssue> {
-	let path = resolve(link)?;
-	let content = std::fs::read_to_string(&path).ok()?; //IGNORED_ERROR: an unreadable issue file is indistinguishable from an unresolvable link here
-	VirtualIssue::parse(&content, path).ok() //IGNORED_ERROR: same — a malformed file surfaces when it is opened, not while navigating
+	load_link(link).ok() //IGNORED_ERROR: callers treat an unknown issue as not-closed; a malformed file surfaces when it is opened
 }
 
-/// Whether an issue is resolvable locally and open.
-fn link_is_open(link: &IssueLink) -> bool {
-	link_local(link).is_some_and(|vi| !vi.contents.state.is_closed())
+/// The locally-stored issue at `link`. Not stored locally is an error: its state is unknown, not closed.
+fn load_link(link: &IssueLink) -> Result<VirtualIssue, String> {
+	let path = resolve(link).ok_or_else(|| format!("{}#{} is not stored locally — run `todo sprints get/edit` online to fetch it", link.project(), link.number()))?;
+	let content = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+	VirtualIssue::parse(&content, path).map_err(|e| e.to_string())
 }
 
-/// Whether an issue's current (deepest) blocker delegates to another issue.
-fn link_delegates(link: &IssueLink) -> bool {
-	link_local(link).is_some_and(|vi| vi.contents.blockers.deepest_issue_ref().is_some())
+/// Open, and its current (deepest) blocker doesn't delegate to another issue.
+fn is_workable(vi: &VirtualIssue) -> bool {
+	!vi.contents.state.is_closed() && vi.contents.blockers.deepest_issue_ref().is_none()
 }
 
 /// Display string for a link: local relative path if resolvable, else `owner/repo#number`.

@@ -383,20 +383,20 @@ pub async fn select(pattern: Option<String>, next: bool, prev: bool, down: bool,
 		Landing::Milestone { title, resolved: Some(link) } => println!("Selected milestone: {title} → {}", issue_key(&link)),
 		Landing::Milestone { title, resolved: None } => println!("Selected milestone: {title} (no workable issue)"),
 	}
-	retrack_if_changed(yes).await;
+	retrack_if_changed(yes).await?;
 	Ok(())
 }
 /// Print the active sprint's current selection (auto-defaulting to the top open item).
 pub async fn selected_show(yes: bool) -> Result<()> {
 	let (link, _) = selected_link_path()?;
 	println!("Selected: {}", issue_key(&link));
-	retrack_if_changed(yes).await;
+	retrack_if_changed(yes).await?;
 	Ok(())
 }
 /// `sprints selected open` — edit the selected node. A milestone terminal opens the
 /// milestone's own file (synced as a milestone); an issue terminal opens the issue.
 pub async fn selected_open(offline: bool, yes: bool) -> Result<()> {
-	match Selected::load().current_node() {
+	match Selected::load().current_node().map_err(|e| eyre!("{e}"))? {
 		Some(NodeLink::Milestone(ml)) => {
 			let milestone = Local::load_milestone(&ml, &FsReader)?.ok_or_else(|| eyre!("milestone {} is not stored locally", ml.as_str()))?;
 			modify_and_sync_milestone(milestone, offline, MilestoneModifier::Editor, SyncOptions::default()).await?;
@@ -409,7 +409,7 @@ pub async fn selected_open(offline: bool, yes: bool) -> Result<()> {
 		}
 		None => bail!("No selected issue. Edit a sprint (`todo sprints edit 1d`) or the urgent list first."),
 	}
-	retrack_if_changed(yes).await;
+	retrack_if_changed(yes).await?;
 	Ok(())
 }
 /// `sprints selected list` — print the active sprint's `# Must` strip (one box per item plus
@@ -663,7 +663,7 @@ async fn modify_selected(offline: bool, modifier: Modifier, yes: bool) -> Result
 	if let Some(output) = result.output {
 		println!("{output}");
 	}
-	retrack_if_changed(yes).await;
+	retrack_if_changed(yes).await?;
 	Ok(())
 }
 
@@ -672,6 +672,7 @@ fn selected_link_path() -> Result<(IssueLink, PathBuf)> {
 	let mut selected = Selected::load();
 	let link = selected
 		.current_link()
+		.map_err(|e| eyre!("{e}"))?
 		.ok_or_else(|| eyre!("No selected issue. Edit a sprint (`todo sprints edit 1d`) or the urgent list first."))?;
 	let path = Local::find_by_number(link.project(), link.number(), FsReader).ok_or_else(|| eyre!("issue #{} not found locally", link.number()))?;
 	Ok((link, path))
@@ -708,18 +709,18 @@ fn issue_key(link: &IssueLink) -> String {
 
 /// After a selection/edit, restart the Clockify timer on the newly-selected issue if it
 /// changed (and stop entirely if nothing is selected). No-op when not tracking.
-async fn retrack_if_changed(yes: bool) {
-	let Some(tracked) = clockify_tracking::tracked_issue() else { return };
+async fn retrack_if_changed(yes: bool) -> Result<()> {
+	let Some(tracked) = clockify_tracking::tracked_issue() else { return Ok(()) };
 
 	let mut selected = Selected::load();
-	let Some(link) = selected.current_link() else {
+	let Some(link) = selected.current_link().map_err(|e| eyre!("{e}"))? else {
 		let _ = clockify_tracking::stop_current_tracking(None).await;
 		let _ = clockify_tracking::set_tracked_issue(None);
-		return;
+		return Ok(());
 	};
 	let key = issue_key(&link);
 	if key == tracked {
-		return;
+		return Ok(());
 	}
 
 	let _ = clockify_tracking::stop_current_tracking(None).await;
@@ -735,6 +736,7 @@ async fn retrack_if_changed(yes: bool) {
 		}
 	}
 	let _ = clockify_tracking::set_tracked_issue(Some(&key));
+	Ok(())
 }
 
 #[cfg(test)]
