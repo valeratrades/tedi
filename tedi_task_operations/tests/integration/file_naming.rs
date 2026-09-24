@@ -11,7 +11,7 @@ use v_fixtures::FixtureRenderer;
 
 use crate::{
 	FixtureIssuesExt as _,
-	common::{TestContext, are_you_sure::UnsafePathExt, parse_virtual},
+	common::{Seed, TestContext, are_you_sure::UnsafePathExt, parse_virtual},
 };
 
 #[tokio::test]
@@ -170,4 +170,22 @@ async fn test_duplicate_reference_to_existing_issue_succeeds() {
 		"Should succeed and remove issue file after duplicate marking. stderr: {}",
 		out.stderr
 	);
+}
+
+/// A synced issue sweeps away its own pre-creation file, which carries only the title. Two issues
+/// sharing a title must not read as each other's leftover.
+#[tokio::test]
+async fn test_same_title_issues_keep_both_files() {
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+	ctx.remote(&parse_virtual("- [ ] same <!-- @mock_user https://github.com/o/r/issues/1 -->\n"), Some(Seed::new(15)));
+	ctx.remote(&parse_virtual("- [ ] same <!-- @mock_user https://github.com/o/r/issues/2 -->\n"), Some(Seed::new(15)));
+
+	for n in [1, 2] {
+		let out = ctx.open_url(("o", "r").into(), n).run();
+		assert!(out.status.success(), "stderr: {}", out.stderr);
+	}
+
+	for n in [1, 2] {
+		assert!(ctx.flat_issue_path(("o", "r").into(), n, "same").exists(), "o/r#{n}'s file was swept as the other's leftover");
+	}
 }
