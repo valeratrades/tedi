@@ -1041,7 +1041,13 @@ impl VirtualIssue {
 	pub fn parse(content: &str, path: PathBuf) -> Result<Self, ParseError> {
 		let ctx = ParseContext::new(content.to_owned(), path);
 		let events = crate::Events::parse(content);
-		Self::parse_from_events(&events, &ctx)
+		let item_lines = tedi_md::item_source_lines(content);
+		assert_eq!(
+			item_lines.len(),
+			events.iter().filter(|e| matches!(e, crate::OwnedEvent::Start(crate::OwnedTag::Item))).count(),
+			"Events::parse must keep every list item"
+		);
+		Self::parse_from_events_inner(&events, &ctx, &item_lines, 0, false)
 	}
 
 	/// Parse a VirtualIssue from a cmark event stream.
@@ -1049,12 +1055,9 @@ impl VirtualIssue {
 	/// Expects: `Start(List) > Start(Item) > ... > End(Item) > End(List)`
 	/// The item contains: CheckBox, title text, InlineHtml marker, body events,
 	/// comment markers (Html), blocker heading+list, child issue lists.
-	fn parse_from_events(events: &[crate::OwnedEvent], ctx: &ParseContext) -> Result<Self, ParseError> {
-		Self::parse_from_events_inner(events, ctx, false)
-	}
-
-	fn parse_from_events_inner(events: &[crate::OwnedEvent], ctx: &ParseContext, default_pending: bool) -> Result<Self, ParseError> {
-		let (title, pos) = TitleLine::decode(events, ctx, default_pending)?;
+	/// `item_ordinal`: index of this slice's first `Start(Item)` among all of the source's items.
+	fn parse_from_events_inner(events: &[crate::OwnedEvent], ctx: &ParseContext, item_lines: &[&str], item_ordinal: usize, default_pending: bool) -> Result<Self, ParseError> {
+		let (title, pos) = TitleLine::decode(events, ctx, item_lines[item_ordinal], default_pending)?;
 		let selector = title.marker.selector(&title.title);
 
 		let seg = Self::segment_item(events, pos, ctx)?;
@@ -1073,8 +1076,9 @@ impl VirtualIssue {
 		// descend recursively so any embedded content a child item does hold is captured — production
 		// buffers hold only links, but test fixtures and hand-authored files may embed child bodies.
 		let mut children = HashMap::new();
-		for (child_events, children_default_pending) in seg.child_slices {
-			let child = Self::parse_from_events_inner(&child_events, ctx, children_default_pending)?;
+		for (child_events, child_offset, children_default_pending) in seg.child_slices {
+			let child_ordinal = item_ordinal + events[..child_offset].iter().filter(|e| matches!(e, crate::OwnedEvent::Start(crate::OwnedTag::Item))).count();
+			let child = Self::parse_from_events_inner(&child_events, ctx, item_lines, child_ordinal, children_default_pending)?;
 			children.insert(child.selector, child);
 		}
 
@@ -1112,7 +1116,7 @@ impl VirtualIssue {
 		use super::{OwnedEvent, OwnedTag, OwnedTagEnd};
 
 		let mut comment_spans: Vec<(CommentIdentity, Vec<OwnedEvent>)> = Vec::new();
-		let mut child_slices: Vec<(Vec<OwnedEvent>, bool)> = Vec::new();
+		let mut child_slices: Vec<(Vec<OwnedEvent>, usize, bool)> = Vec::new();
 		let mut body_events: Vec<OwnedEvent> = Vec::new();
 		let mut current_comment_events: Vec<OwnedEvent> = Vec::new();
 		let mut current_comment_meta: Option<CommentIdentity> = None;
@@ -1327,7 +1331,7 @@ impl VirtualIssue {
 								child_events.push(OwnedEvent::End(OwnedTagEnd::List(false)));
 
 								if children_default_pending || Self::first_item_marked(&child_events) {
-									child_slices.push((child_events, children_default_pending));
+									child_slices.push((child_events, pos + item_start, children_default_pending));
 								} else {
 									body_items.extend(list_events[item_start..item_end].iter().cloned());
 								}
@@ -1581,7 +1585,9 @@ impl TitleLine {
 
 	/// Parse the title line from an item event stream. Returns the parsed line and the
 	/// position of the first body event inside the item.
-	fn decode(events: &[crate::OwnedEvent], ctx: &ParseContext, default_pending: bool) -> Result<(Self, usize), ParseError> {
+	/// `source_line`: the item's line as written — the title is read from it, since the inline events
+	/// have already interpreted any markdown a plain-text Github title happens to contain.
+	fn decode(events: &[crate::OwnedEvent], ctx: &ParseContext, source_line: &str, default_pending: bool) -> Result<(Self, usize), ParseError> {
 		use crate::{OwnedEvent, OwnedTag, OwnedTagEnd};
 
 		let mut pos = 0;
@@ -1605,40 +1611,34 @@ impl TitleLine {
 			_ => return Err(ParseError::invalid_title(ctx.named_source(), ctx.line_span(1), "missing checkbox".into())),
 		};
 
-		// Collect text before the issue marker InlineHtml.
-		// A child item renders its title as a markdown link (`[Title](./rel)`) so `gf` works;
-		// we unwrap the Link and keep its inner text as the title (the path is navigational).
-		let mut title_text = String::new();
+		// Walk past the title's inline events to the marker; a child's title renders as a link to its file.
+		let mut link_dest = None;
 		while pos < events.len() {
 			match &events[pos] {
-				OwnedEvent::InlineHtml(_) => break,
-				OwnedEvent::Text(t) => {
-					title_text.push_str(t);
+				OwnedEvent::InlineHtml(html) if html.trim_start().starts_with("<!--") => break,
+				OwnedEvent::Start(OwnedTag::Link { dest_url, .. }) => {
+					link_dest = Some(dest_url.clone());
 					pos += 1;
 				}
-				OwnedEvent::Code(c) => {
-					title_text.push('`');
-					title_text.push_str(c);
-					title_text.push('`');
-					pos += 1;
-				}
-				OwnedEvent::Start(OwnedTag::Link { .. }) | OwnedEvent::End(OwnedTagEnd::Link) => {
-					pos += 1;
-				}
-				OwnedEvent::Start(OwnedTag::Strong) | OwnedEvent::End(OwnedTagEnd::Strong) => {
-					title_text.push_str("**");
-					pos += 1;
-				}
-				OwnedEvent::Start(OwnedTag::Emphasis) | OwnedEvent::End(OwnedTagEnd::Emphasis) => {
-					title_text.push('*');
-					pos += 1;
-				}
-				OwnedEvent::Start(OwnedTag::Strikethrough) | OwnedEvent::End(OwnedTagEnd::Strikethrough) => {
-					title_text.push_str("~~");
-					pos += 1;
-				}
+				OwnedEvent::Text(_)
+				| OwnedEvent::Code(_)
+				| OwnedEvent::InlineHtml(_)
+				| OwnedEvent::End(OwnedTagEnd::Link)
+				| OwnedEvent::Start(OwnedTag::Strong | OwnedTag::Emphasis | OwnedTag::Strikethrough)
+				| OwnedEvent::End(OwnedTagEnd::Strong | OwnedTagEnd::Emphasis | OwnedTagEnd::Strikethrough) => pos += 1,
 				_ => break,
 			}
+		}
+		let after_checkbox = source_line.split_once(']').expect("the item's events opened with a checkbox").1;
+		let after_checkbox = after_checkbox.strip_prefix(' ').unwrap_or(after_checkbox);
+		let mut title_text = match &events.get(pos) {
+			Some(OwnedEvent::InlineHtml(html)) => after_checkbox[..after_checkbox.find(html.as_str()).expect("the marker's text is on its own line")].to_string(),
+			_ => after_checkbox.to_string(),
+		};
+		if let Some(dest) = link_dest {
+			let close = title_text.rfind(&format!("]({dest})")).expect("the link's text is on its own line");
+			let open = title_text[..close].find('[').expect("a link opens before it closes");
+			title_text = format!("{}{}", &title_text[..open], &title_text[open + 1..close]);
 		}
 
 		// Parse the InlineHtml marker, or fall back to `!n` shorthand embedded in title text.
@@ -1717,8 +1717,8 @@ struct ItemSegments {
 	/// Body span first (identity `Body`), then any additional comment spans.
 	comments: Vec<(CommentIdentity, Vec<crate::OwnedEvent>)>,
 	blocker_events: Vec<crate::OwnedEvent>,
-	/// Child item slices (each already wrapped in a List), with their default-pending flag.
-	child_slices: Vec<(Vec<crate::OwnedEvent>, bool)>,
+	/// Child item slices (each already wrapped in a List), with their offset in the parent's events and default-pending flag.
+	child_slices: Vec<(Vec<crate::OwnedEvent>, usize, bool)>,
 	select_blockers: bool,
 }
 

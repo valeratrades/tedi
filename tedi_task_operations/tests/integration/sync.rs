@@ -292,31 +292,41 @@ async fn test_opening_a_duplicate_errors_instead_of_panicking() {
 	);
 }
 
-/// A Github title is plain text, but the title line is markdown: emphasis in it must not cost us
-/// the marker that follows.
+/// A Github title is plain text, but the title line is markdown: nothing markdown would interpret
+/// (emphasis, escapes, entities, inline html) may change it or cost us the marker that follows.
 #[tokio::test]
 async fn test_markdown_in_remote_title_roundtrips() {
 	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 
-	let remote_vi = parse_virtual("- [ ] placeholder <!-- @mock_user https://github.com/o/r/issues/1 -->\n  body\n");
+	let remote_vi = parse_virtual("- [ ] placeholder <!-- @mock_user https://github.com/o/r/issues/1 -->\n  body\n\n  - [ ] child <!-- @mock_user https://github.com/o/r/issues/2 -->\n");
 	ctx.remote(&remote_vi, Some(Seed::new(15)));
-	ctx.set_remote_title(("o", "r").into(), 1, "go after the **entire** body, `code` too");
+	let title = r"go after the **entire** body, `code` too \*x\* &amp; <b>y</b> [z] _w_";
+	ctx.set_remote_title(("o", "r").into(), 1, title);
+	ctx.set_remote_title(("o", "r").into(), 2, title);
 
-	let out = ctx.open_url(("o", "r").into(), 1).run();
-	assert!(out.status.success(), "stderr: {}", out.stderr);
-	let reopen = ctx.open_url(("o", "r").into(), 1).run();
-	assert!(reopen.status.success(), "reopen must parse the title line we wrote. stderr: {}", reopen.stderr);
-	let dir = ctx.flat_issue_path(("o", "r").into(), 1, "x").parent().unwrap().to_path_buf();
-	let file = std::fs::read_dir(&dir)
+	for _ in 0..2 {
+		let out = ctx.open_url(("o", "r").into(), 1).run();
+		assert!(out.status.success(), "stderr: {}", out.stderr);
+	}
+
+	let issues_dir = ctx.flat_issue_path(("o", "r").into(), 1, "x").parent().unwrap().to_path_buf();
+	let parent_dir = std::fs::read_dir(&issues_dir)
 		.unwrap()
 		.map(|e| e.unwrap().path())
-		.find(|p| p.file_name().unwrap().to_string_lossy().starts_with("1_-_"))
+		.find(|p| p.is_dir() && p.file_name().unwrap().to_string_lossy().starts_with("1_-_"))
 		.unwrap();
-	let title_line = read_issue_file(&file).lines().next().unwrap().to_string();
-	assert!(
-		title_line.contains("go after the **entire** body, `code` too <!--"),
-		"title must read back as Github holds it. Got: {title_line}"
-	);
+	let main = read_issue_file(&parent_dir.join("__main__.md"));
+	let child_file = std::fs::read_dir(&parent_dir)
+		.unwrap()
+		.map(|e| e.unwrap().path())
+		.find(|p| p.file_name().unwrap().to_string_lossy().starts_with("2_-_"))
+		.unwrap();
+	let child = read_issue_file(&child_file);
+	for (what, line) in [("parent", main.lines().next().unwrap()), ("child", child.lines().next().unwrap())] {
+		assert!(line.contains(&format!("{title} <!--")), "{what}'s title must read back as Github holds it. Got: {line}");
+	}
+	let link_line = main.lines().find(|l| l.contains("issues/2")).unwrap();
+	assert!(link_line.contains(&format!("[{title}](")), "child link must carry the title verbatim. Got: {link_line}");
 }
 
 /// The conflict file is per owner, so it can sit resolved while a different issue of that owner

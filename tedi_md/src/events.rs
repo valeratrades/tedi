@@ -773,6 +773,16 @@ fn item_has_checkbox(item_events: &[OwnedEvent]) -> bool {
 	matches!(item_events.get(i), Some(OwnedEvent::CheckBox(_)))
 }
 
+/// The source line each list item opens on, in document order — `Events::parse` never adds or drops
+/// a `Start(Item)`, so the n-th one here is the n-th one there.
+pub fn item_source_lines(content: &str) -> Vec<&str> {
+	pulldown_cmark::Parser::new_ext(content, parser_options())
+		.into_offset_iter()
+		.filter(|(e, _)| matches!(e, pulldown_cmark::Event::Start(pulldown_cmark::Tag::Item)))
+		.map(|(_, range)| content[range.start..].trim_start().lines().next().expect("an item spans at least its own line")) // under tab indent the range can open on the preceding newline
+		.collect()
+}
+
 fn parser_options() -> pulldown_cmark::Options {
 	pulldown_cmark::Options::ENABLE_TASKLISTS | pulldown_cmark::Options::ENABLE_STRIKETHROUGH
 }
