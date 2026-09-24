@@ -1034,6 +1034,41 @@ async fn test_milestone_edit_expands_milestone_ref_and_syncs_inner_blockers() {
 	");
 }
 
+/// Issues fold, wherever they sit; an inlined milestone stays open so its issue titles read as its outline.
+#[tokio::test]
+async fn test_sprint_folds_issues_not_milestones() {
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+
+	let vi = parse_virtual("- [ ] Inner Issue <!-- @mock_user https://github.com/o/r/issues/20 -->\n\tinner body\n");
+	ctx.local(&vi, Some(Seed::new(0))).await;
+	seed_selection(
+		&ctx,
+		"",
+		&[("https://github.com/o/r/milestone/3", "big_feature", false, "- https://github.com/o/r/issues/20")],
+		&[],
+	);
+
+	let buffer = ctx.xdg.inner.root.join("expanded_buffer.md");
+	let capture = buffer.clone();
+	let (out, _) = ctx.milestone_edit_with_changes("# Sprint\n\n- https://github.com/o/r/milestone/3\n", move |tmp_path| {
+		std::fs::copy(tmp_path, &capture).unwrap();
+	});
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+
+	let rendered = std::fs::read_to_string(&buffer).unwrap();
+	let milestone_path = rendered.split_once("](").unwrap().1.split_once(')').unwrap().0.to_string();
+	insta::assert_snapshot!(rendered.replace(&milestone_path, "<milestone_path>"), @"
+	# Must
+
+	# Sprint
+
+	- [ ] [big_feature](<milestone_path>) <!-- https://github.com/o/r/milestone/3 -->
+	  - [ ] Inner Issue <!-- @mock_user https://github.com/o/r/issues/20 --> <!--{{{1-->
+	    inner body
+	    <!--}}}1-->
+	");
+}
+
 /// One issue rendered twice in the same buffer (held by the sprint *and* by an inlined milestone):
 /// editing either copy commits, and the next open pulls both copies to the new state.
 #[tokio::test]

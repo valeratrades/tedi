@@ -87,7 +87,7 @@ pub async fn expand_and_refresh(content: &str, pull: bool) -> Result<String> {
 		if pull {
 			pull_issue(&mut issue, MergeMode::Normal).await?;
 		}
-		expansions.insert(key, issue.to_string());
+		expansions.insert(key, folded(&issue.to_string()));
 	}
 
 	for (url, milestone, inner) in milestones {
@@ -103,59 +103,19 @@ pub async fn expand_and_refresh(content: &str, pull: bool) -> Result<String> {
 		expansions.insert(url, block);
 	}
 
-	Ok(fold_top_level(&doc.render(&expansions)))
+	Ok(doc.render(&expansions))
 }
 
-/// Wrap each top-level component of a rendered view in a vim fold, title line included, so the
-/// whole sprint collapses to its title lines (`zM`) and back (`zR`) with no plugin.
-/// Only the first level is emitted here; deeper folds come from the issues' own markers.
-fn fold_top_level(rendered: &str) -> String {
+/// An issue's block as shown in a view: behind a first-level vim fold, title line included, so a
+/// sprint reads as its outline until opened. Presentation only — `TaskView::parse` strips it.
+fn folded(block: &str) -> String {
+	let block = block.trim_end();
+	let Some((title, rest)) = block.split_once('\n') else {
+		return block.to_string(); // a fold over the title alone would only hide it
+	};
 	let start = tedi_core::Marker::FoldStart(tedi_core::FoldLevel::First).encode();
 	let end = tedi_core::Marker::FoldEnd(tedi_core::FoldLevel::First).encode();
-	let lines: Vec<&str> = rendered.lines().collect();
-
-	let mut out = String::with_capacity(rendered.len());
-	let mut push = |line: &str| {
-		out.push_str(line);
-		out.push('\n');
-	};
-
-	let mut i = 0;
-	while i < lines.len() {
-		if !lines[i].starts_with("- ") {
-			push(lines[i]);
-			i += 1;
-			continue;
-		}
-
-		let mut block_end = i + 1;
-		while block_end < lines.len() && !lines[block_end].starts_with("- ") && !lines[block_end].starts_with('#') {
-			block_end += 1;
-		}
-		// the blank separator before the next component belongs between the folds, not inside one
-		let mut content_end = block_end;
-		while content_end > i + 1 && lines[content_end - 1].trim().is_empty() {
-			content_end -= 1;
-		}
-
-		if content_end == i + 1 {
-			// single-line component — a fold over it would only hide it
-			for line in &lines[i..block_end] {
-				push(line);
-			}
-		} else {
-			push(&format!("{} {start}", lines[i]));
-			for line in &lines[i + 1..content_end] {
-				push(line);
-			}
-			push(&format!("  {end}"));
-			for line in &lines[content_end..block_end] {
-				push(line);
-			}
-		}
-		i = block_end;
-	}
-	out.trim_end_matches('\n').to_string()
+	format!("{title} {start}\n{rest}\n  {end}")
 }
 
 /// Fetch each milestone (deduped) and store it as a durable local file, along with its
@@ -737,44 +697,4 @@ async fn retrack_if_changed(yes: bool) -> Result<()> {
 	}
 	let _ = clockify_tracking::set_tracked_issue(Some(&key));
 	Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-	use super::*;
-
-	const RENDERED: &str = "\
-# important today
-
-- [ ] First <!-- @u https://github.com/o/r/issues/1 -->
-  # Blockers
-  - task A
-
-- [ ] Second <!-- @u https://github.com/o/r/issues/2 -->
-
-- [ ] third_repo
-  - [ ] Nested <!-- @u https://github.com/o/r/issues/3 -->";
-
-	#[test]
-	fn fold_top_level_wraps_multiline_components_only() {
-		insta::assert_snapshot!(fold_top_level(RENDERED), @"
-		# important today
-
-		- [ ] First <!-- @u https://github.com/o/r/issues/1 --> <!--{{{1-->
-		  # Blockers
-		  - task A
-		  <!--}}}1-->
-
-		- [ ] Second <!-- @u https://github.com/o/r/issues/2 -->
-
-		- [ ] third_repo <!--{{{1-->
-		  - [ ] Nested <!-- @u https://github.com/o/r/issues/3 -->
-		  <!--}}}1-->
-		");
-	}
-
-	#[test]
-	fn folds_never_reach_the_stored_form() {
-		assert_eq!(TaskView::parse(&fold_top_level(RENDERED)).serialize(), TaskView::parse(RENDERED).serialize());
-	}
 }
