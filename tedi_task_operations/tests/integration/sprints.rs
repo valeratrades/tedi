@@ -1530,3 +1530,44 @@ async fn test_selected_on_milestone_with_unfetched_issue_errors() {
 	assert!(!out.status.success(), "expected failure, stdout: {}", out.stdout);
 	assert!(out.stderr.contains("o/r#4"), "stderr: {}", out.stderr);
 }
+
+/// Github lists every issue carrying the milestone field, closed-as-duplicate ones included. Those
+/// aren't tracked, so folding them into the body re-lists a dead link on every sync.
+#[tokio::test]
+async fn test_milestone_does_not_fold_in_assigned_duplicates() {
+	use tedi_task_operations::{RepoInfo, local::Local};
+
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+	ctx.set_issues_dir_override();
+	ctx.xdg.write_config("config.toml", "github_token = \"test_token\"\n\n[milestones]\nurl = \"o/r\"\n");
+
+	let repo = RepoInfo::new("o", "r");
+	let (title, number) = ("1d", 7u64);
+	let body = "- https://github.com/o/r/issues/11";
+
+	std::fs::write(
+		&ctx.mock_state_path,
+		serde_json::json!({
+			"milestones": [{
+				"owner": "o", "repo": "r", "number": number, "title": title, "state": "open",
+				"description": body,
+				"due_on": "2099-01-01T00:00:00Z",
+				"updated_at": "2001-09-11T12:00:00Z",
+			}],
+			"issues": [
+				{ "owner": "o", "repo": "r", "number": 10, "title": "dup", "state": "closed", "state_reason": "duplicate", "milestone": number },
+				{ "owner": "o", "repo": "r", "number": 11, "title": "orig", "state": "open", "milestone": number },
+			],
+		})
+		.to_string(),
+	)
+	.unwrap();
+
+	let out = ctx.milestone_client_edit(&["--mock", "sprints", "edit", "1d"], None, None);
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+	assert!(!out.stderr.contains("duplicate"), "the duplicate was reached through the milestone: {}", out.stderr);
+
+	let local_after = std::fs::read_to_string(Local::milestone_file_path(repo, number, title)).unwrap();
+	assert!(local_after.contains("issues/11"), "{local_after}");
+	assert!(!local_after.contains("issues/10"), "the duplicate was folded into the body: {local_after}");
+}

@@ -104,6 +104,7 @@ impl MockGithubClient {
 				let state_str = issue.get("state").and_then(|v| v.as_str()).unwrap_or("open");
 				let state_reason = issue.get("state_reason").and_then(|v| v.as_str()).map(|s| s.to_string());
 				let owner_login = issue.get("owner_login").and_then(|v| v.as_str()).unwrap_or("mock_user");
+				let milestone = issue.get("milestone").and_then(|v| v.as_u64());
 
 				let labels: Vec<String> = issue
 					.get("labels")
@@ -134,6 +135,7 @@ impl MockGithubClient {
 					description_timestamp,
 					labels_timestamp,
 					state_timestamp,
+					milestone,
 				};
 
 				self.issues.lock().unwrap().entry(key).or_default().insert(number, issue_data);
@@ -238,6 +240,7 @@ impl MockGithubClient {
 			description_timestamp: timestamp,
 			labels_timestamp: timestamp,
 			state_timestamp: timestamp,
+			milestone: None,
 		};
 
 		let mut issues = self.issues.lock().unwrap();
@@ -392,6 +395,7 @@ struct MockIssueData {
 	labels_timestamp: Option<jiff::Timestamp>,
 	/// Timestamp for state changes (open/closed)
 	state_timestamp: Option<jiff::Timestamp>,
+	milestone: Option<u64>,
 }
 
 /// Internal representation of a milestone in the mock
@@ -652,6 +656,7 @@ impl GithubClient for MockGithubClient {
 			description_timestamp: now,
 			labels_timestamp: now,
 			state_timestamp: now,
+			milestone: None,
 		};
 
 		let mut issues = self.issues.lock().unwrap();
@@ -797,6 +802,9 @@ impl GithubClient for MockGithubClient {
 		let repo_name = repo.repo();
 		tracing::info!(target: "mock_github", owner, repo_name, issue_number, ?milestone, "set_issue_milestone");
 		self.log_call(&format!("set_issue_milestone({owner}, {repo_name}, {issue_number}, {milestone:?})"));
+		if let Some(issue) = self.issues.lock().unwrap().get_mut(&RepoKey::new(owner, repo_name)).and_then(|m| m.get_mut(&issue_number)) {
+			issue.milestone = milestone;
+		}
 		Ok(())
 	}
 
@@ -835,10 +843,14 @@ impl GithubClient for MockGithubClient {
 			.ok_or_else(|| GithubError::new_other(format!("mock has no milestone #{number}")))
 	}
 
-	// Assignments aren't tracked in the mock; hosted issues come from the milestone description body.
-	async fn list_milestone_issues(&self, _repo: RepoInfo, milestone_number: u64) -> Result<Vec<GithubIssue>, GithubError> {
+	async fn list_milestone_issues(&self, repo: RepoInfo, milestone_number: u64) -> Result<Vec<GithubIssue>, GithubError> {
 		self.log_call(&format!("list_milestone_issues({milestone_number})"));
-		Ok(Vec::new())
+		let key = RepoKey::new(repo.owner().expect("github repo"), repo.repo());
+		let issues = self.issues.lock().unwrap();
+		Ok(issues
+			.get(&key)
+			.map(|m| m.values().filter(|i| i.milestone == Some(milestone_number)).map(|i| self.convert_issue_data(i)).collect())
+			.unwrap_or_default())
 	}
 
 	async fn create_milestone(&self, _repo: RepoInfo, title: &str, _description: &str, _closed: bool) -> Result<(), GithubError> {
