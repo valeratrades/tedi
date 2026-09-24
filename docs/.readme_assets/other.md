@@ -2,7 +2,7 @@
 ### Vim Fold Markers
 Needs `foldmethod=marker` on markdown buffers.
 
-Sprint views wrap each top-level component in a `{{{1`/`}}}1` fold, so `zM` collapses the sprint down to its title lines and `zR` brings the contents back.
+Sprint views fold every multi-line component at level `base + depth` (base: milestone 1, category group 1, issue 3; depth: folded components around it). With `foldenable` and `foldlevel=2`, a sprint opens with its milestones and groups expanded and its issues closed.
 
 Closed issues/sub-issues wrap their content in vim fold markers using `{{{always` suffix (nested one level deeper inside a sprint).
 To auto-close these folds in nvim, add:
