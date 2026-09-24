@@ -57,7 +57,7 @@ pub async fn expand_and_refresh(content: &str, pull: bool) -> Result<String> {
 		links.extend(inner.issue_links());
 	}
 
-	let mut expansions: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+	let mut expansions: std::collections::HashMap<String, tedi_core::Expansion> = std::collections::HashMap::new();
 	for link in &links {
 		let key = link.to_string();
 		if expansions.contains_key(&key) {
@@ -87,7 +87,7 @@ pub async fn expand_and_refresh(content: &str, pull: bool) -> Result<String> {
 		if pull {
 			pull_issue(&mut issue, MergeMode::Normal).await?;
 		}
-		expansions.insert(key, folded(&issue.to_string()));
+		expansions.insert(key, tedi_core::Expansion::Issue(issue.to_string()));
 	}
 
 	for (url, milestone, inner) in milestones {
@@ -95,27 +95,11 @@ pub async fn expand_and_refresh(content: &str, pull: bool) -> Result<String> {
 		// markdown-link title → `gf`-jumpable to the milestone's own local file from the edit buffer;
 		// the marker still carries identity, so this collapses back to the bare URL on save.
 		let abspath = Local::milestone_file_path(milestone.identity.link.repo_info(), milestone.number(), &milestone.identity.title);
-		let mut block = format!("- [{checkbox}] [{}]({}) <!-- {url} -->\n", milestone.identity.title, abspath.display());
-		let inner_rendered = inner.render(&expansions);
-		if !inner_rendered.trim().is_empty() {
-			tedi_md::indent_into(&mut block, &inner_rendered, "  ");
-		}
-		expansions.insert(url, block);
+		let head = format!("- [{checkbox}] [{}]({}) <!-- {url} -->", milestone.identity.title, abspath.display());
+		expansions.insert(url, tedi_core::Expansion::Milestone { head, body: inner });
 	}
 
 	Ok(doc.render(&expansions))
-}
-
-/// An issue's block as shown in a view: behind a first-level vim fold, title line included, so a
-/// sprint reads as its outline until opened. Presentation only — `TaskView::parse` strips it.
-fn folded(block: &str) -> String {
-	let block = block.trim_end();
-	let Some((title, rest)) = block.split_once('\n') else {
-		return block.to_string(); // a fold over the title alone would only hide it
-	};
-	let start = tedi_core::Marker::FoldStart(tedi_core::FoldLevel::First).encode();
-	let end = tedi_core::Marker::FoldEnd(tedi_core::FoldLevel::First).encode();
-	format!("{title} {start}\n{rest}\n  {end}")
 }
 
 /// Fetch each milestone (deduped) and store it as a durable local file, along with its

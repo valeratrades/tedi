@@ -264,9 +264,9 @@ async fn test_must_section_materialized_when_absent() {
 
 	# important today
 
-	- [ ] My Issue <!-- @mock_user https://github.com/o/r/issues/10 --> <!--{{{1-->
+	- [ ] My Issue <!-- @mock_user https://github.com/o/r/issues/10 --> <!--{{{3-->
 	  body
-	  <!--}}}1-->
+	  <!--}}}3-->
 	");
 	insta::assert_snapshot!(milestone, @"
 	# Must
@@ -300,9 +300,9 @@ async fn test_partial_state_survives_sprint_edit() {
 	insta::assert_snapshot!(std::fs::read_to_string(&buffer).unwrap(), @r"
 	# Must
 
-	- \[.] Half Done <!-- @mock_user https://github.com/o/r/issues/10 --> <!--{{{1-->
+	- \[.] Half Done <!-- @mock_user https://github.com/o/r/issues/10 --> <!--{{{3-->
 	  body
-	  <!--}}}1-->
+	  <!--}}}3-->
 	");
 	insta::assert_snapshot!(milestone, @"
 	# Must
@@ -1034,23 +1034,26 @@ async fn test_milestone_edit_expands_milestone_ref_and_syncs_inner_blockers() {
 	");
 }
 
-/// Issues fold, wherever they sit; an inlined milestone stays open so its issue titles read as its outline.
+/// A component's fold level is its kind's base plus the number of folded components around it.
 #[tokio::test]
-async fn test_sprint_folds_issues_not_milestones() {
+async fn test_sprint_fold_levels_follow_nesting() {
 	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 
-	let vi = parse_virtual("- [ ] Inner Issue <!-- @mock_user https://github.com/o/r/issues/20 -->\n\tinner body\n");
-	ctx.local(&vi, Some(Seed::new(0))).await;
+	for (n, title) in [(10, "Grouped Issue"), (11, "Top Issue"), (20, "Inner Issue")] {
+		let vi = parse_virtual(&format!("- [ ] {title} <!-- @mock_user https://github.com/o/r/issues/{n} -->\n\t{title} body\n"));
+		ctx.local(&vi, Some(Seed::new(0))).await;
+	}
 	seed_selection(
 		&ctx,
 		"",
-		&[("https://github.com/o/r/milestone/3", "big_feature", false, "- https://github.com/o/r/issues/20")],
+		&[("https://github.com/o/r/milestone/3", "big_feature", false, "- category\n  - https://github.com/o/r/issues/20")],
 		&[],
 	);
 
 	let buffer = ctx.xdg.inner.root.join("expanded_buffer.md");
 	let capture = buffer.clone();
-	let (out, _) = ctx.milestone_edit_with_changes("# Sprint\n\n- https://github.com/o/r/milestone/3\n", move |tmp_path| {
+	let sprint = "# Sprint\n\n- https://github.com/o/r/milestone/3\n- category\n  - https://github.com/o/r/issues/10\n- https://github.com/o/r/issues/11\n";
+	let (out, _) = ctx.milestone_edit_with_changes(sprint, move |tmp_path| {
 		std::fs::copy(tmp_path, &capture).unwrap();
 	});
 	assert!(out.status.success(), "stderr: {}", out.stderr);
@@ -1062,10 +1065,23 @@ async fn test_sprint_folds_issues_not_milestones() {
 
 	# Sprint
 
-	- [ ] [big_feature](<milestone_path>) <!-- https://github.com/o/r/milestone/3 -->
-	  - [ ] Inner Issue <!-- @mock_user https://github.com/o/r/issues/20 --> <!--{{{1-->
-	    inner body
-	    <!--}}}1-->
+	- [ ] [big_feature](<milestone_path>) <!-- https://github.com/o/r/milestone/3 --> <!--{{{1-->
+	  - category <!--{{{2-->
+	    - [ ] Inner Issue <!-- @mock_user https://github.com/o/r/issues/20 --> <!--{{{5-->
+	      Inner Issue body
+	      <!--}}}5-->
+	    <!--}}}2-->
+	  <!--}}}1-->
+
+	- category <!--{{{1-->
+	  - [ ] Grouped Issue <!-- @mock_user https://github.com/o/r/issues/10 --> <!--{{{4-->
+	    Grouped Issue body
+	    <!--}}}4-->
+	  <!--}}}1-->
+
+	- [ ] Top Issue <!-- @mock_user https://github.com/o/r/issues/11 --> <!--{{{3-->
+	  Top Issue body
+	  <!--}}}3-->
 	");
 }
 

@@ -227,9 +227,16 @@ impl TaskView {
 		self.normalize();
 	}
 
-	/// Render to markdown, substituting each issue/milestone ref (whose canonical URL is
-	/// in `expansions`) with its pre-rendered block. An empty map yields the collapsed form.
-	pub fn render(&self, expansions: &HashMap<String, String>) -> String {
+	/// Render to markdown, substituting each issue/milestone ref (whose canonical URL is in
+	/// `expansions`) with its expanded block, every multi-line component behind a vim fold.
+	pub fn render(&self, expansions: &HashMap<String, Expansion>) -> String {
+		self.write(Render {
+			fold: Some(Fold { depth: 0, enclosing: 0 }),
+			..Render::unfolded(expansions)
+		})
+	}
+
+	fn write(&self, r: Render) -> String {
 		debug_assert!(
 			self.sections.keys().chain(self.prose.keys()).all(|k| self.order.contains(k)),
 			"every key is registered in `order` on insertion"
@@ -267,14 +274,14 @@ impl TaskView {
 				if !output.is_empty() {
 					ensure_blank_line(&mut output);
 				}
-				serialize_items(items, expansions, &mut output);
+				serialize_items(items, r, &mut output);
 			}
 		}
 		output.trim_matches('\n').to_string()
 	}
 
 	pub fn serialize(&self) -> String {
-		self.render(&HashMap::new())
+		self.write(Render::unfolded(&HashMap::new()))
 	}
 
 	/// Open-checkbox virtual items that read as new tasks, in document order, each with its
@@ -417,6 +424,14 @@ enum TaskContent {
 	Virtual(Vec<OwnedEvent>),
 }
 
+/// What a ref renders as in [`TaskView::render`].
+pub enum Expansion {
+	/// The issue's own `Display`, emitted verbatim.
+	Issue(String),
+	/// `head` is the title line; `body` renders indented under it.
+	Milestone { head: String, body: TaskView },
+}
+
 /// A child block under a component: free-form markdown or a nested list.
 #[derive(Clone)]
 enum Section {
@@ -432,28 +447,44 @@ impl std::fmt::Display for TaskView {
 
 // ─── Parsing ─────────────────────────────────────────────────────────────────
 
-/// Sprint-view folds are a render concern (see `sprints::expand_and_refresh`): an edited buffer
-/// must collapse back to the same stored bytes, so the markers never reach the event stream.
+/// Task-view folds are a render concern (see [`TaskView::render`]): an edited buffer must
+/// collapse back to the same stored bytes, so the markers never reach the event stream.
 fn strip_fold_markers(content: &str) -> std::borrow::Cow<'_, str> {
-	let start = crate::Marker::FoldStart(crate::FoldLevel::First).encode();
-	let end = crate::Marker::FoldEnd(crate::FoldLevel::First).encode();
-	if !content.contains(&start) && !content.contains(&end) {
+	if !content.contains("<!--{{{") && !content.contains("<!--}}}") {
 		return std::borrow::Cow::Borrowed(content);
 	}
 
 	let mut out = String::with_capacity(content.len());
 	for line in content.lines() {
-		if !line.contains(&start) && !line.contains(&end) {
+		let mut kept = String::new();
+		let mut stripped = false;
+		let mut rest = line;
+		while let Some(open) = rest.find("<!--")
+			&& let Some(len) = rest[open..].find("-->").map(|close| close + 3)
+		{
+			let comment = &rest[open..open + len];
+			kept.push_str(&rest[..open]);
+			if matches!(
+				crate::Marker::decode(comment),
+				Some(crate::Marker::FoldStart(crate::FoldLevel::Level(_)) | crate::Marker::FoldEnd(crate::FoldLevel::Level(_)))
+			) {
+				stripped = true;
+			} else {
+				kept.push_str(comment);
+			}
+			rest = &rest[open + len..];
+		}
+		if !stripped {
 			out.push_str(line);
 			out.push('\n');
 			continue;
 		}
-		let stripped = line.replace(&start, "").replace(&end, "");
-		let stripped = stripped.trim_end();
-		if stripped.is_empty() {
+		kept.push_str(rest);
+		let kept = kept.trim_end();
+		if kept.is_empty() {
 			continue;
 		}
-		out.push_str(stripped);
+		out.push_str(kept);
 		out.push('\n');
 	}
 	std::borrow::Cow::Owned(out)
@@ -774,7 +805,7 @@ fn collect_homeless(items: &[TaskItem], section: &[String], path: &mut Vec<usize
 		if is_new_task(item) {
 			// A candidate's subtree is the issue's own content — no candidates inside it.
 			let mut block = String::new();
-			serialize_item(item, &HashMap::new(), &mut block);
+			serialize_item(item, Render::unfolded(&HashMap::new()), &mut block);
 			out.push((
 				TaskItemId {
 					section: section.to_vec(),
@@ -814,7 +845,7 @@ fn collect_milestone_bodies(items: &[TaskItem], out: &mut Vec<(MilestoneLink, St
 			}
 			let mut body = String::new();
 			for sec in &children {
-				serialize_section(sec, &HashMap::new(), &mut body);
+				serialize_section(sec, Render::unfolded(&HashMap::new()), &mut body);
 			}
 			out.push((r#ref.to_milestone_link(), body.trim_matches('\n').to_string()));
 		}
@@ -883,25 +914,52 @@ fn expansion_key(content: &TaskContent) -> Option<String> {
 
 /// Whether a list should render loose (blank lines between items): checkbox lists,
 /// or any list whose issue/milestone refs are being expanded.
-fn items_are_loose(items: &[TaskItem], expansions: &HashMap<String, String>) -> bool {
-	items
-		.iter()
-		.any(|item| item.checkbox.is_some() || expansion_key(&item.content).is_some_and(|k| expansions.contains_key(&k)))
+fn items_are_loose(items: &[TaskItem], r: Render) -> bool {
+	items.iter().any(|item| item.checkbox.is_some() || r.expansion(&item.content).is_some())
 }
 
-fn serialize_items(items: &[TaskItem], expansions: &HashMap<String, String>, output: &mut String) {
-	let loose = items_are_loose(items, expansions);
+/// Which refs expand, and where folds stand (`None`: no folds).
+#[derive(Clone, Copy)]
+struct Render<'a> {
+	expansions: &'a HashMap<String, Expansion>,
+	fold: Option<Fold>,
+	in_milestone: bool, // milestones contain only issues: inner milestone refs stay bare links
+}
+#[derive(Clone, Copy)]
+struct Fold {
+	/// Folded components around this one.
+	depth: u8,
+	/// Level of the innermost of them, 0 at top.
+	enclosing: u8,
+}
+impl Render<'_> {
+	fn unfolded(expansions: &HashMap<String, Expansion>) -> Render<'_> {
+		Render {
+			expansions,
+			fold: None,
+			in_milestone: false,
+		}
+	}
+
+	fn expansion(&self, content: &TaskContent) -> Option<&Expansion> {
+		let expansion = self.expansions.get(&expansion_key(content)?)?;
+		(!(self.in_milestone && matches!(expansion, Expansion::Milestone { .. }))).then_some(expansion)
+	}
+}
+
+fn serialize_items(items: &[TaskItem], r: Render, output: &mut String) {
+	let loose = items_are_loose(items, r);
 	for (i, item) in items.iter().enumerate() {
 		if i > 0 && loose {
 			ensure_blank_line(output);
 		} else if !output.is_empty() && !output.ends_with('\n') {
 			output.push('\n');
 		}
-		serialize_item(item, expansions, output);
+		serialize_item(item, r, output);
 	}
 }
 
-fn serialize_section(section: &Section, expansions: &HashMap<String, String>, output: &mut String) {
+fn serialize_section(section: &Section, r: Render, output: &mut String) {
 	match section {
 		Section::FreeContent(owned) => {
 			if !output.is_empty() {
@@ -909,19 +967,54 @@ fn serialize_section(section: &Section, expansions: &HashMap<String, String>, ou
 			}
 			output.push_str(&String::from(Events::from(owned.clone())));
 		}
-		Section::List(items) => serialize_items(items, expansions, output),
+		Section::List(items) => serialize_items(items, r, output),
 	}
 }
 
-fn serialize_item(item: &TaskItem, expansions: &HashMap<String, String>, output: &mut String) {
-	// Expansion substitution: emit the component's pre-rendered block verbatim.
-	if let Some(key) = expansion_key(&item.content)
-		&& let Some(expansion) = expansions.get(&key)
-	{
-		output.push_str(expansion.trim_matches('\n'));
-		return;
-	}
+fn serialize_item(item: &TaskItem, r: Render, output: &mut String) {
+	let expansion = r.expansion(&item.content);
+	let base = match expansion {
+		Some(Expansion::Issue(_)) => 3,
+		Some(Expansion::Milestone { .. }) | None => 1,
+	};
+	let level = r.fold.map(|f| base + f.depth);
+	debug_assert!(r.fold.zip(level).is_none_or(|(f, level)| level > f.enclosing), "a fold must nest inside its parent's");
+	let inner = Render {
+		fold: r.fold.zip(level).map(|(f, level)| Fold {
+			depth: f.depth + 1,
+			enclosing: level,
+		}),
+		..r
+	};
 
+	let mut block = String::new();
+	match expansion {
+		Some(Expansion::Issue(text)) => block.push_str(text.trim_matches('\n')),
+		Some(Expansion::Milestone { head, body }) => {
+			block.push_str(head.trim_matches('\n'));
+			let body = body.write(Render { in_milestone: true, ..inner });
+			if !body.trim().is_empty() {
+				block.push('\n');
+				indent_into(&mut block, &body, "  ");
+			}
+		}
+		None => serialize_plain_item(item, inner, &mut block),
+	}
+	match (level, block.trim_end_matches('\n').split_once('\n')) {
+		(Some(level), Some((title, rest))) => {
+			let level = crate::FoldLevel::Level(level.try_into().expect("base is at least 1"));
+			output.push_str(&format!(
+				"{title} {}\n{rest}\n  {}",
+				crate::Marker::FoldStart(level).encode(),
+				crate::Marker::FoldEnd(level).encode()
+			));
+		}
+		_ => output.push_str(&block),
+	}
+}
+
+/// An item with no expansion: its own inline text, children rendered as markdown under it.
+fn serialize_plain_item(item: &TaskItem, r: Render, output: &mut String) {
 	let mut events = vec![OwnedEvent::Start(OwnedTag::List(None)), OwnedEvent::Start(OwnedTag::Item)];
 	let mut inline_events = item_content_to_events(&item.content);
 	if let Some(ref inner) = item.checkbox {
@@ -942,7 +1035,7 @@ fn serialize_item(item: &TaskItem, expansions: &HashMap<String, String>, output:
 		output.push('\n');
 		let mut child_output = String::new();
 		for child in &item.children {
-			serialize_section(child, expansions, &mut child_output);
+			serialize_section(child, r, &mut child_output);
 		}
 		indent_into(output, &child_output, "  ");
 	}
@@ -973,8 +1066,18 @@ mod tests {
 	use super::*;
 	use crate::Issue;
 
-	fn expansions(pairs: &[(&str, &str)]) -> HashMap<String, String> {
-		pairs.iter().map(|(url, view)| (NodeLink::parse(url).unwrap().to_string(), view.to_string())).collect()
+	fn expansions(pairs: &[(&str, &str)]) -> HashMap<String, Expansion> {
+		pairs
+			.iter()
+			.map(|(url, view)| (NodeLink::parse(url).unwrap().to_string(), Expansion::Issue(view.to_string())))
+			.collect()
+	}
+
+	fn milestone(head: &str, body: &str) -> Expansion {
+		Expansion::Milestone {
+			head: head.to_string(),
+			body: TaskView::parse(body),
+		}
 	}
 
 	#[test]
@@ -1196,9 +1299,10 @@ mod tests {
 		insta::assert_snapshot!(doc.render(&exp), @"
 		# important today
 
-		- [ ] First <!-- @user https://github.com/owner/repo/issues/1 -->
+		- [ ] First <!-- @user https://github.com/owner/repo/issues/1 --> <!--{{{3-->
 			# Blockers
 			- task A
+		  <!--}}}3-->
 
 		- [ ] Second <!-- @user https://github.com/owner/repo/issues/2 -->
 
@@ -1230,13 +1334,15 @@ mod tests {
 		insta::assert_snapshot!(doc.render(&exp), @"
 		# important today
 
-		- [ ] OpenClaw
+		- [ ] OpenClaw <!--{{{1-->
 		  # Blockers
 		  - wait on Vincent
+		  <!--}}}1-->
 
-		- [ ] v2_interface <!-- @valeratrades https://github.com/valeratrades/discretionary_engine/issues/77 -->
+		- [ ] v2_interface <!-- @valeratrades https://github.com/valeratrades/discretionary_engine/issues/77 --> <!--{{{3-->
 			# Blockers
 			- new protocols
+		  <!--}}}3-->
 
 		- [ ] risk <!-- @valeratrades https://github.com/valeratrades/discretionary_engine/issues/78 -->
 		");
@@ -1439,23 +1545,27 @@ mod tests {
 - https://github.com/o/r/issues/1
 - https://github.com/o/r/milestone/3
 ";
-		let exp = expansions(&[
+		let mut exp = expansions(&[
 			("https://github.com/o/r/issues/1", "- [ ] First <!-- @user https://github.com/o/r/issues/1 -->"),
-			(
-				"https://github.com/o/r/milestone/3",
-				"- [ ] big_feature <!-- https://github.com/o/r/milestone/3 -->\n  desc line\n\n  - [ ] Inner <!-- @user https://github.com/o/r/issues/5 -->",
-			),
+			("https://github.com/o/r/issues/5", "- [ ] Inner <!-- @user https://github.com/o/r/issues/5 -->\n  inner body"),
 		]);
+		exp.insert(
+			"https://github.com/o/r/milestone/3".into(),
+			milestone("- [ ] big_feature <!-- https://github.com/o/r/milestone/3 -->", "desc line\n\n- https://github.com/o/r/issues/5"),
+		);
 		let doc = TaskView::parse(stored);
 		insta::assert_snapshot!(doc.render(&exp), @"
 		# Sprint
 
 		- [ ] First <!-- @user https://github.com/o/r/issues/1 -->
 
-		- [ ] big_feature <!-- https://github.com/o/r/milestone/3 -->
+		- [ ] big_feature <!-- https://github.com/o/r/milestone/3 --> <!--{{{1-->
 		  desc line
 
-		  - [ ] Inner <!-- @user https://github.com/o/r/issues/5 -->
+		  - [ ] Inner <!-- @user https://github.com/o/r/issues/5 --> <!--{{{4-->
+		    inner body
+		    <!--}}}4-->
+		  <!--}}}1-->
 		");
 	}
 
@@ -1463,13 +1573,14 @@ mod tests {
 	fn test_milestone_expansion_roundtrip() {
 		// expanded → parse → collapse must recover the stored form exactly
 		let stored = "- https://github.com/o/r/issues/1\n- https://github.com/o/r/milestone/3\n";
-		let exp = expansions(&[
+		let mut exp = expansions(&[
 			("https://github.com/o/r/issues/1", "- [ ] First <!-- @user https://github.com/o/r/issues/1 -->"),
-			(
-				"https://github.com/o/r/milestone/3",
-				"- [x] big_feature <!-- https://github.com/o/r/milestone/3 -->\n  - [ ] Inner <!-- @user https://github.com/o/r/issues/5 -->",
-			),
+			("https://github.com/o/r/issues/5", "- [ ] Inner <!-- @user https://github.com/o/r/issues/5 -->\n  inner body"),
 		]);
+		exp.insert(
+			"https://github.com/o/r/milestone/3".into(),
+			milestone("- [x] big_feature <!-- https://github.com/o/r/milestone/3 -->", "- category\n  - https://github.com/o/r/issues/5"),
+		);
 		let rendered = TaskView::parse(stored).render(&exp);
 		let mut reparsed = TaskView::parse(&rendered);
 		reparsed.collapse_to_links();

@@ -161,21 +161,28 @@ impl fmt::Display for IssueMarker {
 
 /// Suffix of a vim fold marker. `always` is ours, not a vim level: nvim closes those folds on
 /// open (see README). Vim reads it as unnumbered, so such a fold nests under whatever encloses it.
-#[non_exhaustive]
-#[derive(Clone, Copy, Debug, PartialEq, strum::Display, strum::EnumString, strum::VariantArray)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum FoldLevel {
-	#[strum(serialize = "always")]
 	Always,
-	#[strum(serialize = "1")]
-	First,
-	#[strum(serialize = "2")]
-	Second,
-	#[strum(serialize = "3")]
-	Third,
-	#[strum(serialize = "4")]
-	Fourth,
-	#[strum(serialize = "5")]
-	Fifth,
+	Level(std::num::NonZeroU8),
+}
+impl fmt::Display for FoldLevel {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		match self {
+			Self::Always => f.write_str("always"),
+			Self::Level(n) => write!(f, "{n}"),
+		}
+	}
+}
+impl std::str::FromStr for FoldLevel {
+	type Err = std::num::ParseIntError;
+
+	fn from_str(s: &str) -> Result<Self, Self::Err> {
+		match s {
+			"always" => Ok(Self::Always),
+			_ => s.parse().map(Self::Level),
+		}
+	}
 }
 
 /// A marker that can appear in issue files.
@@ -484,9 +491,13 @@ mod tests {
 			Marker::OmittedStart,
 			Marker::OmittedEnd,
 		];
-		let markers = markers
-			.into_iter()
-			.chain(<FoldLevel as strum::VariantArray>::VARIANTS.iter().flat_map(|l| [Marker::FoldStart(*l), Marker::FoldEnd(*l)]));
+		let markers = markers.into_iter().chain(
+			[1, 3, 6, 255]
+				.map(|n| FoldLevel::Level(n.try_into().unwrap()))
+				.into_iter()
+				.chain([FoldLevel::Always])
+				.flat_map(|l| [Marker::FoldStart(l), Marker::FoldEnd(l)]),
+		);
 
 		for marker in markers {
 			let encoded = marker.encode();
