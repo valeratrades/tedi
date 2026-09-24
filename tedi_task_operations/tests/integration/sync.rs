@@ -276,6 +276,26 @@ async fn test_body_shaped_like_ours_survives_reopen() {
 	assert!(reopen.status.success(), "reopen must parse the file we just wrote. stderr: {}", reopen.stderr);
 }
 
+/// Github's "convert to issue" on a task-list item takes the item's whole rendered text as the
+/// title, heading lines included. Written as-is, the title spills past the title line and the
+/// file we produced no longer parses.
+#[tokio::test]
+async fn test_multiline_remote_title_is_rejected_before_write() {
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+
+	let remote_vi = parse_virtual("- [ ] spoof location <!-- @mock_user https://github.com/o/r/issues/1 -->\n  body\n");
+	ctx.remote(&remote_vi, Some(Seed::new(15)));
+	ctx.set_remote_title(("o", "r").into(), 1, "spoof location\nBlockers");
+
+	let out = ctx.open_url(("o", "r").into(), 1).run();
+	assert!(!out.status.success(), "a multi-line title must not be written. stdout: {}", out.stdout);
+	assert!(
+		out.stderr.contains("o/r#1") && out.stderr.contains("title"),
+		"error must name the issue and its title. stderr: {}",
+		out.stderr
+	);
+}
+
 /// Two consecutive plain paragraphs in a body are the one shape where the local file's first
 /// paragraph shares the title line, so the item-interior span reaching `Events` carries both a
 /// paragraph-bridge `SoftBreak` and the paragraph boundary it stands for. Counting both grew a

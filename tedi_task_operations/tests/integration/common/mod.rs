@@ -270,6 +270,20 @@ impl TestContext {
 		self.rebuild_mock_state();
 	}
 
+	/// Overwrite a seeded issue's Github title verbatim — Github accepts titles our model can't hold.
+	pub fn set_remote_title(&self, repo_info: tedi_task_operations::RepoInfo, number: u64, title: &str) {
+		let (owner, repo) = (repo_info.owner().expect("github project").to_string(), repo_info.repo().to_string());
+		with_state(self, |state| {
+			let issue = state
+				.remote_issues
+				.iter_mut()
+				.find(|i| i.owner == owner && i.repo == repo && i.number == number)
+				.expect("seed the issue with remote() first");
+			issue.title = title.to_string();
+		});
+		self.rebuild_mock_state();
+	}
+
 	/// Write issue to local filesystem (uncommitted). Uses defaults: owner="o", repo="r", user="mock_user".
 	///
 	/// If `seed` is provided, timestamps are generated from it and written to `.meta.json`.

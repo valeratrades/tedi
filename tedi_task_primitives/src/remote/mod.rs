@@ -85,6 +85,11 @@ pub enum RemoteError {
 	#[error("{rendered}")]
 	Gone { rendered: String },
 
+	/// The title line can't hold it. Pre-rendered for the same reason as `Gone`.
+	#[leaf]
+	#[error("{rendered}")]
+	MultilineTitle { rendered: String },
+
 	/// Required executable not found.
 	#[leaf]
 	#[error("`{executable}` not found in PATH (required for {operation})")]
@@ -105,6 +110,18 @@ pub enum RemoteError {
 struct Gone {
 	repo: RepoInfo,
 	number: u64,
+}
+
+#[derive(Debug, miette::Diagnostic, thiserror::Error)]
+#[error("{repo}#{number} has a multi-line title on GitHub: {title:?}")]
+#[diagnostic(help(
+	"usually left by GitHub's \"convert to issue\" on a task-list item that had nested content. \
+		 Edit the title on GitHub down to one line, then re-run."
+))]
+struct MultilineTitle {
+	repo: RepoInfo,
+	number: u64,
+	title: String,
 }
 
 impl RemoteError {
@@ -264,7 +281,7 @@ impl crate::LazyIssue<RemoteSource> for Issue {
 		let issue = issue_result.map_err(|e| RemoteError::fetch_issue(repo_info, number, e))?;
 		let comments = comments_result.map_err(|e| RemoteError::FetchComments { repo: repo_info, number, source: e })?;
 
-		self.contents = build_contents_from_github(&issue, &comments);
+		self.contents = build_contents_from_github(repo_info, &issue, &comments)?;
 
 		// Per-comment timestamps from REST API data (updated_at, falling back to created_at).
 		let comments_ts: Vec<_> = comments
@@ -353,7 +370,16 @@ pub enum RemoteSinkError {
 }
 /// Build IssueContents from GitHub API data.
 #[instrument(skip_all, fields(issue_number = issue.number, title = %issue.title))]
-fn build_contents_from_github(issue: &GithubIssue, comments: &[GithubComment]) -> IssueContents {
+fn build_contents_from_github(repo: RepoInfo, issue: &GithubIssue, comments: &[GithubComment]) -> Result<IssueContents, RemoteError> {
+	if issue.title.contains(['\n', '\r']) {
+		let report = miette::Report::new(MultilineTitle {
+			repo,
+			number: issue.number,
+			title: issue.title.clone(),
+		});
+		return Err(RemoteError::new_multiline_title(format!("{report:?}")));
+	}
+
 	let all_labels: Vec<String> = issue.labels.iter().map(|l| l.name.clone()).collect();
 	let close_state = CloseState::from_github(&issue.state, issue.state_reason.as_deref(), &all_labels);
 	// the `p:` label *is* the state here; leaving it in would also render it in the title line's `(labels)` slot
@@ -377,13 +403,13 @@ fn build_contents_from_github(issue: &GithubIssue, comments: &[GithubComment]) -
 		});
 	}
 
-	IssueContents {
+	Ok(IssueContents {
 		title: issue.title.clone(),
 		labels,
 		state: close_state,
 		comments: issue_comments.into(),
 		blockers,
-	}
+	})
 }
 
 /// Labels as Github holds them: the issue's own, plus the managed `p:` label carrying a
