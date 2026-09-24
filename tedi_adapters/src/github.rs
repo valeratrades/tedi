@@ -28,6 +28,9 @@ pub trait GithubClient: Send + Sync {
 	/// Update an issue's body
 	async fn update_issue_body(&self, repo: RepoInfo, issue_number: u64, body: &str) -> Result<(), GithubError>;
 
+	/// Update an issue's title
+	async fn update_issue_title(&self, repo: RepoInfo, issue_number: u64, title: &str) -> Result<(), GithubError>;
+
 	/// Update an issue's state (open/closed)
 	async fn update_issue_state(&self, repo: RepoInfo, issue_number: u64, state: &str) -> Result<(), GithubError>;
 
@@ -340,6 +343,11 @@ impl GithubClient for RealGithubClient {
 	async fn update_issue_body(&self, repo: RepoInfo, issue_number: u64, body: &str) -> Result<(), GithubError> {
 		let url = format!("https://api.github.com/repos/{}/{}/issues/{issue_number}", repo.owner().expect("github repo"), repo.repo());
 		self.patch_json(&url, &serde_json::json!({ "body": body }), "Failed to update issue body").await
+	}
+
+	async fn update_issue_title(&self, repo: RepoInfo, issue_number: u64, title: &str) -> Result<(), GithubError> {
+		let url = format!("https://api.github.com/repos/{}/{}/issues/{issue_number}", repo.owner().expect("github repo"), repo.repo());
+		self.patch_json(&url, &serde_json::json!({ "title": title }), "Failed to update issue title").await
 	}
 
 	async fn update_issue_state(&self, repo: RepoInfo, issue_number: u64, state: &str) -> Result<(), GithubError> {
@@ -702,6 +710,10 @@ impl GithubClient for RetryingGithubClient {
 
 	async fn update_issue_body(&self, repo: RepoInfo, issue_number: u64, body: &str) -> Result<(), GithubError> {
 		retrying!(self.inner.update_issue_body(repo, issue_number, body))
+	}
+
+	async fn update_issue_title(&self, repo: RepoInfo, issue_number: u64, title: &str) -> Result<(), GithubError> {
+		retrying!(self.inner.update_issue_title(repo, issue_number, title))
 	}
 
 	async fn update_issue_state(&self, repo: RepoInfo, issue_number: u64, state: &str) -> Result<(), GithubError> {

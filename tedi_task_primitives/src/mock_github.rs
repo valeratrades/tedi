@@ -553,6 +553,12 @@ impl GithubClient for MockGithubClient {
 		self.with_issue_mut(repo, issue_number, |issue| issue.body = body.to_string())
 	}
 
+	async fn update_issue_title(&self, repo: RepoInfo, issue_number: u64, title: &str) -> Result<(), GithubError> {
+		let (owner, repo_name) = (repo.owner().expect("github repo"), repo.repo());
+		self.log_call(&format!("update_issue_title({owner}, {repo_name}, {issue_number}, {title})"));
+		self.with_issue_mut(repo, issue_number, |issue| issue.title = title.to_string())
+	}
+
 	#[instrument(skip_all, fields(issue_number, state))]
 	async fn update_issue_state(&self, repo: RepoInfo, issue_number: u64, state: &str) -> Result<(), GithubError> {
 		let owner = repo.owner().expect("github repo");

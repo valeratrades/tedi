@@ -496,6 +496,12 @@ impl Sink<Remote> for Issue {
 		// Sync content against old (if we have old state)
 		let diff = compute_node_diff(self, old);
 
+		if old.is_some_and(|old| old.contents.title != self.contents.title) {
+			println!("Updating issue #{issue_number} title...");
+			gh.update_issue_title(repo_info, issue_number, &self.contents.title).await?;
+			changed = true;
+		}
+
 		// Compare full GitHub body (text + blockers), not just comments[0]
 		let body_changed = match old {
 			Some(old) => self.body() != old.body(),

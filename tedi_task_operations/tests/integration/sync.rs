@@ -1062,3 +1062,21 @@ async fn test_adding_labels_syncs_to_remote() {
 	let content = read_issue_file(&issue_path);
 	assert!(content.contains("(bug, urgent)"), "Labels should be in file. Got: {content}");
 }
+
+/// A title edited locally has to reach Github. Left local, it re-wins every merge on its own
+/// timestamp and never settles.
+#[tokio::test]
+async fn test_local_title_edit_pushes_to_remote() {
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+
+	let vi = parse_virtual("- [ ] old title <!-- @mock_user https://github.com/o/r/issues/1 -->\n  body\n");
+	let issue = ctx.consensus(&vi, Some(Seed::new(5))).await;
+	ctx.remote(&vi, Some(Seed::new(5)));
+
+	let mut renamed = vi.clone();
+	renamed.contents.title = "new title".to_string();
+	let out = ctx.open_issue(&issue).edit(&renamed).run();
+
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+	assert!(out.stdout.contains("Updating issue #1 title"), "the rename never reached Github. stdout: {}", out.stdout);
+}
