@@ -276,6 +276,50 @@ async fn test_body_shaped_like_ours_survives_reopen() {
 	assert!(reopen.status.success(), "reopen must parse the file we just wrote. stderr: {}", reopen.stderr);
 }
 
+/// The conflict file is per owner, so it can sit resolved while a different issue of that owner
+/// is opened. It names its own issue in its title line — anyone else's content must not land in it.
+#[tokio::test]
+async fn test_resolved_conflict_file_only_resolves_the_issue_it_names() {
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+
+	let conflicted = parse_virtual("- [ ] one <!-- @mock_user https://github.com/o/r/issues/1 -->\n  body one\n");
+	let bystander = parse_virtual("- [ ] two <!-- @mock_user https://github.com/o/r/issues/2 -->\n  body two\n");
+	ctx.consensus(&conflicted, Some(Seed::new(15))).await;
+	ctx.remote(&conflicted, Some(Seed::new(15)));
+	ctx.consensus(&bystander, Some(Seed::new(15))).await;
+	ctx.remote(&bystander, Some(Seed::new(15)));
+
+	let bystander_path = ctx.flat_issue_path(("o", "r").into(), 2, "two");
+	let conflict = bystander_path.parent().unwrap().parent().unwrap().join("__conflict.md");
+	std::fs::write(&conflict, "- [ ] one <!-- @mock_user https://github.com/o/r/issues/1 -->\n  resolved one\n").unwrap();
+
+	let out = ctx.open_url(("o", "r").into(), 2).run();
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+
+	assert!(bystander_path.exists(), "o/r#2 was rewritten under o/r#1's title");
+	let content = read_issue_file(&bystander_path);
+	assert!(content.contains("body two") && !content.contains("resolved one"), "o/r#2 took o/r#1's resolution. Got: {content}");
+	assert!(conflict.exists(), "o/r#1's resolution was consumed by another issue");
+}
+
+/// pulldown-cmark splits a code block's text per line when the block sits in a list item (the
+/// local file), but not in a standalone body (Github). Same text, different events — so the
+/// second open saw an edit nobody made.
+#[tokio::test]
+async fn test_multiline_code_block_is_a_roundtrip_fixpoint() {
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+
+	let remote_vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n  placeholder\n");
+	ctx.remote(&remote_vi, Some(Seed::new(15)));
+	ctx.set_remote_body(("o", "r").into(), 1, "intro\n\n```sh\nline one\nline two\n```\n");
+
+	let out = ctx.open_url(("o", "r").into(), 1).run();
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+
+	let reopen = ctx.open_url(("o", "r").into(), 1).run();
+	assert!(reopen.status.success(), "local and remote must agree on a body neither side touched. stderr: {}", reopen.stderr);
+}
+
 /// Github's "convert to issue" on a task-list item takes the item's whole rendered text as the
 /// title, heading lines included. Written as-is, the title spills past the title line and the
 /// file we produced no longer parses.

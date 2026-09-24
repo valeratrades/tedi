@@ -74,6 +74,14 @@ pub async fn check_for_existing_conflict(issue_index: IssueIndex) -> Result<Opti
 	if has_conflict_markers(&content) {
 		Ok(Some(conflict_fpath))
 	} else {
+		let title_line = content.lines().next().expect("a resolved conflict file holds the issue it was written for");
+		let Some((crate::IssueMarker::Linked { link, .. }, _)) = crate::IssueMarker::parse_from_end(title_line) else {
+			bail!("{} has no linked issue marker on its title line; can't tell which issue it resolves", conflict_fpath.display());
+		};
+		let number = *issue_index.git_num_path()?.last().expect("a github issue index ends in its number");
+		if link.project() != issue_index.repo_info() || link.number() != number {
+			return Ok(None); // waits for its own issue to be loaded
+		}
 		// have the conflict file, but user has had resolved it, - sync then cleanup
 		{
 			let mut new_issue = {

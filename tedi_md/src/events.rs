@@ -426,7 +426,7 @@ impl Events {
 		let events = normalize_list_items_tight(events);
 		let events = preserve_paragraph_spacing(events);
 
-		Self(split_blockers_from_checkboxes(events))
+		split_blockers_from_checkboxes(events).into()
 	}
 }
 
@@ -475,7 +475,7 @@ pub fn indent_into(out: &mut String, content: &str, prefix: &str) {
 /// exactly the events that parsing that rendered text back would produce, or local and remote
 /// never compare equal.
 pub fn as_standalone_block(events: Vec<OwnedEvent>) -> Events {
-	Events(preserve_paragraph_spacing(wrap_inline_in_paragraphs(events)))
+	preserve_paragraph_spacing(wrap_inline_in_paragraphs(events)).into()
 }
 
 fn wrap_inline_in_paragraphs(events: Vec<OwnedEvent>) -> Vec<OwnedEvent> {
@@ -895,9 +895,17 @@ impl fmt::Display for Events {
 	}
 }
 
+/// Adjacent `Text`s are merged: pulldown-cmark splits the same text differently by container (a code block's lines inside a list item, not outside), and equality must not see it.
 impl From<Vec<OwnedEvent>> for Events {
 	fn from(events: Vec<OwnedEvent>) -> Self {
-		Self(events)
+		let mut merged: Vec<OwnedEvent> = Vec::with_capacity(events.len());
+		for e in events {
+			match (merged.last_mut(), e) {
+				(Some(OwnedEvent::Text(prev)), OwnedEvent::Text(next)) => prev.push_str(&next),
+				(_, e) => merged.push(e),
+			}
+		}
+		Self(merged)
 	}
 }
 
