@@ -292,6 +292,36 @@ async fn test_opening_a_duplicate_errors_instead_of_panicking() {
 	);
 }
 
+/// Whatever a title opens with — a character markdown reads as structure, or a `(…)` shaped like
+/// our labels slot — it must read back as itself, or the next sync renames the issue on Github.
+#[tokio::test]
+async fn test_title_with_leading_markdown_char_roundtrips() {
+	for (n, title) in [
+		(1, "`Ts` enum + derive(Timestamped)"),
+		(2, "--last flag on open"),
+		(3, "_data subcrate"),
+		(4, "[integrations, rm] integrate"),
+		(5, "(wip) not a label"),
+	] {
+		let ctx = TestContext::build_with_preexisting_state_unsafe("");
+		ctx.remote(
+			&parse_virtual(&format!("- [ ] placeholder <!-- @mock_user https://github.com/o/r/issues/{n} -->\n  body\n")),
+			Some(Seed::new(15)),
+		);
+		ctx.set_remote_title(("o", "r").into(), n, title);
+
+		let out = ctx.open_url(("o", "r").into(), n).run();
+		assert!(out.status.success(), "stderr: {}", out.stderr);
+		let reopen = ctx.open_url(("o", "r").into(), n).run();
+		assert!(reopen.status.success(), "stderr: {}", reopen.stderr);
+		assert!(
+			!reopen.stdout.contains("title..."),
+			"{title:?} read back as something else and got pushed. stdout: {}",
+			reopen.stdout
+		);
+	}
+}
+
 /// A Github title is plain text, but the title line is markdown: nothing markdown would interpret
 /// (emphasis, escapes, entities, inline html) may change it or cost us the marker that follows.
 #[tokio::test]

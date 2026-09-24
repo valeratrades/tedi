@@ -864,35 +864,15 @@ impl Issue /*{{{1*/ {
 	/// used when this issue is embedded as a child of its parent. The path is navigational
 	/// (`gf`-jumpable) and re-derived on write; identity comes from the marker.
 	fn child_link_line(&self) -> String {
-		use crate::{OwnedEvent, OwnedTag, OwnedTagEnd};
-		let labels_part = if self.contents.labels.is_empty() {
-			String::new()
-		} else {
-			format!("({}) ", self.contents.labels.join(", "))
-		};
-		let mut events = vec![
-			OwnedEvent::Start(OwnedTag::List(None)),
-			OwnedEvent::Start(OwnedTag::Item),
-			OwnedEvent::CheckBox(self.contents.state.to_checkbox_contents()),
-		];
-		if !labels_part.is_empty() {
-			events.push(OwnedEvent::Text(labels_part));
-		}
-		events.extend([
-			OwnedEvent::Start(OwnedTag::Link {
-				link_type: pulldown_cmark::LinkType::Inline,
-				dest_url: self.storage_rel_link(),
-				title: String::new(),
-				id: String::new(),
-			}),
-			OwnedEvent::Text(self.contents.title.clone()),
-			OwnedEvent::End(OwnedTagEnd::Link),
-			OwnedEvent::Text(" ".to_string()),
-			OwnedEvent::InlineHtml(format!("<!-- {} -->", IssueMarker::from(&self.identity).encode())),
-			OwnedEvent::End(OwnedTagEnd::Item),
-			OwnedEvent::End(OwnedTagEnd::List(false)),
-		]);
-		crate::Events::from(events).into()
+		let line = TitleLine::of(self);
+		format!(
+			"{}{}[{}]({}) <!-- {} -->\n",
+			line.checkbox_prefix(),
+			line.labels_prefix(),
+			line.title,
+			self.storage_rel_link(),
+			line.marker.encode()
+		)
 	}
 
 	/// Relative path (from the parent issue's directory) to this issue's markdown file.
@@ -1567,20 +1547,26 @@ impl TitleLine {
 		}
 	}
 
-	/// Render via cmark as a standalone list item (depth 0; keeps its trailing newline).
+	/// The title line, raw: a Github title is plain text, and cmark would escape its first character.
 	pub(crate) fn encode(&self) -> String {
-		use crate::{OwnedEvent, OwnedTag, OwnedTagEnd};
-		let labels_part = if self.labels.is_empty() { String::new() } else { format!("({}) ", self.labels.join(", ")) };
-		crate::Events::from(vec![
-			OwnedEvent::Start(OwnedTag::List(None)),
-			OwnedEvent::Start(OwnedTag::Item),
-			OwnedEvent::CheckBox(self.state.to_checkbox_contents()),
-			OwnedEvent::Text(format!("{labels_part}{} ", self.title)),
-			OwnedEvent::InlineHtml(format!("<!-- {} -->", self.marker.encode())),
-			OwnedEvent::End(OwnedTagEnd::Item),
-			OwnedEvent::End(OwnedTagEnd::List(false)),
-		])
-		.into()
+		format!("{}{}{} <!-- {} -->\n", self.checkbox_prefix(), self.labels_prefix(), self.title, self.marker.encode())
+	}
+
+	/// `[ ]`/`[x]` are Github task markers; any other state is escaped so it stays literal text.
+	fn checkbox_prefix(&self) -> String {
+		match self.state.to_checkbox_contents().as_str() {
+			c @ (" " | "x") => format!("- [{c}] "),
+			c => format!("- \\[{c}] "),
+		}
+	}
+
+	/// Empty `()` when there are no labels but the title opens with `(`, so it isn't read back as labels.
+	fn labels_prefix(&self) -> String {
+		match self.labels.is_empty() {
+			false => format!("({}) ", self.labels.join(", ")),
+			true if self.title.starts_with('(') => "() ".to_string(),
+			true => String::new(),
+		}
 	}
 
 	/// Parse the title line from an item event stream. Returns the parsed line and the
@@ -1611,18 +1597,13 @@ impl TitleLine {
 			_ => return Err(ParseError::invalid_title(ctx.named_source(), ctx.line_span(1), "missing checkbox".into())),
 		};
 
-		// Walk past the title's inline events to the marker; a child's title renders as a link to its file.
-		let mut link_dest = None;
 		while pos < events.len() {
 			match &events[pos] {
 				OwnedEvent::InlineHtml(html) if html.trim_start().starts_with("<!--") => break,
-				OwnedEvent::Start(OwnedTag::Link { dest_url, .. }) => {
-					link_dest = Some(dest_url.clone());
-					pos += 1;
-				}
 				OwnedEvent::Text(_)
 				| OwnedEvent::Code(_)
 				| OwnedEvent::InlineHtml(_)
+				| OwnedEvent::Start(OwnedTag::Link { .. })
 				| OwnedEvent::End(OwnedTagEnd::Link)
 				| OwnedEvent::Start(OwnedTag::Strong | OwnedTag::Emphasis | OwnedTag::Strikethrough)
 				| OwnedEvent::End(OwnedTagEnd::Strong | OwnedTagEnd::Emphasis | OwnedTagEnd::Strikethrough) => pos += 1,
@@ -1635,9 +1616,11 @@ impl TitleLine {
 			Some(OwnedEvent::InlineHtml(html)) => after_checkbox[..after_checkbox.find(html.as_str()).expect("the marker's text is on its own line")].to_string(),
 			_ => after_checkbox.to_string(),
 		};
-		if let Some(dest) = link_dest {
-			let close = title_text.rfind(&format!("]({dest})")).expect("the link's text is on its own line");
-			let open = title_text[..close].find('[').expect("a link opens before it closes");
+		// a child renders as `[Title](./its/file.md)`
+		if title_text.trim_end().ends_with(')')
+			&& let Some(close) = title_text.rfind("](./")
+		{
+			let open = title_text.find('[').expect("a child link opens before it closes");
 			title_text = format!("{}{}", &title_text[..open], &title_text[open + 1..close]);
 		}
 
