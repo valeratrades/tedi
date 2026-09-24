@@ -276,6 +276,49 @@ async fn test_body_shaped_like_ours_survives_reopen() {
 	assert!(reopen.status.success(), "reopen must parse the file we just wrote. stderr: {}", reopen.stderr);
 }
 
+/// Duplicates aren't tracked: as sub-issues they're filtered out, but a direct link (URL, sprint,
+/// milestone) still reaches one.
+#[tokio::test]
+async fn test_opening_a_duplicate_errors_instead_of_panicking() {
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+	ctx.remote(&parse_virtual("- [2] dup <!-- @mock_user https://github.com/o/r/issues/1 -->\n"), Some(Seed::new(15)));
+
+	let out = ctx.open_url(("o", "r").into(), 1).run();
+	assert!(!out.status.success(), "stdout: {}", out.stdout);
+	assert!(
+		!out.stderr.contains("panicked") && out.stderr.contains("o/r#1") && out.stderr.contains("duplicate"),
+		"stderr: {}",
+		out.stderr
+	);
+}
+
+/// A Github title is plain text, but the title line is markdown: emphasis in it must not cost us
+/// the marker that follows.
+#[tokio::test]
+async fn test_markdown_in_remote_title_roundtrips() {
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+
+	let remote_vi = parse_virtual("- [ ] placeholder <!-- @mock_user https://github.com/o/r/issues/1 -->\n  body\n");
+	ctx.remote(&remote_vi, Some(Seed::new(15)));
+	ctx.set_remote_title(("o", "r").into(), 1, "go after the **entire** body, `code` too");
+
+	let out = ctx.open_url(("o", "r").into(), 1).run();
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+	let reopen = ctx.open_url(("o", "r").into(), 1).run();
+	assert!(reopen.status.success(), "reopen must parse the title line we wrote. stderr: {}", reopen.stderr);
+	let dir = ctx.flat_issue_path(("o", "r").into(), 1, "x").parent().unwrap().to_path_buf();
+	let file = std::fs::read_dir(&dir)
+		.unwrap()
+		.map(|e| e.unwrap().path())
+		.find(|p| p.file_name().unwrap().to_string_lossy().starts_with("1_-_"))
+		.unwrap();
+	let title_line = read_issue_file(&file).lines().next().unwrap().to_string();
+	assert!(
+		title_line.contains("go after the **entire** body, `code` too <!--"),
+		"title must read back as Github holds it. Got: {title_line}"
+	);
+}
+
 /// The conflict file is per owner, so it can sit resolved while a different issue of that owner
 /// is opened. It names its own issue in its title line — anyone else's content must not land in it.
 #[tokio::test]

@@ -1625,6 +1625,18 @@ impl TitleLine {
 				OwnedEvent::Start(OwnedTag::Link { .. }) | OwnedEvent::End(OwnedTagEnd::Link) => {
 					pos += 1;
 				}
+				OwnedEvent::Start(OwnedTag::Strong) | OwnedEvent::End(OwnedTagEnd::Strong) => {
+					title_text.push_str("**");
+					pos += 1;
+				}
+				OwnedEvent::Start(OwnedTag::Emphasis) | OwnedEvent::End(OwnedTagEnd::Emphasis) => {
+					title_text.push('*');
+					pos += 1;
+				}
+				OwnedEvent::Start(OwnedTag::Strikethrough) | OwnedEvent::End(OwnedTagEnd::Strikethrough) => {
+					title_text.push_str("~~");
+					pos += 1;
+				}
 				_ => break,
 			}
 		}

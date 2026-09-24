@@ -90,6 +90,11 @@ pub enum RemoteError {
 	#[error("{rendered}")]
 	MultilineTitle { rendered: String },
 
+	/// Closed as a duplicate, which tedi doesn't track. Pre-rendered for the same reason as `Gone`.
+	#[leaf]
+	#[error("{rendered}")]
+	Duplicate { rendered: String },
+
 	/// Required executable not found.
 	#[leaf]
 	#[error("`{executable}` not found in PATH (required for {operation})")]
@@ -108,6 +113,14 @@ pub enum RemoteError {
 		 or drop it from whatever references it, then re-run."
 ))]
 struct Gone {
+	repo: RepoInfo,
+	number: u64,
+}
+
+#[derive(Debug, miette::Diagnostic, thiserror::Error)]
+#[error("{repo}#{number} is closed as a duplicate on GitHub")]
+#[diagnostic(help("duplicates aren't tracked. Point whatever links it at the original issue, or drop the link, then re-run."))]
+struct Duplicate {
 	repo: RepoInfo,
 	number: u64,
 }
@@ -378,6 +391,10 @@ fn build_contents_from_github(repo: RepoInfo, issue: &GithubIssue, comments: &[G
 			title: issue.title.clone(),
 		});
 		return Err(RemoteError::new_multiline_title(format!("{report:?}")));
+	}
+	if CloseState::is_duplicate_reason(issue.state_reason.as_deref()) {
+		let report = miette::Report::new(Duplicate { repo, number: issue.number });
+		return Err(RemoteError::new_duplicate(format!("{report:?}")));
 	}
 
 	let all_labels: Vec<String> = issue.labels.iter().map(|l| l.name.clone()).collect();
