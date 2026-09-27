@@ -8,12 +8,13 @@
 use std::path::{Path, PathBuf};
 
 use color_eyre::eyre::{Result, bail, eyre};
+use futures::{StreamExt as _, TryStreamExt as _};
 
 use crate::{
 	HollowIssue, Issue, IssueIdentity, IssueIndex, IssueLink, LazyIssue, Milestone, MilestoneLink, NodeLink, RepoInfo, TaskView, VirtualIssue,
 	clockify_tracking::{self, HaltArgs, ResumeArgs},
 	local::{Consensus, FsReader, GitReader, Local, LocalFs},
-	open_interactions::{MergeMode, MilestoneModifier, Modifier, SyncOptions, modify_and_sync_issue, modify_and_sync_milestone, pull_issue},
+	open_interactions::{MergeMode, MilestoneModifier, Modifier, SyncOptions, modify_and_sync_issue, modify_and_sync_milestone, pull_issues},
 	remote::{Remote, RemoteSource, load_remote_milestone},
 	selection::{Landing, Selected},
 	sink::Sink,
@@ -57,38 +58,24 @@ pub async fn expand_and_refresh(content: &str, pull: bool) -> Result<String> {
 		links.extend(inner.issue_links());
 	}
 
-	let mut expansions: std::collections::HashMap<String, tedi_core::Expansion> = std::collections::HashMap::new();
+	let mut seen = std::collections::HashSet::new();
+	links.retain(|l| seen.insert(l.to_string()));
+	// Stored before any local issue is read: an ancestor read first would see the stored child as its own deletion.
+	let unavailable = fetch_and_store_missing(&links).await;
+	links.retain(|l| !unavailable.contains(l));
+
+	let mut issues = Vec::with_capacity(links.len());
 	for link in &links {
-		let key = link.to_string();
-		if expansions.contains_key(&key) {
-			continue;
-		}
-		let mut issue = match load_local_issue(link).await {
-			Ok(issue) => issue,
-			// virtual issues have no remote: they must never be fetched
-			Err(e) if matches!(link, IssueLink::Virtual(_)) => {
-				tracing::warn!("failed to expand virtual issue {link}: {e}");
-				continue;
-			}
-			Err(_) => match fetch_and_store_remote_issue(link).await {
-				Ok(issue) => issue,
-				Err(e) => {
-					tracing::warn!("failed to expand {link}: {e}");
-					continue;
-				}
-			},
-		};
-		// ponytail: serial round-trip per issue. The consensus sink shells out to `git add -A` +
-		// `commit`, so concurrent pulls would race the index — prefetch remote concurrently and
-		// merge serially if a sprint ever grows past a tolerable wait.
-		// A failure here stops the whole edit: `initiate_conflict_merge` records the divergence on a
-		// git branch and only handles one per run (a second reaches its `AutoMerged` unreachable),
-		// so there is no continuing past the first.
-		if pull {
-			pull_issue(&mut issue, MergeMode::Normal).await?;
-		}
-		expansions.insert(key, tedi_core::Expansion::Issue(issue.to_string()));
+		issues.push(load_local_issue(link).await?);
 	}
+	if pull {
+		pull_issues(&mut issues, MergeMode::Normal).await?;
+	}
+	let mut expansions: std::collections::HashMap<String, tedi_core::Expansion> = links
+		.iter()
+		.zip(&issues)
+		.map(|(link, issue)| (link.to_string(), tedi_core::Expansion::Issue(issue.to_string())))
+		.collect();
 
 	for (url, milestone, inner) in milestones {
 		let checkbox = if milestone.is_closed() { 'x' } else { ' ' };
@@ -107,21 +94,17 @@ pub async fn expand_and_refresh(content: &str, pull: bool) -> Result<String> {
 /// unsynced edits is left untouched (it syncs on the next milestone edit).
 pub async fn refresh_milestone_cache(links: &[MilestoneLink]) -> Result<()> {
 	let mut seen = std::collections::HashSet::new();
-	for link in links {
-		if !seen.insert(link.as_str().to_string()) {
-			continue;
-		}
-		let remote = load_remote_milestone(link).await?;
+	let links: Vec<&MilestoneLink> = links.iter().filter(|l| seen.insert(l.as_str().to_string())).collect();
+	let remotes: Vec<Milestone> = futures::stream::iter(&links)
+		.map(|l| load_remote_milestone(l))
+		.buffered(crate::open_interactions::MAX_CONCURRENT_FETCHES)
+		.try_collect()
+		.await?;
 
-		for child in &remote.body.hosted() {
-			if load_local_issue(child).await.is_ok() || matches!(child, IssueLink::Virtual(_)) {
-				continue;
-			}
-			if let Err(e) = fetch_and_store_remote_issue(child).await {
-				tracing::warn!("failed to store milestone issue {child}: {e}");
-			}
-		}
+	let hosted: Vec<IssueLink> = remotes.iter().flat_map(|m| m.body.hosted()).filter(|l| !matches!(l, IssueLink::Virtual(_))).collect();
+	fetch_and_store_missing(&hosted).await;
 
+	for (link, remote) in links.into_iter().zip(remotes) {
 		let local = Local::load_milestone(link, &FsReader)?;
 		let consensus = Local::load_milestone(link, &GitReader)?;
 		let has_unsynced_local = match (&local, &consensus) {
@@ -588,13 +571,47 @@ async fn load_local_issue(link: &IssueLink) -> Result<Issue> {
 	Issue::load(local_source).await.map_err(Into::into)
 }
 
-/// Fetch an issue from GitHub and store it locally (filesystem + consensus).
-async fn fetch_and_store_remote_issue(link: &IssueLink) -> Result<Issue> {
-	let source = RemoteSource::build(link.clone(), None)?;
-	let mut issue = Issue::load(source).await?;
-	<Issue as Sink<LocalFs>>::sink(&mut issue, None).await?;
-	<Issue as Sink<Consensus>>::sink(&mut issue, None).await?;
-	Ok(issue)
+/// Fetch every link not stored locally from GitHub concurrently, then store each (filesystem +
+/// consensus) one at a time — the consensus sink commits through the one git index.
+/// Returns the links that are still not stored locally.
+async fn fetch_and_store_missing(links: &[IssueLink]) -> Vec<IssueLink> {
+	let missing: Vec<&IssueLink> = links
+		.iter()
+		.filter(|l| match l {
+			IssueLink::Virtual(p) => !p.exists(),
+			IssueLink::Owned(_) => Local::find_by_number(l.project(), l.number(), FsReader).is_none(),
+		})
+		.collect();
+	let fetched: Vec<Result<Issue>> = futures::stream::iter(&missing)
+		.map(|link| async move {
+			// virtual issues have no remote: they must never be fetched
+			if matches!(link, IssueLink::Virtual(_)) {
+				bail!("virtual issue file is missing");
+			}
+			Ok(Issue::load(RemoteSource::build((*link).clone(), None)?).await?)
+		})
+		.buffered(crate::open_interactions::MAX_CONCURRENT_FETCHES)
+		.collect()
+		.await;
+
+	let mut unavailable = Vec::new();
+	for (link, issue) in missing.into_iter().zip(fetched) {
+		let stored = match issue {
+			Ok(mut issue) =>
+				async {
+					<Issue as Sink<LocalFs>>::sink(&mut issue, None).await?;
+					<Issue as Sink<Consensus>>::sink(&mut issue, None).await?;
+					Ok::<_, color_eyre::Report>(())
+				}
+				.await,
+			Err(e) => Err(e),
+		};
+		if let Err(e) = stored {
+			tracing::warn!("failed to fetch {link}: {e}"); // its ref stays a bare link
+			unavailable.push(link.clone());
+		}
+	}
+	unavailable
 }
 
 // ─── Selection & the `sprints selected` operations ────────────────────────────

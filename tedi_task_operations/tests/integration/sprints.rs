@@ -1461,6 +1461,55 @@ async fn test_sprint_edit_buffer_is_pulled_before_the_editor() {
 	assert!(buffer.contains("Late arrival"), "buffer must hold the link the milestone gained: {buffer}");
 }
 
+/// A sprint listing a sub-issue alongside its parent pulls the pair as one tree: syncing the child
+/// on its own leaves the parent's copy of it behind consensus, which then reads as a local revert.
+#[tokio::test]
+async fn test_sprint_listing_parent_and_child_pulls_both() {
+	use tedi_task_operations::RepoInfo;
+
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+	ctx.set_issues_dir_override();
+	ctx.xdg.write_config("config.toml", "github_token = \"test_token\"\n\n[milestones]\nurl = \"o/r\"\n");
+	let repo = RepoInfo::new("o", "r");
+
+	let tree = parse_virtual(
+		"- [ ] Parent Issue <!-- @mock_user https://github.com/o/r/issues/20 -->\n\
+		 \tparent body\n\
+		 \n\
+		 \t- [ ] Child Issue <!-- @mock_user https://github.com/o/r/issues/21 -->\n\
+		 \t\tstale child body\n",
+	);
+	ctx.remote(&tree, Some(Seed::new(100)));
+	ctx.set_remote_body(repo, 21, "child body github gained since");
+	ctx.consensus(&tree, Some(Seed::new(0))).await;
+
+	let (title, number) = ("1d", 7u64);
+	let mut mock_state: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&ctx.mock_state_path).unwrap()).unwrap();
+	mock_state["milestones"] = serde_json::json!([{
+		"owner": "o", "repo": "r", "number": number, "title": title, "state": "open",
+		"description": "- https://github.com/o/r/issues/21\n- https://github.com/o/r/issues/20",
+		"due_on": "2099-01-01T00:00:00Z",
+		"updated_at": "2020-01-01T00:00:00Z",
+	}]);
+	std::fs::write(&ctx.mock_state_path, mock_state.to_string()).unwrap();
+
+	let seen = ctx.xdg.inner.root.join("buffer_seen.md");
+	let seen_by_editor = seen.clone();
+	let out = ctx.milestone_client_edit(
+		&["--mock", "sprints", "edit", "1d"],
+		None,
+		Some(Box::new(move |tmp: &Path| {
+			std::fs::copy(tmp, &seen_by_editor).unwrap();
+		}) as EditFn),
+	);
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+
+	let buffer = std::fs::read_to_string(&seen).unwrap();
+	assert!(buffer.contains("child body github gained since"), "buffer must hold the child's current body: {buffer}");
+	assert!(!buffer.contains("stale child body"), "buffer must not hold the superseded child body: {buffer}");
+	assert!(buffer.contains("parent body"), "{buffer}");
+}
+
 /// The stored selection path of the "1d" sprint.
 fn stored_path(ctx: &TestContext) -> serde_json::Value {
 	let cache = std::fs::read_to_string(ctx.xdg.cache_dir().join("sprints_selection.json")).unwrap();

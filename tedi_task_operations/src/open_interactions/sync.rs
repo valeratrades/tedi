@@ -22,6 +22,7 @@
 //! sync always uses `Normal`. This prevents accidental data loss.
 
 use color_eyre::eyre::{Result, bail};
+use futures::StreamExt as _;
 use tracing::instrument;
 pub use types::*;
 
@@ -48,25 +49,60 @@ pub(crate) fn is_transient_sync_error(e: &color_eyre::Report) -> bool {
 		.any(|cause| cause.downcast_ref::<crate::github::GithubError>().map(|g| g.is_transient()).unwrap_or(false))
 }
 
-/// Reconcile a linked issue with Github, leaving local, consensus and remote in agreement.
+/// Reconcile linked issues with Github, leaving local, consensus and remote in agreement.
 ///
 /// Every read of an issue that a user is about to reason against goes through here first: an edit
 /// applied on top of a body Github has moved past folds back as a deletion of everything it gained
 /// since. A transient outage degrades to the local copy; a genuine divergence is a loud conflict.
-pub async fn pull_issue(issue: &mut Issue, mode: MergeMode) -> Result<()> {
-	// Virtual issues have no remote — never fetch them.
-	if !issue.is_linked() || issue.identity.is_virtual {
-		return Ok(());
-	}
-	let consensus = load_consensus_issue(IssueIndex::from(&*issue)).await?;
-	if let Err(e) = core::sync(issue, consensus, mode).await {
-		if !is_transient_sync_error(&e) {
-			return Err(e);
+///
+/// Remotes are fetched concurrently; merges run one at a time — the consensus sink commits through
+/// the one git index, and a conflict is recorded on a git branch once per run, so the first failed
+/// merge stops the batch. An issue nested under another one in the batch is synced as part of that
+/// ancestor's tree, then re-read from disk.
+pub async fn pull_issues(issues: &mut [Issue], mode: MergeMode) -> Result<()> {
+	let indices: Vec<IssueIndex> = issues.iter().map(Issue::full_index).collect();
+	let nested: Vec<bool> = indices
+		.iter()
+		.map(|i| {
+			indices
+				.iter()
+				.any(|a| a.repo_info() == i.repo_info() && a.index().len() < i.index().len() && i.index().starts_with(a.index()))
+		})
+		.collect();
+	let remotes: Vec<Option<Result<Issue>>> = futures::stream::iter(issues.iter().zip(&nested))
+		.map(|(issue, nested)| async move {
+			match !nested && issue.is_linked() && !issue.identity.is_virtual {
+				true => Some(core::fetch_remote(issue).await),
+				false => None,
+			}
+		})
+		.buffered(MAX_CONCURRENT_FETCHES)
+		.collect()
+		.await;
+
+	for (issue, remote) in issues.iter_mut().zip(remotes) {
+		let Some(remote) = remote else { continue };
+		let result = match remote {
+			Ok(remote) => {
+				let consensus = load_consensus_issue(IssueIndex::from(&*issue)).await?;
+				core::sync(issue, consensus, remote, mode).await
+			}
+			Err(e) => Err(e),
+		};
+		if let Err(e) = result {
+			if !is_transient_sync_error(&e) {
+				return Err(e);
+			}
+			tracing::warn!("GitHub transient during pre-open issue sync — proceeding with local: {e}");
 		}
-		tracing::warn!("GitHub transient during pre-open issue sync — proceeding with local: {e}");
+	}
+	for (issue, _) in issues.iter_mut().zip(&nested).filter(|(_, nested)| **nested) {
+		*issue = Issue::load(LocalIssueSource::<FsReader>::build(LocalPath::new(issue.full_index())).await?).await?;
 	}
 	Ok(())
 }
+/// Each issue load is itself ~5 requests plus its sub-issue fan-out; GitHub's secondary limit trips around 100 in flight.
+pub(crate) const MAX_CONCURRENT_FETCHES: usize = 8;
 
 /// Modify a local issue, then sync changes back to Github.
 ///
@@ -83,7 +119,7 @@ pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Mo
 	let issue_index = IssueIndex::from(&issue);
 
 	if !offline {
-		pull_issue(&mut issue, sync_opts.take_merge_mode()).await?;
+		pull_issues(std::slice::from_mut(&mut issue), sync_opts.take_merge_mode()).await?;
 	}
 
 	// expose for modification (by user or procedural)
@@ -112,7 +148,11 @@ pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Mo
 			match issue.is_linked() {
 				true => {
 					let consensus = load_consensus_issue(issue_index).await?;
-					if let Err(e) = core::sync(&mut issue, consensus, mode).await {
+					let synced = match core::fetch_remote(&issue).await {
+						Ok(remote) => core::sync(&mut issue, consensus, remote, mode).await,
+						Err(e) => Err(e),
+					};
+					if let Err(e) = synced {
 						if !is_transient_sync_error(&e) {
 							return Err(e);
 						}
@@ -281,17 +321,21 @@ mod core {
 		}
 	}
 
-	#[instrument(skip_all, fields(?mode, has_consensus = consensus.is_some()))]
-	pub(super) async fn sync(current_issue: &mut Issue, consensus: Option<Issue>, mode: MergeMode) -> Result<()> {
-		println!("Syncing...");
+	/// Network half of a sync: reads Github only, so any number may run at once.
+	pub(super) async fn fetch_remote(current_issue: &Issue) -> Result<Issue> {
 		let issue_number = current_issue.git_id().expect(
 			"can't be linked and not have number associated\nunless we die in a weird moment I guess. If this ever triggers, should fix it to set issue as pending (not linked) and sink",
 		);
-		let repo_info = current_issue.repo_info();
-
-		let link = IssueLink::in_project(repo_info, issue_number);
+		let link = IssueLink::in_project(current_issue.repo_info(), issue_number);
 		let remote_source = RemoteSource::build(link, Some(&current_issue.identity.git_lineage()?))?; //DEPENDS: git_lineage() will error if any parent is not synced. //Q: should I move the logic for traversing IssueIndex in search of pending parents right here?
-		let remote = Issue::load(remote_source).await?;
+		Ok(Issue::load(remote_source).await?)
+	}
+
+	#[instrument(skip_all, fields(?mode, has_consensus = consensus.is_some()))]
+	pub(super) async fn sync(current_issue: &mut Issue, consensus: Option<Issue>, remote: Issue, mode: MergeMode) -> Result<()> {
+		println!("Syncing...");
+		let issue_number = current_issue.git_id().expect("fetched remote, so linked");
+		let repo_info = current_issue.repo_info();
 
 		let (resolved, changed) = core::resolve_merge(current_issue.clone(), consensus, remote, mode, repo_info, issue_number).await?;
 		*current_issue = resolved;

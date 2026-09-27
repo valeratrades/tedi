@@ -349,18 +349,19 @@ impl crate::LazyIssue<RemoteSource> for Issue {
 		let parent_number = source.link.number();
 		let child_parent_index = self.identity.child_parent_index().expect("parent must be linked before fetching children");
 
-		let mut children = HashMap::new();
-		for sub_issue in filtered {
-			let child_link = IssueLink::in_project(repo_info, sub_issue.number);
-			let child_source = source.child(child_link, parent_number);
-			let mut child = Issue::empty_local(child_parent_index);
-
-			Self::identity(&mut child, child_source.clone()).await?;
-			Self::contents(&mut child, child_source.clone()).await?;
-			Box::pin(Self::children(&mut child, child_source)).await?;
-
-			children.insert(child.selector(), child);
-		}
+		let children: HashMap<IssueSelector, Issue> = futures::future::try_join_all(filtered.into_iter().map(|sub_issue| {
+			let child_source = source.child(IssueLink::in_project(repo_info, sub_issue.number), parent_number);
+			async move {
+				let mut child = Issue::empty_local(child_parent_index);
+				Self::identity(&mut child, child_source.clone()).await?;
+				Self::contents(&mut child, child_source.clone()).await?;
+				Box::pin(Self::children(&mut child, child_source)).await?;
+				Ok::<_, RemoteError>((child.selector(), child))
+			}
+		}))
+		.await?
+		.into_iter()
+		.collect();
 
 		self.children = children.clone();
 		Ok(children)

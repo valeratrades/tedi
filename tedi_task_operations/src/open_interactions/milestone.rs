@@ -31,7 +31,7 @@ pub async fn load_consensus_milestone(link: &MilestoneLink) -> Result<Option<Mil
 	Local::load_milestone(link, &GitReader).map_err(Into::into)
 }
 
-/// Reconcile a milestone with GitHub — the milestone mirror of `pull_issue`, and the same reason:
+/// Reconcile a milestone with GitHub — the milestone mirror of `pull_issues`, and the same reason:
 /// a body rendered into the editor from the local cache alone is a body the user edits blind.
 pub async fn pull_milestone(milestone: &mut Milestone, mode: MergeMode) -> Result<()> {
 	let link = milestone.identity.link.clone();
