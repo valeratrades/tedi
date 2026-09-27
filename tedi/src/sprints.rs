@@ -448,7 +448,7 @@ async fn edit_urgent(offline: bool) -> Result<()> {
 	// urgent is local-only: milestone refs live on GitHub and have no meaning here
 	let milestone_links = edited_doc.milestone_links();
 	if !milestone_links.is_empty() {
-		tedi_task_operations::utils::persist_rejected_changes(&edited_content);
+		tedi_task_operations::utils::persist_rejected_changes(&edited_content)?;
 		eprintln!("Your changes were saved to /tmp/tedi/rejected-changes.md — you can recover them from there.");
 		bail!(
 			"urgent sprint cannot contain milestone refs: {}",
@@ -457,13 +457,13 @@ async fn edit_urgent(offline: bool) -> Result<()> {
 	}
 
 	if let Err(e) = sync_embedded_issue_changes(&edited_content, offline).await {
-		tedi_task_operations::utils::persist_rejected_changes(&edited_content);
+		tedi_task_operations::utils::persist_rejected_changes(&edited_content)?;
 		eprintln!("Your changes were saved to /tmp/tedi/rejected-changes.md — you can recover them from there.");
 		return Err(e);
 	}
 
 	if let Err(e) = materialize_new_tasks(&mut edited_doc, None, offline).await {
-		tedi_task_operations::utils::persist_rejected_changes(&edited_content);
+		tedi_task_operations::utils::persist_rejected_changes(&edited_content)?;
 		eprintln!("Your changes were saved to /tmp/tedi/rejected-changes.md — you can recover them from there.");
 		return Err(e);
 	}
@@ -652,7 +652,7 @@ async fn edit_milestone(settings: &LiveSettings, tf: Timeframe, offline: bool, m
 
 /// Persist an editor buffer that failed a genuine (non-transient) sync/parse, and surface the path.
 fn dump_rejected(edited_content: &str, e: Report) -> Result<()> {
-	tedi_task_operations::utils::persist_rejected_changes(edited_content);
+	tedi_task_operations::utils::persist_rejected_changes(edited_content)?;
 	eprintln!("Your changes were saved to /tmp/tedi/rejected-changes.md — you can recover them from there.");
 	Err(e)
 }

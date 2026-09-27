@@ -1022,6 +1022,9 @@ impl VirtualIssue {
 		let ctx = ParseContext::new(content.to_owned(), path);
 		let events = crate::Events::parse(content);
 		let item_lines = tedi_md::item_source_lines(content);
+		if item_lines.is_empty() {
+			return Err(ParseError::empty_file());
+		}
 		assert_eq!(
 			item_lines.len(),
 			events.iter().filter(|e| matches!(e, crate::OwnedEvent::Start(crate::OwnedTag::Item))).count(),

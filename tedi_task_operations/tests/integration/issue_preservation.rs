@@ -325,3 +325,27 @@ async fn test_markerless_item_appended_after_children_reports_its_own_line() {
 		"the milestone reference should remain issue body content"
 	);
 }
+
+/// A rejected edit must leave the issue file as it was before the editor opened — otherwise the
+/// next open parses the rejected buffer from disk and fails before the user can correct it.
+#[tokio::test]
+async fn test_emptied_buffer_is_rejected_and_file_restored() {
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+
+	let vi = parse_virtual("- [ ] a <!-- @mock_user https://github.com/o/r/issues/1 -->\n  body\n");
+	let issue = ctx.consensus(&vi, None).await;
+	ctx.remote(&vi, None);
+
+	let (vpath, paused) = ctx.open_issue(&issue).args(&["--offline"]).break_to_edit();
+	let before = std::fs::read_to_string(&vpath).unwrap();
+	std::fs::write(&vpath, "").unwrap();
+
+	let out = paused.resume();
+	assert!(!out.status.success(), "an empty buffer must be refused. stdout: {}", out.stdout);
+	assert!(!out.stderr.contains("panicked"), "stderr: {}", out.stderr);
+	assert!(out.stderr.contains("rejected-changes.md"), "must say where the edit was saved. stderr: {}", out.stderr);
+	assert_eq!(std::fs::read_to_string(&vpath).unwrap(), before);
+
+	let reopen = ctx.open_issue(&issue).args(&["--offline"]).run();
+	assert!(reopen.status.success(), "stderr: {}", reopen.stderr);
+}

@@ -78,15 +78,8 @@ pub fn rg(args: &[&str], dir: &Path) -> Result<String> {
 }
 /// Persist rejected user-edited content to a known path for recovery.
 /// Call this before propagating a parse/validation error on user-edited content.
-pub fn persist_rejected_changes(content: &str) {
+pub fn persist_rejected_changes(content: &str) -> std::io::Result<()> {
 	let path = Path::new(REJECTED_CHANGES_PATH);
-	if let Some(parent) = path.parent() {
-		if let Err(e) = std::fs::create_dir_all(parent) {
-			tracing::warn!("failed to create rejected-changes dir: {e}");
-			return;
-		}
-	}
-	if let Err(e) = std::fs::write(path, content) {
-		tracing::warn!("failed to persist rejected changes: {e}");
-	}
+	std::fs::create_dir_all(path.parent().expect("REJECTED_CHANGES_PATH is absolute"))?;
+	std::fs::write(path, content)
 }

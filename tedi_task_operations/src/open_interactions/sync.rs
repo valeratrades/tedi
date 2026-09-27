@@ -217,9 +217,8 @@ fn persist_blocker_selection(issue: &mut Issue) {
 		Err(e) => tracing::warn!("!s: failed to resolve issue path for blocker selection: {e}"),
 	}
 }
-#[derive(Debug, miette::Diagnostic, thiserror::Error)]
-#[error(transparent)]
-#[diagnostic(help("Your changes were saved to /tmp/tedi/rejected-changes.md — you can recover them from there."))]
+#[derive(Debug, thiserror::Error)]
+#[error("{0}\n\nYour changes were saved to /tmp/tedi/rejected-changes.md — you can recover them from there.")]
 struct RejectedEdit(#[from] crate::ParseError);
 
 mod core {
@@ -495,24 +494,33 @@ mod types {
 						Some(before) if before.is_empty() || before.ends_with('\n')
 					);
 
-					if undo || !file_modified {
-						// No effective change. If the file existed before, restore it to mirror the issue
-						// (an undo leaves raw editor text on disk). If we created it just to open the editor
-						// for a brand-new issue, remove it — an aborted touch must not create anything.
+					// If the file existed before, restore it to mirror the issue (an undo or a rejected edit
+					// leaves raw editor text on disk). If we created it just to open the editor for a
+					// brand-new issue, remove it — an aborted touch must not create anything.
+					let restore = || -> std::io::Result<()> {
 						if pre_existed {
-							std::fs::write(&path, issue.to_string())?;
+							std::fs::write(&path, issue.to_string())
 						} else {
 							std::fs::remove_file(&path)?;
 							if let Some(parent) = path.parent() {
 								let _ = std::fs::remove_dir(parent); // only succeeds if we left it empty
 							}
+							Ok(())
 						}
+					};
+
+					if undo || !file_modified {
+						restore()?;
 						ModifyResult { output: None, file_modified: false }
 					} else {
-						let edited = VirtualIssue::parse(&content, path.clone()).map_err(|e| {
-							crate::utils::persist_rejected_changes(&content);
-							RejectedEdit(e)
-						})?;
+						let edited = match VirtualIssue::parse(&content, path.clone()) {
+							Ok(edited) => edited,
+							Err(e) => {
+								crate::utils::persist_rejected_changes(&content)?;
+								restore()?;
+								return Err(RejectedEdit(e).into());
+							}
+						};
 						apply_edited_buffer(issue, &old_issue, edited);
 						ModifyResult { output: None, file_modified: true }
 					}
