@@ -663,14 +663,18 @@ impl GithubClient for RealGithubClient {
 /// Re-run `$call` up to three extra times on a transient error, backing off 200→400→800ms.
 /// `$call` is re-evaluated each attempt (all our arg types are `Copy` or `&`-borrowed).
 macro_rules! retrying {
-	($call:expr) => {{
-		let mut result = $call.await;
+	($self:ident.inner.$method:ident($($arg:expr),*)) => {{
+		let attempt = || async {
+			let _permit = $self.in_flight.acquire().await.expect("semaphore is never closed");
+			$self.inner.$method($($arg),*).await
+		};
+		let mut result = attempt().await;
 		for delay_ms in [200u64, 400, 800] {
 			match &result {
 				Err(e) if GithubError::is_transient(e) => {
 					tracing::warn!("transient GitHub error, retrying in {delay_ms}ms: {e}");
 					tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
-					result = $call.await;
+					result = attempt().await;
 				}
 				_ => break,
 			}
@@ -680,13 +684,19 @@ macro_rules! retrying {
 }
 
 /// Decorates any `GithubClient`, absorbing momentary blips (5xx/429/network) by retrying before
-/// they surface. Wrapping the client once covers every method — no per-call site edits.
+/// they surface, and capping requests in flight so concurrent loads stay under GitHub's secondary
+/// rate limit. Wrapping the client once covers every method — no per-call site edits.
 pub struct RetryingGithubClient {
 	inner: BoxedGithubClient,
+	in_flight: tokio::sync::Semaphore,
 }
 impl RetryingGithubClient {
-	pub fn new(inner: BoxedGithubClient) -> Self {
-		Self { inner }
+	pub fn new(inner: BoxedGithubClient, max_in_flight: usize) -> Self {
+		assert!(max_in_flight > 0, "a zero cap would deadlock every request");
+		Self {
+			inner,
+			in_flight: tokio::sync::Semaphore::new(max_in_flight),
+		}
 	}
 }
 

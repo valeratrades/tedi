@@ -64,7 +64,7 @@ async fn main() {
 	} else if has_github_commands {
 		let config = exit_on_error(settings.config());
 		let client = tedi_adapters::github::RealGithubClient::new(config.github_token.clone());
-		let retrying = tedi_adapters::github::RetryingGithubClient::new(Arc::new(client));
+		let retrying = tedi_adapters::github::RetryingGithubClient::new(Arc::new(client), config.github_max_in_flight.unwrap_or(32));
 		Some(Arc::new(retrying) as tedi_adapters::github::BoxedGithubClient)
 	} else {
 		None

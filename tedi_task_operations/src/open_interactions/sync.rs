@@ -22,7 +22,6 @@
 //! sync always uses `Normal`. This prevents accidental data loss.
 
 use color_eyre::eyre::{Result, bail};
-use futures::StreamExt as _;
 use tracing::instrument;
 pub use types::*;
 
@@ -69,16 +68,13 @@ pub async fn pull_issues(issues: &mut [Issue], mode: MergeMode) -> Result<()> {
 				.any(|a| a.repo_info() == i.repo_info() && a.index().len() < i.index().len() && i.index().starts_with(a.index()))
 		})
 		.collect();
-	let remotes: Vec<Option<Result<Issue>>> = futures::stream::iter(issues.iter().zip(&nested))
-		.map(|(issue, nested)| async move {
-			match !nested && issue.is_linked() && !issue.identity.is_virtual {
-				true => Some(core::fetch_remote(issue).await),
-				false => None,
-			}
-		})
-		.buffered(MAX_CONCURRENT_FETCHES)
-		.collect()
-		.await;
+	let remotes: Vec<Option<Result<Issue>>> = futures::future::join_all(issues.iter().zip(&nested).map(|(issue, nested)| async move {
+		match !nested && issue.is_linked() && !issue.identity.is_virtual {
+			true => Some(core::fetch_remote(issue).await),
+			false => None,
+		}
+	}))
+	.await;
 
 	for (issue, remote) in issues.iter_mut().zip(remotes) {
 		let Some(remote) = remote else { continue };
@@ -101,8 +97,6 @@ pub async fn pull_issues(issues: &mut [Issue], mode: MergeMode) -> Result<()> {
 	}
 	Ok(())
 }
-/// Each issue load is itself ~5 requests plus its sub-issue fan-out; GitHub's secondary limit trips around 100 in flight.
-pub(crate) const MAX_CONCURRENT_FETCHES: usize = 8;
 
 /// Modify a local issue, then sync changes back to Github.
 ///

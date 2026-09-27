@@ -41,6 +41,7 @@ clockify_workspace_id = "..."
 
 # Optional
 default_extension = "md"  # or "typ" for typst
+github_max_in_flight = 32  # GitHub requests in flight at once
 ```
 
 </details>

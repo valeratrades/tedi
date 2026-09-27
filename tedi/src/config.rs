@@ -5,6 +5,8 @@ pub const EXE_NAME: &str = env!("CARGO_PKG_NAME");
 #[derive(Clone, Debug, Default, v_macros::LiveSettings, v_macros::MyConfigPrimitives, v_macros::Settings)]
 pub struct AppConfig {
 	pub github_token: String,
+	/// Max GitHub requests in flight at once (default: 32). GitHub's secondary rate limit trips around 100.
+	pub github_max_in_flight: Option<usize>,
 	pub timer: Option<Timer>,
 	pub milestones: Option<Milestones>,
 	pub manual_stats: Option<ManualStats>,

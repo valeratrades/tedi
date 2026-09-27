@@ -8,7 +8,6 @@
 use std::path::{Path, PathBuf};
 
 use color_eyre::eyre::{Result, bail, eyre};
-use futures::{StreamExt as _, TryStreamExt as _};
 
 use crate::{
 	HollowIssue, Issue, IssueIdentity, IssueIndex, IssueLink, LazyIssue, Milestone, MilestoneLink, NodeLink, RepoInfo, TaskView, VirtualIssue,
@@ -95,11 +94,7 @@ pub async fn expand_and_refresh(content: &str, pull: bool) -> Result<String> {
 pub async fn refresh_milestone_cache(links: &[MilestoneLink]) -> Result<()> {
 	let mut seen = std::collections::HashSet::new();
 	let links: Vec<&MilestoneLink> = links.iter().filter(|l| seen.insert(l.as_str().to_string())).collect();
-	let remotes: Vec<Milestone> = futures::stream::iter(&links)
-		.map(|l| load_remote_milestone(l))
-		.buffered(crate::open_interactions::MAX_CONCURRENT_FETCHES)
-		.try_collect()
-		.await?;
+	let remotes: Vec<Milestone> = futures::future::try_join_all(links.iter().map(|l| load_remote_milestone(l))).await?;
 
 	let hosted: Vec<IssueLink> = remotes.iter().flat_map(|m| m.body.hosted()).filter(|l| !matches!(l, IssueLink::Virtual(_))).collect();
 	fetch_and_store_missing(&hosted).await;
@@ -582,17 +577,14 @@ async fn fetch_and_store_missing(links: &[IssueLink]) -> Vec<IssueLink> {
 			IssueLink::Owned(_) => Local::find_by_number(l.project(), l.number(), FsReader).is_none(),
 		})
 		.collect();
-	let fetched: Vec<Result<Issue>> = futures::stream::iter(&missing)
-		.map(|link| async move {
-			// virtual issues have no remote: they must never be fetched
-			if matches!(link, IssueLink::Virtual(_)) {
-				bail!("virtual issue file is missing");
-			}
-			Ok(Issue::load(RemoteSource::build((*link).clone(), None)?).await?)
-		})
-		.buffered(crate::open_interactions::MAX_CONCURRENT_FETCHES)
-		.collect()
-		.await;
+	let fetched: Vec<Result<Issue>> = futures::future::join_all(missing.iter().map(|link| async move {
+		// virtual issues have no remote: they must never be fetched
+		if matches!(link, IssueLink::Virtual(_)) {
+			bail!("virtual issue file is missing");
+		}
+		Ok(Issue::load(RemoteSource::build((*link).clone(), None)?).await?)
+	}))
+	.await;
 
 	let mut unavailable = Vec::new();
 	for (link, issue) in missing.into_iter().zip(fetched) {
