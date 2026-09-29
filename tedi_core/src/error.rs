@@ -31,8 +31,8 @@ impl ParseError {
 		}
 	}
 
-	pub fn empty_file() -> Self {
-		Self::from_diagnostic(ParseDiagnostic::EmptyFile)
+	pub fn empty_file(path: PathBuf) -> Self {
+		Self::from_diagnostic(ParseDiagnostic::EmptyFile { path })
 	}
 
 	pub fn invalid_title(src: NamedSource<String>, span: SourceSpan, detail: String) -> Self {
@@ -145,9 +145,9 @@ impl ParseContext {
 /// Internal miette diagnostic for nice error rendering with source highlighting.
 #[derive(Debug, miette::Diagnostic, thiserror::Error)]
 enum ParseDiagnostic {
-	#[error("file is empty")]
+	#[error("file is empty: {}", path.display())]
 	#[diagnostic(code(tedi::parse::empty_file))]
-	EmptyFile,
+	EmptyFile { path: PathBuf },
 
 	#[error("invalid title line: {detail}")]
 	#[diagnostic(code(tedi::parse::invalid_title), help("title must be formatted as: '- [ ] Title <!-- url -->' or '- [x] Title <!-- url -->'"))]

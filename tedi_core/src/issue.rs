@@ -1023,7 +1023,7 @@ impl VirtualIssue {
 		let events = crate::Events::parse(content);
 		let item_lines = tedi_md::item_source_lines(content);
 		if item_lines.is_empty() {
-			return Err(ParseError::empty_file());
+			return Err(ParseError::empty_file(ctx.filename.clone()));
 		}
 		assert_eq!(
 			item_lines.len(),
@@ -1586,7 +1586,7 @@ impl TitleLine {
 			pos += 1;
 		}
 		if pos >= events.len() {
-			return Err(ParseError::empty_file());
+			return Err(ParseError::empty_file(ctx.filename.clone()));
 		}
 		pos += 1; // past Start(Item)
 
