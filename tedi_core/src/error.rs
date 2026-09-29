@@ -145,8 +145,11 @@ impl ParseContext {
 /// Internal miette diagnostic for nice error rendering with source highlighting.
 #[derive(Debug, miette::Diagnostic, thiserror::Error)]
 enum ParseDiagnostic {
-	#[error("file is empty: {}", path.display())]
-	#[diagnostic(code(tedi::parse::empty_file))]
+	#[error("issue file is empty, so it no longer defines an issue: {}", path.display())]
+	#[diagnostic(
+		code(tedi::parse::empty_file),
+		help("a link (e.g. in a sprint or the urgent list) still points at this issue; restore its `- [ ] Title` line, or delete the file and the links to it")
+	)]
 	EmptyFile { path: PathBuf },
 
 	#[error("invalid title line: {detail}")]
