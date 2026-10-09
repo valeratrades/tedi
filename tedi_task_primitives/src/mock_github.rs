@@ -293,9 +293,9 @@ impl MockGithubClient {
 	}
 
 	fn log_call(&self, call: &str) {
+		// the file is absent until the test makes the edit
 		if let Ok(path) = std::env::var(ENV_MOCK_REMOTE_EDIT)
 			&& let Ok(content) = std::fs::read_to_string(&path)
-		// absent until the test makes the edit
 		{
 			self.load_state_json(&content).expect("mock remote edit must be valid mock state");
 			std::fs::remove_file(&path).expect("remote edit applies once");
