@@ -13,16 +13,40 @@ jobs:
     - pre_ci
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v5
+    - name: Lean cache setup
+      run: 'mkdir -p /tmp/nix-lean-cache
+
+        chmod 0777 /tmp/nix-lean-cache
+
+        printf ''#!/bin/sh\nexport PATH=/nix/var/nix/profiles/default/bin:$PATH\nnix
+        copy --to "file:///tmp/nix-lean-cache?compression=zstd&parallel-compression=true"
+        $OUT_PATHS || true\n'' > /tmp/nix-lean-pbh.sh
+
+        chmod 0755 /tmp/nix-lean-pbh.sh
+
+        '
+      shell: bash
     - name: Install Nix
       uses: DeterminateSystems/nix-installer-action@main
       with:
-        extra-conf: lazy-trees = true
-    - name: Setup Nix cache
-      uses: nix-community/cache-nix-action@v7
+        extra-conf: 'lazy-trees = true
+
+          post-build-hook = /tmp/nix-lean-pbh.sh
+
+          extra-substituters = file:///tmp/nix-lean-cache
+
+          extra-trusted-substituters = file:///tmp/nix-lean-cache
+
+          require-sigs = false
+
+          '
+    - name: Lean nix cache (built-only paths)
+      uses: actions/cache@v5
       with:
-        primary-key: nix-${{ runner.os }}-${{ hashFiles('**/flake.lock') }}
-        restore-prefixes-first-match: nix-${{ runner.os }}-
+        key: nix-lean-${{ runner.os }}-${{ github.run_id }}
+        path: /tmp/nix-lean-cache
+        restore-keys: nix-lean-${{ runner.os }}-
     - name: Debug nix environment
       run: "echo \"=== NIX ENVIRONMENT DEBUG ===\"\necho \"\"\necho \"1. Which nix:\"\
         \nwhich nix || echo \"nix not found in PATH\"\necho \"\"\necho \"2. Nix version:\"\
@@ -80,7 +104,7 @@ jobs:
         \ | head -20 || echo \"query failed\"\necho \"\"\necho \"20. System libssl:\"\
         \nldconfig -p 2>/dev/null | grep libssl || echo \"no system libssl\"\necho\
         \ \"\"\necho \"=== END DEBUG ===\"\n"
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v5
       with:
         path: my_gh_stuff
         repository: valeratrades/v_flakes
@@ -136,15 +160,39 @@ jobs:
   load_nix:
     runs-on: ubuntu-latest
     steps:
+    - name: Lean cache setup
+      run: 'mkdir -p /tmp/nix-lean-cache
+
+        chmod 0777 /tmp/nix-lean-cache
+
+        printf ''#!/bin/sh\nexport PATH=/nix/var/nix/profiles/default/bin:$PATH\nnix
+        copy --to "file:///tmp/nix-lean-cache?compression=zstd&parallel-compression=true"
+        $OUT_PATHS || true\n'' > /tmp/nix-lean-pbh.sh
+
+        chmod 0755 /tmp/nix-lean-pbh.sh
+
+        '
+      shell: bash
     - name: Install Nix
       uses: DeterminateSystems/nix-installer-action@main
       with:
-        extra-conf: lazy-trees = true
-    - name: Setup Nix cache
-      uses: nix-community/cache-nix-action@v7
+        extra-conf: 'lazy-trees = true
+
+          post-build-hook = /tmp/nix-lean-pbh.sh
+
+          extra-substituters = file:///tmp/nix-lean-cache
+
+          extra-trusted-substituters = file:///tmp/nix-lean-cache
+
+          require-sigs = false
+
+          '
+    - name: Lean nix cache (built-only paths)
+      uses: actions/cache@v5
       with:
-        primary-key: nix-${{ runner.os }}-${{ hashFiles('**/flake.lock') }}
-        restore-prefixes-first-match: nix-${{ runner.os }}-
+        key: nix-lean-${{ runner.os }}-${{ github.run_id }}
+        path: /tmp/nix-lean-cache
+        restore-keys: nix-lean-${{ runner.os }}-
     - name: Cache packages
       run: '# Pre-fetch packages into nix store so they''re cached for dependent jobs
 
@@ -164,16 +212,40 @@ jobs:
     - pre_ci
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v5
+    - name: Lean cache setup
+      run: 'mkdir -p /tmp/nix-lean-cache
+
+        chmod 0777 /tmp/nix-lean-cache
+
+        printf ''#!/bin/sh\nexport PATH=/nix/var/nix/profiles/default/bin:$PATH\nnix
+        copy --to "file:///tmp/nix-lean-cache?compression=zstd&parallel-compression=true"
+        $OUT_PATHS || true\n'' > /tmp/nix-lean-pbh.sh
+
+        chmod 0755 /tmp/nix-lean-pbh.sh
+
+        '
+      shell: bash
     - name: Install Nix
       uses: DeterminateSystems/nix-installer-action@main
       with:
-        extra-conf: lazy-trees = true
-    - name: Setup Nix cache
-      uses: nix-community/cache-nix-action@v7
+        extra-conf: 'lazy-trees = true
+
+          post-build-hook = /tmp/nix-lean-pbh.sh
+
+          extra-substituters = file:///tmp/nix-lean-cache
+
+          extra-trusted-substituters = file:///tmp/nix-lean-cache
+
+          require-sigs = false
+
+          '
+    - name: Lean nix cache (built-only paths)
+      uses: actions/cache@v5
       with:
-        primary-key: nix-${{ runner.os }}-${{ hashFiles('**/flake.lock') }}
-        restore-prefixes-first-match: nix-${{ runner.os }}-
+        key: nix-lean-${{ runner.os }}-${{ github.run_id }}
+        path: /tmp/nix-lean-cache
+        restore-keys: nix-lean-${{ runner.os }}-
     - name: Debug nix environment
       run: "echo \"=== NIX ENVIRONMENT DEBUG ===\"\necho \"\"\necho \"1. Which nix:\"\
         \nwhich nix || echo \"nix not found in PATH\"\necho \"\"\necho \"2. Nix version:\"\
@@ -233,7 +305,7 @@ jobs:
         \ \"\"\necho \"=== END DEBUG ===\"\n"
     - uses: dtolnay/rust-toolchain@clippy
     - name: Download modified by pre-ci Cargo.toml files
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@v7
       with:
         name: modified-cargo-files
     - run: nix-shell -p mold egl-wayland wayland libGL libgbm fd pkg-config pkg-config
@@ -273,16 +345,40 @@ jobs:
     - pre_ci
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v5
+    - name: Lean cache setup
+      run: 'mkdir -p /tmp/nix-lean-cache
+
+        chmod 0777 /tmp/nix-lean-cache
+
+        printf ''#!/bin/sh\nexport PATH=/nix/var/nix/profiles/default/bin:$PATH\nnix
+        copy --to "file:///tmp/nix-lean-cache?compression=zstd&parallel-compression=true"
+        $OUT_PATHS || true\n'' > /tmp/nix-lean-pbh.sh
+
+        chmod 0755 /tmp/nix-lean-pbh.sh
+
+        '
+      shell: bash
     - name: Install Nix
       uses: DeterminateSystems/nix-installer-action@main
       with:
-        extra-conf: lazy-trees = true
-    - name: Setup Nix cache
-      uses: nix-community/cache-nix-action@v7
+        extra-conf: 'lazy-trees = true
+
+          post-build-hook = /tmp/nix-lean-pbh.sh
+
+          extra-substituters = file:///tmp/nix-lean-cache
+
+          extra-trusted-substituters = file:///tmp/nix-lean-cache
+
+          require-sigs = false
+
+          '
+    - name: Lean nix cache (built-only paths)
+      uses: actions/cache@v5
       with:
-        primary-key: nix-${{ runner.os }}-${{ hashFiles('**/flake.lock') }}
-        restore-prefixes-first-match: nix-${{ runner.os }}-
+        key: nix-lean-${{ runner.os }}-${{ github.run_id }}
+        path: /tmp/nix-lean-cache
+        restore-keys: nix-lean-${{ runner.os }}-
     - name: Debug nix environment
       run: "echo \"=== NIX ENVIRONMENT DEBUG ===\"\necho \"\"\necho \"1. Which nix:\"\
         \nwhich nix || echo \"nix not found in PATH\"\necho \"\"\necho \"2. Nix version:\"\
@@ -342,7 +438,7 @@ jobs:
         \ \"\"\necho \"=== END DEBUG ===\"\n"
     - uses: dtolnay/rust-toolchain@nightly
     - name: Download modified by pre-ci Cargo.toml files
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@v7
       with:
         name: modified-cargo-files
     - uses: dtolnay/install@cargo-docs-rs
@@ -374,16 +470,40 @@ jobs:
     needs: load_nix
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v5
+    - name: Lean cache setup
+      run: 'mkdir -p /tmp/nix-lean-cache
+
+        chmod 0777 /tmp/nix-lean-cache
+
+        printf ''#!/bin/sh\nexport PATH=/nix/var/nix/profiles/default/bin:$PATH\nnix
+        copy --to "file:///tmp/nix-lean-cache?compression=zstd&parallel-compression=true"
+        $OUT_PATHS || true\n'' > /tmp/nix-lean-pbh.sh
+
+        chmod 0755 /tmp/nix-lean-pbh.sh
+
+        '
+      shell: bash
     - name: Install Nix
       uses: DeterminateSystems/nix-installer-action@main
       with:
-        extra-conf: lazy-trees = true
-    - name: Setup Nix cache
-      uses: nix-community/cache-nix-action@v7
+        extra-conf: 'lazy-trees = true
+
+          post-build-hook = /tmp/nix-lean-pbh.sh
+
+          extra-substituters = file:///tmp/nix-lean-cache
+
+          extra-trusted-substituters = file:///tmp/nix-lean-cache
+
+          require-sigs = false
+
+          '
+    - name: Lean nix cache (built-only paths)
+      uses: actions/cache@v5
       with:
-        primary-key: nix-${{ runner.os }}-${{ hashFiles('**/flake.lock') }}
-        restore-prefixes-first-match: nix-${{ runner.os }}-
+        key: nix-lean-${{ runner.os }}-${{ github.run_id }}
+        path: /tmp/nix-lean-cache
+        restore-keys: nix-lean-${{ runner.os }}-
     - name: Debug nix environment
       run: "echo \"=== NIX ENVIRONMENT DEBUG ===\"\necho \"\"\necho \"1. Which nix:\"\
         \nwhich nix || echo \"nix not found in PATH\"\necho \"\"\necho \"2. Nix version:\"\
@@ -470,16 +590,40 @@ jobs:
     needs: load_nix
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v5
+    - name: Lean cache setup
+      run: 'mkdir -p /tmp/nix-lean-cache
+
+        chmod 0777 /tmp/nix-lean-cache
+
+        printf ''#!/bin/sh\nexport PATH=/nix/var/nix/profiles/default/bin:$PATH\nnix
+        copy --to "file:///tmp/nix-lean-cache?compression=zstd&parallel-compression=true"
+        $OUT_PATHS || true\n'' > /tmp/nix-lean-pbh.sh
+
+        chmod 0755 /tmp/nix-lean-pbh.sh
+
+        '
+      shell: bash
     - name: Install Nix
       uses: DeterminateSystems/nix-installer-action@main
       with:
-        extra-conf: lazy-trees = true
-    - name: Setup Nix cache
-      uses: nix-community/cache-nix-action@v7
+        extra-conf: 'lazy-trees = true
+
+          post-build-hook = /tmp/nix-lean-pbh.sh
+
+          extra-substituters = file:///tmp/nix-lean-cache
+
+          extra-trusted-substituters = file:///tmp/nix-lean-cache
+
+          require-sigs = false
+
+          '
+    - name: Lean nix cache (built-only paths)
+      uses: actions/cache@v5
       with:
-        primary-key: nix-${{ runner.os }}-${{ hashFiles('**/flake.lock') }}
-        restore-prefixes-first-match: nix-${{ runner.os }}-
+        key: nix-lean-${{ runner.os }}-${{ github.run_id }}
+        path: /tmp/nix-lean-cache
+        restore-keys: nix-lean-${{ runner.os }}-
     - name: Debug nix environment
       run: "echo \"=== NIX ENVIRONMENT DEBUG ===\"\necho \"\"\necho \"1. Which nix:\"\
         \nwhich nix || echo \"nix not found in PATH\"\necho \"\"\necho \"2. Nix version:\"\
@@ -569,16 +713,40 @@ jobs:
     needs: load_nix
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v5
+    - name: Lean cache setup
+      run: 'mkdir -p /tmp/nix-lean-cache
+
+        chmod 0777 /tmp/nix-lean-cache
+
+        printf ''#!/bin/sh\nexport PATH=/nix/var/nix/profiles/default/bin:$PATH\nnix
+        copy --to "file:///tmp/nix-lean-cache?compression=zstd&parallel-compression=true"
+        $OUT_PATHS || true\n'' > /tmp/nix-lean-pbh.sh
+
+        chmod 0755 /tmp/nix-lean-pbh.sh
+
+        '
+      shell: bash
     - name: Install Nix
       uses: DeterminateSystems/nix-installer-action@main
       with:
-        extra-conf: lazy-trees = true
-    - name: Setup Nix cache
-      uses: nix-community/cache-nix-action@v7
+        extra-conf: 'lazy-trees = true
+
+          post-build-hook = /tmp/nix-lean-pbh.sh
+
+          extra-substituters = file:///tmp/nix-lean-cache
+
+          extra-trusted-substituters = file:///tmp/nix-lean-cache
+
+          require-sigs = false
+
+          '
+    - name: Lean nix cache (built-only paths)
+      uses: actions/cache@v5
       with:
-        primary-key: nix-${{ runner.os }}-${{ hashFiles('**/flake.lock') }}
-        restore-prefixes-first-match: nix-${{ runner.os }}-
+        key: nix-lean-${{ runner.os }}-${{ github.run_id }}
+        path: /tmp/nix-lean-cache
+        restore-keys: nix-lean-${{ runner.os }}-
     - name: Debug nix environment
       run: "echo \"=== NIX ENVIRONMENT DEBUG ===\"\necho \"\"\necho \"1. Which nix:\"\
         \nwhich nix || echo \"nix not found in PATH\"\necho \"\"\necho \"2. Nix version:\"\
@@ -670,16 +838,40 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v4
+      uses: actions/checkout@v5
+    - name: Lean cache setup
+      run: 'mkdir -p /tmp/nix-lean-cache
+
+        chmod 0777 /tmp/nix-lean-cache
+
+        printf ''#!/bin/sh\nexport PATH=/nix/var/nix/profiles/default/bin:$PATH\nnix
+        copy --to "file:///tmp/nix-lean-cache?compression=zstd&parallel-compression=true"
+        $OUT_PATHS || true\n'' > /tmp/nix-lean-pbh.sh
+
+        chmod 0755 /tmp/nix-lean-pbh.sh
+
+        '
+      shell: bash
     - name: Install Nix
       uses: DeterminateSystems/nix-installer-action@main
       with:
-        extra-conf: lazy-trees = true
-    - name: Setup Nix cache
-      uses: nix-community/cache-nix-action@v7
+        extra-conf: 'lazy-trees = true
+
+          post-build-hook = /tmp/nix-lean-pbh.sh
+
+          extra-substituters = file:///tmp/nix-lean-cache
+
+          extra-trusted-substituters = file:///tmp/nix-lean-cache
+
+          require-sigs = false
+
+          '
+    - name: Lean nix cache (built-only paths)
+      uses: actions/cache@v5
       with:
-        primary-key: nix-${{ runner.os }}-${{ hashFiles('**/flake.lock') }}
-        restore-prefixes-first-match: nix-${{ runner.os }}-
+        key: nix-lean-${{ runner.os }}-${{ github.run_id }}
+        path: /tmp/nix-lean-cache
+        restore-keys: nix-lean-${{ runner.os }}-
     - name: Debug nix environment
       run: "echo \"=== NIX ENVIRONMENT DEBUG ===\"\necho \"\"\necho \"1. Which nix:\"\
         \nwhich nix || echo \"nix not found in PATH\"\necho \"\"\necho \"2. Nix version:\"\

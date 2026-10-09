@@ -4,7 +4,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v4
+      uses: actions/checkout@v5
     - env:
         loc_gist_token: ${{ secrets.loc_gist_token }}
       name: Ensure loc_gist_token secret is configured
@@ -47,12 +47,15 @@ jobs:
         '
     - name: Display generated JSON
       run: cat ${{ steps.count.outputs.pname }}-loc.json
-    - name: Update gist
-      uses: exuanbo/actions-deploy-gist@v1
-      with:
-        file_path: ${{ steps.count.outputs.pname }}-loc.json
-        gist_id: b48e6f02c61942200e7d1e3eeabf9bcb
-        token: ${{ secrets.loc_gist_token }}
+    - env:
+        GH_TOKEN: ${{ secrets.loc_gist_token }}
+      name: Update gist
+      run: 'F="${{ steps.count.outputs.pname }}-loc.json"
+
+        gh api -X PATCH gists/b48e6f02c61942200e7d1e3eeabf9bcb -f "files[$F][content]=$(cat
+        "$F")" --silent
+
+        '
 name: Other
 'on':
   pull_request: {}
