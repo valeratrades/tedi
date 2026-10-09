@@ -68,8 +68,9 @@
         {
           packages =
             let
-              rustc = rust;
-              cargo = rust;
+              build_rust = v_flakes.rs.build_nightly system;
+              rustc = build_rust;
+              cargo = build_rust;
               rustPlatform = pkgs.makeRustPlatform {
                 inherit rustc cargo stdenv;
               };
@@ -88,6 +89,26 @@
                 RUSTC_WRAPPER = ""; # .cargo/config.toml sets sccache, absent in sandbox
               };
             };
+
+          apps.help = {
+            type = "app";
+            program = "${pkgs.writeShellScriptBin "help" ''
+              cat <<'EOF'
+              ${pname} — GitHub issues as local markdown, plus sprints, blockers and daily stats.
+
+              Commands:
+                nix develop                    dev shell (rust nightly, pre-commit, generated configs)
+                nix build                      build the `${pname}` binary
+                nix run . -- --help            CLI help: open, sprints, manual, clockify, perf-eval, monitors, init
+                cargo t                        tests (integration: tedi_task_operations/tests/)
+
+              Outputs:
+                homeManagerModules.monitors-watch   systemd user service running `${pname} monitors watch`
+
+              Docs: README.md, docs/ARCHITECTURE.md, docs/spec/
+              EOF
+            ''}/bin/help";
+          };
 
           devShells.default =
             with pkgs;
