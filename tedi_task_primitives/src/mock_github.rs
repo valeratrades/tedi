@@ -25,6 +25,11 @@ const ENV_MOCK_STATE: &str = "tedi_MOCK_STATE";
 /// When set to an HTTP status (e.g. `503`), `get_milestone`/`update_milestone` return that status as
 /// an `Api` error — lets tests inject a GitHub outage and exercise the deferral path.
 const ENV_MOCK_FAIL_GET_MILESTONE: &str = "tedi_MOCK_FAIL_GET_MILESTONE";
+/// State in the `{app}_MOCK_STATE` shape, merged in on the first call after the file appears — a
+/// remote edit made by someone else mid-run (e.g. while the editor is open).
+const ENV_MOCK_REMOTE_EDIT: &str = "tedi_MOCK_REMOTE_EDIT";
+/// Every call is appended here as it happens, so a test can see what reached GitHub up to a point.
+const ENV_MOCK_CALL_LOG: &str = "tedi_MOCK_CALL_LOG";
 /// Mock Github client that stores all state in memory.
 /// Thread-safe for use in async contexts.
 pub struct MockGithubClient {
@@ -288,6 +293,18 @@ impl MockGithubClient {
 	}
 
 	fn log_call(&self, call: &str) {
+		if let Ok(path) = std::env::var(ENV_MOCK_REMOTE_EDIT)
+			&& let Ok(content) = std::fs::read_to_string(&path)
+		// absent until the test makes the edit
+		{
+			self.load_state_json(&content).expect("mock remote edit must be valid mock state");
+			std::fs::remove_file(&path).expect("remote edit applies once");
+		}
+		if let Ok(path) = std::env::var(ENV_MOCK_CALL_LOG) {
+			use std::io::Write as _;
+			let mut log = std::fs::OpenOptions::new().create(true).append(true).open(&path).expect("mock call log is writable");
+			writeln!(log, "{call}").expect("mock call log is writable");
+		}
 		self.call_log.lock().unwrap().push(call.to_string());
 	}
 

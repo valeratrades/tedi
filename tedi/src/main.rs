@@ -7,7 +7,7 @@ mod sprints;
 use std::{sync::Arc, time::Duration};
 
 use clap::Parser;
-use tedi_task_operations::MockType;
+use tedi_task_operations::{MockType, open_interactions::SyncMode};
 use v_utils::utils::exit_on_error;
 
 #[derive(clap::Parser)]
@@ -24,6 +24,9 @@ struct Cli {
 	/// Automatically enabled for virtual projects (projects without Github remote).
 	#[arg(long, global = true)]
 	offline: bool,
+	/// Open the editor on local state; reach Github only once it closes.
+	#[arg(long, global = true, conflicts_with = "offline")]
+	sync_on_exit: bool,
 	/// Log to a specific file (filename only, no path). Logs go to ~/.local/state/tedi/{filename}.log
 	#[arg(long, global = true)]
 	log_to: Option<String>,
@@ -54,6 +57,11 @@ async fn main() {
 	v_utils::clientside!(extract_log_to());
 
 	let cli = Cli::parse();
+	let mode = match (cli.offline, cli.sync_on_exit) {
+		(true, _) => SyncMode::Offline,
+		(false, true) => SyncMode::OnExit,
+		(false, false) => SyncMode::Full,
+	};
 	let settings = Arc::new(exit_on_error(config::LiveSettings::new(cli.settings_flags.clone(), Duration::from_secs(3))));
 
 	// Commands that may need GitHub client (always construct it - offline only skips network calls)
@@ -70,28 +78,28 @@ async fn main() {
 		None
 	};
 
+	let user_cache = v_utils::xdg_cache_file!("authenticated_user.txt");
+	let cached_user = std::fs::read_to_string(&user_cache).ok().map(|u| u.trim().to_string()).filter(|u| !u.is_empty()); // unreadable reads as never fetched
+
 	// Set global GitHub client and current user for sink operations
 	if let Some(client) = &github_client {
-		if !cli.offline || cli.mock.is_some() {
-			if let Ok(user) = client.fetch_authenticated_user().await {
-				tracing::info!("Authenticated as: {user}");
-				let cache_path = v_utils::xdg_cache_file!("authenticated_user.txt");
-				let _ = std::fs::write(&cache_path, &user);
-				tedi_task_operations::current_user::set(user);
-			}
+		let fetch_user = match mode {
+			SyncMode::Full => true,
+			SyncMode::OnExit => cached_user.is_none(),
+			SyncMode::Offline => cli.mock.is_some(),
+		};
+		if fetch_user && let Ok(user) = client.fetch_authenticated_user().await {
+			tracing::info!("Authenticated as: {user}");
+			let _ = std::fs::write(&user_cache, &user);
+			tedi_task_operations::current_user::set(user);
 		}
 		tedi_adapters::github::client::set(client.clone());
 	}
-	// Load cached user if not fetched from network
-	if tedi_task_operations::current_user::get().is_none() {
-		let cache_path = v_utils::xdg_cache_file!("authenticated_user.txt");
-		if let Ok(user) = std::fs::read_to_string(&cache_path) {
-			let user = user.trim().to_string();
-			if !user.is_empty() {
-				tracing::info!("Loaded cached user: {user}");
-				tedi_task_operations::current_user::set(user);
-			}
-		}
+	if tedi_task_operations::current_user::get().is_none()
+		&& let Some(user) = cached_user
+	{
+		tracing::info!("Loaded cached user: {user}");
+		tedi_task_operations::current_user::set(user);
 	}
 
 	// All the functions here can rely on config being correct.
@@ -102,7 +110,7 @@ async fn main() {
 			let date_format = config.manual_stats.as_ref().map(|m| m.date_format.as_str()).filter(|s| !s.is_empty()).unwrap_or("%Y-%m-%d");
 			tedi_eval::manual_stats::update_or_open(date_format, manual_args).await
 		}
-		Commands::Sprints(sprints_command) => sprints::sprints_command(&*settings, sprints_command, cli.mock, cli.offline).await,
+		Commands::Sprints(sprints_command) => sprints::sprints_command(&*settings, sprints_command, cli.mock, mode).await,
 		Commands::Init(args) => {
 			shell_init::output(&*settings, args);
 			Ok(())
@@ -110,7 +118,7 @@ async fn main() {
 		Commands::Clockify(args) => tedi_adapters::clockify::main(exit_on_error(settings.config()).yes, args).await,
 		Commands::PerfEval(args) => tedi_eval::perf_eval::main(args).await,
 		Commands::Monitors(args) => tedi_eval::watch_monitors::main(args).await,
-		Commands::Open(args) => tedi_task_operations::open_interactions::open_command(args, cli.offline, cli.mock).await,
+		Commands::Open(args) => tedi_task_operations::open_interactions::open_command(args, mode, cli.mock).await,
 	});
 }
 

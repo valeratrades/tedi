@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use color_eyre::eyre::Report;
 use v_utils::{macros::wrap_err, utils::exit_on_error};
 
-use super::command::ProjectType;
+use super::{command::ProjectType, sync::SyncMode};
 use crate::{
 	IssueIndex, IssueSelector, RepoInfo, github,
 	local::{FsReader, Local, LocalError, LocalIssueSource, LocalPath, LocalPathError, LocalPathErrorKind},
@@ -41,7 +41,7 @@ pub enum TouchError {
 /// With no match, the input is split by `/` literally as `owner/repo/…/title` and the
 /// issue is created — under the local project if it exists, else on GitHub if the repo
 /// is accessible, else as a virtual project when `parent` allows it.
-pub async fn parse_touch_path(user_input: &str, parent: Option<ProjectType>, offline: bool) -> Result<LocalIssueSource<FsReader>, TouchError> {
+pub async fn parse_touch_path(user_input: &str, parent: Option<ProjectType>, mode: SyncMode) -> Result<LocalIssueSource<FsReader>, TouchError> {
 	let pattern = strip_md_extension(user_input);
 
 	// logical path → file relpath
@@ -77,7 +77,7 @@ pub async fn parse_touch_path(user_input: &str, parent: Option<ProjectType>, off
 	let titles = &segments[2..];
 
 	let repo_known = Local::project_dir(github_repo).exists() || {
-		!offline && {
+		mode != SyncMode::Offline && {
 			let client = exit_on_error(github::client::get());
 			exit_on_error(client.repo_exists(github_repo).await)
 		}
@@ -130,8 +130,8 @@ mod tests {
 		std::fs::create_dir_all(&tmp).unwrap();
 		crate::mocks::set_issues_dir(tmp);
 
-		let err1 = parse_touch_path("owner/issue.md", None, true).await.unwrap_err();
-		let err2 = parse_touch_path("issue.md", None, true).await.unwrap_err();
+		let err1 = parse_touch_path("owner/issue.md", None, SyncMode::Offline).await.unwrap_err();
+		let err2 = parse_touch_path("issue.md", None, SyncMode::Offline).await.unwrap_err();
 		eprintln!("{err1:?}\n\n&{err2:?}"); // can't `snapshot` assert it, - error contains home path atm, which depends on the env
 	}
 }

@@ -105,14 +105,21 @@ pub async fn pull_issues(issues: &mut [Issue], mode: MergeMode) -> Result<()> {
 	repo = ?issue.identity.repo_info(),
 	issue_id = ?issue.git_id(),
 	title = %issue.contents.title,
-	offline,
+	?mode,
 	modifier = ?modifier,
 ))]
-pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Modifier, sync_opts: SyncOptions) -> Result<ModifyResult> {
+pub async fn modify_and_sync_issue(mut issue: Issue, mode: SyncMode, modifier: Modifier, sync_opts: SyncOptions) -> Result<ModifyResult> {
 	let repo_info = issue.identity.repo_info();
 	let issue_index = IssueIndex::from(&issue);
 
-	if !offline {
+	// `Write` applies a buffer rendered earlier: a pull between that render and the apply reads as the user reverting whatever the remote gained meanwhile.
+	let pre_pull = !matches!(modifier, Modifier::Write { .. })
+		&& match mode {
+			SyncMode::Offline => false,
+			SyncMode::OnExit => sync_opts.merge_mode_set(), // a forced side is a resolution asked for before editing
+			SyncMode::Full => true,
+		};
+	if pre_pull {
 		pull_issues(std::slice::from_mut(&mut issue), sync_opts.take_merge_mode()).await?;
 	}
 
@@ -129,7 +136,7 @@ pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Mo
 		result
 	};
 
-	match offline || repo_info.is_virtual() {
+	match mode == SyncMode::Offline || repo_info.is_virtual() {
 		true => {
 			<Issue as Sink<LocalFs>>::sink(&mut issue, None).await?;
 			persist_blocker_selection(&mut issue);
@@ -191,6 +198,11 @@ pub async fn modify_and_sync_issue(mut issue: Issue, offline: bool, modifier: Mo
 			Ok(new_modified)
 		}
 	}
+}
+
+/// Changed on both sides since `base`, to different values.
+pub(super) fn clash<T: PartialEq>(local: T, base: T, remote: T) -> bool {
+	local != base && remote != base && local != remote
 }
 
 /// `!s` blocker selection: once the edited issue is sunk (and its final path known), point the
@@ -261,6 +273,11 @@ mod core {
 			_ => (false, false),
 		};
 
+		let clash = match (mode, &consensus) {
+			(MergeMode::Normal, Some(base)) => concurrent_edit(&local, base, &remote).map(|(l, r)| (l.git_id().expect("on the remote, so linked"), l.to_string(), r.to_string())),
+			_ => None,
+		};
+
 		// Apply four-merge algorithm
 		let mut local_merged = local.clone();
 		let mut remote_merged = remote.clone();
@@ -275,24 +292,18 @@ mod core {
 		}
 		remote_merged.merge(&local, force_local_wins)?;
 
-		// Compare results
-		match local_merged == remote_merged {
-			true => {
+		let divergence = clash.or_else(|| (local_merged != remote_merged).then(|| (issue_number, local_merged.to_string(), remote_merged.to_string())));
+		match divergence {
+			None => {
 				// Auto-resolved - sink to both sides
 				let mut resolved = local_merged;
 				<Issue as Sink<LocalFs>>::sink(&mut resolved, None).await?;
 				<Issue as Sink<Remote>>::sink(&mut resolved, Some(&remote)).await?;
 				Ok((resolved, true))
 			}
-			false => {
+			Some((issue_number, local_side, remote_side)) => {
 				// Conflict - initiate git merge
-				match initiate_conflict_merge(
-					repo_info,
-					issue_number,
-					&local_merged.to_string(),
-					&remote_merged.to_string(),
-					conflict_file_path(repo_info.owner().expect("github project")),
-				)? {
+				match initiate_conflict_merge(repo_info, issue_number, &local_side, &remote_side, conflict_file_path(repo_info.owner().expect("github project")))? {
 					ConflictOutcome::AutoMerged => {
 						unreachable!(
 							"AutoMerged means when we triggered a merge of local against remote (which we've already checked are divergent), it succeeded. Which would be an implementation error, - whole point of the call is to record the conflict before getting user to resolve it manually."
@@ -311,6 +322,29 @@ mod core {
 					}
 				}
 			}
+		}
+	}
+
+	/// The first node with a field both sides edited since `base`: neither edit was made knowing of
+	/// the other, so no timestamp can order them.
+	fn concurrent_edit<'a>(local: &'a Issue, base: &Issue, remote: &'a Issue) -> Option<(&'a Issue, &'a Issue)> {
+		let labels = |i: &Issue| {
+			let mut labels = i.contents.labels.clone();
+			labels.sort_unstable();
+			labels
+		};
+		let comments = |i: &Issue| i.contents.comments.iter().skip(1).map(|c| (c.id(), c.body.to_string())).collect::<Vec<_>>();
+		let edited = clash(&local.contents.title, &base.contents.title, &remote.contents.title)
+			|| clash(labels(local), labels(base), labels(remote))
+			|| clash(local.body().to_string(), base.body().to_string(), remote.body().to_string())
+			|| clash(&local.contents.state, &base.contents.state, &remote.contents.state)
+			|| clash(comments(local), comments(base), comments(remote));
+		match edited {
+			true => Some((local, remote)),
+			false => local
+				.children
+				.iter()
+				.find_map(|(selector, child)| concurrent_edit(child, base.children.get(selector)?, remote.children.get(selector)?)),
 		}
 	}
 
@@ -366,6 +400,16 @@ mod types {
 		Reset { prefer: Side },
 	}
 
+	/// When a run may reach GitHub, relative to the editor.
+	#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+	pub enum SyncMode {
+		Offline,
+		/// Only once the editor has closed: it opens on local state.
+		OnExit,
+		/// Before the editor too, so it opens on reconciled state.
+		Full,
+	}
+
 	/// Options for controlling sync behavior.
 	///
 	/// The `merge_mode` is consumed after first use (pre-editor sync),
@@ -380,6 +424,10 @@ mod types {
 			Self {
 				merge_mode: std::cell::Cell::new(merge_mode),
 			}
+		}
+
+		pub(super) fn merge_mode_set(&self) -> bool {
+			self.merge_mode.get().is_some()
 		}
 
 		/// Take the merge mode, returning Normal if already taken or not set.

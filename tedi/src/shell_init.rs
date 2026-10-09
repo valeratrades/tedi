@@ -41,7 +41,7 @@ alias tmr="tm ev -r --"
 # {exe_name}s-sprints //HACK: same prefix as manual
 alias tmh="{exe_name} sprints healthcheck"
 alias tmg="{exe_name} sprints get"
-alias tme="{exe_name} sprints edit"
+alias tme="{exe_name} sprints edit --sync-on-exit"
 
 # {exe_name}s-{exe_name}s
 alias tdo="{exe_name} open"

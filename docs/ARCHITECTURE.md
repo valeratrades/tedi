@@ -65,7 +65,12 @@ here we have a series of durations, like `1d`, `2w`, `1Q`, `1y` etc.
 This is less so a fundamental building component of the system, and rather a view into it, - our compiled selection of the tasks for each period.
 They assume top-down priority ordering, - as we admit impossibility of consistent 100% completion of the period's selection.
 
-Online, nothing reaches an editor before it has been reconciled with Github: the sprint's own body, every milestone it inlines, and every issue it expands are pulled first. The buffer is what an edit is reasoned against, so anything typed on top of a superseded body would fold back as a deletion of everything the remote gained since.
+When Github is reached depends on the sync mode:
+- **Full** (default): nothing reaches an editor before it has been reconciled with Github: the sprint's own body, every milestone it inlines, and every issue it expands are pulled first. The buffer is what an edit is reasoned against.
+- **On exit** (`--sync-on-exit`, what `tme` runs): the editor opens on local state; Github is reached only once it closes. Only what is missing locally is fetched before.
+- **Offline**: never.
+
+A buffer is folded back against the state it was rendered from, never against a pull made after it. A field changed on both sides since consensus is a conflict, never a timestamp race: neither edit was made knowing of the other.
 
 A sprint stores links only, so an issue expanded into an edit buffer has no second home there: its block is sliced back out of the buffer verbatim and committed whole through the same `VirtualIssue::parse` its own file goes through (`Modifier::Write`) — body, state, labels, comments and blockers alike. A block that doesn't compose fails the edit rather than being dropped.
 

@@ -6,6 +6,7 @@ use tedi_core::RepoInfo;
 use tedi_task_operations::{
 	IssueLink, MilestoneLink, TaskView,
 	clockify_tracking::{HaltArgs, ResumeArgs},
+	open_interactions::SyncMode,
 	sprints::{expand_and_refresh, materialize_new_tasks, sync_embedded_issue_changes, sync_milestone_changes},
 };
 use v_utils::{Timeframe, TimeframeDesignator};
@@ -20,8 +21,6 @@ pub enum SprintsCommands {
 	/// Edit a sprint (milestone description, or the local urgent list) in your $EDITOR
 	Edit {
 		sprint: SprintRef,
-		#[arg(long)]
-		offline: bool,
 	},
 	/// Ensures all milestones up to date, if yes - writes "OK" to $XDG_DATA_HOME/todo/healthcheck.status
 	/// Can get outdated easily, so printed output of the command is prepended with the filename
@@ -115,7 +114,7 @@ impl std::str::FromStr for SprintRef {
 pub static HEALTHCHECK_REL_PATH: &str = "healthcheck.status";
 pub static SPRINT_HEADER_REL_PATH: &str = "sprint_header.md";
 
-pub async fn sprints_command(settings: &LiveSettings, args: SprintsArgs, mock: Option<tedi_task_operations::MockType>, offline: bool) -> Result<()> {
+pub async fn sprints_command(settings: &LiveSettings, args: SprintsArgs, mock: Option<tedi_task_operations::MockType>, mode: SyncMode) -> Result<()> {
 	use tedi_task_operations::sprints as ops;
 
 	let yes = || settings.config().map(|c| c.yes).unwrap_or(false);
@@ -139,16 +138,16 @@ pub async fn sprints_command(settings: &LiveSettings, args: SprintsArgs, mock: O
 			println!("{expanded}");
 			Ok(())
 		}
-		SprintsCommands::Edit { sprint, offline } => match sprint {
-			SprintRef::Urgent => edit_urgent(offline).await,
-			SprintRef::Tf(tf) => edit_milestone(settings, tf, offline, mock.is_some()).await,
+		SprintsCommands::Edit { sprint } => match sprint {
+			SprintRef::Urgent => edit_urgent(mode).await,
+			SprintRef::Tf(tf) => edit_milestone(settings, tf, mode, mock.is_some()).await,
 		},
 		SprintsCommands::Healthcheck => healthcheck(settings).await,
 		SprintsCommands::Select { pattern, next, prev, down, up, top } => {
 			// A bare timeframe (`sprints select 1d`) focuses that sprint precision; anything else
 			// is an issue pattern within the currently-active sprint. The alpha-designator guard
 			// keeps numeric issue patterns (`select 2`) from parsing as a timeframe.
-			if !offline
+			if mode != SyncMode::Offline
 				&& !next && !prev
 				&& !down && !up
 				&& !top && let Some(p) = pattern.as_deref()
@@ -157,19 +156,19 @@ pub async fn sprints_command(settings: &LiveSettings, args: SprintsArgs, mock: O
 			{
 				focus_sprint(settings, tf, yes()).await
 			} else {
-				ensure_selection_cache(settings, offline).await?;
+				ensure_selection_cache(settings, mode).await?;
 				ops::select(pattern, next, prev, down, up, top, yes()).await
 			}
 		}
 		SprintsCommands::Selected { op } => {
-			ensure_selection_cache(settings, offline).await?;
+			ensure_selection_cache(settings, mode).await?;
 			match op {
-				SelectedOp::Open => ops::selected_open(offline, yes()).await,
+				SelectedOp::Open => ops::selected_open(mode, yes()).await,
 				SelectedOp::List { markup } => ops::selected_list(markup),
 				SelectedOp::Current { markup } => ops::selected_current(markup),
-				SelectedOp::Add { text, nest } => ops::selected_add(text, nest, offline, yes()).await,
-				SelectedOp::Pop { parents } => ops::selected_pop(parents as usize, offline, yes()).await,
-				SelectedOp::Set { text } => ops::selected_set(text, offline, yes()).await,
+				SelectedOp::Add { text, nest } => ops::selected_add(text, nest, mode, yes()).await,
+				SelectedOp::Pop { parents } => ops::selected_pop(parents as usize, mode, yes()).await,
+				SelectedOp::Set { text } => ops::selected_set(text, mode, yes()).await,
 				SelectedOp::Resume(resume_args) => ops::selected_resume(resume_args, yes()).await,
 				SelectedOp::Halt(halt_args) => ops::selected_halt(halt_args).await,
 			}
@@ -194,7 +193,9 @@ async fn refresh_sprint_milestones(content: &str) {
 /// Ensure an active sprint is resolvable for selection. Urgent (a local file) needs nothing;
 /// otherwise, when cold and online, fetch the lowest normal sprint (`blocker_tf`) into the cache.
 /// When online, also fetch any milestone in the active view missing from the milestone cache.
-async fn ensure_selection_cache(settings: &LiveSettings, offline: bool) -> Result<()> {
+/// Only what is missing locally is fetched, so `--sync-on-exit` reaches it too.
+async fn ensure_selection_cache(settings: &LiveSettings, mode: SyncMode) -> Result<()> {
+	let offline = mode == SyncMode::Offline;
 	if !offline {
 		let missing = tedi_task_operations::selection::Selected::uncached_active_milestones();
 		if !missing.is_empty()
@@ -419,7 +420,7 @@ async fn cache_blocker_milestone(settings: &LiveSettings, milestones: &[GithubMi
 
 /// Edit the local urgent list (creating it if absent). Same expand/sync/collapse cycle as
 /// milestones, but the storage is `urgent_path()` — no GitHub involved.
-async fn edit_urgent(offline: bool) -> Result<()> {
+async fn edit_urgent(mode: SyncMode) -> Result<()> {
 	use std::fs;
 
 	let _lock = tedi_task_operations::selection::try_lock_urgent()?.ok_or_else(|| eyre!("Another instance is already editing the urgent sprint. Only one editor at a time is allowed."))?;
@@ -430,7 +431,7 @@ async fn edit_urgent(offline: bool) -> Result<()> {
 		Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
 		Err(e) => return Err(e.into()),
 	};
-	let expanded = expand_and_refresh(&original, !offline).await?;
+	let expanded = expand_and_refresh(&original, mode == SyncMode::Full).await?;
 
 	let tmp_path = tempfile::tempdir()?.keep().join("milestone_urgent.md");
 	fs::write(&tmp_path, &expanded)?;
@@ -456,13 +457,13 @@ async fn edit_urgent(offline: bool) -> Result<()> {
 		);
 	}
 
-	if let Err(e) = sync_embedded_issue_changes(&edited_content, offline).await {
+	if let Err(e) = sync_embedded_issue_changes(&edited_content, mode).await {
 		tedi_task_operations::utils::persist_rejected_changes(&edited_content)?;
 		eprintln!("Your changes were saved to /tmp/tedi/rejected-changes.md — you can recover them from there.");
 		return Err(e);
 	}
 
-	if let Err(e) = materialize_new_tasks(&mut edited_doc, None, offline).await {
+	if let Err(e) = materialize_new_tasks(&mut edited_doc, None, mode).await {
 		tedi_task_operations::utils::persist_rejected_changes(&edited_content)?;
 		eprintln!("Your changes were saved to /tmp/tedi/rejected-changes.md — you can recover them from there.");
 		return Err(e);
@@ -490,7 +491,7 @@ async fn edit_urgent(offline: bool) -> Result<()> {
 	Ok(())
 }
 
-async fn edit_milestone(settings: &LiveSettings, tf: Timeframe, offline: bool, mock: bool) -> Result<()> {
+async fn edit_milestone(settings: &LiveSettings, tf: Timeframe, mode: SyncMode, mock: bool) -> Result<()> {
 	use std::fs;
 
 	use tedi_task_operations::{
@@ -509,55 +510,63 @@ async fn edit_milestone(settings: &LiveSettings, tf: Timeframe, offline: bool, m
 	}
 
 	// GitHub unreachable → degrade the whole run to offline: every edit persists to LocalFs as a
-	// divergence from Consensus, reconciled by the pre-open sync on the next online `tme <tf>`.
-	let offline = offline || (!mock && !tedi_adapters::github::reachable().await);
+	// divergence from Consensus, reconciled by the next online sync of it.
+	let mode = match mode == SyncMode::Full && !mock && !tedi_adapters::github::reachable().await {
+		true => SyncMode::Offline,
+		false => mode,
+	};
 
 	// The {app}_MOCK_MILESTONE file shortcut (existing mock tests) bypasses the client + three-way model.
 	if let Ok(mock_milestone_path) = std::env::var(concat!(env!("CARGO_PKG_NAME"), "_MOCK_MILESTONE")) {
-		return edit_milestone_mock_file(&mock_milestone_path, tf, offline).await;
+		return edit_milestone_mock_file(&mock_milestone_path, tf, mode).await;
 	}
 
-	// Resolve the milestone number: from GitHub when online, from the local cache when offline.
 	let (owner, repo) = milestone_repo(settings)?;
 	let repo_info = RepoInfo::new(&owner, &repo);
-	let number = if offline {
+	let cached_number = || {
 		Local::load_milestone_project_meta(repo_info, &FsReader)
 			.milestones
 			.iter()
 			.find(|(_, m)| m.title == tf.to_string())
 			.map(|(n, _)| *n)
-			.ok_or_else(|| eyre!("Cannot edit '{tf}' offline — it was never fetched while online (no local milestone cache)."))?
-	} else {
-		let retrieved = request_milestones(settings).await?;
-		retrieved.iter().find(|m| m.title == tf.to_string()).map(|m| m.number).ok_or_else(|| {
-			let existing = retrieved.iter().map(|m| m.title.clone()).collect::<Vec<_>>();
-			eyre!("Milestone '{tf}' not found. Existing milestones: {existing:?}")
-		})?
+	};
+	let number = match (mode, cached_number()) {
+		(SyncMode::OnExit | SyncMode::Offline, Some(n)) => n,
+		(SyncMode::Offline, None) => bail!("Cannot edit '{tf}' offline — it was never fetched while online (no local milestone cache)."),
+		(SyncMode::Full, _) | (SyncMode::OnExit, None) => {
+			let retrieved = request_milestones(settings).await?;
+			retrieved.iter().find(|m| m.title == tf.to_string()).map(|m| m.number).ok_or_else(|| {
+				let existing = retrieved.iter().map(|m| m.title.clone()).collect::<Vec<_>>();
+				eyre!("Milestone '{tf}' not found. Existing milestones: {existing:?}")
+			})?
+		}
 	};
 	let link = MilestoneLink::parse(&format!("https://github.com/{owner}/{repo}/milestone/{number}")).expect("well-formed milestone url");
 
 	// Local-first load (mirrors `sync_milestone_changes`): a diverged local body seeds the editor so a
-	// prior deferred edit stays visible and is preserved in the new body. Fall back to remote only
-	// when never cached (online only).
+	// prior deferred edit stays visible and is preserved in the new body. Remote only when never cached.
 	let mut milestone = match Local::load_milestone(&link, &FsReader)? {
 		Some(m) => m,
-		None if offline => bail!("Cannot edit '{tf}' offline — it was never fetched while online (no local milestone cache)."),
+		None if mode == SyncMode::Offline => bail!("Cannot edit '{tf}' offline — it was never fetched while online (no local milestone cache)."),
 		None => load_remote_milestone(&link).await?,
 	};
 	// The buffer is what the edit is reasoned against, so reconcile before rendering it — not on the
 	// way out, where whatever Github gained since would already have been typed over.
-	if !offline {
-		pull_milestone(&mut milestone, MergeMode::Normal).await?;
+	match mode {
+		SyncMode::Full => {
+			pull_milestone(&mut milestone, MergeMode::Normal).await?;
+			refresh_sprint_milestones(&milestone.to_string()).await;
+		}
+		SyncMode::OnExit =>
+			if let Some(conflict_file) = tedi_task_operations::conflict_resolve::check_for_existing_milestone_conflict(&link).await? {
+				bail!("Unresolved milestone conflict in {}. Resolve with git tools, then re-run.", conflict_file.display());
+			},
+		SyncMode::Offline => {}
 	}
 	let milestone_number = milestone.number();
 	let original_description = milestone.to_string();
-	let is_outdated = milestone.identity.due_on.map(|d| d + tedi_eval::same_day_buffer() < Timestamp::now()).unwrap_or(true);
 
-	// Refresh inlined milestone contents so their refs expand inline, then expand for editing.
-	if !offline {
-		refresh_sprint_milestones(&original_description).await;
-	}
-	let expanded_description = expand_and_refresh(&original_description, !offline).await?;
+	let expanded_description = expand_and_refresh(&original_description, mode == SyncMode::Full).await?;
 
 	// Use keep() so the temp file survives panics/errors.
 	let tmp_path = tempfile::tempdir()?.keep().join(format!("milestone_{tf}.md"));
@@ -566,6 +575,11 @@ async fn edit_milestone(settings: &LiveSettings, tf: Timeframe, offline: bool, m
 
 	tedi_task_operations::utils::open_file(&tmp_path, None).await?;
 
+	let mode = match mode == SyncMode::OnExit && !mock && !tedi_adapters::github::reachable().await {
+		true => SyncMode::Offline,
+		false => mode,
+	};
+
 	let edited_content = fs::read_to_string(&tmp_path)?;
 	// Compare against expanded (not original) — expansion itself is not a user edit.
 	let changed = edited_content != expanded_description;
@@ -573,47 +587,47 @@ async fn edit_milestone(settings: &LiveSettings, tf: Timeframe, offline: bool, m
 	let mut edited_doc = TaskView::parse(&edited_content);
 	if changed {
 		// Fold every edited issue block back into its own issue file.
-		if let Err(e) = sync_embedded_issue_changes(&edited_content, offline).await {
-			// Parts #1–#3 route transient GitHub errors elsewhere (retried, probed to offline, or deferred
-			// at the sync boundary), so a bail reaching here is a genuine non-transient parse/logic failure.
+		if let Err(e) = sync_embedded_issue_changes(&edited_content, mode).await {
+			// Transient GitHub errors are retried, probed to offline, or deferred at the sync boundary,
+			// so a bail reaching here is a genuine non-transient parse/logic failure.
 			return dump_rejected(&edited_content, e);
 		}
 		// Top-level new tasks belong to this milestone → materialize as real issues in the milestones repo.
-		if let Err(e) = materialize_new_tasks(&mut edited_doc, Some(link.clone()), offline).await {
+		if let Err(e) = materialize_new_tasks(&mut edited_doc, Some(link.clone()), mode).await {
 			return dump_rejected(&edited_content, e);
 		}
 		// Persist edits inside inlined milestone blocks (incl. materialized tasks) to their own nodes.
-		if let Err(e) = sync_milestone_changes(&edited_doc, offline).await {
+		if let Err(e) = sync_milestone_changes(&edited_doc, mode).await {
 			return dump_rejected(&edited_content, e);
 		}
 		edited_doc.collapse_to_links();
 	}
 
 	// No editor change → reuse the loaded body verbatim (so `collapse(expand(x)) != x` formatting jitter
-	// can't spuriously push); the pre-open sync below still reflushes any prior divergence.
+	// can't spuriously push); the sync below still reflushes any prior divergence.
 	let new_body = if changed {
 		MilestoneBody::parse(&edited_doc.serialize(), milestone.identity.link.repo_info())
 	} else {
 		milestone.body.clone()
 	};
-	let new_description = new_body.0.serialize();
 
 	// Sync issue↔milestone assignments (incl. unassignments, which the set-union merge can't express).
 	// Best-effort: a failure is reconciled on the next online edit rather than throwing hands.
-	if !offline && changed {
+	if mode != SyncMode::Offline && changed {
 		let mut orig_doc = TaskView::parse(&original_description);
 		orig_doc.resolve_bare_refs(None);
 		let old_links = orig_doc.issue_links();
-		let new_links = TaskView::parse(&new_description).issue_links();
+		let new_links = new_body.0.issue_links();
 		if let Err(e) = sync_milestone_assignments(settings, milestone_number, &old_links, &new_links).await {
 			tracing::warn!("failed to sync milestone assignments (will reconcile next online edit): {e}");
 			eprintln!("warning: failed to sync milestone assignments: {e}");
 		}
 	}
 
-	// Route the top-level body through the three-way model: pre-open sync (reflush a prior deferral),
-	// apply the new body, then sink to LocalFs + Consensus (+ Remote when online).
-	modify_and_sync_milestone(milestone, offline, MilestoneModifier::BodyWrite { body: new_body }, SyncOptions::default()).await?;
+	// Route the top-level body through the three-way model: apply the new body, then sink to
+	// LocalFs + Consensus (+ Remote when online).
+	let milestone = modify_and_sync_milestone(milestone, mode, MilestoneModifier::BodyWrite { body: new_body }, SyncOptions::default()).await?;
+	let new_description = milestone.to_string();
 
 	// Update the blocker cache if this is the blocker timeframe milestone.
 	let blocker_tf = settings.config()?.milestones.as_ref().map(|m| m.blocker_tf().to_string()).unwrap_or_else(|| "1d".to_string());
@@ -622,7 +636,9 @@ async fn edit_milestone(settings: &LiveSettings, tf: Timeframe, offline: bool, m
 	}
 
 	// Outdated milestones get a due-date bump + an archived snapshot. Direct API, online only, best-effort.
-	if !offline && is_outdated {
+	// Read off the synced due date: another machine may have bumped it already.
+	let is_outdated = milestone.identity.due_on.map(|d| d + tedi_eval::same_day_buffer() < Timestamp::now()).unwrap_or(true);
+	if mode != SyncMode::Offline && is_outdated {
 		let new_date = Timestamp::now() + tf.duration();
 		println!("Milestone was outdated, updating due date to {}", new_date.strftime("%Y-%m-%d"));
 		let archive_title = format!("{}_{tf}", Timestamp::now().strftime("%Y/%m/%d"));
@@ -642,7 +658,9 @@ async fn edit_milestone(settings: &LiveSettings, tf: Timeframe, offline: bool, m
 
 	// The edit is already saved above; the trailing healthcheck is informational. It hard-requires the
 	// `2w` sprint, so never let its absence abort a completed edit and make it read as discarded.
-	if !offline && let Err(e) = healthcheck(settings).await {
+	if mode != SyncMode::Offline
+		&& let Err(e) = healthcheck(settings).await
+	{
 		tracing::warn!("post-edit healthcheck failed (your edit was already saved): {e}");
 		eprintln!("warning: post-edit healthcheck failed (your edit was already saved): {e}");
 	}
@@ -659,7 +677,7 @@ fn dump_rejected(edited_content: &str, e: Report) -> Result<()> {
 
 /// The {app}_MOCK_MILESTONE file shortcut: read/edit/write the milestone body from a plain file,
 /// bypassing the client and the three-way model. Used by the simplest mock integration tests.
-async fn edit_milestone_mock_file(mock_milestone_path: &str, tf: Timeframe, offline: bool) -> Result<()> {
+async fn edit_milestone_mock_file(mock_milestone_path: &str, tf: Timeframe, mode: SyncMode) -> Result<()> {
 	use std::fs;
 
 	let original_description = fs::read_to_string(mock_milestone_path)?;
@@ -677,15 +695,15 @@ async fn edit_milestone_mock_file(mock_milestone_path: &str, tf: Timeframe, offl
 		return Ok(());
 	}
 
-	if let Err(e) = sync_embedded_issue_changes(&edited_content, offline).await {
+	if let Err(e) = sync_embedded_issue_changes(&edited_content, mode).await {
 		return dump_rejected(&edited_content, e);
 	}
 	let mut edited_doc = TaskView::parse(&edited_content);
-	if let Err(e) = materialize_new_tasks(&mut edited_doc, None, offline).await {
+	if let Err(e) = materialize_new_tasks(&mut edited_doc, None, mode).await {
 		return dump_rejected(&edited_content, e);
 	}
 	// Mock file mode never reaches the network.
-	if let Err(e) = sync_milestone_changes(&edited_doc, true).await {
+	if let Err(e) = sync_milestone_changes(&edited_doc, SyncMode::Offline).await {
 		return dump_rejected(&edited_content, e);
 	}
 

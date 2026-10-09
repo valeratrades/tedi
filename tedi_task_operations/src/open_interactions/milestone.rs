@@ -5,7 +5,7 @@
 
 use color_eyre::eyre::{Result, bail};
 
-use super::sync::{MergeMode, Side, SyncOptions};
+use super::sync::{MergeMode, Side, SyncMode, SyncOptions, clash};
 use crate::{
 	IssueLink, Milestone, MilestoneBody, MilestoneLink,
 	conflict_resolve::{check_for_existing_milestone_conflict, initiate_conflict_merge},
@@ -34,11 +34,7 @@ pub async fn load_consensus_milestone(link: &MilestoneLink) -> Result<Option<Mil
 /// Reconcile a milestone with GitHub — the milestone mirror of `pull_issues`, and the same reason:
 /// a body rendered into the editor from the local cache alone is a body the user edits blind.
 pub async fn pull_milestone(milestone: &mut Milestone, mode: MergeMode) -> Result<()> {
-	let link = milestone.identity.link.clone();
-	if let Some(conflict_file) = check_for_existing_milestone_conflict(&link).await? {
-		bail!("Unresolved milestone conflict in {}. Resolve with git tools, then re-run.", conflict_file.display());
-	}
-	let consensus = load_consensus_milestone(&link).await?;
+	let consensus = load_consensus_milestone(&milestone.identity.link).await?;
 	if let Err(e) = sync(milestone, consensus, mode).await {
 		if !super::sync::is_transient_sync_error(&e) {
 			return Err(e);
@@ -49,25 +45,29 @@ pub async fn pull_milestone(milestone: &mut Milestone, mode: MergeMode) -> Resul
 }
 
 /// Modify a local milestone, then sync back to GitHub (parity with `modify_and_sync_issue`).
-pub async fn modify_and_sync_milestone(mut milestone: Milestone, offline: bool, modifier: MilestoneModifier, sync_opts: SyncOptions) -> Result<bool> {
+/// Returns the milestone as it ends up stored.
+pub async fn modify_and_sync_milestone(mut milestone: Milestone, mode: SyncMode, modifier: MilestoneModifier, sync_opts: SyncOptions) -> Result<Milestone> {
 	let link = milestone.identity.link.clone();
 
-	if !offline {
+	// `BodyWrite` applies a buffer rendered earlier: a pull between that render and the apply reads as the user reverting whatever the remote gained meanwhile.
+	let pulled = mode == SyncMode::Full && matches!(modifier, MilestoneModifier::Editor);
+	if pulled {
 		pull_milestone(&mut milestone, sync_opts.take_merge_mode()).await?;
 	}
 
-	if !apply_modifier(&mut milestone, modifier).await? {
+	// Unpulled, the sync below is the only reconciliation — callers read the synced state even when nothing was typed.
+	if !apply_modifier(&mut milestone, modifier).await? && (pulled || mode == SyncMode::Offline) {
 		v_utils::log!("Aborted (no milestone changes made)");
-		return Ok(false);
+		return Ok(milestone);
 	}
 
-	match offline {
-		true => {
+	match mode {
+		SyncMode::Offline => {
 			<Milestone as Sink<LocalFs>>::sink(&mut milestone, None).await?;
 			println!("Offline: milestone saved locally.");
-			Ok(true)
+			Ok(milestone)
 		}
-		false => {
+		SyncMode::OnExit | SyncMode::Full => {
 			let mode = sync_opts.take_merge_mode();
 			let consensus = load_consensus_milestone(&link).await?;
 			if let Err(e) = sync(&mut milestone, consensus, mode).await {
@@ -78,7 +78,7 @@ pub async fn modify_and_sync_milestone(mut milestone: Milestone, offline: bool, 
 				eprintln!("GitHub unreachable; milestone edit saved locally (will sync next online edit).");
 				<Milestone as Sink<LocalFs>>::sink(&mut milestone, None).await?;
 			}
-			Ok(true)
+			Ok(milestone)
 		}
 	}
 }
@@ -113,6 +113,9 @@ async fn apply_modifier(milestone: &mut Milestone, modifier: MilestoneModifier) 
 async fn sync(milestone: &mut Milestone, consensus: Option<Milestone>, mode: MergeMode) -> Result<()> {
 	println!("Syncing milestone...");
 	let link = milestone.identity.link.clone();
+	if let Some(conflict_file) = check_for_existing_milestone_conflict(&link).await? {
+		bail!("Unresolved milestone conflict in {}. Resolve with git tools, then re-run.", conflict_file.display());
+	}
 	let remote = load_remote_milestone(&link).await?;
 
 	let (resolved, changed) = resolve_merge(milestone.clone(), consensus, remote, mode).await?;
@@ -154,6 +157,11 @@ async fn resolve_merge(local: Milestone, consensus: Option<Milestone>, remote: M
 	// `merge` unions the hosted set, which alone can't tell "the other side added it" from "I
 	// deleted it". Against the base, a link one side dropped is a deletion; the losing side of a
 	// `--force` gets no vote. Without a base (never committed) every link reads as an addition.
+	let clash = match (mode, consensus.as_ref()) {
+		(MergeMode::Normal, Some(base)) => concurrent_edit(&local, base, &remote),
+		_ => false,
+	};
+
 	let dropped: Vec<IssueLink> = match consensus.as_ref() {
 		Some(base) => {
 			let (in_local, in_remote) = (local.body.hosted(), remote.body.hosted());
@@ -182,7 +190,7 @@ async fn resolve_merge(local: Milestone, consensus: Option<Milestone>, remote: M
 	local_merged.body.0.remove_issue_links(&dropped);
 	remote_merged.body.0.remove_issue_links(&dropped);
 
-	if milestones_agree(&local_merged, &remote_merged) {
+	if !clash && milestones_agree(&local_merged, &remote_merged) {
 		let mut resolved = local_merged;
 		<Milestone as Sink<LocalFs>>::sink(&mut resolved, None).await?;
 		<Milestone as Sink<Remote>>::sink(&mut resolved, Some(&remote)).await?;
@@ -191,32 +199,44 @@ async fn resolve_merge(local: Milestone, consensus: Option<Milestone>, remote: M
 
 	let repo = local.identity.link.repo_info();
 	let number = local.number();
-	match initiate_conflict_merge(
-		repo,
-		number,
-		&local_merged.to_string(),
-		&remote_merged.to_string(),
-		milestone_conflict_file_path(repo.owner().expect("github project")),
-	)? {
+	let (local_side, remote_side) = match clash {
+		true => (local.to_string(), remote.to_string()),
+		false => (local_merged.to_string(), remote_merged.to_string()),
+	};
+	match initiate_conflict_merge(repo, number, &local_side, &remote_side, milestone_conflict_file_path(repo.owner().expect("github project")))? {
 		ConflictOutcome::AutoMerged => unreachable!("divergent states cannot auto-merge; the conflict must be recorded for manual resolution"),
 		ConflictOutcome::NeedsResolution => bail!("Conflict detected for milestone {repo}#{number}.\nResolve using standard git tools, then re-run."),
 		ConflictOutcome::NoChanges => Ok((local_merged, false)),
 	}
 }
 
+/// A field both sides edited since `base`: neither edit was made knowing of the other, so no
+/// timestamp can order them.
+///
+/// The body is one timestamped unit whose hosted links merge as a set, so only prose can be lost:
+/// the newer body wins whole, and the older side's prose with it.
+fn concurrent_edit(local: &Milestone, base: &Milestone, remote: &Milestone) -> bool {
+	let older = match local.identity.timestamps.description > remote.identity.timestamps.description {
+		true => remote,
+		false => local,
+	};
+	clash(&local.identity.title, &base.identity.title, &remote.identity.title)
+		|| clash(&local.identity.state, &base.identity.state, &remote.identity.state)
+		|| clash(local.identity.due_on, base.identity.due_on, remote.identity.due_on)
+		|| (local.body != base.body && remote.body != base.body && prose(older) != prose(base) && prose(local) != prose(remote))
+}
+
+/// The body with its issue links taken out.
+fn prose(m: &Milestone) -> String {
+	let mut doc = m.body.0.clone();
+	doc.remove_issues();
+	doc.serialize()
+}
+
 /// Merge equality that treats `hosted` as an order-independent set — the two merge sides
 /// build the union in opposite orders, so a Vec `==` would spuriously flag a conflict.
 fn milestones_agree(a: &Milestone, b: &Milestone) -> bool {
-	if a.identity != b.identity {
-		return false;
-	}
-	// Compare prose skeleton (issues removed) so the order-independent hosted set is judged separately.
-	let skeleton = |m: &Milestone| {
-		let mut doc = m.body.0.clone();
-		doc.remove_issues();
-		doc.serialize()
-	};
-	if skeleton(a) != skeleton(b) {
+	if a.identity != b.identity || prose(a) != prose(b) {
 		return false;
 	}
 	let mut ah: Vec<String> = a.body.hosted().iter().map(|l| l.to_string()).collect();

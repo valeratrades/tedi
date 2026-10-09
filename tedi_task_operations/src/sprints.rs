@@ -13,7 +13,7 @@ use crate::{
 	HollowIssue, Issue, IssueIdentity, IssueIndex, IssueLink, LazyIssue, Milestone, MilestoneLink, NodeLink, RepoInfo, TaskView, VirtualIssue,
 	clockify_tracking::{self, HaltArgs, ResumeArgs},
 	local::{Consensus, FsReader, GitReader, Local, LocalFs},
-	open_interactions::{MergeMode, MilestoneModifier, Modifier, SyncOptions, modify_and_sync_issue, modify_and_sync_milestone, pull_issues},
+	open_interactions::{MergeMode, MilestoneModifier, Modifier, SyncMode, SyncOptions, modify_and_sync_issue, modify_and_sync_milestone, pull_issues},
 	remote::{Remote, RemoteSource, load_remote_milestone},
 	selection::{Landing, Selected},
 	sink::Sink,
@@ -129,7 +129,7 @@ pub async fn refresh_milestone_cache(links: &[MilestoneLink]) -> Result<()> {
 /// Offline, a milestone task can't be uploaded — it's left as text and retried on the next online
 /// edit. Tasks living inside an inlined milestone leave their new link in that milestone's body;
 /// persisting it upstream is `sync_milestone_changes`'s job (call it after this).
-pub async fn materialize_new_tasks(doc: &mut TaskView, ambient: Option<MilestoneLink>, offline: bool) -> Result<Vec<IssueLink>> {
+pub async fn materialize_new_tasks(doc: &mut TaskView, ambient: Option<MilestoneLink>, mode: SyncMode) -> Result<Vec<IssueLink>> {
 	let candidates = doc.homeless_tasks();
 	if candidates.is_empty() {
 		return Ok(Vec::new());
@@ -138,7 +138,7 @@ pub async fn materialize_new_tasks(doc: &mut TaskView, ambient: Option<Milestone
 	let mut created = Vec::new();
 	for (id, block, task_milestone) in candidates {
 		let link = match task_milestone.or_else(|| ambient.clone()) {
-			Some(milestone) if offline => {
+			Some(milestone) if mode == SyncMode::Offline => {
 				tracing::warn!(
 					"new milestone task can't be created offline; left as text, will upload on next online edit ({}):\n{block}",
 					milestone.as_str()
@@ -165,13 +165,13 @@ pub async fn materialize_new_tasks(doc: &mut TaskView, ambient: Option<Milestone
 /// own durable store + upstream. The general form of the old materialize-only push: every
 /// inlined milestone whose body changed is routed through `modify_and_sync_milestone`, so
 /// materialized tasks (and any body edit) persist and never re-materialize.
-pub async fn sync_milestone_changes(doc: &TaskView, offline: bool) -> Result<()> {
+pub async fn sync_milestone_changes(doc: &TaskView, mode: SyncMode) -> Result<()> {
 	for (link, body_text) in doc.embedded_milestone_bodies() {
 		let new_body = crate::MilestoneBody::parse(&body_text, link.repo_info());
 
 		let milestone = match Local::load_milestone(&link, &FsReader)? {
 			Some(m) => m,
-			None if offline => {
+			None if mode == SyncMode::Offline => {
 				tracing::warn!("milestone {} not stored locally; its inline edits will sync on the next online edit", link.as_str());
 				continue;
 			}
@@ -183,7 +183,7 @@ pub async fn sync_milestone_changes(doc: &TaskView, offline: bool) -> Result<()>
 		}
 
 		println!("Syncing milestone changes for {}", link.as_str());
-		modify_and_sync_milestone(milestone, offline, MilestoneModifier::BodyWrite { body: new_body }, SyncOptions::default()).await?;
+		modify_and_sync_milestone(milestone, mode, MilestoneModifier::BodyWrite { body: new_body }, SyncOptions::default()).await?;
 	}
 	Ok(())
 }
@@ -192,7 +192,7 @@ pub async fn sync_milestone_changes(doc: &TaskView, offline: bool) -> Result<()>
 ///
 /// Each block is parsed by the same `VirtualIssue::parse` an issue's own file goes through, so a
 /// block that doesn't compose (stray text under `# Blockers`, say) is a loud error, not a drop.
-pub async fn sync_embedded_issue_changes(content: &str, offline: bool) -> Result<()> {
+pub async fn sync_embedded_issue_changes(content: &str, mode: SyncMode) -> Result<()> {
 	// An issue can be rendered several times in one buffer (held by the sprint *and* by an inlined
 	// milestone). Grouping is what keeps the untouched copies from reverting the edited one.
 	let mut grouped: Vec<(IssueLink, Vec<VirtualIssue>)> = Vec::new();
@@ -235,7 +235,7 @@ pub async fn sync_embedded_issue_changes(content: &str, offline: bool) -> Result
 
 		println!("Syncing changes for {link}");
 
-		modify_and_sync_issue(issue, offline, Modifier::Write { edited }, SyncOptions::default()).await?;
+		modify_and_sync_issue(issue, mode, Modifier::Write { edited }, SyncOptions::default()).await?;
 	}
 
 	Ok(())
@@ -317,17 +317,17 @@ pub async fn selected_show(yes: bool) -> Result<()> {
 }
 /// `sprints selected open` — edit the selected node. A milestone terminal opens the
 /// milestone's own file (synced as a milestone); an issue terminal opens the issue.
-pub async fn selected_open(offline: bool, yes: bool) -> Result<()> {
+pub async fn selected_open(mode: SyncMode, yes: bool) -> Result<()> {
 	match Selected::load().current_node().map_err(|e| eyre!("{e}"))? {
 		Some(NodeLink::Milestone(ml)) => {
 			let milestone = Local::load_milestone(&ml, &FsReader)?.ok_or_else(|| eyre!("milestone {} is not stored locally", ml.as_str()))?;
-			modify_and_sync_milestone(milestone, offline, MilestoneModifier::Editor, SyncOptions::default()).await?;
+			modify_and_sync_milestone(milestone, mode, MilestoneModifier::Editor, SyncOptions::default()).await?;
 		}
 		Some(NodeLink::Issue(link)) => {
 			let path = Local::find_by_number(link.project(), link.number(), FsReader).ok_or_else(|| eyre!("issue #{} not found locally", link.number()))?;
 			let local = crate::conflict_resolve::build_resolving_from_path(&path).await?;
 			let issue = Issue::load(local).await?;
-			modify_and_sync_issue(issue, offline, Modifier::Editor { open_at_blocker: true }, SyncOptions::default()).await?;
+			modify_and_sync_issue(issue, mode, Modifier::Editor { open_at_blocker: true }, SyncOptions::default()).await?;
 		}
 		None => bail!("No selected issue. Edit a sprint (`todo sprints edit 1d`) or the urgent list first."),
 	}
@@ -461,14 +461,14 @@ fn tracking_dot(key: &str) -> String {
 fn pango_escape(s: &str) -> String {
 	s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
 }
-pub async fn selected_add(text: String, nest: bool, offline: bool, yes: bool) -> Result<()> {
-	modify_selected(offline, Modifier::BlockerAdd { text, nest }, yes).await
+pub async fn selected_add(text: String, nest: bool, mode: SyncMode, yes: bool) -> Result<()> {
+	modify_selected(mode, Modifier::BlockerAdd { text, nest }, yes).await
 }
-pub async fn selected_pop(parents: usize, offline: bool, yes: bool) -> Result<()> {
-	modify_selected(offline, Modifier::BlockerPop { parents }, yes).await
+pub async fn selected_pop(parents: usize, mode: SyncMode, yes: bool) -> Result<()> {
+	modify_selected(mode, Modifier::BlockerPop { parents }, yes).await
 }
-pub async fn selected_set(text: String, offline: bool, yes: bool) -> Result<()> {
-	modify_selected(offline, Modifier::BlockerSet { text }, yes).await
+pub async fn selected_set(text: String, mode: SyncMode, yes: bool) -> Result<()> {
+	modify_selected(mode, Modifier::BlockerSet { text }, yes).await
 }
 /// `sprints selected resume` — start a Clockify timer on the selected issue.
 pub async fn selected_resume(mut resume_args: ResumeArgs, yes: bool) -> Result<()> {
@@ -608,11 +608,11 @@ async fn fetch_and_store_missing(links: &[IssueLink]) -> Vec<IssueLink> {
 
 // ─── Selection & the `sprints selected` operations ────────────────────────────
 
-async fn modify_selected(offline: bool, modifier: Modifier, yes: bool) -> Result<()> {
+async fn modify_selected(mode: SyncMode, modifier: Modifier, yes: bool) -> Result<()> {
 	let (_, path) = selected_link_path()?;
 	let local = crate::conflict_resolve::build_resolving_from_path(&path).await?;
 	let issue = Issue::load(local).await?;
-	let result = modify_and_sync_issue(issue, offline, modifier, SyncOptions::default()).await?;
+	let result = modify_and_sync_issue(issue, mode, modifier, SyncOptions::default()).await?;
 	if let Some(output) = result.output {
 		println!("{output}");
 	}

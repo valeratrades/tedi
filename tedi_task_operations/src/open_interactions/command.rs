@@ -6,7 +6,7 @@ use clap::Args;
 use color_eyre::eyre::{Result, bail, eyre};
 
 use super::{
-	sync::{MergeMode, Modifier, Side, SyncOptions, modify_and_sync_issue},
+	sync::{MergeMode, Modifier, Side, SyncMode, SyncOptions, modify_and_sync_issue},
 	touch::parse_touch_path,
 };
 use crate::{
@@ -88,10 +88,10 @@ pub enum ProjectType {
 	touch = args.touch,
 	force = args.force,
 	reset = args.reset,
-	offline,
+	?mode,
 	mock = ?mock,
 ))]
-pub async fn open_command(args: OpenArgs, offline: bool, mock: Option<MockType>) -> Result<()> {
+pub async fn open_command(args: OpenArgs, mode: SyncMode, mock: Option<MockType>) -> Result<()> {
 	// Helper to create the appropriate modifier based on mock type
 	let make_modifier = || -> Modifier {
 		match mock {
@@ -130,7 +130,7 @@ pub async fn open_command(args: OpenArgs, offline: bool, mock: Option<MockType>)
 
 	// Handle --touch mode first and separately
 	if args.touch {
-		let source = parse_touch_path(input, args.parent, offline).await?;
+		let source = parse_touch_path(input, args.parent, mode).await?;
 		let is_create = source.local_path.clone().resolve_parent(FsReader)?.search().is_err();
 
 		let issue = if is_create {
@@ -155,23 +155,23 @@ pub async fn open_command(args: OpenArgs, offline: bool, mock: Option<MockType>)
 			println!("Found existing issue: {}", issue.contents.title);
 		}
 
-		modify_and_sync_issue(issue, offline || project_is_virtual, make_modifier(), local_sync_opts()).await?;
+		modify_and_sync_issue(issue, if project_is_virtual { SyncMode::Offline } else { mode }, make_modifier(), local_sync_opts()).await?;
 		return Ok(());
 	}
 
 	// Resolve issue and sync options based on mode
-	let (issue, sync_opts, effective_offline) = if args.last {
+	let (issue, sync_opts) = if args.last {
 		// Handle --last mode: open the last modified issue (recorded in cache)
 		let cache_path = crate::paths::cache_file("last_modified_issue");
 		let index_str = std::fs::read_to_string(&cache_path).map_err(|_| eyre!("No last modified issue recorded. Open an issue first."))?;
 		let index: IssueIndex = index_str.parse()?;
 		let source = crate::conflict_resolve::build_resolving(index).await?;
 		let issue = Issue::load(source).await?;
-		(issue, local_sync_opts(), offline)
+		(issue, local_sync_opts())
 	} else if github::is_github_issue_url(input) {
 		// Github URL mode: unified with --pull behavior
 		// URL opening implies pull=true and prefers Remote for --force/--reset
-		if offline {
+		if mode == SyncMode::Offline {
 			bail!("Cannot fetch issue from URL in offline mode");
 		}
 
@@ -226,7 +226,7 @@ pub async fn open_command(args: OpenArgs, offline: bool, mock: Option<MockType>)
 		};
 
 		// URL mode uses remote_sync_opts: pull=true, --force/--reset prefer Remote
-		(issue, remote_sync_opts(), offline)
+		(issue, remote_sync_opts())
 	} else {
 		// Check if input is an existing file path (absolute or relative)
 		let input_path = Path::new(input);
@@ -240,11 +240,11 @@ pub async fn open_command(args: OpenArgs, offline: bool, mock: Option<MockType>)
 
 		let source = crate::conflict_resolve::build_resolving_from_path(&issue_file_path).await?;
 		let issue = Issue::load(source).await?;
-		(issue, local_sync_opts(), offline)
+		(issue, local_sync_opts())
 	};
 
 	// Open the issue for editing
-	modify_and_sync_issue(issue, effective_offline, make_modifier(), sync_opts).await?;
+	modify_and_sync_issue(issue, mode, make_modifier(), sync_opts).await?;
 
 	Ok(())
 }

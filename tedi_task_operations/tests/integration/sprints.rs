@@ -15,6 +15,8 @@ const ENV_MOCK_MILESTONE: &str = concat!("tedi", "_MOCK_MILESTONE");
 const ENV_MOCK_PIPE: &str = concat!("tedi", "_MOCK_PIPE");
 const ENV_MOCK_STATE: &str = concat!("tedi", "_MOCK_STATE");
 const ENV_MOCK_FAIL_GET_MILESTONE: &str = concat!("tedi", "_MOCK_FAIL_GET_MILESTONE");
+const ENV_MOCK_REMOTE_EDIT: &str = concat!("tedi", "_MOCK_REMOTE_EDIT");
+const ENV_MOCK_CALL_LOG: &str = concat!("tedi", "_MOCK_CALL_LOG");
 
 type EditFn = Box<dyn FnOnce(&Path)>;
 
@@ -75,12 +77,48 @@ impl TestContext {
 		self.drive_editor_session(cmd, edit_fn)
 	}
 
+	/// Mock-state entries written here land on the mock remote at its next call (see `remote_issue_edit`).
+	fn remote_edit_path(&self) -> PathBuf {
+		self.xdg.inner.root.join("mock_remote_edit.json")
+	}
+
+	/// Every mock GitHub call of the run, one per line, as it happens.
+	fn call_log_path(&self) -> PathBuf {
+		self.xdg.inner.root.join("mock_calls.log")
+	}
+
+	fn github_calls(&self) -> Vec<String> {
+		match std::fs::read_to_string(self.call_log_path()) {
+			Ok(log) => log.lines().map(str::to_string).collect(),
+			Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+			Err(e) => panic!("{e}"),
+		}
+	}
+
+	/// Someone else editing issue `number` on GitHub: `f` rewrites its seeded mock entry. Calling the
+	/// returned edit makes it, and the running binary sees it from its next GitHub call on.
+	fn remote_issue_edit(&self, number: u64, f: impl FnOnce(&mut serde_json::Value)) -> impl FnOnce() + 'static {
+		let state: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&self.mock_state_path).unwrap()).unwrap();
+		let mut issue = state["issues"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.find(|i| i["number"] == number)
+			.expect("seed the issue with remote() first")
+			.clone();
+		f(&mut issue);
+		let (path, edit) = (self.remote_edit_path(), serde_json::json!({ "issues": [issue] }).to_string());
+		move || std::fs::write(path, edit).unwrap()
+	}
+
 	/// Spawn the binary with the mock-editor pipe attached, apply `edit_fn` to the tmp file
 	/// once the binary is parked in the editor, then signal the pipe and collect output.
 	fn drive_editor_session(&self, mut cmd: Command, edit_fn: Option<EditFn>) -> RunOutput {
 		cmd.env("__IS_INTEGRATION_TEST", "1");
 		cmd.env(concat!("tedi", "__GITHUB_TOKEN"), "test_token");
 		cmd.env(ENV_MOCK_PIPE, &self.pipe_path);
+		cmd.env(ENV_MOCK_REMOTE_EDIT, self.remote_edit_path());
+		cmd.env(ENV_MOCK_CALL_LOG, self.call_log_path());
 		for (key, value) in self.xdg.env_vars() {
 			cmd.env(key, value);
 		}
@@ -1619,4 +1657,169 @@ async fn test_milestone_does_not_fold_in_assigned_duplicates() {
 	let local_after = std::fs::read_to_string(Local::milestone_file_path(repo, number, title)).unwrap();
 	assert!(local_after.contains("issues/11"), "{local_after}");
 	assert!(!local_after.contains("issues/10"), "the duplicate was folded into the body: {local_after}");
+}
+
+// ─── Remote edits racing the editor session; `--sync-on-exit` ─────────────────
+
+const ISSUE_10: &str = "- [ ] Titre application <!-- @mock_user https://github.com/o/r/issues/10 -->\n  issue body\n\n  # Blockers\n  - first step\n";
+
+/// Sprint `1d` (milestone #7) holding issue #10. This machine's last view is committed as consensus:
+/// #10 as `ISSUE_10`, the milestone due `local_due_on`. GitHub holds `remote_issue` for #10 and the
+/// milestone due in 2099.
+async fn seed_sprint(ctx: &TestContext, remote_issue: &str, remote_seed: i8, local_due_on: &str) {
+	use tedi_task_operations::{RepoInfo, local::Local};
+
+	ctx.set_issues_dir_override();
+	ctx.xdg.write_config("config.toml", "github_token = \"test_token\"\n\n[milestones]\nurl = \"o/r\"\n");
+	std::fs::create_dir_all(ctx.xdg.cache_dir()).unwrap();
+	std::fs::write(ctx.xdg.cache_dir().join("authenticated_user.txt"), crate::common::USER).unwrap();
+
+	ctx.remote(&parse_virtual(remote_issue), Some(Seed::new(remote_seed.into())));
+	ctx.consensus(&parse_virtual(ISSUE_10), Some(Seed::new(-100))).await;
+
+	let (repo, title, number, body) = (RepoInfo::new("o", "r"), "1d", 7u64, "- https://github.com/o/r/issues/10");
+	let mut mock_state: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&ctx.mock_state_path).unwrap()).unwrap();
+	mock_state["milestones"] = serde_json::json!([{
+		"owner": "o", "repo": "r", "number": number, "title": title, "state": "open",
+		"description": body,
+		"due_on": "2099-01-01T00:00:00Z",
+		"updated_at": "2020-01-01T00:00:00Z",
+	}]);
+	std::fs::write(&ctx.mock_state_path, mock_state.to_string()).unwrap();
+
+	let ms_file = Local::milestone_file_path(repo, number, title);
+	std::fs::create_dir_all(ms_file.parent().unwrap()).unwrap();
+	std::fs::write(&ms_file, format!("{body}\n")).unwrap();
+	std::fs::write(
+		Local::milestone_project_dir(repo).join(".meta.json"),
+		serde_json::json!({
+			"milestones": { number.to_string(): {
+				"title": title, "state": "Open",
+				"due_on": local_due_on,
+				"timestamps": { "description": "2001-09-11T12:00:00Z" }
+			}}
+		})
+		.to_string(),
+	)
+	.unwrap();
+	let issues_dir = ctx.xdg.data_dir().join("issues");
+	Command::new("git").arg("-C").arg(&issues_dir).args(["add", "-A"]).output().unwrap();
+	Command::new("git").arg("-C").arg(&issues_dir).args(["commit", "-m", "seed consensus"]).output().unwrap();
+}
+
+fn local_issue_10() -> String {
+	use tedi_task_operations::{
+		RepoInfo,
+		local::{FsReader, Local},
+	};
+	std::fs::read_to_string(Local::find_by_number(RepoInfo::new("o", "r"), 10, FsReader).expect("#10 is stored locally")).unwrap()
+}
+
+/// An issue folded back from the buffer is folded back from what the user saw. GitHub gaining a body
+/// on it while the editor was open must not be reverted by the user retitling it.
+#[tokio::test]
+async fn test_sprint_edit_keeps_remote_change_made_during_session() {
+	let ctx = TestContext::build();
+	seed_sprint(&ctx, ISSUE_10, -100, "2099-01-01T00:00:00Z").await;
+
+	let remote_edit = ctx.remote_issue_edit(10, |issue| {
+		issue["body"] = issue["body"].as_str().unwrap().replace("issue body", "body github gained mid-session").into();
+		issue["description_timestamp"] = "2010-01-01T00:00:00Z".into();
+	});
+	let out = ctx.milestone_client_edit(
+		&["--mock", "sprints", "edit", "1d"],
+		None,
+		Some(Box::new(move |tmp: &Path| {
+			remote_edit();
+			let c = std::fs::read_to_string(tmp).unwrap();
+			std::fs::write(tmp, c.replace("Titre application", "Retitled locally")).unwrap();
+		}) as EditFn),
+	);
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+
+	let local = local_issue_10();
+	assert!(local.contains("Retitled locally"), "{local}");
+	assert!(local.contains("body github gained mid-session"), "the remote's edit was reverted: {local}");
+}
+
+/// Edited blind, a field GitHub also changed since this machine last saw it is a conflict — never a
+/// timestamp race the local edit wins by being later.
+#[tokio::test]
+async fn test_sync_on_exit_concurrent_description_edit_conflicts() {
+	let ctx = TestContext::build();
+	seed_sprint(&ctx, &ISSUE_10.replace("issue body", "body github gained"), 100, "2099-01-01T00:00:00Z").await;
+
+	let out = ctx.milestone_client_edit(
+		&["--mock", "--sync-on-exit", "sprints", "edit", "1d"],
+		None,
+		Some(Box::new(|tmp: &Path| {
+			let c = std::fs::read_to_string(tmp).unwrap();
+			std::fs::write(tmp, c.replace("first step", "first step, reworded")).unwrap();
+		}) as EditFn),
+	);
+	assert!(!out.status.success(), "a concurrent edit must not resolve silently. stdout: {}", out.stdout);
+	assert!(
+		!ctx.github_calls().iter().any(|c| c.starts_with("update_issue_body(o, r, 10")),
+		"the remote body was overwritten: {:?}",
+		ctx.github_calls()
+	);
+	let conflict = std::fs::read_to_string(tedi_task_operations::local::conflict_detect::conflict_file_path("o")).unwrap();
+	assert!(conflict.contains("<<<<<<<"), "{conflict}");
+}
+
+/// Edits to different fields of one issue — the remote's title, the user's body — both land.
+#[tokio::test]
+async fn test_sync_on_exit_disjoint_edits_both_kept() {
+	let ctx = TestContext::build();
+	seed_sprint(&ctx, &ISSUE_10.replace("Titre application", "Title github gave it"), 100, "2099-01-01T00:00:00Z").await;
+
+	let out = ctx.milestone_client_edit(
+		&["--mock", "--sync-on-exit", "sprints", "edit", "1d"],
+		None,
+		Some(Box::new(|tmp: &Path| {
+			let c = std::fs::read_to_string(tmp).unwrap();
+			std::fs::write(tmp, c.replace("issue body", "body typed locally")).unwrap();
+		}) as EditFn),
+	);
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+
+	let local = local_issue_10();
+	assert!(local.contains("Title github gave it"), "{local}");
+	assert!(local.contains("body typed locally"), "{local}");
+}
+
+/// The due date this machine holds can be stale: another machine already bumped it. Bumping again
+/// off the stale date would archive the sprint a second time.
+#[tokio::test]
+async fn test_sync_on_exit_outdated_check_reads_synced_due_date() {
+	let ctx = TestContext::build();
+	seed_sprint(&ctx, ISSUE_10, -100, "2001-01-01T00:00:00Z").await;
+
+	let out = ctx.milestone_client_edit(&["--mock", "--sync-on-exit", "sprints", "edit", "1d"], None, None);
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+	assert!(
+		!ctx.github_calls().iter().any(|c| c.starts_with("create_milestone(")),
+		"archived an already-bumped sprint: {:?}",
+		ctx.github_calls()
+	);
+}
+
+/// `--sync-on-exit` opens the editor on local state alone: nothing reaches GitHub before it closes.
+#[tokio::test]
+async fn test_sync_on_exit_makes_no_calls_before_the_editor() {
+	let ctx = TestContext::build();
+	seed_sprint(&ctx, ISSUE_10, -100, "2099-01-01T00:00:00Z").await;
+
+	let call_log = ctx.call_log_path();
+	let seen = std::sync::Arc::new(std::sync::Mutex::new(None));
+	let seen_by_editor = seen.clone();
+	let out = ctx.milestone_client_edit(
+		&["--mock", "--sync-on-exit", "sprints", "edit", "1d"],
+		None,
+		Some(Box::new(move |_: &Path| {
+			*seen_by_editor.lock().unwrap() = Some(std::fs::read_to_string(&call_log).unwrap_or_default());
+		}) as EditFn),
+	);
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+	assert_eq!(seen.lock().unwrap().as_deref(), Some(""));
 }
