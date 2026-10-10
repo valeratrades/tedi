@@ -48,13 +48,13 @@ alias tdo="{exe_name} open"
 alias tdp="{exe_name} open --pull"
 
 # {exe_name}s-blocker
-alias tbp="{exe_name} -y sprints selected pop"
-alias tba="{exe_name} -y sprints selected add"
-alias tbo="{exe_name} -y sprints selected open"
+alias tbp="{exe_name} -y --sync-on-exit sprints selected pop"
+alias tba="{exe_name} -y --sync-on-exit sprints selected add"
+alias tbo="{exe_name} -y --sync-on-exit sprints selected open"
 
 alias tbs="{exe_name} -y sprints selected set"
-alias tbl="{exe_name} -y sprints selected list"
-alias tbc="{exe_name} -y sprints selected current"
+alias tbl="{exe_name} -y --sync-on-exit sprints selected list"
+alias tbc="{exe_name} -y --sync-on-exit sprints selected current"
 
 alias tbr="{exe_name} -y sprints selected resume"
 alias tbh="{exe_name} -y sprints selected halt"
