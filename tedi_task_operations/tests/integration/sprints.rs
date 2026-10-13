@@ -1231,6 +1231,32 @@ async fn test_inlined_milestone_task_creates_real_issue_and_does_not_remateriali
 	);
 }
 
+/// A link typed into the sprint to an issue that exists only upstream is fetched on save, so selection can land on it.
+#[tokio::test]
+async fn test_saved_link_to_remote_only_issue_is_fetched() {
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+	ctx.remote(
+		&parse_virtual("- [ ] Remote only <!-- @mock_user https://github.com/o/r/issues/19 -->\n  body\n"),
+		Some(Seed::new(100)),
+	);
+	seed_sprint(&ctx, ISSUE_10, -100, "2099-01-01T00:00:00Z").await;
+
+	let out = ctx.milestone_client_edit(
+		&["--mock", "--sync-on-exit", "sprints", "edit", "1d"],
+		None,
+		Some(Box::new(|tmp: &Path| {
+			let c = std::fs::read_to_string(tmp).unwrap();
+			std::fs::write(tmp, format!("{c}- [ ] https://github.com/o/r/issues/19\n")).unwrap();
+		}) as EditFn),
+	);
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+
+	assert!(
+		tedi_task_operations::local::Local::find_by_number(tedi_task_operations::RepoInfo::new("o", "r"), 19, tedi_task_operations::local::FsReader).is_some(),
+		"linked issue must be stored locally after save"
+	);
+}
+
 /// Old-format cache (flat string `selections`) loads with `normal` intact; the dropped
 /// field is silently ignored and the selection re-derives from the top open item.
 #[tokio::test]

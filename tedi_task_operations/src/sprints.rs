@@ -118,8 +118,8 @@ pub async fn refresh_milestone_cache(links: &[MilestoneLink]) -> Result<()> {
 	Ok(())
 }
 
-/// Materialize each unlinked open `- [ ]` item of an edited task view into a real issue,
-/// replacing the item with the issue's link. Returns the created links.
+/// Materialize every item of an edited task view: linked refs not stored locally are fetched,
+/// unlinked open `- [ ]` items become issues (replaced by their link). Returns the created links.
 ///
 /// A task's home decides its kind: a task belonging to a milestone (its own inlined milestone
 /// ref, else `ambient` — the milestone whose body is being edited) is created upstream as a
@@ -130,6 +130,9 @@ pub async fn refresh_milestone_cache(links: &[MilestoneLink]) -> Result<()> {
 /// edit. Tasks living inside an inlined milestone leave their new link in that milestone's body;
 /// persisting it upstream is `sync_milestone_changes`'s job (call it after this).
 pub async fn materialize_new_tasks(doc: &mut TaskView, ambient: Option<MilestoneLink>, mode: SyncMode) -> Result<Vec<IssueLink>> {
+	if mode != SyncMode::Offline {
+		fetch_and_store_missing(&doc.issue_links()).await;
+	}
 	let candidates = doc.homeless_tasks();
 	if candidates.is_empty() {
 		return Ok(Vec::new());
