@@ -6,6 +6,7 @@ authors.workspace = true
 description = "Pure todo primitives (issues, blockers) and their parse/serialize for tedi"
 license.workspace = true
 repository.workspace = true
+include = ["src/**/*"]
 
 [dependencies]
 arrayvec.workspace = true

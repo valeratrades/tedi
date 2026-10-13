@@ -47,7 +47,7 @@ jobs:
         # Use nix-shell which properly sets up env vars like PKG_CONFIG_PATH
 
         nix-shell -p mold egl-wayland wayland libGL libgbm fd pkg-config pkg-config
-        openssl.out openssl.dev --run "echo packages cached"
+        openssl.out openssl.dev git --run "echo packages cached"
 
         '
   pre_ci:
@@ -162,9 +162,9 @@ jobs:
     - if: matrix.rust == 'nightly'
       name: Enable type layout randomization
       run: 'nix-shell -p mold egl-wayland wayland libGL libgbm fd pkg-config pkg-config
-        openssl.out openssl.dev --command "export LD_LIBRARY_PATH=\"\$(nix-build ''<nixpkgs>''
-        -A mold --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export
-        LD_LIBRARY_PATH=\"\$(nix-build ''<nixpkgs>'' -A egl-wayland --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
+        openssl.out openssl.dev git --command "export LD_LIBRARY_PATH=\"\$(nix-build
+        ''<nixpkgs>'' -A mold --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
+        && export LD_LIBRARY_PATH=\"\$(nix-build ''<nixpkgs>'' -A egl-wayland --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
         && export LD_LIBRARY_PATH=\"\$(nix-build ''<nixpkgs>'' -A wayland --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
         && export LD_LIBRARY_PATH=\"\$(nix-build ''<nixpkgs>'' -A libGL --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
         && export LD_LIBRARY_PATH=\"\$(nix-build ''<nixpkgs>'' -A libgbm --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
@@ -186,9 +186,9 @@ jobs:
       with:
         name: modified-cargo-files
     - run: nix-shell -p mold egl-wayland wayland libGL libgbm fd pkg-config pkg-config
-        openssl.out openssl.dev --command "export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>'
-        -A mold --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export
-        LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A egl-wayland --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
+        openssl.out openssl.dev git --command "export LD_LIBRARY_PATH=\"\$(nix-build
+        '<nixpkgs>' -A mold --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
+        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A egl-wayland --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
         && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A wayland --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
         && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A libGL --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
         && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A libgbm --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
@@ -199,9 +199,9 @@ jobs:
         && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.dev --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
         && cargo update"
     - run: nix-shell -p mold egl-wayland wayland libGL libgbm fd pkg-config pkg-config
-        openssl.out openssl.dev --command "export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>'
-        -A mold --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export
-        LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A egl-wayland --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
+        openssl.out openssl.dev git --command "export LD_LIBRARY_PATH=\"\$(nix-build
+        '<nixpkgs>' -A mold --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
+        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A egl-wayland --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
         && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A wayland --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
         && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A libGL --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
         && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A libgbm --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
@@ -212,9 +212,9 @@ jobs:
         && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.dev --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
         && cargo check"
     - run: nix-shell -p mold egl-wayland wayland libGL libgbm fd pkg-config pkg-config
-        openssl.out openssl.dev --command "export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>'
-        -A mold --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export
-        LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A egl-wayland --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
+        openssl.out openssl.dev git --command "export LD_LIBRARY_PATH=\"\$(nix-build
+        '<nixpkgs>' -A mold --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
+        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A egl-wayland --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
         && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A wayland --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
         && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A libGL --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
         && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A libgbm --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
