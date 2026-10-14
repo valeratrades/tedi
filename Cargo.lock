@@ -3803,7 +3803,7 @@ dependencies = [
 
 [[package]]
 name = "tedi"
-version = "0.17.2"
+version = "0.17.3"
 dependencies = [
  "clap",
  "clap_complete",
@@ -3832,7 +3832,7 @@ dependencies = [
 
 [[package]]
 name = "tedi_adapters"
-version = "0.17.2"
+version = "0.17.3"
 dependencies = [
  "arrayvec",
  "async-trait",
@@ -3853,7 +3853,7 @@ dependencies = [
 
 [[package]]
 name = "tedi_core"
-version = "0.17.2"
+version = "0.17.3"
 dependencies = [
  "arrayvec",
  "copy_arrayvec",
@@ -3875,7 +3875,7 @@ dependencies = [
 
 [[package]]
 name = "tedi_eval"
-version = "0.17.2"
+version = "0.17.3"
 dependencies = [
  "ask_llm",
  "base64",
@@ -3894,7 +3894,7 @@ dependencies = [
 
 [[package]]
 name = "tedi_md"
-version = "0.17.2"
+version = "0.17.3"
 dependencies = [
  "derive_more",
  "insta",
@@ -3904,7 +3904,7 @@ dependencies = [
 
 [[package]]
 name = "tedi_task_operations"
-version = "0.17.2"
+version = "0.17.3"
 dependencies = [
  "arrayvec",
  "async-trait",
@@ -3950,7 +3950,7 @@ dependencies = [
 
 [[package]]
 name = "tedi_task_primitives"
-version = "0.17.2"
+version = "0.17.3"
 dependencies = [
  "arrayvec",
  "async-trait",
