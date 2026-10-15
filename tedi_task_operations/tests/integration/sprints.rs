@@ -1849,3 +1849,60 @@ async fn test_sync_on_exit_makes_no_calls_before_the_editor() {
 	assert!(out.status.success(), "stderr: {}", out.stderr);
 	assert_eq!(seen.lock().unwrap().as_deref(), Some(""));
 }
+
+/// Ticking a checkbox onto a category header that groups existing issues turns it into a real issue
+/// owning them: created in their repo, each grouped issue becoming its sub-issue.
+#[tokio::test]
+async fn test_checkbox_on_category_header_adopts_grouped_issues() {
+	use tedi_task_operations::RepoInfo;
+
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+	ctx.set_issues_dir_override();
+	ctx.xdg.write_config("config.toml", "github_token = \"test_token\"\n\n[milestones]\nurl = \"o/todos\"\n");
+	let repo = RepoInfo::new("o", "r");
+
+	for (n, title) in [(10, "first bug"), (11, "second bug")] {
+		let vi = parse_virtual(&format!("- [ ] {title} <!-- @mock_user https://github.com/o/r/issues/{n} -->\n\tbody of {n}\n"));
+		ctx.remote(&vi, Some(Seed::new(0)));
+		ctx.consensus(&vi, Some(Seed::new(0))).await;
+	}
+
+	let mut mock_state: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&ctx.mock_state_path).unwrap()).unwrap();
+	mock_state["milestones"] = serde_json::json!([{
+		"owner": "o", "repo": "todos", "number": 7, "title": "1d", "state": "open",
+		"description": "- fix reported bugs\n  - https://github.com/o/r/issues/10\n  - https://github.com/o/r/issues/11",
+		"due_on": "2099-01-01T00:00:00Z",
+		"updated_at": "2020-01-01T00:00:00Z",
+	}]);
+	std::fs::write(&ctx.mock_state_path, mock_state.to_string()).unwrap();
+
+	let out = ctx.milestone_client_edit(
+		&["--mock", "sprints", "edit", "1d"],
+		None,
+		Some(Box::new(|tmp: &Path| {
+			let content = std::fs::read_to_string(tmp).unwrap();
+			std::fs::write(tmp, content.replacen("- fix reported bugs", "- [ ] fix reported bugs", 1)).unwrap();
+		}) as EditFn),
+	);
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+
+	assert!(
+		ctx.github_calls().iter().filter(|c| c.starts_with("add_sub_issue(o, r, parent=12,")).count() == 2,
+		"both grouped issues become sub-issues of the new o/r#12: {:?}",
+		ctx.github_calls()
+	);
+	let issues = ctx.xdg.data_dir().join("issues");
+	let mut tree: Vec<String> = walkdir::WalkDir::new(issues.join("o/r"))
+		.into_iter()
+		.map(|e| e.unwrap().path().strip_prefix(&issues).unwrap().display().to_string())
+		.filter(|p| p.ends_with(".md"))
+		.collect();
+	tree.sort();
+	insta::assert_snapshot!(tree.join("\n"), @"
+	o/r/12_-_fix_reported_bugs/10_-_first_bug.md
+	o/r/12_-_fix_reported_bugs/11_-_second_bug.md
+	o/r/12_-_fix_reported_bugs/__main__.md
+	");
+	let sprint = std::fs::read_to_string(tedi_task_operations::local::Local::milestone_file_path(RepoInfo::new("o", "todos"), 7, "1d")).unwrap();
+	insta::assert_snapshot!(sprint, @"- https://github.com/o/r/issues/12");
+}

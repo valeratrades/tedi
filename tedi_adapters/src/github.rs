@@ -148,6 +148,8 @@ impl GithubError {
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct GithubIssue {
+	/// Database id — what the sub-issue endpoints address an issue by.
+	pub id: u64,
 	pub number: u64,
 	pub title: String,
 	pub body: Option<String>,

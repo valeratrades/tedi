@@ -124,7 +124,8 @@ pub async fn refresh_milestone_cache(links: &[MilestoneLink]) -> Result<()> {
 /// A task's home decides its kind: a task belonging to a milestone (its own inlined milestone
 /// ref, else `ambient` — the milestone whose body is being edited) is created upstream as a
 /// pending (`!n`) Github issue, since milestones host only real issues. A task with no milestone
-/// (a plain sprint item) becomes a local-only numbered virtual issue.
+/// (a plain sprint item) becomes a local-only numbered virtual issue. A task listing issues directly
+/// under it is created in their project instead, and adopts them as its children.
 ///
 /// Offline, a milestone task can't be uploaded — it's left as text and retried on the next online
 /// edit. Tasks living inside an inlined milestone leave their new link in that milestone's body;
@@ -139,25 +140,36 @@ pub async fn materialize_new_tasks(doc: &mut TaskView, ambient: Option<Milestone
 	}
 
 	let mut created = Vec::new();
-	for (id, block, task_milestone) in candidates {
-		let link = match task_milestone.or_else(|| ambient.clone()) {
-			Some(milestone) if mode == SyncMode::Offline => {
-				tracing::warn!(
-					"new milestone task can't be created offline; left as text, will upload on next online edit ({}):\n{block}",
-					milestone.as_str()
-				);
+	for task in candidates {
+		let block = &task.block;
+		let home = match task.adopts.split_first() {
+			Some((first, rest)) => {
+				let repo = first.project();
+				if let Some(other) = rest.iter().find(|l| l.project() != repo) {
+					bail!("can't make an issue of:\n{block}\nit groups issues of different projects ({first}, {other}) — an issue's children live in its own");
+				}
+				Some(repo)
+			}
+			None => task.milestone.or_else(|| ambient.clone()).map(|m| m.repo_info()),
+		};
+		let link = match home {
+			Some(repo) if repo != RepoInfo::Virtual && mode == SyncMode::Offline => {
+				tracing::warn!("new task can't be created on Github offline; left as text, will upload on next online edit ({repo}):\n{block}");
 				continue;
 			}
-			Some(milestone) => match create_pending_upstream(&block, &milestone).await? {
+			Some(repo) if repo != RepoInfo::Virtual => match create_pending_upstream(block, repo).await? {
 				Some(link) => link,
 				None => continue,
 			},
-			None => match materialize_virtual(&block).await? {
+			_ => match materialize_virtual(block).await? {
 				Some(link) => link,
 				None => continue,
 			},
 		};
-		doc.assign_link(&id, link.clone());
+		if !task.adopts.is_empty() {
+			adopt(&link, &task.adopts).await?;
+		}
+		doc.assign_link(&task.id, link.clone());
 		created.push(link);
 	}
 
@@ -531,12 +543,10 @@ async fn materialize_virtual(block: &str) -> Result<Option<IssueLink>> {
 	Ok(Some(link))
 }
 
-/// Milestone task → pending (`!n`) issue created upstream in the milestone's repo, then synced
-/// to local + consensus. Returns the created issue's real link. `Ok(None)` if the block failed
-/// to parse (already warned; the item stays as text).
-async fn create_pending_upstream(block: &str, milestone: &MilestoneLink) -> Result<Option<IssueLink>> {
-	let repo = milestone.repo_info();
-
+/// Task → pending (`!n`) issue created upstream in `repo`, then synced to local + consensus.
+/// Returns the created issue's real link. `Ok(None)` if the block failed to parse (already
+/// warned; the item stays as text).
+async fn create_pending_upstream(block: &str, repo: RepoInfo) -> Result<Option<IssueLink>> {
 	let vi = match VirtualIssue::parse(&mark_task_block(block, "!n"), PathBuf::from("<milestone item>")) {
 		Ok(vi) => vi,
 		Err(e) => {
@@ -556,6 +566,47 @@ async fn create_pending_upstream(block: &str, milestone: &MilestoneLink) -> Resu
 	let link = issue.identity.link().expect("issue is linked after remote sink").clone();
 	println!("Created issue {repo}#{}: {title}", link.number());
 	Ok(Some(link))
+}
+
+/// Re-home top-level `children` under the freshly created `parent`, upstream as sub-issues and
+/// locally into its directory.
+async fn adopt(parent: &IssueLink, children: &[IssueLink]) -> Result<()> {
+	fn rehome(issue: &mut Issue, parent_index: IssueIndex) {
+		issue.identity.parent_index = parent_index;
+		let child_index = issue.identity.child_parent_index().expect("stored issues are numbered");
+		for child in issue.children.values_mut() {
+			rehome(child, child_index);
+		}
+	}
+
+	let before = load_local_issue(parent).await?;
+	let mut tree = before.clone();
+	let child_index = tree.identity.child_parent_index().expect("created issues are numbered");
+	let mut olds = Vec::new();
+	for link in children {
+		let old = load_local_issue(link).await?;
+		if let Some(owner) = old.identity.git_lineage()?.last() {
+			bail!("{link} is already a sub-issue of #{owner}; move it out before grouping it under a new issue");
+		}
+		if let IssueLink::Owned(_) = link {
+			let gh = crate::github::client::get()?;
+			let id = gh.fetch_issue(link.project(), link.number()).await?.id;
+			gh.add_sub_issue(link.project(), parent.number(), id).await?;
+		}
+		let mut child = old.clone();
+		rehome(&mut child, child_index);
+		tree.children.insert(child.selector(), child);
+		olds.push(old);
+	}
+
+	<Issue as Sink<LocalFs>>::sink(&mut tree, Some(&before)).await?;
+	for old in &olds {
+		let child = tree.children.get_mut(&old.selector()).expect("inserted above");
+		<Issue as Sink<LocalFs>>::sink(child, Some(old)).await?;
+	}
+	<Issue as Sink<Consensus>>::sink(&mut tree, Some(&before)).await?;
+	println!("Grouped {} issue(s) under {parent}", children.len());
+	Ok(())
 }
 
 /// Load a local issue by its IssueLink. A virtual link's path is the file directly; a remote

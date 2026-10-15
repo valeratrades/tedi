@@ -340,6 +340,7 @@ impl MockGithubClient {
 
 	fn convert_issue_data(&self, data: &MockIssueData) -> GithubIssue {
 		GithubIssue {
+			id: data.id,
 			number: data.number,
 			title: data.title.clone(),
 			body: if data.body.is_empty() { None } else { Some(data.body.clone()) },
@@ -949,7 +950,7 @@ mod tests {
 
 		// Fetch sub-issues
 		let sub_issues = client.fetch_sub_issues(repo, 1).await.unwrap();
-		assert_debug_snapshot!(format!("{sub_issues:?}"), @r#""[GithubIssue { number: 2, title: \"Child Issue\", body: None, labels: [], user: GithubUser { login: \"testuser\" }, state: \"open\", state_reason: None }]""#);
+		assert_debug_snapshot!(format!("{sub_issues:?}"), @r#""[GithubIssue { id: 1001, number: 2, title: \"Child Issue\", body: None, labels: [], user: GithubUser { login: \"testuser\" }, state: \"open\", state_reason: None }]""#);
 	}
 
 	#[tokio::test]

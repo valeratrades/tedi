@@ -284,11 +284,10 @@ impl TaskView {
 		self.write(Render::unfolded(&HashMap::new()))
 	}
 
-	/// Open-checkbox virtual items that read as new tasks, in document order, each with its
-	/// serialized block and the inlined milestone it lives under (if any). Skipped: items with
-	/// an issue/milestone ref among their list descendants (category headers — we descend into
-	/// those instead), and single-word childless items (repo-context headers / half-typed input).
-	pub fn homeless_tasks(&self) -> Vec<(TaskItemId, String, Option<MilestoneLink>)> {
+	/// Open-checkbox virtual items that read as new tasks, in document order. Skipped (we descend
+	/// into those instead): single-word items over refs or childless (repo-context headers /
+	/// half-typed input), and items holding refs anywhere but as direct issue children.
+	pub fn homeless_tasks(&self) -> Vec<HomelessTask> {
 		let mut out = Vec::new();
 		for key in &self.order {
 			if let Some(items) = self.sections.get(key) {
@@ -389,6 +388,17 @@ fn dedent(line: &str, width: usize) -> &str {
 		consumed += if c == '\t' { 4 } else { 1 };
 	}
 	""
+}
+
+/// A task typed into a view as plain text, to be turned into an issue.
+pub struct HomelessTask {
+	pub id: TaskItemId,
+	/// Serialized item, issue children cut out.
+	pub block: String,
+	/// The inlined milestone it lives under.
+	pub milestone: Option<MilestoneLink>,
+	/// Issues listed directly under it, which become its children.
+	pub adopts: Vec<IssueLink>,
 }
 
 /// Address of a task item within a `TaskView`: section header-path + positional path
@@ -799,21 +809,36 @@ fn collapse_items(items: &mut [TaskItem]) {
 	}
 }
 
-fn collect_homeless(items: &[TaskItem], section: &[String], path: &mut Vec<usize>, milestone: Option<&MilestoneLink>, out: &mut Vec<(TaskItemId, String, Option<MilestoneLink>)>) {
+fn collect_homeless(items: &[TaskItem], section: &[String], path: &mut Vec<usize>, milestone: Option<&MilestoneLink>, out: &mut Vec<HomelessTask>) {
 	for (i, item) in items.iter().enumerate() {
 		path.push(i);
 		if is_new_task(item) {
 			// A candidate's subtree is the issue's own content — no candidates inside it.
+			let mut own = item.clone();
+			let mut adopts = Vec::new();
+			for sec in &mut own.children {
+				if let Section::List(list) = sec {
+					list.retain(|child| match &child.content {
+						TaskContent::Issue { r#ref } => {
+							adopts.push(r#ref.to_issue_link().expect("is_new_task admits only resolved refs"));
+							false
+						}
+						_ => true,
+					});
+				}
+			}
+			own.children.retain(|sec| !matches!(sec, Section::List(list) if list.is_empty()));
 			let mut block = String::new();
-			serialize_item(item, Render::unfolded(&HashMap::new()), &mut block);
-			out.push((
-				TaskItemId {
+			serialize_item(&own, Render::unfolded(&HashMap::new()), &mut block);
+			out.push(HomelessTask {
+				id: TaskItemId {
 					section: section.to_vec(),
 					path: path.clone(),
 				},
 				block,
-				milestone.cloned(),
-			));
+				milestone: milestone.cloned(),
+				adopts,
+			});
 		} else if !matches!(item.content, TaskContent::Issue { .. }) {
 			// An expanded issue block's interior is that issue's own content (body, children,
 			// blockers) — `sync_embedded_issue_changes` owns it, see `embedded_issues`.
@@ -868,10 +893,17 @@ fn is_new_task(item: &TaskItem) -> bool {
 	if trimmed.is_empty() {
 		return false;
 	}
-	if !trimmed.contains(' ') && item.children.is_empty() {
+	if !trimmed.contains(' ') && (item.children.is_empty() || has_ref_descendant(item)) {
 		return false;
 	}
-	!has_ref_descendant(item)
+	item.children.iter().all(|sec| match sec {
+		Section::List(list) => list.iter().all(|child| match &child.content {
+			TaskContent::Issue { r#ref } => r#ref.to_issue_link().is_some(),
+			TaskContent::Milestone { .. } => false,
+			TaskContent::Virtual(_) => !has_ref_descendant(child),
+		}),
+		Section::FreeContent(_) => true,
+	})
 }
 
 fn has_ref_descendant(item: &TaskItem) -> bool {
@@ -1445,9 +1477,9 @@ mod tests {
 ";
 		let mut doc = TaskView::parse(content);
 		doc.resolve_bare_refs(None);
-		let found: Vec<String> = doc.homeless_tasks().into_iter().map(|(_, block, _)| block).collect();
+		let found: Vec<String> = doc.homeless_tasks().into_iter().map(|t| t.block).collect();
 		// OpenClaw (single-word but has blockers) and the two multi-word tasks materialize;
-		// the category header (ref descendant), single-word childless, and closed items don't.
+		// the single-word category header over a ref, single-word childless, and closed items don't.
 		insta::assert_snapshot!(found.join("~~~\n"), @r"
 		- [ ] OpenClaw
 		  # Blockers
@@ -1476,7 +1508,7 @@ mod tests {
 		let homeless = doc.homeless_tasks();
 		assert_eq!(homeless.len(), 1);
 		let link = IssueLink::parse("https://github.com/local/virtual/issues/1").unwrap();
-		doc.assign_link(&homeless[0].0, link);
+		doc.assign_link(&homeless[0].id, link);
 		doc.collapse_to_links();
 		insta::assert_snapshot!(doc.serialize(), @r"
 		- https://github.com/local/virtual/issues/1
@@ -1498,13 +1530,13 @@ mod tests {
 		let homeless = doc.homeless_tasks();
 		assert_eq!(homeless.len(), 1, "only the unlinked task materializes");
 		assert_eq!(
-			homeless[0].2.as_ref().map(|m| m.as_str()),
+			homeless[0].milestone.as_ref().map(|m| m.as_str()),
 			Some("https://github.com/o/r/milestone/3"),
 			"the task is attributed to the inlined milestone it lives under"
 		);
 
 		let link = IssueLink::parse("https://github.com/local/virtual/issues/1").unwrap();
-		doc.assign_link(&homeless[0].0, link);
+		doc.assign_link(&homeless[0].id, link);
 
 		// the milestone body (collapsed to links) now carries the virtual link — this is what
 		// gets pushed back to the milestone, so it never re-materializes.
