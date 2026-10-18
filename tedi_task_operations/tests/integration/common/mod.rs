@@ -22,7 +22,7 @@
 //! ```
 
 /// Global CLI flags that must appear before the subcommand.
-const GLOBAL_FLAGS: &[&str] = &["--offline", "--mock", "-v", "--verbose", "-q", "--quiet"];
+const GLOBAL_FLAGS: &[&str] = &["--offline", "--sync-on-exit", "--mock", "-v", "--verbose", "-q", "--quiet"];
 /// Environment variable names derived from package name
 const ENV_GITHUB_TOKEN: &str = concat!("tedi", "__GITHUB_TOKEN");
 const ENV_MOCK_STATE: &str = concat!("tedi", "_MOCK_STATE");
@@ -110,6 +110,7 @@ impl TestContext {
 		let mut cmd = Command::new(get_binary_path());
 		cmd.args(args);
 		cmd.env("__IS_INTEGRATION_TEST", "1");
+		cmd.env("EDITOR", "true"); // an unmocked editor exits untouched instead of hanging the suite
 		cmd.env(ENV_GITHUB_TOKEN, "test_token");
 		for (key, value) in self.xdg.env_vars() {
 			cmd.env(key, value);
@@ -129,6 +130,7 @@ impl TestContext {
 		let mut cmd = Command::new(get_binary_path());
 		cmd.args(args);
 		cmd.env("__IS_INTEGRATION_TEST", "1");
+		cmd.env("EDITOR", "true"); // an unmocked editor exits untouched instead of hanging the suite
 		cmd.env(ENV_GITHUB_TOKEN, "test_token");
 		for (key, value) in self.xdg.env_vars() {
 			cmd.env(key, value);
@@ -478,6 +480,7 @@ impl<'a> OpenBuilder<'a> {
 		}
 
 		cmd.env("__IS_INTEGRATION_TEST", "1");
+		cmd.env("EDITOR", "true"); // an unmocked editor exits untouched instead of hanging the suite
 		cmd.env(ENV_GITHUB_TOKEN, "test_token");
 		for (key, value) in self.ctx.xdg.env_vars() {
 			cmd.env(key, value);
@@ -560,6 +563,7 @@ impl<'a> OpenBuilder<'a> {
 		}
 
 		cmd.env("__IS_INTEGRATION_TEST", "1");
+		cmd.env("EDITOR", "true"); // an unmocked editor exits untouched instead of hanging the suite
 		cmd.env(ENV_GITHUB_TOKEN, "test_token");
 		for (key, value) in self.ctx.xdg.env_vars() {
 			cmd.env(key, value);

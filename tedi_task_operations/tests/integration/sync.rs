@@ -1110,3 +1110,137 @@ async fn test_local_title_edit_pushes_to_remote() {
 	assert!(out.status.success(), "stderr: {}", out.stderr);
 	assert!(out.stdout.contains("Updating issue #1 title"), "the rename never reached Github. stdout: {}", out.stdout);
 }
+
+/// The user's hand-resolution of a conflict is the new truth: whatever they then edit on top of it
+/// syncs as a plain edit, never as another divergence from the pre-conflict consensus.
+#[rstest]
+#[case::full(&[])]
+#[case::on_exit(&["--sync-on-exit"])]
+#[tokio::test]
+async fn test_edit_on_top_of_resolved_conflict_syncs(#[case] args: &[&str]) {
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+
+	ctx.consensus(
+		&parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n  consensus body\n"),
+		Some(Seed::new(-100)),
+	)
+	.await;
+	let local = ctx
+		.local(
+			&parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n  local diverged body\n"),
+			Some(Seed::new(100)),
+		)
+		.await;
+	ctx.remote(
+		&parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n  remote diverged body\n"),
+		Some(Seed::new(100)),
+	);
+
+	let out = ctx.open_issue(&local).run();
+	assert!(!out.status.success(), "divergence must conflict first. stdout: {}", out.stdout);
+	let path = ctx.flat_issue_path(("o", "r").into(), 1, "Test Issue");
+	let conflict = path.parent().unwrap().parent().unwrap().join("__conflict.md");
+	assert!(conflict.exists());
+
+	std::fs::write(&conflict, "- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n  resolved body\n").unwrap();
+
+	let out = ctx
+		.open_issue(&local)
+		.args(args)
+		.edit(&parse_virtual(
+			"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n  resolved body\n\n  edited on top\n",
+		))
+		.run();
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+	assert!(!conflict.exists(), "resolution must be consumed");
+	insta::allow_duplicates! {
+		assert_snapshot!(read_issue_file(&path), @"
+	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+	  resolved body
+
+	  edited on top
+		");
+	}
+}
+
+/// Resolving and then closing the editor untouched still lands the resolution: it was an edit,
+/// just one made in the conflict file.
+#[rstest]
+#[case::full(&[])]
+#[case::on_exit(&["--sync-on-exit"])]
+#[tokio::test]
+async fn test_resolved_conflict_without_further_edit_syncs(#[case] args: &[&str]) {
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+
+	ctx.consensus(
+		&parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n  consensus body\n"),
+		Some(Seed::new(-100)),
+	)
+	.await;
+	let local = ctx
+		.local(
+			&parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n  local diverged body\n"),
+			Some(Seed::new(100)),
+		)
+		.await;
+	ctx.remote(
+		&parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n  remote diverged body\n"),
+		Some(Seed::new(100)),
+	);
+
+	let out = ctx.open_issue(&local).run();
+	assert!(!out.status.success(), "divergence must conflict first. stdout: {}", out.stdout);
+	let path = ctx.flat_issue_path(("o", "r").into(), 1, "Test Issue");
+	let conflict = path.parent().unwrap().parent().unwrap().join("__conflict.md");
+
+	std::fs::write(&conflict, "- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n  resolved body\n").unwrap();
+
+	let out = ctx.open_issue(&local).args(args).run();
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+	assert!(!conflict.exists(), "resolution must be consumed");
+
+	// what the remote holds after the resolution: the mock forgets writes between runs
+	ctx.set_remote_body(("o", "r").into(), 1, "resolved body\n");
+	let out = ctx.open_issue(&local).args(args).run();
+	assert!(out.status.success(), "a landed resolution must not re-conflict. stderr: {}", out.stderr);
+	insta::allow_duplicates! {
+		assert_snapshot!(read_issue_file(&path), @"
+	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+	  resolved body
+		");
+	}
+}
+
+/// A conflict left unresolved while Github moves on is re-raised against the new remote: the user
+/// never resolves against a side that no longer exists.
+#[tokio::test]
+async fn test_pending_conflict_rebuilt_on_remote_change() {
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+
+	ctx.consensus(
+		&parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n  consensus body\n"),
+		Some(Seed::new(-100)),
+	)
+	.await;
+	let local = ctx
+		.local(
+			&parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n  local diverged body\n"),
+			Some(Seed::new(100)),
+		)
+		.await;
+	ctx.remote(
+		&parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n  remote diverged body\n"),
+		Some(Seed::new(100)),
+	);
+
+	let out = ctx.open_issue(&local).run();
+	assert!(!out.status.success(), "divergence must conflict first. stdout: {}", out.stdout);
+	let path = ctx.flat_issue_path(("o", "r").into(), 1, "Test Issue");
+	let conflict = path.parent().unwrap().parent().unwrap().join("__conflict.md");
+
+	ctx.set_remote_body(("o", "r").into(), 1, "remote moved on\n");
+	let out = ctx.open_issue(&local).run();
+	assert!(!out.status.success(), "markers remain, so still blocked. stdout: {}", out.stdout);
+	let conflict = std::fs::read_to_string(&conflict).unwrap();
+	assert!(conflict.contains("remote moved on") && !conflict.contains("remote diverged body"), "{conflict}");
+}

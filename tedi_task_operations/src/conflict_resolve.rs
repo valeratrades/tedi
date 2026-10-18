@@ -13,13 +13,14 @@ use std::{path::Path, process::Command};
 use color_eyre::eyre::{Result, bail, eyre};
 
 use crate::{
-	Issue, IssueIndex, LazyIssue as _, RepoInfo, VirtualIssue,
+	Issue, IssueIndex, IssueLink, LazyIssue as _, RepoInfo, VirtualIssue,
 	local::{
-		FsReader, GitReader, Local, LocalFs, LocalIssueSource, LocalPath,
+		Consensus, FsReader, GitReader, Local, LocalFs, LocalIssueSource, LocalPath,
 		conflict_detect::{ConflictBlockedError, ConflictError, ConflictOutcome, conflict_file_path, has_conflict_markers, is_merge_in_progress, milestone_conflict_file_path},
 		consensus::is_git_initialized,
 	},
-	remote::Remote,
+	open_interactions::fetch_remote,
+	remote::{Remote, RemoteSource},
 	sink::Sink,
 };
 
@@ -39,6 +40,7 @@ pub async fn build_resolving_from_path(path: &Path) -> Result<LocalIssueSource<F
 /// If a pending conflict blocks `index`, open it for resolution and re-check.
 /// Errors with `ConflictBlockedError` if markers still remain after the editor exits.
 pub async fn resolve_pending_conflict(index: IssueIndex) -> Result<()> {
+	refresh_pending_conflict(index).await?;
 	if let Some(conflict_file) = check_for_existing_conflict(index).await? {
 		eprintln!("Unresolved merge conflict in: {}", conflict_file.display());
 		eprintln!("Opening for resolution...");
@@ -74,19 +76,13 @@ pub async fn check_for_existing_conflict(issue_index: IssueIndex) -> Result<Opti
 	if has_conflict_markers(&content) {
 		Ok(Some(conflict_fpath))
 	} else {
-		let title_line = content.lines().next().expect("a resolved conflict file holds the issue it was written for");
-		let Some((crate::IssueMarker::Linked { link, .. }, _)) = crate::IssueMarker::parse_from_end(title_line) else {
-			bail!("{} has no linked issue marker on its title line; can't tell which issue it resolves", conflict_fpath.display());
-		};
-		let number = *issue_index.git_num_path()?.last().expect("a github issue index ends in its number");
-		if link.project() != issue_index.repo_info() || link.number() != number {
+		if !names(&content, &conflict_fpath, issue_index)? {
 			return Ok(None); // waits for its own issue to be loaded
 		}
-		// have the conflict file, but user has had resolved it, - sync then cleanup
 		{
 			let mut new_issue = {
 				let mut new_issue_but_old_local_timestamps = {
-					let virtual_issue = VirtualIssue::parse(&content, conflict_fpath)?;
+					let virtual_issue = VirtualIssue::parse(&content, conflict_fpath.clone())?;
 					let hollow = Local::read_hollow_from_project_meta(issue_index)?;
 					Issue::from_combined(hollow, virtual_issue, issue_index.parent().unwrap(), issue_index.repo_info().is_virtual())?
 				};
@@ -97,12 +93,83 @@ pub async fn check_for_existing_conflict(issue_index: IssueIndex) -> Result<Opti
 				new_issue_but_old_local_timestamps
 			};
 
+			let remote = fetch_remote(&new_issue).await?;
 			<Issue as Sink<LocalFs>>::sink(&mut new_issue, None).await?;
-			<Issue as Sink<Remote>>::sink(&mut new_issue, None).await?;
+			<Issue as Sink<Remote>>::sink(&mut new_issue, Some(&remote)).await?;
+			std::fs::remove_file(&conflict_fpath)?;
+			<Issue as Sink<Consensus>>::sink(&mut new_issue, None).await?; // `add -A` records the removal, concluding a pending merge
 		}
-		conflict_resolution_cleanup(conflict_file_path(issue_index.owner().expect("github project")))?;
+		conflict_resolution_cleanup()?;
 		Ok(None)
 	}
+}
+
+/// Does the conflict file `content` resolve `issue_index`? Read off its title line's link.
+fn names(content: &str, conflict_fpath: &Path, issue_index: IssueIndex) -> Result<bool> {
+	let title_line = content.lines().next().expect("a conflict side holds the issue it was written for");
+	let Some((crate::IssueMarker::Linked { link, .. }, _)) = crate::IssueMarker::parse_from_end(title_line) else {
+		bail!("{} has no linked issue marker on its title line; can't tell which issue it resolves", conflict_fpath.display());
+	};
+	let number = *issue_index.git_num_path()?.last().expect("a github issue index ends in its number");
+	Ok(link.project() == issue_index.repo_info() && link.number() == number)
+}
+
+/// A conflict still carrying markers is re-raised against a fresh pull if Github moved since it was
+/// written, so the user never resolves against a stale remote. Unchanged remote keeps the file as is.
+async fn refresh_pending_conflict(issue_index: IssueIndex) -> Result<()> {
+	if issue_index.repo_info().is_virtual() {
+		return Ok(());
+	}
+	let conflict_fpath = conflict_file_path(issue_index.owner().expect("github project"));
+	if !conflict_fpath.exists() || !has_conflict_markers(&std::fs::read_to_string(&conflict_fpath)?) {
+		return Ok(());
+	}
+	let data_dir = Local::issues_dir();
+	let data_dir_str = data_dir.to_str().ok_or_else(|| eyre!("Invalid data directory path"))?;
+	let rel = conflict_fpath.strip_prefix(&data_dir).expect("conflict file lives in the issues dir");
+	let show = Command::new("git").args(["-C", data_dir_str, "show", &format!("remote-state:./{}", rel.display())]).output()?;
+	if !show.status.success() {
+		bail!(
+			"{} has conflict markers but no `remote-state` branch records its remote side: {}",
+			conflict_fpath.display(),
+			String::from_utf8_lossy(&show.stderr).trim()
+		);
+	}
+	let recorded_remote = String::from_utf8(show.stdout)?;
+	if !names(&recorded_remote, &conflict_fpath, issue_index)? {
+		return Ok(());
+	}
+
+	let num_path = issue_index.git_num_path()?;
+	let (&number, lineage) = num_path.split_last().expect("a github issue index ends in its number");
+	let remote = Issue::load(RemoteSource::build(IssueLink::in_project(issue_index.repo_info(), number), Some(lineage))?).await?;
+	let remote_side = remote.to_string();
+	if remote_side == recorded_remote {
+		return Ok(());
+	}
+	if is_merge_in_progress() {
+		let abort = Command::new("git").args(["-C", data_dir_str, "merge", "--abort"]).output()?;
+		if !abort.status.success() {
+			bail!("git merge --abort failed: {}", String::from_utf8_lossy(&abort.stderr).trim());
+		}
+	}
+	// the rebuilt merge's base must not hold either side, or git resolves it for us; the local issue file is the local side
+	let rm = Command::new("git").args(["-C", data_dir_str, "rm", "-q", "-f", "--ignore-unmatch", "--"]).arg(rel).output()?;
+	if !rm.status.success() {
+		bail!("git rm of the stale conflict file failed: {}", String::from_utf8_lossy(&rm.stderr).trim());
+	}
+	if !Command::new("git").args(["-C", data_dir_str, "diff", "--cached", "--quiet"]).status()?.success() {
+		let commit = Command::new("git")
+			.args(["-C", data_dir_str, "commit", "-q", "-m", "__conflict: drop stale remote side"])
+			.output()?;
+		if !commit.status.success() {
+			bail!("committing the stale conflict file's removal failed: {}", String::from_utf8_lossy(&commit.stderr).trim());
+		}
+	}
+	let local = Issue::load(LocalIssueSource::<FsReader>::build(LocalPath::new(issue_index)).await?).await?;
+	// a marker-free outcome (Github now agrees with local) is left for `check_for_existing_conflict` to consume as a resolution
+	initiate_conflict_merge(issue_index.repo_info(), number, &local.to_string(), &remote_side, conflict_fpath)?;
+	Ok(())
 }
 
 /// Milestone counterpart to `check_for_existing_conflict`: if the resolution file's markers
@@ -143,7 +210,9 @@ pub async fn check_for_existing_milestone_conflict(link: &crate::MilestoneLink) 
 
 	<crate::Milestone as Sink<LocalFs>>::sink(&mut milestone, None).await?;
 	<crate::Milestone as Sink<Remote>>::sink(&mut milestone, None).await?;
-	conflict_resolution_cleanup(conflict_fpath)?;
+	std::fs::remove_file(&conflict_fpath)?;
+	<crate::Milestone as Sink<Consensus>>::sink(&mut milestone, None).await?; // `add -A` records the removal, concluding a pending merge
+	conflict_resolution_cleanup()?;
 	Ok(None)
 }
 
@@ -306,27 +375,12 @@ pub fn initiate_conflict_merge(
 	}
 }
 
-/// Complete the conflict resolution process.
-///
-/// Call this after user has resolved conflicts and committed.
-/// Cleans up the remote-state branch.
-pub fn conflict_resolution_cleanup(conflict_file: std::path::PathBuf) -> Result<()> {
+/// Drop the `remote-state` branch once the resolution is committed to consensus.
+fn conflict_resolution_cleanup() -> Result<()> {
 	let data_dir = Local::issues_dir();
 	let data_dir_str = data_dir.to_str().ok_or_else(|| eyre!("Invalid data directory path"))?;
-
-	// Ensure we're not in the middle of a merge
-	if is_merge_in_progress() {
-		bail!("Git merge is still in progress. Complete the merge first: git add <file> && git commit");
-	}
-
-	// Cleanup branch
-	let _ = Command::new("git").args(["-C", data_dir_str, "branch", "-D", "remote-state"]).output();
-
-	// Remove the conflict file after successful resolution.
-	if conflict_file.exists() {
-		std::fs::remove_file(&conflict_file)?;
-	}
-
+	assert!(!is_merge_in_progress(), "the consensus commit concludes the conflict merge");
+	let _ = Command::new("git").args(["-C", data_dir_str, "branch", "-D", "remote-state"]).output(); // absent when the merge was concluded by an earlier run
 	Ok(())
 }
 

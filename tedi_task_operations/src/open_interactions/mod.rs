@@ -12,6 +12,7 @@ mod touch;
 // Re-export the public API
 pub use command::{OpenArgs, open_command};
 pub use milestone::{MilestoneModifier, load_consensus_milestone, modify_and_sync_milestone, pull_milestone};
+pub(crate) use sync::fetch_remote;
 // Re-export sync types for blocker interaction
 #[allow(unused_imports)]
 pub use sync::{MergeMode, Modifier, ModifyResult, Side, SyncMode, SyncOptions, modify_and_sync_issue, pull_issues};

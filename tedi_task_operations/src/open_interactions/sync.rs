@@ -21,6 +21,8 @@
 //! The merge mode is consumed after first use (pre-editor sync), so post-editor
 //! sync always uses `Normal`. This prevents accidental data loss.
 
+pub(crate) use core::fetch_remote;
+
 use color_eyre::eyre::{Result, bail};
 use tracing::instrument;
 pub use types::*;
@@ -349,7 +351,7 @@ mod core {
 	}
 
 	/// Network half of a sync: reads Github only, so any number may run at once.
-	pub(super) async fn fetch_remote(current_issue: &Issue) -> Result<Issue> {
+	pub(crate) async fn fetch_remote(current_issue: &Issue) -> Result<Issue> {
 		let issue_number = current_issue.git_id().expect(
 			"can't be linked and not have number associated\nunless we die in a weird moment I guess. If this ever triggers, should fix it to set issue as pending (not linked) and sink",
 		);
