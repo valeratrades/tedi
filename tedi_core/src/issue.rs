@@ -619,41 +619,53 @@ impl Issue /*{{{1*/ {
 		self.identity.user()
 	}
 
-	/// Update timestamps based on what changed compared to old issue.
-	/// This should be called after local modifications to track when fields changed.
-	/// Recursively updates children's timestamps too.
-	fn update_timestamps_from_diff(&mut self, old: &Issue) {
+	/// Post-update hook: call after any modification to an issue, to timestamp the fields that
+	/// changed since `old`, recursively.
+	pub fn post_update(&mut self, old: &Issue) {
 		if let Some(linked) = self.identity.mut_linked_issue_meta() {
 			linked.timestamps.update_from_diff(&old.contents, &self.contents);
 		}
-
-		// Recursively update children's timestamps
-		// Match children by selector
 		for (selector, new_child) in &mut self.children {
 			if let Some(old_child) = old.children.get(selector) {
-				new_child.update_timestamps_from_diff(old_child);
+				new_child.post_update(old_child);
 			}
-			// New children (not in old) don't need timestamp updates - they'll use defaults
 		}
 	}
 
-	/// If this issue is closed, propagate its exact close state to all children recursively.
-	fn propagate_closed(&mut self) {
-		if !self.contents.state.is_closed() {
-			return;
+	/// A closed issue never has an open descendant (ARCHITECTURE.md, `### Issue`). Errors naming
+	/// every (closed ancestor, open descendant) pair in this subtree.
+	pub fn check_closed_subtree(&self) -> Result<(), crate::IssueError> {
+		fn name(issue: &Issue) -> String {
+			match issue.git_id() {
+				Some(n) => format!("{:?} (#{n})", issue.contents.title),
+				None => format!("{:?}", issue.contents.title),
+			}
 		}
-		let state = self.contents.state.clone();
-		for child in self.children.values_mut() {
-			child.contents.state = state.clone();
-			child.propagate_closed();
+		fn walk<'a>(issue: &'a Issue, closed_ancestors: &mut Vec<&'a Issue>, violations: &mut Vec<String>) {
+			let closed = issue.contents.state.is_closed();
+			if !closed {
+				violations.extend(closed_ancestors.iter().map(|a| format!("{} is closed, but its descendant {} is open", name(a), name(issue))));
+			}
+			if closed {
+				closed_ancestors.push(issue);
+			}
+			for child in issue.children.values() {
+				walk(child, closed_ancestors, violations);
+			}
+			if closed {
+				closed_ancestors.pop();
+			}
 		}
-	}
 
-	/// Post-update hook: call after any modification to an issue.
-	/// Updates timestamps from diff and propagates closed state to children.
-	pub fn post_update(&mut self, old: &Issue) {
-		self.update_timestamps_from_diff(old);
-		self.propagate_closed();
+		let mut violations = Vec::new();
+		walk(self, &mut Vec::new(), &mut violations);
+		match violations.is_empty() {
+			true => Ok(()),
+			false => {
+				violations.sort();
+				Err(crate::IssueError::new_open_under_closed(violations.join("\n")))
+			}
+		}
 	}
 
 	/// Get parent_index.

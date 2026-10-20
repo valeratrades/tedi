@@ -19,6 +19,8 @@ can have associated discussions/dumps with unstructured thoughts on the subject.
 ### Issue
 fundamental pieces of scoped work. This is the level of precision, that day-to-day planning operates with.
 
+A closed issue (closed, not planned, duplicate) never has an open descendant: a user edit producing one is rejected, so closing a subtree means closing each of its nodes in the same save. Remote state violating it (GitHub allows it) is pulled as-is; the next edit of that tree must resolve it.
+
 ### Blockers
 blockers form a definitive ordering, covering the tasks necessary for completion of a given objective.
 Note that the `Blockers` list is not a superset of the underlying Task Objectives, - Blocker is only reasoning about the parts we are aware about and have had sorted explicitly. For example, - a blocker sequence can easily end in an `- evaluate the path, given grown knowledge` item. Thus we keep them distinctly separate from the success-criterions asosciated with the task they have been added on.
