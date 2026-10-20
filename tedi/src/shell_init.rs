@@ -48,11 +48,13 @@ alias tdo="{exe_name} open"
 alias tdp="{exe_name} open --pull"
 
 # {exe_name}s-blocker
+alias tbs="{exe_name} -y sprints select"
+
 alias tbp="{exe_name} -y --sync-on-exit sprints selected pop"
 alias tba="{exe_name} -y --sync-on-exit sprints selected add"
 alias tbo="{exe_name} -y --sync-on-exit sprints selected open"
 
-alias tbs="{exe_name} -y sprints selected set"
+alias tbe="{exe_name} -y sprints selected set # `e` for Edit current. It's more so Replace, but abbreviation for that taken."
 alias tbl="{exe_name} -y --sync-on-exit sprints selected list"
 alias tbc="{exe_name} -y --sync-on-exit sprints selected current"
 

@@ -30,23 +30,25 @@ pub enum SprintsCommands {
 	Select {
 		pattern: Option<String>,
 		/// Forward in the selection history
-		#[arg(long)]
+		#[arg(long, short)]
 		next: bool,
 		/// Back in the selection history
-		#[arg(long)]
+		#[arg(long, short)]
 		prev: bool,
-		#[arg(long)]
+		#[arg(long, short)]
+		/// Go to issue above currently selected in the main Sprint
 		up: bool,
-		#[arg(long)]
+		#[arg(long, short)]
+		/// Go to issue below currently selected in the main Sprint
 		down: bool,
 		/// Descend into the selected milestone (its top workable issue) or issue (its top open child)
-		#[arg(long = "in")]
+		#[arg(long = "in", short)]
 		enter: bool,
 		/// Ascend one level in the selection path
-		#[arg(long)]
+		#[arg(long, short)]
 		out: bool,
 		/// Reset to the top item of the sprint
-		#[arg(long)]
+		#[arg(long, short)]
 		top: bool,
 	},
 	/// Operate on the selected issue in the active sprint
