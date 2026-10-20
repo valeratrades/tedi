@@ -11,19 +11,19 @@ members = [
 ]
 
 [workspace.package]
-version = "0.17.3"
+version = "0.17.4"
 edition = "2024"
 authors = ["Valeriy Sakharov <valeratrades@gmail.com>"]
 license = "BlueOak-1.0.0"
 repository = "https://github.com/valeratrades/tedi"
 
 [workspace.dependencies]
-tedi_adapters = { path = "tedi_adapters", version = "0.17.3" }
-tedi_core = { path = "tedi_core", version = "0.17.3" }
-tedi_eval = { path = "tedi_eval", version = "0.17.3" }
-tedi_md = { path = "tedi_md", version = "0.17.3" }
-tedi_task_operations = { path = "tedi_task_operations", version = "0.17.3" }
-tedi_task_primitives = { path = "tedi_task_primitives", version = "0.17.3" }
+tedi_adapters = { path = "tedi_adapters", version = "0.17.4" }
+tedi_core = { path = "tedi_core", version = "0.17.4" }
+tedi_eval = { path = "tedi_eval", version = "0.17.4" }
+tedi_md = { path = "tedi_md", version = "0.17.4" }
+tedi_task_operations = { path = "tedi_task_operations", version = "0.17.4" }
+tedi_task_primitives = { path = "tedi_task_primitives", version = "0.17.4" }
 
 arrayvec = "0.7"
 ask_llm = { version = "^3.0.1" }
