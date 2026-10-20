@@ -298,7 +298,7 @@ pub fn refresh_selection_cache(key: &str, content: &str) {
 		tracing::warn!("failed to refresh selection cache: {e}");
 	}
 }
-/// `sprints select [pattern] [--next|--prev|--down|--up|--top]` — change the active sprint's selection.
+/// `sprints select [pattern] [--next|--prev|--up|--down|--in|--out|--top]` — change the active sprint's selection.
 #[expect(clippy::too_many_arguments)]
 pub async fn select(pattern: Option<String>, next: bool, prev: bool, up: bool, down: bool, enter: bool, out: bool, top: bool, yes: bool) -> Result<()> {
 	let landing = if next {
