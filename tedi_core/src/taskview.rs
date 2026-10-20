@@ -172,7 +172,7 @@ impl TaskView {
 		nodes
 	}
 
-	/// Nodes reachable by `--next`/`--prev`: the `# Must` section plus the first section
+	/// Nodes reachable by `--up`/`--down`: the `# Must` section plus the first section
 	/// below it. Absent a `# Must` section, the whole view.
 	pub fn cycle_scope(&self) -> Vec<NodeLink> {
 		let Some(must) = self.managed_index(ManagedSection::Must) else {

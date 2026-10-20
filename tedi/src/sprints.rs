@@ -25,20 +25,26 @@ pub enum SprintsCommands {
 	/// Ensures all milestones up to date, if yes - writes "OK" to $XDG_DATA_HOME/todo/healthcheck.status
 	/// Can get outdated easily, so printed output of the command is prepended with the filename
 	Healthcheck,
-	/// Change the active sprint's selected issue (circular with --next/--prev, tree descent
-	/// with --down/--up, else fzf/pattern over the whole reachable tree)
+	/// Change the active sprint's selected issue (circular with --up/--down, tree descent
+	/// with --in/--out, history with --prev/--next, else fzf/pattern over the whole reachable tree)
 	Select {
 		pattern: Option<String>,
+		/// Forward in the selection history
 		#[arg(long)]
 		next: bool,
+		/// Back in the selection history
 		#[arg(long)]
 		prev: bool,
-		/// Descend into the selected milestone (its top workable issue) or issue (its top open child)
-		#[arg(long)]
-		down: bool,
-		/// Ascend one level in the selection path
 		#[arg(long)]
 		up: bool,
+		#[arg(long)]
+		down: bool,
+		/// Descend into the selected milestone (its top workable issue) or issue (its top open child)
+		#[arg(long = "in")]
+		enter: bool,
+		/// Ascend one level in the selection path
+		#[arg(long)]
+		out: bool,
 		/// Reset to the top item of the sprint
 		#[arg(long)]
 		top: bool,
@@ -143,13 +149,23 @@ pub async fn sprints_command(settings: &LiveSettings, args: SprintsArgs, mock: O
 			SprintRef::Tf(tf) => edit_milestone(settings, tf, mode, mock.is_some()).await,
 		},
 		SprintsCommands::Healthcheck => healthcheck(settings).await,
-		SprintsCommands::Select { pattern, next, prev, down, up, top } => {
+		SprintsCommands::Select {
+			pattern,
+			next,
+			prev,
+			up,
+			down,
+			enter,
+			out,
+			top,
+		} => {
 			// A bare timeframe (`sprints select 1d`) focuses that sprint precision; anything else
 			// is an issue pattern within the currently-active sprint. The alpha-designator guard
 			// keeps numeric issue patterns (`select 2`) from parsing as a timeframe.
 			if mode != SyncMode::Offline
 				&& !next && !prev
-				&& !down && !up
+				&& !up && !down
+				&& !enter && !out
 				&& !top && let Some(p) = pattern.as_deref()
 				&& p.chars().any(|c| c.is_ascii_alphabetic())
 				&& let Ok(tf) = p.parse::<Timeframe>()
@@ -157,7 +173,7 @@ pub async fn sprints_command(settings: &LiveSettings, args: SprintsArgs, mock: O
 				focus_sprint(settings, tf, yes()).await
 			} else {
 				ensure_selection_cache(settings, mode).await?;
-				ops::select(pattern, next, prev, down, up, top, yes()).await
+				ops::select(pattern, next, prev, up, down, enter, out, top, yes()).await
 			}
 		}
 		SprintsCommands::Selected { op } => {

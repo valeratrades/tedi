@@ -255,14 +255,14 @@ async fn test_select_next_cycles_between_entries() {
 	let out = ctx.run(&["--offline", "sprints", "selected", "list"]);
 	assert!(out.stdout.contains("task A"), "initial selection should be A. stdout: {}", out.stdout);
 
-	let out = ctx.run(&["--offline", "sprints", "select", "--next"]);
-	assert!(out.status.success(), "select --next should succeed. stderr: {}", out.stderr);
+	let out = ctx.run(&["--offline", "sprints", "select", "--down"]);
+	assert!(out.status.success(), "select --down should succeed. stderr: {}", out.stderr);
 
 	let out = ctx.run(&["--offline", "sprints", "selected", "list"]);
-	assert!(out.stdout.contains("task B"), "after --next, selection should be B. stdout: {}", out.stdout);
+	assert!(out.stdout.contains("task B"), "after --down, selection should be B. stdout: {}", out.stdout);
 
 	// Wrap back to A.
-	ctx.run(&["--offline", "sprints", "select", "--next"]);
+	ctx.run(&["--offline", "sprints", "select", "--down"]);
 	let out = ctx.run(&["--offline", "sprints", "selected", "list"]);
 	assert!(out.stdout.contains("task A"), "after wrapping, should be back to A. stdout: {}", out.stdout);
 }
@@ -276,7 +276,7 @@ async fn test_select_single_entry_errors() {
 
 	write_selection(&ctx, &[("Issue A", "mock_user", "https://github.com/o/r/issues/1")]);
 
-	let out = ctx.run(&["--offline", "sprints", "select", "--next"]);
+	let out = ctx.run(&["--offline", "sprints", "select", "--down"]);
 	assert!(!out.status.success(), "select with single entry should fail. stdout: {}", out.stdout);
 	assert!(out.stderr.contains("Only one item"), "error should mention single item. stderr: {}", out.stderr);
 }
@@ -299,7 +299,7 @@ async fn test_selected_add_works_after_select() {
 			("Issue B", "mock_user", "https://github.com/o/r/issues/2"),
 		],
 	);
-	ctx.run(&["--offline", "sprints", "select", "--next"]);
+	ctx.run(&["--offline", "sprints", "select", "--down"]);
 
 	let out = ctx.run(&["--offline", "sprints", "selected", "add", "new task on B"]);
 	assert!(out.status.success(), "add should succeed after select. stderr: {}", out.stderr);
@@ -334,9 +334,9 @@ async fn test_select_skips_delegating_issues() {
 		],
 	);
 
-	// From A, --next skips B (delegates) and lands on C.
-	let out = ctx.run(&["--offline", "sprints", "select", "--next"]);
-	assert!(out.status.success(), "select --next should succeed. stderr: {}", out.stderr);
+	// From A, --down skips B (delegates) and lands on C.
+	let out = ctx.run(&["--offline", "sprints", "select", "--down"]);
+	assert!(out.status.success(), "select --down should succeed. stderr: {}", out.stderr);
 
 	let out = ctx.run(&["--offline", "sprints", "selected", "list"]);
 	assert!(out.stdout.contains("task C"), "should skip B and land on C. stdout: {}", out.stdout);
@@ -359,7 +359,7 @@ async fn test_select_all_delegating_errors() {
 		],
 	);
 
-	let out = ctx.run(&["--offline", "sprints", "select", "--next"]);
+	let out = ctx.run(&["--offline", "sprints", "select", "--down"]);
 	assert!(!out.status.success(), "select should fail when all issues delegate. stdout: {}", out.stdout);
 	assert!(
 		out.stderr.contains("All issues") || out.stderr.contains("Nothing to stop at"),

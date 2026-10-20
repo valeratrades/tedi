@@ -299,15 +299,20 @@ pub fn refresh_selection_cache(key: &str, content: &str) {
 	}
 }
 /// `sprints select [pattern] [--next|--prev|--down|--up|--top]` — change the active sprint's selection.
-pub async fn select(pattern: Option<String>, next: bool, prev: bool, down: bool, up: bool, top: bool, yes: bool) -> Result<()> {
+#[expect(clippy::too_many_arguments)]
+pub async fn select(pattern: Option<String>, next: bool, prev: bool, up: bool, down: bool, enter: bool, out: bool, top: bool, yes: bool) -> Result<()> {
 	let landing = if next {
-		Selected::select_move(1)
+		Selected::select_history(false)
 	} else if prev {
+		Selected::select_history(true)
+	} else if up {
 		Selected::select_move(-1)
 	} else if down {
-		Selected::select_down()
-	} else if up {
-		Selected::select_up()
+		Selected::select_move(1)
+	} else if enter {
+		Selected::select_in()
+	} else if out {
+		Selected::select_out()
 	} else if top {
 		Selected::select_top()
 	} else {

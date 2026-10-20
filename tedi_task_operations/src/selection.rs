@@ -54,6 +54,9 @@ pub struct Selected {
 	/// `sprints edit`/`healthcheck`; urgent needs no cache (it is a local file).
 	#[serde(default)]
 	normal: Option<NormalSprint>,
+	/// sprint key → explicit selection changes, walked by `--prev`/`--next`.
+	#[serde(default)]
+	history: HashMap<String, History>,
 }
 impl Selected {
 	fn cache_path() -> PathBuf {
@@ -153,7 +156,7 @@ impl Selected {
 			let idx = idx as usize;
 			if let Some(landing) = sel.landing(&siblings[idx]) {
 				*path.last_mut().expect("non-empty checked above") = siblings[idx].clone();
-				sel.persist_path(&active.key, &path);
+				sel.navigate(&active.key, &path);
 				return Ok(landing);
 			}
 		}
@@ -162,7 +165,7 @@ impl Selected {
 
 	/// Descend into the terminal: milestone → its first open non-delegating issue,
 	/// issue → its top open child. Explicit descent errors loudly instead of skipping.
-	pub fn select_down() -> Result<Landing, String> {
+	pub fn select_in() -> Result<Landing, String> {
 		let mut sel = Self::load();
 		let active = sel.active().ok_or("No active sprint. Run `todo sprints edit 1d` first.")?;
 		guard_urgent(&active)?;
@@ -181,7 +184,7 @@ impl Selected {
 			},
 		};
 		path.push(NodeLink::Issue(child.clone()));
-		sel.persist_path(&active.key, &path);
+		sel.navigate(&active.key, &path);
 		Ok(Landing::Issue(child))
 	}
 
@@ -190,15 +193,14 @@ impl Selected {
 		let mut sel = Self::load();
 		let active = sel.active().ok_or("No active sprint. Run `todo sprints edit 1d` first.")?;
 		guard_urgent(&active)?;
-		sel.paths.remove(&active.key);
-		let path = sel.validate_path(&active)?;
+		let path = sel.top_root(&active)?;
 		let landing = sel.describe(path.last().ok_or("No open items in the active sprint.")?)?;
-		sel.persist_path(&active.key, &path);
+		sel.navigate(&active.key, &path);
 		Ok(landing)
 	}
 
 	/// Ascend one level; error at the sprint root.
-	pub fn select_up() -> Result<Landing, String> {
+	pub fn select_out() -> Result<Landing, String> {
 		let mut sel = Self::load();
 		let active = sel.active().ok_or("No active sprint. Run `todo sprints edit 1d` first.")?;
 		guard_urgent(&active)?;
@@ -208,7 +210,7 @@ impl Selected {
 		}
 		path.pop();
 		let landing = sel.describe(path.last().expect("len > 1 checked above"))?;
-		sel.persist_path(&active.key, &path);
+		sel.navigate(&active.key, &path);
 		Ok(landing)
 	}
 
@@ -234,6 +236,45 @@ impl Selected {
 		let idx = displays.iter().position(|d| *d == selected).ok_or_else(|| format!("fzf returned unknown entry: {selected}"))?;
 		let path = candidates[idx].clone();
 		let landing = sel.describe(path.last().expect("candidate paths are non-empty"))?;
+		sel.navigate(&active.key, &path);
+		Ok(landing)
+	}
+
+	/// Step back (or forward) through the active sprint's selection history, skipping
+	/// entries that no longer validate in full.
+	pub fn select_history(back: bool) -> Result<Landing, String> {
+		let mut sel = Self::load();
+		let active = sel.active().ok_or("No active sprint. Run `todo sprints edit 1d` first.")?;
+		guard_urgent(&active)?;
+		let current: Vec<String> = sel.validate_path(&active)?.iter().map(|n| n.to_string()).collect();
+		let mut history = sel.history.remove(&active.key).unwrap_or_default();
+		let (from, to) = if back {
+			(&mut history.back, &mut history.forward)
+		} else {
+			(&mut history.forward, &mut history.back)
+		};
+		let mut found = None;
+		while let Some(entry) = from.pop() {
+			if entry == current {
+				continue;
+			}
+			match sel.validate_stored(&active, &entry) {
+				Ok(path) if path.len() == entry.len() => {
+					found = Some(path);
+					break;
+				}
+				Ok(_) => {}
+				Err(e) => eprintln!("skipping {e}"),
+			}
+		}
+		let Some(path) = found else {
+			return Err(format!("No {} selection in history.", if back { "earlier" } else { "later" }));
+		};
+		if !current.is_empty() {
+			to.push(current);
+		}
+		sel.history.insert(active.key.clone(), history);
+		let landing = sel.describe(path.last().expect("validated in full, and entries are non-empty"))?;
 		sel.persist_path(&active.key, &path);
 		Ok(landing)
 	}
@@ -256,8 +297,8 @@ impl Selected {
 		});
 		match found {
 			Some(path) => {
-				sel.paths.insert(active.key.clone(), path.iter().map(|n| n.to_string()).collect());
-				sel.save()
+				sel.navigate(&active.key, &path);
+				Ok(())
 			}
 			None => {
 				tracing::warn!(path = %issue_path.display(), "issue not in active sprint tree; !s ignored");
@@ -301,11 +342,18 @@ impl Selected {
 	/// or no longer a child of the previous level. Empty → the top open root node.
 	/// An issue not stored locally is unknown rather than closed, so it errors instead of truncating.
 	fn validate_path(&self, active: &ActiveSprint) -> Result<Vec<NodeLink>, String> {
-		let root = active.view.nodes();
-		let stored = self.paths.get(&active.key).cloned().unwrap_or_default();
+		let path = self.validate_stored(active, self.paths.get(&active.key).map_or(&[], |p| p.as_slice()))?;
+		if !path.is_empty() {
+			return Ok(path);
+		}
+		self.top_root(active)
+	}
+
+	/// The truncating walk of `validate_path` over any stored path, without the top-root default.
+	fn validate_stored(&self, active: &ActiveSprint, stored: &[String]) -> Result<Vec<NodeLink>, String> {
 		let mut path: Vec<NodeLink> = Vec::new();
-		let mut siblings = root.clone();
-		for url in &stored {
+		let mut siblings = active.view.nodes();
+		for url in stored {
 			let Some(node) = NodeLink::parse(url) else { break };
 			if !siblings.contains(&node) || !self.node_is_open(&node)? {
 				break;
@@ -313,15 +361,33 @@ impl Selected {
 			siblings = self.children(&node);
 			path.push(node);
 		}
-		if path.is_empty() {
-			for node in root {
-				if self.node_is_open(&node)? {
-					path.push(node);
-					break;
-				}
+		Ok(path)
+	}
+
+	fn top_root(&self, active: &ActiveSprint) -> Result<Vec<NodeLink>, String> {
+		for node in active.view.nodes() {
+			if self.node_is_open(&node)? {
+				return Ok(vec![node]);
 			}
 		}
-		Ok(path)
+		Ok(Vec::new())
+	}
+
+	/// An explicit selection change: the replaced path joins the back history, forward history is dropped.
+	fn navigate(&mut self, key: &str, path: &[NodeLink]) {
+		let urls: Vec<String> = path.iter().map(|n| n.to_string()).collect();
+		if let Some(prev) = self.paths.get(key)
+			&& !prev.is_empty()
+			&& *prev != urls
+		{
+			let history = self.history.entry(key.to_string()).or_default();
+			history.back.push(prev.clone());
+			if history.back.len() > HISTORY_CAP {
+				history.back.remove(0);
+			}
+			history.forward.clear();
+		}
+		self.persist_path(key, path);
 	}
 
 	fn persist_path(&mut self, key: &str, path: &[NodeLink]) {
@@ -514,6 +580,14 @@ fn cleanup_urgent() {
 	if let Err(e) = result {
 		tracing::warn!("failed to clean up urgent file: {e}");
 	}
+}
+
+/// shortcut: oldest entries are dropped past this, raise if deep back-walks turn out useful.
+const HISTORY_CAP: usize = 100;
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+struct History {
+	back: Vec<Vec<String>>,
+	forward: Vec<Vec<String>>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

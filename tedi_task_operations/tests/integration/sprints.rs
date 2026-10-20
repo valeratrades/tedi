@@ -815,9 +815,9 @@ fn seed_selection(ctx: &TestContext, sprint_content: &str, milestones: &[(&str, 
 	);
 }
 
-/// Milestone as a select target: `--next` lands on it (output shows the cached title and
+/// Milestone as a select target: `--down` lands on it (output shows the cached title and
 /// the auto-resolved top open issue), `selected *` ops act on the resolved issue, and
-/// `--down`/`--next`/`--up` navigate inside the milestone and back out.
+/// `--in`/`--down`/`--out` navigate inside the milestone and back out.
 #[tokio::test]
 async fn test_select_tree_navigation_through_milestone() {
 	let ctx = TestContext::build_with_preexisting_state_unsafe("");
@@ -841,8 +841,8 @@ async fn test_select_tree_navigation_through_milestone() {
 		&[],
 	);
 
-	// default selection is the top open root node (#10); --next lands on the milestone
-	let out = ctx.run(&["--offline", "sprints", "select", "--next"]);
+	// default selection is the top open root node (#10); --down lands on the milestone
+	let out = ctx.run(&["--offline", "sprints", "select", "--down"]);
 	assert!(out.status.success(), "stderr: {}", out.stderr);
 	assert!(out.stdout.contains("Selected milestone: big_feature → o/r#20"), "stdout: {}", out.stdout);
 
@@ -852,24 +852,24 @@ async fn test_select_tree_navigation_through_milestone() {
 	assert!(out.stdout.contains("milestone task one"), "stdout: {}", out.stdout);
 
 	// explicit descent pins the resolved issue in the path
-	let out = ctx.run(&["--offline", "sprints", "select", "--down"]);
+	let out = ctx.run(&["--offline", "sprints", "select", "--in"]);
 	assert!(out.status.success(), "stderr: {}", out.stderr);
 	assert!(out.stdout.contains("Selected: o/r#20"), "stdout: {}", out.stdout);
 
-	// --next now moves among the milestone's issues, not the sprint's
-	let out = ctx.run(&["--offline", "sprints", "select", "--next"]);
+	// --down now moves among the milestone's issues, not the sprint's
+	let out = ctx.run(&["--offline", "sprints", "select", "--down"]);
 	assert!(out.status.success(), "stderr: {}", out.stderr);
 	assert!(out.stdout.contains("Selected: o/r#21"), "stdout: {}", out.stdout);
 	let out = ctx.run(&["--offline", "sprints", "selected", "current"]);
 	assert!(out.stdout.contains("milestone task two"), "stdout: {}", out.stdout);
 
-	// --up pops back out to the milestone
-	let out = ctx.run(&["--offline", "sprints", "select", "--up"]);
+	// --out pops back out to the milestone
+	let out = ctx.run(&["--offline", "sprints", "select", "--out"]);
 	assert!(out.status.success(), "stderr: {}", out.stderr);
 	assert!(out.stdout.contains("Selected milestone: big_feature → o/r#20"), "stdout: {}", out.stdout);
 
-	// back at root level, --next wraps to the sprint issue
-	let out = ctx.run(&["--offline", "sprints", "select", "--next"]);
+	// back at root level, --down wraps to the sprint issue
+	let out = ctx.run(&["--offline", "sprints", "select", "--down"]);
 	assert!(out.stdout.contains("Selected: o/r#10"), "stdout: {}", out.stdout);
 }
 
@@ -894,15 +894,15 @@ async fn test_milestone_bare_ref_resolves_to_own_repo() {
 		&[],
 	);
 
-	let out = ctx.run(&["--offline", "sprints", "select", "--next"]);
+	let out = ctx.run(&["--offline", "sprints", "select", "--down"]);
 	assert!(out.status.success(), "stderr: {}", out.stderr);
 	assert!(out.stdout.contains("Selected milestone: big_feature → o/r#20"), "stdout: {}", out.stdout);
 
-	let out = ctx.run(&["--offline", "sprints", "select", "--down"]);
+	let out = ctx.run(&["--offline", "sprints", "select", "--in"]);
 	assert!(out.status.success(), "stderr: {}", out.stderr);
 	assert!(out.stdout.contains("Selected: o/r#20"), "stdout: {}", out.stdout);
 
-	let out = ctx.run(&["--offline", "sprints", "select", "--next"]);
+	let out = ctx.run(&["--offline", "sprints", "select", "--down"]);
 	assert!(out.status.success(), "stderr: {}", out.stderr);
 	assert!(out.stdout.contains("Selected: o/r#21"), "stdout: {}", out.stdout);
 }
@@ -923,7 +923,7 @@ async fn test_milestone_repo_shorthand_inherits_owner() {
 		&["https://github.com/o/r2/milestone/3"],
 	);
 
-	let out = ctx.run(&["--offline", "sprints", "select", "--down"]);
+	let out = ctx.run(&["--offline", "sprints", "select", "--in"]);
 	assert!(out.status.success(), "stderr: {}", out.stderr);
 	assert!(out.stdout.contains("Selected: o/r#20"), "stdout: {}", out.stdout);
 }
@@ -949,7 +949,7 @@ async fn test_milestone_bare_ref_expands_in_sprint_edit() {
 	assert!(out.status.success(), "stderr: {}", out.stderr);
 }
 
-/// A directory issue in a sprint: `--down` selects its top open child, then `--next`
+/// A directory issue in a sprint: `--in` selects its top open child, then `--down`
 /// moves among the children rather than the sprint items.
 #[tokio::test]
 async fn test_select_descends_into_directory_issue() {
@@ -967,17 +967,67 @@ async fn test_select_descends_into_directory_issue() {
 
 	seed_selection(&ctx, "- https://github.com/o/r/issues/1\n", &[], &[]);
 
-	let out = ctx.run(&["--offline", "sprints", "select", "--down"]);
+	let out = ctx.run(&["--offline", "sprints", "select", "--in"]);
 	assert!(out.status.success(), "stderr: {}", out.stderr);
 	assert!(out.stdout.contains("Selected: o/r#2"), "stdout: {}", out.stdout);
 
-	let out = ctx.run(&["--offline", "sprints", "select", "--next"]);
+	let out = ctx.run(&["--offline", "sprints", "select", "--down"]);
 	assert!(out.status.success(), "stderr: {}", out.stderr);
 	assert!(out.stdout.contains("Selected: o/r#3"), "stdout: {}", out.stdout);
 
-	let out = ctx.run(&["--offline", "sprints", "select", "--up"]);
+	let out = ctx.run(&["--offline", "sprints", "select", "--out"]);
 	assert!(out.status.success(), "stderr: {}", out.stderr);
 	assert!(out.stdout.contains("Selected: o/r#1"), "stdout: {}", out.stdout);
+}
+
+/// `--prev`/`--next` walk the selection history, not the sibling list: after jumping
+/// #10 → #12, `--prev` returns to #10 (skipping #11 between them), `--next` back to #12.
+/// A history entry that has since closed is skipped.
+#[tokio::test]
+async fn test_select_prev_next_walk_history() {
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+
+	for n in [10, 11, 12, 13] {
+		let vi = parse_virtual(&format!("- [ ] Issue {n} <!-- @mock_user https://github.com/o/r/issues/{n} -->\n\n  # Blockers\n  - task {n}\n"));
+		ctx.local(&vi, Some(Seed::new(0))).await;
+	}
+	seed_selection(
+		&ctx,
+		"- https://github.com/o/r/issues/10\n- https://github.com/o/r/issues/11\n- https://github.com/o/r/issues/12\n- https://github.com/o/r/issues/13\n",
+		&[],
+		&["https://github.com/o/r/issues/10"],
+	);
+
+	let out = ctx.run(&["--offline", "sprints", "select", "12"]);
+	assert!(out.stdout.contains("Selected: o/r#12"), "stdout: {} stderr: {}", out.stdout, out.stderr);
+
+	let out = ctx.run(&["--offline", "sprints", "select", "--prev"]);
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+	assert!(out.stdout.contains("Selected: o/r#10"), "stdout: {}", out.stdout);
+
+	let out = ctx.run(&["--offline", "sprints", "select", "--next"]);
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+	assert!(out.stdout.contains("Selected: o/r#12"), "stdout: {}", out.stdout);
+
+	let out = ctx.run(&["--offline", "sprints", "select", "--next"]);
+	assert!(!out.status.success(), "history has no later entry, stdout: {}", out.stdout);
+
+	// a fresh selection after going back drops the forward history
+	ctx.run(&["--offline", "sprints", "select", "--prev"]);
+	let out = ctx.run(&["--offline", "sprints", "select", "13"]);
+	assert!(out.stdout.contains("Selected: o/r#13"), "stdout: {} stderr: {}", out.stdout, out.stderr);
+	let out = ctx.run(&["--offline", "sprints", "select", "--next"]);
+	assert!(!out.status.success(), "forward history should be dropped, stdout: {}", out.stdout);
+
+	// back history is #10, #13 → #11 now; closing #13 makes --prev skip it
+	let out = ctx.run(&["--offline", "sprints", "select", "11"]);
+	assert!(out.stdout.contains("Selected: o/r#11"), "stdout: {} stderr: {}", out.stdout, out.stderr);
+	let issue_13 = ctx.xdg.data_dir().join("issues/o/r/13_-_Issue_13.md");
+	let content = std::fs::read_to_string(&issue_13).unwrap();
+	std::fs::write(&issue_13, content.replacen("- [ ]", "- [x]", 1)).unwrap();
+	let out = ctx.run(&["--offline", "sprints", "select", "--prev"]);
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+	assert!(out.stdout.contains("Selected: o/r#10"), "stdout: {}", out.stdout);
 }
 
 /// Offline movement past an uncached milestone skips it with a warning.
@@ -997,7 +1047,7 @@ async fn test_select_skips_uncached_milestone_with_warning() {
 		&[],
 	);
 
-	let out = ctx.run(&["--offline", "sprints", "select", "--next"]);
+	let out = ctx.run(&["--offline", "sprints", "select", "--down"]);
 	assert!(out.status.success(), "stderr: {}", out.stderr);
 	assert!(out.stdout.contains("Selected: o/r#11"), "stdout: {}", out.stdout);
 	assert!(out.stderr.contains("skipping milestone"), "stderr: {}", out.stderr);
@@ -1005,7 +1055,7 @@ async fn test_select_skips_uncached_milestone_with_warning() {
 
 /// Explicit descent into an uncached milestone errors loudly, naming the fix.
 #[tokio::test]
-async fn test_select_down_onto_uncached_milestone_errors() {
+async fn test_select_in_onto_uncached_milestone_errors() {
 	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 
 	let vi10 = parse_virtual("- [ ] Issue Ten <!-- @mock_user https://github.com/o/r/issues/10 -->\n\n  # Blockers\n  - task ten\n");
@@ -1018,7 +1068,7 @@ async fn test_select_down_onto_uncached_milestone_errors() {
 		&["https://github.com/o/r/milestone/9"],
 	);
 
-	let out = ctx.run(&["--offline", "sprints", "select", "--down"]);
+	let out = ctx.run(&["--offline", "sprints", "select", "--in"]);
 	assert!(!out.status.success(), "expected failure, stdout: {}", out.stdout);
 	assert!(out.stderr.contains("not stored locally"), "stderr: {}", out.stderr);
 }
