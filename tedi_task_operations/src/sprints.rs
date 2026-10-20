@@ -5,12 +5,15 @@
 //! These are the config-free halves of the sprint command — the bin owns config,
 //! CLI dispatch, and the GitHub milestone-metadata calls.
 
-use std::path::{Path, PathBuf};
+use std::{
+	collections::HashMap,
+	path::{Path, PathBuf},
+};
 
 use color_eyre::eyre::{Result, bail, eyre};
 
 use crate::{
-	HollowIssue, Issue, IssueIdentity, IssueIndex, IssueLink, LazyIssue, Milestone, MilestoneLink, NodeLink, RepoInfo, TaskView, VirtualIssue,
+	CloseState, HollowIssue, Issue, IssueIdentity, IssueIndex, IssueLink, LazyIssue, Milestone, MilestoneLink, NodeLink, RepoInfo, TaskView, VirtualIssue,
 	clockify_tracking::{self, HaltArgs, ResumeArgs},
 	local::{Consensus, FsReader, GitReader, Local, LocalFs},
 	open_interactions::{MergeMode, MilestoneModifier, Modifier, SyncMode, SyncOptions, modify_and_sync_issue, modify_and_sync_milestone, pull_issues},
@@ -207,6 +210,8 @@ pub async fn sync_milestone_changes(doc: &TaskView, mode: SyncMode) -> Result<()
 ///
 /// Each block is parsed by the same `VirtualIssue::parse` an issue's own file goes through, so a
 /// block that doesn't compose (stray text under `# Blockers`, say) is a loud error, not a drop.
+///
+/// Every block is folded and validated before any is committed, so a rejected save commits nothing.
 pub async fn sync_embedded_issue_changes(content: &str, mode: SyncMode) -> Result<()> {
 	// An issue can be rendered several times in one buffer (held by the sprint *and* by an inlined
 	// milestone). Grouping is what keeps the untouched copies from reverting the edited one.
@@ -231,29 +236,82 @@ pub async fn sync_embedded_issue_changes(content: &str, mode: SyncMode) -> Resul
 		}
 	}
 
+	let mut blocks: Vec<(IssueLink, Issue, Vec<VirtualIssue>)> = Vec::new();
 	for (link, copies) in grouped {
-		let issue = match load_local_issue(&link).await {
-			Ok(issue) => issue,
-			Err(e) => {
-				tracing::warn!("failed to load {link} for sync: {e}");
-				continue;
-			}
-		};
+		match load_local_issue(&link).await {
+			Ok(issue) => blocks.push((link, issue, copies)),
+			Err(e) => tracing::warn!("failed to load {link} for sync: {e}"),
+		}
+	}
 
-		let mut changed = copies.into_iter().filter(|vi| vi.contents != issue.contents);
+	// An expanded child's state is also rendered on its link line inside its parent's block: one more copy of it.
+	let mut states: HashMap<IssueIndex, CloseState> = HashMap::new();
+	for (link, issue, copies) in &blocks {
+		let index = issue.full_index();
+		let in_parents = blocks.iter().flat_map(|(_, parent, parent_copies)| {
+			parent
+				.children
+				.iter()
+				.filter(|(_, child)| child.full_index() == index)
+				.flat_map(move |(selector, _)| parent_copies.iter().filter_map(move |copy| copy.children.get(selector)))
+		});
+		let mut edited = copies.iter().chain(in_parents).map(|copy| &copy.contents.state).filter(|state| **state != issue.contents.state);
+		let state = match edited.next() {
+			Some(first) => {
+				if edited.any(|other| other != first) {
+					bail!("{link}'s state is rendered more than once here and its copies were edited differently — leave a single version of it and retry");
+				}
+				first.clone()
+			}
+			None => issue.contents.state.clone(),
+		};
+		states.insert(index, state);
+	}
+	for (_, issue, copies) in &mut blocks {
+		for copy in copies.iter_mut() {
+			copy.contents.state = states[&issue.full_index()].clone();
+			for (selector, child) in &mut copy.children {
+				if let Some(state) = issue.children.get(selector).and_then(|c| states.get(&c.full_index())) {
+					child.contents.state = state.clone();
+				}
+			}
+		}
+	}
+
+	let mut edits = Vec::new();
+	for (link, issue, copies) in blocks {
+		let rendered = VirtualIssue::parse(&issue.to_string(), PathBuf::from(format!("<{link} as stored>")))?;
+		let mut changed = copies.into_iter().filter(|copy| *copy != rendered);
 		let Some(edited) = changed.next() else {
 			continue;
 		};
-		if changed.any(|other| other.contents != edited.contents) {
+		if changed.any(|other| other != edited) {
 			bail!("{link} is rendered more than once here and its copies were edited differently — leave a single version of it and retry");
 		}
 
-		println!("Syncing changes for {link}");
+		let mut folded = issue.clone();
+		overlay_states(&mut folded, &states);
+		crate::open_interactions::apply_edited_buffer(&mut folded, &issue, edited.clone())?;
+		edits.push((link, issue.full_index().index().len(), edited));
+	}
 
-		modify_and_sync_issue(issue, mode, Modifier::Write { edited }, SyncOptions::default()).await?;
+	// An ancestor's commit reloads its subtree from disk, so its descendants' edits must land first.
+	edits.sort_by_key(|(_, depth, _)| std::cmp::Reverse(*depth));
+	for (link, _, edited) in edits {
+		println!("Syncing changes for {link}");
+		modify_and_sync_issue(load_local_issue(&link).await?, mode, Modifier::Write { edited }, SyncOptions::default()).await?;
 	}
 
 	Ok(())
+}
+/// Descendants that are blocks of the same buffer take their state from there, not from disk.
+fn overlay_states(issue: &mut Issue, states: &HashMap<IssueIndex, CloseState>) {
+	for child in issue.children.values_mut() {
+		if let Some(state) = states.get(&child.full_index()) {
+			child.contents.state = state.clone();
+		}
+		overlay_states(child, states);
+	}
 }
 /// `sprints search <label-or-text>` — build a task view of local issues whose files
 /// match `query` (case-insensitive `rg` over labels/title/body/blockers).

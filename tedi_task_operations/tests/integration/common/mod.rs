@@ -27,6 +27,7 @@ const GLOBAL_FLAGS: &[&str] = &["--offline", "--sync-on-exit", "--mock", "-v", "
 const ENV_GITHUB_TOKEN: &str = concat!("tedi", "__GITHUB_TOKEN");
 const ENV_MOCK_STATE: &str = concat!("tedi", "_MOCK_STATE");
 const ENV_MOCK_PIPE: &str = concat!("tedi", "_MOCK_PIPE");
+pub const ENV_MOCK_CALL_LOG: &str = concat!("tedi", "_MOCK_CALL_LOG");
 
 /// Base timestamp: 2001-09-11 12:00:00 UTC (midday).
 const BASE_TIMESTAMP_SECS: i64 = 1000209600;
@@ -101,6 +102,19 @@ impl TestContext {
 	pub fn virtual_repo(mut self) -> Self {
 		self.is_virtual_repo = true;
 		self
+	}
+
+	/// Every mock GitHub call of the run, one per line, as it happens.
+	pub fn call_log_path(&self) -> PathBuf {
+		self.xdg.inner.root.join("mock_calls.log")
+	}
+
+	pub fn github_calls(&self) -> Vec<String> {
+		match std::fs::read_to_string(self.call_log_path()) {
+			Ok(log) => log.lines().map(str::to_string).collect(),
+			Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+			Err(e) => panic!("{e}"),
+		}
 	}
 
 	/// Run a command with proper XDG environment.
@@ -487,14 +501,16 @@ impl<'a> OpenBuilder<'a> {
 		}
 		cmd.env(ENV_MOCK_STATE, &self.ctx.mock_state_path);
 		cmd.env(ENV_MOCK_PIPE, &self.ctx.pipe_path);
+		cmd.env(ENV_MOCK_CALL_LOG, self.ctx.call_log_path());
 		cmd.stdout(std::process::Stdio::piped());
 		cmd.stderr(std::process::Stdio::piped());
 
 		let mut child = cmd.spawn().unwrap();
-		let stdout = child.stdout.take().unwrap();
-		let stderr = child.stderr.take().unwrap();
+		let mut stdout = child.stdout.take().unwrap();
+		let mut stderr = child.stderr.take().unwrap();
 		set_nonblocking(&stdout);
 		set_nonblocking(&stderr);
+		let (mut stdout_buf, mut stderr_buf) = (Vec::new(), Vec::new());
 
 		let pipe_path = self.ctx.pipe_path.clone();
 		let virtual_edit_base = self.ctx.xdg.inner.root.clone();
@@ -513,11 +529,23 @@ impl<'a> OpenBuilder<'a> {
 			if child.try_wait().unwrap().is_some() {
 				panic!("Process exited before reaching the edit point");
 			}
+			drain_pipe(&mut stdout, &mut stdout_buf); // a full pipe would block the binary short of the edit point
+			drain_pipe(&mut stderr, &mut stderr_buf);
 			std::thread::sleep(std::time::Duration::from_millis(5));
 		};
 
 		let vpath = find_virtual_edit_file(&virtual_edit_base).expect("virtual file must exist once the binary is parked at the edit point");
-		(vpath, PausedEdit { child, stdout, stderr, pipe })
+		(
+			vpath,
+			PausedEdit {
+				child,
+				stdout,
+				stderr,
+				stdout_buf,
+				stderr_buf,
+				pipe,
+			},
+		)
 	}
 
 	/// Run the command and return RunOutput.
@@ -570,6 +598,7 @@ impl<'a> OpenBuilder<'a> {
 		}
 		cmd.env(ENV_MOCK_STATE, &self.ctx.mock_state_path);
 		cmd.env(ENV_MOCK_PIPE, &self.ctx.pipe_path);
+		cmd.env(ENV_MOCK_CALL_LOG, self.ctx.call_log_path());
 		cmd.stdout(std::process::Stdio::piped());
 		cmd.stderr(std::process::Stdio::piped());
 
@@ -641,8 +670,7 @@ impl<'a> OpenBuilder<'a> {
 impl PausedEdit {
 	/// Resume execution after modifying the virtual file.
 	pub fn resume(mut self) -> RunOutput {
-		let mut stdout_buf = Vec::new();
-		let mut stderr_buf = Vec::new();
+		let (mut stdout_buf, mut stderr_buf) = (self.stdout_buf, self.stderr_buf);
 
 		// Unblock the binary's `read()` via the write end held open since the barrier, then close
 		// it (EOF) so the binary never waits on a second byte.
@@ -801,6 +829,8 @@ pub struct PausedEdit {
 	child: std::process::Child,
 	stdout: std::process::ChildStdout,
 	stderr: std::process::ChildStderr,
+	stdout_buf: Vec<u8>,
+	stderr_buf: Vec<u8>,
 	/// Held write end of the editor FIFO. Keeping it open parks the binary in `read()`;
 	/// `resume()` writes to it to unblock. Opened only once the binary is a confirmed reader.
 	pipe: std::fs::File,

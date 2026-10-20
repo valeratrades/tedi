@@ -9,14 +9,13 @@ use std::{
 	process::Command,
 };
 
-use crate::common::{RunOutput, Seed, TestContext, drain_pipe, get_binary_path, parse_virtual, set_nonblocking};
+use crate::common::{ENV_MOCK_CALL_LOG, RunOutput, Seed, TestContext, drain_pipe, get_binary_path, parse_virtual, set_nonblocking};
 
 const ENV_MOCK_MILESTONE: &str = concat!("tedi", "_MOCK_MILESTONE");
 const ENV_MOCK_PIPE: &str = concat!("tedi", "_MOCK_PIPE");
 const ENV_MOCK_STATE: &str = concat!("tedi", "_MOCK_STATE");
 const ENV_MOCK_FAIL_GET_MILESTONE: &str = concat!("tedi", "_MOCK_FAIL_GET_MILESTONE");
 const ENV_MOCK_REMOTE_EDIT: &str = concat!("tedi", "_MOCK_REMOTE_EDIT");
-const ENV_MOCK_CALL_LOG: &str = concat!("tedi", "_MOCK_CALL_LOG");
 
 type EditFn = Box<dyn FnOnce(&Path)>;
 
@@ -80,19 +79,6 @@ impl TestContext {
 	/// Mock-state entries written here land on the mock remote at its next call (see `remote_issue_edit`).
 	fn remote_edit_path(&self) -> PathBuf {
 		self.xdg.inner.root.join("mock_remote_edit.json")
-	}
-
-	/// Every mock GitHub call of the run, one per line, as it happens.
-	fn call_log_path(&self) -> PathBuf {
-		self.xdg.inner.root.join("mock_calls.log")
-	}
-
-	fn github_calls(&self) -> Vec<String> {
-		match std::fs::read_to_string(self.call_log_path()) {
-			Ok(log) => log.lines().map(str::to_string).collect(),
-			Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-			Err(e) => panic!("{e}"),
-		}
 	}
 
 	/// Someone else editing issue `number` on GitHub: `f` rewrites its seeded mock entry. Calling the
@@ -1289,7 +1275,7 @@ async fn test_saved_link_to_remote_only_issue_is_fetched() {
 		&parse_virtual("- [ ] Remote only <!-- @mock_user https://github.com/o/r/issues/19 -->\n  body\n"),
 		Some(Seed::new(100)),
 	);
-	seed_sprint(&ctx, ISSUE_10, -100, "2099-01-01T00:00:00Z").await;
+	seed_sprint(&ctx, ISSUE_10, ISSUE_10, -100, "2099-01-01T00:00:00Z").await;
 
 	let out = ctx.milestone_client_edit(
 		&["--mock", "--sync-on-exit", "sprints", "edit", "1d"],
@@ -1740,9 +1726,9 @@ async fn test_milestone_does_not_fold_in_assigned_duplicates() {
 const ISSUE_10: &str = "- [ ] Titre application <!-- @mock_user https://github.com/o/r/issues/10 -->\n  issue body\n\n  # Blockers\n  - first step\n";
 
 /// Sprint `1d` (milestone #7) holding issue #10. This machine's last view is committed as consensus:
-/// #10 as `ISSUE_10`, the milestone due `local_due_on`. GitHub holds `remote_issue` for #10 and the
-/// milestone due in 2099.
-async fn seed_sprint(ctx: &TestContext, remote_issue: &str, remote_seed: i8, local_due_on: &str) {
+/// #10 as `consensus_issue`, the milestone due `local_due_on`. GitHub holds `remote_issue` for #10 and
+/// the milestone due in 2099.
+async fn seed_sprint(ctx: &TestContext, consensus_issue: &str, remote_issue: &str, remote_seed: i8, local_due_on: &str) {
 	use tedi_task_operations::{RepoInfo, local::Local};
 
 	ctx.set_issues_dir_override();
@@ -1751,7 +1737,7 @@ async fn seed_sprint(ctx: &TestContext, remote_issue: &str, remote_seed: i8, loc
 	std::fs::write(ctx.xdg.cache_dir().join("authenticated_user.txt"), crate::common::USER).unwrap();
 
 	ctx.remote(&parse_virtual(remote_issue), Some(Seed::new(remote_seed.into())));
-	ctx.consensus(&parse_virtual(ISSUE_10), Some(Seed::new(-100))).await;
+	ctx.consensus(&parse_virtual(consensus_issue), Some(Seed::new(-100))).await;
 
 	let (repo, title, number, body) = (RepoInfo::new("o", "r"), "1d", 7u64, "- https://github.com/o/r/issues/10");
 	let mut mock_state: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&ctx.mock_state_path).unwrap()).unwrap();
@@ -1783,12 +1769,12 @@ async fn seed_sprint(ctx: &TestContext, remote_issue: &str, remote_seed: i8, loc
 	Command::new("git").arg("-C").arg(&issues_dir).args(["commit", "-m", "seed consensus"]).output().unwrap();
 }
 
-fn local_issue_10() -> String {
+fn local_issue(number: u64) -> String {
 	use tedi_task_operations::{
 		RepoInfo,
 		local::{FsReader, Local},
 	};
-	std::fs::read_to_string(Local::find_by_number(RepoInfo::new("o", "r"), 10, FsReader).expect("#10 is stored locally")).unwrap()
+	std::fs::read_to_string(Local::find_by_number(RepoInfo::new("o", "r"), number, FsReader).expect("stored locally")).unwrap()
 }
 
 /// An issue folded back from the buffer is folded back from what the user saw. GitHub gaining a body
@@ -1796,7 +1782,7 @@ fn local_issue_10() -> String {
 #[tokio::test]
 async fn test_sprint_edit_keeps_remote_change_made_during_session() {
 	let ctx = TestContext::build();
-	seed_sprint(&ctx, ISSUE_10, -100, "2099-01-01T00:00:00Z").await;
+	seed_sprint(&ctx, ISSUE_10, ISSUE_10, -100, "2099-01-01T00:00:00Z").await;
 
 	let remote_edit = ctx.remote_issue_edit(10, |issue| {
 		issue["body"] = issue["body"].as_str().unwrap().replace("issue body", "body github gained mid-session").into();
@@ -1813,7 +1799,7 @@ async fn test_sprint_edit_keeps_remote_change_made_during_session() {
 	);
 	assert!(out.status.success(), "stderr: {}", out.stderr);
 
-	let local = local_issue_10();
+	let local = local_issue(10);
 	assert!(local.contains("Retitled locally"), "{local}");
 	assert!(local.contains("body github gained mid-session"), "the remote's edit was reverted: {local}");
 }
@@ -1823,7 +1809,7 @@ async fn test_sprint_edit_keeps_remote_change_made_during_session() {
 #[tokio::test]
 async fn test_sync_on_exit_concurrent_description_edit_conflicts() {
 	let ctx = TestContext::build();
-	seed_sprint(&ctx, &ISSUE_10.replace("issue body", "body github gained"), 100, "2099-01-01T00:00:00Z").await;
+	seed_sprint(&ctx, ISSUE_10, &ISSUE_10.replace("issue body", "body github gained"), 100, "2099-01-01T00:00:00Z").await;
 
 	let out = ctx.milestone_client_edit(
 		&["--mock", "--sync-on-exit", "sprints", "edit", "1d"],
@@ -1847,7 +1833,7 @@ async fn test_sync_on_exit_concurrent_description_edit_conflicts() {
 #[tokio::test]
 async fn test_sync_on_exit_disjoint_edits_both_kept() {
 	let ctx = TestContext::build();
-	seed_sprint(&ctx, &ISSUE_10.replace("Titre application", "Title github gave it"), 100, "2099-01-01T00:00:00Z").await;
+	seed_sprint(&ctx, ISSUE_10, &ISSUE_10.replace("Titre application", "Title github gave it"), 100, "2099-01-01T00:00:00Z").await;
 
 	let out = ctx.milestone_client_edit(
 		&["--mock", "--sync-on-exit", "sprints", "edit", "1d"],
@@ -1859,9 +1845,69 @@ async fn test_sync_on_exit_disjoint_edits_both_kept() {
 	);
 	assert!(out.status.success(), "stderr: {}", out.stderr);
 
-	let local = local_issue_10();
+	let local = local_issue(10);
 	assert!(local.contains("Title github gave it"), "{local}");
 	assert!(local.contains("body typed locally"), "{local}");
+}
+
+/// GitHub already closed the sub-issues, but the editor opened on local state, where they are open.
+/// Closing only the parent there closes it over open children.
+#[tokio::test]
+async fn test_sync_on_exit_closing_parent_of_remotely_closed_children() {
+	const PARENT_10: &str = "- [ ] Parent <!-- @mock_user https://github.com/o/r/issues/10 -->\n  parent body\n\n  - [ ] Child one <!--sub @mock_user https://github.com/o/r/issues/11 -->\n\n    one body\n\n  - [ ] Child two <!--sub @mock_user https://github.com/o/r/issues/12 -->\n\n    two body\n";
+	let ctx = TestContext::build();
+	seed_sprint(&ctx, PARENT_10, &PARENT_10.replace("- [ ] Child", "- [x] Child"), -100, "2099-01-01T00:00:00Z").await;
+
+	let out = ctx.milestone_client_edit(
+		&["--mock", "--sync-on-exit", "sprints", "edit", "1d"],
+		None,
+		Some(Box::new(|tmp: &Path| {
+			let c = std::fs::read_to_string(tmp).unwrap();
+			assert!(c.contains("- [ ] Parent"), "{c}");
+			std::fs::write(tmp, c.replace("- [ ] Parent", "- [x] Parent")).unwrap();
+		}) as EditFn),
+	);
+	assert!(!out.status.success(), "stdout: {}", out.stdout);
+	assert!(out.stderr.contains("rejected-changes.md"), "stderr: {}", out.stderr);
+	assert!(local_issue(10).contains("- [ ] Parent"), "{}", local_issue(10));
+	assert!(!ctx.github_calls().iter().any(|c| c.starts_with("update_issue_state(")), "{:?}", ctx.github_calls());
+}
+
+const PARENT_WITH_CHILD: &str =
+	"- [ ] Parent <!-- @mock_user https://github.com/o/r/issues/10 -->\n  parent body\n\n  - [ ] Child <!--sub @mock_user https://github.com/o/r/issues/11 -->\n\n    child body\n";
+
+/// Parent and child expanded as blocks of their own: each closed on its own title line, while the
+/// child's link line inside the parent block is left as rendered. Together they close the subtree.
+#[tokio::test]
+async fn test_sprint_closing_parent_and_child_across_blocks() {
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+	ctx.local(&parse_virtual(PARENT_WITH_CHILD), Some(Seed::new(0))).await;
+
+	let (out, _) = ctx.milestone_edit_with_changes("- o/r#10\n- o/r#11", |tmp| {
+		let c = std::fs::read_to_string(tmp).unwrap();
+		assert!(c.contains("- [ ] [Child]"), "{c}");
+		std::fs::write(tmp, c.replace("- [ ] Parent <!--", "- [x] Parent <!--").replace("- [ ] Child <!--", "- [x] Child <!--")).unwrap();
+	});
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+	assert!(local_issue(10).contains("- [x] Parent"), "{}", local_issue(10));
+	assert!(local_issue(11).contains("- [x] Child"), "{}", local_issue(11));
+}
+
+/// Closing the parent block alone leaves its child open: the whole save is refused, including the
+/// unrelated edit made to the child's block in it.
+#[tokio::test]
+async fn test_sprint_closing_parent_over_open_child_commits_nothing() {
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+	ctx.local(&parse_virtual(PARENT_WITH_CHILD), Some(Seed::new(0))).await;
+
+	let (out, _) = ctx.milestone_edit_with_changes("- o/r#10\n- o/r#11", |tmp| {
+		let c = std::fs::read_to_string(tmp).unwrap();
+		std::fs::write(tmp, c.replace("- [ ] Parent <!--", "- [x] Parent <!--").replace("child body", "child body, edited")).unwrap();
+	});
+	assert!(!out.status.success(), "stdout: {}", out.stdout);
+	assert!(out.stderr.contains("rejected-changes.md"), "stderr: {}", out.stderr);
+	assert!(local_issue(10).contains("- [ ] Parent"), "{}", local_issue(10));
+	assert!(!local_issue(11).contains("edited"), "{}", local_issue(11));
 }
 
 /// The due date this machine holds can be stale: another machine already bumped it. Bumping again
@@ -1869,7 +1915,7 @@ async fn test_sync_on_exit_disjoint_edits_both_kept() {
 #[tokio::test]
 async fn test_sync_on_exit_outdated_check_reads_synced_due_date() {
 	let ctx = TestContext::build();
-	seed_sprint(&ctx, ISSUE_10, -100, "2001-01-01T00:00:00Z").await;
+	seed_sprint(&ctx, ISSUE_10, ISSUE_10, -100, "2001-01-01T00:00:00Z").await;
 
 	let out = ctx.milestone_client_edit(&["--mock", "--sync-on-exit", "sprints", "edit", "1d"], None, None);
 	assert!(out.status.success(), "stderr: {}", out.stderr);
@@ -1884,7 +1930,7 @@ async fn test_sync_on_exit_outdated_check_reads_synced_due_date() {
 #[tokio::test]
 async fn test_sync_on_exit_makes_no_calls_before_the_editor() {
 	let ctx = TestContext::build();
-	seed_sprint(&ctx, ISSUE_10, -100, "2099-01-01T00:00:00Z").await;
+	seed_sprint(&ctx, ISSUE_10, ISSUE_10, -100, "2099-01-01T00:00:00Z").await;
 
 	let call_log = ctx.call_log_path();
 	let seen = std::sync::Arc::new(std::sync::Mutex::new(None));

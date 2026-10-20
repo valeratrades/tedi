@@ -4,6 +4,7 @@ mod common;
 pub use common::*;
 
 mod blocker_integrated;
+mod closed_subtree;
 mod file_naming;
 mod issue_preservation;
 mod reset_conflict;

@@ -233,7 +233,7 @@ fn persist_blocker_selection(issue: &mut Issue) {
 }
 #[derive(Debug, thiserror::Error)]
 #[error("{0}\n\nYour changes were saved to /tmp/tedi/rejected-changes.md — you can recover them from there.")]
-struct RejectedEdit(#[from] crate::ParseError);
+struct RejectedEdit(Box<dyn std::error::Error + Send + Sync>);
 
 mod core {
 	use super::*;
@@ -448,8 +448,9 @@ mod types {
 	///
 	/// The buffer carries this node's own contents plus its children as one-line links (shallow —
 	/// state/title/labels only). The children's real subtrees stay as loaded; we apply link-level
-	/// changes, drop links the user removed, and add newly-typed pending children.
-	fn apply_edited_buffer(issue: &mut Issue, old: &Issue, edited: VirtualIssue) {
+	/// changes, drop links the user removed, and add newly-typed pending children. Errors if the
+	/// resulting tree breaks `Issue::check_closed_subtree`.
+	pub(crate) fn apply_edited_buffer(issue: &mut Issue, old: &Issue, edited: VirtualIssue) -> Result<(), crate::IssueError> {
 		use std::collections::HashMap;
 
 		issue.contents = edited.contents;
@@ -478,6 +479,7 @@ mod types {
 			children.insert(selector, child);
 		}
 		issue.children = children;
+		issue.check_closed_subtree()
 	}
 
 	/// A modifier that can be applied to an issue file.
@@ -549,7 +551,7 @@ mod types {
 					// brand-new issue, remove it — an aborted touch must not create anything.
 					let restore = || -> std::io::Result<()> {
 						if pre_existed {
-							std::fs::write(&path, issue.to_string())
+							std::fs::write(&path, old_issue.to_string())
 						} else {
 							std::fs::remove_file(&path)?;
 							if let Some(parent) = path.parent() {
@@ -563,15 +565,15 @@ mod types {
 						restore()?;
 						ModifyResult { output: None, file_modified: false }
 					} else {
-						let edited = match VirtualIssue::parse(&content, path.clone()) {
-							Ok(edited) => edited,
-							Err(e) => {
-								crate::utils::persist_rejected_changes(&content)?;
-								restore()?;
-								return Err(RejectedEdit(e).into());
-							}
+						let applied: Result<(), Box<dyn std::error::Error + Send + Sync>> = match VirtualIssue::parse(&content, path.clone()) {
+							Ok(edited) => apply_edited_buffer(issue, &old_issue, edited).map_err(Into::into),
+							Err(e) => Err(e.into()),
 						};
-						apply_edited_buffer(issue, &old_issue, edited);
+						if let Err(cause) = applied {
+							crate::utils::persist_rejected_changes(&content)?;
+							restore()?;
+							return Err(RejectedEdit(cause).into());
+						}
 						ModifyResult { output: None, file_modified: true }
 					}
 				}
@@ -602,7 +604,7 @@ mod types {
 					}
 				}
 				Modifier::Write { edited } => {
-					apply_edited_buffer(issue, &old_issue, edited.clone());
+					apply_edited_buffer(issue, &old_issue, edited.clone())?;
 					ModifyResult {
 						output: None,
 						file_modified: *issue != old_issue,

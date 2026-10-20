@@ -80,6 +80,9 @@ pub enum IssueError {
 	#[leaf]
 	#[error("git-linked child #{issue_number} present in virtual but missing from HollowIssue: {detail}")]
 	ErroneousComposition { issue_number: u64, detail: String },
+	#[leaf]
+	#[error("a closed issue can't have open descendants — close them too, or reopen it:\n{detail}")]
+	OpenUnderClosed { detail: String },
 }
 
 /// Error when converting IssueIndex to a git number path.
