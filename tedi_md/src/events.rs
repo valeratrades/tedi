@@ -326,6 +326,14 @@ impl Events {
 	/// and replace with `CheckBox(inner)` + optional `Text(rest)`.
 	pub fn parse(content: &str) -> Self {
 		use pulldown_cmark::Parser;
+		let terminated; // raw-line blocks (html, code) carry their line ending: a text that stops at EOF must not parse apart from the same text re-rendered
+		let content = match content.ends_with('\n') || content.is_empty() {
+			true => content,
+			false => {
+				terminated = format!("{content}\n");
+				&terminated
+			}
+		};
 		let parser = Parser::new_ext(content, parser_options());
 		let raw: Vec<OwnedEvent> = parser.map(OwnedEvent::from_event).collect();
 
@@ -475,7 +483,8 @@ pub fn indent_into(out: &mut String, content: &str, prefix: &str) {
 /// exactly the events that parsing that rendered text back would produce, or local and remote
 /// never compare equal.
 pub fn as_standalone_block(events: Vec<OwnedEvent>) -> Events {
-	preserve_paragraph_spacing(wrap_inline_in_paragraphs(events)).into()
+	let block: Events = preserve_paragraph_spacing(wrap_inline_in_paragraphs(events)).into();
+	Events::parse(&String::from(block)) // what continued the title line inside the item can open a block on its own: `<img …/>` is an `HtmlBlock` there
 }
 
 fn wrap_inline_in_paragraphs(events: Vec<OwnedEvent>) -> Vec<OwnedEvent> {

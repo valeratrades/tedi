@@ -1910,6 +1910,26 @@ async fn test_sprint_closing_parent_over_open_child_commits_nothing() {
 	assert!(!local_issue(11).contains("edited"), "{}", local_issue(11));
 }
 
+/// Sub-issue bodies opening on an html line, as GitHub's image upload writes them, untouched on either
+/// side since consensus: an edit to their parent syncs without seeing them as diverged.
+#[tokio::test]
+async fn test_sync_on_exit_html_led_child_bodies_are_not_divergence() {
+	const PARENT_10: &str = "- [ ] Parent <!-- @mock_user https://github.com/o/r/issues/10 -->\n  parent body\n\n  - [ ] Child one <!--sub @mock_user https://github.com/o/r/issues/11 -->\n\n    <img width=\"816\" height=\"644\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/1\" />\n\n  - [ ] Child two <!--sub @mock_user https://github.com/o/r/issues/12 -->\n\n    <img width=\"730\" height=\"923\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/2\" />\n\n    second paragraph\n";
+	let ctx = TestContext::build();
+	seed_sprint(&ctx, PARENT_10, PARENT_10, -100, "2099-01-01T00:00:00Z").await;
+
+	let out = ctx.milestone_client_edit(
+		&["--mock", "--sync-on-exit", "sprints", "edit", "1d"],
+		None,
+		Some(Box::new(|tmp: &Path| {
+			let c = std::fs::read_to_string(tmp).unwrap();
+			std::fs::write(tmp, c.replace("parent body", "parent body, edited")).unwrap();
+		}) as EditFn),
+	);
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+	assert!(local_issue(10).contains("parent body, edited"), "{}", local_issue(10));
+}
+
 /// The due date this machine holds can be stale: another machine already bumped it. Bumping again
 /// off the stale date would archive the sprint a second time.
 #[tokio::test]
@@ -1955,7 +1975,6 @@ async fn test_checkbox_on_category_header_adopts_grouped_issues() {
 	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 	ctx.set_issues_dir_override();
 	ctx.xdg.write_config("config.toml", "github_token = \"test_token\"\n\n[milestones]\nurl = \"o/todos\"\n");
-	let repo = RepoInfo::new("o", "r");
 
 	for (n, title) in [(10, "first bug"), (11, "second bug")] {
 		let vi = parse_virtual(&format!("- [ ] {title} <!-- @mock_user https://github.com/o/r/issues/{n} -->\n\tbody of {n}\n"));
