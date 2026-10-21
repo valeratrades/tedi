@@ -653,7 +653,15 @@ async fn edit_milestone(settings: &LiveSettings, tf: Timeframe, mode: SyncMode, 
 		let new_date = Timestamp::now() + tf.duration();
 		println!("Milestone was outdated, updating due date to {}", new_date.strftime("%Y-%m-%d"));
 		let archive_title = format!("{}_{tf}", Timestamp::now().strftime("%Y/%m/%d"));
-		match create_closed_milestone(settings, &archive_title, &original_description).await {
+		let description = milestone.to_string();
+		let (update_result, archive_result) = tokio::join!(
+			update_milestone(settings, milestone_number, &description, Some(new_date)),
+			create_closed_milestone(settings, &archive_title, &original_description)
+		);
+		if let Err(e) = update_result {
+			tracing::warn!("failed to bump milestone due date (will reconcile next online edit): {e}");
+		}
+		match archive_result {
 			Err(e) => tracing::warn!("Failed to archive old milestone contents (its closed issues stay until the next rollover): {e}"),
 			Ok(()) => {
 				// an issue closed within this edit is in no archive yet
@@ -668,10 +676,6 @@ async fn edit_milestone(settings: &LiveSettings, tf: Timeframe, mode: SyncMode, 
 					milestone = modify_and_sync_milestone(milestone, mode, MilestoneModifier::BodyWrite { body }, SyncOptions::default()).await?;
 				}
 			}
-		}
-		// after the prune: a due date bumped beneath the three-way sync reads to it as a divergence
-		if let Err(e) = update_milestone(settings, milestone_number, &milestone.to_string(), Some(new_date)).await {
-			tracing::warn!("failed to bump milestone due date (will reconcile next online edit): {e}");
 		}
 	}
 

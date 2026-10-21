@@ -1950,6 +1950,51 @@ async fn test_sync_on_exit_outdated_check_reads_synced_due_date() {
 	);
 }
 
+/// Rewrites this machine's view of sprint `1d` past consensus, as an offline edit would leave it.
+fn diverge_local_sprint(body: &str, due_on: &str, description_ts: &str) {
+	use tedi_task_operations::{RepoInfo, local::Local};
+
+	let repo = RepoInfo::new("o", "r");
+	std::fs::write(Local::milestone_file_path(repo, 7, "1d"), format!("{body}\n")).unwrap();
+	std::fs::write(
+		Local::milestone_project_dir(repo).join(".meta.json"),
+		serde_json::json!({ "milestones": { "7": { "title": "1d", "state": "Open", "due_on": due_on, "timestamps": { "description": description_ts } } } }).to_string(),
+	)
+	.unwrap();
+}
+
+/// A body edit saved offline, then GitHub moves the due date: each side changed a different field
+/// since consensus, so both land — however GitHub's coarse `updated_at` stamps the untouched body.
+#[tokio::test]
+async fn test_sprint_one_sided_edits_both_kept() {
+	use tedi_task_operations::{RepoInfo, local::Local};
+
+	let ctx = TestContext::build();
+	seed_sprint(&ctx, ISSUE_10, ISSUE_10, -100, "2098-01-01T00:00:00Z").await;
+	diverge_local_sprint("offline note\n\n- https://github.com/o/r/issues/10", "2098-01-01T00:00:00Z", "2010-01-01T00:00:00Z");
+
+	let out = ctx.milestone_client_edit(&["--mock", "sprints", "edit", "1d"], None, None);
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+	let stored = std::fs::read_to_string(Local::milestone_file_path(RepoInfo::new("o", "r"), 7, "1d")).unwrap();
+	assert!(stored.contains("offline note"), "the offline body edit was lost: {stored}");
+	let meta = std::fs::read_to_string(Local::milestone_project_dir(RepoInfo::new("o", "r")).join(".meta.json")).unwrap();
+	assert!(meta.contains("2099-01-01"), "GitHub's due date was lost: {meta}");
+}
+
+/// Both sides moved the due date, to different days: a conflict the body-only conflict file can't
+/// hold, so the sync refuses rather than picking one.
+#[tokio::test]
+async fn test_sprint_due_date_clash_is_refused() {
+	let ctx = TestContext::build();
+	seed_sprint(&ctx, ISSUE_10, ISSUE_10, -100, "2098-01-01T00:00:00Z").await;
+	diverge_local_sprint("- https://github.com/o/r/issues/10", "2097-01-01T00:00:00Z", "2001-09-11T12:00:00Z");
+
+	let out = ctx.milestone_client_edit(&["--mock", "sprints", "edit", "1d"], None, None);
+	assert!(!out.status.success(), "stdout: {}", out.stdout);
+	assert!(out.stderr.contains("due date"), "stderr: {}", out.stderr);
+	assert!(!out.stderr.contains("panicked"), "stderr: {}", out.stderr);
+}
+
 /// Sprint `1d` holding closed #10 and open #11, due in the past, rolled over by an edit applying
 /// `edit_fn`; closed #12 exists outside it. Returns the stored body.
 async fn rollover(edit_fn: Option<EditFn>) -> String {

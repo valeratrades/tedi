@@ -1,6 +1,6 @@
 //! Three-way sync for milestones — the milestone mirror of `sync.rs`.
 //!
-//! Same four-merge algorithm (local ⇄ consensus ⇄ remote) and git-branch conflict flow,
+//! Three-way merge (local ⇄ consensus ⇄ remote) and the same git-branch conflict flow,
 //! over the simpler `Milestone` primitive (no children, no comments).
 
 use color_eyre::eyre::{Result, bail};
@@ -131,7 +131,7 @@ async fn sync(milestone: &mut Milestone, consensus: Option<Milestone>, mode: Mer
 	Ok(())
 }
 
-/// Four-merge resolution; a divergence produces a git-branch conflict in `__milestone_conflict.md`.
+/// Three-way resolution; a divergence produces a git-branch conflict in `__milestone_conflict.md`.
 async fn resolve_merge(local: Milestone, consensus: Option<Milestone>, remote: Milestone, mode: MergeMode) -> Result<(Milestone, bool)> {
 	if let MergeMode::Reset { prefer } = mode {
 		return match prefer {
@@ -175,17 +175,9 @@ async fn resolve_merge(local: Milestone, consensus: Option<Milestone>, remote: M
 	};
 
 	let mut local_merged = local.clone();
+	local_merged.merge(&remote, consensus.as_ref(), force_remote_wins);
 	let mut remote_merged = remote.clone();
-
-	if let Some(ref consensus) = consensus {
-		local_merged.merge(consensus, false);
-	}
-	local_merged.merge(&remote, force_remote_wins);
-
-	if let Some(consensus) = consensus {
-		remote_merged.merge(&consensus, false);
-	}
-	remote_merged.merge(&local, force_local_wins);
+	remote_merged.merge(&local, consensus.as_ref(), force_local_wins);
 
 	local_merged.body.0.remove_issue_links(&dropped);
 	remote_merged.body.0.remove_issue_links(&dropped);
@@ -203,6 +195,21 @@ async fn resolve_merge(local: Milestone, consensus: Option<Milestone>, remote: M
 		true => (local.to_string(), remote.to_string()),
 		false => (local_merged.to_string(), remote_merged.to_string()),
 	};
+	if local_side == remote_side {
+		let differ: Vec<&str> = [
+			("title", local.identity.title != remote.identity.title),
+			("state", local.identity.state != remote.identity.state),
+			("due date", local.identity.due_on != remote.identity.due_on),
+		]
+		.into_iter()
+		.filter_map(|(field, differs)| differs.then_some(field))
+		.collect();
+		bail!(
+			"Milestone {repo}#{number}: {} changed both locally and on GitHub since the last sync, and the conflict file holds only the body. Make {} agree with GitHub (or GitHub with it), then re-run.",
+			differ.join(", "),
+			Local::milestone_project_dir(repo).join(".meta.json").display()
+		);
+	}
 	match initiate_conflict_merge(repo, number, &local_side, &remote_side, milestone_conflict_file_path(repo.owner().expect("github project")))? {
 		ConflictOutcome::AutoMerged => unreachable!("divergent states cannot auto-merge; the conflict must be recorded for manual resolution"),
 		ConflictOutcome::NeedsResolution => bail!("Conflict detected for milestone {repo}#{number}.\nResolve using standard git tools, then re-run."),

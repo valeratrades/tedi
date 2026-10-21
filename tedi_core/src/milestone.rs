@@ -123,30 +123,43 @@ impl Milestone {
 		self.identity.timestamps = ts;
 	}
 
-	/// Merge `other` into `self`, using timestamps to resolve per-field conflicts.
-	/// `force` always takes `other`. Hosted links are a set union (same spirit as
-	/// children merge — merge only adds; removals are a sink concern).
-	pub fn merge(&mut self, other: &Milestone, force: bool) {
+	/// Merge `other` into `self`. Against `base`, a field only one side edited is that side's;
+	/// the rest goes to the newer timestamp, or to `other` under `force`. Hosted links are a set
+	/// union (same spirit as children merge — merge only adds; removals are a sink concern).
+	pub fn merge(&mut self, other: &Milestone, base: Option<&Milestone>, force: bool) {
+		/// `Some(take other)` when `base` settles it.
+		fn one_sided<T: PartialEq>(mine: T, base: Option<T>, theirs: T) -> Option<bool> {
+			let base = base?;
+			match (mine != base, theirs != base) {
+				(_, false) => Some(false),
+				(false, true) => Some(true),
+				(true, true) => None,
+			}
+		}
 		let s = self.identity.timestamps.clone();
 		let o = other.identity.timestamps.clone();
-		let dominated = |sf: Option<Timestamp>, of: Option<Timestamp>| -> bool {
-			if force {
-				return true;
-			}
-			match (sf, of) {
-				(_, None) => false,
-				(None, Some(_)) => true,
-				(Some(a), Some(b)) => b > a,
-			}
+		let takes_other = |settled: Option<bool>, sf: Option<Timestamp>, of: Option<Timestamp>| -> bool {
+			settled.unwrap_or_else(|| {
+				force
+					|| match (sf, of) {
+						(_, None) => false,
+						(None, Some(_)) => true,
+						(Some(a), Some(b)) => b > a,
+					}
+			})
 		};
+		let title = one_sided(&self.identity.title, base.map(|b| &b.identity.title), &other.identity.title);
+		let state = one_sided(&self.identity.state, base.map(|b| &b.identity.state), &other.identity.state);
+		let due_on = one_sided(self.identity.due_on, base.map(|b| b.identity.due_on), other.identity.due_on);
+		let description = one_sided(&self.body, base.map(|b| &b.body), &other.body);
 
-		if dominated(s.title, o.title) {
+		if takes_other(title, s.title, o.title) {
 			self.identity.title = other.identity.title.clone();
 		}
-		if dominated(s.state, o.state) {
+		if takes_other(state, s.state, o.state) {
 			self.identity.state = other.identity.state.clone();
 		}
-		if dominated(s.due_on, o.due_on) {
+		if takes_other(due_on, s.due_on, o.due_on) {
 			self.identity.due_on = other.identity.due_on;
 		}
 		// hosted is a set union regardless of which doc wins — no GitHub-assigned issue is dropped.
@@ -156,7 +169,7 @@ impl Milestone {
 				union.push(link);
 			}
 		}
-		if dominated(s.description, o.description) {
+		if takes_other(description, s.description, o.description) {
 			self.body = other.body.clone();
 		}
 		let present = self.body.hosted();
@@ -258,7 +271,7 @@ mod tests {
 		};
 		let mut a = milestone("old desc\n\n- https://github.com/o/r/issues/5", "t", self_ts);
 		let b = milestone("new desc\n\n- https://github.com/o/r/issues/6", "t", other_ts);
-		a.merge(&b, false);
+		a.merge(&b, None, false);
 		assert!(a.body.0.serialize().contains("new desc"));
 		let mut hosted: Vec<u64> = a.body.hosted().iter().map(|l| l.number()).collect();
 		hosted.sort_unstable();
@@ -287,7 +300,7 @@ mod tests {
 				..Default::default()
 			},
 		);
-		a.merge(&b, false);
+		a.merge(&b, None, false);
 		assert_eq!(a.identity.title, "self");
 		assert_eq!(a.body.0.serialize().trim(), "newer");
 	}
@@ -304,7 +317,7 @@ mod tests {
 			},
 		);
 		let b = milestone("other", "other", MilestoneTimestamps::default());
-		a.merge(&b, true);
+		a.merge(&b, None, true);
 		assert_eq!(a.identity.title, "other");
 	}
 }

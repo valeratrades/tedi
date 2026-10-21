@@ -894,6 +894,7 @@ impl GithubClient for MockGithubClient {
 			if due_on.is_some() {
 				m.due_on = due_on;
 			}
+			m.updated_at = Some(jiff::Timestamp::now());
 		}
 		Ok(())
 	}
