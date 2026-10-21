@@ -1729,6 +1729,13 @@ const ISSUE_10: &str = "- [ ] Titre application <!-- @mock_user https://github.c
 /// #10 as `consensus_issue`, the milestone due `local_due_on`. GitHub holds `remote_issue` for #10 and
 /// the milestone due in 2099.
 async fn seed_sprint(ctx: &TestContext, consensus_issue: &str, remote_issue: &str, remote_seed: i8, local_due_on: &str) {
+	ctx.remote(&parse_virtual(remote_issue), Some(Seed::new(remote_seed.into())));
+	ctx.consensus(&parse_virtual(consensus_issue), Some(Seed::new(-100))).await;
+	seed_sprint_milestone(ctx, "- https://github.com/o/r/issues/10", "2099-01-01T00:00:00Z", local_due_on);
+}
+
+/// Sprint `1d` (milestone #7) holding `body`, committed as consensus together with the issues seeded before it.
+fn seed_sprint_milestone(ctx: &TestContext, body: &str, remote_due_on: &str, local_due_on: &str) {
 	use tedi_task_operations::{RepoInfo, local::Local};
 
 	ctx.set_issues_dir_override();
@@ -1736,15 +1743,12 @@ async fn seed_sprint(ctx: &TestContext, consensus_issue: &str, remote_issue: &st
 	std::fs::create_dir_all(ctx.xdg.cache_dir()).unwrap();
 	std::fs::write(ctx.xdg.cache_dir().join("authenticated_user.txt"), crate::common::USER).unwrap();
 
-	ctx.remote(&parse_virtual(remote_issue), Some(Seed::new(remote_seed.into())));
-	ctx.consensus(&parse_virtual(consensus_issue), Some(Seed::new(-100))).await;
-
-	let (repo, title, number, body) = (RepoInfo::new("o", "r"), "1d", 7u64, "- https://github.com/o/r/issues/10");
+	let (repo, title, number) = (RepoInfo::new("o", "r"), "1d", 7u64);
 	let mut mock_state: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&ctx.mock_state_path).unwrap()).unwrap();
 	mock_state["milestones"] = serde_json::json!([{
 		"owner": "o", "repo": "r", "number": number, "title": title, "state": "open",
 		"description": body,
-		"due_on": "2099-01-01T00:00:00Z",
+		"due_on": remote_due_on,
 		"updated_at": "2020-01-01T00:00:00Z",
 	}]);
 	std::fs::write(&ctx.mock_state_path, mock_state.to_string()).unwrap();
@@ -1944,6 +1948,53 @@ async fn test_sync_on_exit_outdated_check_reads_synced_due_date() {
 		"archived an already-bumped sprint: {:?}",
 		ctx.github_calls()
 	);
+}
+
+/// Sprint `1d` holding closed #10 and open #11, due in the past, rolled over by an edit applying
+/// `edit_fn`; closed #12 exists outside it. Returns the stored body.
+async fn rollover(edit_fn: Option<EditFn>) -> String {
+	use tedi_task_operations::{RepoInfo, local::Local};
+
+	const PAST: &str = "2001-01-01T00:00:00Z";
+	let ctx = TestContext::build();
+	let closed = |n: u64| format!("- [x] Done {n} <!-- @mock_user https://github.com/o/r/issues/{n} -->\n  body {n}\n");
+	for vi in [
+		closed(10),
+		"- [ ] Still open <!-- @mock_user https://github.com/o/r/issues/11 -->\n  body 11\n".into(),
+		closed(12),
+	] {
+		ctx.remote(&parse_virtual(&vi), Some(Seed::new(-100)));
+		ctx.consensus(&parse_virtual(&vi), Some(Seed::new(-100))).await;
+	}
+	seed_sprint_milestone(&ctx, "- https://github.com/o/r/issues/10\n- https://github.com/o/r/issues/11", PAST, PAST);
+
+	let out = ctx.milestone_client_edit(&["--mock", "sprints", "edit", "1d"], None, edit_fn);
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+	let calls = ctx.github_calls();
+	assert!(calls.iter().any(|c| c.starts_with("create_milestone(")), "{calls:?}");
+	assert!(calls.iter().any(|c| c == "set_issue_milestone(o, r, 10, None)"), "{calls:?}");
+	std::fs::read_to_string(Local::milestone_file_path(RepoInfo::new("o", "r"), 7, "1d")).unwrap()
+}
+
+/// Rolling a sprint over archives it; an issue that archive recorded as closed leaves the live sprint.
+#[tokio::test]
+async fn test_rollover_prunes_archived_closed_issues() {
+	let stored = rollover(None).await;
+	assert!(!stored.contains("issues/10"), "{stored}");
+	assert!(stored.contains("issues/11"), "{stored}");
+}
+
+/// A closed issue added within the rolling-over edit is in no archive yet, so it stays for the next one.
+#[tokio::test]
+async fn test_rollover_keeps_closed_issue_added_in_same_edit() {
+	let stored = rollover(Some(Box::new(|tmp: &Path| {
+		let c = std::fs::read_to_string(tmp).unwrap();
+		std::fs::write(tmp, format!("{c}\n- https://github.com/o/r/issues/12\n")).unwrap();
+	}) as EditFn))
+	.await;
+	assert!(!stored.contains("issues/10"), "{stored}");
+	assert!(stored.contains("issues/11"), "{stored}");
+	assert!(stored.contains("issues/12"), "{stored}");
 }
 
 /// `--sync-on-exit` opens the editor on local state alone: nothing reaches GitHub before it closes.

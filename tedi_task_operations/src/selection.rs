@@ -545,19 +545,14 @@ fn guard_urgent(active: &ActiveSprint) -> Result<(), String> {
 	Ok(())
 }
 
-/// Drop every issue that reached a closed state (done, not planned, duplicate). A link that
-/// doesn't resolve locally is unknown, not done, and stays. `true` when anything was dropped.
-pub fn prune_closed(view: &mut TaskView) -> bool {
-	let closed: Vec<IssueLink> = view.issue_links().into_iter().filter(|l| link_local(l).is_some_and(|vi| vi.contents.state.is_closed())).collect();
-	if closed.is_empty() {
-		return false;
-	}
-	view.remove_issue_links(&closed);
-	true
+/// Issues that reached a closed state (done, not planned, duplicate). A link that doesn't resolve
+/// locally is unknown, not done.
+pub fn closed_links(view: &TaskView) -> Vec<IssueLink> {
+	view.issue_links().into_iter().filter(|l| link_local(l).is_some_and(|vi| vi.contents.state.is_closed())).collect()
 }
 
-/// Urgent is the one sprint that prunes itself: closed issues leave it as soon as it is
-/// processed, and the file goes with them when nothing else remains. Plain-text items are never
+/// Urgent prunes itself on every processing, unlike normal sprints which do so on rollover: closed
+/// issues leave it, and the file goes with them when nothing else remains. Plain-text items are never
 /// cleanup fodder. Skipped while an edit session holds the urgent lock.
 fn cleanup_urgent() {
 	let path = urgent_path();
@@ -568,9 +563,11 @@ fn cleanup_urgent() {
 	let Ok(content) = std::fs::read_to_string(&path) else { return }; // deleted between exists() and here
 	let mut view = TaskView::parse(&content);
 	view.resolve_bare_refs(None);
-	if !prune_closed(&mut view) {
+	let closed = closed_links(&view);
+	if closed.is_empty() {
 		return;
 	}
+	view.remove_issue_links(&closed);
 	let remaining = view.serialize();
 	let result = if remaining.trim().is_empty() {
 		std::fs::remove_file(&path)

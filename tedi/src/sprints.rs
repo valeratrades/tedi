@@ -488,7 +488,7 @@ async fn edit_urgent(mode: SyncMode) -> Result<()> {
 	}
 
 	edited_doc.collapse_to_links();
-	tedi_task_operations::selection::prune_closed(&mut edited_doc); // an issue closed in the buffer leaves urgent with the same save
+	edited_doc.remove_issue_links(&tedi_task_operations::selection::closed_links(&edited_doc)); // an issue closed in the buffer leaves urgent with the same save
 	let stored = edited_doc.serialize();
 	// urgent is section-less by design (ARCHITECTURE.md); a header here is inert, not an error
 	let headers: Vec<&str> = stored.lines().filter(|l| l.starts_with('#')).collect();
@@ -644,14 +644,7 @@ async fn edit_milestone(settings: &LiveSettings, tf: Timeframe, mode: SyncMode, 
 
 	// Route the top-level body through the three-way model: apply the new body, then sink to
 	// LocalFs + Consensus (+ Remote when online).
-	let milestone = modify_and_sync_milestone(milestone, mode, MilestoneModifier::BodyWrite { body: new_body }, SyncOptions::default()).await?;
-	let new_description = milestone.to_string();
-
-	// Update the blocker cache if this is the blocker timeframe milestone.
-	let blocker_tf = settings.config()?.milestones.as_ref().map(|m| m.blocker_tf().to_string()).unwrap_or_else(|| "1d".to_string());
-	if tf.to_string() == blocker_tf {
-		tedi_task_operations::sprints::refresh_selection_cache(&blocker_tf, &new_description);
-	}
+	let mut milestone = modify_and_sync_milestone(milestone, mode, MilestoneModifier::BodyWrite { body: new_body }, SyncOptions::default()).await?;
 
 	// Outdated milestones get a due-date bump + an archived snapshot. Direct API, online only, best-effort.
 	// Read off the synced due date: another machine may have bumped it already.
@@ -660,16 +653,31 @@ async fn edit_milestone(settings: &LiveSettings, tf: Timeframe, mode: SyncMode, 
 		let new_date = Timestamp::now() + tf.duration();
 		println!("Milestone was outdated, updating due date to {}", new_date.strftime("%Y-%m-%d"));
 		let archive_title = format!("{}_{tf}", Timestamp::now().strftime("%Y/%m/%d"));
-		let (update_result, archive_result) = tokio::join!(
-			update_milestone(settings, milestone_number, &new_description, Some(new_date)),
-			create_closed_milestone(settings, &archive_title, &original_description)
-		);
-		if let Err(e) = update_result {
+		match create_closed_milestone(settings, &archive_title, &original_description).await {
+			Err(e) => tracing::warn!("Failed to archive old milestone contents (its closed issues stay until the next rollover): {e}"),
+			Ok(()) => {
+				// an issue closed within this edit is in no archive yet
+				let archived = MilestoneBody::parse(&original_description, link.repo_info()).hosted();
+				let pruned: Vec<IssueLink> = tedi_task_operations::selection::closed_links(&milestone.body.0)
+					.into_iter()
+					.filter(|l| archived.contains(l))
+					.collect();
+				if !pruned.is_empty() {
+					let mut body = milestone.body.clone();
+					body.0.remove_issue_links(&pruned);
+					milestone = modify_and_sync_milestone(milestone, mode, MilestoneModifier::BodyWrite { body }, SyncOptions::default()).await?;
+				}
+			}
+		}
+		// after the prune: a due date bumped beneath the three-way sync reads to it as a divergence
+		if let Err(e) = update_milestone(settings, milestone_number, &milestone.to_string(), Some(new_date)).await {
 			tracing::warn!("failed to bump milestone due date (will reconcile next online edit): {e}");
 		}
-		if let Err(e) = archive_result {
-			tracing::warn!("Failed to archive old milestone contents: {e}");
-		}
+	}
+
+	let blocker_tf = settings.config()?.milestones.as_ref().map(|m| m.blocker_tf().to_string()).unwrap_or_else(|| "1d".to_string());
+	if tf.to_string() == blocker_tf {
+		tedi_task_operations::sprints::refresh_selection_cache(&blocker_tf, &milestone.to_string());
 	}
 
 	println!("Updated milestone '{tf}'");
