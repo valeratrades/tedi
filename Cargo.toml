@@ -88,3 +88,6 @@ tabs_in_doc_comments = "allow"
 
 [workspace.lints.rust]
 unused_features = "allow"
+
+[workspace.lints.cargo]
+non_kebab_case_bins = "allow"
