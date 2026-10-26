@@ -1,339 +1,310 @@
 env:
-  CARGO_INCREMENTAL: '0'
-  CARGO_NET_RETRY: '10'
-  RUSTC_WRAPPER: ''
-  RUSTUP_MAX_RETRIES: '10'
+  CARGO_INCREMENTAL: "0"
+  CARGO_NET_RETRY: "10"
+  RUSTC_WRAPPER: ""
+  RUSTUP_MAX_RETRIES: "10"
   RUST_BACKTRACE: short
 jobs:
   code-duplication:
-    if: github.event_name != 'pull_request'
     name: Code Duplication
     needs:
-    - load_nix
-    - pre_ci
+      - load_nix
+      - pre_ci
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v5
-    - name: Lean cache setup
-      run: 'mkdir -p /tmp/nix-lean-cache
+      - uses: actions/checkout@v5
+      - name: Lean cache setup
+        run: |
+          mkdir -p /tmp/nix-lean-cache
+          chmod 0777 /tmp/nix-lean-cache
+          printf '#!/bin/sh\nexport PATH=/nix/var/nix/profiles/default/bin:$PATH\nnix copy --to "file:///tmp/nix-lean-cache?compression=zstd&parallel-compression=true" $OUT_PATHS || true\n' > /tmp/nix-lean-pbh.sh
+          chmod 0755 /tmp/nix-lean-pbh.sh
+        shell: bash
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+        with:
+          extra-conf: |
+            lazy-trees = true
+            post-build-hook = /tmp/nix-lean-pbh.sh
+            extra-substituters = file:///tmp/nix-lean-cache
+            extra-trusted-substituters = file:///tmp/nix-lean-cache
+            require-sigs = false
+      - name: Lean nix cache (built-only paths)
+        uses: actions/cache@v5
+        with:
+          key: nix-lean-${{ runner.os }}-${{ github.run_id }}
+          path: /tmp/nix-lean-cache
+          restore-keys: nix-lean-${{ runner.os }}-
+      - name: Debug nix environment
+        run: |
+          echo "=== NIX ENVIRONMENT DEBUG ==="
+          echo ""
+          echo "1. Which nix:"
+          which nix || echo "nix not found in PATH"
+          echo ""
+          echo "2. Nix version:"
+          nix --version || echo "failed"
+          echo ""
+          echo "3. Current PATH:"
+          echo "$PATH" | tr ':' '\n'
+          echo ""
+          echo "4. LD_LIBRARY_PATH (before nix-shell):"
+          echo "$LD_LIBRARY_PATH"
+          echo ""
+          echo "5. NIX_PROFILES:"
+          echo "$NIX_PROFILES"
+          echo ""
+          echo "6. Package store paths:"
+          echo "  mold: $(nix-build '<nixpkgs>' -A mold --no-out-link 2>/dev/null || echo 'FAILED')"
 
-        chmod 0777 /tmp/nix-lean-cache
+          echo "  egl-wayland: $(nix-build '<nixpkgs>' -A egl-wayland --no-out-link 2>/dev/null || echo 'FAILED')"
 
-        printf ''#!/bin/sh\nexport PATH=/nix/var/nix/profiles/default/bin:$PATH\nnix
-        copy --to "file:///tmp/nix-lean-cache?compression=zstd&parallel-compression=true"
-        $OUT_PATHS || true\n'' > /tmp/nix-lean-pbh.sh
+          echo "  wayland: $(nix-build '<nixpkgs>' -A wayland --no-out-link 2>/dev/null || echo 'FAILED')"
 
-        chmod 0755 /tmp/nix-lean-pbh.sh
+          echo "  libGL: $(nix-build '<nixpkgs>' -A libGL --no-out-link 2>/dev/null || echo 'FAILED')"
 
-        '
-      shell: bash
-    - name: Install Nix
-      uses: DeterminateSystems/nix-installer-action@main
-      with:
-        extra-conf: 'lazy-trees = true
+          echo "  libgbm: $(nix-build '<nixpkgs>' -A libgbm --no-out-link 2>/dev/null || echo 'FAILED')"
 
-          post-build-hook = /tmp/nix-lean-pbh.sh
+          echo "  fd: $(nix-build '<nixpkgs>' -A fd --no-out-link 2>/dev/null || echo 'FAILED')"
 
-          extra-substituters = file:///tmp/nix-lean-cache
+          echo "  pkg-config: $(nix-build '<nixpkgs>' -A pkg-config --no-out-link 2>/dev/null || echo 'FAILED')"
 
-          extra-trusted-substituters = file:///tmp/nix-lean-cache
+          echo "  pkg-config: $(nix-build '<nixpkgs>' -A pkg-config --no-out-link 2>/dev/null || echo 'FAILED')"
 
-          require-sigs = false
+          echo "  openssl.out: $(nix-build '<nixpkgs>' -A openssl.out --no-out-link 2>/dev/null || echo 'FAILED')"
 
-          '
-    - name: Lean nix cache (built-only paths)
-      uses: actions/cache@v5
-      with:
-        key: nix-lean-${{ runner.os }}-${{ github.run_id }}
-        path: /tmp/nix-lean-cache
-        restore-keys: nix-lean-${{ runner.os }}-
-    - name: Debug nix environment
-      run: "echo \"=== NIX ENVIRONMENT DEBUG ===\"\necho \"\"\necho \"1. Which nix:\"\
-        \nwhich nix || echo \"nix not found in PATH\"\necho \"\"\necho \"2. Nix version:\"\
-        \nnix --version || echo \"failed\"\necho \"\"\necho \"3. Current PATH:\"\n\
-        echo \"$PATH\" | tr ':' '\\n'\necho \"\"\necho \"4. LD_LIBRARY_PATH (before\
-        \ nix-shell):\"\necho \"$LD_LIBRARY_PATH\"\necho \"\"\necho \"5. NIX_PROFILES:\"\
-        \necho \"$NIX_PROFILES\"\necho \"\"\necho \"6. Package store paths:\"\necho\
-        \ \"  mold: $(nix-build '<nixpkgs>' -A mold --no-out-link 2>/dev/null || echo\
-        \ 'FAILED')\"\n\necho \"  egl-wayland: $(nix-build '<nixpkgs>' -A egl-wayland\
-        \ --no-out-link 2>/dev/null || echo 'FAILED')\"\n\necho \"  wayland: $(nix-build\
-        \ '<nixpkgs>' -A wayland --no-out-link 2>/dev/null || echo 'FAILED')\"\n\n\
-        echo \"  libGL: $(nix-build '<nixpkgs>' -A libGL --no-out-link 2>/dev/null\
-        \ || echo 'FAILED')\"\n\necho \"  libgbm: $(nix-build '<nixpkgs>' -A libgbm\
-        \ --no-out-link 2>/dev/null || echo 'FAILED')\"\n\necho \"  fd: $(nix-build\
-        \ '<nixpkgs>' -A fd --no-out-link 2>/dev/null || echo 'FAILED')\"\n\necho\
-        \ \"  pkg-config: $(nix-build '<nixpkgs>' -A pkg-config --no-out-link 2>/dev/null\
-        \ || echo 'FAILED')\"\n\necho \"  pkg-config: $(nix-build '<nixpkgs>' -A pkg-config\
-        \ --no-out-link 2>/dev/null || echo 'FAILED')\"\n\necho \"  openssl.out: $(nix-build\
-        \ '<nixpkgs>' -A openssl.out --no-out-link 2>/dev/null || echo 'FAILED')\"\
-        \n\necho \"  openssl.dev: $(nix-build '<nixpkgs>' -A openssl.dev --no-out-link\
-        \ 2>/dev/null || echo 'FAILED')\"\n\necho \"\"\necho \"7. libssl.so locations\
-        \ in nix store:\"\nfind /nix/store -name 'libssl.so*' 2>/dev/null | head -20\
-        \ || echo \"none found\"\necho \"\"\necho \"8. libgbm.so locations in nix\
-        \ store:\"\nfind /nix/store -name 'libgbm.so*' 2>/dev/null | head -20 || echo\
-        \ \"none found\"\necho \"\"\necho \"9. Contents of openssl lib dir:\"\nls\
-        \ -la \"$(nix-build '<nixpkgs>' -A openssl --no-out-link)/lib/\" 2>/dev/null\
-        \ || echo \"failed\"\necho \"\"\necho \"10. Contents of openssl.dev lib dir:\"\
-        \nls -la \"$(nix-build '<nixpkgs>' -A openssl.dev --no-out-link)/lib/\" 2>/dev/null\
-        \ || echo \"failed\"\necho \"\"\necho \"11. ldd on a test binary (if exists):\"\
-        \nif [ -f target/debug/todo ]; then\n  ldd target/debug/todo 2>&1 || echo\
-        \ \"ldd failed\"\nelse\n  echo \"binary not built yet\"\nfi\necho \"\"\necho\
-        \ \"12. System LD_LIBRARY_PATH search dirs:\"\ncat /etc/ld.so.conf 2>/dev/null\
-        \ || echo \"no ld.so.conf\"\nldconfig -p 2>/dev/null | grep -E \"libssl|libgbm\"\
-        \ | head -10 || echo \"ldconfig failed or no matches\"\necho \"\"\necho \"\
-        13. Test nix-shell environment:\"\nnix-shell -p mold egl-wayland wayland libGL\
-        \ libgbm fd pkg-config pkg-config openssl.out openssl.dev --run 'echo \"Inside\
-        \ nix-shell LD_LIBRARY_PATH: $LD_LIBRARY_PATH\"'\necho \"\"\necho \"14. Test\
-        \ nix-shell with manual LD_LIBRARY_PATH:\"\nnix-shell -p mold egl-wayland\
-        \ wayland libGL libgbm fd pkg-config pkg-config openssl.out openssl.dev --command\
-        \ 'export LD_LIBRARY_PATH=\"$(nix-build \"<nixpkgs>\" -A openssl --no-out-link)/lib${LD_LIBRARY_PATH:+:}$LD_LIBRARY_PATH\"\
-        \ && echo \"Manual LD_LIBRARY_PATH: $LD_LIBRARY_PATH\"'\necho \"\"\necho \"\
-        15. Check if openssl lib has libssl.so.3:\"\nOPENSSL_PATH=$(nix-build '<nixpkgs>'\
-        \ -A openssl --no-out-link 2>/dev/null)\nif [ -n \"$OPENSSL_PATH\" ]; then\n\
-        \  ls -la \"$OPENSSL_PATH/lib/\" | grep ssl || echo \"no ssl libs in openssl\"\
-        \nfi\necho \"\"\necho \"16. Check openssl.out (runtime output):\"\nnix-build\
-        \ '<nixpkgs>' -A openssl.out --no-out-link 2>/dev/null && ls -la \"$(nix-build\
-        \ '<nixpkgs>' -A openssl.out --no-out-link)/lib/\" | grep ssl || echo \"openssl.out\
-        \ failed\"\necho \"\"\necho \"17. Env vars in nix-shell:\"\nnix-shell -p openssl\
-        \ --run 'env | grep -E \"^(LD_|NIX_|PATH=)\" | sort'\necho \"\"\necho \"18.\
-        \ Test subprocess inheritance:\"\nnix-shell -p mold egl-wayland wayland libGL\
-        \ libgbm fd pkg-config pkg-config openssl.out openssl.dev --command 'export\
-        \ LD_LIBRARY_PATH=\"$(nix-build \"<nixpkgs>\" -A openssl --no-out-link)/lib:$LD_LIBRARY_PATH\"\
-        \ && bash -c \"echo subprocess sees: \\$LD_LIBRARY_PATH\"'\necho \"\"\necho\
-        \ \"19. All openssl-related packages:\"\nnix-env -qaP 'openssl.*' 2>/dev/null\
-        \ | head -20 || echo \"query failed\"\necho \"\"\necho \"20. System libssl:\"\
-        \nldconfig -p 2>/dev/null | grep libssl || echo \"no system libssl\"\necho\
-        \ \"\"\necho \"=== END DEBUG ===\"\n"
-    - uses: actions/checkout@v5
-      with:
-        path: my_gh_stuff
-        repository: valeratrades/v_flakes
-        sparse-checkout: github/workflows
-        sparse-checkout-cone-mode: false
-    - name: Setup nightly Rust
-      uses: dtolnay/rust-toolchain@nightly
-    - name: Install mold linker
-      run: nix-shell -p mold egl-wayland wayland libGL libgbm fd pkg-config pkg-config
-        openssl.out openssl.dev git --command "export LD_LIBRARY_PATH=\"\$(nix-build
-        '<nixpkgs>' -A mold --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A egl-wayland --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A wayland --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A libGL --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A libgbm --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A fd --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.out --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.dev --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && sudo apt-get install -y mold"
-    - name: Install qlty
-      uses: qltysh/qlty-action/install@main
-    - name: Initialize qlty
-      run: nix-shell -p mold egl-wayland wayland libGL libgbm fd pkg-config pkg-config
-        openssl.out openssl.dev git --command "export LD_LIBRARY_PATH=\"\$(nix-build
-        '<nixpkgs>' -A mold --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A egl-wayland --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A wayland --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A libGL --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A libgbm --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A fd --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.out --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.dev --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && qlty init --no --no-upgrade-check"
-    - name: Check for code duplication
-      run: nix-shell -p mold egl-wayland wayland libGL libgbm fd pkg-config pkg-config
-        openssl.out openssl.dev git --command "export LD_LIBRARY_PATH=\"\$(nix-build
-        '<nixpkgs>' -A mold --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A egl-wayland --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A wayland --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A libGL --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A libgbm --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A fd --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.out --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.dev --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && cargo +nightly -Zscript -q my_gh_stuff/github/workflows/code-duplication.rs"
+          echo "  openssl.dev: $(nix-build '<nixpkgs>' -A openssl.dev --no-out-link 2>/dev/null || echo 'FAILED')"
+
+          echo ""
+          echo "7. libssl.so locations in nix store:"
+          find /nix/store -name 'libssl.so*' 2>/dev/null | head -20 || echo "none found"
+          echo ""
+          echo "8. libgbm.so locations in nix store:"
+          find /nix/store -name 'libgbm.so*' 2>/dev/null | head -20 || echo "none found"
+          echo ""
+          echo "9. Contents of openssl lib dir:"
+          ls -la "$(nix-build '<nixpkgs>' -A openssl --no-out-link)/lib/" 2>/dev/null || echo "failed"
+          echo ""
+          echo "10. Contents of openssl.dev lib dir:"
+          ls -la "$(nix-build '<nixpkgs>' -A openssl.dev --no-out-link)/lib/" 2>/dev/null || echo "failed"
+          echo ""
+          echo "11. ldd on a test binary (if exists):"
+          if [ -f target/debug/todo ]; then
+            ldd target/debug/todo 2>&1 || echo "ldd failed"
+          else
+            echo "binary not built yet"
+          fi
+          echo ""
+          echo "12. System LD_LIBRARY_PATH search dirs:"
+          cat /etc/ld.so.conf 2>/dev/null || echo "no ld.so.conf"
+          ldconfig -p 2>/dev/null | grep -E "libssl|libgbm" | head -10 || echo "ldconfig failed or no matches"
+          echo ""
+          echo "13. Test nix-shell environment:"
+          nix-shell -p mold egl-wayland wayland libGL libgbm fd pkg-config pkg-config openssl.out openssl.dev --run 'echo "Inside nix-shell LD_LIBRARY_PATH: $LD_LIBRARY_PATH"'
+          echo ""
+          echo "14. Test nix-shell with manual LD_LIBRARY_PATH:"
+          nix-shell -p mold egl-wayland wayland libGL libgbm fd pkg-config pkg-config openssl.out openssl.dev --command 'export LD_LIBRARY_PATH="$(nix-build "<nixpkgs>" -A openssl --no-out-link)/lib${LD_LIBRARY_PATH:+:}$LD_LIBRARY_PATH" && echo "Manual LD_LIBRARY_PATH: $LD_LIBRARY_PATH"'
+          echo ""
+          echo "15. Check if openssl lib has libssl.so.3:"
+          OPENSSL_PATH=$(nix-build '<nixpkgs>' -A openssl --no-out-link 2>/dev/null)
+          if [ -n "$OPENSSL_PATH" ]; then
+            ls -la "$OPENSSL_PATH/lib/" | grep ssl || echo "no ssl libs in openssl"
+          fi
+          echo ""
+          echo "16. Check openssl.out (runtime output):"
+          nix-build '<nixpkgs>' -A openssl.out --no-out-link 2>/dev/null && ls -la "$(nix-build '<nixpkgs>' -A openssl.out --no-out-link)/lib/" | grep ssl || echo "openssl.out failed"
+          echo ""
+          echo "17. Env vars in nix-shell:"
+          nix-shell -p openssl --run 'env | grep -E "^(LD_|NIX_|PATH=)" | sort'
+          echo ""
+          echo "18. Test subprocess inheritance:"
+          nix-shell -p mold egl-wayland wayland libGL libgbm fd pkg-config pkg-config openssl.out openssl.dev --command 'export LD_LIBRARY_PATH="$(nix-build "<nixpkgs>" -A openssl --no-out-link)/lib:$LD_LIBRARY_PATH" && bash -c "echo subprocess sees: \$LD_LIBRARY_PATH"'
+          echo ""
+          echo "19. All openssl-related packages:"
+          nix-env -qaP 'openssl.*' 2>/dev/null | head -20 || echo "query failed"
+          echo ""
+          echo "20. System libssl:"
+          ldconfig -p 2>/dev/null | grep libssl || echo "no system libssl"
+          echo ""
+          echo "=== END DEBUG ==="
+      - uses: actions/checkout@v5
+        with:
+          path: my_gh_stuff
+          repository: valeratrades/v_flakes
+          sparse-checkout: github/workflows
+          sparse-checkout-cone-mode: false
+      - name: Setup nightly Rust
+        uses: dtolnay/rust-toolchain@nightly
+      - name: Install mold linker
+        run: nix-shell -p mold egl-wayland wayland libGL libgbm fd pkg-config pkg-config openssl.out openssl.dev git --command "export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A mold --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A egl-wayland --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A wayland --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A libGL --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A libgbm --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A fd --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.out --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.dev --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && sudo apt-get install -y mold"
+      - name: Install qlty
+        uses: qltysh/qlty-action/install@main
+      - name: Initialize qlty
+        run: nix-shell -p mold egl-wayland wayland libGL libgbm fd pkg-config pkg-config openssl.out openssl.dev git --command "export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A mold --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A egl-wayland --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A wayland --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A libGL --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A libgbm --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A fd --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.out --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.dev --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && qlty init --no --no-upgrade-check"
+      - name: Check for code duplication
+        run: nix-shell -p mold egl-wayland wayland libGL libgbm fd pkg-config pkg-config openssl.out openssl.dev git --command "export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A mold --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A egl-wayland --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A wayland --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A libGL --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A libgbm --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A fd --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.out --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.dev --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && cargo +nightly -Zscript -q my_gh_stuff/github/workflows/code-duplication.rs"
     timeout-minutes: 15
   load_nix:
     runs-on: ubuntu-latest
     steps:
-    - name: Lean cache setup
-      run: 'mkdir -p /tmp/nix-lean-cache
-
-        chmod 0777 /tmp/nix-lean-cache
-
-        printf ''#!/bin/sh\nexport PATH=/nix/var/nix/profiles/default/bin:$PATH\nnix
-        copy --to "file:///tmp/nix-lean-cache?compression=zstd&parallel-compression=true"
-        $OUT_PATHS || true\n'' > /tmp/nix-lean-pbh.sh
-
-        chmod 0755 /tmp/nix-lean-pbh.sh
-
-        '
-      shell: bash
-    - name: Install Nix
-      uses: DeterminateSystems/nix-installer-action@main
-      with:
-        extra-conf: 'lazy-trees = true
-
-          post-build-hook = /tmp/nix-lean-pbh.sh
-
-          extra-substituters = file:///tmp/nix-lean-cache
-
-          extra-trusted-substituters = file:///tmp/nix-lean-cache
-
-          require-sigs = false
-
-          '
-    - name: Lean nix cache (built-only paths)
-      uses: actions/cache@v5
-      with:
-        key: nix-lean-${{ runner.os }}-${{ github.run_id }}
-        path: /tmp/nix-lean-cache
-        restore-keys: nix-lean-${{ runner.os }}-
-    - name: Cache packages
-      run: '# Pre-fetch packages into nix store so they''re cached for dependent jobs
-
-        # Use nix-shell which properly sets up env vars like PKG_CONFIG_PATH
-
-        nix-shell -p mold egl-wayland wayland libGL libgbm fd pkg-config pkg-config
-        openssl.out openssl.dev git --run "echo packages cached"
-
-        '
+      - name: Lean cache setup
+        run: |
+          mkdir -p /tmp/nix-lean-cache
+          chmod 0777 /tmp/nix-lean-cache
+          printf '#!/bin/sh\nexport PATH=/nix/var/nix/profiles/default/bin:$PATH\nnix copy --to "file:///tmp/nix-lean-cache?compression=zstd&parallel-compression=true" $OUT_PATHS || true\n' > /tmp/nix-lean-pbh.sh
+          chmod 0755 /tmp/nix-lean-pbh.sh
+        shell: bash
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+        with:
+          extra-conf: |
+            lazy-trees = true
+            post-build-hook = /tmp/nix-lean-pbh.sh
+            extra-substituters = file:///tmp/nix-lean-cache
+            extra-trusted-substituters = file:///tmp/nix-lean-cache
+            require-sigs = false
+      - name: Lean nix cache (built-only paths)
+        uses: actions/cache@v5
+        with:
+          key: nix-lean-${{ runner.os }}-${{ github.run_id }}
+          path: /tmp/nix-lean-cache
+          restore-keys: nix-lean-${{ runner.os }}-
+      - name: Cache packages
+        run: |
+          # Pre-fetch packages into nix store so they're cached for dependent jobs
+          # Use nix-shell which properly sets up env vars like PKG_CONFIG_PATH
+          nix-shell -p mold egl-wayland wayland libGL libgbm fd pkg-config pkg-config openssl.out openssl.dev git --run "echo packages cached"
   pre_ci:
     uses: valeratrades/.github/.github/workflows/pre_ci.yml@main
   rust-clippy:
-    if: github.event_name != 'pull_request'
     name: Clippy
     needs:
-    - load_nix
-    - pre_ci
+      - load_nix
+      - pre_ci
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v5
-    - name: Lean cache setup
-      run: 'mkdir -p /tmp/nix-lean-cache
+      - uses: actions/checkout@v5
+      - name: Lean cache setup
+        run: |
+          mkdir -p /tmp/nix-lean-cache
+          chmod 0777 /tmp/nix-lean-cache
+          printf '#!/bin/sh\nexport PATH=/nix/var/nix/profiles/default/bin:$PATH\nnix copy --to "file:///tmp/nix-lean-cache?compression=zstd&parallel-compression=true" $OUT_PATHS || true\n' > /tmp/nix-lean-pbh.sh
+          chmod 0755 /tmp/nix-lean-pbh.sh
+        shell: bash
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+        with:
+          extra-conf: |
+            lazy-trees = true
+            post-build-hook = /tmp/nix-lean-pbh.sh
+            extra-substituters = file:///tmp/nix-lean-cache
+            extra-trusted-substituters = file:///tmp/nix-lean-cache
+            require-sigs = false
+      - name: Lean nix cache (built-only paths)
+        uses: actions/cache@v5
+        with:
+          key: nix-lean-${{ runner.os }}-${{ github.run_id }}
+          path: /tmp/nix-lean-cache
+          restore-keys: nix-lean-${{ runner.os }}-
+      - name: Debug nix environment
+        run: |
+          echo "=== NIX ENVIRONMENT DEBUG ==="
+          echo ""
+          echo "1. Which nix:"
+          which nix || echo "nix not found in PATH"
+          echo ""
+          echo "2. Nix version:"
+          nix --version || echo "failed"
+          echo ""
+          echo "3. Current PATH:"
+          echo "$PATH" | tr ':' '\n'
+          echo ""
+          echo "4. LD_LIBRARY_PATH (before nix-shell):"
+          echo "$LD_LIBRARY_PATH"
+          echo ""
+          echo "5. NIX_PROFILES:"
+          echo "$NIX_PROFILES"
+          echo ""
+          echo "6. Package store paths:"
+          echo "  mold: $(nix-build '<nixpkgs>' -A mold --no-out-link 2>/dev/null || echo 'FAILED')"
 
-        chmod 0777 /tmp/nix-lean-cache
+          echo "  egl-wayland: $(nix-build '<nixpkgs>' -A egl-wayland --no-out-link 2>/dev/null || echo 'FAILED')"
 
-        printf ''#!/bin/sh\nexport PATH=/nix/var/nix/profiles/default/bin:$PATH\nnix
-        copy --to "file:///tmp/nix-lean-cache?compression=zstd&parallel-compression=true"
-        $OUT_PATHS || true\n'' > /tmp/nix-lean-pbh.sh
+          echo "  wayland: $(nix-build '<nixpkgs>' -A wayland --no-out-link 2>/dev/null || echo 'FAILED')"
 
-        chmod 0755 /tmp/nix-lean-pbh.sh
+          echo "  libGL: $(nix-build '<nixpkgs>' -A libGL --no-out-link 2>/dev/null || echo 'FAILED')"
 
-        '
-      shell: bash
-    - name: Install Nix
-      uses: DeterminateSystems/nix-installer-action@main
-      with:
-        extra-conf: 'lazy-trees = true
+          echo "  libgbm: $(nix-build '<nixpkgs>' -A libgbm --no-out-link 2>/dev/null || echo 'FAILED')"
 
-          post-build-hook = /tmp/nix-lean-pbh.sh
+          echo "  fd: $(nix-build '<nixpkgs>' -A fd --no-out-link 2>/dev/null || echo 'FAILED')"
 
-          extra-substituters = file:///tmp/nix-lean-cache
+          echo "  pkg-config: $(nix-build '<nixpkgs>' -A pkg-config --no-out-link 2>/dev/null || echo 'FAILED')"
 
-          extra-trusted-substituters = file:///tmp/nix-lean-cache
+          echo "  pkg-config: $(nix-build '<nixpkgs>' -A pkg-config --no-out-link 2>/dev/null || echo 'FAILED')"
 
-          require-sigs = false
+          echo "  openssl.out: $(nix-build '<nixpkgs>' -A openssl.out --no-out-link 2>/dev/null || echo 'FAILED')"
 
-          '
-    - name: Lean nix cache (built-only paths)
-      uses: actions/cache@v5
-      with:
-        key: nix-lean-${{ runner.os }}-${{ github.run_id }}
-        path: /tmp/nix-lean-cache
-        restore-keys: nix-lean-${{ runner.os }}-
-    - name: Debug nix environment
-      run: "echo \"=== NIX ENVIRONMENT DEBUG ===\"\necho \"\"\necho \"1. Which nix:\"\
-        \nwhich nix || echo \"nix not found in PATH\"\necho \"\"\necho \"2. Nix version:\"\
-        \nnix --version || echo \"failed\"\necho \"\"\necho \"3. Current PATH:\"\n\
-        echo \"$PATH\" | tr ':' '\\n'\necho \"\"\necho \"4. LD_LIBRARY_PATH (before\
-        \ nix-shell):\"\necho \"$LD_LIBRARY_PATH\"\necho \"\"\necho \"5. NIX_PROFILES:\"\
-        \necho \"$NIX_PROFILES\"\necho \"\"\necho \"6. Package store paths:\"\necho\
-        \ \"  mold: $(nix-build '<nixpkgs>' -A mold --no-out-link 2>/dev/null || echo\
-        \ 'FAILED')\"\n\necho \"  egl-wayland: $(nix-build '<nixpkgs>' -A egl-wayland\
-        \ --no-out-link 2>/dev/null || echo 'FAILED')\"\n\necho \"  wayland: $(nix-build\
-        \ '<nixpkgs>' -A wayland --no-out-link 2>/dev/null || echo 'FAILED')\"\n\n\
-        echo \"  libGL: $(nix-build '<nixpkgs>' -A libGL --no-out-link 2>/dev/null\
-        \ || echo 'FAILED')\"\n\necho \"  libgbm: $(nix-build '<nixpkgs>' -A libgbm\
-        \ --no-out-link 2>/dev/null || echo 'FAILED')\"\n\necho \"  fd: $(nix-build\
-        \ '<nixpkgs>' -A fd --no-out-link 2>/dev/null || echo 'FAILED')\"\n\necho\
-        \ \"  pkg-config: $(nix-build '<nixpkgs>' -A pkg-config --no-out-link 2>/dev/null\
-        \ || echo 'FAILED')\"\n\necho \"  pkg-config: $(nix-build '<nixpkgs>' -A pkg-config\
-        \ --no-out-link 2>/dev/null || echo 'FAILED')\"\n\necho \"  openssl.out: $(nix-build\
-        \ '<nixpkgs>' -A openssl.out --no-out-link 2>/dev/null || echo 'FAILED')\"\
-        \n\necho \"  openssl.dev: $(nix-build '<nixpkgs>' -A openssl.dev --no-out-link\
-        \ 2>/dev/null || echo 'FAILED')\"\n\necho \"\"\necho \"7. libssl.so locations\
-        \ in nix store:\"\nfind /nix/store -name 'libssl.so*' 2>/dev/null | head -20\
-        \ || echo \"none found\"\necho \"\"\necho \"8. libgbm.so locations in nix\
-        \ store:\"\nfind /nix/store -name 'libgbm.so*' 2>/dev/null | head -20 || echo\
-        \ \"none found\"\necho \"\"\necho \"9. Contents of openssl lib dir:\"\nls\
-        \ -la \"$(nix-build '<nixpkgs>' -A openssl --no-out-link)/lib/\" 2>/dev/null\
-        \ || echo \"failed\"\necho \"\"\necho \"10. Contents of openssl.dev lib dir:\"\
-        \nls -la \"$(nix-build '<nixpkgs>' -A openssl.dev --no-out-link)/lib/\" 2>/dev/null\
-        \ || echo \"failed\"\necho \"\"\necho \"11. ldd on a test binary (if exists):\"\
-        \nif [ -f target/debug/todo ]; then\n  ldd target/debug/todo 2>&1 || echo\
-        \ \"ldd failed\"\nelse\n  echo \"binary not built yet\"\nfi\necho \"\"\necho\
-        \ \"12. System LD_LIBRARY_PATH search dirs:\"\ncat /etc/ld.so.conf 2>/dev/null\
-        \ || echo \"no ld.so.conf\"\nldconfig -p 2>/dev/null | grep -E \"libssl|libgbm\"\
-        \ | head -10 || echo \"ldconfig failed or no matches\"\necho \"\"\necho \"\
-        13. Test nix-shell environment:\"\nnix-shell -p mold egl-wayland wayland libGL\
-        \ libgbm fd pkg-config pkg-config openssl.out openssl.dev --run 'echo \"Inside\
-        \ nix-shell LD_LIBRARY_PATH: $LD_LIBRARY_PATH\"'\necho \"\"\necho \"14. Test\
-        \ nix-shell with manual LD_LIBRARY_PATH:\"\nnix-shell -p mold egl-wayland\
-        \ wayland libGL libgbm fd pkg-config pkg-config openssl.out openssl.dev --command\
-        \ 'export LD_LIBRARY_PATH=\"$(nix-build \"<nixpkgs>\" -A openssl --no-out-link)/lib${LD_LIBRARY_PATH:+:}$LD_LIBRARY_PATH\"\
-        \ && echo \"Manual LD_LIBRARY_PATH: $LD_LIBRARY_PATH\"'\necho \"\"\necho \"\
-        15. Check if openssl lib has libssl.so.3:\"\nOPENSSL_PATH=$(nix-build '<nixpkgs>'\
-        \ -A openssl --no-out-link 2>/dev/null)\nif [ -n \"$OPENSSL_PATH\" ]; then\n\
-        \  ls -la \"$OPENSSL_PATH/lib/\" | grep ssl || echo \"no ssl libs in openssl\"\
-        \nfi\necho \"\"\necho \"16. Check openssl.out (runtime output):\"\nnix-build\
-        \ '<nixpkgs>' -A openssl.out --no-out-link 2>/dev/null && ls -la \"$(nix-build\
-        \ '<nixpkgs>' -A openssl.out --no-out-link)/lib/\" | grep ssl || echo \"openssl.out\
-        \ failed\"\necho \"\"\necho \"17. Env vars in nix-shell:\"\nnix-shell -p openssl\
-        \ --run 'env | grep -E \"^(LD_|NIX_|PATH=)\" | sort'\necho \"\"\necho \"18.\
-        \ Test subprocess inheritance:\"\nnix-shell -p mold egl-wayland wayland libGL\
-        \ libgbm fd pkg-config pkg-config openssl.out openssl.dev --command 'export\
-        \ LD_LIBRARY_PATH=\"$(nix-build \"<nixpkgs>\" -A openssl --no-out-link)/lib:$LD_LIBRARY_PATH\"\
-        \ && bash -c \"echo subprocess sees: \\$LD_LIBRARY_PATH\"'\necho \"\"\necho\
-        \ \"19. All openssl-related packages:\"\nnix-env -qaP 'openssl.*' 2>/dev/null\
-        \ | head -20 || echo \"query failed\"\necho \"\"\necho \"20. System libssl:\"\
-        \nldconfig -p 2>/dev/null | grep libssl || echo \"no system libssl\"\necho\
-        \ \"\"\necho \"=== END DEBUG ===\"\n"
-    - uses: dtolnay/rust-toolchain@clippy
-    - name: Download modified by pre-ci Cargo.toml files
-      uses: actions/download-artifact@v7
-      with:
-        name: modified-cargo-files
-    - run: nix-shell -p mold egl-wayland wayland libGL libgbm fd pkg-config pkg-config
-        openssl.out openssl.dev git --command "export LD_LIBRARY_PATH=\"\$(nix-build
-        '<nixpkgs>' -A mold --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A egl-wayland --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A wayland --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A libGL --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A libgbm --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A fd --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.out --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.dev --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && rm -f .cargo/config.toml .cargo/config"
-    - run: nix-shell -p mold egl-wayland wayland libGL libgbm fd pkg-config pkg-config
-        openssl.out openssl.dev git --command "export LD_LIBRARY_PATH=\"\$(nix-build
-        '<nixpkgs>' -A mold --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A egl-wayland --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A wayland --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A libGL --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A libgbm --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A fd --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.out --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.dev --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && cargo clippy --tests -- -Dwarnings"
+          echo "  openssl.dev: $(nix-build '<nixpkgs>' -A openssl.dev --no-out-link 2>/dev/null || echo 'FAILED')"
+
+          echo ""
+          echo "7. libssl.so locations in nix store:"
+          find /nix/store -name 'libssl.so*' 2>/dev/null | head -20 || echo "none found"
+          echo ""
+          echo "8. libgbm.so locations in nix store:"
+          find /nix/store -name 'libgbm.so*' 2>/dev/null | head -20 || echo "none found"
+          echo ""
+          echo "9. Contents of openssl lib dir:"
+          ls -la "$(nix-build '<nixpkgs>' -A openssl --no-out-link)/lib/" 2>/dev/null || echo "failed"
+          echo ""
+          echo "10. Contents of openssl.dev lib dir:"
+          ls -la "$(nix-build '<nixpkgs>' -A openssl.dev --no-out-link)/lib/" 2>/dev/null || echo "failed"
+          echo ""
+          echo "11. ldd on a test binary (if exists):"
+          if [ -f target/debug/todo ]; then
+            ldd target/debug/todo 2>&1 || echo "ldd failed"
+          else
+            echo "binary not built yet"
+          fi
+          echo ""
+          echo "12. System LD_LIBRARY_PATH search dirs:"
+          cat /etc/ld.so.conf 2>/dev/null || echo "no ld.so.conf"
+          ldconfig -p 2>/dev/null | grep -E "libssl|libgbm" | head -10 || echo "ldconfig failed or no matches"
+          echo ""
+          echo "13. Test nix-shell environment:"
+          nix-shell -p mold egl-wayland wayland libGL libgbm fd pkg-config pkg-config openssl.out openssl.dev --run 'echo "Inside nix-shell LD_LIBRARY_PATH: $LD_LIBRARY_PATH"'
+          echo ""
+          echo "14. Test nix-shell with manual LD_LIBRARY_PATH:"
+          nix-shell -p mold egl-wayland wayland libGL libgbm fd pkg-config pkg-config openssl.out openssl.dev --command 'export LD_LIBRARY_PATH="$(nix-build "<nixpkgs>" -A openssl --no-out-link)/lib${LD_LIBRARY_PATH:+:}$LD_LIBRARY_PATH" && echo "Manual LD_LIBRARY_PATH: $LD_LIBRARY_PATH"'
+          echo ""
+          echo "15. Check if openssl lib has libssl.so.3:"
+          OPENSSL_PATH=$(nix-build '<nixpkgs>' -A openssl --no-out-link 2>/dev/null)
+          if [ -n "$OPENSSL_PATH" ]; then
+            ls -la "$OPENSSL_PATH/lib/" | grep ssl || echo "no ssl libs in openssl"
+          fi
+          echo ""
+          echo "16. Check openssl.out (runtime output):"
+          nix-build '<nixpkgs>' -A openssl.out --no-out-link 2>/dev/null && ls -la "$(nix-build '<nixpkgs>' -A openssl.out --no-out-link)/lib/" | grep ssl || echo "openssl.out failed"
+          echo ""
+          echo "17. Env vars in nix-shell:"
+          nix-shell -p openssl --run 'env | grep -E "^(LD_|NIX_|PATH=)" | sort'
+          echo ""
+          echo "18. Test subprocess inheritance:"
+          nix-shell -p mold egl-wayland wayland libGL libgbm fd pkg-config pkg-config openssl.out openssl.dev --command 'export LD_LIBRARY_PATH="$(nix-build "<nixpkgs>" -A openssl --no-out-link)/lib:$LD_LIBRARY_PATH" && bash -c "echo subprocess sees: \$LD_LIBRARY_PATH"'
+          echo ""
+          echo "19. All openssl-related packages:"
+          nix-env -qaP 'openssl.*' 2>/dev/null | head -20 || echo "query failed"
+          echo ""
+          echo "20. System libssl:"
+          ldconfig -p 2>/dev/null | grep libssl || echo "no system libssl"
+          echo ""
+          echo "=== END DEBUG ==="
+      - uses: dtolnay/rust-toolchain@clippy
+      - name: Download modified by pre-ci Cargo.toml files
+        uses: actions/download-artifact@v7
+        with:
+          name: modified-cargo-files
+      - run: nix-shell -p mold egl-wayland wayland libGL libgbm fd pkg-config pkg-config openssl.out openssl.dev git --command "export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A mold --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A egl-wayland --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A wayland --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A libGL --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A libgbm --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A fd --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.out --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.dev --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && rm -f \"\$GITHUB_WORKSPACE/.cargo/config.toml\" \"\$GITHUB_WORKSPACE/.cargo/config\""
+      - run: nix-shell -p mold egl-wayland wayland libGL libgbm fd pkg-config pkg-config openssl.out openssl.dev git --command "export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A mold --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A egl-wayland --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A wayland --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A libGL --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A libgbm --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A fd --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.out --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.dev --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && cargo clippy --workspace --all-targets -- -Dwarnings"
     timeout-minutes: 45
   rust-doc:
     env:
@@ -341,655 +312,659 @@ jobs:
     if: needs.pre_ci.outputs.continue
     name: Documentation
     needs:
-    - load_nix
-    - pre_ci
+      - load_nix
+      - pre_ci
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v5
-    - name: Lean cache setup
-      run: 'mkdir -p /tmp/nix-lean-cache
+      - uses: actions/checkout@v5
+      - name: Lean cache setup
+        run: |
+          mkdir -p /tmp/nix-lean-cache
+          chmod 0777 /tmp/nix-lean-cache
+          printf '#!/bin/sh\nexport PATH=/nix/var/nix/profiles/default/bin:$PATH\nnix copy --to "file:///tmp/nix-lean-cache?compression=zstd&parallel-compression=true" $OUT_PATHS || true\n' > /tmp/nix-lean-pbh.sh
+          chmod 0755 /tmp/nix-lean-pbh.sh
+        shell: bash
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+        with:
+          extra-conf: |
+            lazy-trees = true
+            post-build-hook = /tmp/nix-lean-pbh.sh
+            extra-substituters = file:///tmp/nix-lean-cache
+            extra-trusted-substituters = file:///tmp/nix-lean-cache
+            require-sigs = false
+      - name: Lean nix cache (built-only paths)
+        uses: actions/cache@v5
+        with:
+          key: nix-lean-${{ runner.os }}-${{ github.run_id }}
+          path: /tmp/nix-lean-cache
+          restore-keys: nix-lean-${{ runner.os }}-
+      - name: Debug nix environment
+        run: |
+          echo "=== NIX ENVIRONMENT DEBUG ==="
+          echo ""
+          echo "1. Which nix:"
+          which nix || echo "nix not found in PATH"
+          echo ""
+          echo "2. Nix version:"
+          nix --version || echo "failed"
+          echo ""
+          echo "3. Current PATH:"
+          echo "$PATH" | tr ':' '\n'
+          echo ""
+          echo "4. LD_LIBRARY_PATH (before nix-shell):"
+          echo "$LD_LIBRARY_PATH"
+          echo ""
+          echo "5. NIX_PROFILES:"
+          echo "$NIX_PROFILES"
+          echo ""
+          echo "6. Package store paths:"
+          echo "  mold: $(nix-build '<nixpkgs>' -A mold --no-out-link 2>/dev/null || echo 'FAILED')"
 
-        chmod 0777 /tmp/nix-lean-cache
+          echo "  egl-wayland: $(nix-build '<nixpkgs>' -A egl-wayland --no-out-link 2>/dev/null || echo 'FAILED')"
 
-        printf ''#!/bin/sh\nexport PATH=/nix/var/nix/profiles/default/bin:$PATH\nnix
-        copy --to "file:///tmp/nix-lean-cache?compression=zstd&parallel-compression=true"
-        $OUT_PATHS || true\n'' > /tmp/nix-lean-pbh.sh
+          echo "  wayland: $(nix-build '<nixpkgs>' -A wayland --no-out-link 2>/dev/null || echo 'FAILED')"
 
-        chmod 0755 /tmp/nix-lean-pbh.sh
+          echo "  libGL: $(nix-build '<nixpkgs>' -A libGL --no-out-link 2>/dev/null || echo 'FAILED')"
 
-        '
-      shell: bash
-    - name: Install Nix
-      uses: DeterminateSystems/nix-installer-action@main
-      with:
-        extra-conf: 'lazy-trees = true
+          echo "  libgbm: $(nix-build '<nixpkgs>' -A libgbm --no-out-link 2>/dev/null || echo 'FAILED')"
 
-          post-build-hook = /tmp/nix-lean-pbh.sh
+          echo "  fd: $(nix-build '<nixpkgs>' -A fd --no-out-link 2>/dev/null || echo 'FAILED')"
 
-          extra-substituters = file:///tmp/nix-lean-cache
+          echo "  pkg-config: $(nix-build '<nixpkgs>' -A pkg-config --no-out-link 2>/dev/null || echo 'FAILED')"
 
-          extra-trusted-substituters = file:///tmp/nix-lean-cache
+          echo "  pkg-config: $(nix-build '<nixpkgs>' -A pkg-config --no-out-link 2>/dev/null || echo 'FAILED')"
 
-          require-sigs = false
+          echo "  openssl.out: $(nix-build '<nixpkgs>' -A openssl.out --no-out-link 2>/dev/null || echo 'FAILED')"
 
-          '
-    - name: Lean nix cache (built-only paths)
-      uses: actions/cache@v5
-      with:
-        key: nix-lean-${{ runner.os }}-${{ github.run_id }}
-        path: /tmp/nix-lean-cache
-        restore-keys: nix-lean-${{ runner.os }}-
-    - name: Debug nix environment
-      run: "echo \"=== NIX ENVIRONMENT DEBUG ===\"\necho \"\"\necho \"1. Which nix:\"\
-        \nwhich nix || echo \"nix not found in PATH\"\necho \"\"\necho \"2. Nix version:\"\
-        \nnix --version || echo \"failed\"\necho \"\"\necho \"3. Current PATH:\"\n\
-        echo \"$PATH\" | tr ':' '\\n'\necho \"\"\necho \"4. LD_LIBRARY_PATH (before\
-        \ nix-shell):\"\necho \"$LD_LIBRARY_PATH\"\necho \"\"\necho \"5. NIX_PROFILES:\"\
-        \necho \"$NIX_PROFILES\"\necho \"\"\necho \"6. Package store paths:\"\necho\
-        \ \"  mold: $(nix-build '<nixpkgs>' -A mold --no-out-link 2>/dev/null || echo\
-        \ 'FAILED')\"\n\necho \"  egl-wayland: $(nix-build '<nixpkgs>' -A egl-wayland\
-        \ --no-out-link 2>/dev/null || echo 'FAILED')\"\n\necho \"  wayland: $(nix-build\
-        \ '<nixpkgs>' -A wayland --no-out-link 2>/dev/null || echo 'FAILED')\"\n\n\
-        echo \"  libGL: $(nix-build '<nixpkgs>' -A libGL --no-out-link 2>/dev/null\
-        \ || echo 'FAILED')\"\n\necho \"  libgbm: $(nix-build '<nixpkgs>' -A libgbm\
-        \ --no-out-link 2>/dev/null || echo 'FAILED')\"\n\necho \"  fd: $(nix-build\
-        \ '<nixpkgs>' -A fd --no-out-link 2>/dev/null || echo 'FAILED')\"\n\necho\
-        \ \"  pkg-config: $(nix-build '<nixpkgs>' -A pkg-config --no-out-link 2>/dev/null\
-        \ || echo 'FAILED')\"\n\necho \"  pkg-config: $(nix-build '<nixpkgs>' -A pkg-config\
-        \ --no-out-link 2>/dev/null || echo 'FAILED')\"\n\necho \"  openssl.out: $(nix-build\
-        \ '<nixpkgs>' -A openssl.out --no-out-link 2>/dev/null || echo 'FAILED')\"\
-        \n\necho \"  openssl.dev: $(nix-build '<nixpkgs>' -A openssl.dev --no-out-link\
-        \ 2>/dev/null || echo 'FAILED')\"\n\necho \"\"\necho \"7. libssl.so locations\
-        \ in nix store:\"\nfind /nix/store -name 'libssl.so*' 2>/dev/null | head -20\
-        \ || echo \"none found\"\necho \"\"\necho \"8. libgbm.so locations in nix\
-        \ store:\"\nfind /nix/store -name 'libgbm.so*' 2>/dev/null | head -20 || echo\
-        \ \"none found\"\necho \"\"\necho \"9. Contents of openssl lib dir:\"\nls\
-        \ -la \"$(nix-build '<nixpkgs>' -A openssl --no-out-link)/lib/\" 2>/dev/null\
-        \ || echo \"failed\"\necho \"\"\necho \"10. Contents of openssl.dev lib dir:\"\
-        \nls -la \"$(nix-build '<nixpkgs>' -A openssl.dev --no-out-link)/lib/\" 2>/dev/null\
-        \ || echo \"failed\"\necho \"\"\necho \"11. ldd on a test binary (if exists):\"\
-        \nif [ -f target/debug/todo ]; then\n  ldd target/debug/todo 2>&1 || echo\
-        \ \"ldd failed\"\nelse\n  echo \"binary not built yet\"\nfi\necho \"\"\necho\
-        \ \"12. System LD_LIBRARY_PATH search dirs:\"\ncat /etc/ld.so.conf 2>/dev/null\
-        \ || echo \"no ld.so.conf\"\nldconfig -p 2>/dev/null | grep -E \"libssl|libgbm\"\
-        \ | head -10 || echo \"ldconfig failed or no matches\"\necho \"\"\necho \"\
-        13. Test nix-shell environment:\"\nnix-shell -p mold egl-wayland wayland libGL\
-        \ libgbm fd pkg-config pkg-config openssl.out openssl.dev --run 'echo \"Inside\
-        \ nix-shell LD_LIBRARY_PATH: $LD_LIBRARY_PATH\"'\necho \"\"\necho \"14. Test\
-        \ nix-shell with manual LD_LIBRARY_PATH:\"\nnix-shell -p mold egl-wayland\
-        \ wayland libGL libgbm fd pkg-config pkg-config openssl.out openssl.dev --command\
-        \ 'export LD_LIBRARY_PATH=\"$(nix-build \"<nixpkgs>\" -A openssl --no-out-link)/lib${LD_LIBRARY_PATH:+:}$LD_LIBRARY_PATH\"\
-        \ && echo \"Manual LD_LIBRARY_PATH: $LD_LIBRARY_PATH\"'\necho \"\"\necho \"\
-        15. Check if openssl lib has libssl.so.3:\"\nOPENSSL_PATH=$(nix-build '<nixpkgs>'\
-        \ -A openssl --no-out-link 2>/dev/null)\nif [ -n \"$OPENSSL_PATH\" ]; then\n\
-        \  ls -la \"$OPENSSL_PATH/lib/\" | grep ssl || echo \"no ssl libs in openssl\"\
-        \nfi\necho \"\"\necho \"16. Check openssl.out (runtime output):\"\nnix-build\
-        \ '<nixpkgs>' -A openssl.out --no-out-link 2>/dev/null && ls -la \"$(nix-build\
-        \ '<nixpkgs>' -A openssl.out --no-out-link)/lib/\" | grep ssl || echo \"openssl.out\
-        \ failed\"\necho \"\"\necho \"17. Env vars in nix-shell:\"\nnix-shell -p openssl\
-        \ --run 'env | grep -E \"^(LD_|NIX_|PATH=)\" | sort'\necho \"\"\necho \"18.\
-        \ Test subprocess inheritance:\"\nnix-shell -p mold egl-wayland wayland libGL\
-        \ libgbm fd pkg-config pkg-config openssl.out openssl.dev --command 'export\
-        \ LD_LIBRARY_PATH=\"$(nix-build \"<nixpkgs>\" -A openssl --no-out-link)/lib:$LD_LIBRARY_PATH\"\
-        \ && bash -c \"echo subprocess sees: \\$LD_LIBRARY_PATH\"'\necho \"\"\necho\
-        \ \"19. All openssl-related packages:\"\nnix-env -qaP 'openssl.*' 2>/dev/null\
-        \ | head -20 || echo \"query failed\"\necho \"\"\necho \"20. System libssl:\"\
-        \nldconfig -p 2>/dev/null | grep libssl || echo \"no system libssl\"\necho\
-        \ \"\"\necho \"=== END DEBUG ===\"\n"
-    - uses: dtolnay/rust-toolchain@nightly
-    - name: Download modified by pre-ci Cargo.toml files
-      uses: actions/download-artifact@v7
-      with:
-        name: modified-cargo-files
-    - uses: dtolnay/install@cargo-docs-rs
-    - run: "nix-shell -p mold egl-wayland wayland libGL libgbm fd pkg-config pkg-config\
-        \ openssl.out openssl.dev git --command \"export LD_LIBRARY_PATH=\\\"\\$(nix-build\
-        \ '<nixpkgs>' -A mold --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\
-        \" && export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A egl-wayland\
-        \ --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && export\
-        \ LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A wayland --no-out-link)/lib\\\
-        ${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && export LD_LIBRARY_PATH=\\\"\
-        \\$(nix-build '<nixpkgs>' -A libGL --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\\
-        $LD_LIBRARY_PATH\\\" && export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>'\
-        \ -A libgbm --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\"\
-        \ && export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A fd --no-out-link)/lib\\\
-        ${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && export LD_LIBRARY_PATH=\\\"\
-        \\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\\
-        $LD_LIBRARY_PATH\\\" && export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>'\
-        \ -A pkg-config --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\
-        \" && export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A openssl.out\
-        \ --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && export\
-        \ LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A openssl.dev --no-out-link)/lib\\\
-        ${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && for p in \\$(cargo metadata\
-        \ --no-deps --format-version 1 | jq -r '.packages[] | select([.targets[].kind[]]\
-        \ | any(. == \\\"lib\\\" or . == \\\"proc-macro\\\")) | .name'); do\n  cargo\
-        \ docs-rs -p \\\"\\$p\\\"\ndone\n\""
+          echo "  openssl.dev: $(nix-build '<nixpkgs>' -A openssl.dev --no-out-link 2>/dev/null || echo 'FAILED')"
+
+          echo ""
+          echo "7. libssl.so locations in nix store:"
+          find /nix/store -name 'libssl.so*' 2>/dev/null | head -20 || echo "none found"
+          echo ""
+          echo "8. libgbm.so locations in nix store:"
+          find /nix/store -name 'libgbm.so*' 2>/dev/null | head -20 || echo "none found"
+          echo ""
+          echo "9. Contents of openssl lib dir:"
+          ls -la "$(nix-build '<nixpkgs>' -A openssl --no-out-link)/lib/" 2>/dev/null || echo "failed"
+          echo ""
+          echo "10. Contents of openssl.dev lib dir:"
+          ls -la "$(nix-build '<nixpkgs>' -A openssl.dev --no-out-link)/lib/" 2>/dev/null || echo "failed"
+          echo ""
+          echo "11. ldd on a test binary (if exists):"
+          if [ -f target/debug/todo ]; then
+            ldd target/debug/todo 2>&1 || echo "ldd failed"
+          else
+            echo "binary not built yet"
+          fi
+          echo ""
+          echo "12. System LD_LIBRARY_PATH search dirs:"
+          cat /etc/ld.so.conf 2>/dev/null || echo "no ld.so.conf"
+          ldconfig -p 2>/dev/null | grep -E "libssl|libgbm" | head -10 || echo "ldconfig failed or no matches"
+          echo ""
+          echo "13. Test nix-shell environment:"
+          nix-shell -p mold egl-wayland wayland libGL libgbm fd pkg-config pkg-config openssl.out openssl.dev --run 'echo "Inside nix-shell LD_LIBRARY_PATH: $LD_LIBRARY_PATH"'
+          echo ""
+          echo "14. Test nix-shell with manual LD_LIBRARY_PATH:"
+          nix-shell -p mold egl-wayland wayland libGL libgbm fd pkg-config pkg-config openssl.out openssl.dev --command 'export LD_LIBRARY_PATH="$(nix-build "<nixpkgs>" -A openssl --no-out-link)/lib${LD_LIBRARY_PATH:+:}$LD_LIBRARY_PATH" && echo "Manual LD_LIBRARY_PATH: $LD_LIBRARY_PATH"'
+          echo ""
+          echo "15. Check if openssl lib has libssl.so.3:"
+          OPENSSL_PATH=$(nix-build '<nixpkgs>' -A openssl --no-out-link 2>/dev/null)
+          if [ -n "$OPENSSL_PATH" ]; then
+            ls -la "$OPENSSL_PATH/lib/" | grep ssl || echo "no ssl libs in openssl"
+          fi
+          echo ""
+          echo "16. Check openssl.out (runtime output):"
+          nix-build '<nixpkgs>' -A openssl.out --no-out-link 2>/dev/null && ls -la "$(nix-build '<nixpkgs>' -A openssl.out --no-out-link)/lib/" | grep ssl || echo "openssl.out failed"
+          echo ""
+          echo "17. Env vars in nix-shell:"
+          nix-shell -p openssl --run 'env | grep -E "^(LD_|NIX_|PATH=)" | sort'
+          echo ""
+          echo "18. Test subprocess inheritance:"
+          nix-shell -p mold egl-wayland wayland libGL libgbm fd pkg-config pkg-config openssl.out openssl.dev --command 'export LD_LIBRARY_PATH="$(nix-build "<nixpkgs>" -A openssl --no-out-link)/lib:$LD_LIBRARY_PATH" && bash -c "echo subprocess sees: \$LD_LIBRARY_PATH"'
+          echo ""
+          echo "19. All openssl-related packages:"
+          nix-env -qaP 'openssl.*' 2>/dev/null | head -20 || echo "query failed"
+          echo ""
+          echo "20. System libssl:"
+          ldconfig -p 2>/dev/null | grep libssl || echo "no system libssl"
+          echo ""
+          echo "=== END DEBUG ==="
+      - uses: dtolnay/rust-toolchain@nightly
+      - name: Download modified by pre-ci Cargo.toml files
+        uses: actions/download-artifact@v7
+        with:
+          name: modified-cargo-files
+      - uses: dtolnay/install@cargo-docs-rs
+      - run: nix-shell -p mold egl-wayland wayland libGL libgbm fd pkg-config pkg-config openssl.out openssl.dev git --command "export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A mold --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A egl-wayland --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A wayland --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A libGL --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A libgbm --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A fd --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.out --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.dev --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && rm -f \"\$GITHUB_WORKSPACE/.cargo/config.toml\" \"\$GITHUB_WORKSPACE/.cargo/config\""
+      - run: |-
+          nix-shell -p mold egl-wayland wayland libGL libgbm fd pkg-config pkg-config openssl.out openssl.dev git --command "export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A mold --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A egl-wayland --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A wayland --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A libGL --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A libgbm --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A fd --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.out --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.dev --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && for p in \$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select([.targets[].kind[]] | any(. == \"lib\" or . == \"proc-macro\")) | .name'); do
+            cargo docs-rs -p \"\$p\"
+          done
+          "
     timeout-minutes: 45
   rust-machete:
     name: Unused Dependencies
     needs: load_nix
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v5
-    - name: Lean cache setup
-      run: 'mkdir -p /tmp/nix-lean-cache
+      - uses: actions/checkout@v5
+      - name: Lean cache setup
+        run: |
+          mkdir -p /tmp/nix-lean-cache
+          chmod 0777 /tmp/nix-lean-cache
+          printf '#!/bin/sh\nexport PATH=/nix/var/nix/profiles/default/bin:$PATH\nnix copy --to "file:///tmp/nix-lean-cache?compression=zstd&parallel-compression=true" $OUT_PATHS || true\n' > /tmp/nix-lean-pbh.sh
+          chmod 0755 /tmp/nix-lean-pbh.sh
+        shell: bash
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+        with:
+          extra-conf: |
+            lazy-trees = true
+            post-build-hook = /tmp/nix-lean-pbh.sh
+            extra-substituters = file:///tmp/nix-lean-cache
+            extra-trusted-substituters = file:///tmp/nix-lean-cache
+            require-sigs = false
+      - name: Lean nix cache (built-only paths)
+        uses: actions/cache@v5
+        with:
+          key: nix-lean-${{ runner.os }}-${{ github.run_id }}
+          path: /tmp/nix-lean-cache
+          restore-keys: nix-lean-${{ runner.os }}-
+      - name: Debug nix environment
+        run: |
+          echo "=== NIX ENVIRONMENT DEBUG ==="
+          echo ""
+          echo "1. Which nix:"
+          which nix || echo "nix not found in PATH"
+          echo ""
+          echo "2. Nix version:"
+          nix --version || echo "failed"
+          echo ""
+          echo "3. Current PATH:"
+          echo "$PATH" | tr ':' '\n'
+          echo ""
+          echo "4. LD_LIBRARY_PATH (before nix-shell):"
+          echo "$LD_LIBRARY_PATH"
+          echo ""
+          echo "5. NIX_PROFILES:"
+          echo "$NIX_PROFILES"
+          echo ""
+          echo "6. Package store paths:"
+          echo "  mold: $(nix-build '<nixpkgs>' -A mold --no-out-link 2>/dev/null || echo 'FAILED')"
 
-        chmod 0777 /tmp/nix-lean-cache
+          echo "  egl-wayland: $(nix-build '<nixpkgs>' -A egl-wayland --no-out-link 2>/dev/null || echo 'FAILED')"
 
-        printf ''#!/bin/sh\nexport PATH=/nix/var/nix/profiles/default/bin:$PATH\nnix
-        copy --to "file:///tmp/nix-lean-cache?compression=zstd&parallel-compression=true"
-        $OUT_PATHS || true\n'' > /tmp/nix-lean-pbh.sh
+          echo "  wayland: $(nix-build '<nixpkgs>' -A wayland --no-out-link 2>/dev/null || echo 'FAILED')"
 
-        chmod 0755 /tmp/nix-lean-pbh.sh
+          echo "  libGL: $(nix-build '<nixpkgs>' -A libGL --no-out-link 2>/dev/null || echo 'FAILED')"
 
-        '
-      shell: bash
-    - name: Install Nix
-      uses: DeterminateSystems/nix-installer-action@main
-      with:
-        extra-conf: 'lazy-trees = true
+          echo "  libgbm: $(nix-build '<nixpkgs>' -A libgbm --no-out-link 2>/dev/null || echo 'FAILED')"
 
-          post-build-hook = /tmp/nix-lean-pbh.sh
+          echo "  fd: $(nix-build '<nixpkgs>' -A fd --no-out-link 2>/dev/null || echo 'FAILED')"
 
-          extra-substituters = file:///tmp/nix-lean-cache
+          echo "  pkg-config: $(nix-build '<nixpkgs>' -A pkg-config --no-out-link 2>/dev/null || echo 'FAILED')"
 
-          extra-trusted-substituters = file:///tmp/nix-lean-cache
+          echo "  pkg-config: $(nix-build '<nixpkgs>' -A pkg-config --no-out-link 2>/dev/null || echo 'FAILED')"
 
-          require-sigs = false
+          echo "  openssl.out: $(nix-build '<nixpkgs>' -A openssl.out --no-out-link 2>/dev/null || echo 'FAILED')"
 
-          '
-    - name: Lean nix cache (built-only paths)
-      uses: actions/cache@v5
-      with:
-        key: nix-lean-${{ runner.os }}-${{ github.run_id }}
-        path: /tmp/nix-lean-cache
-        restore-keys: nix-lean-${{ runner.os }}-
-    - name: Debug nix environment
-      run: "echo \"=== NIX ENVIRONMENT DEBUG ===\"\necho \"\"\necho \"1. Which nix:\"\
-        \nwhich nix || echo \"nix not found in PATH\"\necho \"\"\necho \"2. Nix version:\"\
-        \nnix --version || echo \"failed\"\necho \"\"\necho \"3. Current PATH:\"\n\
-        echo \"$PATH\" | tr ':' '\\n'\necho \"\"\necho \"4. LD_LIBRARY_PATH (before\
-        \ nix-shell):\"\necho \"$LD_LIBRARY_PATH\"\necho \"\"\necho \"5. NIX_PROFILES:\"\
-        \necho \"$NIX_PROFILES\"\necho \"\"\necho \"6. Package store paths:\"\necho\
-        \ \"  mold: $(nix-build '<nixpkgs>' -A mold --no-out-link 2>/dev/null || echo\
-        \ 'FAILED')\"\n\necho \"  egl-wayland: $(nix-build '<nixpkgs>' -A egl-wayland\
-        \ --no-out-link 2>/dev/null || echo 'FAILED')\"\n\necho \"  wayland: $(nix-build\
-        \ '<nixpkgs>' -A wayland --no-out-link 2>/dev/null || echo 'FAILED')\"\n\n\
-        echo \"  libGL: $(nix-build '<nixpkgs>' -A libGL --no-out-link 2>/dev/null\
-        \ || echo 'FAILED')\"\n\necho \"  libgbm: $(nix-build '<nixpkgs>' -A libgbm\
-        \ --no-out-link 2>/dev/null || echo 'FAILED')\"\n\necho \"  fd: $(nix-build\
-        \ '<nixpkgs>' -A fd --no-out-link 2>/dev/null || echo 'FAILED')\"\n\necho\
-        \ \"  pkg-config: $(nix-build '<nixpkgs>' -A pkg-config --no-out-link 2>/dev/null\
-        \ || echo 'FAILED')\"\n\necho \"  pkg-config: $(nix-build '<nixpkgs>' -A pkg-config\
-        \ --no-out-link 2>/dev/null || echo 'FAILED')\"\n\necho \"  openssl.out: $(nix-build\
-        \ '<nixpkgs>' -A openssl.out --no-out-link 2>/dev/null || echo 'FAILED')\"\
-        \n\necho \"  openssl.dev: $(nix-build '<nixpkgs>' -A openssl.dev --no-out-link\
-        \ 2>/dev/null || echo 'FAILED')\"\n\necho \"\"\necho \"7. libssl.so locations\
-        \ in nix store:\"\nfind /nix/store -name 'libssl.so*' 2>/dev/null | head -20\
-        \ || echo \"none found\"\necho \"\"\necho \"8. libgbm.so locations in nix\
-        \ store:\"\nfind /nix/store -name 'libgbm.so*' 2>/dev/null | head -20 || echo\
-        \ \"none found\"\necho \"\"\necho \"9. Contents of openssl lib dir:\"\nls\
-        \ -la \"$(nix-build '<nixpkgs>' -A openssl --no-out-link)/lib/\" 2>/dev/null\
-        \ || echo \"failed\"\necho \"\"\necho \"10. Contents of openssl.dev lib dir:\"\
-        \nls -la \"$(nix-build '<nixpkgs>' -A openssl.dev --no-out-link)/lib/\" 2>/dev/null\
-        \ || echo \"failed\"\necho \"\"\necho \"11. ldd on a test binary (if exists):\"\
-        \nif [ -f target/debug/todo ]; then\n  ldd target/debug/todo 2>&1 || echo\
-        \ \"ldd failed\"\nelse\n  echo \"binary not built yet\"\nfi\necho \"\"\necho\
-        \ \"12. System LD_LIBRARY_PATH search dirs:\"\ncat /etc/ld.so.conf 2>/dev/null\
-        \ || echo \"no ld.so.conf\"\nldconfig -p 2>/dev/null | grep -E \"libssl|libgbm\"\
-        \ | head -10 || echo \"ldconfig failed or no matches\"\necho \"\"\necho \"\
-        13. Test nix-shell environment:\"\nnix-shell -p mold egl-wayland wayland libGL\
-        \ libgbm fd pkg-config pkg-config openssl.out openssl.dev --run 'echo \"Inside\
-        \ nix-shell LD_LIBRARY_PATH: $LD_LIBRARY_PATH\"'\necho \"\"\necho \"14. Test\
-        \ nix-shell with manual LD_LIBRARY_PATH:\"\nnix-shell -p mold egl-wayland\
-        \ wayland libGL libgbm fd pkg-config pkg-config openssl.out openssl.dev --command\
-        \ 'export LD_LIBRARY_PATH=\"$(nix-build \"<nixpkgs>\" -A openssl --no-out-link)/lib${LD_LIBRARY_PATH:+:}$LD_LIBRARY_PATH\"\
-        \ && echo \"Manual LD_LIBRARY_PATH: $LD_LIBRARY_PATH\"'\necho \"\"\necho \"\
-        15. Check if openssl lib has libssl.so.3:\"\nOPENSSL_PATH=$(nix-build '<nixpkgs>'\
-        \ -A openssl --no-out-link 2>/dev/null)\nif [ -n \"$OPENSSL_PATH\" ]; then\n\
-        \  ls -la \"$OPENSSL_PATH/lib/\" | grep ssl || echo \"no ssl libs in openssl\"\
-        \nfi\necho \"\"\necho \"16. Check openssl.out (runtime output):\"\nnix-build\
-        \ '<nixpkgs>' -A openssl.out --no-out-link 2>/dev/null && ls -la \"$(nix-build\
-        \ '<nixpkgs>' -A openssl.out --no-out-link)/lib/\" | grep ssl || echo \"openssl.out\
-        \ failed\"\necho \"\"\necho \"17. Env vars in nix-shell:\"\nnix-shell -p openssl\
-        \ --run 'env | grep -E \"^(LD_|NIX_|PATH=)\" | sort'\necho \"\"\necho \"18.\
-        \ Test subprocess inheritance:\"\nnix-shell -p mold egl-wayland wayland libGL\
-        \ libgbm fd pkg-config pkg-config openssl.out openssl.dev --command 'export\
-        \ LD_LIBRARY_PATH=\"$(nix-build \"<nixpkgs>\" -A openssl --no-out-link)/lib:$LD_LIBRARY_PATH\"\
-        \ && bash -c \"echo subprocess sees: \\$LD_LIBRARY_PATH\"'\necho \"\"\necho\
-        \ \"19. All openssl-related packages:\"\nnix-env -qaP 'openssl.*' 2>/dev/null\
-        \ | head -20 || echo \"query failed\"\necho \"\"\necho \"20. System libssl:\"\
-        \nldconfig -p 2>/dev/null | grep libssl || echo \"no system libssl\"\necho\
-        \ \"\"\necho \"=== END DEBUG ===\"\n"
-    - uses: cachix/install-nix-action@v31
-    - name: Cargo Machete
-      run: "nix-shell -p mold egl-wayland wayland libGL libgbm fd pkg-config pkg-config\
-        \ openssl.out openssl.dev git --command \"export LD_LIBRARY_PATH=\\\"\\$(nix-build\
-        \ '<nixpkgs>' -A mold --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\
-        \" && export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A egl-wayland\
-        \ --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && export\
-        \ LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A wayland --no-out-link)/lib\\\
-        ${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && export LD_LIBRARY_PATH=\\\"\
-        \\$(nix-build '<nixpkgs>' -A libGL --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\\
-        $LD_LIBRARY_PATH\\\" && export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>'\
-        \ -A libgbm --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\"\
-        \ && export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A fd --no-out-link)/lib\\\
-        ${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && export LD_LIBRARY_PATH=\\\"\
-        \\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\\
-        $LD_LIBRARY_PATH\\\" && export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>'\
-        \ -A pkg-config --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\
-        \" && export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A openssl.out\
-        \ --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && export\
-        \ LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A openssl.dev --no-out-link)/lib\\\
-        ${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && \t\t\t\tnix run github:valeratrades/v_flakes#cargo-machete\n\
-        \t\t\t\texit_code=\\$?\n\t\t\t\tif [ \\$exit_code != 0 ]; then\n\t\t\t\t\t\
-        echo \\\"Found unused dependencies\\\"\n\t\t\t\t\texit \\$exit_code\n\t\t\t\
-        \tfi\n\t\t\t\""
+          echo "  openssl.dev: $(nix-build '<nixpkgs>' -A openssl.dev --no-out-link 2>/dev/null || echo 'FAILED')"
+
+          echo ""
+          echo "7. libssl.so locations in nix store:"
+          find /nix/store -name 'libssl.so*' 2>/dev/null | head -20 || echo "none found"
+          echo ""
+          echo "8. libgbm.so locations in nix store:"
+          find /nix/store -name 'libgbm.so*' 2>/dev/null | head -20 || echo "none found"
+          echo ""
+          echo "9. Contents of openssl lib dir:"
+          ls -la "$(nix-build '<nixpkgs>' -A openssl --no-out-link)/lib/" 2>/dev/null || echo "failed"
+          echo ""
+          echo "10. Contents of openssl.dev lib dir:"
+          ls -la "$(nix-build '<nixpkgs>' -A openssl.dev --no-out-link)/lib/" 2>/dev/null || echo "failed"
+          echo ""
+          echo "11. ldd on a test binary (if exists):"
+          if [ -f target/debug/todo ]; then
+            ldd target/debug/todo 2>&1 || echo "ldd failed"
+          else
+            echo "binary not built yet"
+          fi
+          echo ""
+          echo "12. System LD_LIBRARY_PATH search dirs:"
+          cat /etc/ld.so.conf 2>/dev/null || echo "no ld.so.conf"
+          ldconfig -p 2>/dev/null | grep -E "libssl|libgbm" | head -10 || echo "ldconfig failed or no matches"
+          echo ""
+          echo "13. Test nix-shell environment:"
+          nix-shell -p mold egl-wayland wayland libGL libgbm fd pkg-config pkg-config openssl.out openssl.dev --run 'echo "Inside nix-shell LD_LIBRARY_PATH: $LD_LIBRARY_PATH"'
+          echo ""
+          echo "14. Test nix-shell with manual LD_LIBRARY_PATH:"
+          nix-shell -p mold egl-wayland wayland libGL libgbm fd pkg-config pkg-config openssl.out openssl.dev --command 'export LD_LIBRARY_PATH="$(nix-build "<nixpkgs>" -A openssl --no-out-link)/lib${LD_LIBRARY_PATH:+:}$LD_LIBRARY_PATH" && echo "Manual LD_LIBRARY_PATH: $LD_LIBRARY_PATH"'
+          echo ""
+          echo "15. Check if openssl lib has libssl.so.3:"
+          OPENSSL_PATH=$(nix-build '<nixpkgs>' -A openssl --no-out-link 2>/dev/null)
+          if [ -n "$OPENSSL_PATH" ]; then
+            ls -la "$OPENSSL_PATH/lib/" | grep ssl || echo "no ssl libs in openssl"
+          fi
+          echo ""
+          echo "16. Check openssl.out (runtime output):"
+          nix-build '<nixpkgs>' -A openssl.out --no-out-link 2>/dev/null && ls -la "$(nix-build '<nixpkgs>' -A openssl.out --no-out-link)/lib/" | grep ssl || echo "openssl.out failed"
+          echo ""
+          echo "17. Env vars in nix-shell:"
+          nix-shell -p openssl --run 'env | grep -E "^(LD_|NIX_|PATH=)" | sort'
+          echo ""
+          echo "18. Test subprocess inheritance:"
+          nix-shell -p mold egl-wayland wayland libGL libgbm fd pkg-config pkg-config openssl.out openssl.dev --command 'export LD_LIBRARY_PATH="$(nix-build "<nixpkgs>" -A openssl --no-out-link)/lib:$LD_LIBRARY_PATH" && bash -c "echo subprocess sees: \$LD_LIBRARY_PATH"'
+          echo ""
+          echo "19. All openssl-related packages:"
+          nix-env -qaP 'openssl.*' 2>/dev/null | head -20 || echo "query failed"
+          echo ""
+          echo "20. System libssl:"
+          ldconfig -p 2>/dev/null | grep libssl || echo "no system libssl"
+          echo ""
+          echo "=== END DEBUG ==="
+      - uses: cachix/install-nix-action@v31
+      - name: Cargo Machete
+        run: "nix-shell -p mold egl-wayland wayland libGL libgbm fd pkg-config pkg-config openssl.out openssl.dev git --command \"export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A mold --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A egl-wayland --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A wayland --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A libGL --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A libgbm --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A fd --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A openssl.out --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A openssl.dev --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && \t\t\t\tnix run github:valeratrades/v_flakes#cargo-machete\n\t\t\t\texit_code=\\$?\n\t\t\t\tif [ \\$exit_code != 0 ]; then\n\t\t\t\t\techo \\\"Found unused dependencies\\\"\n\t\t\t\t\texit \\$exit_code\n\t\t\t\tfi\n\t\t\t\""
   rust-sorted:
     name: Cargo Sorted
     needs: load_nix
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v5
-    - name: Lean cache setup
-      run: 'mkdir -p /tmp/nix-lean-cache
+      - uses: actions/checkout@v5
+      - name: Lean cache setup
+        run: |
+          mkdir -p /tmp/nix-lean-cache
+          chmod 0777 /tmp/nix-lean-cache
+          printf '#!/bin/sh\nexport PATH=/nix/var/nix/profiles/default/bin:$PATH\nnix copy --to "file:///tmp/nix-lean-cache?compression=zstd&parallel-compression=true" $OUT_PATHS || true\n' > /tmp/nix-lean-pbh.sh
+          chmod 0755 /tmp/nix-lean-pbh.sh
+        shell: bash
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+        with:
+          extra-conf: |
+            lazy-trees = true
+            post-build-hook = /tmp/nix-lean-pbh.sh
+            extra-substituters = file:///tmp/nix-lean-cache
+            extra-trusted-substituters = file:///tmp/nix-lean-cache
+            require-sigs = false
+      - name: Lean nix cache (built-only paths)
+        uses: actions/cache@v5
+        with:
+          key: nix-lean-${{ runner.os }}-${{ github.run_id }}
+          path: /tmp/nix-lean-cache
+          restore-keys: nix-lean-${{ runner.os }}-
+      - name: Debug nix environment
+        run: |
+          echo "=== NIX ENVIRONMENT DEBUG ==="
+          echo ""
+          echo "1. Which nix:"
+          which nix || echo "nix not found in PATH"
+          echo ""
+          echo "2. Nix version:"
+          nix --version || echo "failed"
+          echo ""
+          echo "3. Current PATH:"
+          echo "$PATH" | tr ':' '\n'
+          echo ""
+          echo "4. LD_LIBRARY_PATH (before nix-shell):"
+          echo "$LD_LIBRARY_PATH"
+          echo ""
+          echo "5. NIX_PROFILES:"
+          echo "$NIX_PROFILES"
+          echo ""
+          echo "6. Package store paths:"
+          echo "  mold: $(nix-build '<nixpkgs>' -A mold --no-out-link 2>/dev/null || echo 'FAILED')"
 
-        chmod 0777 /tmp/nix-lean-cache
+          echo "  egl-wayland: $(nix-build '<nixpkgs>' -A egl-wayland --no-out-link 2>/dev/null || echo 'FAILED')"
 
-        printf ''#!/bin/sh\nexport PATH=/nix/var/nix/profiles/default/bin:$PATH\nnix
-        copy --to "file:///tmp/nix-lean-cache?compression=zstd&parallel-compression=true"
-        $OUT_PATHS || true\n'' > /tmp/nix-lean-pbh.sh
+          echo "  wayland: $(nix-build '<nixpkgs>' -A wayland --no-out-link 2>/dev/null || echo 'FAILED')"
 
-        chmod 0755 /tmp/nix-lean-pbh.sh
+          echo "  libGL: $(nix-build '<nixpkgs>' -A libGL --no-out-link 2>/dev/null || echo 'FAILED')"
 
-        '
-      shell: bash
-    - name: Install Nix
-      uses: DeterminateSystems/nix-installer-action@main
-      with:
-        extra-conf: 'lazy-trees = true
+          echo "  libgbm: $(nix-build '<nixpkgs>' -A libgbm --no-out-link 2>/dev/null || echo 'FAILED')"
 
-          post-build-hook = /tmp/nix-lean-pbh.sh
+          echo "  fd: $(nix-build '<nixpkgs>' -A fd --no-out-link 2>/dev/null || echo 'FAILED')"
 
-          extra-substituters = file:///tmp/nix-lean-cache
+          echo "  pkg-config: $(nix-build '<nixpkgs>' -A pkg-config --no-out-link 2>/dev/null || echo 'FAILED')"
 
-          extra-trusted-substituters = file:///tmp/nix-lean-cache
+          echo "  pkg-config: $(nix-build '<nixpkgs>' -A pkg-config --no-out-link 2>/dev/null || echo 'FAILED')"
 
-          require-sigs = false
+          echo "  openssl.out: $(nix-build '<nixpkgs>' -A openssl.out --no-out-link 2>/dev/null || echo 'FAILED')"
 
-          '
-    - name: Lean nix cache (built-only paths)
-      uses: actions/cache@v5
-      with:
-        key: nix-lean-${{ runner.os }}-${{ github.run_id }}
-        path: /tmp/nix-lean-cache
-        restore-keys: nix-lean-${{ runner.os }}-
-    - name: Debug nix environment
-      run: "echo \"=== NIX ENVIRONMENT DEBUG ===\"\necho \"\"\necho \"1. Which nix:\"\
-        \nwhich nix || echo \"nix not found in PATH\"\necho \"\"\necho \"2. Nix version:\"\
-        \nnix --version || echo \"failed\"\necho \"\"\necho \"3. Current PATH:\"\n\
-        echo \"$PATH\" | tr ':' '\\n'\necho \"\"\necho \"4. LD_LIBRARY_PATH (before\
-        \ nix-shell):\"\necho \"$LD_LIBRARY_PATH\"\necho \"\"\necho \"5. NIX_PROFILES:\"\
-        \necho \"$NIX_PROFILES\"\necho \"\"\necho \"6. Package store paths:\"\necho\
-        \ \"  mold: $(nix-build '<nixpkgs>' -A mold --no-out-link 2>/dev/null || echo\
-        \ 'FAILED')\"\n\necho \"  egl-wayland: $(nix-build '<nixpkgs>' -A egl-wayland\
-        \ --no-out-link 2>/dev/null || echo 'FAILED')\"\n\necho \"  wayland: $(nix-build\
-        \ '<nixpkgs>' -A wayland --no-out-link 2>/dev/null || echo 'FAILED')\"\n\n\
-        echo \"  libGL: $(nix-build '<nixpkgs>' -A libGL --no-out-link 2>/dev/null\
-        \ || echo 'FAILED')\"\n\necho \"  libgbm: $(nix-build '<nixpkgs>' -A libgbm\
-        \ --no-out-link 2>/dev/null || echo 'FAILED')\"\n\necho \"  fd: $(nix-build\
-        \ '<nixpkgs>' -A fd --no-out-link 2>/dev/null || echo 'FAILED')\"\n\necho\
-        \ \"  pkg-config: $(nix-build '<nixpkgs>' -A pkg-config --no-out-link 2>/dev/null\
-        \ || echo 'FAILED')\"\n\necho \"  pkg-config: $(nix-build '<nixpkgs>' -A pkg-config\
-        \ --no-out-link 2>/dev/null || echo 'FAILED')\"\n\necho \"  openssl.out: $(nix-build\
-        \ '<nixpkgs>' -A openssl.out --no-out-link 2>/dev/null || echo 'FAILED')\"\
-        \n\necho \"  openssl.dev: $(nix-build '<nixpkgs>' -A openssl.dev --no-out-link\
-        \ 2>/dev/null || echo 'FAILED')\"\n\necho \"\"\necho \"7. libssl.so locations\
-        \ in nix store:\"\nfind /nix/store -name 'libssl.so*' 2>/dev/null | head -20\
-        \ || echo \"none found\"\necho \"\"\necho \"8. libgbm.so locations in nix\
-        \ store:\"\nfind /nix/store -name 'libgbm.so*' 2>/dev/null | head -20 || echo\
-        \ \"none found\"\necho \"\"\necho \"9. Contents of openssl lib dir:\"\nls\
-        \ -la \"$(nix-build '<nixpkgs>' -A openssl --no-out-link)/lib/\" 2>/dev/null\
-        \ || echo \"failed\"\necho \"\"\necho \"10. Contents of openssl.dev lib dir:\"\
-        \nls -la \"$(nix-build '<nixpkgs>' -A openssl.dev --no-out-link)/lib/\" 2>/dev/null\
-        \ || echo \"failed\"\necho \"\"\necho \"11. ldd on a test binary (if exists):\"\
-        \nif [ -f target/debug/todo ]; then\n  ldd target/debug/todo 2>&1 || echo\
-        \ \"ldd failed\"\nelse\n  echo \"binary not built yet\"\nfi\necho \"\"\necho\
-        \ \"12. System LD_LIBRARY_PATH search dirs:\"\ncat /etc/ld.so.conf 2>/dev/null\
-        \ || echo \"no ld.so.conf\"\nldconfig -p 2>/dev/null | grep -E \"libssl|libgbm\"\
-        \ | head -10 || echo \"ldconfig failed or no matches\"\necho \"\"\necho \"\
-        13. Test nix-shell environment:\"\nnix-shell -p mold egl-wayland wayland libGL\
-        \ libgbm fd pkg-config pkg-config openssl.out openssl.dev --run 'echo \"Inside\
-        \ nix-shell LD_LIBRARY_PATH: $LD_LIBRARY_PATH\"'\necho \"\"\necho \"14. Test\
-        \ nix-shell with manual LD_LIBRARY_PATH:\"\nnix-shell -p mold egl-wayland\
-        \ wayland libGL libgbm fd pkg-config pkg-config openssl.out openssl.dev --command\
-        \ 'export LD_LIBRARY_PATH=\"$(nix-build \"<nixpkgs>\" -A openssl --no-out-link)/lib${LD_LIBRARY_PATH:+:}$LD_LIBRARY_PATH\"\
-        \ && echo \"Manual LD_LIBRARY_PATH: $LD_LIBRARY_PATH\"'\necho \"\"\necho \"\
-        15. Check if openssl lib has libssl.so.3:\"\nOPENSSL_PATH=$(nix-build '<nixpkgs>'\
-        \ -A openssl --no-out-link 2>/dev/null)\nif [ -n \"$OPENSSL_PATH\" ]; then\n\
-        \  ls -la \"$OPENSSL_PATH/lib/\" | grep ssl || echo \"no ssl libs in openssl\"\
-        \nfi\necho \"\"\necho \"16. Check openssl.out (runtime output):\"\nnix-build\
-        \ '<nixpkgs>' -A openssl.out --no-out-link 2>/dev/null && ls -la \"$(nix-build\
-        \ '<nixpkgs>' -A openssl.out --no-out-link)/lib/\" | grep ssl || echo \"openssl.out\
-        \ failed\"\necho \"\"\necho \"17. Env vars in nix-shell:\"\nnix-shell -p openssl\
-        \ --run 'env | grep -E \"^(LD_|NIX_|PATH=)\" | sort'\necho \"\"\necho \"18.\
-        \ Test subprocess inheritance:\"\nnix-shell -p mold egl-wayland wayland libGL\
-        \ libgbm fd pkg-config pkg-config openssl.out openssl.dev --command 'export\
-        \ LD_LIBRARY_PATH=\"$(nix-build \"<nixpkgs>\" -A openssl --no-out-link)/lib:$LD_LIBRARY_PATH\"\
-        \ && bash -c \"echo subprocess sees: \\$LD_LIBRARY_PATH\"'\necho \"\"\necho\
-        \ \"19. All openssl-related packages:\"\nnix-env -qaP 'openssl.*' 2>/dev/null\
-        \ | head -20 || echo \"query failed\"\necho \"\"\necho \"20. System libssl:\"\
-        \nldconfig -p 2>/dev/null | grep libssl || echo \"no system libssl\"\necho\
-        \ \"\"\necho \"=== END DEBUG ===\"\n"
-    - name: Installation
-      uses: taiki-e/install-action@v2
-      with:
-        tool: cargo-sort
-    - name: Check if Cargo.toml is sorted
-      run: "nix-shell -p mold egl-wayland wayland libGL libgbm fd pkg-config pkg-config\
-        \ openssl.out openssl.dev git --command \"export LD_LIBRARY_PATH=\\\"\\$(nix-build\
-        \ '<nixpkgs>' -A mold --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\
-        \" && export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A egl-wayland\
-        \ --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && export\
-        \ LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A wayland --no-out-link)/lib\\\
-        ${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && export LD_LIBRARY_PATH=\\\"\
-        \\$(nix-build '<nixpkgs>' -A libGL --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\\
-        $LD_LIBRARY_PATH\\\" && export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>'\
-        \ -A libgbm --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\"\
-        \ && export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A fd --no-out-link)/lib\\\
-        ${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && export LD_LIBRARY_PATH=\\\"\
-        \\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\\
-        $LD_LIBRARY_PATH\\\" && export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>'\
-        \ -A pkg-config --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\
-        \" && export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A openssl.out\
-        \ --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && export\
-        \ LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A openssl.dev --no-out-link)/lib\\\
-        ${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && cargo sort --workspace --grouped\
-        \ --check\nexit_code=\\$?\nif [ \\$exit_code != 0 ]; then\n  echo \\\"Cargo.toml\
-        \ is not sorted. Run \\\\\\`cargo sort -w\\\\\\` to fix it.\\\"\n  exit \\\
-        $exit_code\nfi\n\""
+          echo "  openssl.dev: $(nix-build '<nixpkgs>' -A openssl.dev --no-out-link 2>/dev/null || echo 'FAILED')"
+
+          echo ""
+          echo "7. libssl.so locations in nix store:"
+          find /nix/store -name 'libssl.so*' 2>/dev/null | head -20 || echo "none found"
+          echo ""
+          echo "8. libgbm.so locations in nix store:"
+          find /nix/store -name 'libgbm.so*' 2>/dev/null | head -20 || echo "none found"
+          echo ""
+          echo "9. Contents of openssl lib dir:"
+          ls -la "$(nix-build '<nixpkgs>' -A openssl --no-out-link)/lib/" 2>/dev/null || echo "failed"
+          echo ""
+          echo "10. Contents of openssl.dev lib dir:"
+          ls -la "$(nix-build '<nixpkgs>' -A openssl.dev --no-out-link)/lib/" 2>/dev/null || echo "failed"
+          echo ""
+          echo "11. ldd on a test binary (if exists):"
+          if [ -f target/debug/todo ]; then
+            ldd target/debug/todo 2>&1 || echo "ldd failed"
+          else
+            echo "binary not built yet"
+          fi
+          echo ""
+          echo "12. System LD_LIBRARY_PATH search dirs:"
+          cat /etc/ld.so.conf 2>/dev/null || echo "no ld.so.conf"
+          ldconfig -p 2>/dev/null | grep -E "libssl|libgbm" | head -10 || echo "ldconfig failed or no matches"
+          echo ""
+          echo "13. Test nix-shell environment:"
+          nix-shell -p mold egl-wayland wayland libGL libgbm fd pkg-config pkg-config openssl.out openssl.dev --run 'echo "Inside nix-shell LD_LIBRARY_PATH: $LD_LIBRARY_PATH"'
+          echo ""
+          echo "14. Test nix-shell with manual LD_LIBRARY_PATH:"
+          nix-shell -p mold egl-wayland wayland libGL libgbm fd pkg-config pkg-config openssl.out openssl.dev --command 'export LD_LIBRARY_PATH="$(nix-build "<nixpkgs>" -A openssl --no-out-link)/lib${LD_LIBRARY_PATH:+:}$LD_LIBRARY_PATH" && echo "Manual LD_LIBRARY_PATH: $LD_LIBRARY_PATH"'
+          echo ""
+          echo "15. Check if openssl lib has libssl.so.3:"
+          OPENSSL_PATH=$(nix-build '<nixpkgs>' -A openssl --no-out-link 2>/dev/null)
+          if [ -n "$OPENSSL_PATH" ]; then
+            ls -la "$OPENSSL_PATH/lib/" | grep ssl || echo "no ssl libs in openssl"
+          fi
+          echo ""
+          echo "16. Check openssl.out (runtime output):"
+          nix-build '<nixpkgs>' -A openssl.out --no-out-link 2>/dev/null && ls -la "$(nix-build '<nixpkgs>' -A openssl.out --no-out-link)/lib/" | grep ssl || echo "openssl.out failed"
+          echo ""
+          echo "17. Env vars in nix-shell:"
+          nix-shell -p openssl --run 'env | grep -E "^(LD_|NIX_|PATH=)" | sort'
+          echo ""
+          echo "18. Test subprocess inheritance:"
+          nix-shell -p mold egl-wayland wayland libGL libgbm fd pkg-config pkg-config openssl.out openssl.dev --command 'export LD_LIBRARY_PATH="$(nix-build "<nixpkgs>" -A openssl --no-out-link)/lib:$LD_LIBRARY_PATH" && bash -c "echo subprocess sees: \$LD_LIBRARY_PATH"'
+          echo ""
+          echo "19. All openssl-related packages:"
+          nix-env -qaP 'openssl.*' 2>/dev/null | head -20 || echo "query failed"
+          echo ""
+          echo "20. System libssl:"
+          ldconfig -p 2>/dev/null | grep libssl || echo "no system libssl"
+          echo ""
+          echo "=== END DEBUG ==="
+      - name: Installation
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-sort
+      - name: Check if Cargo.toml is sorted
+        run: |-
+          nix-shell -p mold egl-wayland wayland libGL libgbm fd pkg-config pkg-config openssl.out openssl.dev git --command "export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A mold --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A egl-wayland --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A wayland --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A libGL --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A libgbm --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A fd --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.out --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.dev --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && cargo sort --workspace --grouped --check
+          exit_code=\$?
+          if [ \$exit_code != 0 ]; then
+            echo 'Cargo.toml is not sorted. Run \`cargo sort -w\` to fix it.'
+            exit \$exit_code
+          fi
+          "
   rust-sorted-derives:
     name: Sorted Derives
     needs: load_nix
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v5
-    - name: Lean cache setup
-      run: 'mkdir -p /tmp/nix-lean-cache
+      - uses: actions/checkout@v5
+      - name: Lean cache setup
+        run: |
+          mkdir -p /tmp/nix-lean-cache
+          chmod 0777 /tmp/nix-lean-cache
+          printf '#!/bin/sh\nexport PATH=/nix/var/nix/profiles/default/bin:$PATH\nnix copy --to "file:///tmp/nix-lean-cache?compression=zstd&parallel-compression=true" $OUT_PATHS || true\n' > /tmp/nix-lean-pbh.sh
+          chmod 0755 /tmp/nix-lean-pbh.sh
+        shell: bash
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+        with:
+          extra-conf: |
+            lazy-trees = true
+            post-build-hook = /tmp/nix-lean-pbh.sh
+            extra-substituters = file:///tmp/nix-lean-cache
+            extra-trusted-substituters = file:///tmp/nix-lean-cache
+            require-sigs = false
+      - name: Lean nix cache (built-only paths)
+        uses: actions/cache@v5
+        with:
+          key: nix-lean-${{ runner.os }}-${{ github.run_id }}
+          path: /tmp/nix-lean-cache
+          restore-keys: nix-lean-${{ runner.os }}-
+      - name: Debug nix environment
+        run: |
+          echo "=== NIX ENVIRONMENT DEBUG ==="
+          echo ""
+          echo "1. Which nix:"
+          which nix || echo "nix not found in PATH"
+          echo ""
+          echo "2. Nix version:"
+          nix --version || echo "failed"
+          echo ""
+          echo "3. Current PATH:"
+          echo "$PATH" | tr ':' '\n'
+          echo ""
+          echo "4. LD_LIBRARY_PATH (before nix-shell):"
+          echo "$LD_LIBRARY_PATH"
+          echo ""
+          echo "5. NIX_PROFILES:"
+          echo "$NIX_PROFILES"
+          echo ""
+          echo "6. Package store paths:"
+          echo "  mold: $(nix-build '<nixpkgs>' -A mold --no-out-link 2>/dev/null || echo 'FAILED')"
 
-        chmod 0777 /tmp/nix-lean-cache
+          echo "  egl-wayland: $(nix-build '<nixpkgs>' -A egl-wayland --no-out-link 2>/dev/null || echo 'FAILED')"
 
-        printf ''#!/bin/sh\nexport PATH=/nix/var/nix/profiles/default/bin:$PATH\nnix
-        copy --to "file:///tmp/nix-lean-cache?compression=zstd&parallel-compression=true"
-        $OUT_PATHS || true\n'' > /tmp/nix-lean-pbh.sh
+          echo "  wayland: $(nix-build '<nixpkgs>' -A wayland --no-out-link 2>/dev/null || echo 'FAILED')"
 
-        chmod 0755 /tmp/nix-lean-pbh.sh
+          echo "  libGL: $(nix-build '<nixpkgs>' -A libGL --no-out-link 2>/dev/null || echo 'FAILED')"
 
-        '
-      shell: bash
-    - name: Install Nix
-      uses: DeterminateSystems/nix-installer-action@main
-      with:
-        extra-conf: 'lazy-trees = true
+          echo "  libgbm: $(nix-build '<nixpkgs>' -A libgbm --no-out-link 2>/dev/null || echo 'FAILED')"
 
-          post-build-hook = /tmp/nix-lean-pbh.sh
+          echo "  fd: $(nix-build '<nixpkgs>' -A fd --no-out-link 2>/dev/null || echo 'FAILED')"
 
-          extra-substituters = file:///tmp/nix-lean-cache
+          echo "  pkg-config: $(nix-build '<nixpkgs>' -A pkg-config --no-out-link 2>/dev/null || echo 'FAILED')"
 
-          extra-trusted-substituters = file:///tmp/nix-lean-cache
+          echo "  pkg-config: $(nix-build '<nixpkgs>' -A pkg-config --no-out-link 2>/dev/null || echo 'FAILED')"
 
-          require-sigs = false
+          echo "  openssl.out: $(nix-build '<nixpkgs>' -A openssl.out --no-out-link 2>/dev/null || echo 'FAILED')"
 
-          '
-    - name: Lean nix cache (built-only paths)
-      uses: actions/cache@v5
-      with:
-        key: nix-lean-${{ runner.os }}-${{ github.run_id }}
-        path: /tmp/nix-lean-cache
-        restore-keys: nix-lean-${{ runner.os }}-
-    - name: Debug nix environment
-      run: "echo \"=== NIX ENVIRONMENT DEBUG ===\"\necho \"\"\necho \"1. Which nix:\"\
-        \nwhich nix || echo \"nix not found in PATH\"\necho \"\"\necho \"2. Nix version:\"\
-        \nnix --version || echo \"failed\"\necho \"\"\necho \"3. Current PATH:\"\n\
-        echo \"$PATH\" | tr ':' '\\n'\necho \"\"\necho \"4. LD_LIBRARY_PATH (before\
-        \ nix-shell):\"\necho \"$LD_LIBRARY_PATH\"\necho \"\"\necho \"5. NIX_PROFILES:\"\
-        \necho \"$NIX_PROFILES\"\necho \"\"\necho \"6. Package store paths:\"\necho\
-        \ \"  mold: $(nix-build '<nixpkgs>' -A mold --no-out-link 2>/dev/null || echo\
-        \ 'FAILED')\"\n\necho \"  egl-wayland: $(nix-build '<nixpkgs>' -A egl-wayland\
-        \ --no-out-link 2>/dev/null || echo 'FAILED')\"\n\necho \"  wayland: $(nix-build\
-        \ '<nixpkgs>' -A wayland --no-out-link 2>/dev/null || echo 'FAILED')\"\n\n\
-        echo \"  libGL: $(nix-build '<nixpkgs>' -A libGL --no-out-link 2>/dev/null\
-        \ || echo 'FAILED')\"\n\necho \"  libgbm: $(nix-build '<nixpkgs>' -A libgbm\
-        \ --no-out-link 2>/dev/null || echo 'FAILED')\"\n\necho \"  fd: $(nix-build\
-        \ '<nixpkgs>' -A fd --no-out-link 2>/dev/null || echo 'FAILED')\"\n\necho\
-        \ \"  pkg-config: $(nix-build '<nixpkgs>' -A pkg-config --no-out-link 2>/dev/null\
-        \ || echo 'FAILED')\"\n\necho \"  pkg-config: $(nix-build '<nixpkgs>' -A pkg-config\
-        \ --no-out-link 2>/dev/null || echo 'FAILED')\"\n\necho \"  openssl.out: $(nix-build\
-        \ '<nixpkgs>' -A openssl.out --no-out-link 2>/dev/null || echo 'FAILED')\"\
-        \n\necho \"  openssl.dev: $(nix-build '<nixpkgs>' -A openssl.dev --no-out-link\
-        \ 2>/dev/null || echo 'FAILED')\"\n\necho \"\"\necho \"7. libssl.so locations\
-        \ in nix store:\"\nfind /nix/store -name 'libssl.so*' 2>/dev/null | head -20\
-        \ || echo \"none found\"\necho \"\"\necho \"8. libgbm.so locations in nix\
-        \ store:\"\nfind /nix/store -name 'libgbm.so*' 2>/dev/null | head -20 || echo\
-        \ \"none found\"\necho \"\"\necho \"9. Contents of openssl lib dir:\"\nls\
-        \ -la \"$(nix-build '<nixpkgs>' -A openssl --no-out-link)/lib/\" 2>/dev/null\
-        \ || echo \"failed\"\necho \"\"\necho \"10. Contents of openssl.dev lib dir:\"\
-        \nls -la \"$(nix-build '<nixpkgs>' -A openssl.dev --no-out-link)/lib/\" 2>/dev/null\
-        \ || echo \"failed\"\necho \"\"\necho \"11. ldd on a test binary (if exists):\"\
-        \nif [ -f target/debug/todo ]; then\n  ldd target/debug/todo 2>&1 || echo\
-        \ \"ldd failed\"\nelse\n  echo \"binary not built yet\"\nfi\necho \"\"\necho\
-        \ \"12. System LD_LIBRARY_PATH search dirs:\"\ncat /etc/ld.so.conf 2>/dev/null\
-        \ || echo \"no ld.so.conf\"\nldconfig -p 2>/dev/null | grep -E \"libssl|libgbm\"\
-        \ | head -10 || echo \"ldconfig failed or no matches\"\necho \"\"\necho \"\
-        13. Test nix-shell environment:\"\nnix-shell -p mold egl-wayland wayland libGL\
-        \ libgbm fd pkg-config pkg-config openssl.out openssl.dev --run 'echo \"Inside\
-        \ nix-shell LD_LIBRARY_PATH: $LD_LIBRARY_PATH\"'\necho \"\"\necho \"14. Test\
-        \ nix-shell with manual LD_LIBRARY_PATH:\"\nnix-shell -p mold egl-wayland\
-        \ wayland libGL libgbm fd pkg-config pkg-config openssl.out openssl.dev --command\
-        \ 'export LD_LIBRARY_PATH=\"$(nix-build \"<nixpkgs>\" -A openssl --no-out-link)/lib${LD_LIBRARY_PATH:+:}$LD_LIBRARY_PATH\"\
-        \ && echo \"Manual LD_LIBRARY_PATH: $LD_LIBRARY_PATH\"'\necho \"\"\necho \"\
-        15. Check if openssl lib has libssl.so.3:\"\nOPENSSL_PATH=$(nix-build '<nixpkgs>'\
-        \ -A openssl --no-out-link 2>/dev/null)\nif [ -n \"$OPENSSL_PATH\" ]; then\n\
-        \  ls -la \"$OPENSSL_PATH/lib/\" | grep ssl || echo \"no ssl libs in openssl\"\
-        \nfi\necho \"\"\necho \"16. Check openssl.out (runtime output):\"\nnix-build\
-        \ '<nixpkgs>' -A openssl.out --no-out-link 2>/dev/null && ls -la \"$(nix-build\
-        \ '<nixpkgs>' -A openssl.out --no-out-link)/lib/\" | grep ssl || echo \"openssl.out\
-        \ failed\"\necho \"\"\necho \"17. Env vars in nix-shell:\"\nnix-shell -p openssl\
-        \ --run 'env | grep -E \"^(LD_|NIX_|PATH=)\" | sort'\necho \"\"\necho \"18.\
-        \ Test subprocess inheritance:\"\nnix-shell -p mold egl-wayland wayland libGL\
-        \ libgbm fd pkg-config pkg-config openssl.out openssl.dev --command 'export\
-        \ LD_LIBRARY_PATH=\"$(nix-build \"<nixpkgs>\" -A openssl --no-out-link)/lib:$LD_LIBRARY_PATH\"\
-        \ && bash -c \"echo subprocess sees: \\$LD_LIBRARY_PATH\"'\necho \"\"\necho\
-        \ \"19. All openssl-related packages:\"\nnix-env -qaP 'openssl.*' 2>/dev/null\
-        \ | head -20 || echo \"query failed\"\necho \"\"\necho \"20. System libssl:\"\
-        \nldconfig -p 2>/dev/null | grep libssl || echo \"no system libssl\"\necho\
-        \ \"\"\necho \"=== END DEBUG ===\"\n"
-    - uses: cachix/install-nix-action@v31
-    - name: Assert derives are sorted
-      run: "nix-shell -p mold egl-wayland wayland libGL libgbm fd pkg-config pkg-config\
-        \ openssl.out openssl.dev git --command \"export LD_LIBRARY_PATH=\\\"\\$(nix-build\
-        \ '<nixpkgs>' -A mold --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\
-        \" && export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A egl-wayland\
-        \ --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && export\
-        \ LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A wayland --no-out-link)/lib\\\
-        ${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && export LD_LIBRARY_PATH=\\\"\
-        \\$(nix-build '<nixpkgs>' -A libGL --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\\
-        $LD_LIBRARY_PATH\\\" && export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>'\
-        \ -A libgbm --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\"\
-        \ && export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A fd --no-out-link)/lib\\\
-        ${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && export LD_LIBRARY_PATH=\\\"\
-        \\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\\
-        $LD_LIBRARY_PATH\\\" && export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>'\
-        \ -A pkg-config --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\
-        \" && export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A openssl.out\
-        \ --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && export\
-        \ LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A openssl.dev --no-out-link)/lib\\\
-        ${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && \t\t\t\t# \\`sort-derives\\\
-        ` is argv[1] here: the binary is a cargo subcommand, and \\`nix run\\` invokes\n\
-        \t\t\t\t# it directly rather than through \\`cargo\\`, so nothing else supplies\
-        \ that word.\n\t\t\t\tnix run github:valeratrades/v_flakes#cargo-sort-derives\
-        \ -- sort-derives --check\n\t\t\t\texit_code=\\$?\n\t\t\t\tif [ \\$exit_code\
-        \ != 0 ]; then\n\t\t\t\t\techo \\\"Derives are not sorted. Run \\\\\\`cargo\
-        \ sort-derives\\\\\\` to fix it.\\\"\n\t\t\t\t\texit \\$exit_code\n\t\t\t\t\
-        fi\n\t\t\t\""
+          echo "  openssl.dev: $(nix-build '<nixpkgs>' -A openssl.dev --no-out-link 2>/dev/null || echo 'FAILED')"
+
+          echo ""
+          echo "7. libssl.so locations in nix store:"
+          find /nix/store -name 'libssl.so*' 2>/dev/null | head -20 || echo "none found"
+          echo ""
+          echo "8. libgbm.so locations in nix store:"
+          find /nix/store -name 'libgbm.so*' 2>/dev/null | head -20 || echo "none found"
+          echo ""
+          echo "9. Contents of openssl lib dir:"
+          ls -la "$(nix-build '<nixpkgs>' -A openssl --no-out-link)/lib/" 2>/dev/null || echo "failed"
+          echo ""
+          echo "10. Contents of openssl.dev lib dir:"
+          ls -la "$(nix-build '<nixpkgs>' -A openssl.dev --no-out-link)/lib/" 2>/dev/null || echo "failed"
+          echo ""
+          echo "11. ldd on a test binary (if exists):"
+          if [ -f target/debug/todo ]; then
+            ldd target/debug/todo 2>&1 || echo "ldd failed"
+          else
+            echo "binary not built yet"
+          fi
+          echo ""
+          echo "12. System LD_LIBRARY_PATH search dirs:"
+          cat /etc/ld.so.conf 2>/dev/null || echo "no ld.so.conf"
+          ldconfig -p 2>/dev/null | grep -E "libssl|libgbm" | head -10 || echo "ldconfig failed or no matches"
+          echo ""
+          echo "13. Test nix-shell environment:"
+          nix-shell -p mold egl-wayland wayland libGL libgbm fd pkg-config pkg-config openssl.out openssl.dev --run 'echo "Inside nix-shell LD_LIBRARY_PATH: $LD_LIBRARY_PATH"'
+          echo ""
+          echo "14. Test nix-shell with manual LD_LIBRARY_PATH:"
+          nix-shell -p mold egl-wayland wayland libGL libgbm fd pkg-config pkg-config openssl.out openssl.dev --command 'export LD_LIBRARY_PATH="$(nix-build "<nixpkgs>" -A openssl --no-out-link)/lib${LD_LIBRARY_PATH:+:}$LD_LIBRARY_PATH" && echo "Manual LD_LIBRARY_PATH: $LD_LIBRARY_PATH"'
+          echo ""
+          echo "15. Check if openssl lib has libssl.so.3:"
+          OPENSSL_PATH=$(nix-build '<nixpkgs>' -A openssl --no-out-link 2>/dev/null)
+          if [ -n "$OPENSSL_PATH" ]; then
+            ls -la "$OPENSSL_PATH/lib/" | grep ssl || echo "no ssl libs in openssl"
+          fi
+          echo ""
+          echo "16. Check openssl.out (runtime output):"
+          nix-build '<nixpkgs>' -A openssl.out --no-out-link 2>/dev/null && ls -la "$(nix-build '<nixpkgs>' -A openssl.out --no-out-link)/lib/" | grep ssl || echo "openssl.out failed"
+          echo ""
+          echo "17. Env vars in nix-shell:"
+          nix-shell -p openssl --run 'env | grep -E "^(LD_|NIX_|PATH=)" | sort'
+          echo ""
+          echo "18. Test subprocess inheritance:"
+          nix-shell -p mold egl-wayland wayland libGL libgbm fd pkg-config pkg-config openssl.out openssl.dev --command 'export LD_LIBRARY_PATH="$(nix-build "<nixpkgs>" -A openssl --no-out-link)/lib:$LD_LIBRARY_PATH" && bash -c "echo subprocess sees: \$LD_LIBRARY_PATH"'
+          echo ""
+          echo "19. All openssl-related packages:"
+          nix-env -qaP 'openssl.*' 2>/dev/null | head -20 || echo "query failed"
+          echo ""
+          echo "20. System libssl:"
+          ldconfig -p 2>/dev/null | grep libssl || echo "no system libssl"
+          echo ""
+          echo "=== END DEBUG ==="
+      - uses: cachix/install-nix-action@v31
+      - name: Assert derives are sorted
+        run: |-
+          nix-shell -p mold egl-wayland wayland libGL libgbm fd pkg-config pkg-config openssl.out openssl.dev git --command "export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A mold --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A egl-wayland --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A wayland --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A libGL --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A libgbm --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A fd --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.out --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.dev --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && # \`sort-derives\` is argv[1] here: the binary is a cargo subcommand, and \`nix run\` invokes
+          # it directly rather than through \`cargo\`, so nothing else supplies that word.
+          nix run github:valeratrades/v_flakes#cargo-sort-derives -- sort-derives --check
+          exit_code=\$?
+          if [ \$exit_code != 0 ]; then
+            echo 'Derives are not sorted. Run \`cargo sort-derives\` to fix it.'
+            exit \$exit_code
+          fi
+          "
   tokei:
     name: Reasonable Amount of Comments
     needs: load_nix
     runs-on: ubuntu-latest
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v5
-    - name: Lean cache setup
-      run: 'mkdir -p /tmp/nix-lean-cache
+      - name: Checkout repository
+        uses: actions/checkout@v5
+      - name: Lean cache setup
+        run: |
+          mkdir -p /tmp/nix-lean-cache
+          chmod 0777 /tmp/nix-lean-cache
+          printf '#!/bin/sh\nexport PATH=/nix/var/nix/profiles/default/bin:$PATH\nnix copy --to "file:///tmp/nix-lean-cache?compression=zstd&parallel-compression=true" $OUT_PATHS || true\n' > /tmp/nix-lean-pbh.sh
+          chmod 0755 /tmp/nix-lean-pbh.sh
+        shell: bash
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+        with:
+          extra-conf: |
+            lazy-trees = true
+            post-build-hook = /tmp/nix-lean-pbh.sh
+            extra-substituters = file:///tmp/nix-lean-cache
+            extra-trusted-substituters = file:///tmp/nix-lean-cache
+            require-sigs = false
+      - name: Lean nix cache (built-only paths)
+        uses: actions/cache@v5
+        with:
+          key: nix-lean-${{ runner.os }}-${{ github.run_id }}
+          path: /tmp/nix-lean-cache
+          restore-keys: nix-lean-${{ runner.os }}-
+      - name: Debug nix environment
+        run: |
+          echo "=== NIX ENVIRONMENT DEBUG ==="
+          echo ""
+          echo "1. Which nix:"
+          which nix || echo "nix not found in PATH"
+          echo ""
+          echo "2. Nix version:"
+          nix --version || echo "failed"
+          echo ""
+          echo "3. Current PATH:"
+          echo "$PATH" | tr ':' '\n'
+          echo ""
+          echo "4. LD_LIBRARY_PATH (before nix-shell):"
+          echo "$LD_LIBRARY_PATH"
+          echo ""
+          echo "5. NIX_PROFILES:"
+          echo "$NIX_PROFILES"
+          echo ""
+          echo "6. Package store paths:"
+          echo "  mold: $(nix-build '<nixpkgs>' -A mold --no-out-link 2>/dev/null || echo 'FAILED')"
 
-        chmod 0777 /tmp/nix-lean-cache
+          echo "  egl-wayland: $(nix-build '<nixpkgs>' -A egl-wayland --no-out-link 2>/dev/null || echo 'FAILED')"
 
-        printf ''#!/bin/sh\nexport PATH=/nix/var/nix/profiles/default/bin:$PATH\nnix
-        copy --to "file:///tmp/nix-lean-cache?compression=zstd&parallel-compression=true"
-        $OUT_PATHS || true\n'' > /tmp/nix-lean-pbh.sh
+          echo "  wayland: $(nix-build '<nixpkgs>' -A wayland --no-out-link 2>/dev/null || echo 'FAILED')"
 
-        chmod 0755 /tmp/nix-lean-pbh.sh
+          echo "  libGL: $(nix-build '<nixpkgs>' -A libGL --no-out-link 2>/dev/null || echo 'FAILED')"
 
-        '
-      shell: bash
-    - name: Install Nix
-      uses: DeterminateSystems/nix-installer-action@main
-      with:
-        extra-conf: 'lazy-trees = true
+          echo "  libgbm: $(nix-build '<nixpkgs>' -A libgbm --no-out-link 2>/dev/null || echo 'FAILED')"
 
-          post-build-hook = /tmp/nix-lean-pbh.sh
+          echo "  fd: $(nix-build '<nixpkgs>' -A fd --no-out-link 2>/dev/null || echo 'FAILED')"
 
-          extra-substituters = file:///tmp/nix-lean-cache
+          echo "  pkg-config: $(nix-build '<nixpkgs>' -A pkg-config --no-out-link 2>/dev/null || echo 'FAILED')"
 
-          extra-trusted-substituters = file:///tmp/nix-lean-cache
+          echo "  pkg-config: $(nix-build '<nixpkgs>' -A pkg-config --no-out-link 2>/dev/null || echo 'FAILED')"
 
-          require-sigs = false
+          echo "  openssl.out: $(nix-build '<nixpkgs>' -A openssl.out --no-out-link 2>/dev/null || echo 'FAILED')"
 
-          '
-    - name: Lean nix cache (built-only paths)
-      uses: actions/cache@v5
-      with:
-        key: nix-lean-${{ runner.os }}-${{ github.run_id }}
-        path: /tmp/nix-lean-cache
-        restore-keys: nix-lean-${{ runner.os }}-
-    - name: Debug nix environment
-      run: "echo \"=== NIX ENVIRONMENT DEBUG ===\"\necho \"\"\necho \"1. Which nix:\"\
-        \nwhich nix || echo \"nix not found in PATH\"\necho \"\"\necho \"2. Nix version:\"\
-        \nnix --version || echo \"failed\"\necho \"\"\necho \"3. Current PATH:\"\n\
-        echo \"$PATH\" | tr ':' '\\n'\necho \"\"\necho \"4. LD_LIBRARY_PATH (before\
-        \ nix-shell):\"\necho \"$LD_LIBRARY_PATH\"\necho \"\"\necho \"5. NIX_PROFILES:\"\
-        \necho \"$NIX_PROFILES\"\necho \"\"\necho \"6. Package store paths:\"\necho\
-        \ \"  mold: $(nix-build '<nixpkgs>' -A mold --no-out-link 2>/dev/null || echo\
-        \ 'FAILED')\"\n\necho \"  egl-wayland: $(nix-build '<nixpkgs>' -A egl-wayland\
-        \ --no-out-link 2>/dev/null || echo 'FAILED')\"\n\necho \"  wayland: $(nix-build\
-        \ '<nixpkgs>' -A wayland --no-out-link 2>/dev/null || echo 'FAILED')\"\n\n\
-        echo \"  libGL: $(nix-build '<nixpkgs>' -A libGL --no-out-link 2>/dev/null\
-        \ || echo 'FAILED')\"\n\necho \"  libgbm: $(nix-build '<nixpkgs>' -A libgbm\
-        \ --no-out-link 2>/dev/null || echo 'FAILED')\"\n\necho \"  fd: $(nix-build\
-        \ '<nixpkgs>' -A fd --no-out-link 2>/dev/null || echo 'FAILED')\"\n\necho\
-        \ \"  pkg-config: $(nix-build '<nixpkgs>' -A pkg-config --no-out-link 2>/dev/null\
-        \ || echo 'FAILED')\"\n\necho \"  pkg-config: $(nix-build '<nixpkgs>' -A pkg-config\
-        \ --no-out-link 2>/dev/null || echo 'FAILED')\"\n\necho \"  openssl.out: $(nix-build\
-        \ '<nixpkgs>' -A openssl.out --no-out-link 2>/dev/null || echo 'FAILED')\"\
-        \n\necho \"  openssl.dev: $(nix-build '<nixpkgs>' -A openssl.dev --no-out-link\
-        \ 2>/dev/null || echo 'FAILED')\"\n\necho \"\"\necho \"7. libssl.so locations\
-        \ in nix store:\"\nfind /nix/store -name 'libssl.so*' 2>/dev/null | head -20\
-        \ || echo \"none found\"\necho \"\"\necho \"8. libgbm.so locations in nix\
-        \ store:\"\nfind /nix/store -name 'libgbm.so*' 2>/dev/null | head -20 || echo\
-        \ \"none found\"\necho \"\"\necho \"9. Contents of openssl lib dir:\"\nls\
-        \ -la \"$(nix-build '<nixpkgs>' -A openssl --no-out-link)/lib/\" 2>/dev/null\
-        \ || echo \"failed\"\necho \"\"\necho \"10. Contents of openssl.dev lib dir:\"\
-        \nls -la \"$(nix-build '<nixpkgs>' -A openssl.dev --no-out-link)/lib/\" 2>/dev/null\
-        \ || echo \"failed\"\necho \"\"\necho \"11. ldd on a test binary (if exists):\"\
-        \nif [ -f target/debug/todo ]; then\n  ldd target/debug/todo 2>&1 || echo\
-        \ \"ldd failed\"\nelse\n  echo \"binary not built yet\"\nfi\necho \"\"\necho\
-        \ \"12. System LD_LIBRARY_PATH search dirs:\"\ncat /etc/ld.so.conf 2>/dev/null\
-        \ || echo \"no ld.so.conf\"\nldconfig -p 2>/dev/null | grep -E \"libssl|libgbm\"\
-        \ | head -10 || echo \"ldconfig failed or no matches\"\necho \"\"\necho \"\
-        13. Test nix-shell environment:\"\nnix-shell -p mold egl-wayland wayland libGL\
-        \ libgbm fd pkg-config pkg-config openssl.out openssl.dev --run 'echo \"Inside\
-        \ nix-shell LD_LIBRARY_PATH: $LD_LIBRARY_PATH\"'\necho \"\"\necho \"14. Test\
-        \ nix-shell with manual LD_LIBRARY_PATH:\"\nnix-shell -p mold egl-wayland\
-        \ wayland libGL libgbm fd pkg-config pkg-config openssl.out openssl.dev --command\
-        \ 'export LD_LIBRARY_PATH=\"$(nix-build \"<nixpkgs>\" -A openssl --no-out-link)/lib${LD_LIBRARY_PATH:+:}$LD_LIBRARY_PATH\"\
-        \ && echo \"Manual LD_LIBRARY_PATH: $LD_LIBRARY_PATH\"'\necho \"\"\necho \"\
-        15. Check if openssl lib has libssl.so.3:\"\nOPENSSL_PATH=$(nix-build '<nixpkgs>'\
-        \ -A openssl --no-out-link 2>/dev/null)\nif [ -n \"$OPENSSL_PATH\" ]; then\n\
-        \  ls -la \"$OPENSSL_PATH/lib/\" | grep ssl || echo \"no ssl libs in openssl\"\
-        \nfi\necho \"\"\necho \"16. Check openssl.out (runtime output):\"\nnix-build\
-        \ '<nixpkgs>' -A openssl.out --no-out-link 2>/dev/null && ls -la \"$(nix-build\
-        \ '<nixpkgs>' -A openssl.out --no-out-link)/lib/\" | grep ssl || echo \"openssl.out\
-        \ failed\"\necho \"\"\necho \"17. Env vars in nix-shell:\"\nnix-shell -p openssl\
-        \ --run 'env | grep -E \"^(LD_|NIX_|PATH=)\" | sort'\necho \"\"\necho \"18.\
-        \ Test subprocess inheritance:\"\nnix-shell -p mold egl-wayland wayland libGL\
-        \ libgbm fd pkg-config pkg-config openssl.out openssl.dev --command 'export\
-        \ LD_LIBRARY_PATH=\"$(nix-build \"<nixpkgs>\" -A openssl --no-out-link)/lib:$LD_LIBRARY_PATH\"\
-        \ && bash -c \"echo subprocess sees: \\$LD_LIBRARY_PATH\"'\necho \"\"\necho\
-        \ \"19. All openssl-related packages:\"\nnix-env -qaP 'openssl.*' 2>/dev/null\
-        \ | head -20 || echo \"query failed\"\necho \"\"\necho \"20. System libssl:\"\
-        \nldconfig -p 2>/dev/null | grep libssl || echo \"no system libssl\"\necho\
-        \ \"\"\necho \"=== END DEBUG ===\"\n"
-    - name: Installation
-      uses: taiki-e/install-action@v2
-      with:
-        tool: tokei
-    - name: Generate Tokei output
-      run: nix-shell -p mold egl-wayland wayland libGL libgbm fd pkg-config pkg-config
-        openssl.out openssl.dev git --command "export LD_LIBRARY_PATH=\"\$(nix-build
-        '<nixpkgs>' -A mold --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A egl-wayland --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A wayland --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A libGL --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A libgbm --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A fd --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.out --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.dev --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && tokei -o json > tokei_output.json"
-    - name: Install jq
-      run: nix-shell -p mold egl-wayland wayland libGL libgbm fd pkg-config pkg-config
-        openssl.out openssl.dev git --command "export LD_LIBRARY_PATH=\"\$(nix-build
-        '<nixpkgs>' -A mold --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A egl-wayland --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A wayland --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A libGL --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A libgbm --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A fd --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.out --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.dev --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\"
-        && sudo apt-get install -y jq"
-    - name: Check Rust comments
-      run: "nix-shell -p mold egl-wayland wayland libGL libgbm fd pkg-config pkg-config\
-        \ openssl.out openssl.dev git --command \"export LD_LIBRARY_PATH=\\\"\\$(nix-build\
-        \ '<nixpkgs>' -A mold --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\
-        \" && export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A egl-wayland\
-        \ --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && export\
-        \ LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A wayland --no-out-link)/lib\\\
-        ${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && export LD_LIBRARY_PATH=\\\"\
-        \\$(nix-build '<nixpkgs>' -A libGL --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\\
-        $LD_LIBRARY_PATH\\\" && export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>'\
-        \ -A libgbm --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\"\
-        \ && export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A fd --no-out-link)/lib\\\
-        ${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && export LD_LIBRARY_PATH=\\\"\
-        \\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\\
-        $LD_LIBRARY_PATH\\\" && export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>'\
-        \ -A pkg-config --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\
-        \" && export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A openssl.out\
-        \ --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && export\
-        \ LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A openssl.dev --no-out-link)/lib\\\
-        ${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && \t\t\t\tcomments=\\$(jq '.Rust.comments'\
-        \ tokei_output.json)\n\t\t\t\tcode=\\$(jq '.Rust.code' tokei_output.json)\n\
-        \n\t\t\t\t# compare: comments > code * 0.15\n\t\t\t\tif [ \\$((comments *\
-        \ 100)) -ge \\$((code * 15)) ]; then\n\t\t\t\t\t\techo \\\"Number of comments\
-        \ should be less than 15% of code\\\"\n\t\t\t\t\t\texit 1\n\t\t\t\telse\n\t\
-        \t\t\t\t\techo \\\"Check passed: Number of comments is less than 15% of code\\\
-        \"\n\t\t\t\tfi\n        \t\t\t\""
+          echo "  openssl.dev: $(nix-build '<nixpkgs>' -A openssl.dev --no-out-link 2>/dev/null || echo 'FAILED')"
+
+          echo ""
+          echo "7. libssl.so locations in nix store:"
+          find /nix/store -name 'libssl.so*' 2>/dev/null | head -20 || echo "none found"
+          echo ""
+          echo "8. libgbm.so locations in nix store:"
+          find /nix/store -name 'libgbm.so*' 2>/dev/null | head -20 || echo "none found"
+          echo ""
+          echo "9. Contents of openssl lib dir:"
+          ls -la "$(nix-build '<nixpkgs>' -A openssl --no-out-link)/lib/" 2>/dev/null || echo "failed"
+          echo ""
+          echo "10. Contents of openssl.dev lib dir:"
+          ls -la "$(nix-build '<nixpkgs>' -A openssl.dev --no-out-link)/lib/" 2>/dev/null || echo "failed"
+          echo ""
+          echo "11. ldd on a test binary (if exists):"
+          if [ -f target/debug/todo ]; then
+            ldd target/debug/todo 2>&1 || echo "ldd failed"
+          else
+            echo "binary not built yet"
+          fi
+          echo ""
+          echo "12. System LD_LIBRARY_PATH search dirs:"
+          cat /etc/ld.so.conf 2>/dev/null || echo "no ld.so.conf"
+          ldconfig -p 2>/dev/null | grep -E "libssl|libgbm" | head -10 || echo "ldconfig failed or no matches"
+          echo ""
+          echo "13. Test nix-shell environment:"
+          nix-shell -p mold egl-wayland wayland libGL libgbm fd pkg-config pkg-config openssl.out openssl.dev --run 'echo "Inside nix-shell LD_LIBRARY_PATH: $LD_LIBRARY_PATH"'
+          echo ""
+          echo "14. Test nix-shell with manual LD_LIBRARY_PATH:"
+          nix-shell -p mold egl-wayland wayland libGL libgbm fd pkg-config pkg-config openssl.out openssl.dev --command 'export LD_LIBRARY_PATH="$(nix-build "<nixpkgs>" -A openssl --no-out-link)/lib${LD_LIBRARY_PATH:+:}$LD_LIBRARY_PATH" && echo "Manual LD_LIBRARY_PATH: $LD_LIBRARY_PATH"'
+          echo ""
+          echo "15. Check if openssl lib has libssl.so.3:"
+          OPENSSL_PATH=$(nix-build '<nixpkgs>' -A openssl --no-out-link 2>/dev/null)
+          if [ -n "$OPENSSL_PATH" ]; then
+            ls -la "$OPENSSL_PATH/lib/" | grep ssl || echo "no ssl libs in openssl"
+          fi
+          echo ""
+          echo "16. Check openssl.out (runtime output):"
+          nix-build '<nixpkgs>' -A openssl.out --no-out-link 2>/dev/null && ls -la "$(nix-build '<nixpkgs>' -A openssl.out --no-out-link)/lib/" | grep ssl || echo "openssl.out failed"
+          echo ""
+          echo "17. Env vars in nix-shell:"
+          nix-shell -p openssl --run 'env | grep -E "^(LD_|NIX_|PATH=)" | sort'
+          echo ""
+          echo "18. Test subprocess inheritance:"
+          nix-shell -p mold egl-wayland wayland libGL libgbm fd pkg-config pkg-config openssl.out openssl.dev --command 'export LD_LIBRARY_PATH="$(nix-build "<nixpkgs>" -A openssl --no-out-link)/lib:$LD_LIBRARY_PATH" && bash -c "echo subprocess sees: \$LD_LIBRARY_PATH"'
+          echo ""
+          echo "19. All openssl-related packages:"
+          nix-env -qaP 'openssl.*' 2>/dev/null | head -20 || echo "query failed"
+          echo ""
+          echo "20. System libssl:"
+          ldconfig -p 2>/dev/null | grep libssl || echo "no system libssl"
+          echo ""
+          echo "=== END DEBUG ==="
+      - name: Installation
+        uses: taiki-e/install-action@v2
+        with:
+          tool: tokei
+      - name: Generate Tokei output
+        run: nix-shell -p mold egl-wayland wayland libGL libgbm fd pkg-config pkg-config openssl.out openssl.dev git --command "export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A mold --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A egl-wayland --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A wayland --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A libGL --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A libgbm --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A fd --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.out --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.dev --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && tokei -o json > tokei_output.json"
+      - name: Install jq
+        run: nix-shell -p mold egl-wayland wayland libGL libgbm fd pkg-config pkg-config openssl.out openssl.dev git --command "export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A mold --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A egl-wayland --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A wayland --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A libGL --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A libgbm --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A fd --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.out --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && export LD_LIBRARY_PATH=\"\$(nix-build '<nixpkgs>' -A openssl.dev --no-out-link)/lib\${LD_LIBRARY_PATH:+:}\$LD_LIBRARY_PATH\" && sudo apt-get install -y jq"
+      - name: Check Rust comments
+        run: "nix-shell -p mold egl-wayland wayland libGL libgbm fd pkg-config pkg-config openssl.out openssl.dev git --command \"export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A mold --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A egl-wayland --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A wayland --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A libGL --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A libgbm --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A fd --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A pkg-config --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A openssl.out --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && export LD_LIBRARY_PATH=\\\"\\$(nix-build '<nixpkgs>' -A openssl.dev --no-out-link)/lib\\${LD_LIBRARY_PATH:+:}\\$LD_LIBRARY_PATH\\\" && \t\t\t\tcomments=\\$(jq '.Rust.comments' tokei_output.json)\n\t\t\t\tcode=\\$(jq '.Rust.code' tokei_output.json)\n\n\t\t\t\t# compare: comments > code * 0.15\n\t\t\t\tif [ \\$((comments * 100)) -ge \\$((code * 15)) ]; then\n\t\t\t\t\t\techo \\\"Number of comments should be less than 15% of code\\\"\n\t\t\t\t\t\texit 1\n\t\t\t\telse\n\t\t\t\t\t\techo \\\"Check passed: Number of comments is less than 15% of code\\\"\n\t\t\t\tfi\n        \t\t\t\""
 name: Warnings
-'on':
-  pull_request: {}
+on:
   push: {}
   workflow_dispatch: {}
 permissions:
