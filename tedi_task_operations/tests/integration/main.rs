@@ -8,6 +8,7 @@ mod closed_subtree;
 mod file_naming;
 mod issue_preservation;
 mod reset_conflict;
+mod search;
 mod sprints;
 mod sync;
 mod touch;

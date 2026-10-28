@@ -8,6 +8,7 @@ members = [
     "tedi_md",
     "tedi_task_operations",
     "tedi_task_primitives",
+    "tedi_utils",
 ]
 
 [workspace.package]
@@ -24,6 +25,7 @@ tedi_eval = { path = "tedi_eval", version = "0.17.4" }
 tedi_md = { path = "tedi_md", version = "0.17.4" }
 tedi_task_operations = { path = "tedi_task_operations", version = "0.17.4" }
 tedi_task_primitives = { path = "tedi_task_primitives", version = "0.17.4" }
+tedi_utils = { path = "tedi_utils", version = "0.17.4" }
 
 arrayvec = "0.7"
 ask_llm = { version = "^3.0.1" }
@@ -72,6 +74,8 @@ libc = "0.2"
 rstest = "0.26"
 v_fixtures = { version = "^0.3.4" }
 walkdir = "2"
+nucleo-matcher = "0.3"
+skim = { version = "~5.9", default-features = false }
 
 #[patch.crates-io]
 #v_utils = { path = "../v_utils/v_utils" }

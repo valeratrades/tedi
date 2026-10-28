@@ -984,7 +984,7 @@ async fn test_select_prev_next_walk_history() {
 		&["https://github.com/o/r/issues/10"],
 	);
 
-	let out = ctx.run(&["--offline", "sprints", "select", "12"]);
+	let out = ctx.run(&["--offline", "sprints", "select", "-e", "12"]);
 	assert!(out.stdout.contains("Selected: o/r#12"), "stdout: {} stderr: {}", out.stdout, out.stderr);
 
 	let out = ctx.run(&["--offline", "sprints", "select", "--prev"]);
@@ -1000,13 +1000,13 @@ async fn test_select_prev_next_walk_history() {
 
 	// a fresh selection after going back drops the forward history
 	ctx.run(&["--offline", "sprints", "select", "--prev"]);
-	let out = ctx.run(&["--offline", "sprints", "select", "13"]);
+	let out = ctx.run(&["--offline", "sprints", "select", "-e", "13"]);
 	assert!(out.stdout.contains("Selected: o/r#13"), "stdout: {} stderr: {}", out.stdout, out.stderr);
 	let out = ctx.run(&["--offline", "sprints", "select", "--next"]);
 	assert!(!out.status.success(), "forward history should be dropped, stdout: {}", out.stdout);
 
 	// back history is #10, #13 → #11 now; closing #13 makes --prev skip it
-	let out = ctx.run(&["--offline", "sprints", "select", "11"]);
+	let out = ctx.run(&["--offline", "sprints", "select", "-e", "11"]);
 	assert!(out.stdout.contains("Selected: o/r#11"), "stdout: {} stderr: {}", out.stdout, out.stderr);
 	let issue_13 = ctx.xdg.data_dir().join("issues/o/r/13_-_Issue_13.md");
 	let content = std::fs::read_to_string(&issue_13).unwrap();

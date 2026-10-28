@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 
 use color_eyre::eyre::Report;
+use tedi_utils::search::{self, Candidate, SearchKind};
 use v_utils::{macros::wrap_err, utils::exit_on_error};
 
 use super::{command::ProjectType, sync::SyncMode};
@@ -35,8 +36,8 @@ pub enum TouchError {
 /// Parse a path for --touch mode.
 ///
 /// The input is first matched as a regex over the full logical paths of all existing
-/// issues (`owner/repo/.../issue`; dir issues by dir path, flat files sans extension).
-/// A unique match opens that issue; multiple matches go through fzf.
+/// issues (`owner/repo/.../issue`; dir issues by dir path, flat files sans extension) — the
+/// same shape a creation path takes. A unique match opens that issue; several open the picker.
 ///
 /// With no match, the input is split by `/` literally as `owner/repo/…/title` and the
 /// issue is created — under the local project if it exists, else on GitHub if the repo
@@ -44,8 +45,8 @@ pub enum TouchError {
 pub async fn parse_touch_path(user_input: &str, parent: Option<ProjectType>, mode: SyncMode) -> Result<LocalIssueSource<FsReader>, TouchError> {
 	let pattern = strip_md_extension(user_input);
 
-	// logical path → file relpath
-	let candidates: Vec<(String, PathBuf)> = Local::issue_file_relpaths()?
+	let base = Local::issues_dir();
+	let (rels, candidates): (Vec<PathBuf>, Vec<Candidate>) = Local::issue_file_relpaths()?
 		.into_iter()
 		.filter_map(|rel| {
 			if rel.components().count() < 3 {
@@ -58,14 +59,25 @@ pub async fn parse_touch_path(user_input: &str, parent: Option<ProjectType>, mod
 				let base = name.strip_suffix(".md.bak").or_else(|| name.strip_suffix(".md")).unwrap_or(name);
 				rel.with_file_name(base).to_string_lossy().to_string()
 			};
-			Some((logical, rel))
+			Some((rel, logical))
 		})
-		.collect();
-
-	let names: Vec<String> = candidates.iter().map(|(logical, _)| logical.clone()).collect();
-	if let Some(matched) = Local::resolve_pattern(&names, pattern)? {
-		let (_, rel) = candidates.iter().find(|(logical, _)| *logical == matched).expect("resolve_pattern returns one of its inputs");
-		return Ok(crate::conflict_resolve::build_resolving_from_path(&Local::issues_dir().join(rel)).await?);
+		.map(|(rel, logical)| {
+			let body = std::fs::read_to_string(base.join(&rel))?;
+			Ok((
+				rel,
+				Candidate {
+					title: logical,
+					context: Vec::new(),
+					body,
+				},
+			))
+		})
+		.collect::<std::io::Result<Vec<_>>>()
+		.map_err(Report::from)?
+		.into_iter()
+		.unzip();
+	if let Some(i) = search::pick(candidates, SearchKind::Regex, Some(pattern)).await.map_err(Report::from)? {
+		return Ok(crate::conflict_resolve::build_resolving_from_path(&base.join(&rels[i])).await?);
 	}
 
 	// No existing issue matches — creation: interpret segments literally as owner/repo/…/title.

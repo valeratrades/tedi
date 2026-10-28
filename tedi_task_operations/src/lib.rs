@@ -15,5 +15,6 @@ pub use tedi_task_primitives::*;
 pub mod clockify_tracking;
 pub mod conflict_resolve;
 pub mod open_interactions;
+pub mod search;
 pub mod selection;
 pub mod sprints;
