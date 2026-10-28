@@ -6,7 +6,6 @@ authors.workspace = true
 description = "Leaf utilities for tedi, independent of its domain model"
 license.workspace = true
 repository.workspace = true
-include = ["src/**/*"]
 
 [dependencies]
 nucleo-matcher = { workspace = true }
