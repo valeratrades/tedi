@@ -108,8 +108,9 @@ struct TermHit {
 	indices: Vec<u32>,
 }
 impl TermHit {
-	fn key(&self) -> (Field, Quality, u16) {
-		(self.field, self.quality, self.score)
+	/// A scatter is a typo rather than a hit, so it loses to any contiguous hit before fields compare.
+	fn key(&self) -> (bool, Field, Quality, u16) {
+		(self.quality != Quality::Fuzzy, self.field, self.quality, self.score)
 	}
 }
 
@@ -145,7 +146,7 @@ impl Query {
 			Self::Terms(groups) => groups,
 		};
 		let mut fields = [0u32; 3];
-		let (mut quality, mut nucleo) = (0u32, 0u32);
+		let (mut contiguous, mut quality, mut nucleo) = (0u32, 0u32, 0u32);
 		let mut line_indices = Vec::new();
 		for group in terms {
 			let mut satisfied = false;
@@ -172,6 +173,7 @@ impl Query {
 				return None;
 			}
 			let Some(hit) = best else { continue };
+			contiguous += u32::from(hit.quality != Quality::Fuzzy);
 			fields[hit.field as usize] += 1;
 			quality += hit.quality as u32;
 			nucleo += u32::from(hit.score);
@@ -185,7 +187,7 @@ impl Query {
 		line_indices.dedup();
 		let [body, context, title] = fields;
 		Some(Hit {
-			score: pack(title, context, body, quality, nucleo),
+			score: pack(contiguous, title, context, body, quality, nucleo),
 			line_indices,
 		})
 	}
@@ -214,18 +216,28 @@ impl Query {
 	}
 }
 
-/// Item score: per-field hit counts (title first), then summed quality, then summed nucleo score.
-/// shortcut: components saturate (15 terms per field, 63 quality, 4095 nucleo), far past any typed query.
-fn pack(title: u32, context: u32, body: u32, quality: u32, nucleo: u32) -> i32 {
+/// Item score: contiguous hit count, per-field hit counts (title first), summed quality, summed nucleo score.
+/// shortcut: components saturate (15 terms per count, 31 quality, 1023 nucleo), far past any typed query.
+fn pack(contiguous: u32, title: u32, context: u32, body: u32, quality: u32, nucleo: u32) -> i32 {
 	let sat = |v: u32, bits: u32| v.min((1 << bits) - 1);
-	let packed = sat(title, 4) << 26 | sat(context, 4) << 22 | sat(body, 4) << 18 | sat(quality, 6) << 12 | sat(nucleo, 12);
-	i32::try_from(packed).expect("30 bits fit")
+	let packed = sat(contiguous, 4) << 27 | sat(title, 4) << 23 | sat(context, 4) << 19 | sat(body, 4) << 15 | sat(quality, 5) << 10 | sat(nucleo, 10);
+	i32::try_from(packed).expect("31 bits fit")
 }
 
 impl Term {
-	/// Best hit across fields; field dominates, so the first field that hits wins.
+	/// Best hit across fields by [`TermHit::key`]: the first contiguous one in field order, else the first scatter.
 	fn hit(&self, c: &Prepared, m: &mut Matcher) -> Option<TermHit> {
-		[Field::Title, Field::Context, Field::Body].into_iter().find_map(|f| self.hit_in(c, f, m))
+		let mut scatter = None;
+		for field in [Field::Title, Field::Context, Field::Body] {
+			match self.hit_in(c, field, m) {
+				Some(hit) if hit.quality != Quality::Fuzzy => return Some(hit),
+				Some(hit) => {
+					scatter.get_or_insert(hit);
+				}
+				None => {}
+			}
+		}
+		scatter
 	}
 
 	fn hit_in(&self, c: &Prepared, field: Field, m: &mut Matcher) -> Option<TermHit> {
@@ -407,6 +419,12 @@ mod tests {
 	fn own_title_beats_context_beats_body() {
 		let items = [("child", "o/r > fix crash", ""), ("unrelated", "", "we fix it"), ("fix crash", "o/r", "")];
 		assert_eq!(check(Fuzzy, "fix", &items), ["fix crash", "child", "unrelated"]);
+	}
+
+	#[test]
+	fn scatter_loses_to_any_contiguous_hit() {
+		let items = [("pay off student mortgage and loans", "", ""), ("child", "postman route", ""), ("permit", "", "the postman")];
+		assert_eq!(check(Fuzzy, "postman", &items), ["child", "permit", "pay off student mortgage and loans"]);
 	}
 
 	#[test]

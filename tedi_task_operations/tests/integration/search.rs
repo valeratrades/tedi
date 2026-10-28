@@ -52,6 +52,13 @@ async fn test_whole_word_outranks_word_prefix() {
 	assert_eq!(search(&ctx, &["'fix'"]), Some(vec![2]));
 }
 
+/// A scatter is a typo, not a hit: it loses to any contiguous one, whatever field that sits in.
+#[tokio::test]
+async fn test_contiguous_body_hit_outranks_fuzzy_title_scatter() {
+	let ctx = with_issues(&[&issue(1, "pay off student mortgage and loans", "x"), &issue(2, "residence permit", "the postman lost it")]).await;
+	assert_eq!(search(&ctx, &["postman"]), Some(vec![2, 1]));
+}
+
 #[tokio::test]
 async fn test_exclusion_scopes() {
 	let ctx = with_issues(&[&issue(1, "crash on start", "x"), &issue(2, "logging", "mentions a crash"), &issue(3, "other", "x")]).await;

@@ -113,7 +113,7 @@ Every issue search — `open`, `sprints select`, `sprints search`, `open --touch
 - **Fuzzy** (default) / **Exact** (`-e`; `'x` flips a term back to fuzzy) share one grammar: whitespace-separated terms AND (`\ ` escapes a space), a lone `|` ORs its neighbours; `'x` substring, `'x'` whole word, `^x` prefix, `x$` suffix, `^x$` equality, anchored to the field tested. `!x` excludes on the own title, `!!x` on any field. Smartcase per term.
 - **Regex** (`-ee`) / **RegexLine** (`-eee`, anchored): one regex over the displayed row; the body is not consulted. An invalid regex on the CLI is an error.
 
-Ranking: each term takes its best hit by (field: title > context > body, then quality: whole word > word prefix > substring > fuzzy, then matcher score); word boundaries are string edges and non-alphanumerics. An item's score is the sum over its terms, so more terms in the title wins; ties keep input order. The body is never fuzzy-matched — a fuzzy term tests it as a substring. Selection maps back by index, never by display string.
+Ranking: each term takes its best hit by (contiguous over fuzzy — a scatter is a typo, not a hit; then field: title > context > body; then quality: whole word > word prefix > substring; then matcher score); word boundaries are string edges and non-alphanumerics. An item's score is the sum over its terms, so more terms in the title wins; ties keep input order. The body is never fuzzy-matched — a fuzzy term tests it as a substring. Selection maps back by index, never by display string.
 
 ## Sources
 
