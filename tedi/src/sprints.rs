@@ -7,8 +7,10 @@ use tedi_task_operations::{
 	IssueLink, MilestoneLink, TaskView,
 	clockify_tracking::{HaltArgs, ResumeArgs},
 	open_interactions::SyncMode,
+	search::SearchArgs,
 	sprints::{expand_and_refresh, materialize_new_tasks, sync_embedded_issue_changes, sync_milestone_changes},
 };
+use tedi_utils::search::SearchKind;
 use v_utils::{Timeframe, TimeframeDesignator};
 
 use crate::config::LiveSettings;
@@ -26,9 +28,11 @@ pub enum SprintsCommands {
 	/// Can get outdated easily, so printed output of the command is prepended with the filename
 	Healthcheck,
 	/// Change the active sprint's selected issue (circular with --up/--down, tree descent
-	/// with --in/--out, history with --prev/--next, else fzf/pattern over the whole reachable tree)
+	/// with --in/--out, history with --prev/--next, else search over the whole reachable tree)
 	Select {
 		pattern: Option<String>,
+		#[command(flatten)]
+		search: SearchArgs,
 		/// Forward in the selection history
 		#[arg(long, short)]
 		next: bool,
@@ -42,7 +46,7 @@ pub enum SprintsCommands {
 		/// Go to issue below currently selected in the main Sprint
 		down: bool,
 		/// Descend into the selected milestone (its top workable issue) or issue (its top open child)
-		#[arg(long = "in", short)]
+		#[arg(long = "in", short = 'i')]
 		enter: bool,
 		/// Ascend one level in the selection path
 		#[arg(long, short)]
@@ -56,9 +60,11 @@ pub enum SprintsCommands {
 		#[command(subcommand)]
 		op: SelectedOp,
 	},
-	/// Build a task view of local issues matching a label or text
+	/// Build a task view of the open local issues matching a query, best first
 	Search {
 		query: String,
+		#[command(flatten)]
+		search: SearchArgs,
 	},
 }
 #[derive(clap::Subcommand)]
@@ -153,6 +159,7 @@ pub async fn sprints_command(settings: &LiveSettings, args: SprintsArgs, mock: O
 		SprintsCommands::Healthcheck => healthcheck(settings).await,
 		SprintsCommands::Select {
 			pattern,
+			search,
 			next,
 			prev,
 			up,
@@ -175,7 +182,7 @@ pub async fn sprints_command(settings: &LiveSettings, args: SprintsArgs, mock: O
 				focus_sprint(settings, tf, yes()).await
 			} else {
 				ensure_selection_cache(settings, mode).await?;
-				ops::select(pattern, next, prev, up, down, enter, out, top, yes()).await
+				ops::select(pattern, SearchKind::try_from(search)?, next, prev, up, down, enter, out, top, yes()).await
 			}
 		}
 		SprintsCommands::Selected { op } => {
@@ -191,7 +198,7 @@ pub async fn sprints_command(settings: &LiveSettings, args: SprintsArgs, mock: O
 				SelectedOp::Halt(halt_args) => ops::selected_halt(halt_args).await,
 			}
 		}
-		SprintsCommands::Search { query } => ops::search(&query).await,
+		SprintsCommands::Search { query, search } => ops::search(&query, SearchKind::try_from(search)?).await,
 	}
 }
 

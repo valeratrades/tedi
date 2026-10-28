@@ -289,42 +289,6 @@ impl Local {
 		Ok(IssueIndex::with_index(repo_info, selectors))
 	}
 
-	/// Spawn fzf with a given list of items and a pre-filled query, return the selected item.
-	/// Uses `--select-1` so a single-entry list resolves without interaction.
-	pub fn fzf_select(items: &[String], query: &str) -> Result<String> {
-		use std::{
-			io::Write,
-			process::{Command, Stdio},
-		};
-
-		let mut cmd = Command::new("fzf");
-		cmd.arg("--query")
-			.arg(query)
-			.arg("--select-1")
-			.arg("--preview")
-			.arg("cat {}")
-			.arg("--preview-window")
-			.arg("right:50%:wrap")
-			.current_dir(Self::issues_dir())
-			.stdin(Stdio::piped())
-			.stdout(Stdio::piped());
-
-		let mut child = cmd.spawn()?;
-		if let Some(stdin) = child.stdin.as_mut() {
-			for item in items {
-				writeln!(stdin, "{item}")?;
-			}
-		}
-		let output = child.wait_with_output()?;
-		if output.status.success() {
-			let selected = String::from_utf8_lossy(&output.stdout).trim().to_string();
-			if !selected.is_empty() {
-				return Ok(selected);
-			}
-		}
-		bail!("No item selected")
-	}
-
 	/// All issue files under the issues dir, as paths relative to it.
 	pub fn issue_file_relpaths() -> Result<Vec<PathBuf>> {
 		fn walk(dir: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<()> {
@@ -354,110 +318,77 @@ impl Local {
 		Ok(files.into_iter().map(|p| p.strip_prefix(&base).expect("walk stays under base").to_path_buf()).collect())
 	}
 
-	/// Resolve a user pattern against candidate strings.
-	///
-	/// The pattern is a regex over the full candidate string, smartcase (case-insensitive
-	/// unless the pattern contains an uppercase character). Invalid regex is never an error:
-	/// the pattern is handed to fzf as a fuzzy query instead.
-	/// 0 matches → `Ok(None)`; 1 → that candidate; N → fzf over the matched subset.
-	pub fn resolve_pattern(candidates: &[String], pattern: &str) -> Result<Option<String>> {
-		let smartcase = if pattern.chars().any(char::is_uppercase) {
-			pattern.to_string()
-		} else {
-			format!("(?i){pattern}")
-		};
-		let Ok(re) = Regex::new(&smartcase) else {
-			return Self::fzf_select(candidates, pattern).map(Some);
-		};
-		let mut matched: Vec<String> = candidates.iter().filter(|c| re.is_match(c)).cloned().collect();
-		match matched.len() {
-			0 => Ok(None),
-			1 => Ok(Some(matched.remove(0))),
-			// regex syntax isn't fzf syntax, so no query prefill
-			_ => Self::fzf_select(&matched, "").map(Some),
+	/// Every issue file under a project, with its search candidate, most recently modified first.
+	pub fn issue_candidates() -> Result<Vec<(PathBuf, Candidate)>> {
+		struct Entry {
+			path: PathBuf,
+			/// The directory for a `__main__` file, else the file itself.
+			issue_path: PathBuf,
+			project_dir: PathBuf,
+			project: String,
+			modified: std::time::SystemTime,
+			number: Option<u64>,
+			title: String,
+			body: String,
 		}
-	}
-
-	/// Interactive issue file selection using fzf.
-	/// Collects all issue files and presents them in fzf for selection.
-	pub fn fzf_issue(initial_query: &str, exact: ExactMatchLevel) -> Result<PathBuf> {
-		use std::{
-			io::Write,
-			process::{Command, Stdio},
-		};
-
-		let issues_base = Self::issues_dir();
-		let mut files = Self::issue_file_relpaths()?;
-		if files.is_empty() {
-			bail!("No issue files found. Use a Github URL to fetch an issue first.");
-		}
-
-		// Sort by modification time (most recent first) when using exact matching modes,
-		// to match GitHub's default sort order. In fuzzy mode, preserve filesystem order.
-		if !matches!(exact, ExactMatchLevel::Fuzzy) {
-			files.sort_by(|a, b| {
-				let a_time = std::fs::metadata(issues_base.join(a)).and_then(|m| m.modified()).ok();
-				let b_time = std::fs::metadata(issues_base.join(b)).and_then(|m| m.modified()).ok();
-				b_time.cmp(&a_time)
+		let base = Self::issues_dir();
+		let mut entries = Vec::new();
+		for rel in Self::issue_file_relpaths()? {
+			if rel.components().count() == 1 {
+				continue; // sprint files like `urgent.md` sit beside the projects
+			}
+			let path = base.join(&rel);
+			let index = Self::extract_index_from_path(&path)?;
+			let body = std::fs::read_to_string(&path)?;
+			let title = tedi_core::VirtualIssue::parse(&body, path.clone())?.contents.title;
+			let is_main = path.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with(Self::MAIN_ISSUE_FILENAME));
+			entries.push(Entry {
+				issue_path: if is_main {
+					path.parent().expect("__main__ sits in its issue dir").to_path_buf()
+				} else {
+					path.clone()
+				},
+				project_dir: Self::project_dir(index.repo_info()),
+				project: index.repo_info().to_string(),
+				modified: std::fs::metadata(&path)?.modified()?,
+				number: index.issue_number(),
+				title,
+				body,
+				path,
 			});
 		}
-
-		let file_list: Vec<String> = files.iter().map(|p| p.to_string_lossy().to_string()).collect();
-
-		match exact {
-			ExactMatchLevel::RegexSubstring | ExactMatchLevel::RegexLine if !initial_query.is_empty() => {
-				let pattern = match exact {
-					ExactMatchLevel::RegexLine => {
-						let has_start = initial_query.starts_with('^');
-						let has_end = initial_query.ends_with('$');
-						match (has_start, has_end) {
-							(true, true) => initial_query.to_string(),
-							(true, false) => format!("{initial_query}$"),
-							(false, true) => format!("^{initial_query}"),
-							(false, false) => format!("^{initial_query}$"),
-						}
-					}
-					_ => initial_query.to_string(),
+		let dir_titles: HashMap<&Path, &str> = entries.iter().map(|e| (e.issue_path.as_path(), e.title.as_str())).collect();
+		let mut candidates = entries
+			.iter()
+			.map(|e| {
+				let mut context = Vec::new();
+				for dir in e.issue_path.ancestors().skip(1).take_while(|d| *d != e.project_dir) {
+					context.push(
+						dir_titles
+							.get(dir)
+							.ok_or_else(|| eyre!("issue dir {} has no {}.md", dir.display(), Self::MAIN_ISSUE_FILENAME))?
+							.to_string(),
+					);
+				}
+				context.push(e.project.clone());
+				context.reverse();
+				let title = match e.number {
+					Some(n) => format!("#{n} {}", e.title),
+					None => e.title.clone(),
 				};
-				match Self::resolve_pattern(&file_list, &pattern)? {
-					Some(selected) => Ok(issues_base.join(selected)),
-					None => bail!("No issue matching '{initial_query}'"),
-				}
-			}
-			ExactMatchLevel::ExactTerms => {
-				// Need --exact flag: spawn fzf directly
-				let mut cmd = Command::new("fzf");
-				cmd.arg("--query")
-					.arg(initial_query)
-					.arg("--exact")
-					.arg("--select-1")
-					.arg("--preview")
-					.arg("cat {}")
-					.arg("--preview-window")
-					.arg("right:50%:wrap")
-					.current_dir(&issues_base)
-					.stdin(Stdio::piped())
-					.stdout(Stdio::piped());
-				let mut child = cmd.spawn()?;
-				if let Some(stdin) = child.stdin.as_mut() {
-					for file in &file_list {
-						writeln!(stdin, "{file}")?;
-					}
-				}
-				let output = child.wait_with_output()?;
-				if output.status.success() {
-					let selected = String::from_utf8_lossy(&output.stdout).trim().to_string();
-					if !selected.is_empty() {
-						return Ok(issues_base.join(selected));
-					}
-				}
-				bail!("No issue selected")
-			}
-			_ => {
-				let selected = Self::fzf_select(&file_list, initial_query)?;
-				Ok(issues_base.join(selected))
-			}
-		}
+				Ok((
+					e.modified,
+					e.path.clone(),
+					Candidate {
+						title,
+						context,
+						body: e.body.clone(),
+					},
+				))
+			})
+			.collect::<Result<Vec<_>>>()?;
+		candidates.sort_by_key(|(modified, ..)| std::cmp::Reverse(*modified));
+		Ok(candidates.into_iter().map(|(_, path, c)| (path, c)).collect())
 	}
 
 	/// Ensure the virtual project exists (creates its `.meta.json` if needed).
@@ -1108,8 +1039,8 @@ use color_eyre::eyre::{Report, Result, bail, eyre};
 pub use consensus::Consensus;
 pub use fs_sink::{LocalFs, LocalFsSinkError};
 pub use milestone::{MilestoneMeta, MilestoneProjectMeta};
-use regex::Regex;
 use serde::{Deserialize, Serialize};
+use tedi_utils::search::Candidate;
 use tracing::{instrument, warn};
 use v_utils::macros::wrap_err;
 
@@ -1133,16 +1064,6 @@ pub struct ProjectMeta {
 	pub next_virtual_issue_number: u64,
 	#[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
 	pub issues: BTreeMap<u64, IssueMeta>,
-}
-
-/// Exact match level for fzf queries.
-#[derive(Clone, Copy, Debug, Default)]
-pub enum ExactMatchLevel {
-	#[default]
-	Fuzzy,
-	ExactTerms,
-	RegexSubstring,
-	RegexLine,
 }
 
 /// Type for local filesystem operations.
@@ -1257,20 +1178,6 @@ pub enum LocalError {
 //==============================================================================
 // Types
 //==============================================================================
-
-impl TryFrom<u8> for ExactMatchLevel {
-	type Error = &'static str;
-
-	fn try_from(count: u8) -> Result<Self, Self::Error> {
-		match count {
-			0 => Ok(Self::Fuzzy),
-			1 => Ok(Self::ExactTerms),
-			2 => Ok(Self::RegexSubstring),
-			3 => Ok(Self::RegexLine),
-			_ => Err("--exact / -e can be specified at most 3 times"),
-		}
-	}
-}
 
 //==============================================================================
 // LazyIssue Implementation for LocalIssueSource<R: LocalReader>

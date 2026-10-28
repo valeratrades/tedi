@@ -385,7 +385,7 @@ async fn test_select_unique_pattern_selects_directly() {
 		],
 	);
 
-	// "2" uniquely matches Beta's local path — succeeds without fzf.
+	// "2" uniquely matches Beta's `#2` — succeeds without the picker.
 	let out = ctx.run(&["--offline", "sprints", "select", "2"]);
 	assert!(out.status.success(), "unique match should succeed. stderr: {}", out.stderr);
 

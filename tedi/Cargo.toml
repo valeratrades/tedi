@@ -36,6 +36,7 @@ tedi_core.workspace = true
 tedi_eval.workspace = true
 tedi_task_operations.workspace = true
 tedi_task_primitives.workspace = true
+tedi_utils.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
 tokio.workspace = true

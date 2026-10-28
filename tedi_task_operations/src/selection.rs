@@ -18,6 +18,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use tedi_core::{IssueLink, IssueSelector, MilestoneLink, NodeLink, TaskView, VirtualIssue};
+use tedi_utils::search::{self, Candidate, SearchKind};
 
 use crate::local::{FsReader, Local};
 
@@ -143,7 +144,7 @@ impl Selected {
 		if siblings.len() == 1 {
 			return Err("Only one item at this level. Nothing to move to.".into());
 		}
-		// a pattern/fzf jump can park the terminal outside the cycle scope; then the first
+		// a pattern jump can park the terminal outside the cycle scope; then the first
 		// step must land on the scope's first node rather than skip past it
 		let start = match siblings.iter().position(|n| *n == terminal) {
 			Some(i) => i as isize,
@@ -214,10 +215,9 @@ impl Selected {
 		Ok(landing)
 	}
 
-	/// Select the tree node whose display matches `pattern` (smartcase regex over the
-	/// full display string). With no unique match (or no pattern) opens fzf on the whole
-	/// reachable tree. Duplicates resolve to the first occurrence in document order.
-	pub fn select_pattern(pattern: Option<&str>) -> Result<Landing, String> {
+	/// Select the tree node `pattern` resolves to (search over the whole reachable tree); a
+	/// non-unique match, or no pattern, opens the picker.
+	pub async fn select_pattern(pattern: Option<&str>, kind: SearchKind) -> Result<Landing, String> {
 		let mut sel = Self::load();
 		let active = sel.active().ok_or("No active sprint. Run `todo sprints edit 1d` first.")?;
 		guard_urgent(&active)?;
@@ -225,15 +225,19 @@ impl Selected {
 		if candidates.is_empty() {
 			return Err("No items in the active sprint.".into());
 		}
-		let displays = sel.candidate_displays(&candidates);
-		let selected = match pattern {
-			None => Local::fzf_select(&displays, "").map_err(|e| format!("fzf failed: {e}"))?,
-			Some(p) => Local::resolve_pattern(&displays, p)
-				.map_err(|e| format!("fzf failed: {e}"))?
-				.ok_or_else(|| format!("No item matching '{p}' in the sprint."))?,
-		};
-		// fzf maps back by string equality
-		let idx = displays.iter().position(|d| *d == selected).ok_or_else(|| format!("fzf returned unknown entry: {selected}"))?;
+		let mut titles: HashMap<&NodeLink, String> = HashMap::new();
+		let mut searchable = Vec::with_capacity(candidates.len());
+		for path in &candidates {
+			let node = path.last().expect("candidate paths are non-empty");
+			let (title, body) = node_title_and_body(node)?;
+			titles.insert(node, title.clone());
+			let context = path[..path.len() - 1].iter().map(|n| titles[n].clone()).collect(); // every prefix is an earlier candidate
+			searchable.push(Candidate { title, context, body });
+		}
+		let idx = search::pick(searchable, kind, pattern)
+			.await
+			.map_err(|e| e.to_string())?
+			.ok_or_else(|| format!("No item matching '{}' in the sprint.", pattern.unwrap_or_default()))?;
 		let path = candidates[idx].clone();
 		let landing = sel.describe(path.last().expect("candidate paths are non-empty"))?;
 		sel.navigate(&active.key, &path);
@@ -484,34 +488,6 @@ impl Selected {
 		walk(self, &mut Vec::new(), &active.view.nodes(), &mut out);
 		out
 	}
-
-	/// Display strings for candidate paths. Two candidates sharing a display string get
-	/// their full path as context — mandatory, since fzf maps back by string equality.
-	fn candidate_displays(&self, candidates: &[Vec<NodeLink>]) -> Vec<String> {
-		let base: Vec<String> = candidates.iter().map(|p| self.display(p.last().expect("candidate paths are non-empty"))).collect();
-		let mut counts: HashMap<&String, usize> = HashMap::new();
-		for d in &base {
-			*counts.entry(d).or_default() += 1;
-		}
-		candidates
-			.iter()
-			.zip(&base)
-			.map(|(path, d)| {
-				if counts[d] > 1 {
-					path.iter().map(|n| self.display(n)).collect::<Vec<_>>().join(" > ")
-				} else {
-					d.clone()
-				}
-			})
-			.collect()
-	}
-
-	fn display(&self, node: &NodeLink) -> String {
-		match node {
-			NodeLink::Issue(link) => display_for_link(link),
-			NodeLink::Milestone(ml) => display_for_milestone(ml),
-		}
-	}
 }
 
 /// The active sprint: its key and resolved view.
@@ -642,18 +618,25 @@ fn is_workable(vi: &VirtualIssue) -> bool {
 	!vi.contents.state.is_closed() && vi.contents.blockers.deepest_issue_ref().is_none()
 }
 
-/// Display string for a link: local relative path if resolvable, else `owner/repo#number`.
-/// The path doubles as fzf's `cat {}` preview target, so it must stay relative to `issues_dir`.
-fn display_for_link(link: &IssueLink) -> String {
-	resolve(link)
-		.and_then(|p| p.strip_prefix(Local::issues_dir()).ok().map(|rel| rel.to_string_lossy().to_string()))
-		.unwrap_or_else(|| format!("{}#{}", link.project(), link.number()))
-}
-
-/// Display string for a milestone: its local relative file path (so fzf's `cat {}` previews it),
-/// falling back to the title when the file is not stored locally.
-fn display_for_milestone(ml: &MilestoneLink) -> String {
-	Local::find_milestone_path(ml.repo_info(), ml.number(), &FsReader)
-		.and_then(|p| p.strip_prefix(Local::issues_dir()).ok().map(|rel| rel.to_string_lossy().to_string()))
-		.unwrap_or_else(|| milestone_title(ml))
+/// A node's search title (`#N title`, or `owner/repo#N` when not stored locally; a milestone's
+/// title) and its local file content (empty when not stored).
+fn node_title_and_body(node: &NodeLink) -> Result<(String, String), String> {
+	let read = |path: &Path| std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()));
+	match node {
+		NodeLink::Issue(link) => match resolve(link) {
+			None => Ok((format!("{}#{}", link.project(), link.number()), String::new())),
+			Some(path) => {
+				let body = read(&path)?;
+				let title = VirtualIssue::parse(&body, path).map_err(|e| e.to_string())?.contents.title;
+				Ok((format!("#{} {title}", link.number()), body))
+			}
+		},
+		NodeLink::Milestone(ml) => {
+			let body = match Local::find_milestone_path(ml.repo_info(), ml.number(), &FsReader) {
+				Some(path) => read(&path)?,
+				None => String::new(),
+			};
+			Ok((milestone_title(ml), body))
+		}
+	}
 }

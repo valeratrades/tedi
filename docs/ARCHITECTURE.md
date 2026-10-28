@@ -83,7 +83,7 @@ An unlinked `- [ ] task` becomes an issue on save. Listing existing issues direc
 Normal sprints store their `TaskView` in the GitHub milestone `description` (keyed by timeframe). On rollover (the first online edit past its due date) the period is archived as a closed `YYYY/MM/DD_{tf}` milestone, and issues that archive recorded as closed leave the sprint. **Urgent** is the special lowest-precision sprint: stored locally (`issues/urgent.md`, no GitHub sync), section-less, and free to hold plain-text items alongside issue refs; milestone refs are rejected on edit. It prunes on every processing rather than on rollover: closed links are dropped (the file is deleted if nothing else remains) — deferred while an edit session holds the urgent lock. Plain-text items are never cleanup fodder.
 
 ##### Selection
-`Selected` holds one selected issue per sprint (`sprints_selection.json`); the *active* selection is that of the lowest existing sprint (urgent while it has an open issue, else `1d`, …). `sprints select` moves it: `--up`/`--down` step among the selection's siblings — circular, skipping issues whose current blocker delegates to another issue (a blocker ref) — and at the root walk only the day's working set (`# Must` plus the section under it); `--in`/`--out` descend into / ascend out of the tree; pattern/fzf reaches the whole view. `--prev`/`--next` walk back and forth through the sprint's selection history (every explicit selection change is recorded; entries no longer open in the view are skipped). When the selection closes or leaves the view it auto-advances to the top open item; when no open issues remain the selection is cleared and the next sprint up becomes active. An issue not stored locally is unknown, not closed: selecting, resolving or validating onto one errors, naming what to fetch (movement alone skips it with a notice, to stay usable offline).
+`Selected` holds one selected issue per sprint (`sprints_selection.json`); the *active* selection is that of the lowest existing sprint (urgent while it has an open issue, else `1d`, …). `sprints select` moves it: `--up`/`--down` step among the selection's siblings — circular, skipping issues whose current blocker delegates to another issue (a blocker ref) — and at the root walk only the day's working set (`# Must` plus the section under it); `--in`/`--out` descend into / ascend out of the tree; a [search](#search) pattern (or the picker) reaches the whole view. `--prev`/`--next` walk back and forth through the sprint's selection history (every explicit selection change is recorded; entries no longer open in the view are skipped). When the selection closes or leaves the view it auto-advances to the top open item; when no open issues remain the selection is cleared and the next sprint up becomes active. An issue not stored locally is unknown, not closed: selecting, resolving or validating onto one errors, naming what to fetch (movement alone skips it with a notice, to stay usable offline).
 Header sections tedi assigns meaning to are the `ManagedSection` variants — currently just `# Must`, the day's musts, whose completion `sprints selected list` reports above its blockers.
 The selected issue is where day-to-day blocker work lands: `sprints selected add/pop/set/list/open` route through the issue coordinator (`modify_and_sync_issue` + `Modifier::Blocker*`) — blockers keep zero runtime, the issue owns save/sync. `sprints selected resume/halt` drive a per-issue Clockify timer (keyed by the selected `repo#number`, description = title + current blocker); a selection change restarts it on the new issue.
 
@@ -96,8 +96,8 @@ If a milestone technically covers a wider area of tasks, that could be added und
 ## Crates
 ```
 tedi_md → tedi_core → tedi_task_primitives → tedi_task_operations → tedi
-              ↑                 ↑                                     ↑
-        tedi_adapters ──────────┘                                 tedi_eval
+              ↑                 ↑    ↑                                ↑
+        tedi_adapters ──────────┘    └──── tedi_utils             tedi_eval
 ```
 - `tedi_md` — markdown primitives: owned pulldown_cmark `Events` ⇄ `String`.
 - `tedi_core` — the pure model: the primitives above (Issue/Blockers/Milestone), their locators/markers, and parse/serialize over `Events`. No IO, no async, no transport. A primitive cannot reach fs/network/app-state — the crate boundary enforces it.
@@ -105,7 +105,15 @@ tedi_md → tedi_core → tedi_task_primitives → tedi_task_operations → tedi
 - `tedi_task_primitives` — what a stored issue *is*: local/remote sources+sinks, storage layout, path resolution, the `LazyIssue` loading protocol, the GitHub mock.
 - `tedi_task_operations` — what we *do* with issues: sync/merge/touch/conflict, sprint flows + per-sprint selection, per-issue Clockify.
 - `tedi_eval` — performance evaluation and manual-stats tracking.
+- `tedi_utils` — leaf utilities on plain data, no tedi deps. `search`: the one engine every issue search goes through ([below](#search)), and its skim picker.
 - `tedi` — interface only: clap enums/dispatch, config, shell init. Parses args, resolves config, calls ops. Owns `config` (v_utils `LiveSettings` binds app identity to the crate that derives it).
+
+## Search
+Every issue search — `open`, `sprints select`, `sprints search`, `open --touch` — goes through `tedi_utils::search`. A candidate is a title, its context (containing scopes, shown before it) and a body; the `-e` count picks the kind.
+- **Fuzzy** (default) / **Exact** (`-e`; `'x` flips a term back to fuzzy) share one grammar: whitespace-separated terms AND (`\ ` escapes a space), a lone `|` ORs its neighbours; `'x` substring, `'x'` whole word, `^x` prefix, `x$` suffix, `^x$` equality, anchored to the field tested. `!x` excludes on the own title, `!!x` on any field. Smartcase per term.
+- **Regex** (`-ee`) / **RegexLine** (`-eee`, anchored): one regex over the displayed row; the body is not consulted. An invalid regex on the CLI is an error.
+
+Ranking: each term takes its best hit by (field: title > context > body, then quality: whole word > word prefix > substring > fuzzy, then matcher score); word boundaries are string edges and non-alphanumerics. An item's score is the sum over its terms, so more terms in the title wins; ties keep input order. The body is never fuzzy-matched — a fuzzy term tests it as a substring. Selection maps back by index, never by display string.
 
 ## Sources
 

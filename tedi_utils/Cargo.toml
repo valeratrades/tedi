@@ -1,0 +1,18 @@
+[package]
+name = "tedi_utils"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Leaf utilities for tedi, independent of its domain model"
+license.workspace = true
+repository.workspace = true
+include = ["src/**/*"]
+
+[dependencies]
+nucleo-matcher = { workspace = true }
+regex.workspace = true
+skim = { workspace = true }
+thiserror.workspace = true
+
+[lints]
+workspace = true

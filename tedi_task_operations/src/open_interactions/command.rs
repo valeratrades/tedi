@@ -4,6 +4,7 @@ use std::path::Path;
 
 use clap::Args;
 use color_eyre::eyre::{Result, bail, eyre};
+use tedi_utils::search::{self, SearchKind};
 
 use super::{
 	sync::{MergeMode, Modifier, Side, SyncMode, SyncOptions, modify_and_sync_issue},
@@ -11,8 +12,9 @@ use super::{
 };
 use crate::{
 	Issue, IssueIndex, IssueLink, LazyIssue, MockType, RepoInfo, github,
-	local::{Consensus, ExactMatchLevel, FsReader, Local, LocalFs},
+	local::{Consensus, FsReader, Local, LocalFs},
 	remote::RemoteSource,
+	search::SearchArgs,
 	sink::Sink,
 };
 
@@ -27,15 +29,11 @@ use crate::{
 pub struct OpenArgs {
 	/// Github issue URL (e.g., https://github.com/owner/repo/issues/123) OR a search pattern for local issue files
 	/// With --touch: path format is workspace/project/{issue.md, issue/sub-issue.md}
-	/// If omitted, opens fzf on all local issue files.
+	/// If omitted, or matching several, opens the picker over all local issue files.
 	pub url_or_pattern: Option<String>,
 
-	/// Use exact matching in fzf. Can be specified multiple times:
-	/// -e: exact terms (space-separated; exact matches, but no regex)
-	/// -ee: regex pattern (substring match)
-	/// -eee: regex pattern (full line match, auto-anchored)
-	#[arg(short = 'e', long, action = clap::ArgAction::Count)]
-	pub exact: u8,
+	#[command(flatten)]
+	pub search: SearchArgs,
 
 	/// Create or open an issue from a path. Path format: workspace/project/issue[.md]
 	/// For sub-issues: workspace/project/parent/child (parent must exist on Github)
@@ -100,8 +98,7 @@ pub async fn open_command(args: OpenArgs, mode: SyncMode, mock: Option<MockType>
 		}
 	};
 
-	// Validate and convert exact match level
-	let exact = ExactMatchLevel::try_from(args.exact).map_err(|e| eyre!(e))?;
+	let kind = SearchKind::try_from(args.search)?;
 
 	// Build merge mode from args with the given side preference
 	let build_merge_mode = |prefer: Side| -> Option<MergeMode> {
@@ -234,8 +231,14 @@ pub async fn open_command(args: OpenArgs, mode: SyncMode, mock: Option<MockType>
 			// Direct file path - open it
 			input_path.to_path_buf()
 		} else {
-			// Local search mode: use fzf for interactive selection
-			Local::fzf_issue(input, exact)?
+			let (paths, candidates): (Vec<_>, Vec<_>) = Local::issue_candidates()?.into_iter().unzip();
+			if candidates.is_empty() {
+				bail!("No issue files found. Use a Github URL to fetch an issue first.");
+			}
+			match search::pick(candidates, kind, (!input.is_empty()).then_some(input)).await? {
+				Some(i) => paths[i].clone(),
+				None => bail!("No issue matching '{input}'"),
+			}
 		};
 
 		let source = crate::conflict_resolve::build_resolving_from_path(&issue_file_path).await?;

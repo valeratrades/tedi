@@ -11,6 +11,7 @@ use std::{
 };
 
 use color_eyre::eyre::{Result, bail, eyre};
+use tedi_utils::search::{Candidate, SearchKind};
 
 use crate::{
 	CloseState, HollowIssue, Issue, IssueIdentity, IssueIndex, IssueLink, LazyIssue, Milestone, MilestoneLink, NodeLink, RepoInfo, TaskView, VirtualIssue,
@@ -313,34 +314,22 @@ fn overlay_states(issue: &mut Issue, states: &HashMap<IssueIndex, CloseState>) {
 		overlay_states(child, states);
 	}
 }
-/// `sprints search <label-or-text>` — build a task view of local issues whose files
-/// match `query` (case-insensitive `rg` over labels/title/body/blockers).
-pub async fn search(query: &str) -> Result<()> {
-	let issues_dir = Local::issues_dir();
-	let output = std::process::Command::new("rg").args(["-l", "-i", "--", query]).current_dir(&issues_dir).output()?;
-
-	let stdout = String::from_utf8_lossy(&output.stdout);
+/// `sprints search <query>` — a task view of the open local issues matching `query`, best first.
+pub async fn search(query: &str, kind: SearchKind) -> Result<()> {
+	let (paths, candidates): (Vec<PathBuf>, Vec<Candidate>) = Local::issue_candidates()?.into_iter().filter(|(path, _)| !path.extension().is_some_and(|e| e == "bak")).unzip();
 	let mut links: Vec<IssueLink> = Vec::new();
-	for rel in stdout.lines().filter(|l| !l.is_empty()) {
-		let path = issues_dir.join(rel);
-		let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-		if name.ends_with(".bak") {
-			continue;
-		}
+	for i in tedi_utils::search::rank(&candidates, kind, query)? {
+		let path = &paths[i];
 		// Directory issues match on `__main__.md`; take the issue number from the parent dir.
-		let index_path = if name.starts_with(tedi_core::MAIN_ISSUE_FILENAME) {
-			path.parent().map(Path::to_path_buf).unwrap_or(path.clone())
-		} else {
-			path.clone()
+		let index_path = match path.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with(tedi_core::MAIN_ISSUE_FILENAME)) {
+			true => path.parent().expect("__main__ sits in its issue dir"),
+			false => path,
 		};
-		if let Ok(index) = Local::extract_index_from_path(&index_path)
-			&& let Some(number) = index.issue_number()
-		{
+		let index = Local::extract_index_from_path(index_path)?;
+		if let Some(number) = index.issue_number() {
 			links.push(Local::issue_link(index.repo_info(), number));
 		}
 	}
-	links.sort_by_key(|l| l.to_string());
-	links.dedup();
 
 	if links.is_empty() {
 		println!("No issues matching '{query}'.");
@@ -358,7 +347,7 @@ pub fn refresh_selection_cache(key: &str, content: &str) {
 }
 /// `sprints select [pattern] [--next|--prev|--up|--down|--in|--out|--top]` — change the active sprint's selection.
 #[expect(clippy::too_many_arguments)]
-pub async fn select(pattern: Option<String>, next: bool, prev: bool, up: bool, down: bool, enter: bool, out: bool, top: bool, yes: bool) -> Result<()> {
+pub async fn select(pattern: Option<String>, kind: SearchKind, next: bool, prev: bool, up: bool, down: bool, enter: bool, out: bool, top: bool, yes: bool) -> Result<()> {
 	let landing = if next {
 		Selected::select_history(false)
 	} else if prev {
@@ -374,7 +363,7 @@ pub async fn select(pattern: Option<String>, next: bool, prev: bool, up: bool, d
 	} else if top {
 		Selected::select_top()
 	} else {
-		Selected::select_pattern(pattern.as_deref())
+		Selected::select_pattern(pattern.as_deref(), kind).await
 	}
 	.map_err(|e| eyre!("{e}"))?;
 

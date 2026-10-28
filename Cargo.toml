@@ -8,6 +8,7 @@ members = [
     "tedi_md",
     "tedi_task_operations",
     "tedi_task_primitives",
+    "tedi_utils",
 ]
 
 [workspace.package]
@@ -24,6 +25,7 @@ tedi_eval = { path = "tedi_eval", version = "0.17.4" }
 tedi_md = { path = "tedi_md", version = "0.17.4" }
 tedi_task_operations = { path = "tedi_task_operations", version = "0.17.4" }
 tedi_task_primitives = { path = "tedi_task_primitives", version = "0.17.4" }
+tedi_utils = { path = "tedi_utils", version = "0.17.4" }
 
 arrayvec = "0.7"
 ask_llm = { version = "^3.0.1" }
@@ -43,6 +45,7 @@ image = "0.25.10"
 jiff = { version = "^0.2", features = ["serde"] }
 libwayshot = "0.7.3"
 miette = { version = "7", features = ["fancy"] }
+nucleo-matcher = "0.3"
 pandoc = "^0.8.11"
 png = "0.18"
 pulldown-cmark = "0.13"
@@ -51,6 +54,7 @@ regex = "1.12.3"
 reqwest = { version = "^0.13.3", features = ["blocking", "json"] }
 serde = { version = "^1.0.228", features = ["derive"] }
 serde_json = { version = "^1.0.149", features = ["std"] }
+skim = { version = "~5.9", default-features = false } # pinned to minor: we replace `App::matcher`, reachable only through `app_mut`
 smart-default = "^0.7"
 strum = { version = "0.28.0", features = ["derive"] }
 tempfile = "^3.27.0"
