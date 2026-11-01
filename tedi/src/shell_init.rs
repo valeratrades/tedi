@@ -53,6 +53,7 @@ alias tbs="{exe_name} -y sprints select"
 alias tbp="{exe_name} -y --sync-on-exit sprints selected pop"
 alias tba="{exe_name} -y --sync-on-exit sprints selected add"
 alias tbo="{exe_name} -y --sync-on-exit sprints selected open"
+alias tbu="{exe_name} --sync-on-exit sprints edit urgent"
 
 alias tbe="{exe_name} -y sprints selected set # `e` for Edit current. It's more so Replace, but abbreviation for that taken."
 alias tbl="{exe_name} -y --sync-on-exit sprints selected list"
