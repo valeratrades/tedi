@@ -129,14 +129,19 @@ pub async fn modify_and_sync_issue(mut issue: Issue, mode: SyncMode, modifier: M
 	let new_modified = {
 		let before = issue.clone();
 		let result = modifier.apply(&mut issue).await?;
-		if !result.file_modified {
-			v_utils::log!("Aborted (no changes made)");
-			return Ok(result);
+		match result.file_modified {
+			true => {
+				rehome_detached(&before, &issue).await?;
+				// Record this issue as the last modified
+				let cache_path = crate::paths::cache_file("last_modified_issue");
+				std::fs::write(&cache_path, issue.full_index().to_string()).ok();
+			}
+			false if mode != SyncMode::Offline && unsynced(&issue).await? => println!("No changes made; resuming an unfinished sync."),
+			false => {
+				v_utils::log!("Aborted (no changes made)");
+				return Ok(result);
+			}
 		}
-		rehome_detached(&before, &issue).await?;
-		// Record this issue as the last modified
-		let cache_path = crate::paths::cache_file("last_modified_issue");
-		std::fs::write(&cache_path, issue.full_index().to_string()).ok();
 		result
 	};
 
@@ -202,6 +207,11 @@ pub async fn modify_and_sync_issue(mut issue: Issue, mode: SyncMode, modifier: M
 			Ok(new_modified)
 		}
 	}
+}
+
+/// Local moved past consensus with no sync landing it: a run killed mid-sync, or an outage deferred to local.
+pub(crate) async fn unsynced(issue: &Issue) -> Result<bool> {
+	Ok(issue.is_linked() && load_consensus_issue(IssueIndex::from(issue)).await?.as_ref() != Some(issue))
 }
 
 /// Linked children of `before` that `after` no longer holds were detached: they live on as top-level issues.

@@ -466,6 +466,7 @@ async fn edit_urgent(mode: SyncMode) -> Result<()> {
 
 	let edited_content = fs::read_to_string(&tmp_path)?;
 	if edited_content == expanded {
+		sync_embedded_issue_changes(&edited_content, mode).await?; // an issue a killed run left unsynced has nothing else to carry it
 		println!("No changes made to urgent sprint");
 		return Ok(());
 	}
@@ -610,13 +611,13 @@ async fn edit_milestone(settings: &LiveSettings, tf: Timeframe, mode: SyncMode, 
 	let changed = edited_content != expanded_description;
 
 	let mut edited_doc = TaskView::parse(&edited_content);
+	// Unchanged too: an issue a killed run left unsynced has nothing else to carry it.
+	if let Err(e) = sync_embedded_issue_changes(&edited_content, mode).await {
+		// Transient GitHub errors are retried, probed to offline, or deferred at the sync boundary,
+		// so a bail reaching here is a genuine non-transient parse/logic failure.
+		return dump_rejected(&edited_content, e);
+	}
 	if changed {
-		// Fold every edited issue block back into its own issue file.
-		if let Err(e) = sync_embedded_issue_changes(&edited_content, mode).await {
-			// Transient GitHub errors are retried, probed to offline, or deferred at the sync boundary,
-			// so a bail reaching here is a genuine non-transient parse/logic failure.
-			return dump_rejected(&edited_content, e);
-		}
 		// Top-level new tasks belong to this milestone → materialize as real issues in the milestones repo.
 		if let Err(e) = materialize_new_tasks(&mut edited_doc, Some(link.clone()), mode).await {
 			return dump_rejected(&edited_content, e);

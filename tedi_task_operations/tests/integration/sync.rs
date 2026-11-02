@@ -1244,3 +1244,33 @@ async fn test_pending_conflict_rebuilt_on_remote_change() {
 	let conflict = std::fs::read_to_string(&conflict).unwrap();
 	assert!(conflict.contains("remote moved on") && !conflict.contains("remote diverged body"), "{conflict}");
 }
+
+/// A run killed mid-sync leaves local ahead of consensus. Exiting the editor untouched must still
+/// carry it to Github: there is nothing left to type that would.
+#[tokio::test]
+async fn test_sync_on_exit_untouched_reflushes_interrupted_sync() {
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+
+	let consensus_vi = parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n  consensus body\n");
+	ctx.consensus(&consensus_vi, Some(Seed::new(-100))).await;
+	ctx.remote(&consensus_vi, Some(Seed::new(-100)));
+	let local = ctx
+		.local(
+			&parse_virtual("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n  body that never reached github\n"),
+			Some(Seed::new(100)),
+		)
+		.await;
+
+	let out = ctx.open_issue(&local).args(&["--sync-on-exit"]).run();
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+	assert!(
+		ctx.github_calls().iter().any(|c| c.starts_with("update_issue_body(o, r, 1")),
+		"the interrupted sync was never resumed: {:?}\nstdout: {}",
+		ctx.github_calls(),
+		out.stdout
+	);
+
+	let out = ctx.open_issue(&local).args(&["--sync-on-exit"]).run();
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+	assert!(!out.stdout.contains("Syncing"), "a landed sync was resumed again. stdout: {}", out.stdout);
+}

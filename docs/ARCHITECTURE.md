@@ -71,7 +71,7 @@ They assume top-down priority ordering, - as we admit impossibility of consisten
 
 When Github is reached depends on the sync mode:
 - **Full** (default): nothing reaches an editor before it has been reconciled with Github: the sprint's own body, every milestone it inlines, and every issue it expands are pulled first. The buffer is what an edit is reasoned against.
-- **On exit** (`--sync-on-exit`, what `tme` runs): the editor opens on local state; Github is reached only once it closes. Only what is missing locally is fetched before.
+- **On exit** (`--sync-on-exit`, what `tme` runs): the editor opens on local state; Github is reached only once it closes. Only what is missing locally is fetched before. Closing it untouched still lands what a prior run left unsynced (local past consensus).
 - **Offline**: never.
 
 A pending conflict is always reconciled against a fresh pull, Offline included; its resolution becomes consensus.

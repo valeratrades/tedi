@@ -1950,6 +1950,25 @@ async fn test_sync_on_exit_outdated_check_reads_synced_due_date() {
 	);
 }
 
+/// An issue a killed run left ahead of consensus is carried to Github by the next exit, even with
+/// nothing typed in the buffer.
+#[tokio::test]
+async fn test_sync_on_exit_untouched_reflushes_interrupted_issue_sync() {
+	let ctx = TestContext::build();
+	seed_sprint(&ctx, ISSUE_10, ISSUE_10, -100, "2099-01-01T00:00:00Z").await;
+	ctx.local(&parse_virtual(&ISSUE_10.replace("issue body", "body that never reached github")), Some(Seed::new(100)))
+		.await;
+
+	let out = ctx.milestone_client_edit(&["--mock", "--sync-on-exit", "sprints", "edit", "1d"], None, None);
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+	assert!(
+		ctx.github_calls().iter().any(|c| c.starts_with("update_issue_body(o, r, 10")),
+		"the interrupted sync was never resumed: {:?}\nstdout: {}",
+		ctx.github_calls(),
+		out.stdout
+	);
+}
+
 /// Rewrites this machine's view of sprint `1d` past consensus, as an offline edit would leave it.
 fn diverge_local_sprint(body: &str, due_on: &str, description_ts: &str) {
 	use tedi_task_operations::{RepoInfo, local::Local};

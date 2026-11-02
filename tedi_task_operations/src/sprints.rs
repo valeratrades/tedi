@@ -17,7 +17,7 @@ use crate::{
 	CloseState, HollowIssue, Issue, IssueIdentity, IssueIndex, IssueLink, LazyIssue, Milestone, MilestoneLink, NodeLink, RepoInfo, TaskView, VirtualIssue,
 	clockify_tracking::{self, HaltArgs, ResumeArgs},
 	local::{Consensus, FsReader, GitReader, Local, LocalFs},
-	open_interactions::{MergeMode, MilestoneModifier, Modifier, SyncMode, SyncOptions, modify_and_sync_issue, modify_and_sync_milestone, pull_issues},
+	open_interactions::{MergeMode, MilestoneModifier, Modifier, SyncMode, SyncOptions, modify_and_sync_issue, modify_and_sync_milestone, pull_issues, unsynced},
 	remote::{Remote, RemoteSource, load_remote_milestone},
 	selection::{Landing, Selected},
 	sink::Sink,
@@ -280,10 +280,14 @@ pub async fn sync_embedded_issue_changes(content: &str, mode: SyncMode) -> Resul
 	}
 
 	let mut edits = Vec::new();
+	let mut unfinished = Vec::new();
 	for (link, issue, copies) in blocks {
 		let rendered = VirtualIssue::parse(&issue.to_string(), PathBuf::from(format!("<{link} as stored>")))?;
 		let mut changed = copies.into_iter().filter(|copy| *copy != rendered);
 		let Some(edited) = changed.next() else {
+			if mode != SyncMode::Offline && unsynced(&issue).await? {
+				unfinished.push(link);
+			}
 			continue;
 		};
 		if changed.any(|other| other != edited) {
@@ -301,6 +305,16 @@ pub async fn sync_embedded_issue_changes(content: &str, mode: SyncMode) -> Resul
 	for (link, _, edited) in edits {
 		println!("Syncing changes for {link}");
 		modify_and_sync_issue(load_local_issue(&link).await?, mode, Modifier::Write { edited }, SyncOptions::default()).await?;
+	}
+
+	// Reloaded: an edited descendant has moved on disk since `blocks` was read.
+	let mut unfinished = futures::future::try_join_all(unfinished.iter().map(load_local_issue)).await?;
+	if !unfinished.is_empty() {
+		println!(
+			"Resuming unfinished sync of {}",
+			unfinished.iter().map(|i| i.full_index().to_string()).collect::<Vec<_>>().join(", ")
+		);
+		pull_issues(&mut unfinished, MergeMode::Normal).await?;
 	}
 
 	Ok(())
