@@ -19,7 +19,9 @@ can have associated discussions/dumps with unstructured thoughts on the subject.
 ### Issue
 fundamental pieces of scoped work. This is the level of precision, that day-to-day planning operates with.
 
-A closed issue (closed, not planned, duplicate) never has an open descendant: a user edit producing one is rejected, so closing a subtree means closing each of its nodes in the same save. Remote state violating it (GitHub allows it) is pulled as-is; the next edit of that tree must resolve it.
+A completed issue (`[x]`) never has an open descendant: a user edit producing one is rejected, so completing a subtree means closing each of its nodes in the same save. Other close reasons (not planned, duplicate) carry no such constraint. Remote state violating it (GitHub allows it) is pulled as-is; the next edit of that tree must resolve it.
+
+Dropping a child's link from its parent detaches it, on either side: the sub-issue relation is gone, and the child lives on as a top-level issue.
 
 ### Blockers
 blockers form a definitive ordering, covering the tasks necessary for completion of a given objective.

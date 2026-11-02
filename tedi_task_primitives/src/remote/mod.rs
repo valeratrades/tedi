@@ -569,6 +569,13 @@ impl Sink<Remote> for Issue {
 				child.identity.parent_index = child_parent_index;
 			}
 		}
+		for detached in old.iter().flat_map(|o| &o.children).filter(|(s, _)| !self.children.contains_key(s)).map(|(_, c)| c) {
+			let n = detached.git_id().expect("children of a remote state are numbered");
+			let id = gh.fetch_issue(repo_info, n).await?.id;
+			println!("Detaching #{n} from #{issue_number}...");
+			gh.remove_sub_issue(repo_info, issue_number, id).await?;
+			changed = true;
+		}
 		for (selector, child) in self.children.iter_mut() {
 			let old_child = old.and_then(|o| o.children.get(selector));
 			changed |= Box::pin(<Issue as Sink<Remote>>::sink(child, old_child)).await?;

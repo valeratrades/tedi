@@ -1,4 +1,4 @@
-//! A closed issue never has an open descendant: an edit producing one is rejected whole.
+//! A completed (`[x]`) issue never has an open descendant: an edit producing one is rejected whole. Other close reasons carry no such constraint.
 
 use tedi_task_operations::{
 	RepoInfo,
@@ -78,4 +78,20 @@ async fn test_closing_child_over_open_grandchild_is_rejected() {
 	assert!(!out.status.success(), "stdout: {}", out.stdout);
 	assert!(out.stderr.contains("Open grandchild"), "stderr: {}", out.stderr);
 	assert_eq!(std::fs::read_to_string(&vpath).unwrap(), before);
+}
+
+#[tokio::test]
+async fn test_not_planned_parent_over_open_child_is_accepted() {
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+	let vi = parse_virtual(TREE);
+	let issue = ctx.consensus(&vi, None).await;
+	ctx.remote(&vi, None);
+
+	let (vpath, paused) = ctx.open_issue(&issue).break_to_edit();
+	let before = std::fs::read_to_string(&vpath).unwrap();
+	std::fs::write(&vpath, before.replacen("- [ ] Parent task", "- [-] Parent task", 1)).unwrap();
+
+	let out = paused.resume();
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+	assert!(std::fs::read_to_string(local_path(2)).unwrap().contains("- [ ] Open child"));
 }

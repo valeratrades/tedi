@@ -720,6 +720,37 @@ impl GithubClient for MockGithubClient {
 		Ok(())
 	}
 
+	#[instrument(skip_all, fields(parent_issue_number, child_issue_id))]
+	async fn remove_sub_issue(&self, repo: RepoInfo, parent_issue_number: u64, child_issue_id: u64) -> Result<(), GithubError> {
+		let owner = repo.owner().expect("github repo");
+		let repo_name = repo.repo();
+		tracing::info!(target: "mock_github", owner, repo_name, parent_issue_number, child_issue_id, "remove_sub_issue");
+		self.log_call(&format!("remove_sub_issue({owner}, {repo_name}, parent={parent_issue_number}, child_id={child_issue_id})"));
+
+		let key = RepoKey::new(owner, repo_name);
+		let child_number = {
+			let issues = self.issues.lock().unwrap();
+			let repo_issues = issues.get(&key).ok_or_else(|| GithubError::new_other(format!("Repository not found: {owner}/{repo_name}")))?;
+			repo_issues
+				.values()
+				.find(|i| i.id == child_issue_id)
+				.map(|i| i.number)
+				.ok_or_else(|| GithubError::new_other(format!("Child issue with id {child_issue_id} not found")))?
+		};
+
+		let mut sub_issues = self.sub_issues.lock().unwrap();
+		let children = sub_issues
+			.get_mut(&key)
+			.and_then(|m| m.get_mut(&parent_issue_number))
+			.ok_or_else(|| GithubError::new_other(format!("#{parent_issue_number} has no sub-issues")))?;
+		let before = children.len();
+		children.retain(|&n| n != child_number);
+		if children.len() == before {
+			return Err(GithubError::new_other(format!("#{child_number} is not a sub-issue of #{parent_issue_number}")));
+		}
+		Ok(())
+	}
+
 	#[instrument(skip_all, fields(title))]
 	async fn find_issue_by_title(&self, repo: RepoInfo, title: &str) -> Result<Option<u64>, GithubError> {
 		let owner = repo.owner().expect("github repo");

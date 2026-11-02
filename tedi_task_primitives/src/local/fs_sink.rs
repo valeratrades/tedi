@@ -92,7 +92,7 @@ fn sink_issue_node<R: LocalReader>(new: &Issue, maybe_old: Option<&Issue>, reade
 	// Write content if changed
 	let content = new.to_string(); //DEPENDS: relies on the issue `Display` including `title`, `close_state`, `git_id`
 	let node_changed = match maybe_old {
-		Some(old_issue) => content != old_issue.to_string() || format_changed, // we check for `format_changed` instead of checking for exact match of children, because we start individual sinks for each of the mismatched children later
+		Some(old_issue) => content != old_issue.to_string() || format_changed || old_issue.identity.parent_index != new.identity.parent_index, // we check for `format_changed` instead of checking for exact match of children, because we start individual sinks for each of the mismatched children later
 		None => true,
 	};
 	let mut any_written = false;

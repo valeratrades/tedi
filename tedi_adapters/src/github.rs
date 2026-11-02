@@ -50,6 +50,9 @@ pub trait GithubClient: Send + Sync {
 	/// Note: `child_issue_id` is the resource ID (not the issue number)
 	async fn add_sub_issue(&self, repo: RepoInfo, parent_issue_number: u64, child_issue_id: u64) -> Result<(), GithubError>;
 
+	/// Note: `child_issue_id` is the resource ID (not the issue number)
+	async fn remove_sub_issue(&self, repo: RepoInfo, parent_issue_number: u64, child_issue_id: u64) -> Result<(), GithubError>;
+
 	/// Find an issue by exact title match
 	#[allow(dead_code)]
 	async fn find_issue_by_title(&self, repo: RepoInfo, title: &str) -> Result<Option<u64>, GithubError>;
@@ -418,6 +421,23 @@ impl GithubClient for RealGithubClient {
 		self.post_json(&url, &serde_json::json!({ "sub_issue_id": child_issue_id }), "Failed to add sub-issue").await
 	}
 
+	async fn remove_sub_issue(&self, repo: RepoInfo, parent_issue_number: u64, child_issue_id: u64) -> Result<(), GithubError> {
+		let url = format!(
+			"https://api.github.com/repos/{}/{}/issues/{parent_issue_number}/sub_issue",
+			repo.owner().expect("github repo"),
+			repo.repo()
+		);
+		let res = self.delete(&url).json(&serde_json::json!({ "sub_issue_id": child_issue_id })).send().await?;
+
+		if !res.status().is_success() {
+			let status = res.status();
+			let body = res.text().await.unwrap_or_default();
+			return Err(GithubError::new_api(status, body, "Failed to remove sub-issue".to_string()));
+		}
+
+		Ok(())
+	}
+
 	async fn find_issue_by_title(&self, repo: RepoInfo, title: &str) -> Result<Option<u64>, GithubError> {
 		// Search for issues with this title (search in open and closed)
 		let encoded_title = urlencoding::encode(title);
@@ -750,6 +770,10 @@ impl GithubClient for RetryingGithubClient {
 
 	async fn add_sub_issue(&self, repo: RepoInfo, parent_issue_number: u64, child_issue_id: u64) -> Result<(), GithubError> {
 		retrying!(self.inner.add_sub_issue(repo, parent_issue_number, child_issue_id))
+	}
+
+	async fn remove_sub_issue(&self, repo: RepoInfo, parent_issue_number: u64, child_issue_id: u64) -> Result<(), GithubError> {
+		retrying!(self.inner.remove_sub_issue(repo, parent_issue_number, child_issue_id))
 	}
 
 	async fn find_issue_by_title(&self, repo: RepoInfo, title: &str) -> Result<Option<u64>, GithubError> {

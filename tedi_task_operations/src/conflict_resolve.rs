@@ -83,11 +83,14 @@ pub async fn check_for_existing_conflict(issue_index: IssueIndex) -> Result<Opti
 			let mut new_issue = {
 				let mut new_issue_but_old_local_timestamps = {
 					let virtual_issue = VirtualIssue::parse(&content, conflict_fpath.clone())?;
-					// the resolution holds children as links only; their subtrees are checked as stored
+					// the resolution holds children as links only; their subtrees come from storage
 					let local = Issue::load(LocalIssueSource::<FsReader>::build(LocalPath::from(issue_index)).await?).await?;
-					apply_edited_buffer(&mut local.clone(), &local, virtual_issue.clone()).wrap_err_with(|| format!("{} can't be taken as the resolution", conflict_fpath.display()))?;
+					let mut folded = local.clone();
+					apply_edited_buffer(&mut folded, &local, virtual_issue.clone()).wrap_err_with(|| format!("{} can't be taken as the resolution", conflict_fpath.display()))?;
 					let hollow = Local::read_hollow_from_project_meta(issue_index)?;
-					Issue::from_combined(hollow, virtual_issue, issue_index.parent().unwrap(), issue_index.repo_info().is_virtual())?
+					let mut resolved = Issue::from_combined(hollow, virtual_issue, issue_index.parent().unwrap(), issue_index.repo_info().is_virtual())?;
+					resolved.children = folded.children;
+					resolved
 				};
 
 				let last_consensus_issue = Issue::load(LocalIssueSource::<GitReader>::build(LocalPath::from(issue_index))?).await?;

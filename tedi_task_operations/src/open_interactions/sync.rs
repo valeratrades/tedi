@@ -127,11 +127,13 @@ pub async fn modify_and_sync_issue(mut issue: Issue, mode: SyncMode, modifier: M
 
 	// expose for modification (by user or procedural)
 	let new_modified = {
+		let before = issue.clone();
 		let result = modifier.apply(&mut issue).await?;
 		if !result.file_modified {
 			v_utils::log!("Aborted (no changes made)");
 			return Ok(result);
 		}
+		rehome_detached(&before, &issue).await?;
 		// Record this issue as the last modified
 		let cache_path = crate::paths::cache_file("last_modified_issue");
 		std::fs::write(&cache_path, issue.full_index().to_string()).ok();
@@ -200,6 +202,31 @@ pub async fn modify_and_sync_issue(mut issue: Issue, mode: SyncMode, modifier: M
 			Ok(new_modified)
 		}
 	}
+}
+
+/// Linked children of `before` that `after` no longer holds were detached: they live on as top-level issues.
+async fn rehome_detached(before: &Issue, after: &Issue) -> Result<()> {
+	fn rehome(issue: &mut Issue, parent_index: IssueIndex) {
+		issue.identity.parent_index = parent_index;
+		let child_index = issue.identity.child_parent_index().expect("stored issues are numbered");
+		for child in issue.children.values_mut() {
+			rehome(child, child_index);
+		}
+	}
+
+	for (selector, old) in &before.children {
+		match after.children.get(selector) {
+			Some(kept) => Box::pin(rehome_detached(old, kept)).await?,
+			None if old.is_linked() => {
+				let mut moved = old.clone();
+				rehome(&mut moved, IssueIndex::repo_only(old.repo_info()));
+				<Issue as Sink<LocalFs>>::sink(&mut moved, Some(old)).await?;
+				println!("Detached {} from {}", moved.full_index(), before.full_index());
+			}
+			None => {}
+		}
+	}
+	Ok(())
 }
 
 /// Changed on both sides since `base`, to different values.
@@ -289,10 +316,15 @@ mod core {
 		}
 		local_merged.merge(&remote, force_remote_wins)?;
 
-		if let Some(consensus) = consensus {
-			remote_merged.merge(&consensus, false)?;
+		if let Some(ref consensus) = consensus {
+			remote_merged.merge(consensus, false)?;
 		}
 		remote_merged.merge(&local, force_local_wins)?;
+
+		if let Some(ref consensus) = consensus {
+			drop_detached(&mut local_merged, consensus, &local, &remote);
+			drop_detached(&mut remote_merged, consensus, &local, &remote);
+		}
 
 		let divergence = clash.or_else(|| (local_merged != remote_merged).then(|| (issue_number, local_merged.to_string(), remote_merged.to_string())));
 		match divergence {
@@ -323,6 +355,18 @@ mod core {
 						Ok((local_merged, false))
 					}
 				}
+			}
+		}
+	}
+
+	/// A child `base` held that either side no longer does was detached there; the merges must not bring it back.
+	fn drop_detached(merged: &mut Issue, base: &Issue, local: &Issue, remote: &Issue) {
+		merged
+			.children
+			.retain(|s, _| !base.children.contains_key(s) || (local.children.contains_key(s) && remote.children.contains_key(s)));
+		for (s, child) in &mut merged.children {
+			if let (Some(b), Some(l), Some(r)) = (base.children.get(s), local.children.get(s), remote.children.get(s)) {
+				drop_detached(child, b, l, r);
 			}
 		}
 	}
@@ -367,6 +411,7 @@ mod core {
 		let repo_info = current_issue.repo_info();
 
 		let (resolved, changed) = core::resolve_merge(current_issue.clone(), consensus, remote, mode, repo_info, issue_number).await?;
+		super::rehome_detached(current_issue, &resolved).await?;
 		*current_issue = resolved;
 
 		match changed {
@@ -449,7 +494,7 @@ mod types {
 	/// The buffer carries this node's own contents plus its children as one-line links (shallow —
 	/// state/title/labels only). The children's real subtrees stay as loaded; we apply link-level
 	/// changes, drop links the user removed, and add newly-typed pending children. Errors if the
-	/// resulting tree breaks `Issue::check_closed_subtree`.
+	/// resulting tree breaks `Issue::check_completed_subtree`.
 	pub(crate) fn apply_edited_buffer(issue: &mut Issue, old: &Issue, edited: VirtualIssue) -> Result<(), crate::IssueError> {
 		use std::collections::HashMap;
 
@@ -479,7 +524,7 @@ mod types {
 			children.insert(selector, child);
 		}
 		issue.children = children;
-		issue.check_closed_subtree()
+		issue.check_completed_subtree()
 	}
 
 	/// A modifier that can be applied to an issue file.

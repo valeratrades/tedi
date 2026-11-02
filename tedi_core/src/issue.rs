@@ -632,28 +632,32 @@ impl Issue /*{{{1*/ {
 		}
 	}
 
-	/// A closed issue never has an open descendant (ARCHITECTURE.md, `### Issue`). Errors naming
-	/// every (closed ancestor, open descendant) pair in this subtree.
-	pub fn check_closed_subtree(&self) -> Result<(), crate::IssueError> {
+	/// A completed issue never has an open descendant (ARCHITECTURE.md, `### Issue`). Errors naming
+	/// every (completed ancestor, open descendant) pair in this subtree.
+	pub fn check_completed_subtree(&self) -> Result<(), crate::IssueError> {
 		fn name(issue: &Issue) -> String {
 			match issue.git_id() {
 				Some(n) => format!("{:?} (#{n})", issue.contents.title),
 				None => format!("{:?}", issue.contents.title),
 			}
 		}
-		fn walk<'a>(issue: &'a Issue, closed_ancestors: &mut Vec<&'a Issue>, violations: &mut Vec<String>) {
-			let closed = issue.contents.state.is_closed();
-			if !closed {
-				violations.extend(closed_ancestors.iter().map(|a| format!("{} is closed, but its descendant {} is open", name(a), name(issue))));
+		fn walk<'a>(issue: &'a Issue, completed_ancestors: &mut Vec<&'a Issue>, violations: &mut Vec<String>) {
+			let completed = issue.contents.state == CloseState::Closed;
+			if !issue.contents.state.is_closed() {
+				violations.extend(
+					completed_ancestors
+						.iter()
+						.map(|a| format!("{} is completed, but its descendant {} is open", name(a), name(issue))),
+				);
 			}
-			if closed {
-				closed_ancestors.push(issue);
+			if completed {
+				completed_ancestors.push(issue);
 			}
 			for child in issue.children.values() {
-				walk(child, closed_ancestors, violations);
+				walk(child, completed_ancestors, violations);
 			}
-			if closed {
-				closed_ancestors.pop();
+			if completed {
+				completed_ancestors.pop();
 			}
 		}
 
@@ -663,7 +667,7 @@ impl Issue /*{{{1*/ {
 			true => Ok(()),
 			false => {
 				violations.sort();
-				Err(crate::IssueError::new_open_under_closed(violations.join("\n")))
+				Err(crate::IssueError::new_open_under_completed(violations.join("\n")))
 			}
 		}
 	}

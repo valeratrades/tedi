@@ -2117,3 +2117,39 @@ async fn test_checkbox_on_category_header_adopts_grouped_issues() {
 	let sprint = std::fs::read_to_string(tedi_task_operations::local::Local::milestone_file_path(RepoInfo::new("o", "todos"), 7, "1d")).unwrap();
 	insta::assert_snapshot!(sprint, @"- https://github.com/o/r/issues/12");
 }
+
+/// Dropping a child's link line from its parent's block, as `tme` runs it, detaches it: unlinked upstream,
+/// kept locally as a top-level issue, and gone from the parent when the sprint is reopened.
+#[tokio::test]
+async fn test_sprint_deleting_child_link_from_parent_block() {
+	let ctx = TestContext::build();
+	seed_sprint(&ctx, PARENT_WITH_CHILD, PARENT_WITH_CHILD, -100, "2099-01-01T00:00:00Z").await;
+
+	let out = ctx.milestone_client_edit(
+		&["--mock", "--sync-on-exit", "sprints", "edit", "1d"],
+		None,
+		Some(Box::new(|tmp: &Path| {
+			let c = std::fs::read_to_string(tmp).unwrap();
+			assert!(c.contains("[Child]"), "{c}");
+			std::fs::write(tmp, c.lines().filter(|l| !l.contains("[Child]")).map(|l| format!("{l}\n")).collect::<String>()).unwrap();
+		}) as EditFn),
+	);
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+	assert!(ctx.github_calls().iter().any(|c| c.starts_with("remove_sub_issue(o, r, parent=10,")), "{:?}", ctx.github_calls());
+	let child = tedi_task_operations::local::Local::find_by_number(tedi_task_operations::RepoInfo::new("o", "r"), 11, tedi_task_operations::local::FsReader).expect("stored locally");
+	assert_eq!(
+		child.parent().unwrap(),
+		tedi_task_operations::local::Local::project_dir(tedi_task_operations::RepoInfo::new("o", "r"))
+	);
+	assert!(std::fs::read_to_string(&child).unwrap().contains("child body"));
+
+	let out = ctx.milestone_client_edit(
+		&["--mock", "--offline", "sprints", "edit", "1d"],
+		None,
+		Some(Box::new(|tmp: &Path| {
+			let c = std::fs::read_to_string(tmp).unwrap();
+			assert!(!c.contains("Child"), "{c}");
+		}) as EditFn),
+	);
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+}
