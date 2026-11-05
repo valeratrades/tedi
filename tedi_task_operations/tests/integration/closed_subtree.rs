@@ -57,7 +57,7 @@ async fn test_closing_parent_with_its_children_in_one_save() {
 	assert!(std::fs::read_to_string(&child).unwrap().contains("- [x] Open child"));
 	let calls = ctx.github_calls();
 	for n in [1, 2] {
-		assert!(calls.iter().any(|c| c == &format!("update_issue_state(o, r, {n}, closed)")), "#{n}: {calls:?}");
+		assert!(calls.iter().any(|c| c == &format!("update_issue_state(o, r, {n}, closed/completed)")), "#{n}: {calls:?}");
 	}
 }
 

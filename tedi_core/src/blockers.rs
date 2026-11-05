@@ -12,7 +12,7 @@
 
 use tedi_md::{Events, OwnedEvent, OwnedTag, OwnedTagEnd};
 
-use crate::{IssueRef, Marker};
+use crate::{IssueLink, IssueRef, Marker, RepoInfo};
 
 /// Split text at the blockers marker, returning (content_before, blockers).
 /// If no blockers marker is found, returns the original text and an empty `Blockers`.
@@ -228,6 +228,37 @@ impl Blockers {
 	/// Clears the item's comments. Returns the previous text, or None if empty.
 	pub fn set(&mut self, text: &str) -> Option<String> {
 		replace_last(&mut self.items, text.to_string())
+	}
+
+	/// Point refs (resolved against `home`) to an issue in `moved` at its new place. `qualify` also
+	/// spells every other `home`-relative ref out in full, for blockers about to leave `home`.
+	pub fn relink(&mut self, home: RepoInfo, moved: &std::collections::HashMap<IssueLink, IssueLink>, qualify: bool) -> bool {
+		fn walk(items: &mut [BlockerItem], home: RepoInfo, moved: &std::collections::HashMap<IssueLink, IssueLink>, qualify: bool) -> bool {
+			let mut changed = false;
+			for item in items {
+				if let Some(mut r) = item.issue_ref() {
+					let relative = matches!(r, IssueRef::Shorthand { owner: None, .. });
+					r.resolve_with_context(None, Some(home));
+					if let Some(link) = r.to_issue_link() {
+						let to = match moved.get(&link) {
+							Some(new) => Some(new),
+							None if qualify && relative => Some(&link),
+							None => None,
+						};
+						if let Some(to) = to {
+							item.text = match r {
+								IssueRef::Url(_) => to.to_string(),
+								IssueRef::Shorthand { .. } => format!("{}#{}", to.project(), to.number()),
+							};
+							changed = true;
+						}
+					}
+				}
+				changed |= walk(&mut item.children, home, moved, qualify);
+			}
+			changed
+		}
+		walk(&mut self.items, home, moved, qualify)
 	}
 
 	/// Build cmark event stream representing this blocker sequence as a list.

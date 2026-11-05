@@ -74,6 +74,12 @@ fn sink_issue_node<R: LocalReader>(new: &Issue, maybe_old: Option<&Issue>, reade
 		info!(issue = ?new.git_id(), duplicate_of = dup_of, "Removing duplicate issue from local storage");
 		return remove_issue_files(new, reader);
 	}
+	if let Some(old) = maybe_old
+		&& old.identity.repo_info() != new.identity.repo_info()
+	{
+		remove_issue_files(old, reader)?;
+		return sink_issue_node(new, None, reader);
+	}
 
 	let title = &new.contents.title;
 	let closed = new.contents.state.is_closed();
@@ -160,9 +166,6 @@ fn sink_issue_node<R: LocalReader>(new: &Issue, maybe_old: Option<&Issue>, reade
 	for (selector, old_child) in &old_children {
 		if !new.children.contains_key(selector) {
 			remove_issue_files(old_child, reader)?;
-			if let Some(old_num) = old_child.git_id() {
-				Local::remove_issue_meta(repo_info, old_num)?;
-			}
 		}
 	}
 	Ok(any_written)
@@ -275,10 +278,16 @@ fn cleanup_old_locations(issue: &Issue, has_children: bool, closed: bool) -> Res
 	Ok(())
 }
 
-/// Remove all file variants for an issue.
+/// Remove all file variants for an issue, and the metadata of its whole subtree.
 #[instrument(skip_all)]
 fn remove_issue_files<R: LocalReader>(issue: &Issue, reader: &R) -> Result<bool, LocalFsSinkError> {
-	let repo_info = issue.identity.repo_info();
+	fn remove_meta(issue: &Issue) -> std::io::Result<()> {
+		if let Some(num) = issue.git_id() {
+			trace!(num, "removing issue metadata");
+			Local::remove_issue_meta(issue.identity.repo_info(), num)?;
+		}
+		issue.children.values().try_for_each(remove_meta)
+	}
 
 	match LocalPath::from(issue).resolve_parent(*reader)?.search() {
 		Ok(resolved_path) =>
@@ -290,17 +299,13 @@ fn remove_issue_files<R: LocalReader>(issue: &Issue, reader: &R) -> Result<bool,
 				info!(path = %p.display(), "removing issue file");
 				try_remove_file(&p)?;
 			},
-		Err(e) if e.kind == LocalPathErrorKind::NotFound => {
-			debug!("issue not found, nothing to remove");
+		Err(e) if matches!(e.kind, LocalPathErrorKind::NotFound | LocalPathErrorKind::ParentIsFlat) => {
+			debug!("issue not found, nothing to remove"); // a flat parent holds no children
 		}
 		Err(e) => return Err(e.into()),
 	};
 
-	// Remove metadata
-	if let Some(num) = issue.git_id() {
-		trace!(num, "removing issue metadata");
-		Local::remove_issue_meta(repo_info, num)?;
-	}
+	remove_meta(issue)?;
 
 	info!(issue_number = ?issue.git_id(), "removed issue");
 	Ok(true)

@@ -3,6 +3,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::Deserialize;
+use tedi_core::CloseState;
 pub use tedi_core::RepoInfo;
 use v_utils::macros::wrap_err;
 
@@ -31,8 +32,8 @@ pub trait GithubClient: Send + Sync {
 	/// Update an issue's title
 	async fn update_issue_title(&self, repo: RepoInfo, issue_number: u64, title: &str) -> Result<(), GithubError>;
 
-	/// Update an issue's state (open/closed)
-	async fn update_issue_state(&self, repo: RepoInfo, issue_number: u64, state: &str) -> Result<(), GithubError>;
+	/// Update an issue's state, closed ones with their reason
+	async fn update_issue_state(&self, repo: RepoInfo, issue_number: u64, state: &CloseState) -> Result<(), GithubError>;
 
 	/// Update a comment's body
 	async fn update_comment(&self, repo: RepoInfo, comment_id: u64, body: &str) -> Result<(), GithubError>;
@@ -93,6 +94,15 @@ pub trait GithubClient: Send + Sync {
 
 	/// Update a milestone's description and, optionally, its due date.
 	async fn update_milestone(&self, repo: RepoInfo, number: u64, description: &str, due_on: Option<jiff::Timestamp>) -> Result<(), GithubError>;
+
+	/// Transfer an issue to `target` (same owner only). Returns its number there.
+	async fn transfer_issue(&self, repo: RepoInfo, issue_number: u64, target: RepoInfo) -> Result<u64, GithubError>;
+
+	/// Names of every label defined in a repository.
+	async fn list_labels(&self, repo: RepoInfo) -> Result<Vec<String>, GithubError>;
+
+	/// Add assignees to an issue. GitHub silently skips those who can't be assigned in `repo`.
+	async fn add_assignees(&self, repo: RepoInfo, issue_number: u64, assignees: &[String]) -> Result<(), GithubError>;
 }
 
 /// A milestone as returned by the GitHub REST API.
@@ -162,6 +172,7 @@ pub struct GithubIssue {
 	/// Reason for the state (e.g., "completed", "not_planned", "duplicate")
 	/// Only present for closed issues.
 	pub state_reason: Option<String>,
+	pub assignees: Vec<GithubUser>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -266,6 +277,25 @@ impl RealGithubClient {
 		Ok(())
 	}
 
+	/// Run a GraphQL request, surfacing both HTTP and GraphQL-level errors.
+	async fn graphql(&self, query: &str, variables: serde_json::Value, error_context: &str) -> Result<serde_json::Value, GithubError> {
+		let res = self
+			.post("https://api.github.com/graphql")
+			.json(&serde_json::json!({ "query": query, "variables": variables }))
+			.send()
+			.await?;
+		if !res.status().is_success() {
+			let status = res.status();
+			let body = res.text().await.unwrap_or_default();
+			return Err(GithubError::new_api(status, body, error_context.to_string()));
+		}
+		let response: serde_json::Value = res.json().await?;
+		if let Some(errors) = response.get("errors") {
+			return Err(GithubError::new_graphql(errors.to_string()));
+		}
+		Ok(response)
+	}
+
 	/// Send a POST request with JSON body, returning an error on non-success status
 	async fn post_json(&self, url: &str, json: &serde_json::Value, error_context: &str) -> Result<(), GithubError> {
 		let res = self.post(url).json(json).send().await?;
@@ -355,9 +385,10 @@ impl GithubClient for RealGithubClient {
 		self.patch_json(&url, &serde_json::json!({ "title": title }), "Failed to update issue title").await
 	}
 
-	async fn update_issue_state(&self, repo: RepoInfo, issue_number: u64, state: &str) -> Result<(), GithubError> {
+	async fn update_issue_state(&self, repo: RepoInfo, issue_number: u64, state: &CloseState) -> Result<(), GithubError> {
 		let url = format!("https://api.github.com/repos/{}/{}/issues/{issue_number}", repo.owner().expect("github repo"), repo.repo());
-		self.patch_json(&url, &serde_json::json!({ "state": state }), "Failed to update issue state").await
+		let json = serde_json::json!({ "state": state.to_github_state(), "state_reason": state.to_github_state_reason() });
+		self.patch_json(&url, &json, "Failed to update issue state").await
 	}
 
 	async fn set_labels(&self, repo: RepoInfo, issue_number: u64, labels: &[String]) -> Result<(), GithubError> {
@@ -546,25 +577,7 @@ impl GithubClient for RealGithubClient {
 			"number": issue_number as i64
 		});
 
-		let body = serde_json::json!({
-			"query": query,
-			"variables": variables
-		});
-
-		let res = self.post("https://api.github.com/graphql").json(&body).send().await?;
-
-		if !res.status().is_success() {
-			let status = res.status();
-			let body = res.text().await.unwrap_or_default();
-			return Err(GithubError::new_api(status, body, "Failed to fetch timeline timestamps via GraphQL".to_string()));
-		}
-
-		let response: serde_json::Value = res.json().await?;
-
-		// Check for GraphQL errors
-		if let Some(errors) = response.get("errors") {
-			return Err(GithubError::new_graphql(errors.to_string()));
-		}
+		let response = self.graphql(query, variables, "Failed to fetch timeline timestamps via GraphQL").await?;
 
 		let mut timestamps = GraphqlTimelineTimestamps::default();
 
@@ -676,6 +689,77 @@ impl GithubClient for RealGithubClient {
 		}
 		self.patch_json(&url, &body, "update milestone").await
 	}
+
+	async fn transfer_issue(&self, repo: RepoInfo, issue_number: u64, target: RepoInfo) -> Result<u64, GithubError> {
+		let query = r#"
+			query($owner: String!, $repo: String!, $number: Int!, $target: String!) {
+				repository(owner: $owner, name: $repo) { issue(number: $number) { id } }
+				target: repository(owner: $owner, name: $target) { id }
+			}
+		"#;
+		let ids = self
+			.graphql(
+				query,
+				serde_json::json!({ "owner": repo.owner().expect("github repo"), "repo": repo.repo(), "number": issue_number as i64, "target": target.repo() }),
+				"resolve transfer ids",
+			)
+			.await?;
+		let id = |pointer: &str| {
+			ids.pointer(pointer)
+				.and_then(|v| v.as_str())
+				.map(str::to_owned)
+				.ok_or_else(|| GithubError::new_graphql(format!("no {pointer} in {ids}")))
+		};
+		let mutation = r#"
+			mutation($issue: ID!, $target: ID!) {
+				transferIssue(input: { issueId: $issue, repositoryId: $target }) { issue { number } }
+			}
+		"#;
+		let moved = self
+			.graphql(
+				mutation,
+				serde_json::json!({ "issue": id("/data/repository/issue/id")?, "target": id("/data/target/id")? }),
+				"transfer issue",
+			)
+			.await?;
+		moved
+			.pointer("/data/transferIssue/issue/number")
+			.and_then(|v| v.as_u64())
+			.ok_or_else(|| GithubError::new_graphql(format!("transferIssue returned no number: {moved}")))
+	}
+
+	async fn list_labels(&self, repo: RepoInfo) -> Result<Vec<String>, GithubError> {
+		let mut names = Vec::new();
+		for page in 1.. {
+			let url = format!(
+				"https://api.github.com/repos/{}/{}/labels?per_page=100&page={page}",
+				repo.owner().expect("github repo"),
+				repo.repo()
+			);
+			let res = self.get(&url).send().await?;
+			if !res.status().is_success() {
+				let status = res.status();
+				let body = res.text().await.unwrap_or_default();
+				return Err(GithubError::new_api(status, body, "list labels".to_string()));
+			}
+			let labels = res.json::<Vec<GithubLabel>>().await?;
+			let last = labels.len() < 100;
+			names.extend(labels.into_iter().map(|l| l.name));
+			if last {
+				break;
+			}
+		}
+		Ok(names)
+	}
+
+	async fn add_assignees(&self, repo: RepoInfo, issue_number: u64, assignees: &[String]) -> Result<(), GithubError> {
+		let url = format!(
+			"https://api.github.com/repos/{}/{}/issues/{issue_number}/assignees",
+			repo.owner().expect("github repo"),
+			repo.repo()
+		);
+		self.post_json(&url, &serde_json::json!({ "assignees": assignees }), "Failed to add assignees").await
+	}
 }
 
 //==============================================================================
@@ -748,7 +832,7 @@ impl GithubClient for RetryingGithubClient {
 		retrying!(self.inner.update_issue_title(repo, issue_number, title))
 	}
 
-	async fn update_issue_state(&self, repo: RepoInfo, issue_number: u64, state: &str) -> Result<(), GithubError> {
+	async fn update_issue_state(&self, repo: RepoInfo, issue_number: u64, state: &CloseState) -> Result<(), GithubError> {
 		retrying!(self.inner.update_issue_state(repo, issue_number, state))
 	}
 
@@ -822,6 +906,18 @@ impl GithubClient for RetryingGithubClient {
 
 	async fn update_milestone(&self, repo: RepoInfo, number: u64, description: &str, due_on: Option<jiff::Timestamp>) -> Result<(), GithubError> {
 		retrying!(self.inner.update_milestone(repo, number, description, due_on))
+	}
+
+	async fn transfer_issue(&self, repo: RepoInfo, issue_number: u64, target: RepoInfo) -> Result<u64, GithubError> {
+		retrying!(self.inner.transfer_issue(repo, issue_number, target))
+	}
+
+	async fn list_labels(&self, repo: RepoInfo) -> Result<Vec<String>, GithubError> {
+		retrying!(self.inner.list_labels(repo))
+	}
+
+	async fn add_assignees(&self, repo: RepoInfo, issue_number: u64, assignees: &[String]) -> Result<(), GithubError> {
+		retrying!(self.inner.add_assignees(repo, issue_number, assignees))
 	}
 }
 

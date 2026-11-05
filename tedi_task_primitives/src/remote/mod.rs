@@ -476,7 +476,7 @@ impl Sink<Remote> for Issue {
 
 			// Close if needed
 			if closed {
-				gh.update_issue_state(repo_info, created.number, "closed").await?;
+				gh.update_issue_state(repo_info, created.number, &self.contents.state).await?;
 			}
 
 			// Link to parent if this issue has one
@@ -527,9 +527,8 @@ impl Sink<Remote> for Issue {
 			None => false,
 		};
 		if remote_state_changed {
-			let state = self.contents.state.to_github_state();
-			println!("Updating issue #{issue_number} state to {state}...");
-			gh.update_issue_state(repo_info, issue_number, state).await?;
+			println!("Updating issue #{issue_number} state to {}...", self.contents.state.to_github_state());
+			gh.update_issue_state(repo_info, issue_number, &self.contents.state).await?;
 			changed = true;
 		}
 

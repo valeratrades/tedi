@@ -677,7 +677,7 @@ async fn adopt(parent: &IssueLink, children: &[IssueLink]) -> Result<()> {
 
 /// Load a local issue by its IssueLink. A virtual link's path is the file directly; a remote
 /// link is resolved by number under its project.
-async fn load_local_issue(link: &IssueLink) -> Result<Issue> {
+pub(crate) async fn load_local_issue(link: &IssueLink) -> Result<Issue> {
 	let path = match link {
 		IssueLink::Virtual(p) => p.clone(),
 		IssueLink::Owned(_) => Local::find_by_number(link.project(), link.number(), FsReader).ok_or_else(|| eyre!("issue #{} not found locally", link.number()))?,

@@ -560,6 +560,10 @@ mod types {
 		Write {
 			edited: VirtualIssue,
 		},
+		/// Repoint blocker refs at issues that moved repo (`!mv`).
+		Relink {
+			moved: std::collections::HashMap<IssueLink, IssueLink>,
+		},
 		/// Mock modifier that does nothing but reports file as modified. For testing.
 		MockGhostEdit,
 	}
@@ -665,6 +669,10 @@ mod types {
 						file_modified: *issue != old_issue,
 					}
 				}
+				Modifier::Relink { moved } => ModifyResult {
+					output: None,
+					file_modified: issue.contents.blockers.relink(issue.repo_info(), moved, false),
+				},
 				Modifier::MockGhostEdit => ModifyResult { output: None, file_modified: true },
 			};
 

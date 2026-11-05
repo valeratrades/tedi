@@ -74,6 +74,7 @@ todo clockify stop                        # Stop tracking
 # !b  on its own line:   insert blockers section (expands to # Blockers)
 # !c  on its own line:   insert new comment      (expands to <!-- new comment -->)
 # !u  on last line:      undo — abort sync, treat as if no changes were made
+# !mv [owner/]repo  on an issue line in a sprint/urgent buffer: move it (and its subtree) to another repo
 
 # Shell integration (add to your shell rc)
 eval "$(todo init zsh)"                   # Or: bash, fish

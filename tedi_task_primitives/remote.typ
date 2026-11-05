@@ -123,7 +123,7 @@ sink(&mut self, old: Option<&Issue>)
   comments, dropped     ─▶ DELETE comments/{id}
   children              ─▶ recurse against old.children[selector]
 
-  `title` and `state_reason` have no call on this path — the client trait carries none.
+  `state_reason` rides along with the state, but a Closed ↔ NotPlanned switch alone makes no call.
 ```
 
 #align(center, diagram(

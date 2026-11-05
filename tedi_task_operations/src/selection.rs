@@ -328,6 +328,24 @@ impl Selected {
 		sel.save()
 	}
 
+	/// Point every stored selection (paths, history, the cached normal sprint) at issues' new places.
+	pub(crate) fn relink(moved: &HashMap<IssueLink, IssueLink>) -> std::io::Result<()> {
+		let relink = |url: &mut String| {
+			if let Some(new) = IssueLink::parse(url).and_then(|l| moved.get(&l)) {
+				*url = new.to_string();
+			}
+		};
+		let mut sel = Self::load();
+		sel.paths.values_mut().flatten().for_each(relink);
+		sel.history.values_mut().flat_map(|h| h.back.iter_mut().chain(h.forward.iter_mut())).flatten().for_each(relink);
+		if let Some(normal) = &mut sel.normal {
+			let mut view = TaskView::parse(&normal.content);
+			view.relink(moved);
+			normal.content = view.serialize();
+		}
+		sel.save()
+	}
+
 	/// Milestone links in the active view that are not yet stored in the local milestone tree.
 	pub fn uncached_active_milestones() -> Vec<MilestoneLink> {
 		let sel = Self::load();

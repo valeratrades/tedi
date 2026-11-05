@@ -54,6 +54,9 @@ pub struct MockGithubClient {
 	/// All milestones, keyed by (owner, repo) -> number -> milestone
 	milestones: Mutex<HashMap<RepoKey, HashMap<u64, MockMilestoneData>>>,
 
+	/// Labels defined per repo; a repo listed here exists even without issues
+	labels: Mutex<HashMap<RepoKey, Vec<String>>>,
+
 	/// When set, `get_milestone`/`update_milestone` fail with this status (fault injection).
 	fail_status: Option<reqwest::StatusCode>,
 
@@ -71,6 +74,7 @@ impl MockGithubClient {
 			comments: Mutex::new(HashMap::new()),
 			sub_issues: Mutex::new(HashMap::new()),
 			milestones: Mutex::new(HashMap::new()),
+			labels: Mutex::new(HashMap::new()),
 			fail_status: std::env::var(ENV_MOCK_FAIL_GET_MILESTONE)
 				.ok()
 				.and_then(|v| v.parse::<u16>().ok())
@@ -116,6 +120,11 @@ impl MockGithubClient {
 					.and_then(|v| v.as_array())
 					.map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
 					.unwrap_or_default();
+				let assignees: Vec<String> = issue
+					.get("assignees")
+					.and_then(|v| v.as_array())
+					.map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+					.unwrap_or_default();
 
 				let key = RepoKey::new(owner, repo);
 				let id = self.next_issue_id.fetch_add(1, Ordering::SeqCst);
@@ -141,6 +150,7 @@ impl MockGithubClient {
 					labels_timestamp,
 					state_timestamp,
 					milestone,
+					assignees,
 				};
 
 				self.issues.lock().unwrap().entry(key).or_default().insert(number, issue_data);
@@ -190,6 +200,19 @@ impl MockGithubClient {
 				};
 
 				comments.entry(key).or_default().insert(comment_id, comment_data);
+			}
+		}
+
+		if let Some(label_arr) = state.get("labels").and_then(|v| v.as_array()) {
+			let mut labels = self.labels.lock().unwrap();
+			for entry in label_arr {
+				let owner = entry.get("owner").and_then(|v| v.as_str()).ok_or("missing owner")?;
+				let repo = entry.get("repo").and_then(|v| v.as_str()).ok_or("missing repo")?;
+				let names = entry.get("names").and_then(|v| v.as_array()).ok_or("missing names")?;
+				labels.insert(
+					RepoKey::new(owner, repo),
+					names.iter().map(|n| n.as_str().map(str::to_owned).ok_or("label names are strings")).collect::<Result<_, _>>()?,
+				);
 			}
 		}
 
@@ -246,6 +269,7 @@ impl MockGithubClient {
 			labels_timestamp: timestamp,
 			state_timestamp: timestamp,
 			milestone: None,
+			assignees: Vec::new(),
 		};
 
 		let mut issues = self.issues.lock().unwrap();
@@ -348,7 +372,15 @@ impl MockGithubClient {
 			user: GithubUser { login: data.owner_login.clone() },
 			state: data.state.clone(),
 			state_reason: data.state_reason.clone(),
+			assignees: data.assignees.iter().map(|login| GithubUser { login: login.clone() }).collect(),
 		}
+	}
+
+	/// Next free issue number in `repo`, counting what's stored locally too.
+	fn next_number(&self, repo: RepoInfo) -> u64 {
+		let max_from_memory = self.issues.lock().unwrap().get(&RepoKey::from(repo)).and_then(|m| m.keys().max().copied()).unwrap_or(0);
+		let max_from_meta = Local::load_project_meta(repo).issues.keys().max().copied().unwrap_or(0);
+		scan_max_issue_number(repo).max(max_from_meta).max(max_from_memory) + 1
 	}
 }
 
@@ -414,6 +446,7 @@ struct MockIssueData {
 	/// Timestamp for state changes (open/closed)
 	state_timestamp: Option<jiff::Timestamp>,
 	milestone: Option<u64>,
+	assignees: Vec<String>,
 }
 
 /// Internal representation of a milestone in the mock
@@ -578,12 +611,19 @@ impl GithubClient for MockGithubClient {
 	}
 
 	#[instrument(skip_all, fields(issue_number, state))]
-	async fn update_issue_state(&self, repo: RepoInfo, issue_number: u64, state: &str) -> Result<(), GithubError> {
+	async fn update_issue_state(&self, repo: RepoInfo, issue_number: u64, state: &crate::CloseState) -> Result<(), GithubError> {
 		let owner = repo.owner().expect("github repo");
 		let repo_name = repo.repo();
+		let (state, reason) = (state.to_github_state(), state.to_github_state_reason());
 		tracing::info!(target: "mock_github", owner, repo_name, issue_number, state, "update_issue_state");
-		self.log_call(&format!("update_issue_state({owner}, {repo_name}, {issue_number}, {state})"));
-		self.with_issue_mut(repo, issue_number, |issue| issue.state = state.to_string())
+		match reason {
+			Some(reason) => self.log_call(&format!("update_issue_state({owner}, {repo_name}, {issue_number}, {state}/{reason})")),
+			None => self.log_call(&format!("update_issue_state({owner}, {repo_name}, {issue_number}, {state})")),
+		}
+		self.with_issue_mut(repo, issue_number, |issue| {
+			issue.state = state.to_string();
+			issue.state_reason = reason.map(str::to_owned);
+		})
 	}
 
 	#[instrument(skip_all, fields(issue_number))]
@@ -609,7 +649,7 @@ impl GithubClient for MockGithubClient {
 		let owner = repo.owner().expect("github repo");
 		let repo_name = repo.repo();
 		tracing::info!(target: "mock_github", owner, repo_name, issue_number, "create_comment");
-		self.log_call(&format!("create_comment({owner}, {repo_name}, {issue_number}, <body>)"));
+		self.log_call(&format!("create_comment({owner}, {repo_name}, {issue_number}, {body:?})"));
 
 		let key = RepoKey::new(owner, repo_name);
 		let comment_id = self.next_comment_id.fetch_add(1, Ordering::SeqCst);
@@ -652,19 +692,11 @@ impl GithubClient for MockGithubClient {
 		let owner = repo.owner().expect("github repo");
 		let repo_name = repo.repo();
 		tracing::info!(target: "mock_github", owner, repo_name, title, "create_issue");
-		self.log_call(&format!("create_issue({owner}, {repo_name}, {title}, <body>)"));
+		self.log_call(&format!("create_issue({owner}, {repo_name}, {title}, {body:?})"));
 
 		let key = RepoKey::new(owner, repo_name);
 		let id = self.next_issue_id.fetch_add(1, Ordering::SeqCst);
-
-		// Get next issue number: check in-memory store, filesystem, and meta
-		let number = {
-			let max_from_memory = self.issues.lock().unwrap().get(&key).map(|m| m.keys().max().copied().unwrap_or(0)).unwrap_or(0);
-			let max_from_files = scan_max_issue_number(repo);
-			let project_meta = Local::load_project_meta(repo);
-			let max_from_meta = project_meta.issues.keys().max().copied().unwrap_or(0);
-			max_from_files.max(max_from_meta).max(max_from_memory) + 1
-		};
+		let number = self.next_number(repo);
 
 		let now = Some(jiff::Timestamp::now());
 		let issue = MockIssueData {
@@ -681,6 +713,7 @@ impl GithubClient for MockGithubClient {
 			labels_timestamp: now,
 			state_timestamp: now,
 			milestone: None,
+			assignees: Vec::new(),
 		};
 
 		let mut issues = self.issues.lock().unwrap();
@@ -871,8 +904,7 @@ impl GithubClient for MockGithubClient {
 		self.log_call(&format!("repo_exists({owner}, {repo_name})"));
 
 		let key = RepoKey::new(owner, repo_name);
-		let issues = self.issues.lock().unwrap();
-		Ok(issues.contains_key(&key))
+		Ok(self.issues.lock().unwrap().contains_key(&key) || self.labels.lock().unwrap().contains_key(&key))
 	}
 
 	// Milestones are served from in-memory state seeded via the `milestones` array of {app}_MOCK_STATE.
@@ -929,6 +961,65 @@ impl GithubClient for MockGithubClient {
 		}
 		Ok(())
 	}
+
+	/// Like GitHub: comments and assignees travel, labels only where the target defines them, and the
+	/// sub-issue relations it was part of are dropped.
+	async fn transfer_issue(&self, repo: RepoInfo, issue_number: u64, target: RepoInfo) -> Result<u64, GithubError> {
+		let (owner, repo_name) = (repo.owner().expect("github repo"), repo.repo());
+		self.log_call(&format!("transfer_issue({owner}, {repo_name}, {issue_number}, {target})"));
+		if repo.owner() != target.owner() {
+			return Err(GithubError::new_other(format!("can't transfer across owners: {repo} → {target}")));
+		}
+		let number = self.next_number(target);
+		let target_labels = self.labels.lock().unwrap().get(&RepoKey::from(target)).cloned().unwrap_or_default();
+		let mut issue = {
+			let mut issues = self.issues.lock().unwrap();
+			issues
+				.get_mut(&RepoKey::from(repo))
+				.and_then(|m| m.remove(&issue_number))
+				.ok_or_else(|| GithubError::new_other(format!("Issue not found: #{issue_number}")))?
+		};
+		issue.number = number;
+		issue.labels.retain(|l| target_labels.contains(l));
+		issue.milestone = None;
+		self.issues.lock().unwrap().entry(RepoKey::from(target)).or_default().insert(number, issue);
+
+		let moved: Vec<MockCommentData> = {
+			let mut comments = self.comments.lock().unwrap();
+			match comments.get_mut(&RepoKey::from(repo)) {
+				Some(c) => {
+					let ids: Vec<u64> = c.values().filter(|c| c.issue_number == issue_number).map(|c| c.id).collect();
+					ids.iter().map(|id| c.remove(id).expect("listed just above")).collect()
+				}
+				None => Vec::new(),
+			}
+		};
+		let mut comments = self.comments.lock().unwrap();
+		let target_comments = comments.entry(RepoKey::from(target)).or_default();
+		for mut c in moved {
+			c.issue_number = number;
+			target_comments.insert(c.id, c);
+		}
+
+		if let Some(relations) = self.sub_issues.lock().unwrap().get_mut(&RepoKey::from(repo)) {
+			relations.remove(&issue_number);
+			for children in relations.values_mut() {
+				children.retain(|&c| c != issue_number);
+			}
+		}
+		Ok(number)
+	}
+
+	async fn list_labels(&self, repo: RepoInfo) -> Result<Vec<String>, GithubError> {
+		self.log_call(&format!("list_labels({repo})"));
+		Ok(self.labels.lock().unwrap().get(&RepoKey::from(repo)).cloned().unwrap_or_default())
+	}
+
+	async fn add_assignees(&self, repo: RepoInfo, issue_number: u64, assignees: &[String]) -> Result<(), GithubError> {
+		let (owner, repo_name) = (repo.owner().expect("github repo"), repo.repo());
+		self.log_call(&format!("add_assignees({owner}, {repo_name}, {issue_number}, {assignees:?})"));
+		self.with_issue_mut(repo, issue_number, |issue| issue.assignees.extend(assignees.iter().cloned()))
+	}
 }
 
 #[cfg(test)]
@@ -963,7 +1054,7 @@ mod tests {
 		assert_eq!(issue.body, Some("New body".to_string()));
 
 		// Update state
-		client.update_issue_state(repo, 123, "closed").await.unwrap();
+		client.update_issue_state(repo, 123, &crate::CloseState::Closed).await.unwrap();
 		let issue = client.fetch_issue(repo, 123).await.unwrap();
 		assert_eq!(issue.state, "closed");
 	}
@@ -982,7 +1073,7 @@ mod tests {
 
 		// Fetch sub-issues
 		let sub_issues = client.fetch_sub_issues(repo, 1).await.unwrap();
-		assert_debug_snapshot!(format!("{sub_issues:?}"), @r#""[GithubIssue { id: 1001, number: 2, title: \"Child Issue\", body: None, labels: [], user: GithubUser { login: \"testuser\" }, state: \"open\", state_reason: None }]""#);
+		assert_debug_snapshot!(format!("{sub_issues:?}"), @r#""[GithubIssue { id: 1001, number: 2, title: \"Child Issue\", body: None, labels: [], user: GithubUser { login: \"testuser\" }, state: \"open\", state_reason: None, assignees: [] }]""#);
 	}
 
 	#[tokio::test]

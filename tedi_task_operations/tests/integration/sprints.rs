@@ -2172,3 +2172,202 @@ async fn test_sprint_deleting_child_link_from_parent_block() {
 	);
 	assert!(out.status.success(), "stderr: {}", out.stderr);
 }
+
+// ─── `!mv` ───────────────────────────────────────────────────────────────────
+
+/// GitHub knows `repo` (it has these labels): a move target must exist.
+fn seed_labels(ctx: &TestContext, repos: &[(&str, &str, &[&str])]) {
+	let mut state: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&ctx.mock_state_path).unwrap()).unwrap();
+	state["labels"] = repos
+		.iter()
+		.map(|(owner, repo, names)| serde_json::json!({ "owner": owner, "repo": repo, "names": names }))
+		.collect();
+	std::fs::write(&ctx.mock_state_path, state.to_string()).unwrap();
+}
+
+/// Append `suffix` to the buffer's list line holding `needle`.
+fn on_line(content: &str, needle: &str, suffix: &str) -> String {
+	let line = content
+		.lines()
+		.find(|l| l.trim_start().starts_with("- ") && l.contains(needle))
+		.unwrap_or_else(|| panic!("no list line holds {needle}:\n{content}"));
+	content.replacen(line, &format!("{line}{suffix}"), 1)
+}
+
+/// Every stored issue file, relative to the issues dir.
+fn issue_tree(ctx: &TestContext) -> String {
+	let issues = ctx.xdg.data_dir().join("issues");
+	let mut tree: Vec<String> = walkdir::WalkDir::new(&issues)
+		.into_iter()
+		.map(|e| e.unwrap().path().strip_prefix(&issues).unwrap().display().to_string())
+		.filter(|p| p.ends_with(".md") && !p.starts_with("__milestones__") && !p.starts_with(".git"))
+		.collect();
+	tree.sort();
+	tree.join("\n")
+}
+
+fn sprint_body() -> String {
+	std::fs::read_to_string(tedi_task_operations::local::Local::milestone_file_path(tedi_task_operations::RepoInfo::new("o", "r"), 7, "1d")).unwrap()
+}
+
+fn mv_edit(ctx: &TestContext, needle: &'static str, suffix: &'static str) -> RunOutput {
+	ctx.milestone_client_edit(
+		&["--mock", "sprints", "edit", "1d"],
+		None,
+		Some(Box::new(move |tmp: &Path| {
+			let c = std::fs::read_to_string(tmp).unwrap();
+			std::fs::write(tmp, on_line(&c, needle, suffix)).unwrap();
+		}) as EditFn),
+	)
+}
+
+/// Same owner: GitHub's own transfer carries the issue, a label the target lacks is reported, and
+/// the sprint, the local file and the selection all follow it.
+#[tokio::test]
+async fn test_mv_same_owner_transfers_and_relinks() {
+	let ctx = TestContext::build();
+	let issue = "- [ ] (bug, x) Fix button <!-- @mock_user https://github.com/o/r/issues/10 -->\n  body\n";
+	seed_sprint(&ctx, issue, issue, -100, "2099-01-01T00:00:00Z").await;
+	seed_labels(&ctx, &[("o", "repo_b", &["bug"])]);
+	std::fs::write(
+		ctx.xdg.cache_dir().join("sprints_selection.json"),
+		serde_json::json!({
+			"paths": { "1d": ["https://github.com/o/r/issues/10"] },
+			"history": { "1d": { "back": [["https://github.com/o/r/issues/10"]], "forward": [] } },
+		})
+		.to_string(),
+	)
+	.unwrap();
+
+	let out = ctx.milestone_client_edit(
+		&["--mock", "sprints", "edit", "1d"],
+		None,
+		Some(Box::new(|tmp: &Path| {
+			let c = std::fs::read_to_string(tmp).unwrap();
+			let marker = " <!-- @mock_user https://github.com/o/r/issues/10 -->";
+			assert!(c.contains(marker), "{c}");
+			std::fs::write(tmp, c.replacen(marker, &format!(" !mv repo_b{marker}"), 1)).unwrap();
+		}) as EditFn),
+	);
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+
+	assert!(ctx.github_calls().iter().any(|c| c == "transfer_issue(o, r, 10, o/repo_b)"), "{:?}", ctx.github_calls());
+	insta::assert_snapshot!(issue_tree(&ctx), @"o/repo_b/1_-_Fix_button.md");
+	let moved = std::fs::read_to_string(ctx.xdg.data_dir().join("issues/o/repo_b/1_-_Fix_button.md")).unwrap();
+	assert!(moved.starts_with("- [ ] (bug) Fix button <!-- @mock_user https://github.com/o/repo_b/issues/1 -->"), "{moved}");
+	assert!(out.stderr.contains("`x`"), "the label repo_b lacks is reported: {}", out.stderr);
+	insta::assert_snapshot!(sprint_body(), @"- https://github.com/o/repo_b/issues/1");
+
+	let selection: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(ctx.xdg.cache_dir().join("sprints_selection.json")).unwrap()).unwrap();
+	assert_eq!(selection["paths"]["1d"], serde_json::json!(["https://github.com/o/repo_b/issues/1"]));
+	assert_eq!(selection["history"]["1d"]["back"], serde_json::json!([["https://github.com/o/repo_b/issues/1"]]));
+}
+
+/// Across owners GitHub can't transfer: the issue is recreated in the target, keeping who wrote it
+/// and who it is assigned to, and the original is closed as a duplicate pointing at its new home.
+#[tokio::test]
+async fn test_mv_cross_owner_recreates_and_closes_original() {
+	let ctx = TestContext::build();
+	let issue = "- [ ] Fix button <!-- @other https://github.com/o/r/issues/10 -->\n  body\n\n  <!-- @other https://github.com/o/r/issues/10#issuecomment-555 -->\n  their comment\n";
+	seed_sprint(&ctx, issue, issue, -100, "2099-01-01T00:00:00Z").await;
+	seed_labels(&ctx, &[("ev", "repo_c", &[])]);
+	let mut state: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&ctx.mock_state_path).unwrap()).unwrap();
+	let original = state["issues"].as_array_mut().unwrap().iter_mut().find(|i| i["number"] == 10).unwrap();
+	original["owner_login"] = serde_json::json!("other"); // fixtures author every issue as `mock_user`
+	original["assignees"] = serde_json::json!(["a"]);
+	std::fs::write(&ctx.mock_state_path, state.to_string()).unwrap();
+
+	let out = mv_edit(&ctx, "issues/10 -->", " !mv ev/repo_c");
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+
+	let calls = ctx.github_calls();
+	assert!(calls.iter().any(|c| c.starts_with("create_issue(ev, repo_c, Fix button, ")), "{calls:?}");
+	assert!(calls.iter().any(|c| c == r#"add_assignees(ev, repo_c, 1, ["a"])"#), "{calls:?}");
+	assert!(calls.iter().any(|c| c == "update_issue_state(o, r, 10, closed/duplicate)"), "{calls:?}");
+	assert!(
+		calls
+			.iter()
+			.any(|c| c.starts_with("create_comment(o, r, 10, ") && c.contains("Moved to https://github.com/ev/repo_c/issues/1") && c.contains("cc @a")),
+		"{calls:?}"
+	);
+	insta::assert_snapshot!(issue_tree(&ctx), @"ev/repo_c/1_-_Fix_button.md");
+	let moved = std::fs::read_to_string(ctx.xdg.data_dir().join("issues/ev/repo_c/1_-_Fix_button.md")).unwrap();
+	assert!(moved.contains("Opened by @other"), "{moved}");
+	assert!(moved.contains("their comment") && moved.contains("— @other"), "{moved}");
+	insta::assert_snapshot!(sprint_body(), @"- https://github.com/ev/repo_c/issues/1");
+}
+
+/// A parent carries its subtree along, the sub-issue link holding in the target.
+#[tokio::test]
+async fn test_mv_parent_carries_subtree() {
+	let ctx = TestContext::build();
+	seed_sprint(&ctx, PARENT_WITH_CHILD, PARENT_WITH_CHILD, -100, "2099-01-01T00:00:00Z").await;
+	seed_labels(&ctx, &[("o", "repo_b", &[])]);
+
+	let out = mv_edit(&ctx, "- [ ] Parent <!--", " !mv repo_b");
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+
+	assert!(ctx.github_calls().iter().any(|c| c.starts_with("add_sub_issue(o, repo_b, parent=2,")), "{:?}", ctx.github_calls());
+	insta::assert_snapshot!(issue_tree(&ctx), @"
+	o/repo_b/2_-_Parent/1_-_Child.md
+	o/repo_b/2_-_Parent/__main__.md
+	");
+	insta::assert_snapshot!(sprint_body(), @"- https://github.com/o/repo_b/issues/2");
+}
+
+/// A child moved on its own leaves its parent: it becomes a top-level issue of the target.
+#[tokio::test]
+async fn test_mv_child_detaches_from_parent() {
+	let ctx = TestContext::build();
+	seed_sprint(&ctx, PARENT_WITH_CHILD, PARENT_WITH_CHILD, -100, "2099-01-01T00:00:00Z").await;
+	seed_labels(&ctx, &[("o", "repo_b", &[])]);
+
+	let out = mv_edit(&ctx, "issues/11 -->", " !mv repo_b");
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+
+	assert!(ctx.github_calls().iter().any(|c| c.starts_with("remove_sub_issue(o, r, parent=10,")), "{:?}", ctx.github_calls());
+	insta::assert_snapshot!(issue_tree(&ctx), @"
+	o/r/10_-_Parent.md
+	o/repo_b/1_-_Child.md
+	");
+	insta::assert_snapshot!(sprint_body(), @"- https://github.com/o/r/issues/10");
+}
+
+/// Offline, nothing can move: the edit is rejected whole.
+#[tokio::test]
+async fn test_mv_offline_rejects_edit() {
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+	ctx.local(
+		&parse_virtual("- [ ] My Issue <!-- @mock_user https://github.com/o/r/issues/10 -->\n\tbody\n"),
+		Some(Seed::new(0)),
+	)
+	.await;
+	let urgent = ctx.xdg.data_dir().join("issues/urgent.md");
+	std::fs::write(&urgent, "- https://github.com/o/r/issues/10\n").unwrap();
+	let before = issue_tree(&ctx);
+
+	let out = ctx.urgent_edit(|tmp| {
+		let c = std::fs::read_to_string(tmp).unwrap();
+		std::fs::write(tmp, on_line(&c, "issues/10 -->", " !mv repo_b")).unwrap();
+	});
+	assert!(!out.status.success(), "stdout: {}", out.stdout);
+	assert_eq!(std::fs::read_to_string(&urgent).unwrap(), "- https://github.com/o/r/issues/10\n");
+	assert_eq!(issue_tree(&ctx), before);
+}
+
+/// Another issue's blocker pointing at the moved issue follows it.
+#[tokio::test]
+async fn test_mv_rewrites_blocker_refs_elsewhere() {
+	let ctx = TestContext::build();
+	let blocked = parse_virtual("- [ ] Blocked <!-- @mock_user https://github.com/o/r/issues/12 -->\n  body\n\n  # Blockers\n  - r#10\n");
+	ctx.remote(&blocked, Some(Seed::new(-100)));
+	ctx.consensus(&blocked, Some(Seed::new(-100))).await;
+	seed_sprint(&ctx, ISSUE_10, ISSUE_10, -100, "2099-01-01T00:00:00Z").await;
+	seed_labels(&ctx, &[("o", "repo_b", &[])]);
+
+	let out = mv_edit(&ctx, "issues/10 -->", " !mv repo_b");
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+
+	assert!(local_issue(12).contains("- o/repo_b#1"), "{}", local_issue(12));
+	assert!(ctx.github_calls().iter().any(|c| c.starts_with("update_issue_body(o, r, 12,")), "{:?}", ctx.github_calls());
+}

@@ -149,6 +149,7 @@ Typed while editing, expanded on save.
 | `!c` | own line          | start a new comment                           |
 | `!s` | own line, or `# Blockers !s` | make this block the active selection |
 | `!u` | last line         | abort — the edit is discarded entirely        |
+| `!mv [owner/]repo` | issue line in a sprint/urgent buffer, at its end or before its `<!-- … -->` | move the issue and its subtree to that repo (default owner: the issue's); online only |
 
 ## Views: sprints, urgent, milestones
 

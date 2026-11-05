@@ -311,6 +311,13 @@ impl TaskView {
 		out
 	}
 
+	/// Point every issue ref held in `moved` at its new place.
+	pub fn relink(&mut self, moved: &HashMap<IssueLink, IssueLink>) {
+		for items in self.sections.values_mut() {
+			relink_items(items, moved);
+		}
+	}
+
 	/// Replace the item at `id` with a bare link to its materialized issue.
 	pub fn assign_link(&mut self, id: &TaskItemId, link: IssueLink) {
 		let items = self.sections.get_mut(&id.section).expect("TaskItemId produced by homeless_tasks on this view");
@@ -351,6 +358,80 @@ pub fn embedded_issues(content: &str) -> Vec<(IssueLink, String)> {
 		i = end;
 	}
 	out
+}
+
+/// `!mv <target>` typed onto a list line, at its end or right before its `<!-- … -->` markers.
+#[derive(Debug, thiserror::Error)]
+#[error("`!mv` on `{line}`: {reason}")]
+pub struct MoveError {
+	line: String,
+	reason: &'static str,
+}
+
+/// Cut every `!mv <target>` out of a task-view buffer, pairing the issue its line names with the
+/// repo it moves to: `repo` (the issue's own owner) or `owner/repo`.
+pub fn take_moves(content: &str) -> Result<(String, Vec<(IssueLink, RepoInfo)>), MoveError> {
+	let mut kept = String::with_capacity(content.len());
+	let mut moves = Vec::new();
+	for line in content.split_inclusive('\n') {
+		let Some((rest, target)) = cut_move(line) else {
+			kept.push_str(line);
+			continue;
+		};
+		let error = |reason| MoveError {
+			line: line.trim().to_string(),
+			reason,
+		};
+		let link = issue_block_start(&rest).or_else(|| single_link(&rest)).ok_or_else(|| error("the line names no issue"))?;
+		let source = link.project();
+		let (owner, repo) = match target.split_once('/') {
+			Some((owner, repo)) => (owner, repo),
+			None => (source.owner().ok_or_else(|| error("a local-only issue can't move"))?, target),
+		};
+		if owner.is_empty() || repo.is_empty() || repo.contains('/') || owner.len() > 39 || repo.len() > 100 {
+			return Err(error("the target is not `repo` or `owner/repo`"));
+		}
+		if matches!(link, IssueLink::Virtual(_)) {
+			return Err(error("a local-only issue can't move"));
+		}
+		kept.push_str(&rest);
+		moves.push((link, RepoInfo::new(owner, repo)));
+	}
+	Ok((kept, moves))
+}
+
+/// `line` without its `!mv`, and the target.
+fn cut_move(line: &str) -> Option<(String, &str)> {
+	if !line.trim_start().starts_with("- ") {
+		return None;
+	}
+	line.match_indices(" !mv ").find_map(|(at, cmd)| {
+		let rest = line[at + cmd.len()..].trim_start();
+		let target = rest.split_whitespace().next()?;
+		let after = rest[target.len()..].trim();
+		(after.is_empty() || after.starts_with("<!--")).then(|| {
+			let mut kept = line[..at].to_string();
+			if !after.is_empty() {
+				kept.push(' ');
+				kept.push_str(after);
+			}
+			if line.ends_with('\n') {
+				kept.push('\n');
+			}
+			(kept, target)
+		})
+	})
+}
+
+/// The issue a bare `- [ ] <link>` line consists of.
+fn single_link(line: &str) -> Option<IssueLink> {
+	let item = line.trim().strip_prefix("- ")?;
+	let item = match item.strip_prefix('[').and_then(|s| s.split_once("] ")) {
+		Some((_, rest)) => rest,
+		None => item,
+	};
+	let word = item.trim();
+	(!word.contains(char::is_whitespace)).then(|| IssueRef::parse_word(word)?.to_issue_link())?
 }
 
 /// The issue a list line is the expanded block of, read off its identity marker.
@@ -779,6 +860,21 @@ fn remove_linked_issue_items(items: &mut Vec<TaskItem>, links: &[IssueLink]) {
 		for section in &mut item.children {
 			if let Section::List(list) = section {
 				remove_linked_issue_items(list, links);
+			}
+		}
+	}
+}
+
+fn relink_items(items: &mut [TaskItem], moved: &HashMap<IssueLink, IssueLink>) {
+	for item in items {
+		if let TaskContent::Issue { r#ref } = &mut item.content
+			&& let Some(new) = r#ref.to_issue_link().and_then(|l| moved.get(&l))
+		{
+			*r#ref = IssueRef::Url(new.clone());
+		}
+		for section in &mut item.children {
+			if let Section::List(list) = section {
+				relink_items(list, moved);
 			}
 		}
 	}

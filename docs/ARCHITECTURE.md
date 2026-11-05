@@ -80,6 +80,8 @@ A buffer is folded back against the state it was rendered from, never against a 
 
 A sprint stores links only, so an issue expanded into an edit buffer has no second home there: its block is sliced back out of the buffer verbatim and committed whole through the same `VirtualIssue::parse` its own file goes through (`Modifier::Write`) — body, state, labels, comments and blockers alike. A block that doesn't compose fails the edit rather than being dropped.
 
+`!mv [owner/]repo` on an issue's line sends it to another repo on save, its subtree with it; a moved child detaches from its parent. Every stored reference follows it, archived milestones aside. Across owners GitHub can't transfer, so the tree is recreated there and the originals closed as duplicates pointing at it.
+
 An unlinked `- [ ] task` becomes an issue on save. Listing existing issues directly under it makes it their parent: it is created in their project, and they become its sub-issues. Without the checkbox it stays a plain-text category header.
 
 Normal sprints store their `TaskView` in the GitHub milestone `description` (keyed by timeframe). On rollover (the first online edit past its due date) the period is archived as a closed `YYYY/MM/DD_{tf}` milestone, and issues that archive recorded as closed leave the sprint. **Urgent** is the special lowest-precision sprint: stored locally (`issues/urgent.md`, no GitHub sync), section-less, and free to hold plain-text items alongside issue refs; milestone refs are rejected on edit. It prunes on every processing rather than on rollover: closed links are dropped (the file is deleted if nothing else remains) — deferred while an edit session holds the urgent lock. Plain-text items are never cleanup fodder.
