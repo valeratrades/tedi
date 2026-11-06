@@ -925,10 +925,14 @@ pub(crate) fn drain_pipe<R: Read>(pipe: &mut R, buf: &mut Vec<u8>) {
 
 pub(crate) fn get_binary_path() -> PathBuf {
 	static BUILT: std::sync::Once = std::sync::Once::new();
-	let mut path = std::env::current_exe().unwrap();
-	path.pop(); // Remove test binary name
-	path.pop(); // Remove 'deps'
-	path.push("tedi");
+	// the profile dir holds `deps/<test>` (cargo's classic layout) or `build/<pkg>/<hash>/out/<test>` (its build-dir layout)
+	let exe = std::env::current_exe().unwrap();
+	let profile_dir = exe
+		.ancestors()
+		.find(|a| a.file_name().is_some_and(|n| n == "deps" || n == "build"))
+		.and_then(Path::parent)
+		.expect("test binaries run from under the profile dir");
+	let path = profile_dir.join("tedi");
 	// `cargo test` never builds another package's binary; nextest's setup script keeps it fresh locally
 	BUILT.call_once(|| {
 		if !path.exists() {
