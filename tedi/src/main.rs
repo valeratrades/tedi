@@ -110,9 +110,9 @@ async fn main() {
 			let date_format = config.manual_stats.as_ref().map(|m| m.date_format.as_str()).filter(|s| !s.is_empty()).unwrap_or("%Y-%m-%d");
 			tedi_eval::manual_stats::update_or_open(date_format, manual_args).await
 		}
-		Commands::Sprints(sprints_command) => sprints::sprints_command(&*settings, sprints_command, cli.mock, mode).await,
+		Commands::Sprints(sprints_command) => sprints::sprints_command(&settings, sprints_command, cli.mock, mode).await,
 		Commands::Init(args) => {
-			shell_init::output(&*settings, args);
+			shell_init::output(&settings, args);
 			Ok(())
 		}
 		Commands::Clockify(args) => tedi_adapters::clockify::main(exit_on_error(settings.config()).yes, args).await,

@@ -922,10 +922,18 @@ pub(crate) fn drain_pipe<R: Read>(pipe: &mut R, buf: &mut Vec<u8>) {
 }
 
 pub(crate) fn get_binary_path() -> PathBuf {
+	static BUILT: std::sync::Once = std::sync::Once::new();
 	let mut path = std::env::current_exe().unwrap();
 	path.pop(); // Remove test binary name
 	path.pop(); // Remove 'deps'
 	path.push("tedi");
+	// `cargo test` never builds another package's binary; nextest's setup script keeps it fresh locally
+	BUILT.call_once(|| {
+		if !path.exists() {
+			let status = Command::new(env!("CARGO")).args(["build", "-p", "tedi"]).status().expect("cargo is runnable");
+			assert!(status.success(), "building the tedi binary failed");
+		}
+	});
 	path
 }
 

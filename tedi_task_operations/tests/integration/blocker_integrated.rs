@@ -28,6 +28,21 @@ fn write_selection(ctx: &TestContext, titles: &[(&str, &str, &str)]) {
 	ctx.xdg.write_cache("sprints_selection.json", &selection_cache_json(titles));
 }
 
+/// `fixture` stored locally as the active sprint's selected issue, then `args` run on it (in the mock
+/// editor when `editor`). Returns the issue file after, and the run's stderr.
+async fn run_on_selected(fixture: &str, args: &[&str], editor: bool) -> (String, String) {
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+	let issue = ctx.local(&parse_virtual(fixture), None).await;
+	let issue_path = ctx.resolve_issue_path(&issue);
+	write_selection(&ctx, &[("Test Issue", "mock_user", "https://github.com/o/r/issues/1")]);
+	let out = match editor {
+		true => ctx.run_with_editor(args),
+		false => ctx.run(args),
+	};
+	assert!(out.status.success(), "{args:?} failed. stderr: {}", out.stderr);
+	(read_issue_file(&issue_path), out.stderr)
+}
+
 /// The command's own stdout: v_utils' tracing preamble shares the stream and carries timestamps.
 /// Its lines are all indented; every line tedi prints itself starts at column 0.
 fn without_tracing(stdout: &str) -> String {
@@ -53,9 +68,7 @@ fn with_cursor(content: &str, stderr: &str) -> String {
 
 #[tokio::test]
 async fn test_selected_open_cursor_at_last_blocker() {
-	let ctx = TestContext::build_with_preexisting_state_unsafe("");
-
-	let vi = parse_virtual(
+	let (file, stderr) = run_on_selected(
 		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
 
   Body text.
@@ -64,15 +77,12 @@ async fn test_selected_open_cursor_at_last_blocker() {
   - First task
   - Second task
 "#,
-	);
-	let issue = ctx.local(&vi, None).await;
-	let issue_path = ctx.resolve_issue_path(&issue);
-	write_selection(&ctx, &[("Test Issue", "mock_user", "https://github.com/o/r/issues/1")]);
+		&["--offline", "sprints", "selected", "open"],
+		true,
+	)
+	.await;
 
-	let out = ctx.run_with_editor(&["--offline", "sprints", "selected", "open"]);
-	assert!(out.status.success(), "selected open should succeed. stderr: {}", out.stderr);
-
-	insta::assert_snapshot!(with_cursor(&read_issue_file(&issue_path), &out.stderr), @"
+	insta::assert_snapshot!(with_cursor(&file, &stderr), @"
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
 	    Body text.
 
@@ -84,24 +94,19 @@ async fn test_selected_open_cursor_at_last_blocker() {
 
 #[tokio::test]
 async fn test_selected_open_cursor_without_blockers_above_children() {
-	let ctx = TestContext::build_with_preexisting_state_unsafe("");
-
-	let vi = parse_virtual(
+	let (file, stderr) = run_on_selected(
 		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
 
   Body text.
 
   - [ ] Sub Issue <!--sub @mock_user https://github.com/o/r/issues/2 -->
 "#,
-	);
-	let issue = ctx.local(&vi, None).await;
-	let issue_path = ctx.resolve_issue_path(&issue);
-	write_selection(&ctx, &[("Test Issue", "mock_user", "https://github.com/o/r/issues/1")]);
+		&["--offline", "sprints", "selected", "open"],
+		true,
+	)
+	.await;
 
-	let out = ctx.run_with_editor(&["--offline", "sprints", "selected", "open"]);
-	assert!(out.status.success(), "selected open should succeed. stderr: {}", out.stderr);
-
-	insta::assert_snapshot!(with_cursor(&read_issue_file(&issue_path), &out.stderr), @"
+	insta::assert_snapshot!(with_cursor(&file, &stderr), @"
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
 	    Body text.
 	$0
@@ -111,22 +116,17 @@ async fn test_selected_open_cursor_without_blockers_above_children() {
 
 #[tokio::test]
 async fn test_selected_open_cursor_without_blockers_below_body() {
-	let ctx = TestContext::build_with_preexisting_state_unsafe("");
-
-	let vi = parse_virtual(
+	let (file, stderr) = run_on_selected(
 		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
 
   Body text.
 "#,
-	);
-	let issue = ctx.local(&vi, None).await;
-	let issue_path = ctx.resolve_issue_path(&issue);
-	write_selection(&ctx, &[("Test Issue", "mock_user", "https://github.com/o/r/issues/1")]);
+		&["--offline", "sprints", "selected", "open"],
+		true,
+	)
+	.await;
 
-	let out = ctx.run_with_editor(&["--offline", "sprints", "selected", "open"]);
-	assert!(out.status.success(), "selected open should succeed. stderr: {}", out.stderr);
-
-	insta::assert_snapshot!(with_cursor(&read_issue_file(&issue_path), &out.stderr), @"
+	insta::assert_snapshot!(with_cursor(&file, &stderr), @"
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
 	    Body text.
 	$0
@@ -135,9 +135,7 @@ async fn test_selected_open_cursor_without_blockers_below_body() {
 
 #[tokio::test]
 async fn test_selected_pop() {
-	let ctx = TestContext::build_with_preexisting_state_unsafe("");
-
-	let vi = parse_virtual(
+	let (file, _) = run_on_selected(
 		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
 
   Body text.
@@ -147,18 +145,12 @@ async fn test_selected_pop() {
   - Second task
   - Third task
 "#,
-	);
+		&["--offline", "sprints", "selected", "pop"],
+		false,
+	)
+	.await;
 
-	let issue = ctx.local(&vi, None).await;
-	let issue_path = ctx.resolve_issue_path(&issue);
-
-	write_selection(&ctx, &[("Test Issue", "mock_user", "https://github.com/o/r/issues/1")]);
-
-	let out = ctx.run(&["--offline", "sprints", "selected", "pop"]);
-	eprintln!("stdout: {}\nstderr: {}", out.stdout, out.stderr);
-	assert!(out.status.success(), "selected pop should succeed. stderr: {}", out.stderr);
-
-	insta::assert_snapshot!(read_issue_file(&issue_path), @"
+	insta::assert_snapshot!(file, @"
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
 	    Body text.
 
@@ -170,24 +162,16 @@ async fn test_selected_pop() {
 
 #[tokio::test]
 async fn test_selected_add_creates_blockers_section_if_missing() {
-	let ctx = TestContext::build_with_preexisting_state_unsafe("");
-
-	let vi = parse_virtual(
+	let (file, _) = run_on_selected(
 		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
 	Body text without blockers section.
 "#,
-	);
+		&["--offline", "sprints", "selected", "add", "New task"],
+		false,
+	)
+	.await;
 
-	let issue = ctx.local(&vi, None).await;
-	let issue_path = ctx.resolve_issue_path(&issue);
-
-	write_selection(&ctx, &[("Test Issue", "mock_user", "https://github.com/o/r/issues/1")]);
-
-	let out = ctx.run(&["--offline", "sprints", "selected", "add", "New task"]);
-	eprintln!("stdout: {}\nstderr: {}", out.stdout, out.stderr);
-	assert!(out.status.success(), "selected add should succeed. stderr: {}", out.stderr);
-
-	insta::assert_snapshot!(read_issue_file(&issue_path), @"
+	insta::assert_snapshot!(file, @"
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
 	    Body text without blockers section.
 
@@ -198,9 +182,7 @@ async fn test_selected_add_creates_blockers_section_if_missing() {
 
 #[tokio::test]
 async fn test_selected_add_with_nested_context() {
-	let ctx = TestContext::build_with_preexisting_state_unsafe("");
-
-	let vi = parse_virtual(
+	let (file, _) = run_on_selected(
 		r#"- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
 description
 
@@ -210,18 +192,12 @@ description
   - Phase 2
     - Implementation task
 "#,
-	);
+		&["--offline", "sprints", "selected", "add", "New sub-task"],
+		false,
+	)
+	.await;
 
-	let issue = ctx.local(&vi, None).await;
-	let issue_path = ctx.resolve_issue_path(&issue);
-
-	write_selection(&ctx, &[("Test Issue", "mock_user", "https://github.com/o/r/issues/1")]);
-
-	let out = ctx.run(&["--offline", "sprints", "selected", "add", "New sub-task"]);
-	eprintln!("stdout: {}\nstderr: {}", out.stdout, out.stderr);
-	assert!(out.status.success(), "selected add should succeed. stderr: {}", out.stderr);
-
-	insta::assert_snapshot!(read_issue_file(&issue_path), @"
+	insta::assert_snapshot!(file, @"
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
 	    description
 

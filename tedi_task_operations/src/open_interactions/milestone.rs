@@ -28,7 +28,7 @@ pub enum MilestoneModifier {
 
 /// Load the consensus (git HEAD) milestone, or `None` if not yet committed.
 pub async fn load_consensus_milestone(link: &MilestoneLink) -> Result<Option<Milestone>> {
-	Local::load_milestone(link, &GitReader).map_err(Into::into)
+	Local::load_milestone(link, &GitReader)
 }
 
 /// Reconcile a milestone with GitHub — the milestone mirror of `pull_issues`, and the same reason:

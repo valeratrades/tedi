@@ -558,7 +558,7 @@ mod types {
 		/// Replace an issue's whole content from a buffer that rendered it — the sprint-embedded
 		/// counterpart of `Editor`, which parses the issue's own file the same way.
 		Write {
-			edited: VirtualIssue,
+			edited: Box<VirtualIssue>,
 		},
 		/// Repoint blocker refs at issues that moved repo (`!mv`).
 		Relink {
@@ -663,7 +663,7 @@ mod types {
 					}
 				}
 				Modifier::Write { edited } => {
-					apply_edited_buffer(issue, &old_issue, edited.clone())?;
+					apply_edited_buffer(issue, &old_issue, (**edited).clone())?;
 					ModifyResult {
 						output: None,
 						file_modified: *issue != old_issue,

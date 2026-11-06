@@ -304,7 +304,7 @@ pub async fn sync_embedded_issue_changes(content: &str, mode: SyncMode) -> Resul
 	edits.sort_by_key(|(_, depth, _)| std::cmp::Reverse(*depth));
 	for (link, _, edited) in edits {
 		println!("Syncing changes for {link}");
-		modify_and_sync_issue(load_local_issue(&link).await?, mode, Modifier::Write { edited }, SyncOptions::default()).await?;
+		modify_and_sync_issue(load_local_issue(&link).await?, mode, Modifier::Write { edited: Box::new(edited) }, SyncOptions::default()).await?;
 	}
 
 	// Reloaded: an edited descendant has moved on disk since `blocks` was read.

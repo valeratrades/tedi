@@ -91,7 +91,7 @@ impl TaskView {
 		if !buf.is_empty() {
 			let key = stack_key(stack);
 			self.touch(&key);
-			self.prose.entry(key).or_default().extend(buf.drain(..));
+			self.prose.entry(key).or_default().append(buf);
 		}
 	}
 

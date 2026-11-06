@@ -111,7 +111,7 @@ pub async fn main(yes: bool, args: ClockifyArgs) -> Result<()> {
 
 			let payload = NewTimeEntry {
 				start: now,
-				description: start_args.description.replace('<', "").replace('>', ""),
+				description: start_args.description.replace(['<', '>'], ""),
 				billable: start_args.billable,
 				project_id,
 				task_id,
@@ -169,7 +169,7 @@ pub async fn start_time_entry_with_defaults(
 	// The description is already fully-qualified (includes project prefix) when fully_qualified=true,
 	// as it's handled by get_current_blocker_with_headers in blocker.rs.
 	// Clockify rejects `<` and `>` characters (error 501), so strip them.
-	let final_description = description.replace('<', "").replace('>', "");
+	let final_description = description.replace(['<', '>'], "");
 
 	let project_id = Some(resolved_project_id);
 

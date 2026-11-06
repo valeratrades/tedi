@@ -956,7 +956,7 @@ pub mod client {
 
 	/// Get the global GitHub client.
 	pub fn get() -> Result<BoxedGithubClient, super::GithubError> {
-		CLIENT.with(|c| c.borrow().clone().ok_or_else(|| super::GithubError::new_not_initialized()))
+		CLIENT.with(|c| c.borrow().clone().ok_or_else(super::GithubError::new_not_initialized))
 	}
 }
 

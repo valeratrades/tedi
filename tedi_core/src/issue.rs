@@ -1403,7 +1403,7 @@ impl VirtualIssue {
 								return Err(ParseError::invalid_composition(
 									ctx.named_source(),
 									ctx.line_span(1),
-									format!("unexpected content after blockers section: {:?}", &events[pos]),
+									format!("unexpected content after blockers section: {:?}", events[pos]),
 								));
 							}
 						}
