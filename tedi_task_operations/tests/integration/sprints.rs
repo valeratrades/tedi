@@ -100,7 +100,7 @@ impl TestContext {
 	/// Spawn the binary with the mock-editor pipe attached, apply `edit_fn` to the tmp file
 	/// once the binary is parked in the editor, then signal the pipe and collect output.
 	fn drive_editor_session(&self, mut cmd: Command, edit_fn: Option<EditFn>) -> RunOutput {
-		cmd.env("__IS_INTEGRATION_TEST", "1");
+		cmd.envs(crate::common::BINARY_ENV);
 		cmd.env(concat!("tedi", "_GITHUB_TOKEN"), "test_token");
 		cmd.env(ENV_MOCK_PIPE, &self.pipe_path);
 		cmd.env(ENV_MOCK_REMOTE_EDIT, self.remote_edit_path());
@@ -477,7 +477,7 @@ async fn test_urgent_cleanup_deferred_during_edit() {
 		// deleted the fully-closed urgent file if cleanup didn't defer to the lock
 		let mut cmd = Command::new(get_binary_path());
 		cmd.args(["--offline", "sprints", "selected", "current"]);
-		cmd.env("__IS_INTEGRATION_TEST", "1");
+		cmd.envs(crate::common::BINARY_ENV);
 		for (key, value) in &envs {
 			cmd.env(key, value);
 		}

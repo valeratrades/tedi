@@ -42,6 +42,8 @@ const DEFAULT_NUMBER: u64 = 1;
 const OWNER: &str = "o";
 const REPO: &str = "r";
 pub const USER: &str = "mock_user";
+/// Every spawned binary runs on these, whatever the developer's shell holds.
+pub const BINARY_ENV: [(&str, &str); 3] = [("__IS_INTEGRATION_TEST", "1"), ("WAKETIME", "07:10"), ("DAY_SECTION_BORDERS", "0.2:8.5:16")];
 
 impl Seed {
 	pub fn new(value: i64) -> Self {
@@ -123,7 +125,7 @@ impl TestContext {
 	pub fn run(&self, args: &[&str]) -> RunOutput {
 		let mut cmd = Command::new(get_binary_path());
 		cmd.args(args);
-		cmd.env("__IS_INTEGRATION_TEST", "1");
+		cmd.envs(BINARY_ENV);
 		cmd.env("EDITOR", "true"); // an unmocked editor exits untouched instead of hanging the suite
 		cmd.env(ENV_GITHUB_TOKEN, "test_token");
 		for (key, value) in self.xdg.env_vars() {
@@ -143,7 +145,7 @@ impl TestContext {
 		self.set_issues_dir_override();
 		let mut cmd = Command::new(get_binary_path());
 		cmd.args(args);
-		cmd.env("__IS_INTEGRATION_TEST", "1");
+		cmd.envs(BINARY_ENV);
 		cmd.env("EDITOR", "true"); // an unmocked editor exits untouched instead of hanging the suite
 		cmd.env(ENV_GITHUB_TOKEN, "test_token");
 		for (key, value) in self.xdg.env_vars() {
@@ -493,7 +495,7 @@ impl<'a> OpenBuilder<'a> {
 			}
 		}
 
-		cmd.env("__IS_INTEGRATION_TEST", "1");
+		cmd.envs(BINARY_ENV);
 		cmd.env("EDITOR", "true"); // an unmocked editor exits untouched instead of hanging the suite
 		cmd.env(ENV_GITHUB_TOKEN, "test_token");
 		for (key, value) in self.ctx.xdg.env_vars() {
@@ -590,7 +592,7 @@ impl<'a> OpenBuilder<'a> {
 			}
 		}
 
-		cmd.env("__IS_INTEGRATION_TEST", "1");
+		cmd.envs(BINARY_ENV);
 		cmd.env("EDITOR", "true"); // an unmocked editor exits untouched instead of hanging the suite
 		cmd.env(ENV_GITHUB_TOKEN, "test_token");
 		for (key, value) in self.ctx.xdg.env_vars() {
