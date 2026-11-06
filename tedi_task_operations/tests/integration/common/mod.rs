@@ -24,7 +24,7 @@
 /// Global CLI flags that must appear before the subcommand.
 const GLOBAL_FLAGS: &[&str] = &["--offline", "--sync-on-exit", "--mock", "-v", "--verbose", "-q", "--quiet"];
 /// Environment variable names derived from package name
-const ENV_GITHUB_TOKEN: &str = concat!("tedi", "__GITHUB_TOKEN");
+const ENV_GITHUB_TOKEN: &str = concat!("tedi", "_GITHUB_TOKEN");
 const ENV_MOCK_STATE: &str = concat!("tedi", "_MOCK_STATE");
 const ENV_MOCK_PIPE: &str = concat!("tedi", "_MOCK_PIPE");
 pub const ENV_MOCK_CALL_LOG: &str = concat!("tedi", "_MOCK_CALL_LOG");

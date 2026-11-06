@@ -17,6 +17,9 @@ pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }.tar.gz"
 bin-dir = "{ bin }{ binary-ext }"
 pkg-fmt = "tgz"
 
+[package.metadata.cargo-machete]
+ignored = ["miette"]
+
 [features]
 default = []
 
@@ -27,24 +30,18 @@ color-eyre.workspace = true
 config.workspace = true
 derive_more.workspace = true
 jiff.workspace = true
-miette.workspace = true
-serde.workspace = true
-serde_json.workspace = true
+miette.workspace = true # `v_utils::clientside!` expands to it
 smart-default.workspace = true
 tedi_adapters.workspace = true
 tedi_core.workspace = true
 tedi_eval.workspace = true
 tedi_task_operations.workspace = true
-tedi_task_primitives.workspace = true
 tedi_utils.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
-tracing-error.workspace = true
-tracing-subscriber.workspace = true
 v_utils.workspace = true
-xdg.workspace = true
 
 [lints]
 workspace = true

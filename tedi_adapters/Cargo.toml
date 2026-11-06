@@ -7,8 +7,10 @@ description = "Remote-service adapters (GitHub, Clockify) for tedi"
 license.workspace = true
 repository.workspace = true
 
+[package.metadata.cargo-machete]
+ignored = ["tracing-error"]
+
 [dependencies]
-arrayvec.workspace = true
 async-trait.workspace = true
 clap.workspace = true
 color-eyre.workspace = true
@@ -20,7 +22,7 @@ tedi_core.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync", "time"] }
 tracing.workspace = true
-tracing-error.workspace = true
+tracing-error.workspace = true # `#[wrap_err]` expands to it
 urlencoding.workspace = true
 v_utils.workspace = true
 

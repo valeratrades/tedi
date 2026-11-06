@@ -101,7 +101,7 @@ impl TestContext {
 	/// once the binary is parked in the editor, then signal the pipe and collect output.
 	fn drive_editor_session(&self, mut cmd: Command, edit_fn: Option<EditFn>) -> RunOutput {
 		cmd.env("__IS_INTEGRATION_TEST", "1");
-		cmd.env(concat!("tedi", "__GITHUB_TOKEN"), "test_token");
+		cmd.env(concat!("tedi", "_GITHUB_TOKEN"), "test_token");
 		cmd.env(ENV_MOCK_PIPE, &self.pipe_path);
 		cmd.env(ENV_MOCK_REMOTE_EDIT, self.remote_edit_path());
 		cmd.env(ENV_MOCK_CALL_LOG, self.call_log_path());
@@ -2297,15 +2297,20 @@ async fn test_mv_cross_owner_recreates_and_closes_original() {
 	insta::assert_snapshot!(sprint_body(), @"- https://github.com/ev/repo_c/issues/1");
 }
 
-/// A parent carries its subtree along, the sub-issue link holding in the target.
-#[tokio::test]
-async fn test_mv_parent_carries_subtree() {
+/// `!mv repo_b` typed on the line holding `needle` of the sprint `PARENT_WITH_CHILD` sits in.
+async fn mv_in_parent_with_child(needle: &'static str) -> TestContext {
 	let ctx = TestContext::build();
 	seed_sprint(&ctx, PARENT_WITH_CHILD, PARENT_WITH_CHILD, -100, "2099-01-01T00:00:00Z").await;
 	seed_labels(&ctx, &[("o", "repo_b", &[])]);
-
-	let out = mv_edit(&ctx, "- [ ] Parent <!--", " !mv repo_b");
+	let out = mv_edit(&ctx, needle, " !mv repo_b");
 	assert!(out.status.success(), "stderr: {}", out.stderr);
+	ctx
+}
+
+/// A parent carries its subtree along, the sub-issue link holding in the target.
+#[tokio::test]
+async fn test_mv_parent_carries_subtree() {
+	let ctx = mv_in_parent_with_child("- [ ] Parent <!--").await;
 
 	assert!(ctx.github_calls().iter().any(|c| c.starts_with("add_sub_issue(o, repo_b, parent=2,")), "{:?}", ctx.github_calls());
 	insta::assert_snapshot!(issue_tree(&ctx), @"
@@ -2318,12 +2323,7 @@ async fn test_mv_parent_carries_subtree() {
 /// A child moved on its own leaves its parent: it becomes a top-level issue of the target.
 #[tokio::test]
 async fn test_mv_child_detaches_from_parent() {
-	let ctx = TestContext::build();
-	seed_sprint(&ctx, PARENT_WITH_CHILD, PARENT_WITH_CHILD, -100, "2099-01-01T00:00:00Z").await;
-	seed_labels(&ctx, &[("o", "repo_b", &[])]);
-
-	let out = mv_edit(&ctx, "issues/11 -->", " !mv repo_b");
-	assert!(out.status.success(), "stderr: {}", out.stderr);
+	let ctx = mv_in_parent_with_child("issues/11 -->").await;
 
 	assert!(ctx.github_calls().iter().any(|c| c.starts_with("remove_sub_issue(o, r, parent=10,")), "{:?}", ctx.github_calls());
 	insta::assert_snapshot!(issue_tree(&ctx), @"

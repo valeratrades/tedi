@@ -8,38 +8,27 @@ license.workspace = true
 repository.workspace = true
 include = ["src/**/*"]
 
+[package.metadata.cargo-machete]
+ignored = ["tracing-error"]
+
 [dependencies]
-arrayvec.workspace = true
-async-trait.workspace = true
-async_from.workspace = true
 clap.workspace = true
 color-eyre.workspace = true
 colored.workspace = true
-config.workspace = true
-copy_arrayvec.workspace = true
-derive-new.workspace = true
 derive_more.workspace = true
 futures.workspace = true
 jiff.workspace = true
 miette.workspace = true
-pandoc.workspace = true
-pulldown-cmark.workspace = true
-reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-smart-default.workspace = true
 tedi_adapters.workspace = true
 tedi_core.workspace = true
-tedi_md.workspace = true
 tedi_task_primitives.workspace = true
 tedi_utils.workspace = true
-tempfile.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
-tracing-error.workspace = true
-url.workspace = true
-urlencoding.workspace = true
+tracing-error.workspace = true # `#[wrap_err]` expands to it
 v_utils.workspace = true
 xdg.workspace = true
 

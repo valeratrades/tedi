@@ -271,7 +271,7 @@ Replace N with an integer from 0 to 10."#
 		}
 		Err(e) => {
 			eprintln!("Error calling LLM: {e:?}");
-			return Err(e);
+			return Err(e.into());
 		}
 	}
 

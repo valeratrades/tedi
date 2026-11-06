@@ -10,7 +10,7 @@ pub struct AppConfig {
 	pub timer: Option<Timer>,
 	pub milestones: Option<Milestones>,
 	pub manual_stats: Option<ManualStats>,
-	#[settings(skip(flag))]
+	#[settings(skip)]
 	#[serde(default)]
 	pub yes: bool,
 }
