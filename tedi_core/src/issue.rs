@@ -1949,8 +1949,8 @@ mod tests {
 		   ·                                    ╰── unrecognized checkbox value
 		 2 │ 
 		   ╰────
-		  help: valid checkbox values are: ' ' (open), '.' (partial), '?' (maybe),
-		        'x' (closed), '-' (not planned), or a number like '123' (duplicate of
+		  help: valid checkbox values are: ' ' (open), '.' (partial), '?' (maybe), 'x'
+		        (closed), '-' (not planned), or a number like '123' (duplicate of
 		        issue #123)
 
 
@@ -1964,8 +1964,8 @@ mod tests {
 		   · ──────────────────────────────────┬─────────────────────────────────
 		   ·                                   ╰── unrecognized checkbox value
 		   ╰────
-		  help: valid checkbox values are: ' ' (open), '.' (partial), '?' (maybe),
-		        'x' (closed), '-' (not planned), or a number like '123' (duplicate of
+		  help: valid checkbox values are: ' ' (open), '.' (partial), '?' (maybe), 'x'
+		        (closed), '-' (not planned), or a number like '123' (duplicate of
 		        issue #123)
 		");
 	}

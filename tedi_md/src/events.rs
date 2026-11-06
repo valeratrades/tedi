@@ -874,6 +874,18 @@ fn prepare_for_render(events: &[OwnedEvent]) -> Vec<Event<'_>> {
 		if item_depth > 0 && after_inline && matches!(ev, OwnedEvent::Start(OwnedTag::Heading { .. })) {
 			out.push(Event::SoftBreak);
 		}
+		// an item's leading inline line becomes its own paragraph once a paragraph follows it, else the
+		// writer reads the item as loose and leaves a blank line before the body
+		if item_depth > 0 && after_inline && matches!(ev, OwnedEvent::Start(OwnedTag::Paragraph)) {
+			let start = out.iter().rposition(|e| matches!(e, Event::Start(pulldown_cmark::Tag::Item))).expect("inside an item") + 1;
+			if out[start..].iter().all(|e| !matches!(e, Event::Start(_) | Event::End(_))) {
+				if matches!(out.last(), Some(Event::SoftBreak)) {
+					out.pop();
+				}
+				out.insert(start, Event::Start(pulldown_cmark::Tag::Paragraph));
+				out.push(Event::End(pulldown_cmark::TagEnd::Paragraph));
+			}
+		}
 		after_inline = matches!(
 			ev,
 			OwnedEvent::Text(_) | OwnedEvent::Code(_) | OwnedEvent::InlineHtml(_) | OwnedEvent::CheckBox(_) | OwnedEvent::SoftBreak
