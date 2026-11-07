@@ -500,8 +500,9 @@ impl Local {
 			let issue_meta = project_meta.issues.get(n);
 			let user = issue_meta.and_then(|m| m.user.clone());
 			let timestamps = issue_meta.map(|m| m.timestamps.clone()).unwrap_or_default();
+			let blocked_by = issue_meta.map(|m| m.blocked_by.clone()).unwrap_or_default();
 			let link = Self::issue_link(repo_info, *n);
-			Some(Box::new(crate::LinkedIssueMeta::new(user, link, timestamps)))
+			Some(Box::new(crate::LinkedIssueMeta::new(user, link, timestamps, blocked_by)))
 		} else {
 			None
 		};
@@ -1055,6 +1056,9 @@ pub struct IssueMeta {
 	/// Timestamps for individual field changes.
 	#[serde(default)]
 	pub timestamps: crate::IssueTimestamps,
+	/// Github's `blocked by` links as of the last read or push.
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub blocked_by: Vec<IssueLink>,
 }
 
 /// Project-level metadata file.
@@ -1215,11 +1219,8 @@ impl<R: LocalReader> crate::LazyIssue<LocalIssueSource<R>> for Issue {
 					} else {
 						IssueLink::in_project(repo_info, n)
 					};
-					Some(Box::new(LinkedIssueMeta::new(
-						meta.as_ref().and_then(|m| m.user.clone()),
-						link,
-						meta.map(|m| m.timestamps).unwrap_or_default(),
-					)))
+					let meta = meta.unwrap_or_default();
+					Some(Box::new(LinkedIssueMeta::new(meta.user, link, meta.timestamps, meta.blocked_by)))
 				}
 				_ => None,
 			};

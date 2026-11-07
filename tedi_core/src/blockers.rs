@@ -281,6 +281,24 @@ impl Blockers {
 		walk(&mut self.items, home, moved, to)
 	}
 
+	/// Drop each bare ref (resolved against `home`) to an issue in `was` that isn't in `now`: a link removed
+	/// upstream. An item holding sub-blockers or notes is structure of its own, so it stays.
+	pub fn drop_unlinked(&mut self, home: RepoInfo, now: &[IssueLink], was: &[IssueLink]) {
+		fn walk(items: &mut Vec<BlockerItem>, home: RepoInfo, now: &[IssueLink], was: &[IssueLink]) {
+			items.retain(|item| {
+				let Some(mut r) = item.issue_ref().filter(|_| item.children.is_empty() && item.comments.is_empty()) else {
+					return true;
+				};
+				r.resolve_with_context(None, Some(home));
+				!r.to_issue_link().is_some_and(|l| was.contains(&l) && !now.contains(&l))
+			});
+			for item in items {
+				walk(&mut item.children, home, now, was);
+			}
+		}
+		walk(&mut self.items, home, now, was)
+	}
+
 	/// Build cmark event stream representing this blocker sequence as a list.
 	pub fn to_events(&self) -> Events {
 		if self.items.is_empty() {

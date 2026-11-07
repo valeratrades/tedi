@@ -271,8 +271,8 @@ impl crate::LazyIssue<RemoteSource> for Issue {
 		};
 
 		let parent_index = source.resolve_parent_index().await?;
-		self.identity = IssueIdentity::new_linked(parent_index, Some(issue.user.login.clone()), source.link.clone(), timestamps);
-		self.identity.mut_linked_issue_meta().expect("just linked").dependencies = Some(timeline.dependencies);
+		self.identity = IssueIdentity::new_linked(parent_index, Some(issue.user.login.clone()), source.link.clone(), timestamps, timeline.blocked_by);
+		self.identity.mut_linked_issue_meta().expect("just linked").blocking = Some(timeline.blocking);
 		Ok(self.identity.clone())
 	}
 
@@ -296,7 +296,7 @@ impl crate::LazyIssue<RemoteSource> for Issue {
 		let comments = comments_result.map_err(|e| RemoteError::FetchComments { repo: repo_info, number, source: e })?;
 		let timeline = timeline_result.map_err(|e| RemoteError::FetchTimestamps { repo: repo_info, number, source: e })?;
 
-		self.contents = build_contents_from_github(repo_info, &issue, &comments, &timeline.dependencies.blocked_by)?;
+		self.contents = build_contents_from_github(repo_info, &issue, &comments, &timeline.blocked_by)?;
 
 		// Per-comment timestamps from REST API data (updated_at, falling back to created_at).
 		let comments_ts: Vec<_> = comments
@@ -311,7 +311,8 @@ impl crate::LazyIssue<RemoteSource> for Issue {
 			// the remote sink deletes it upstream as one the user removed.
 			Some(meta) => {
 				meta.timestamps.comments = comments_ts;
-				meta.dependencies = Some(timeline.dependencies);
+				meta.blocked_by = timeline.blocked_by;
+				meta.blocking = Some(timeline.blocking);
 			}
 			None => {
 				let parent_index = source.resolve_parent_index().await?;
@@ -322,8 +323,8 @@ impl crate::LazyIssue<RemoteSource> for Issue {
 					state: timeline.state,
 					comments: comments_ts,
 				};
-				self.identity = IssueIdentity::new_linked(parent_index, Some(issue.user.login.clone()), source.link.clone(), timestamps);
-				self.identity.mut_linked_issue_meta().expect("just linked").dependencies = Some(timeline.dependencies);
+				self.identity = IssueIdentity::new_linked(parent_index, Some(issue.user.login.clone()), source.link.clone(), timestamps, timeline.blocked_by);
+				self.identity.mut_linked_issue_meta().expect("just linked").blocking = Some(timeline.blocking);
 			}
 		}
 
@@ -514,7 +515,7 @@ impl Sink<Remote> for Issue {
 			// Update identity - keep same parent_index, just add linking info
 			let link = IssueLink::in_project(repo_info, created.number);
 			let user = gh.fetch_authenticated_user().await?;
-			self.identity = IssueIdentity::new_linked(Some(parent_index), Some(user), link, crate::IssueTimestamps::now());
+			self.identity = IssueIdentity::new_linked(Some(parent_index), Some(user), link, crate::IssueTimestamps::now(), Vec::new());
 			changed = true;
 		}
 
@@ -558,22 +559,16 @@ impl Sink<Remote> for Issue {
 			changed = true;
 		}
 
-		let own = IssueLink::in_project(repo_info, issue_number);
-		let named = |issue: &Issue| -> Vec<IssueLink> {
-			let mut links = issue.contents.blockers.issue_links(repo_info);
-			links.retain(|l| matches!(l, IssueLink::Owned(_)) && *l != own);
-			links
-		};
 		let held = match old {
-			Some(old) => Some(match old.identity.as_linked().and_then(|m| m.dependencies.as_ref()) {
-				Some(deps) => deps.blocked_by.clone(),
-				None => named(old), // a state not read from Github: only its own blockers say what was linked
-			}),
+			Some(old) => Some(old.identity.as_linked().expect("an old state is on Github").blocked_by.clone()),
 			None if created => Some(Vec::new()),
 			None => None,
 		};
 		if let Some(held) = held {
-			let wanted = named(self);
+			let own = IssueLink::in_project(repo_info, issue_number);
+			let mut wanted = self.contents.blockers.issue_links(repo_info);
+			wanted.retain(|l| matches!(l, IssueLink::Owned(_)) && *l != own);
+			let mut linked: Vec<IssueLink> = held.iter().filter(|l| wanted.contains(l)).cloned().collect();
 			let gh = &gh;
 			let blocker = move |link: &IssueLink| {
 				let link = link.clone();
@@ -596,6 +591,7 @@ impl Sink<Remote> for Issue {
 				gh.add_blocked_by(repo_info, issue_number, blocker.id)
 					.await
 					.map_err(|source| RemoteSinkError::Blocker { link: link.clone(), source })?;
+				linked.push(link.clone());
 				changed = true;
 			}
 			for link in held.iter().filter(|l| !wanted.contains(l)) {
@@ -609,6 +605,7 @@ impl Sink<Remote> for Issue {
 					.map_err(|source| RemoteSinkError::Blocker { link: link.clone(), source })?;
 				changed = true;
 			}
+			self.identity.mut_linked_issue_meta().expect("linked once created").blocked_by = linked;
 		}
 
 		// Create pending comments sequentially (order matters)

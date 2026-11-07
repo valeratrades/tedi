@@ -23,9 +23,9 @@ pub use lazy::LazyIssue;
 pub use tedi_core::current_user;
 // Data model re-exported at the crate root so moved code keeps resolving `crate::X`.
 pub use tedi_core::{
-	BlockerItem, BlockerSetState, Blockers, CloseState, Comment, CommentIdentity, Comments, Dependencies, HollowIssue, Issue, IssueContents, IssueError, IssueIdentity, IssueIndex,
-	IssueLink, IssueMarker, IssueRef, IssueSelector, IssueTimestamps, LinkedIssueMeta, MAX_INDEX_DEPTH, MAX_LINEAGE_DEPTH, MAX_TITLE_LENGTH, Marker, Milestone, MilestoneBody,
-	MilestoneIdentity, MilestoneLink, MilestoneRef, MilestoneTimestamps, NodeLink, ParseError, Progress, RepoInfo, TaskItemId, TaskView, TitleInGitPathError, VirtualIssue, split_blockers,
+	BlockerItem, BlockerSetState, Blockers, CloseState, Comment, CommentIdentity, Comments, HollowIssue, Issue, IssueContents, IssueError, IssueIdentity, IssueIndex, IssueLink, IssueMarker,
+	IssueRef, IssueSelector, IssueTimestamps, LinkedIssueMeta, MAX_INDEX_DEPTH, MAX_LINEAGE_DEPTH, MAX_TITLE_LENGTH, Marker, Milestone, MilestoneBody, MilestoneIdentity, MilestoneLink,
+	MilestoneRef, MilestoneTimestamps, NodeLink, ParseError, Progress, RepoInfo, TaskItemId, TaskView, TitleInGitPathError, VirtualIssue, split_blockers,
 };
 pub use tedi_md::{Events, Header, OwnedCodeBlockKind, OwnedEvent, OwnedTag, OwnedTagEnd};
 

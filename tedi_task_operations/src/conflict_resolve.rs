@@ -100,8 +100,8 @@ pub async fn check_for_existing_conflict(issue_index: IssueIndex) -> Result<Opti
 			};
 
 			let remote = fetch_remote(&new_issue).await?;
-			<Issue as Sink<LocalFs>>::sink(&mut new_issue, None).await?;
 			<Issue as Sink<Remote>>::sink(&mut new_issue, Some(&remote)).await?;
+			<Issue as Sink<LocalFs>>::sink(&mut new_issue, None).await?; // after the remote sink: it records the links Github now holds
 			std::fs::remove_file(&conflict_fpath)?;
 			<Issue as Sink<Consensus>>::sink(&mut new_issue, None).await?; // `add -A` records the removal, concluding a pending merge
 		}

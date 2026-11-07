@@ -1767,7 +1767,7 @@ mod tests {
 			for cycle in 1..=5 {
 				let vi = crate::VirtualIssue::parse(&file_content, PathBuf::from("/tmp/test.md")).unwrap();
 				let link = crate::IssueLink::parse("https://github.com/o/r/issues/42").unwrap();
-				let identity = crate::IssueIdentity::new_linked(None, None, link, crate::IssueTimestamps::default());
+				let identity = crate::IssueIdentity::new_linked(None, None, link, crate::IssueTimestamps::default(), Vec::new());
 				let issue = Issue {
 					identity,
 					contents: vi.contents.clone(),
@@ -1782,7 +1782,7 @@ mod tests {
 				let mut new_vi = vi;
 				new_vi.contents.blockers = new_blockers;
 				let link2 = crate::IssueLink::parse("https://github.com/o/r/issues/42").unwrap();
-				let identity2 = crate::IssueIdentity::new_linked(None, None, link2, crate::IssueTimestamps::default());
+				let identity2 = crate::IssueIdentity::new_linked(None, None, link2, crate::IssueTimestamps::default(), Vec::new());
 				let new_issue = crate::Issue {
 					identity: identity2,
 					contents: new_vi.contents,

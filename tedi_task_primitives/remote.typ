@@ -52,7 +52,10 @@ GQL timeline                                 │  IssueTimestamps { title, descr
                                              │    them — last in sequence — as the shortest ref
                                              │    from here: `#n`, `repo#n`, `owner/repo#n`.
                                              │    Its add/remove events stamp `description` too.
-    blockedBy, blocking                      │  LinkedIssueMeta.dependencies, as GitHub holds them
+    blockedBy                                │  LinkedIssueMeta.blocked_by — persisted; the base a
+                                             │    later pull's unlinks are told apart by (the merge
+                                             │    drops refs linked then and unlinked since)
+    blocking                                 │  LinkedIssueMeta.blocking — this read only
     comment.updated_at ?? created_at         │  IssueTimestamps.comments[i]
 ```
 
@@ -118,8 +121,9 @@ sink(&mut self, old: Option<&Issue>)
                            identity becomes linked
   body() != old.body()  ─▶ PATCH issues/{n} { body }     the whole body, text and blockers together
   blockers' issue refs  ─▶ POST / DELETE                  any depth, any repo or owner; diffed against
-     vs held links         dependencies/blocked_by       old's `dependencies` (a local `old` has
-                                                         none: its own refs stand in)
+     vs held links         dependencies/blocked_by       old's `blocked_by`. The set GitHub then
+                                                         holds becomes self's `blocked_by`, for the
+                                                         local sink after to persist
   remote_labels()       ─▶ PATCH issues/{n} { labels }   labels + the state's `p:` label; compared
                                                          over the same view, since a `[ ] → [.]`
                                                          flip moves nothing else

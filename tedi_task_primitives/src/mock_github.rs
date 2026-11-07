@@ -60,6 +60,9 @@ pub struct MockGithubClient {
 	/// `blocked by` links, across repos
 	dependencies: Mutex<Vec<MockDependency>>,
 
+	/// `blocked by` links removed on Github: their removal event stamps the blocked issue
+	unlinked: Mutex<Vec<MockDependency>>,
+
 	/// Where a transferred issue went: GitHub redirects its old address there
 	transferred: Mutex<HashMap<(RepoKey, u64), (RepoKey, u64)>>,
 
@@ -82,6 +85,7 @@ impl MockGithubClient {
 			milestones: Mutex::new(HashMap::new()),
 			labels: Mutex::new(HashMap::new()),
 			dependencies: Mutex::new(Vec::new()),
+			unlinked: Mutex::new(Vec::new()),
 			transferred: Mutex::new(HashMap::new()),
 			fail_status: std::env::var(ENV_MOCK_FAIL_GET_MILESTONE)
 				.ok()
@@ -211,7 +215,7 @@ impl MockGithubClient {
 			}
 		}
 
-		if let Some(dep_arr) = state.get("dependencies").and_then(|v| v.as_array()) {
+		{
 			let node = |dep: &serde_json::Value, side: &str| -> Result<(RepoKey, u64), String> {
 				let v = dep.get(side).ok_or(format!("missing {side}"))?;
 				let owner = v.get("owner").and_then(|v| v.as_str()).ok_or("missing owner")?;
@@ -219,13 +223,20 @@ impl MockGithubClient {
 				let number = v.get("number").and_then(|v| v.as_u64()).ok_or("missing number")?;
 				Ok((RepoKey::new(owner, repo), number))
 			};
-			let mut dependencies = self.dependencies.lock().unwrap();
-			for dep in dep_arr {
-				dependencies.push(MockDependency {
+			let parse = |dep: &serde_json::Value| -> Result<MockDependency, String> {
+				Ok(MockDependency {
 					blocked: node(dep, "blocked")?,
 					blocker: node(dep, "blocker")?,
 					at: dep.get("at").and_then(|v| v.as_str()).map(|s| s.parse().expect("valid timestamp in mock JSON")),
-				});
+				})
+			};
+			for (field, list) in [("dependencies", &self.dependencies), ("unlinked", &self.unlinked)] {
+				if let Some(arr) = state.get(field).and_then(|v| v.as_array()) {
+					let mut list = list.lock().unwrap();
+					for dep in arr {
+						list.push(parse(dep)?);
+					}
+				}
 			}
 		}
 
@@ -966,11 +977,14 @@ impl GithubClient for MockGithubClient {
 		let key = RepoKey::new(owner, repo_name);
 		let this = (key.clone(), issue_number);
 		let dependencies = self.dependencies.lock().unwrap();
-		let deps = crate::Dependencies {
-			blocked_by: dependencies.iter().filter(|d| d.blocked == this).map(|d| d.blocker.0.link(d.blocker.1)).collect(),
-			blocking: dependencies.iter().filter(|d| d.blocker == this).map(|d| d.blocked.0.link(d.blocked.1)).collect(),
-		};
-		let linked_at = dependencies.iter().filter(|d| d.blocked == this).filter_map(|d| d.at).max();
+		let blocked_by = dependencies.iter().filter(|d| d.blocked == this).map(|d| d.blocker.0.link(d.blocker.1)).collect();
+		let blocking = dependencies.iter().filter(|d| d.blocker == this).map(|d| d.blocked.0.link(d.blocked.1)).collect();
+		let linked_at = dependencies
+			.iter()
+			.chain(self.unlinked.lock().unwrap().iter())
+			.filter(|d| d.blocked == this)
+			.filter_map(|d| d.at)
+			.max();
 
 		if let Some(repo_issues) = issues.get(&key)
 			&& let Some(issue) = repo_issues.get(&issue_number)
@@ -980,7 +994,8 @@ impl GithubClient for MockGithubClient {
 				description: issue.description_timestamp.max(linked_at),
 				labels: issue.labels_timestamp,
 				state: issue.state_timestamp,
-				dependencies: deps,
+				blocked_by,
+				blocking,
 			});
 		}
 

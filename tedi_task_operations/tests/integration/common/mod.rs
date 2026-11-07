@@ -288,6 +288,17 @@ impl TestContext {
 		self.rebuild_mock_state();
 	}
 
+	/// Github drops the `blocked` ← `blocker` link seeded by [`remote_blocked_by`](Self::remote_blocked_by), at the time `at` seeds.
+	pub fn remote_unblock(&self, blocked: &tedi_task_operations::IssueLink, blocker: &tedi_task_operations::IssueLink, at: Seed) {
+		with_state(self, |state| {
+			let before = state.remote_dependencies.len();
+			state.remote_dependencies.retain(|(b, r, _)| !(b == blocked && r == blocker));
+			assert_eq!(state.remote_dependencies.len() + 1, before, "seed the link with remote_blocked_by() first");
+			state.remote_unlinked.push((blocked.clone(), blocker.clone(), timestamp_for_field(at, DESCRIPTION_FIELD_INDEX)));
+		});
+		self.rebuild_mock_state();
+	}
+
 	/// Overwrite a seeded issue's Github body verbatim — for bodies our own renderer would never
 	/// produce, because a human typed them into the Github UI.
 	pub fn set_remote_body(&self, repo_info: tedi_task_operations::RepoInfo, number: u64, body: &str) {
@@ -366,6 +377,7 @@ impl TestContext {
 			let meta = IssueMeta {
 				user: Some(USER.to_string()),
 				timestamps,
+				blocked_by: Vec::new(),
 			};
 			Local::save_issue_meta(tedi_task_operations::RepoInfo::new(&owner, &repo), number, &meta).expect("save_issue_meta failed");
 		}
@@ -464,9 +476,18 @@ impl TestContext {
 				})
 				.collect();
 
+			let unlinked: Vec<serde_json::Value> = state
+				.remote_unlinked
+				.iter()
+				.map(|(blocked, blocker, at)| serde_json::json!({ "blocked": node(blocked), "blocker": node(blocker), "at": at.to_string() }))
+				.collect();
+
 			let mut mock_state = serde_json::json!({ "issues": issues });
 			if !dependencies.is_empty() {
 				mock_state["dependencies"] = serde_json::Value::Array(dependencies);
+			}
+			if !unlinked.is_empty() {
+				mock_state["unlinked"] = serde_json::Value::Array(unlinked);
 			}
 			if !sub_issues.is_empty() {
 				mock_state["sub_issues"] = serde_json::Value::Array(sub_issues);
@@ -1089,7 +1110,7 @@ fn build_hollow_from_virtual(repo: tedi_task_operations::RepoInfo, virtual_issue
 	let remote = match &virtual_issue.selector {
 		tedi_task_operations::IssueSelector::GitId(n) => {
 			let link = tedi_task_operations::IssueLink::in_project(repo, *n);
-			Some(Box::new(tedi_task_operations::LinkedIssueMeta::new(Some(USER.to_string()), link, timestamps.clone())))
+			Some(Box::new(tedi_task_operations::LinkedIssueMeta::new(Some(USER.to_string()), link, timestamps.clone(), Vec::new())))
 		}
 		tedi_task_operations::IssueSelector::Title(_) | tedi_task_operations::IssueSelector::Exact(_) => None,
 	};
@@ -1194,6 +1215,8 @@ struct GitState {
 	remote_comments: Vec<MockComment>,
 	/// (blocked, blocker, linked at)
 	remote_dependencies: Vec<(tedi_task_operations::IssueLink, tedi_task_operations::IssueLink, Option<jiff::Timestamp>)>,
+	/// (blocked, blocker, unlinked at)
+	remote_unlinked: Vec<(tedi_task_operations::IssueLink, tedi_task_operations::IssueLink, jiff::Timestamp)>,
 	/// Track which (owner, repo, number) have been added to remote
 	remote_issue_ids: HashSet<(String, String, u64)>,
 }

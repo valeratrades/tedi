@@ -226,7 +226,8 @@ pub struct GraphqlTimeline {
 	pub labels: Option<jiff::Timestamp>,
 	/// Most recent state change (from ClosedEvent/ReopenedEvent)
 	pub state: Option<jiff::Timestamp>,
-	pub dependencies: tedi_core::Dependencies,
+	pub blocked_by: Vec<tedi_core::IssueLink>,
+	pub blocking: Vec<tedi_core::IssueLink>,
 }
 
 //==============================================================================
@@ -630,10 +631,8 @@ impl GithubClient for RealGithubClient {
 				})
 				.collect()
 		};
-		timeline.dependencies = tedi_core::Dependencies {
-			blocked_by: links("blockedBy")?,
-			blocking: links("blocking")?,
-		};
+		timeline.blocked_by = links("blockedBy")?;
+		timeline.blocking = links("blocking")?;
 
 		// Extract body edit timestamp (description).
 		// `lastEditedAt` is null if the body was never edited after creation, so fall back to `createdAt`.

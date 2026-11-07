@@ -188,6 +188,19 @@ impl fmt::Display for IssueLink {
 	}
 }
 
+impl serde::Serialize for IssueLink {
+	fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+		serializer.collect_str(self)
+	}
+}
+
+impl<'de> serde::Deserialize<'de> for IssueLink {
+	fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+		let s = String::deserialize(deserializer)?;
+		Self::parse(&s).ok_or_else(|| serde::de::Error::custom(format!("not an issue link: {s}")))
+	}
+}
+
 /// A Github milestone identifier. Wraps a URL and derives properties on demand.
 /// Format: `https://github.com/{owner}/{repo}/milestone/{number}`
 #[derive(Clone, Debug, Eq, Hash, PartialEq, derive_more::Deref)]

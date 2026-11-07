@@ -372,6 +372,10 @@ mod core {
 	/// Returns `(resolved_issue, changed)` where `changed` indicates if any updates were made.
 	#[instrument(skip_all, fields(?mode))]
 	pub(super) async fn resolve_merge(local: Issue, consensus: Option<Issue>, remote: Issue, mode: MergeMode, repo_info: RepoInfo, issue_number: u64) -> Result<(Issue, bool)> {
+		// `remote` stays the sinks' `old`: it's what Github holds, so a body the view dropped refs from gets rewritten
+		let mut view = remote.clone();
+		unlinked_on_github(&local, &mut view);
+
 		// Handle Reset mode - take one side entirely
 		if let MergeMode::Reset { prefer } = mode {
 			return match prefer {
@@ -381,7 +385,8 @@ mod core {
 					Ok((resolved, true))
 				}
 				Side::Remote => {
-					let mut resolved = remote;
+					let mut resolved = view;
+					<Issue as Sink<Remote>>::sink(&mut resolved, Some(&remote)).await?;
 					<Issue as Sink<LocalFs>>::sink(&mut resolved, None).await?;
 					Ok((resolved, true))
 				}
@@ -399,18 +404,18 @@ mod core {
 		};
 
 		let clash = match (mode, &consensus) {
-			(MergeMode::Normal, Some(base)) => concurrent_edit(&local, base, &remote).map(|(l, r)| (l.git_id().expect("on the remote, so linked"), l.to_string(), r.to_string())),
+			(MergeMode::Normal, Some(base)) => concurrent_edit(&local, base, &view).map(|(l, r)| (l.git_id().expect("on the remote, so linked"), l.to_string(), r.to_string())),
 			_ => None,
 		};
 
 		// Apply four-merge algorithm
 		let mut local_merged = local.clone();
-		let mut remote_merged = remote.clone();
+		let mut remote_merged = view.clone();
 
 		if let Some(ref consensus) = consensus {
 			local_merged.merge(consensus, false)?;
 		}
-		local_merged.merge(&remote, force_remote_wins)?;
+		local_merged.merge(&view, force_remote_wins)?;
 
 		if let Some(ref consensus) = consensus {
 			remote_merged.merge(consensus, false)?;
@@ -418,8 +423,8 @@ mod core {
 		remote_merged.merge(&local, force_local_wins)?;
 
 		if let Some(ref consensus) = consensus {
-			drop_detached(&mut local_merged, consensus, &local, &remote);
-			drop_detached(&mut remote_merged, consensus, &local, &remote);
+			drop_detached(&mut local_merged, consensus, &local, &view);
+			drop_detached(&mut remote_merged, consensus, &local, &view);
 		}
 
 		let divergence = clash.or_else(|| (local_merged != remote_merged).then(|| (issue_number, local_merged.to_string(), remote_merged.to_string())));
@@ -451,6 +456,19 @@ mod core {
 						Ok((local_merged, false))
 					}
 				}
+			}
+		}
+	}
+
+	/// Drops each blocker ref whose link Github held at our last sync (the set `local` carries) but no longer does.
+	fn unlinked_on_github(local: &Issue, remote: &mut Issue) {
+		let home = remote.repo_info();
+		if let (Some(was), Some(now)) = (local.identity.as_linked(), remote.identity.as_linked()) {
+			remote.contents.blockers.drop_unlinked(home, &now.blocked_by, &was.blocked_by);
+		}
+		for (selector, child) in &mut remote.children {
+			if let Some(local) = local.children.get(selector) {
+				unlinked_on_github(local, child);
 			}
 		}
 	}
@@ -505,9 +523,7 @@ mod core {
 	pub(super) async fn sync(current_issue: &mut Issue, consensus: Option<Issue>, remote: Issue, mode: MergeMode) -> Result<Vec<IssueLink>> {
 		fn linked(issue: &Issue, out: &mut Vec<IssueLink>) {
 			out.extend(issue.contents.blockers.issue_links(issue.repo_info()));
-			if let Some(deps) = issue.identity.as_linked().and_then(|m| m.dependencies.as_ref()) {
-				out.extend(deps.blocking.iter().cloned());
-			}
+			out.extend(issue.identity.as_linked().and_then(|m| m.blocking.clone()).into_iter().flatten());
 			for child in issue.children.values() {
 				linked(child, out);
 			}

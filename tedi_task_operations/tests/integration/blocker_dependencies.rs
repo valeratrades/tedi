@@ -32,22 +32,25 @@ fn stored(owner: &str, repo: &str, number: u64) -> Option<std::path::PathBuf> {
 	Local::find_by_number(RepoInfo::new(owner, repo), number, FsReader)
 }
 
+/// `#3` predates link tracking: nothing records it as linked, so it's no unlink, and gets linked too.
 #[tokio::test]
 async fn test_named_blockers_are_linked_on_github() {
 	let ctx = TestContext::build();
-	let base = ctx.consensus(&issue("o", "r", 1, "Target", "- step"), Some(Seed::new(0))).await;
-	ctx.remote(&issue("o", "r", 1, "Target", "- step"), Some(Seed::new(0)));
+	let base = ctx.consensus(&issue("o", "r", 1, "Target", "- #3\n- step"), Some(Seed::new(0))).await;
+	ctx.remote(&issue("o", "r", 1, "Target", "- #3\n- step"), Some(Seed::new(0)));
 	ctx.remote(&issue("o", "r", 2, "Same repo", ""), None);
+	ctx.remote(&issue("o", "r", 3, "Legacy", ""), None);
 	ctx.remote_in(RepoInfo::new("o", "other"), &issue("o", "other", 5, "Same owner", ""), None);
 	ctx.remote_in(RepoInfo::new("q", "x"), &issue("q", "x", 7, "Other owner", ""), None);
 
 	let out = ctx
 		.open_issue(&base)
-		.edit(&issue("o", "r", 1, "Target", "- other#5\n- q/x#7\n- step\n  - #2\n- plain text #9"))
+		.edit(&issue("o", "r", 1, "Target", "- other#5\n- q/x#7\n- #3\n- step\n  - #2\n- plain text #9"))
 		.run();
 
 	assert!(out.status.success(), "stderr: {}", out.stderr);
 	insta::assert_snapshot!(dependency_calls(&ctx), @"
+	add_blocked_by(o/r#1, blocker=o/r#3)
 	add_blocked_by(o/r#1, blocker=o/other#5)
 	add_blocked_by(o/r#1, blocker=q/x#7)
 	add_blocked_by(o/r#1, blocker=o/r#2)
@@ -149,4 +152,53 @@ async fn test_linked_sub_issue_new_under_a_stored_tree_is_synced_in() {
 	assert!(out.status.success(), "stderr: {}", out.stderr);
 	let leaf = stored("o", "other", 5).expect("blocker synced in");
 	assert!(stored("o", "other", 4).is_some_and(|root| leaf.starts_with(root.parent().unwrap())), "{}", leaf.display());
+}
+
+/// Github held `#2` as a blocker at our last sync and has since dropped it: run 1 records the link, run 2
+/// sees it gone.
+async fn unlinked_between_runs() -> (TestContext, tedi_task_operations::Issue, usize) {
+	let ctx = TestContext::build();
+	let base = ctx.consensus(&issue("o", "r", 1, "Target", "- #2\n- step"), Some(Seed::new(-100))).await;
+	ctx.remote(&issue("o", "r", 1, "Target", "- #2\n- step"), Some(Seed::new(-100)));
+	ctx.remote(&issue("o", "r", 2, "Same repo", ""), None);
+	ctx.remote_blocked_by(&link("o", "r", 1), &link("o", "r", 2), Some(Seed::new(-100)));
+
+	let out = ctx.open_issue(&base).run();
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+
+	ctx.remote_unblock(&link("o", "r", 1), &link("o", "r", 2), Seed::new(100));
+	let calls = ctx.github_calls().len();
+	(ctx, base, calls)
+}
+
+#[tokio::test]
+async fn test_link_dropped_on_github_leaves_blockers() {
+	let (ctx, base, calls) = unlinked_between_runs().await;
+
+	let out = ctx.open_issue(&base).run();
+
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+	insta::assert_snapshot!(read_issue_file(&ctx.resolve_issue_path(&base)), @"
+	- [ ] Target <!-- @mock_user https://github.com/o/r/issues/1 -->
+	  body
+
+	  # Blockers
+	  - step
+	");
+	let run2 = ctx.github_calls().split_off(calls);
+	insta::assert_snapshot!(run2.iter().filter(|c| c.contains("blocked_by(") || c.contains("update_issue_body")).cloned().collect::<Vec<_>>().join("\n"), @"update_issue_body(o, r, 1, <body>)");
+}
+
+#[tokio::test]
+async fn test_link_dropped_on_github_while_blockers_edited_conflicts() {
+	let (ctx, base, _) = unlinked_between_runs().await;
+
+	let out = ctx
+		.open_issue(&base)
+		.args(&["--sync-on-exit"])
+		.edit(&issue("o", "r", 1, "Target", "- #2\n- step\n- another step"))
+		.run();
+
+	assert!(!out.status.success(), "a field edited on both sides must conflict");
+	assert!(out.stderr.contains("Conflict detected"), "stderr: {}", out.stderr);
 }
