@@ -87,8 +87,11 @@ doc_lazy_continuation = "allow"
 result_large_err = "allow" # errors carry their diagnostics (`#[wrap_err]`, miette sources); they ride the cold path
 
 tabs_in_doc_comments = "allow"
+if_not_else = "warn"
+integer_division = "warn"
 
 [workspace.lints.rust]
+stable_features = "allow"
 unused_features = "allow"
 
 [workspace.lints.cargo]

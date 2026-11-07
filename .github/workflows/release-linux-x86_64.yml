@@ -23,6 +23,28 @@ jobs:
           cd target/x86_64-unknown-linux-gnu/release
           PNAME="${GITHUB_REPOSITORY##*/}"
           tar -czvf "$GITHUB_WORKSPACE/${PNAME}-x86_64-unknown-linux-gnu.tar.gz" $PNAME
+      - env:
+          loc_gist_token: ${{ secrets.loc_gist_token }}
+        name: Ensure loc_gist_token secret is configured
+        run: |
+          if [ -z "${loc_gist_token}" ]; then
+            echo "::error::Secret 'loc_gist_token' is not set (empty in this job)."
+            if [ "${{ github.event.repository.private }}" = "true" ]; then
+              echo "::error::This repo is PRIVATE. On GitHub Free-plan orgs, organization secrets are NOT exposed to private repos — if 'loc_gist_token' is set org-wide it still won't reach here. Fix: set it repo-level (gh secret set loc_gist_token -R ${{ github.repository }}), or upgrade the org to Team/Enterprise."
+            else
+              echo "::error::Add it under Settings → Secrets and variables → Actions (repo-level, or org-level with 'All repositories' visibility — org secrets reach public repos on any plan)."
+            fi
+            echo "::error::Create a token, then: gh secret set loc_gist_token --repo <owner>/<repo> --body YOUR_TOKEN"
+            echo "::error::Bulk-provision all repos: https://github.com/valeratrades/nix/tree/e4338bf5943d7403b949a8e079f9073987d9cd68/home/scripts/shared_github_secrets.bash"
+            exit 1
+          fi
+      - env:
+          GH_TOKEN: ${{ secrets.loc_gist_token }}
+        name: Update badge gist
+        run: |
+          PNAME="${GITHUB_REPOSITORY##*/}"
+          gh api -X PATCH gists/b48e6f02c61942200e7d1e3eeabf9bcb --silent \
+          -f "files[$PNAME-size.json][content]={\"schemaVersion\": 1, \"label\": \"size\", \"message\": \"$(LC_ALL=C numfmt --to=iec-i --suffix=B --format=%.1f $(stat -c %s target/x86_64-unknown-linux-gnu/release/$PNAME))\", \"color\": \"lightblue\"}"
       - id: version
         name: Resolve version tag
         run: |
