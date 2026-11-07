@@ -1228,12 +1228,12 @@ mod tests {
 	fn test_parse_shorthand_refs() {
 		let content = "- [ ] owner/repo#123\n- [ ] tedi#42\n- [ ] #77\n";
 		let doc = TaskView::parse(content);
-		insta::assert_snapshot!(doc.serialize(), @r"
+		insta::assert_snapshot!(doc.serialize(), @"
 		- [ ] owner/repo#123
 
 		- [ ] tedi#42
 
-		- [ ] \#77
+		- [ ] #77
 		");
 	}
 

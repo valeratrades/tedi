@@ -896,6 +896,8 @@ fn prepare_for_render(events: &[OwnedEvent]) -> Vec<Event<'_>> {
 				"x" => out.push(Event::TaskListMarker(true)),
 				_ => out.push(Event::Text(format!("[{inner}] ").into())),
 			},
+			// the writer escapes any text opening on `#`, but `#` before a digit can't open a heading: `#2` is an issue ref
+			OwnedEvent::Text(t) if t.strip_prefix('#').is_some_and(|r| r.starts_with(|c: char| c.is_ascii_digit())) && !t.contains('|') => out.push(Event::InlineHtml(t.as_str().into())),
 			_ => out.push(ev.to_event()),
 		}
 		if loose_item_ends.contains(&i) {
