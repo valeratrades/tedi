@@ -250,7 +250,12 @@ impl TestContext {
 	///
 	/// If `seed` is provided, timestamps are generated from it for the mock response.
 	pub fn remote(&self, issue: &tedi_task_operations::VirtualIssue, seed: Option<Seed>) -> Issue {
-		let issue = with_timestamps(issue, seed, self.is_virtual_repo);
+		self.remote_in((OWNER, REPO).into(), issue, seed)
+	}
+
+	/// [`remote`](Self::remote), seeded in `repo` instead of the default one.
+	pub fn remote_in(&self, repo: tedi_task_operations::RepoInfo, issue: &tedi_task_operations::VirtualIssue, seed: Option<Seed>) -> Issue {
+		let issue = with_timestamps_in(repo, issue, seed, self.is_virtual_repo);
 		let (owner, repo, number) = extract_issue_coords(&issue);
 
 		with_state(self, |state| {
@@ -271,6 +276,16 @@ impl TestContext {
 
 		self.rebuild_mock_state();
 		issue
+	}
+
+	/// Github holds `blocked` as blocked by `blocker`, linked at the time `at` seeds.
+	pub fn remote_blocked_by(&self, blocked: &tedi_task_operations::IssueLink, blocker: &tedi_task_operations::IssueLink, at: Option<Seed>) {
+		with_state(self, |state| {
+			state
+				.remote_dependencies
+				.push((blocked.clone(), blocker.clone(), at.map(|seed| timestamp_for_field(seed, DESCRIPTION_FIELD_INDEX))))
+		});
+		self.rebuild_mock_state();
 	}
 
 	/// Overwrite a seeded issue's Github body verbatim — for bodies our own renderer would never
@@ -318,7 +333,12 @@ impl TestContext {
 	///
 	/// If `seed` is provided, timestamps are generated from it and written to `.meta.json`.
 	pub async fn consensus(&self, issue: &tedi_task_operations::VirtualIssue, seed: Option<Seed>) -> Issue {
-		let mut issue = with_timestamps(issue, seed, self.is_virtual_repo);
+		self.consensus_in((OWNER, REPO).into(), issue, seed).await
+	}
+
+	/// [`consensus`](Self::consensus), stored in `repo` instead of the default one.
+	pub async fn consensus_in(&self, repo: tedi_task_operations::RepoInfo, issue: &tedi_task_operations::VirtualIssue, seed: Option<Seed>) -> Issue {
+		let mut issue = with_timestamps_in(repo, issue, seed, self.is_virtual_repo);
 		let (owner, repo, number) = extract_issue_coords(&issue);
 		with_state(self, |state| {
 			assert!(state.consensus_issues.insert((owner, repo, number)), "consensus() called twice for same issue")
@@ -428,7 +448,26 @@ impl TestContext {
 				})
 				.collect();
 
+			let node = |link: &tedi_task_operations::IssueLink| {
+				let project = link.project();
+				serde_json::json!({ "owner": project.owner().expect("github project"), "repo": project.repo(), "number": link.number() })
+			};
+			let dependencies: Vec<serde_json::Value> = state
+				.remote_dependencies
+				.iter()
+				.map(|(blocked, blocker, at)| {
+					let mut json = serde_json::json!({ "blocked": node(blocked), "blocker": node(blocker) });
+					if let Some(at) = at {
+						json["at"] = serde_json::Value::String(at.to_string());
+					}
+					json
+				})
+				.collect();
+
 			let mut mock_state = serde_json::json!({ "issues": issues });
+			if !dependencies.is_empty() {
+				mock_state["dependencies"] = serde_json::Value::Array(dependencies);
+			}
 			if !sub_issues.is_empty() {
 				mock_state["sub_issues"] = serde_json::Value::Array(sub_issues);
 			}
@@ -816,10 +855,12 @@ pub fn set_timestamps(issue: &mut Issue, seed: Seed) {
 /// - description: -1
 /// - labels: 0
 /// - comments: 1 (aggregate timestamp for "most recent comment")
+const DESCRIPTION_FIELD_INDEX: i64 = -1;
+
 pub fn timestamps_from_seed(seed: Seed) -> IssueTimestamps {
 	IssueTimestamps {
 		title: Some(timestamp_for_field(seed, -2)),
-		description: Some(timestamp_for_field(seed, -1)),
+		description: Some(timestamp_for_field(seed, DESCRIPTION_FIELD_INDEX)),
 		labels: Some(timestamp_for_field(seed, 0)),
 		state: Some(timestamp_for_field(seed, 1)),
 		comments: vec![],
@@ -984,9 +1025,13 @@ fn find_virtual_edit_file(base: &Path) -> Option<PathBuf> {
 /// Convert VirtualIssue to Issue by building HollowIssue with timestamps from seed.
 /// Uses defaults: owner="o", repo="r", user="mock_user".
 pub(crate) fn with_timestamps(virtual_issue: &tedi_task_operations::VirtualIssue, seed: Option<Seed>, is_virtual: bool) -> Issue {
+	with_timestamps_in((OWNER, REPO).into(), virtual_issue, seed, is_virtual)
+}
+
+fn with_timestamps_in(repo: tedi_task_operations::RepoInfo, virtual_issue: &tedi_task_operations::VirtualIssue, seed: Option<Seed>, is_virtual: bool) -> Issue {
 	let timestamps = seed.map(timestamps_from_seed).unwrap_or_default();
-	let hollow = build_hollow_from_virtual(virtual_issue, &timestamps);
-	let parent_idx = tedi_task_operations::IssueIndex::repo_only((OWNER, REPO).into());
+	let hollow = build_hollow_from_virtual(repo, virtual_issue, &timestamps);
+	let parent_idx = tedi_task_operations::IssueIndex::repo_only(repo);
 	Issue::from_combined(hollow, virtual_issue.clone(), parent_idx, is_virtual).expect("test hollow must match virtual")
 }
 
@@ -1040,10 +1085,10 @@ where
 }
 
 /// Recursively build HollowIssue tree from VirtualIssue, setting up remote with timestamps.
-fn build_hollow_from_virtual(virtual_issue: &tedi_task_operations::VirtualIssue, timestamps: &IssueTimestamps) -> tedi_task_operations::HollowIssue {
+fn build_hollow_from_virtual(repo: tedi_task_operations::RepoInfo, virtual_issue: &tedi_task_operations::VirtualIssue, timestamps: &IssueTimestamps) -> tedi_task_operations::HollowIssue {
 	let remote = match &virtual_issue.selector {
 		tedi_task_operations::IssueSelector::GitId(n) => {
-			let link = tedi_task_operations::IssueLink::parse(&format!("https://github.com/{OWNER}/{REPO}/issues/{n}")).unwrap();
+			let link = tedi_task_operations::IssueLink::in_project(repo, *n);
 			Some(Box::new(tedi_task_operations::LinkedIssueMeta::new(Some(USER.to_string()), link, timestamps.clone())))
 		}
 		tedi_task_operations::IssueSelector::Title(_) | tedi_task_operations::IssueSelector::Exact(_) => None,
@@ -1053,7 +1098,7 @@ fn build_hollow_from_virtual(virtual_issue: &tedi_task_operations::VirtualIssue,
 		.children
 		.iter()
 		.map(|(selector, child)| {
-			let child_hollow = build_hollow_from_virtual(child, timestamps);
+			let child_hollow = build_hollow_from_virtual(repo, child, timestamps);
 			(*selector, child_hollow)
 		})
 		.collect();
@@ -1147,6 +1192,8 @@ struct GitState {
 	remote_issues: Vec<MockIssue>,
 	remote_sub_issues: Vec<SubIssueRelation>,
 	remote_comments: Vec<MockComment>,
+	/// (blocked, blocker, linked at)
+	remote_dependencies: Vec<(tedi_task_operations::IssueLink, tedi_task_operations::IssueLink, Option<jiff::Timestamp>)>,
 	/// Track which (owner, repo, number) have been added to remote
 	remote_issue_ids: HashSet<(String, String, u64)>,
 }

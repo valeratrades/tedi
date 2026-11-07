@@ -145,6 +145,17 @@ impl IssueLink {
 		}
 	}
 
+	/// The shortest ref that resolves back to this link from an issue living in `home`.
+	pub fn shorthand(&self, home: RepoInfo) -> String {
+		let project = self.project();
+		match self {
+			Self::Virtual(path) => path.display().to_string(),
+			Self::Owned(_) if project == home => format!("#{}", self.number()),
+			Self::Owned(_) if project.owner() == home.owner() => format!("{}#{}", project.repo(), self.number()),
+			Self::Owned(_) => format!("{project}#{}", self.number()),
+		}
+	}
+
 	/// The Github link for issue `n` in `project`. Github-only — virtual issues are addressed
 	/// by their file path, so build those with `IssueLink::Virtual` from a resolved path.
 	pub fn in_project(project: RepoInfo, n: u64) -> Self {

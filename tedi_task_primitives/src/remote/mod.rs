@@ -254,7 +254,7 @@ impl crate::LazyIssue<RemoteSource> for Issue {
 		// Fetch issue and timeline timestamps in parallel
 		// Note: We don't have comment timestamps here since we don't fetch comments in identity()
 		let issue_fut = gh.fetch_issue(repo_info, number);
-		let timeline_fut = gh.fetch_timeline_timestamps(repo_info, number);
+		let timeline_fut = gh.fetch_timeline(repo_info, number);
 
 		let (issue_result, timeline_result) = tokio::join!(issue_fut, timeline_fut);
 
@@ -272,6 +272,7 @@ impl crate::LazyIssue<RemoteSource> for Issue {
 
 		let parent_index = source.resolve_parent_index().await?;
 		self.identity = IssueIdentity::new_linked(parent_index, Some(issue.user.login.clone()), source.link.clone(), timestamps);
+		self.identity.mut_linked_issue_meta().expect("just linked").dependencies = Some(timeline.dependencies);
 		Ok(self.identity.clone())
 	}
 
@@ -287,14 +288,15 @@ impl crate::LazyIssue<RemoteSource> for Issue {
 
 		let issue_fut = gh.fetch_issue(repo_info, number);
 		let comments_fut = gh.fetch_comments(repo_info, number);
-		let timeline_fut = gh.fetch_timeline_timestamps(repo_info, number);
+		let timeline_fut = gh.fetch_timeline(repo_info, number);
 
 		let (issue_result, comments_result, timeline_result) = tokio::join!(issue_fut, comments_fut, timeline_fut);
 
 		let issue = issue_result.map_err(|e| RemoteError::fetch_issue(repo_info, number, e))?;
 		let comments = comments_result.map_err(|e| RemoteError::FetchComments { repo: repo_info, number, source: e })?;
+		let timeline = timeline_result.map_err(|e| RemoteError::FetchTimestamps { repo: repo_info, number, source: e })?;
 
-		self.contents = build_contents_from_github(repo_info, &issue, &comments)?;
+		self.contents = build_contents_from_github(repo_info, &issue, &comments, &timeline.dependencies.blocked_by)?;
 
 		// Per-comment timestamps from REST API data (updated_at, falling back to created_at).
 		let comments_ts: Vec<_> = comments
@@ -307,10 +309,12 @@ impl crate::LazyIssue<RemoteSource> for Issue {
 			// empty — this is the one place that can fill it. Left empty, a comment posted on
 			// Github since the last sync loses the merge to a local list that never had it, and
 			// the remote sink deletes it upstream as one the user removed.
-			Some(meta) => meta.timestamps.comments = comments_ts,
+			Some(meta) => {
+				meta.timestamps.comments = comments_ts;
+				meta.dependencies = Some(timeline.dependencies);
+			}
 			None => {
 				let parent_index = source.resolve_parent_index().await?;
-				let timeline = timeline_result.map_err(|e| RemoteError::FetchTimestamps { repo: repo_info, number, source: e })?;
 				let timestamps = IssueTimestamps {
 					title: timeline.title,
 					description: timeline.description,
@@ -319,6 +323,7 @@ impl crate::LazyIssue<RemoteSource> for Issue {
 					comments: comments_ts,
 				};
 				self.identity = IssueIdentity::new_linked(parent_index, Some(issue.user.login.clone()), source.link.clone(), timestamps);
+				self.identity.mut_linked_issue_meta().expect("just linked").dependencies = Some(timeline.dependencies);
 			}
 		}
 
@@ -381,10 +386,19 @@ pub enum RemoteSinkError {
 	/// Parent issue has unresolved title-based selector (pending issue in lineage).
 	#[own]
 	TitleInGitPath(crate::TitleInGitPathError),
+
+	/// A blocker names an issue Github won't link.
+	#[error("can't link blocker {link} on Github")]
+	Blocker {
+		link: IssueLink,
+		#[source]
+		#[backtrace]
+		source: crate::github::GithubError,
+	},
 }
 /// Build IssueContents from GitHub API data.
 #[instrument(skip_all, fields(issue_number = issue.number, title = %issue.title))]
-fn build_contents_from_github(repo: RepoInfo, issue: &GithubIssue, comments: &[GithubComment]) -> Result<IssueContents, RemoteError> {
+fn build_contents_from_github(repo: RepoInfo, issue: &GithubIssue, comments: &[GithubComment], blocked_by: &[IssueLink]) -> Result<IssueContents, RemoteError> {
 	if issue.title.contains(['\n', '\r']) {
 		let report = miette::Report::new(MultilineTitle {
 			repo,
@@ -404,7 +418,18 @@ fn build_contents_from_github(repo: RepoInfo, issue: &GithubIssue, comments: &[G
 	let labels: Vec<String> = all_labels.into_iter().filter(|l| l.parse::<crate::Progress>().is_err()).collect();
 
 	let raw_body = issue.body.as_deref().unwrap_or(""); //IGNORED_ERROR: GitHub API null body is valid (empty issue)
-	let (body, blockers) = split_blockers(raw_body);
+	let (body, mut blockers) = split_blockers(raw_body);
+	let named = blockers.issue_links(repo);
+	// one linked on Github alone goes last in sequence, which is the top of the list
+	for link in blocked_by.iter().filter(|l| !named.contains(l)) {
+		blockers.items.insert(
+			0,
+			crate::BlockerItem {
+				text: link.shorthand(repo),
+				..Default::default()
+			},
+		);
+	}
 
 	let mut issue_comments = vec![Comment {
 		identity: CommentIdentity::Body,
@@ -456,9 +481,10 @@ impl Sink<Remote> for Issue {
 		let repo_info = self.identity.parent_index.repo_info();
 
 		let mut changed = false;
+		let created = self.is_local();
 
 		// If this is a pending (local) issue, create it first
-		if self.is_local() {
+		if created {
 			let title = &self.contents.title;
 			let body: String = self.body().into();
 			let closed = self.contents.state.is_closed();
@@ -530,6 +556,59 @@ impl Sink<Remote> for Issue {
 			println!("Updating issue #{issue_number} state to {}...", self.contents.state.to_github_state());
 			gh.update_issue_state(repo_info, issue_number, &self.contents.state).await?;
 			changed = true;
+		}
+
+		let own = IssueLink::in_project(repo_info, issue_number);
+		let named = |issue: &Issue| -> Vec<IssueLink> {
+			let mut links = issue.contents.blockers.issue_links(repo_info);
+			links.retain(|l| matches!(l, IssueLink::Owned(_)) && *l != own);
+			links
+		};
+		let held = match old {
+			Some(old) => Some(match old.identity.as_linked().and_then(|m| m.dependencies.as_ref()) {
+				Some(deps) => deps.blocked_by.clone(),
+				None => named(old), // a state not read from Github: only its own blockers say what was linked
+			}),
+			None if created => Some(Vec::new()),
+			None => None,
+		};
+		if let Some(held) = held {
+			let wanted = named(self);
+			let gh = &gh;
+			let blocker = move |link: &IssueLink| {
+				let link = link.clone();
+				async move { gh.fetch_issue(link.project(), link.number()).await.map_err(|source| RemoteSinkError::Blocker { link, source }) }
+			};
+			for link in wanted.iter().filter(|l| !held.contains(l)) {
+				let blocker = blocker(link).await?;
+				if blocker.pull_request.is_some() {
+					continue; // GitHub links issues only
+				}
+				if IssueLink::parse(&blocker.html_url).as_ref() != Some(link) {
+					eprintln!(
+						"warning: blocker {} of #{issue_number} moved to {}; relink it to have it linked",
+						link.shorthand(repo_info),
+						blocker.html_url
+					);
+					continue;
+				}
+				println!("Linking #{issue_number} as blocked by {}...", link.shorthand(repo_info));
+				gh.add_blocked_by(repo_info, issue_number, blocker.id)
+					.await
+					.map_err(|source| RemoteSinkError::Blocker { link: link.clone(), source })?;
+				changed = true;
+			}
+			for link in held.iter().filter(|l| !wanted.contains(l)) {
+				let blocker = blocker(link).await?;
+				if blocker.pull_request.is_some() || IssueLink::parse(&blocker.html_url).as_ref() != Some(link) {
+					continue; // never linked as named
+				}
+				println!("Unlinking {} from blocking #{issue_number}...", link.shorthand(repo_info));
+				gh.remove_blocked_by(repo_info, issue_number, blocker.id)
+					.await
+					.map_err(|source| RemoteSinkError::Blocker { link: link.clone(), source })?;
+				changed = true;
+			}
 		}
 
 		// Create pending comments sequentially (order matters)

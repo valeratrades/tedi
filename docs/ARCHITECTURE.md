@@ -43,6 +43,8 @@ objective: good times
 
 > NB: read *bottom* -> *top*, not the other way around. The current task is the one at the bottom, and gets `pop`ed once finished.
 
+An item that is just an issue ref is a GitHub `blocked by` link: every one the blockers name is linked there, and dropping it unlinks it. A link made on GitHub alone joins the blockers at the top (last in sequence), written as the shortest ref from the issue's own repo. Either end of a link missing locally is pulled, with the whole tree it lives in.
+
 ### Composition Rules
 how the system components interact with each other.
 

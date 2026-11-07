@@ -32,7 +32,7 @@ use crate::{
 	BlockerSetState, Issue, IssueIndex, IssueLink, IssueSelector, LazyIssue, RepoInfo, VirtualIssue,
 	conflict_resolve::initiate_conflict_merge,
 	local::{
-		Consensus, FsReader, LocalFs, LocalIssueSource, LocalPath,
+		Consensus, FsReader, Local, LocalFs, LocalIssueSource, LocalPath,
 		conflict_detect::{ConflictOutcome, conflict_file_path},
 		consensus::load_consensus_issue,
 	},
@@ -78,6 +78,7 @@ pub async fn pull_issues(issues: &mut [Issue], mode: MergeMode) -> Result<()> {
 	}))
 	.await;
 
+	let mut linked = Vec::new();
 	for (issue, remote) in issues.iter_mut().zip(remotes) {
 		let Some(remote) = remote else { continue };
 		let result = match remote {
@@ -87,13 +88,13 @@ pub async fn pull_issues(issues: &mut [Issue], mode: MergeMode) -> Result<()> {
 			}
 			Err(e) => Err(e),
 		};
-		if let Err(e) = result {
-			if !is_transient_sync_error(&e) {
-				return Err(e);
-			}
-			tracing::warn!("GitHub transient during pre-open issue sync — proceeding with local: {e}");
+		match result {
+			Ok(links) => linked.extend(links),
+			Err(e) if is_transient_sync_error(&e) => tracing::warn!("GitHub transient during pre-open issue sync — proceeding with local: {e}"),
+			Err(e) => return Err(e),
 		}
 	}
+	fetch_and_store_missing(&linked).await;
 	for (issue, _) in issues.iter_mut().zip(&nested).filter(|(_, nested)| **nested) {
 		*issue = Issue::load(LocalIssueSource::<FsReader>::build(LocalPath::new(issue.full_index())).await?).await?;
 	}
@@ -162,13 +163,16 @@ pub async fn modify_and_sync_issue(mut issue: Issue, mode: SyncMode, modifier: M
 						Ok(remote) => core::sync(&mut issue, consensus, remote, mode).await,
 						Err(e) => Err(e),
 					};
-					if let Err(e) = synced {
-						if !is_transient_sync_error(&e) {
-							return Err(e);
+					match synced {
+						Ok(linked) => {
+							fetch_and_store_missing(&linked).await;
 						}
-						tracing::warn!("GitHub transient during issue sync — deferring to local: {e}");
-						eprintln!("GitHub unreachable; edit saved locally (will sync next online edit).");
-						<Issue as Sink<LocalFs>>::sink(&mut issue, None).await?;
+						Err(e) if is_transient_sync_error(&e) => {
+							tracing::warn!("GitHub transient during issue sync — deferring to local: {e}");
+							eprintln!("GitHub unreachable; edit saved locally (will sync next online edit).");
+							<Issue as Sink<LocalFs>>::sink(&mut issue, None).await?;
+						}
+						Err(e) => return Err(e),
 					}
 				}
 				false => {
@@ -207,6 +211,88 @@ pub async fn modify_and_sync_issue(mut issue: Issue, mode: SyncMode, modifier: M
 			Ok(new_modified)
 		}
 	}
+}
+
+/// Store every link not held locally, each with the whole tree it lives in: fetched from GitHub
+/// concurrently, stored one at a time — the consensus sink commits through the one git index. A tree
+/// already stored is synced instead, so its local edits survive. Returns the links still not stored.
+pub(crate) async fn fetch_and_store_missing(links: &[IssueLink]) -> Vec<IssueLink> {
+	let stored = |link: &IssueLink| match link {
+		IssueLink::Virtual(p) => p.exists(),
+		IssueLink::Owned(_) => Local::find_by_number(link.project(), link.number(), FsReader).is_some(),
+	};
+	let mut missing: Vec<&IssueLink> = Vec::new();
+	for link in links.iter().filter(|l| !stored(l)) {
+		if !missing.contains(&link) {
+			missing.push(link);
+		}
+	}
+	let roots: Vec<Result<Option<IssueLink>>> = futures::future::join_all(missing.iter().map(|link| async move {
+		// virtual issues have no remote: they must never be fetched
+		if matches!(link, IssueLink::Virtual(_)) {
+			bail!("virtual issue file is missing");
+		}
+		if crate::github::client::get()?.fetch_issue(link.project(), link.number()).await?.pull_request.is_some() {
+			return Ok(None); // a blocker may name a pull request; there's no issue to store
+		}
+		let lineage = RemoteSource::build((*link).clone(), None)?
+			.resolve_parent_index()
+			.await?
+			.expect("a remote source always resolves its parent index");
+		Ok(Some(match lineage.index().first() {
+			Some(IssueSelector::GitId(root)) => IssueLink::in_project(link.project(), *root),
+			Some(other) => unreachable!("lineage read from GitHub is numbered, got {other:?}"),
+			None => (*link).clone(),
+		}))
+	}))
+	.await;
+
+	let mut trees: Vec<IssueLink> = Vec::new();
+	let mut pull_requests: Vec<&IssueLink> = Vec::new();
+	for (link, root) in missing.iter().zip(roots) {
+		match root {
+			Ok(Some(root)) if !trees.contains(&root) => trees.push(root),
+			Ok(Some(_)) => {}
+			Ok(None) => pull_requests.push(link),
+			Err(e) => tracing::warn!("failed to fetch {link}: {e}"),
+		}
+	}
+	let (held, fresh): (Vec<IssueLink>, Vec<IssueLink>) = trees.into_iter().partition(|root| stored(root));
+	let fetched: Vec<Result<Issue>> = futures::future::join_all(fresh.iter().map(|root| async move { Ok(Issue::load(RemoteSource::build(root.clone(), Some(&[]))?).await?) })).await;
+	for (root, tree) in fresh.iter().zip(fetched) {
+		let landed = match tree {
+			Ok(mut tree) =>
+				async {
+					<Issue as Sink<LocalFs>>::sink(&mut tree, None).await?;
+					<Issue as Sink<Consensus>>::sink(&mut tree, None).await?;
+					Ok::<_, color_eyre::Report>(())
+				}
+				.await,
+			Err(e) => Err(e),
+		};
+		if let Err(e) = landed {
+			tracing::warn!("failed to fetch {root}: {e}");
+		}
+	}
+	// a sub-issue new on GitHub under a tree stored here
+	for root in held {
+		let synced = async {
+			let mut tree = crate::sprints::load_local_issue(&root).await?;
+			let remote = core::fetch_remote(&tree).await?;
+			let consensus = load_consensus_issue(IssueIndex::from(&tree)).await?;
+			core::sync(&mut tree, consensus, remote, MergeMode::Normal).await
+		}
+		.await;
+		if let Err(e) = synced {
+			tracing::warn!("failed to sync {root}: {e}");
+		}
+	}
+
+	let unavailable: Vec<IssueLink> = missing.into_iter().filter(|l| !stored(l) && !pull_requests.contains(l)).cloned().collect();
+	for link in &unavailable {
+		tracing::warn!("{link} is not stored locally"); // its ref stays a bare link
+	}
+	unavailable
 }
 
 /// Local moved past consensus with no sync landing it: a run killed mid-sync, or an outage deferred to local.
@@ -414,11 +500,24 @@ mod core {
 		Ok(Issue::load(remote_source).await?)
 	}
 
+	/// Returns every issue the synced tree's blocker links reach, on either end.
 	#[instrument(skip_all, fields(?mode, has_consensus = consensus.is_some()))]
-	pub(super) async fn sync(current_issue: &mut Issue, consensus: Option<Issue>, remote: Issue, mode: MergeMode) -> Result<()> {
+	pub(super) async fn sync(current_issue: &mut Issue, consensus: Option<Issue>, remote: Issue, mode: MergeMode) -> Result<Vec<IssueLink>> {
+		fn linked(issue: &Issue, out: &mut Vec<IssueLink>) {
+			out.extend(issue.contents.blockers.issue_links(issue.repo_info()));
+			if let Some(deps) = issue.identity.as_linked().and_then(|m| m.dependencies.as_ref()) {
+				out.extend(deps.blocking.iter().cloned());
+			}
+			for child in issue.children.values() {
+				linked(child, out);
+			}
+		}
+
 		println!("Syncing...");
 		let issue_number = current_issue.git_id().expect("fetched remote, so linked");
 		let repo_info = current_issue.repo_info();
+		let mut links = Vec::new();
+		linked(&remote, &mut links);
 
 		let (resolved, changed) = core::resolve_merge(current_issue.clone(), consensus, remote, mode, repo_info, issue_number).await?;
 		super::rehome_detached(current_issue, &resolved).await?;
@@ -432,7 +531,8 @@ mod core {
 			}
 			false => println!("No changes."),
 		}
-		Ok(())
+		linked(current_issue, &mut links);
+		Ok(links)
 	}
 }
 
@@ -671,7 +771,7 @@ mod types {
 				}
 				Modifier::Relink { moved } => ModifyResult {
 					output: None,
-					file_modified: issue.contents.blockers.relink(issue.repo_info(), moved, false),
+					file_modified: issue.contents.blockers.relink(issue.repo_info(), moved, issue.repo_info()),
 				},
 				Modifier::MockGhostEdit => ModifyResult { output: None, file_modified: true },
 			};

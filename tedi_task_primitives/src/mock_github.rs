@@ -57,6 +57,12 @@ pub struct MockGithubClient {
 	/// Labels defined per repo; a repo listed here exists even without issues
 	labels: Mutex<HashMap<RepoKey, Vec<String>>>,
 
+	/// `blocked by` links, across repos
+	dependencies: Mutex<Vec<MockDependency>>,
+
+	/// Where a transferred issue went: GitHub redirects its old address there
+	transferred: Mutex<HashMap<(RepoKey, u64), (RepoKey, u64)>>,
+
 	/// When set, `get_milestone`/`update_milestone` fail with this status (fault injection).
 	fail_status: Option<reqwest::StatusCode>,
 
@@ -75,6 +81,8 @@ impl MockGithubClient {
 			sub_issues: Mutex::new(HashMap::new()),
 			milestones: Mutex::new(HashMap::new()),
 			labels: Mutex::new(HashMap::new()),
+			dependencies: Mutex::new(Vec::new()),
+			transferred: Mutex::new(HashMap::new()),
 			fail_status: std::env::var(ENV_MOCK_FAIL_GET_MILESTONE)
 				.ok()
 				.and_then(|v| v.parse::<u16>().ok())
@@ -200,6 +208,24 @@ impl MockGithubClient {
 				};
 
 				comments.entry(key).or_default().insert(comment_id, comment_data);
+			}
+		}
+
+		if let Some(dep_arr) = state.get("dependencies").and_then(|v| v.as_array()) {
+			let node = |dep: &serde_json::Value, side: &str| -> Result<(RepoKey, u64), String> {
+				let v = dep.get(side).ok_or(format!("missing {side}"))?;
+				let owner = v.get("owner").and_then(|v| v.as_str()).ok_or("missing owner")?;
+				let repo = v.get("repo").and_then(|v| v.as_str()).ok_or("missing repo")?;
+				let number = v.get("number").and_then(|v| v.as_u64()).ok_or("missing number")?;
+				Ok((RepoKey::new(owner, repo), number))
+			};
+			let mut dependencies = self.dependencies.lock().unwrap();
+			for dep in dep_arr {
+				dependencies.push(MockDependency {
+					blocked: node(dep, "blocked")?,
+					blocker: node(dep, "blocker")?,
+					at: dep.get("at").and_then(|v| v.as_str()).map(|s| s.parse().expect("valid timestamp in mock JSON")),
+				});
 			}
 		}
 
@@ -362,7 +388,7 @@ impl MockGithubClient {
 		Ok(f(comment))
 	}
 
-	fn convert_issue_data(&self, data: &MockIssueData) -> GithubIssue {
+	fn convert_issue_data(&self, key: &RepoKey, data: &MockIssueData) -> GithubIssue {
 		GithubIssue {
 			id: data.id,
 			number: data.number,
@@ -373,7 +399,18 @@ impl MockGithubClient {
 			state: data.state.clone(),
 			state_reason: data.state_reason.clone(),
 			assignees: data.assignees.iter().map(|login| GithubUser { login: login.clone() }).collect(),
+			pull_request: None,
+			html_url: key.link(data.number).to_string(),
 		}
+	}
+
+	fn find_by_id(&self, id: u64) -> Result<(RepoKey, u64), GithubError> {
+		self.issues
+			.lock()
+			.unwrap()
+			.iter()
+			.find_map(|(key, issues)| issues.values().find(|i| i.id == id).map(|i| (key.clone(), i.number)))
+			.ok_or_else(|| GithubError::new_other(format!("no issue with id {id}")))
 	}
 
 	/// Next free issue number in `repo`, counting what's stored locally too.
@@ -449,6 +486,20 @@ struct MockIssueData {
 	assignees: Vec<String>,
 }
 
+/// `blocked` is blocked by `blocker`, linked at `at`.
+#[derive(Clone, Debug)]
+struct MockDependency {
+	blocked: (RepoKey, u64),
+	blocker: (RepoKey, u64),
+	at: Option<jiff::Timestamp>,
+}
+
+impl RepoKey {
+	fn link(&self, number: u64) -> crate::IssueLink {
+		crate::IssueLink::in_project(RepoInfo::new(&self.owner, &self.repo), number)
+	}
+}
+
 /// Internal representation of a milestone in the mock
 #[derive(Clone, Debug)]
 struct MockMilestoneData {
@@ -522,7 +573,10 @@ impl GithubClient for MockGithubClient {
 		tracing::info!(target: "mock_github", owner, repo_name, issue_number, "fetch_issue");
 		self.log_call(&format!("fetch_issue({owner}, {repo_name}, {issue_number})"));
 
-		let key = RepoKey::new(owner, repo_name);
+		let (key, issue_number) = match self.transferred.lock().unwrap().get(&(RepoKey::new(owner, repo_name), issue_number)) {
+			Some(to) => to.clone(),
+			None => (RepoKey::new(owner, repo_name), issue_number),
+		};
 		let issues = self.issues.lock().unwrap();
 
 		let repo_issues = issues.get(&key).ok_or_else(|| GithubError::new_other(format!("Repository not found: {owner}/{repo_name}")))?;
@@ -531,7 +585,7 @@ impl GithubClient for MockGithubClient {
 			.get(&issue_number)
 			.ok_or_else(|| GithubError::new_other(format!("Issue not found: #{issue_number}")))?;
 
-		Ok(self.convert_issue_data(issue_data))
+		Ok(self.convert_issue_data(&key, issue_data))
 	}
 
 	#[instrument(skip_all, fields(issue_number))]
@@ -589,7 +643,7 @@ impl GithubClient for MockGithubClient {
 
 		let result: Vec<GithubIssue> = sub_issue_numbers
 			.iter()
-			.filter_map(|num| repo_issues.get(num).map(|data| self.convert_issue_data(data)))
+			.filter_map(|num| repo_issues.get(num).map(|data| self.convert_issue_data(&key, data)))
 			.collect();
 
 		Ok(result)
@@ -784,6 +838,47 @@ impl GithubClient for MockGithubClient {
 		Ok(())
 	}
 
+	async fn add_blocked_by(&self, repo: RepoInfo, issue_number: u64, blocker_id: u64) -> Result<(), GithubError> {
+		let blocker = self.find_by_id(blocker_id)?;
+		self.log_call(&format!(
+			"add_blocked_by({repo}#{issue_number}, blocker={}#{})",
+			RepoInfo::new(&blocker.0.owner, &blocker.0.repo),
+			blocker.1
+		));
+		let blocked = (RepoKey::from(repo), issue_number);
+		let mut dependencies = self.dependencies.lock().unwrap();
+		if dependencies.iter().any(|d| d.blocked == blocked && d.blocker == blocker) {
+			return Err(GithubError::new_api(
+				reqwest::StatusCode::UNPROCESSABLE_ENTITY,
+				"dependency already exists".into(),
+				"Failed to add blocked-by dependency".into(),
+			));
+		}
+		dependencies.push(MockDependency { blocked, blocker, at: None });
+		Ok(())
+	}
+
+	async fn remove_blocked_by(&self, repo: RepoInfo, issue_number: u64, blocker_id: u64) -> Result<(), GithubError> {
+		let blocker = self.find_by_id(blocker_id)?;
+		self.log_call(&format!(
+			"remove_blocked_by({repo}#{issue_number}, blocker={}#{})",
+			RepoInfo::new(&blocker.0.owner, &blocker.0.repo),
+			blocker.1
+		));
+		let blocked = (RepoKey::from(repo), issue_number);
+		let mut dependencies = self.dependencies.lock().unwrap();
+		let before = dependencies.len();
+		dependencies.retain(|d| !(d.blocked == blocked && d.blocker == blocker));
+		if dependencies.len() == before {
+			return Err(GithubError::new_api(
+				reqwest::StatusCode::NOT_FOUND,
+				"no such dependency".into(),
+				"Failed to remove blocked-by dependency".into(),
+			));
+		}
+		Ok(())
+	}
+
 	#[instrument(skip_all, fields(title))]
 	async fn find_issue_by_title(&self, repo: RepoInfo, title: &str) -> Result<Option<u64>, GithubError> {
 		let owner = repo.owner().expect("github repo");
@@ -854,34 +949,42 @@ impl GithubClient for MockGithubClient {
 				let parent_data = repo_issues
 					.get(&parent_num)
 					.ok_or_else(|| GithubError::new_other(format!("Parent issue not found: #{parent_num}")))?;
-				Ok(Some(self.convert_issue_data(parent_data)))
+				Ok(Some(self.convert_issue_data(&key, parent_data)))
 			}
 			None => Ok(None),
 		}
 	}
 
 	#[instrument(skip_all, fields(issue_number))]
-	async fn fetch_timeline_timestamps(&self, repo: RepoInfo, issue_number: u64) -> Result<crate::github::GraphqlTimelineTimestamps, GithubError> {
+	async fn fetch_timeline(&self, repo: RepoInfo, issue_number: u64) -> Result<crate::github::GraphqlTimeline, GithubError> {
 		let owner = repo.owner().expect("github repo");
 		let repo_name = repo.repo();
-		tracing::info!(target: "mock_github", owner, repo_name, issue_number, "fetch_timeline_timestamps");
-		self.log_call(&format!("fetch_timeline_timestamps({owner}, {repo_name}, {issue_number})"));
+		tracing::info!(target: "mock_github", owner, repo_name, issue_number, "fetch_timeline");
+		self.log_call(&format!("fetch_timeline({owner}, {repo_name}, {issue_number})"));
 
 		let issues = self.issues.lock().unwrap();
 		let key = RepoKey::new(owner, repo_name);
+		let this = (key.clone(), issue_number);
+		let dependencies = self.dependencies.lock().unwrap();
+		let deps = crate::Dependencies {
+			blocked_by: dependencies.iter().filter(|d| d.blocked == this).map(|d| d.blocker.0.link(d.blocker.1)).collect(),
+			blocking: dependencies.iter().filter(|d| d.blocker == this).map(|d| d.blocked.0.link(d.blocked.1)).collect(),
+		};
+		let linked_at = dependencies.iter().filter(|d| d.blocked == this).filter_map(|d| d.at).max();
 
 		if let Some(repo_issues) = issues.get(&key)
 			&& let Some(issue) = repo_issues.get(&issue_number)
 		{
-			return Ok(crate::github::GraphqlTimelineTimestamps {
+			return Ok(crate::github::GraphqlTimeline {
 				title: issue.title_timestamp,
-				description: issue.description_timestamp,
+				description: issue.description_timestamp.max(linked_at),
 				labels: issue.labels_timestamp,
 				state: issue.state_timestamp,
+				dependencies: deps,
 			});
 		}
 
-		Ok(crate::github::GraphqlTimelineTimestamps::default())
+		Ok(crate::github::GraphqlTimeline::default())
 	}
 
 	#[instrument(skip_all, fields(issue_number, ?milestone))]
@@ -936,7 +1039,7 @@ impl GithubClient for MockGithubClient {
 		let issues = self.issues.lock().unwrap();
 		Ok(issues
 			.get(&key)
-			.map(|m| m.values().filter(|i| i.milestone == Some(milestone_number)).map(|i| self.convert_issue_data(i)).collect())
+			.map(|m| m.values().filter(|i| i.milestone == Some(milestone_number)).map(|i| self.convert_issue_data(&key, i)).collect())
 			.unwrap_or_default())
 	}
 
@@ -983,6 +1086,15 @@ impl GithubClient for MockGithubClient {
 		issue.labels.retain(|l| target_labels.contains(l));
 		issue.milestone = None;
 		self.issues.lock().unwrap().entry(RepoKey::from(target)).or_default().insert(number, issue);
+		let (from, to) = ((RepoKey::from(repo), issue_number), (RepoKey::from(target), number));
+		for dep in self.dependencies.lock().unwrap().iter_mut() {
+			for end in [&mut dep.blocked, &mut dep.blocker] {
+				if *end == from {
+					*end = to.clone();
+				}
+			}
+		}
+		self.transferred.lock().unwrap().insert(from, to);
 
 		let moved: Vec<MockCommentData> = {
 			let mut comments = self.comments.lock().unwrap();
@@ -1073,7 +1185,7 @@ mod tests {
 
 		// Fetch sub-issues
 		let sub_issues = client.fetch_sub_issues(repo, 1).await.unwrap();
-		assert_debug_snapshot!(format!("{sub_issues:?}"), @r#""[GithubIssue { id: 1001, number: 2, title: \"Child Issue\", body: None, labels: [], user: GithubUser { login: \"testuser\" }, state: \"open\", state_reason: None, assignees: [] }]""#);
+		assert_debug_snapshot!(format!("{sub_issues:?}"), @r#""[GithubIssue { id: 1001, number: 2, title: \"Child Issue\", body: None, labels: [], user: GithubUser { login: \"testuser\" }, state: \"open\", state_reason: None, assignees: [], pull_request: None, html_url: \"https://github.com/owner/repo/issues/2\" }]""#);
 	}
 
 	#[tokio::test]

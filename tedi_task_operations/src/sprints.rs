@@ -17,8 +17,8 @@ use crate::{
 	CloseState, HollowIssue, Issue, IssueIdentity, IssueIndex, IssueLink, LazyIssue, Milestone, MilestoneLink, NodeLink, RepoInfo, TaskView, VirtualIssue,
 	clockify_tracking::{self, HaltArgs, ResumeArgs},
 	local::{Consensus, FsReader, GitReader, Local, LocalFs},
-	open_interactions::{MergeMode, MilestoneModifier, Modifier, SyncMode, SyncOptions, modify_and_sync_issue, modify_and_sync_milestone, pull_issues, unsynced},
-	remote::{Remote, RemoteSource, load_remote_milestone},
+	open_interactions::{MergeMode, MilestoneModifier, Modifier, SyncMode, SyncOptions, fetch_and_store_missing, modify_and_sync_issue, modify_and_sync_milestone, pull_issues, unsynced},
+	remote::{Remote, load_remote_milestone},
 	selection::{Landing, Selected},
 	sink::Sink,
 };
@@ -684,46 +684,6 @@ pub(crate) async fn load_local_issue(link: &IssueLink) -> Result<Issue> {
 	};
 	let local_source = crate::conflict_resolve::build_resolving_from_path(&path).await?;
 	Issue::load(local_source).await.map_err(Into::into)
-}
-
-/// Fetch every link not stored locally from GitHub concurrently, then store each (filesystem +
-/// consensus) one at a time — the consensus sink commits through the one git index.
-/// Returns the links that are still not stored locally.
-async fn fetch_and_store_missing(links: &[IssueLink]) -> Vec<IssueLink> {
-	let missing: Vec<&IssueLink> = links
-		.iter()
-		.filter(|l| match l {
-			IssueLink::Virtual(p) => !p.exists(),
-			IssueLink::Owned(_) => Local::find_by_number(l.project(), l.number(), FsReader).is_none(),
-		})
-		.collect();
-	let fetched: Vec<Result<Issue>> = futures::future::join_all(missing.iter().map(|link| async move {
-		// virtual issues have no remote: they must never be fetched
-		if matches!(link, IssueLink::Virtual(_)) {
-			bail!("virtual issue file is missing");
-		}
-		Ok(Issue::load(RemoteSource::build((*link).clone(), None)?).await?)
-	}))
-	.await;
-
-	let mut unavailable = Vec::new();
-	for (link, issue) in missing.into_iter().zip(fetched) {
-		let stored = match issue {
-			Ok(mut issue) =>
-				async {
-					<Issue as Sink<LocalFs>>::sink(&mut issue, None).await?;
-					<Issue as Sink<Consensus>>::sink(&mut issue, None).await?;
-					Ok::<_, color_eyre::Report>(())
-				}
-				.await,
-			Err(e) => Err(e),
-		};
-		if let Err(e) = stored {
-			tracing::warn!("failed to fetch {link}: {e}"); // its ref stays a bare link
-			unavailable.push(link.clone());
-		}
-	}
-	unavailable
 }
 
 // ─── Selection & the `sprints selected` operations ────────────────────────────

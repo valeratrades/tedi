@@ -54,6 +54,12 @@ pub trait GithubClient: Send + Sync {
 	/// Note: `child_issue_id` is the resource ID (not the issue number)
 	async fn remove_sub_issue(&self, repo: RepoInfo, parent_issue_number: u64, child_issue_id: u64) -> Result<(), GithubError>;
 
+	/// Mark an issue as blocked by another, in any repo. `blocker_id` is the resource ID (not the issue number)
+	async fn add_blocked_by(&self, repo: RepoInfo, issue_number: u64, blocker_id: u64) -> Result<(), GithubError>;
+
+	/// `blocker_id` is the resource ID (not the issue number)
+	async fn remove_blocked_by(&self, repo: RepoInfo, issue_number: u64, blocker_id: u64) -> Result<(), GithubError>;
+
 	/// Find an issue by exact title match
 	#[allow(dead_code)]
 	async fn find_issue_by_title(&self, repo: RepoInfo, title: &str) -> Result<Option<u64>, GithubError>;
@@ -65,10 +71,9 @@ pub trait GithubClient: Send + Sync {
 	/// Fetch the parent issue of a sub-issue (returns None if issue has no parent)
 	async fn fetch_parent_issue(&self, repo: RepoInfo, issue_number: u64) -> Result<Option<GithubIssue>, GithubError>;
 
-	/// Fetch timestamps from GraphQL timeline API for title, description, and label changes.
-	/// All fields are optional because GitHub only retains timeline events for 90 days.
+	/// Field-change timestamps and dependency links, in one GraphQL round trip.
 	/// Note: Comment timestamps should be extracted from GithubComment's created_at/updated_at fields.
-	async fn fetch_timeline_timestamps(&self, repo: RepoInfo, issue_number: u64) -> Result<GraphqlTimelineTimestamps, GithubError>;
+	async fn fetch_timeline(&self, repo: RepoInfo, issue_number: u64) -> Result<GraphqlTimeline, GithubError>;
 
 	/// Replace all labels on an issue.
 	async fn set_labels(&self, repo: RepoInfo, issue_number: u64, labels: &[String]) -> Result<(), GithubError>;
@@ -173,6 +178,10 @@ pub struct GithubIssue {
 	/// Only present for closed issues.
 	pub state_reason: Option<String>,
 	pub assignees: Vec<GithubUser>,
+	/// Present on a pull request: the issues API serves those too.
+	pub pull_request: Option<serde::de::IgnoredAny>,
+	/// Where it lives now: an issue moved since is served from its old address too.
+	pub html_url: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -204,19 +213,20 @@ pub struct CreatedIssue {
 	pub html_url: String,
 }
 
-/// Timestamps from GraphQL timeline API for issue field changes.
-/// All fields are optional because GitHub's timeline only retains events for 90 days.
+/// From the GraphQL timeline API: when issue fields last changed, and the issue's dependency links.
+/// Timestamps are optional because GitHub's timeline only retains events for 90 days.
 /// Note: Comment timestamps are fetched via REST API (in GithubComment), not here.
 #[derive(Clone, Debug, Default)]
-pub struct GraphqlTimelineTimestamps {
+pub struct GraphqlTimeline {
 	/// Most recent title change (from RenamedTitleEvent)
 	pub title: Option<jiff::Timestamp>,
-	/// Most recent body/description edit (from issue's updatedAt, which is imprecise)
+	/// Most recent body edit or `blocked by` change: tedi's blockers hold both
 	pub description: Option<jiff::Timestamp>,
 	/// Most recent label change (from LabeledEvent/UnlabeledEvent)
 	pub labels: Option<jiff::Timestamp>,
 	/// Most recent state change (from ClosedEvent/ReopenedEvent)
 	pub state: Option<jiff::Timestamp>,
+	pub dependencies: tedi_core::Dependencies,
 }
 
 //==============================================================================
@@ -469,6 +479,30 @@ impl GithubClient for RealGithubClient {
 		Ok(())
 	}
 
+	async fn add_blocked_by(&self, repo: RepoInfo, issue_number: u64, blocker_id: u64) -> Result<(), GithubError> {
+		let url = format!(
+			"https://api.github.com/repos/{}/{}/issues/{issue_number}/dependencies/blocked_by",
+			repo.owner().expect("github repo"),
+			repo.repo()
+		);
+		self.post_json(&url, &serde_json::json!({ "issue_id": blocker_id }), "Failed to add blocked-by dependency").await
+	}
+
+	async fn remove_blocked_by(&self, repo: RepoInfo, issue_number: u64, blocker_id: u64) -> Result<(), GithubError> {
+		let url = format!(
+			"https://api.github.com/repos/{}/{}/issues/{issue_number}/dependencies/blocked_by/{blocker_id}",
+			repo.owner().expect("github repo"),
+			repo.repo()
+		);
+		let res = self.delete(&url).send().await?;
+		if !res.status().is_success() {
+			let status = res.status();
+			let body = res.text().await.unwrap_or_default();
+			return Err(GithubError::new_api(status, body, "Failed to remove blocked-by dependency".to_string()));
+		}
+		Ok(())
+	}
+
 	async fn find_issue_by_title(&self, repo: RepoInfo, title: &str) -> Result<Option<u64>, GithubError> {
 		// Search for issues with this title (search in open and closed)
 		let encoded_title = urlencoding::encode(title);
@@ -530,14 +564,7 @@ impl GithubClient for RealGithubClient {
 		Ok(Some(parent))
 	}
 
-	async fn fetch_timeline_timestamps(&self, repo: RepoInfo, issue_number: u64) -> Result<GraphqlTimelineTimestamps, GithubError> {
-		// GraphQL query to fetch timeline events for timestamp extraction.
-		// We query for:
-		// - RenamedTitleEvent: title changes
-		// - LabeledEvent/UnlabeledEvent: label changes
-		// - ClosedEvent/ReopenedEvent: state changes
-		// - The issue body's updatedAt for description changes
-		//
+	async fn fetch_timeline(&self, repo: RepoInfo, issue_number: u64) -> Result<GraphqlTimeline, GithubError> {
 		// Note: GitHub timeline only retains events for 90 days, so all timestamps are optional.
 		// Comment timestamps are fetched via REST API (GithubComment has created_at/updated_at).
 		let query = r#"
@@ -546,7 +573,9 @@ impl GithubClient for RealGithubClient {
 					issue(number: $number) {
 						lastEditedAt
 						createdAt
-						timelineItems(last: 100, itemTypes: [RENAMED_TITLE_EVENT, LABELED_EVENT, UNLABELED_EVENT, CLOSED_EVENT, REOPENED_EVENT]) {
+						blockedBy(first: 100) { nodes { url } }
+						blocking(first: 100) { nodes { url } }
+						timelineItems(last: 100, itemTypes: [RENAMED_TITLE_EVENT, LABELED_EVENT, UNLABELED_EVENT, CLOSED_EVENT, REOPENED_EVENT, BLOCKED_BY_ADDED_EVENT, BLOCKED_BY_REMOVED_EVENT]) {
 							nodes {
 								__typename
 								... on RenamedTitleEvent {
@@ -564,6 +593,12 @@ impl GithubClient for RealGithubClient {
 								... on ReopenedEvent {
 									createdAt
 								}
+								... on BlockedByAddedEvent {
+									createdAt
+								}
+								... on BlockedByRemovedEvent {
+									createdAt
+								}
 							}
 						}
 					}
@@ -577,9 +612,28 @@ impl GithubClient for RealGithubClient {
 			"number": issue_number as i64
 		});
 
-		let response = self.graphql(query, variables, "Failed to fetch timeline timestamps via GraphQL").await?;
+		let response = self.graphql(query, variables, "Failed to fetch timeline via GraphQL").await?;
 
-		let mut timestamps = GraphqlTimelineTimestamps::default();
+		let mut timeline = GraphqlTimeline::default();
+		let links = |field: &str| -> Result<Vec<tedi_core::IssueLink>, GithubError> {
+			let nodes = response
+				.pointer(&format!("/data/repository/issue/{field}/nodes"))
+				.and_then(|v| v.as_array())
+				.ok_or_else(|| GithubError::new_graphql(format!("no {field} in {response}")))?;
+			nodes
+				.iter()
+				.map(|n| {
+					n.get("url")
+						.and_then(|u| u.as_str())
+						.and_then(tedi_core::IssueLink::parse)
+						.ok_or_else(|| GithubError::new_graphql(format!("{field} node is not an issue: {n}")))
+				})
+				.collect()
+		};
+		timeline.dependencies = tedi_core::Dependencies {
+			blocked_by: links("blockedBy")?,
+			blocking: links("blocking")?,
+		};
 
 		// Extract body edit timestamp (description).
 		// `lastEditedAt` is null if the body was never edited after creation, so fall back to `createdAt`.
@@ -588,7 +642,7 @@ impl GithubClient for RealGithubClient {
 			.and_then(|v| v.as_str())
 			.or_else(|| response.pointer("/data/repository/issue/createdAt").and_then(|v| v.as_str()));
 		if let Some(ts_str) = description_ts {
-			timestamps.description = ts_str.parse().ok();
+			timeline.description = ts_str.parse().ok();
 		}
 
 		// Process timeline items
@@ -603,22 +657,29 @@ impl GithubClient for RealGithubClient {
 					"RenamedTitleEvent" =>
 						if let Some(created_at) = node.get("createdAt").and_then(|v| v.as_str()) {
 							let ts: Option<jiff::Timestamp> = created_at.parse().ok();
-							if ts > timestamps.title {
-								timestamps.title = ts;
+							if ts > timeline.title {
+								timeline.title = ts;
 							}
 						},
 					"LabeledEvent" | "UnlabeledEvent" =>
 						if let Some(created_at) = node.get("createdAt").and_then(|v| v.as_str()) {
 							let ts: Option<jiff::Timestamp> = created_at.parse().ok();
-							if ts > timestamps.labels {
-								timestamps.labels = ts;
+							if ts > timeline.labels {
+								timeline.labels = ts;
+							}
+						},
+					"BlockedByAddedEvent" | "BlockedByRemovedEvent" =>
+						if let Some(created_at) = node.get("createdAt").and_then(|v| v.as_str()) {
+							let ts: Option<jiff::Timestamp> = created_at.parse().ok();
+							if ts > timeline.description {
+								timeline.description = ts;
 							}
 						},
 					"ClosedEvent" | "ReopenedEvent" =>
 						if let Some(created_at) = node.get("createdAt").and_then(|v| v.as_str()) {
 							let ts: Option<jiff::Timestamp> = created_at.parse().ok();
-							if ts > timestamps.state {
-								timestamps.state = ts;
+							if ts > timeline.state {
+								timeline.state = ts;
 							}
 						},
 					_ => {}
@@ -626,7 +687,7 @@ impl GithubClient for RealGithubClient {
 			}
 		}
 
-		Ok(timestamps)
+		Ok(timeline)
 	}
 
 	async fn repo_exists(&self, repo: RepoInfo) -> Result<bool, GithubError> {
@@ -872,8 +933,16 @@ impl GithubClient for RetryingGithubClient {
 		retrying!(self.inner.fetch_parent_issue(repo, issue_number))
 	}
 
-	async fn fetch_timeline_timestamps(&self, repo: RepoInfo, issue_number: u64) -> Result<GraphqlTimelineTimestamps, GithubError> {
-		retrying!(self.inner.fetch_timeline_timestamps(repo, issue_number))
+	async fn fetch_timeline(&self, repo: RepoInfo, issue_number: u64) -> Result<GraphqlTimeline, GithubError> {
+		retrying!(self.inner.fetch_timeline(repo, issue_number))
+	}
+
+	async fn add_blocked_by(&self, repo: RepoInfo, issue_number: u64, blocker_id: u64) -> Result<(), GithubError> {
+		retrying!(self.inner.add_blocked_by(repo, issue_number, blocker_id))
+	}
+
+	async fn remove_blocked_by(&self, repo: RepoInfo, issue_number: u64, blocker_id: u64) -> Result<(), GithubError> {
+		retrying!(self.inner.remove_blocked_by(repo, issue_number, blocker_id))
 	}
 
 	async fn set_labels(&self, repo: RepoInfo, issue_number: u64, labels: &[String]) -> Result<(), GithubError> {

@@ -2368,6 +2368,6 @@ async fn test_mv_rewrites_blocker_refs_elsewhere() {
 	let out = mv_edit(&ctx, "issues/10 -->", " !mv repo_b");
 	assert!(out.status.success(), "stderr: {}", out.stderr);
 
-	assert!(local_issue(12).contains("- o/repo_b#1"), "{}", local_issue(12));
+	assert!(local_issue(12).contains("- repo_b#1"), "{}", local_issue(12));
 	assert!(ctx.github_calls().iter().any(|c| c.starts_with("update_issue_body(o, r, 12,")), "{:?}", ctx.github_calls());
 }

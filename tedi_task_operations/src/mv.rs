@@ -211,7 +211,8 @@ fn settle(placed: &mut Issue, was: &HashMap<IssueLink, &Issue>, moved: &HashMap<
 	placed.contents.state = old.contents.state.clone();
 	placed.contents.labels = old.contents.labels.iter().filter(|l| target_labels.contains(l)).cloned().collect();
 	placed.contents.blockers = old.contents.blockers.clone();
-	placed.contents.blockers.relink(source, moved, true);
+	let to = placed.repo_info();
+	placed.contents.blockers.relink(source, moved, to);
 	for child in placed.children.values_mut() {
 		settle(child, was, moved, target_labels, source);
 	}
@@ -268,7 +269,7 @@ async fn relink_blockers(moved: &HashMap<IssueLink, IssueLink>, mode: SyncMode) 
 	for (path, candidate) in Local::issue_candidates()? {
 		let index = Local::extract_index_from_path(&path)?;
 		let mut blockers = VirtualIssue::parse(&candidate.body, path.clone())?.contents.blockers;
-		if !blockers.relink(index.repo_info(), moved, false) {
+		if !blockers.relink(index.repo_info(), moved, index.repo_info()) {
 			continue;
 		}
 		if index.issue_number().is_none() {

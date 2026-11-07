@@ -15,4 +15,4 @@ pub use milestone::{MilestoneModifier, load_consensus_milestone, modify_and_sync
 // Re-export sync types for blocker interaction
 #[allow(unused_imports)]
 pub use sync::{MergeMode, Modifier, ModifyResult, Side, SyncMode, SyncOptions, modify_and_sync_issue, pull_issues};
-pub(crate) use sync::{apply_edited_buffer, fetch_remote, unsynced};
+pub(crate) use sync::{apply_edited_buffer, fetch_and_store_missing, fetch_remote, unsynced};

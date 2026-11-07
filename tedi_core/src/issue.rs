@@ -241,6 +241,13 @@ impl IssueTimestamps {
 	}
 }
 
+/// An issue's `blocked by` / `blocking` links, as Github holds them.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Dependencies {
+	pub blocked_by: Vec<IssueLink>,
+	pub blocking: Vec<IssueLink>,
+}
+
 /// Metadata for an issue linked to Github.
 /// Parent chain is stored in `IssueIdentity.parent_index`.
 #[derive(Clone, Debug, PartialEq)]
@@ -253,10 +260,17 @@ pub struct LinkedIssueMeta {
 	/// Timestamps of last changes to individual fields.
 	/// Used for sync conflict resolution.
 	pub timestamps: IssueTimestamps,
+	/// Github's own dependency links; known only on a state just loaded from Github.
+	pub dependencies: Option<Dependencies>,
 }
 impl LinkedIssueMeta {
 	pub fn new(user: Option<String>, link: IssueLink, timestamps: IssueTimestamps) -> Self {
-		Self { user, link, timestamps }
+		Self {
+			user,
+			link,
+			timestamps,
+			dependencies: None,
+		}
 	}
 
 	/// Get the link.

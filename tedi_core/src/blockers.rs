@@ -230,35 +230,55 @@ impl Blockers {
 		replace_last(&mut self.items, text.to_string())
 	}
 
-	/// Point refs (resolved against `home`) to an issue in `moved` at its new place. `qualify` also
-	/// spells every other `home`-relative ref out in full, for blockers about to leave `home`.
-	pub fn relink(&mut self, home: RepoInfo, moved: &std::collections::HashMap<IssueLink, IssueLink>, qualify: bool) -> bool {
-		fn walk(items: &mut [BlockerItem], home: RepoInfo, moved: &std::collections::HashMap<IssueLink, IssueLink>, qualify: bool) -> bool {
+	/// Every issue an item names outright, resolved against `home`, each once.
+	pub fn issue_links(&self, home: RepoInfo) -> Vec<IssueLink> {
+		fn walk(items: &[BlockerItem], home: RepoInfo, out: &mut Vec<IssueLink>) {
+			for item in items {
+				if let Some(mut r) = item.issue_ref() {
+					r.resolve_with_context(None, Some(home));
+					if let Some(link) = r.to_issue_link()
+						&& !out.contains(&link)
+					{
+						out.push(link);
+					}
+				}
+				walk(&item.children, home, out);
+			}
+		}
+		let mut out = Vec::new();
+		walk(&self.items, home, &mut out);
+		out
+	}
+
+	/// Point refs (resolved against `home`) to an issue in `moved` at its new place, spelled relative to
+	/// `to` — where these blockers live from now on.
+	pub fn relink(&mut self, home: RepoInfo, moved: &std::collections::HashMap<IssueLink, IssueLink>, to: RepoInfo) -> bool {
+		fn walk(items: &mut [BlockerItem], home: RepoInfo, moved: &std::collections::HashMap<IssueLink, IssueLink>, to: RepoInfo) -> bool {
 			let mut changed = false;
 			for item in items {
 				if let Some(mut r) = item.issue_ref() {
 					let relative = matches!(r, IssueRef::Shorthand { owner: None, .. });
 					r.resolve_with_context(None, Some(home));
 					if let Some(link) = r.to_issue_link() {
-						let to = match moved.get(&link) {
+						let target = match moved.get(&link) {
 							Some(new) => Some(new),
-							None if qualify && relative => Some(&link),
+							None if relative && to != home => Some(&link),
 							None => None,
 						};
-						if let Some(to) = to {
+						if let Some(target) = target {
 							item.text = match r {
-								IssueRef::Url(_) => to.to_string(),
-								IssueRef::Shorthand { .. } => format!("{}#{}", to.project(), to.number()),
+								IssueRef::Url(_) => target.to_string(),
+								IssueRef::Shorthand { .. } => target.shorthand(to),
 							};
 							changed = true;
 						}
 					}
 				}
-				changed |= walk(&mut item.children, home, moved, qualify);
+				changed |= walk(&mut item.children, home, moved, to);
 			}
 			changed
 		}
-		walk(&mut self.items, home, moved, qualify)
+		walk(&mut self.items, home, moved, to)
 	}
 
 	/// Build cmark event stream representing this blocker sequence as a list.

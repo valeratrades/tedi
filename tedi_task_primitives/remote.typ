@@ -48,6 +48,11 @@ GQL timeline                                 │  IssueTimestamps { title, descr
                                              │    REST carries one `updated_at` for the whole issue
                                              │    while the merge resolves field by field, so the
                                              │    stamps are read off the timeline instead
+    blockedBy                                │  each one the blockers don't name already goes atop
+                                             │    them — last in sequence — as the shortest ref
+                                             │    from here: `#n`, `repo#n`, `owner/repo#n`.
+                                             │    Its add/remove events stamp `description` too.
+    blockedBy, blocking                      │  LinkedIssueMeta.dependencies, as GitHub holds them
     comment.updated_at ?? created_at         │  IssueTimestamps.comments[i]
 ```
 
@@ -112,6 +117,9 @@ sink(&mut self, old: Option<&Issue>)
                            POST sub_issues    if parented
                            identity becomes linked
   body() != old.body()  ─▶ PATCH issues/{n} { body }     the whole body, text and blockers together
+  blockers' issue refs  ─▶ POST / DELETE                  any depth, any repo or owner; diffed against
+     vs held links         dependencies/blocked_by       old's `dependencies` (a local `old` has
+                                                         none: its own refs stand in)
   remote_labels()       ─▶ PATCH issues/{n} { labels }   labels + the state's `p:` label; compared
                                                          over the same view, since a `[ ] → [.]`
                                                          flip moves nothing else
