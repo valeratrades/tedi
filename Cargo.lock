@@ -5800,9 +5800,9 @@ dependencies = [
 
 [[package]]
 name = "v_utils"
-version = "2.23.0"
+version = "2.24.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5d2375d1136642256d3b61a3fcd768c1d1bb52586e79c6bb151a8a9b9e122222"
+checksum = "ba011b46d6a76c9b76bae3d7a8752cf46ec93c6a5c65455feb2a2a5a12429bf8"
 dependencies = [
  "ahash",
  "bon",

@@ -464,7 +464,7 @@ async fn edit_urgent(mode: SyncMode) -> Result<()> {
 	eprintln!("[milestone] tmp_path: {}", tmp_path.display());
 
 	tedi_task_operations::utils::open_file(&tmp_path, None).await?;
-	let _syncing = SyncSpinner::start();
+	let _syncing = v_utils::io::Spinner::start(); // until the edit is synced
 
 	let raw = fs::read_to_string(&tmp_path)?;
 	if raw == expanded {
@@ -603,7 +603,7 @@ async fn edit_milestone(settings: &LiveSettings, tf: Timeframe, mode: SyncMode, 
 	eprintln!("[milestone] tmp_path: {}", tmp_path.display());
 
 	tedi_task_operations::utils::open_file(&tmp_path, None).await?;
-	let _syncing = SyncSpinner::start();
+	let _syncing = v_utils::io::Spinner::start(); // until the edit is synced
 
 	let mode = match mode == SyncMode::OnExit && !mock && !tedi_adapters::github::reachable().await {
 		true => SyncMode::Offline,
@@ -733,39 +733,6 @@ fn take_moves(buffer: &str, mode: SyncMode) -> Result<(String, Vec<(IssueLink, R
 }
 
 /// Persist an editor buffer that failed a genuine (non-transient) sync/parse, and surface the path.
-/// Dots ticking on stderr from the editor closing until the edit is synced; cleared on drop.
-/// Each frame leaves the cursor at column 0, so a nested println overwrites the dots instead of trailing them.
-struct SyncSpinner {
-	stop: std::sync::mpsc::Sender<()>,
-	ticker: Option<std::thread::JoinHandle<()>>,
-}
-impl SyncSpinner {
-	fn start() -> Self {
-		use std::{io::IsTerminal, sync::mpsc};
-		let (stop, stopped) = mpsc::channel();
-		let ticker = std::io::stderr().is_terminal().then(|| {
-			std::thread::spawn(move || {
-				for frame in [".  ", ".. ", "...", " ..", "  .", "   "].iter().cycle() {
-					eprint!("\r{frame}\r");
-					if stopped.recv_timeout(std::time::Duration::from_millis(250)) != Err(mpsc::RecvTimeoutError::Timeout) {
-						break;
-					}
-				}
-				eprint!("\r   \r");
-			})
-		});
-		Self { stop, ticker }
-	}
-}
-impl Drop for SyncSpinner {
-	fn drop(&mut self) {
-		if let Some(ticker) = self.ticker.take() {
-			self.stop.send(()).expect("ticker holds the receiver until stopped");
-			ticker.join().expect("ticker only prints");
-		}
-	}
-}
-
 fn dump_rejected(edited_content: &str, e: Report) -> Result<()> {
 	tedi_task_operations::utils::persist_rejected_changes(edited_content)?;
 	eprintln!("Your changes were saved to /tmp/tedi/rejected-changes.md — you can recover them from there.");
