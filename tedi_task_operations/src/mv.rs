@@ -5,14 +5,14 @@
 
 use std::collections::HashMap;
 
-use color_eyre::eyre::{Result, bail, eyre};
+use color_eyre::eyre::{Result, WrapErr, bail};
 
 use crate::{
 	CloseState, CommentIdentity, Events, Issue, IssueIdentity, IssueIndex, IssueLink, IssueSelector, LazyIssue, MilestoneLink, RepoInfo, VirtualIssue, clockify_tracking,
 	local::{Consensus, FsReader, Local, LocalFs},
 	open_interactions::{MilestoneModifier, Modifier, SyncMode, SyncOptions, modify_and_sync_issue, modify_and_sync_milestone},
 	remote::{Remote, RemoteSource},
-	selection::{Selected, try_lock_urgent, urgent_path},
+	selection::{Selected, URGENT_KEY, lock_sprint, urgent_path},
 	sink::Sink,
 	sprints::load_local_issue,
 };
@@ -23,7 +23,7 @@ use crate::{
 pub async fn move_issues(moves: &[(IssueLink, RepoInfo)], editing: Option<&MilestoneLink>, mode: SyncMode) -> Result<HashMap<IssueLink, IssueLink>> {
 	assert_ne!(mode, SyncMode::Offline, "moves are rejected offline before reaching here");
 	let _urgent = match editing {
-		Some(_) => Some(try_lock_urgent()?.ok_or_else(|| eyre!("the urgent sprint is open in another editor, and a move repoints links in it — close it and retry"))?),
+		Some(_) => Some(lock_sprint(URGENT_KEY).wrap_err("a move repoints links in urgent")?),
 		None => None,
 	};
 

@@ -28,14 +28,55 @@ pub const URGENT_KEY: &str = "urgent";
 pub fn urgent_path() -> PathBuf {
 	Local::issues_dir().join("urgent.md")
 }
-/// Exclusive cross-process lock over urgent-file mutation (edit sessions and auto-cleanup).
-/// `None` — another session holds it. Keep the returned handle alive for the whole session.
-pub fn try_lock_urgent() -> std::io::Result<Option<std::fs::File>> {
-	let file = std::fs::File::create(crate::paths::cache_file("milestones_urgent.lock"))?;
+/// Exclusive cross-process lock over a sprint's buffer (edit sessions; urgent's auto-cleanup too).
+/// Keep the returned handle alive for the whole session.
+pub fn lock_sprint(key: &str) -> Result<std::fs::File, SprintLockError> {
+	use std::io::{Read, Seek, Write};
+	let mut file = std::fs::OpenOptions::new()
+		.read(true)
+		.write(true)
+		.create(true)
+		.truncate(false)
+		.open(crate::paths::cache_file(&format!("milestones_{key}.lock")))?; // truncating before the lock would wipe the holder's pid
 	match file.try_lock() {
-		Ok(()) => Ok(Some(file)),
-		Err(std::fs::TryLockError::WouldBlock) => Ok(None),
-		Err(std::fs::TryLockError::Error(e)) => Err(e),
+		Ok(()) => {
+			file.set_len(0)?;
+			file.rewind()?;
+			write!(file, "{}", std::process::id())?;
+			Ok(file)
+		}
+		Err(std::fs::TryLockError::WouldBlock) => {
+			let mut pid = String::new();
+			file.read_to_string(&mut pid)?;
+			Err(SprintLockError::Held {
+				key: key.to_owned(),
+				holder: describe_process(pid.trim()),
+			})
+		}
+		Err(std::fs::TryLockError::Error(e)) => Err(e.into()),
+	}
+}
+#[derive(Debug, thiserror::Error)]
+pub enum SprintLockError {
+	#[error("sprint '{key}' is already being edited by {holder}")]
+	Held { key: String, holder: String },
+	#[error(transparent)]
+	Io(#[from] std::io::Error),
+}
+fn describe_process(pid: &str) -> String {
+	if pid.is_empty() {
+		return "another tedi instance (pid unrecorded)".into();
+	}
+	let proc = Path::new("/proc").join(pid);
+	let Ok(cmdline) = std::fs::read(proc.join("cmdline")) else {
+		return format!("pid {pid}, which has since exited — retry");
+	};
+	let cmd = String::from_utf8_lossy(&cmdline).split('\0').filter(|a| !a.is_empty()).collect::<Vec<_>>().join(" ");
+	let tty = std::fs::read_link(proc.join("fd/0")).map(|p| format!(" on {}", p.display())).unwrap_or_default(); // no stdin → nothing to point at
+	let stopped = std::fs::read_to_string(proc.join("status")).is_ok_and(|s| s.lines().any(|l| l.starts_with("State:") && l.contains("T (stopped)")));
+	match stopped {
+		true => format!("pid {pid} `{cmd}`{tty}, SUSPENDED — `fg` it there, or `kill -CONT {pid}` to let it finish"),
+		false => format!("pid {pid} `{cmd}`{tty}"),
 	}
 }
 /// Where a selection operation landed. A milestone landing keeps the milestone as the
@@ -553,7 +594,7 @@ fn cleanup_urgent() {
 	if !path.exists() {
 		return;
 	}
-	let Ok(Some(_lock)) = try_lock_urgent() else { return };
+	let Ok(_lock) = lock_sprint(URGENT_KEY) else { return };
 	let Ok(content) = std::fs::read_to_string(&path) else { return }; // deleted between exists() and here
 	let mut view = TaskView::parse(&content);
 	view.resolve_bare_refs(None);

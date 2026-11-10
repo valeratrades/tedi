@@ -449,7 +449,7 @@ async fn cache_blocker_milestone(settings: &LiveSettings, milestones: &[GithubMi
 async fn edit_urgent(mode: SyncMode) -> Result<()> {
 	use std::fs;
 
-	let _lock = tedi_task_operations::selection::try_lock_urgent()?.ok_or_else(|| eyre!("Another instance is already editing the urgent sprint. Only one editor at a time is allowed."))?;
+	let _lock = tedi_task_operations::selection::lock_sprint(tedi_task_operations::selection::URGENT_KEY)?;
 
 	let path = tedi_task_operations::selection::urgent_path();
 	let original = match fs::read_to_string(&path) {
@@ -535,13 +535,7 @@ async fn edit_milestone(settings: &LiveSettings, tf: Timeframe, mode: SyncMode, 
 		remote::load_remote_milestone,
 	};
 
-	let lock_path = v_utils::xdg_cache_file!(format!("milestones_{tf}.lock"));
-	let lock_file = fs::File::create(&lock_path)?;
-	match lock_file.try_lock() {
-		Ok(()) => {}
-		Err(std::fs::TryLockError::WouldBlock) => bail!("Another instance is already editing milestone '{tf}'. Only one editor at a time is allowed."),
-		Err(std::fs::TryLockError::Error(e)) => return Err(e.into()),
-	}
+	let _lock = tedi_task_operations::selection::lock_sprint(&tf.to_string())?;
 
 	// GitHub unreachable → degrade the whole run to offline: every edit persists to LocalFs as a
 	// divergence from Consensus, reconciled by the next online sync of it.
