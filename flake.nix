@@ -88,6 +88,7 @@
                 src = pkgs.lib.cleanSource ./.;
 
                 RUSTC_WRAPPER = ""; # .cargo/config.toml sets sccache, absent in sandbox
+                doCheck = false; # snapshot tests are colour-sensitive in the sandbox; CI test jobs run them
               };
             };
 
