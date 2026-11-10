@@ -43,6 +43,7 @@
               inherit pkgs pname rs;
               lastSupportedVersion = "nightly-${v_flakes.rs.nightly_version}";
               enable = true;
+              publishCachix = "valeratrades";
               jobs.default = true;
               jobs.errors.install = jobDeps;
               jobs.warnings.install = jobDeps;

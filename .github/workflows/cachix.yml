@@ -1,0 +1,63 @@
+concurrency:
+  cancel-in-progress: false
+  group: cachix
+jobs:
+  build:
+    name: build ${{ matrix.system }}
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: cachix/install-nix-action@v31
+      - uses: cachix/cachix-action@v17
+        with:
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          name: valeratrades
+          skipPush: true
+      - run: nix build -L '.#packages.${{ matrix.system }}.default'
+      - run: cachix push valeratrades ./result
+      - env:
+          loc_gist_token: ${{ secrets.loc_gist_token }}
+        if: matrix.system == 'x86_64-linux'
+        name: Ensure loc_gist_token secret is configured
+        run: |
+          if [ -z "${loc_gist_token}" ]; then
+            echo "::error::Secret 'loc_gist_token' is not set (empty in this job)."
+            if [ "${{ github.event.repository.private }}" = "true" ]; then
+              echo "::error::This repo is PRIVATE. On GitHub Free-plan orgs, organization secrets are NOT exposed to private repos — if 'loc_gist_token' is set org-wide it still won't reach here. Fix: set it repo-level (gh secret set loc_gist_token -R ${{ github.repository }}), or upgrade the org to Team/Enterprise."
+            else
+              echo "::error::Add it under Settings → Secrets and variables → Actions (repo-level, or org-level with 'All repositories' visibility — org secrets reach public repos on any plan)."
+            fi
+            echo "::error::Create a token, then: gh secret set loc_gist_token --repo <owner>/<repo> --body YOUR_TOKEN"
+            echo "::error::Bulk-provision all repos: https://github.com/valeratrades/nix/tree/e4338bf5943d7403b949a8e079f9073987d9cd68/home/scripts/shared_github_secrets.bash"
+            exit 1
+          fi
+      - env:
+          GH_TOKEN: ${{ secrets.loc_gist_token }}
+        if: matrix.system == 'x86_64-linux'
+        name: Update badge gist
+        run: |
+          PNAME="${GITHUB_REPOSITORY##*/}"
+          gh api -X PATCH gists/b48e6f02c61942200e7d1e3eeabf9bcb --silent \
+          -f "files[$PNAME-size.json][content]={\"schemaVersion\": 1, \"label\": \"size\", \"message\": \"$(LC_ALL=C numfmt --to=iec-i --suffix=B --format=%.1f $(cat result/bin/* | wc -c))\", \"color\": \"lightblue\"}"
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            system: x86_64-linux
+          - runner: ubuntu-24.04-arm
+            system: aarch64-linux
+  cached:
+    needs: build
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: git push --force origin HEAD:refs/heads/cached
+name: cachix
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch: {}
