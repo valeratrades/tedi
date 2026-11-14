@@ -88,6 +88,8 @@ A conflict is data: `Conflict { link, clashes: [{ node, field, consensus, local,
 
 A buffer is folded back against the state it was rendered from, never against a pull made after it. A field changed on both sides since consensus is a conflict, never a timestamp race: neither edit was made knowing of the other.
 
+A field edit (`Modifier::Field`: what the web board and `tedi set` send) carries the value it was made against. If, after the pull, the field moved off it to anything but the same new value, the edit comes back as a `Conflict` naming that field, and nothing is written or recorded: the store holds no divergence, so nobody else's line is blocked. Answering it is another edit, made against the value it clashed with.
+
 A sprint stores links only, so an issue expanded into an edit buffer has no second home there: its block is sliced back out of the buffer verbatim and committed whole through the same `VirtualIssue::parse` its own file goes through (`Modifier::Write`) — body, state, labels, comments and blockers alike. A block that doesn't compose fails the edit rather than being dropped.
 
 `!mv [owner/]repo` on an issue's line sends it to another repo on save, its subtree with it; a moved child detaches from its parent. Every stored reference follows it, archived milestones aside. Across owners GitHub can't transfer, so the tree is recreated there and the originals closed as duplicates pointing at it.
@@ -114,7 +116,7 @@ tedi_md → tedi_core → tedi_task_primitives → tedi_task_operations → tedi
         tedi_adapters ──────────┘    └──── tedi_utils             tedi_eval
 ```
 - `tedi_md` — markdown primitives: owned pulldown_cmark `Events` ⇄ `String`.
-- `tedi_core` — the pure model: the primitives above (Issue/Blockers/Milestone), their locators/markers, and parse/serialize over `Events`. No IO, no async, no transport. A primitive cannot reach fs/network/app-state — the crate boundary enforces it.
+- `tedi_core` — the pure model: the primitives above (Issue/Blockers/Milestone), their locators/markers, and parse/serialize over `Events`. No IO, no async, no transport. A primitive cannot reach fs/network/app-state — the crate boundary enforces it. It builds for wasm (the web client runs the board model and reads conflicts): `v_utils` with `macros` only. Its `board` is the board model — cards, query, views, grouping, restaging; `tedi_task_operations::board` cards the store and edits through the sync.
 - `tedi_adapters` — transport at the edge: `GithubClient`, Clockify. Depends on core for the domain locator (`RepoInfo`).
 - `tedi_task_primitives` — what a stored issue *is*: local/remote sources+sinks, storage layout, path resolution, the `LazyIssue` loading protocol, the GitHub mock.
 - `tedi_task_operations` — what we *do* with issues: sync/merge/touch/conflict, sprint flows + per-sprint selection, per-issue Clockify.

@@ -30,7 +30,7 @@ pub use types::*;
 use super::merge::Merge;
 use crate::{
 	BlockerSetState, Issue, IssueIndex, IssueLink, IssueSelector, LazyIssue, RepoInfo, VirtualIssue,
-	conflict_resolve::{Clash, Conflict, Field},
+	conflict_resolve::{Clash, Conflict, Field, FieldEdit},
 	local::{Consensus, FsReader, Local, LocalFs, LocalIssueSource, LocalPath, consensus::load_consensus_issue, lock_store},
 	remote::{Remote, RemoteSource},
 	selection::Selected,
@@ -472,11 +472,7 @@ mod core {
 		if found.is_empty() && local_merged != remote_merged {
 			clashes(&local_merged, consensus.as_ref(), &remote_merged, false, &mut found);
 			if found.is_empty() {
-				let children = |i: &Issue| {
-					let mut titles: Vec<String> = i.children.values().map(|c| c.contents.title.clone()).collect();
-					titles.sort();
-					titles.join("\n")
-				};
+				let children = |i: &Issue| Field::SubIssues.read(i);
 				found.push(Found {
 					index: local_merged.full_index(),
 					local: local_merged.to_string(),
@@ -527,25 +523,11 @@ mod core {
 		if since_base && base.is_none() {
 			return;
 		}
-		let fields: [(Field, fn(&Issue) -> String); 6] = [
-			(Field::Title, |i| i.contents.title.clone()),
-			(Field::Labels, |i| {
-				let mut labels = i.contents.labels.clone();
-				labels.sort_unstable();
-				labels.join(", ")
-			}),
-			(Field::Assignees, |i| i.contents.assignees.join(", ")),
-			(Field::Body, |i| i.body().to_string()),
-			(Field::State, |i| format!("{:?}", i.contents.state)),
-			(Field::Comments, |i| {
-				i.contents.comments.iter().skip(1).map(|c| format!("{:?}: {}", c.id(), c.body)).collect::<Vec<_>>().join("\n")
-			}),
-		];
 		let node = local.identity.link().expect("on the remote, so linked").clone();
-		let found: Vec<Clash> = fields
+		let found: Vec<Clash> = [Field::Title, Field::Labels, Field::Assignees, Field::Body, Field::State, Field::Comments]
 			.into_iter()
-			.filter_map(|(field, read)| {
-				let (l, b, r) = (read(local), base.map(read), read(remote));
+			.filter_map(|field| {
+				let (l, b, r) = (field.read(local), base.map(|b| field.read(b)), field.read(remote));
 				let differs = match since_base {
 					true => clash(&l, b.as_ref().expect("checked above"), &r),
 					false => l != r,
@@ -802,6 +784,11 @@ mod types {
 		Write {
 			edited: Box<VirtualIssue>,
 		},
+		/// Set fields, each made against the value it was seen holding: one that moved on since makes the
+		/// whole edit a `Conflict`, and nothing is written — the store holds no divergence to record.
+		Field {
+			edits: Vec<FieldEdit>,
+		},
 		/// Repoint blocker refs at issues that moved repo (`!mv`).
 		Relink {
 			moved: std::collections::HashMap<IssueLink, IssueLink>,
@@ -906,6 +893,38 @@ mod types {
 				}
 				Modifier::Write { edited } => {
 					apply_edited_buffer(issue, &old_issue, (**edited).clone())?;
+					ModifyResult {
+						output: None,
+						file_modified: *issue != old_issue,
+					}
+				}
+				Modifier::Field { edits } => {
+					let node = issue.identity.link().expect("field edits are made on stored issues").clone();
+					let clashes: Vec<Clash> = edits
+						.iter()
+						.filter_map(|e| {
+							let now = e.field.read(issue);
+							clash(&e.new, &e.seen, &now).then(|| Clash {
+								node: node.clone(),
+								field: e.field,
+								consensus: Some(e.seen.clone()),
+								local: e.new.clone(),
+								remote: now,
+							})
+						})
+						.collect();
+					if !clashes.is_empty() {
+						return Err(Conflict {
+							link: node,
+							clashes,
+							files: Vec::new(),
+						}
+						.into());
+					}
+					for e in edits {
+						e.field.write(issue, &e.new)?;
+					}
+					issue.check_edit()?;
 					ModifyResult {
 						output: None,
 						file_modified: *issue != old_issue,

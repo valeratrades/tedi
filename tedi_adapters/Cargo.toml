@@ -24,7 +24,7 @@ tokio = { workspace = true, features = ["sync", "time"] }
 tracing.workspace = true
 tracing-error.workspace = true # `#[wrap_err]` expands to it
 urlencoding.workspace = true
-v_utils.workspace = true
+v_utils = { workspace = true, features = ["lite", "io", "async-io", "macros", "xdg", "cli"] }
 
 [lints]
 workspace = true

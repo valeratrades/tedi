@@ -8,6 +8,7 @@ mod blocker_dependencies;
 mod blocker_integrated;
 mod closed_subtree;
 mod conflict;
+mod field_edit;
 mod file_naming;
 mod issue_preservation;
 mod label_scheme;

@@ -20,7 +20,7 @@ png.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
-v_utils.workspace = true
+v_utils = { workspace = true, features = ["lite", "io", "async-io", "macros", "xdg", "cli"] }
 
 [lints]
 workspace = true

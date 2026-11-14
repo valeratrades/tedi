@@ -36,12 +36,12 @@ tedi_adapters.workspace = true
 tedi_core.workspace = true
 tedi_eval.workspace = true
 tedi_task_operations.workspace = true
-tedi_utils.workspace = true
+tedi_utils = { workspace = true, features = ["picker"] }
 tempfile.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
-v_utils.workspace = true
+v_utils = { workspace = true, features = ["lite", "io", "async-io", "macros", "xdg", "cli"] }
 
 [lints]
 workspace = true

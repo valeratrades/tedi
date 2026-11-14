@@ -7,6 +7,7 @@
 use std::path::{Path, PathBuf};
 
 use color_eyre::eyre::{Result, WrapErr};
+pub use tedi_core::conflict::{Clash, Conflict, Field, FieldEdit};
 
 use crate::{
 	Issue, IssueIndex, IssueLink, LazyIssue as _, VirtualIssue,
@@ -19,57 +20,6 @@ use crate::{
 	remote::{Remote, RemoteSource},
 	sink::Sink,
 };
-
-/// A sync that can't settle: each field both sides changed since consensus, every clashing node recorded
-/// to a file of its own for resolution. Blocks only the line of issues those nodes sit on.
-#[derive(Debug, miette::Diagnostic, thiserror::Error)]
-#[diagnostic(code(tedi::conflict))]
-pub struct Conflict {
-	pub link: IssueLink,
-	pub clashes: Vec<Clash>,
-	pub files: Vec<PathBuf>,
-}
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Clash {
-	pub node: IssueLink,
-	pub field: Field,
-	/// `None` when there is no consensus: never synced from here.
-	pub consensus: Option<String>,
-	pub local: String,
-	pub remote: String,
-}
-#[derive(Clone, Copy, Debug, Eq, PartialEq, strum::Display)]
-#[strum(serialize_all = "snake_case")]
-pub enum Field {
-	Title,
-	Labels,
-	Assignees,
-	Body,
-	State,
-	Comments,
-	SubIssues,
-}
-impl std::fmt::Display for Conflict {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		let home = self.link.project();
-		writeln!(f, "{home}#{} changed on both sides since the last sync:", self.link.number())?;
-		for c in &self.clashes {
-			// the first line the sides differ on
-			let at = c.local.lines().zip(c.remote.lines()).take_while(|(l, r)| l == r).count();
-			let line = |v: &str| v.lines().nth(at).map_or_else(|| "nothing".to_string(), |l| format!("{:?}", l.trim()));
-			write!(f, "  {} {}: {} here, {} on GitHub", c.node.shorthand(home), c.field, line(&c.local), line(&c.remote))?;
-			match &c.consensus {
-				Some(was) => writeln!(f, " (was {})", line(was))?,
-				None => writeln!(f)?,
-			}
-		}
-		writeln!(f, "Resolve the markers (<<<<<<< ||||||| ======= >>>>>>>) in:")?;
-		for file in &self.files {
-			writeln!(f, "  {}", file.display())?;
-		}
-		write!(f, "then re-run.")
-	}
-}
 
 /// Load a local source at `index`, first resolving any pending conflict via the editor.
 /// Use at user-facing load sites; ancestor/internal loads use the pure `LocalIssueSource::build`.
@@ -107,19 +57,7 @@ pub async fn resolve_pending_conflict(index: IssueIndex) -> Result<()> {
 /// moved on before it is resolved.
 pub fn record_conflict(path: &Path, local: &str, consensus: Option<&str>, remote: &str) -> Result<()> {
 	std::fs::create_dir_all(path.parent().expect("conflicts live in a repo dir"))?;
-	let side = |s: &str| match s.ends_with('\n') {
-		true => s.to_string(),
-		false => format!("{s}\n"),
-	};
-	std::fs::write(
-		path,
-		format!(
-			"<<<<<<< local\n{}||||||| consensus\n{}=======\n{}>>>>>>> remote\n",
-			side(local),
-			consensus.map(side).unwrap_or_default(),
-			side(remote)
-		),
-	)?;
+	std::fs::write(path, tedi_core::conflict::markers(local, consensus, remote))?;
 	std::fs::write(remote_snapshot(path), remote)?;
 	Ok(())
 }

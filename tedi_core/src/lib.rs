@@ -27,6 +27,8 @@ pub mod current_user {
 }
 
 pub mod blockers;
+pub mod board;
+pub mod conflict;
 pub mod error;
 pub mod issue;
 pub mod labels;

@@ -22,12 +22,12 @@ serde_json.workspace = true
 tedi_adapters.workspace = true
 tedi_core.workspace = true
 tedi_md.workspace = true
-tedi_utils.workspace = true
+tedi_utils = { workspace = true, features = ["picker"] }
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-error.workspace = true
-v_utils.workspace = true
+v_utils = { workspace = true, features = ["lite", "io", "async-io", "macros", "xdg", "cli"] }
 xdg.workspace = true
 
 [dev-dependencies]

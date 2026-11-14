@@ -53,6 +53,17 @@ enum Commands {
 	Open(tedi_task_operations::open_interactions::OpenArgs),
 	/// Store every issue of orgs (`owner`) and repos (`owner/repo`); the config's `watch` when none are named
 	Pull { targets: Vec<String> },
+	/// Set a field of a stored issue, made against the value you saw it hold: if it moved on since, nothing is written
+	Set {
+		#[arg(value_parser = |s: &str| tedi_task_operations::IssueLink::parse(s).ok_or("not an issue link"))]
+		link: tedi_task_operations::IssueLink,
+		/// `title`, `labels` / `assignees` (`, `-separated), `state` (` `, `x`, `-`) or `body`
+		field: tedi_task_operations::conflict_resolve::Field,
+		new: String,
+		/// What the field held when you decided on `new`
+		#[arg(long)]
+		seen: String,
+	},
 }
 #[tokio::main]
 async fn main() {
@@ -67,7 +78,7 @@ async fn main() {
 	let settings = Arc::new(exit_on_error(config::LiveSettings::new(cli.settings_flags.clone(), Duration::from_secs(3))));
 
 	// Commands that may need GitHub client (always construct it - offline only skips network calls)
-	let has_github_commands = matches!(cli.command, Commands::Open(_) | Commands::Sprints(_) | Commands::Pull { .. });
+	let has_github_commands = matches!(cli.command, Commands::Open(_) | Commands::Sprints(_) | Commands::Pull { .. } | Commands::Set { .. });
 
 	let github_client: Option<tedi_adapters::github::BoxedGithubClient> = if cli.mock.is_some() {
 		Some(Arc::new(tedi_task_operations::mock_github::MockGithubClient::new("mock_user")))
@@ -121,6 +132,8 @@ async fn main() {
 		Commands::PerfEval(args) => tedi_eval::perf_eval::main(args).await,
 		Commands::Monitors(args) => tedi_eval::watch_monitors::main(args).await,
 		Commands::Open(args) => tedi_task_operations::open_interactions::open_command(args, mode, cli.mock).await,
+		Commands::Set { link, field, new, seen } =>
+			tedi_task_operations::board::edit(&link, vec![tedi_task_operations::conflict_resolve::FieldEdit { field, seen, new }], mode).await,
 		Commands::Pull { targets } => match (targets.is_empty(), exit_on_error(settings.config()).watch) {
 			(false, _) => tedi_task_operations::pull::pull_repos(&targets).await,
 			(true, Some(watch)) => tedi_task_operations::pull::pull_repos(&watch).await,
