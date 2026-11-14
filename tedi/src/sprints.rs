@@ -149,7 +149,7 @@ pub async fn sprints_command(settings: &LiveSettings, args: SprintsArgs, mock: O
 				}
 			};
 			// read-only print: not worth a round-trip per referenced issue
-			let expanded = expand_and_refresh(&raw, false).await?;
+			let expanded = expand_and_refresh(with_must(&raw), false).await?;
 			println!("{expanded}");
 			Ok(())
 		}
@@ -273,7 +273,7 @@ async fn request_milestones(settings: &LiveSettings) -> Result<Vec<GithubMilesto
 
 /// Parse owner and repo from various Github URL formats
 /// Supports: "owner/repo", "https://github.com/owner/repo", "git@github.com:owner/repo.git", etc.
-fn parse_github_repo(url: &str) -> Result<(String, String)> {
+pub(crate) fn parse_github_repo(url: &str) -> Result<(String, String)> {
 	let url = url.trim();
 
 	// Handle "owner/repo" format directly
@@ -457,7 +457,7 @@ async fn edit_urgent(mode: SyncMode) -> Result<()> {
 		Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
 		Err(e) => return Err(e.into()),
 	};
-	let expanded = expand_and_refresh(&original, mode == SyncMode::Full).await?;
+	let expanded = expand_and_refresh(TaskView::parse(&original), mode == SyncMode::Full).await?;
 
 	let tmp_path = tempfile::tempdir()?.keep().join("milestone_urgent.md");
 	fs::write(&tmp_path, &expanded)?;
@@ -595,7 +595,7 @@ async fn edit_milestone(settings: &LiveSettings, tf: Timeframe, mode: SyncMode, 
 	let milestone_number = milestone.number();
 	let original_description = milestone.to_string();
 
-	let expanded_description = expand_and_refresh(&original_description, mode == SyncMode::Full).await?;
+	let expanded_description = expand_and_refresh(with_must(&original_description), mode == SyncMode::Full).await?;
 
 	// Use keep() so the temp file survives panics/errors.
 	let tmp_path = tempfile::tempdir()?.keep().join(format!("milestone_{tf}.md"));
@@ -724,7 +724,7 @@ async fn edit_milestone(settings: &LiveSettings, tf: Timeframe, mode: SyncMode, 
 }
 
 /// Cut the `!mv` requests out of an edited buffer; GitHub must be reachable to carry any of them.
-fn take_moves(buffer: &str, mode: SyncMode) -> Result<(String, Vec<(IssueLink, RepoInfo)>)> {
+pub(crate) fn take_moves(buffer: &str, mode: SyncMode) -> Result<(String, Vec<(IssueLink, RepoInfo)>)> {
 	let (rest, moves) = tedi_core::take_moves(buffer)?;
 	if mode == SyncMode::Offline && !moves.is_empty() {
 		bail!("`!mv` needs GitHub, and this edit runs offline");
@@ -732,8 +732,16 @@ fn take_moves(buffer: &str, mode: SyncMode) -> Result<(String, Vec<(IssueLink, R
 	Ok((rest, moves))
 }
 
+/// A sectioned sprint gets an empty `# Must` when it has none, so the strip is offered without the
+/// header having to be remembered.
+fn with_must(content: &str) -> TaskView {
+	let mut doc = TaskView::parse(content);
+	doc.ensure_managed(tedi_core::ManagedSection::Must);
+	doc
+}
+
 /// Persist an editor buffer that failed a genuine (non-transient) sync/parse, and surface the path.
-fn dump_rejected(edited_content: &str, e: Report) -> Result<()> {
+pub(crate) fn dump_rejected(edited_content: &str, e: Report) -> Result<()> {
 	tedi_task_operations::utils::persist_rejected_changes(edited_content)?;
 	eprintln!("Your changes were saved to /tmp/tedi/rejected-changes.md — you can recover them from there.");
 	Err(e)
@@ -745,7 +753,7 @@ async fn edit_milestone_mock_file(mock_milestone_path: &str, tf: Timeframe, mode
 	use std::fs;
 
 	let original_description = fs::read_to_string(mock_milestone_path)?;
-	let expanded_description = expand_and_refresh(&original_description, false).await?;
+	let expanded_description = expand_and_refresh(with_must(&original_description), false).await?;
 
 	let tmp_path = tempfile::tempdir()?.keep().join(format!("milestone_{tf}.md"));
 	fs::write(&tmp_path, &expanded_description)?;

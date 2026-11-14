@@ -34,12 +34,8 @@ use crate::{
 /// be built from current state — anything typed on top of a superseded body folds back as a
 /// deletion of everything Github gained since. A read-only view (`search`) keeps it off.
 ///
-/// A sectioned view also gets an empty `# Must` when it has none, so the strip is offered
-/// without the header having to be remembered.
-pub async fn expand_and_refresh(content: &str, pull: bool) -> Result<String> {
-	let mut doc = TaskView::parse(content);
+pub async fn expand_and_refresh(mut doc: TaskView, pull: bool) -> Result<String> {
 	doc.resolve_bare_refs(None);
-	doc.ensure_managed(tedi_core::ManagedSection::Must);
 
 	let mut milestones: Vec<(String, Milestone, TaskView)> = Vec::new();
 	for link in doc.milestone_links() {
@@ -373,7 +369,7 @@ pub async fn search(query: &str, kind: SearchKind) -> Result<()> {
 		return Ok(());
 	}
 	let content: String = links.iter().map(|l| format!("- {l}\n")).collect();
-	println!("{}", expand_and_refresh(&content, false).await?);
+	println!("{}", expand_and_refresh(TaskView::parse(&content), false).await?);
 	Ok(())
 }
 /// Refresh the cached lowest-normal-sprint content (called by the bin after `edit`/`healthcheck`).

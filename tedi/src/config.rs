@@ -12,9 +12,25 @@ pub struct AppConfig {
 	pub manual_stats: Option<ManualStats>,
 	/// Orgs (`owner`) and repos (`owner/repo`) `tedi pull` stores when none are named.
 	pub watch: Option<Vec<String>>,
+	/// What `tedi view` and the web board read.
+	#[settings(skip)]
+	pub board: Option<Board>,
 	#[settings(skip)]
 	#[serde(default)]
 	pub yes: bool,
+}
+
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+pub struct Board {
+	/// A closed issue leaves Done / Won't do for Backlog this long after closing (`1w`, `10d`).
+	pub archive_after: String,
+	pub views: Vec<tedi_task_operations::board::View>,
+}
+impl Board {
+	pub fn archive_after(&self) -> color_eyre::Result<jiff::SignedDuration> {
+		let span: jiff::Span = self.archive_after.parse()?;
+		Ok(span.to_duration(jiff::SpanRelativeTo::days_are_24_hours())?)
+	}
 }
 
 #[derive(Clone, Debug, v_macros::MyConfigPrimitives, v_macros::SettingsNested)]

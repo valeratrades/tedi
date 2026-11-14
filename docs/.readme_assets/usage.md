@@ -10,6 +10,11 @@ todo open https://github.com/owner/repo/issues/123  # Fetch and open issue
 todo open -t owner/repo/my-issue                    # Create new issue (touch mode)
 todo open pattern                                   # Fuzzy find local issue
 
+# The board
+tedi pull                                 # Store every issue of the config's `watch` orgs/repos
+tedi pull EV-Main owner/repo              # …or of these
+tedi view stage:triage,selected t:bug i:>=5 --group stage   # A query over the store, opened in $EDITOR; edits sync
+
 # Milestones
 todo milestones                           # Show current milestones
 todo milestones push "goal description"   # Add goal to current milestone

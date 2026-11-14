@@ -21,6 +21,7 @@ mod store_lock;
 mod sync;
 mod touch;
 mod touch_parent;
+mod view;
 
 #[ctor::ctor]
 fn init() {

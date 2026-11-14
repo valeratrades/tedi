@@ -17,7 +17,7 @@ const ENV_MOCK_STATE: &str = concat!("tedi", "_MOCK_STATE");
 const ENV_MOCK_FAIL_GET_MILESTONE: &str = concat!("tedi", "_MOCK_FAIL_GET_MILESTONE");
 const ENV_MOCK_REMOTE_EDIT: &str = concat!("tedi", "_MOCK_REMOTE_EDIT");
 
-type EditFn = Box<dyn FnOnce(&Path)>;
+pub(crate) type EditFn = Box<dyn FnOnce(&Path)>;
 
 impl TestContext {
 	/// Run `milestones edit` in mock mode against a milestone file.
@@ -99,7 +99,7 @@ impl TestContext {
 
 	/// Spawn the binary with the mock-editor pipe attached, apply `edit_fn` to the tmp file
 	/// once the binary is parked in the editor, then signal the pipe and collect output.
-	fn drive_editor_session(&self, mut cmd: Command, edit_fn: Option<EditFn>) -> RunOutput {
+	pub(crate) fn drive_editor_session(&self, mut cmd: Command, edit_fn: Option<EditFn>) -> RunOutput {
 		cmd.envs(crate::common::BINARY_ENV);
 		cmd.env(concat!("tedi", "_GITHUB_TOKEN"), "test_token");
 		cmd.env(ENV_MOCK_PIPE, &self.pipe_path);
@@ -167,11 +167,11 @@ impl TestContext {
 	}
 }
 
-/// Extract the milestone tmp_path from stderr output.
-/// Looks for `[milestone] tmp_path: <path>`.
+/// Extract the edited buffer's tmp_path from stderr output.
+/// Looks for `[milestone] tmp_path: <path>` (or `[view] …`).
 fn parse_tmp_path(stderr: &str) -> Option<PathBuf> {
 	for line in stderr.lines() {
-		if let Some(rest) = line.strip_prefix("[milestone] tmp_path: ") {
+		if let Some(rest) = line.split_once("] tmp_path: ").filter(|(tag, _)| tag.starts_with('[')).map(|(_, rest)| rest) {
 			return Some(PathBuf::from(rest.trim()));
 		}
 	}
