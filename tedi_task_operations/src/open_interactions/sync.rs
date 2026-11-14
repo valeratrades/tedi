@@ -714,6 +714,23 @@ mod types {
 		issue.check_edit()
 	}
 
+	/// An edit pinning an unassigned issue Selected or Wip takes it: whoever made the edit is its assignee.
+	fn take_on_pin(issue: &mut Issue, old: &Issue) {
+		use crate::labels::{Pin, Scheme};
+		let taken = |i: &Issue| matches!(Scheme::from(i.contents.labels.as_slice()).pin, Some(Pin::Selected | Pin::Wip));
+		if taken(issue) && !taken(old) && issue.contents.assignees.is_empty()
+			// unknown only on a first-ever offline run: nobody to assign
+			&& let Some(me) = crate::current_user::get()
+		{
+			issue.contents.assignees.push(me);
+		}
+		for (selector, child) in &mut issue.children {
+			if let Some(old) = old.children.get(selector) {
+				take_on_pin(child, old);
+			}
+		}
+	}
+
 	/// A modifier that can be applied to an issue file.
 	#[derive(Debug)]
 	pub enum Modifier {
@@ -854,6 +871,7 @@ mod types {
 			};
 
 			if result.file_modified {
+				take_on_pin(issue, &old_issue);
 				issue.post_update(&old_issue);
 			}
 

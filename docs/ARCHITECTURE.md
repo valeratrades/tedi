@@ -25,6 +25,8 @@ Dropping a child's link from its parent detaches it, on either side: the sub-iss
 
 Labels follow the scheme `v_flakes/github/labels.nix` puts on every repo (`t:` type, `i:` importance 0–9, `h:` Fibonacci hours, `c:` categories, `ext:`, and `s:` stage pins); they are stored as the strings GitHub holds, and `tedi_core::labels` reads them typed. An edit may not leave two values of `t:`, `i:`, `h:` or `s:`, nor add a label its repo lacks — rejected before anything is written. Remote state breaking either is pulled as-is.
 
+A stage is derived, never stored whole (`tedi_core::stage`): closed reads Done / Won't do from the close reason, and Backlog once closed longer than `archive_after`; open reads In review on a ready PR, In progress on `s:wip` or a draft PR, then Selected / Icebox from their pins, else Triage. An edit pinning an unassigned issue `s:selected` or `s:wip` takes it: the editor becomes its assignee. Rank (`tedi_core::rank`) orders open issues so a blocker sorts above what it blocks, importance flowing up the `blocked by` graph.
+
 ### Blockers
 blockers form a definitive ordering, covering the tasks necessary for completion of a given objective.
 Note that the `Blockers` list is not a superset of the underlying Task Objectives, - Blocker is only reasoning about the parts we are aware about and have had sorted explicitly. For example, - a blocker sequence can easily end in an `- evaluate the path, given grown knowledge` item. Thus we keep them distinctly separate from the success-criterions asosciated with the task they have been added on.

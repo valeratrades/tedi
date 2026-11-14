@@ -33,6 +33,8 @@ pub mod labels;
 pub mod locate;
 pub mod marker;
 pub mod milestone;
+pub mod rank;
+pub mod stage;
 pub mod taskview;
 pub mod uri;
 pub use blockers::{BlockerItem, BlockerSetState, Blockers, split_blockers};
