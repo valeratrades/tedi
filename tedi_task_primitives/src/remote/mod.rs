@@ -667,12 +667,16 @@ mod tests {
 	use super::*;
 	use crate::{LazyIssue, mock_github::MockGithubClient};
 
-	fn seeded(labels: Vec<&str>) -> (Arc<MockGithubClient>, RepoInfo) {
+	/// The GitHub client is process-wide: each test holds it for its whole run.
+	static CLIENT_HELD: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+	async fn seeded(labels: Vec<&str>) -> (Arc<MockGithubClient>, RepoInfo, tokio::sync::MutexGuard<'static, ()>) {
+		let held = CLIENT_HELD.lock().await;
 		let client = Arc::new(MockGithubClient::new("testuser"));
 		let repo = RepoInfo::new("o", "r");
 		client.add_issue(repo, 1, "Half done", "body", "open", labels, "testuser", Some(jiff::Timestamp::from_second(1704067200).unwrap()));
 		github::client::set(client.clone());
-		(client, repo)
+		(client, repo, held)
 	}
 
 	fn source(repo: RepoInfo) -> RemoteSource {
@@ -686,17 +690,18 @@ mod tests {
 	/// reaches the `(labels)` slot of the title line.
 	#[tokio::test]
 	async fn progress_label_parses_back_into_the_state() {
-		let (_client, repo) = seeded(vec!["bug", "p:partial"]);
+		let (_client, repo, held) = seeded(vec!["bug", "p:partial"]).await;
 		let issue = Issue::load(source(repo)).await.unwrap();
 		assert_eq!(issue.contents.state, CloseState::InProgress(crate::Progress::Partial));
 		assert_eq!(issue.contents.labels, ["bug"]);
+		drop(held);
 	}
 
 	/// A pure `[ ] → [.]` flip moves neither `contents.labels` nor the GitHub open/closed state,
 	/// so it must still push — as the managed label.
 	#[tokio::test]
 	async fn progress_flip_pushes_the_managed_label() {
-		let (client, repo) = seeded(vec!["bug"]);
+		let (client, repo, held) = seeded(vec!["bug"]).await;
 		let old = Issue::load(source(repo)).await.unwrap();
 		let mut new = old.clone();
 		new.contents.state = CloseState::InProgress(crate::Progress::Partial);
@@ -704,5 +709,6 @@ mod tests {
 		client.clear_call_log();
 		assert!(<Issue as Sink<Remote>>::sink(&mut new, Some(&old)).await.unwrap());
 		insta::assert_snapshot!(client.get_call_log().join("\n"), @r#"set_labels(o, r, 1, ["bug", "p:partial"])"#);
+		drop(held);
 	}
 }

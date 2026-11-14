@@ -1006,25 +1006,21 @@ pub async fn reachable() -> bool {
 // Global client storage
 //==============================================================================
 
-/// Thread-local storage for the GitHub client.
-/// Set once at startup, then accessed globally by sink operations.
+/// Process-wide GitHub client: set once at startup, shared by every thread that syncs.
 pub mod client {
-	use std::cell::RefCell;
+	use std::sync::RwLock;
 
 	use super::BoxedGithubClient;
 
-	thread_local! {
-		static CLIENT: RefCell<Option<BoxedGithubClient>> = const { RefCell::new(None) };
-	}
+	static CLIENT: RwLock<Option<BoxedGithubClient>> = RwLock::new(None);
 
-	/// Set the global GitHub client. Must be called before any sink operations.
+	/// Must be called before any sink operations.
 	pub fn set(client: BoxedGithubClient) {
-		CLIENT.with(|c| *c.borrow_mut() = Some(client));
+		*CLIENT.write().expect("never held across a panic") = Some(client);
 	}
 
-	/// Get the global GitHub client.
 	pub fn get() -> Result<BoxedGithubClient, super::GithubError> {
-		CLIENT.with(|c| c.borrow().clone().ok_or_else(super::GithubError::new_not_initialized))
+		CLIENT.read().expect("never held across a panic").clone().ok_or_else(super::GithubError::new_not_initialized)
 	}
 }
 
