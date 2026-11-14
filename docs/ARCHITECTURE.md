@@ -103,6 +103,9 @@ Normal sprints store their `TaskView` in the GitHub milestone `description` (key
 Header sections tedi assigns meaning to are the `ManagedSection` variants — currently just `# Must`, the day's musts, whose completion `sprints selected list` reports above its blockers.
 The selected issue is where day-to-day blocker work lands: `sprints selected add/pop/set/list/open` route through the issue coordinator (`modify_and_sync_issue` + `Modifier::Blocker*`) — blockers keep zero runtime, the issue owns save/sync. `sprints selected resume/halt` drive a per-issue Clockify timer (keyed by the selected `repo#number`, description = title + current blocker); a selection change restarts it on the new issue.
 
+#### Views
+A view is a named board query (`tedi_core::board`: `repo:` `assignee:` `stage:` `t:` `i:` `h:` `is:` `label:`, free text through [search](#search)) with a layout and a grouping. `tedi view` opens one as a task view — one `#` section per group, its issues expanded — through the sprint flow's expand-and-fold-back; it stores nothing, so only the issues it expanded change. The web board runs the same query in the browser.
+
 #### Bottlenecks
 a primitive over Milestones; name is immutable, can contain other milestones. In many ways it's much like [sprints](#sprints), - except it reasons in terms of current global priorities, serving as guideline for compiling the latter.
 
