@@ -6543,7 +6543,7 @@ dependencies = [
 
 [[package]]
 name = "tedi"
-version = "0.17.8"
+version = "0.17.9"
 dependencies = [
  "clap",
  "clap_complete",
@@ -6569,7 +6569,7 @@ dependencies = [
 
 [[package]]
 name = "tedi_adapters"
-version = "0.17.8"
+version = "0.17.9"
 dependencies = [
  "async-trait",
  "clap",
@@ -6589,7 +6589,7 @@ dependencies = [
 
 [[package]]
 name = "tedi_core"
-version = "0.17.8"
+version = "0.17.9"
 dependencies = [
  "arrayvec",
  "copy_arrayvec",
@@ -6613,7 +6613,7 @@ dependencies = [
 
 [[package]]
 name = "tedi_eval"
-version = "0.17.8"
+version = "0.17.9"
 dependencies = [
  "ask_llm",
  "base64 0.22.1",
@@ -6632,7 +6632,7 @@ dependencies = [
 
 [[package]]
 name = "tedi_md"
-version = "0.17.8"
+version = "0.17.9"
 dependencies = [
  "derive_more",
  "insta",
@@ -6642,7 +6642,7 @@ dependencies = [
 
 [[package]]
 name = "tedi_task_operations"
-version = "0.17.8"
+version = "0.17.9"
 dependencies = [
  "clap",
  "color-eyre",
@@ -6678,7 +6678,7 @@ dependencies = [
 
 [[package]]
 name = "tedi_task_primitives"
-version = "0.17.8"
+version = "0.17.9"
 dependencies = [
  "async-trait",
  "clap",
@@ -6706,7 +6706,7 @@ dependencies = [
 
 [[package]]
 name = "tedi_utils"
-version = "0.17.8"
+version = "0.17.9"
 dependencies = [
  "nucleo-matcher",
  "regex",
@@ -6716,7 +6716,7 @@ dependencies = [
 
 [[package]]
 name = "tedi_web"
-version = "0.17.8"
+version = "0.17.9"
 dependencies = [
  "color-eyre",
  "dioxus",
