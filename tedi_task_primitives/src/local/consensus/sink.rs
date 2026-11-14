@@ -22,6 +22,7 @@ impl Sink<Consensus> for Issue {
 	/// **Important**: This only does git operations. Call `Sink<LocalFs>::sink()` first
 	/// to write the actual files.
 	async fn sink(&mut self, _old: Option<&Issue>) -> Result<bool, Self::Error> {
+		assert!(crate::local::store_lock::store_locked(), "a consensus commit is made under `lock_store`");
 		let repo_info = self.repo_info();
 		let git_id = self.git_id().expect("calling this before having had linked the issue means invalid implementation somewhere");
 
@@ -30,7 +31,16 @@ impl Sink<Consensus> for Issue {
 
 		// Stage changes
 		let add_output = Command::new("git")
-			.args(["-C", data_dir_str, "add", "-A", "--", ".", &format!(":!{}", crate::local::conflict_detect::CONFLICTS_DIR)])
+			.args([
+				"-C",
+				data_dir_str,
+				"add",
+				"-A",
+				"--",
+				".",
+				&format!(":!{}", crate::local::conflict_detect::CONFLICTS_DIR),
+				&format!(":!{}", crate::local::LOCK_FILE),
+			])
 			.output()?;
 		if !add_output.status.success() {
 			return Err(ConsensusSinkError::new_git_add(String::from_utf8_lossy(&add_output.stderr).into_owned()));

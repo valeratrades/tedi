@@ -551,8 +551,9 @@ impl Local {
 }
 
 mod reader;
-
+mod store_lock;
 pub use reader::{FsReader, GitReader, LocalReader, ReaderError, ReaderErrorKind};
+pub use store_lock::{LOCK_FILE, StoreLock, lock_store};
 
 mod local_path {
 	use std::{

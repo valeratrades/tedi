@@ -186,8 +186,10 @@ pub async fn open_command(args: OpenArgs, mode: SyncMode, mock: Option<MockType>
 			let mut issue = Issue::load(source).await?;
 
 			// Overwrite local with remote
+			let store = crate::local::lock_store().await?;
 			<Issue as Sink<LocalFs>>::sink(&mut issue, None).await?;
 			<Issue as Sink<Consensus>>::sink(&mut issue, None).await?;
+			drop(store);
 
 			crate::conflict_resolve::discard_conflicts(issue.full_index())?;
 
@@ -208,12 +210,14 @@ pub async fn open_command(args: OpenArgs, mode: SyncMode, mock: Option<MockType>
 			let mut issue = Issue::load(source).await?;
 
 			// Write to local filesystem
+			let store = crate::local::lock_store().await?;
 			<Issue as Sink<LocalFs>>::sink(&mut issue, None).await?;
 
 			println!("Stored issue");
 
 			// Commit the fetched state as the consensus baseline
 			<Issue as Sink<Consensus>>::sink(&mut issue, None).await?;
+			drop(store);
 
 			issue
 		};

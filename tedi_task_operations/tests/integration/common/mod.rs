@@ -309,6 +309,17 @@ impl TestContext {
 		self.rebuild_mock_state();
 	}
 
+	/// Commits in the store's git history: one per consensus advance.
+	pub fn git_commit_count(&self) -> usize {
+		let out = Command::new("git")
+			.arg("-C")
+			.arg(self.xdg.data_dir().join("issues"))
+			.args(["rev-list", "--count", "HEAD"])
+			.output()
+			.unwrap();
+		String::from_utf8(out.stdout).unwrap().trim().parse().unwrap()
+	}
+
 	/// Where a clash on `repo#number` waits for resolution.
 	pub fn conflict_file(&self, repo: tedi_task_operations::RepoInfo, number: u64) -> PathBuf {
 		self.set_issues_dir_override();
@@ -379,7 +390,9 @@ impl TestContext {
 		});
 		self.init_git();
 		self.sink_local(&mut issue, seed).await;
+		let store = tedi_task_operations::local::lock_store().await.expect("the store lock is free in setup");
 		<Issue as Sink<Consensus>>::sink(&mut issue, None).await.expect("consensus sink failed");
+		drop(store);
 		issue
 	}
 

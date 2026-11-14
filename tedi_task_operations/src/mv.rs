@@ -108,12 +108,14 @@ async fn move_issue(link: &IssueLink, target: RepoInfo) -> Result<HashMap<IssueL
 	let was: HashMap<IssueLink, &Issue> = nodes(&old).into_iter().map(|n| (moved[linked(n)].clone(), n)).collect();
 	let mut placed = pulled.clone();
 	settle(&mut placed, &was, &moved, &target_labels, source);
+	let store = crate::local::lock_store().await?;
 	<Issue as Sink<Remote>>::sink(&mut placed, Some(&pulled)).await?;
 	<Issue as Sink<LocalFs>>::sink(&mut placed, Some(&old)).await?;
 	if let Some((mut after, before)) = parent {
 		<Issue as Sink<LocalFs>>::sink(&mut after, Some(&before)).await?;
 	}
 	<Issue as Sink<Consensus>>::sink(&mut placed, None).await?;
+	drop(store);
 	println!("Moved {link} → {}", moved[link]);
 	Ok(moved)
 }

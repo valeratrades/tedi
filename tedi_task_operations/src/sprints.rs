@@ -115,8 +115,10 @@ pub async fn refresh_milestone_cache(links: &[MilestoneLink]) -> Result<()> {
 			tracing::debug!("milestone {} has unsynced local edits; keeping local copy until next sync", link.as_str());
 		} else {
 			let mut milestone = remote;
+			let store = crate::local::lock_store().await?;
 			<Milestone as Sink<LocalFs>>::sink(&mut milestone, None).await?;
 			<Milestone as Sink<Consensus>>::sink(&mut milestone, None).await?;
+			drop(store);
 		}
 	}
 	Ok(())
@@ -646,9 +648,11 @@ async fn create_pending_upstream(block: &str, repo: RepoInfo) -> Result<Option<I
 	let parent_index = IssueIndex::repo_only(repo);
 	let mut issue = Issue::from_combined(HollowIssue::new(None, std::collections::HashMap::new()), vi, parent_index, false)?;
 
+	let store = crate::local::lock_store().await?;
 	<Issue as Sink<Remote>>::sink(&mut issue, None).await?;
 	<Issue as Sink<LocalFs>>::sink(&mut issue, None).await?;
 	<Issue as Sink<Consensus>>::sink(&mut issue, None).await?;
+	drop(store);
 
 	let link = issue.identity.link().expect("issue is linked after remote sink").clone();
 	println!("Created issue {repo}#{}: {title}", link.number());
@@ -686,12 +690,14 @@ async fn adopt(parent: &IssueLink, children: &[IssueLink]) -> Result<()> {
 		olds.push(old);
 	}
 
+	let store = crate::local::lock_store().await?;
 	<Issue as Sink<LocalFs>>::sink(&mut tree, Some(&before)).await?;
 	for old in &olds {
 		let child = tree.children.get_mut(&old.selector()).expect("inserted above");
 		<Issue as Sink<LocalFs>>::sink(child, Some(old)).await?;
 	}
 	<Issue as Sink<Consensus>>::sink(&mut tree, Some(&before)).await?;
+	drop(store);
 	println!("Grouped {} issue(s) under {parent}", children.len());
 	Ok(())
 }

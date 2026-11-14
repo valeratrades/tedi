@@ -31,7 +31,7 @@ use super::merge::Merge;
 use crate::{
 	BlockerSetState, Issue, IssueIndex, IssueLink, IssueSelector, LazyIssue, RepoInfo, VirtualIssue,
 	conflict_resolve::{Clash, Conflict, Field},
-	local::{Consensus, FsReader, Local, LocalFs, LocalIssueSource, LocalPath, consensus::load_consensus_issue},
+	local::{Consensus, FsReader, Local, LocalFs, LocalIssueSource, LocalPath, consensus::load_consensus_issue, lock_store},
 	remote::{Remote, RemoteSource},
 	selection::Selected,
 	sink::Sink,
@@ -78,10 +78,7 @@ pub async fn pull_issues(issues: &mut [Issue], mode: MergeMode) -> Result<()> {
 	for (issue, remote) in issues.iter_mut().zip(remotes) {
 		let Some(remote) = remote else { continue };
 		let result = match remote {
-			Ok(remote) => {
-				let consensus = load_consensus_issue(IssueIndex::from(&*issue)).await?;
-				core::sync(issue, consensus, remote, mode).await
-			}
+			Ok(remote) => core::sync(issue, remote, mode).await,
 			Err(e) => Err(e),
 		};
 		match result {
@@ -109,7 +106,6 @@ pub async fn pull_issues(issues: &mut [Issue], mode: MergeMode) -> Result<()> {
 ))]
 pub async fn modify_and_sync_issue(mut issue: Issue, mode: SyncMode, modifier: Modifier, sync_opts: SyncOptions) -> Result<ModifyResult> {
 	let repo_info = issue.identity.repo_info();
-	let issue_index = IssueIndex::from(&issue);
 
 	// `Write` applies a buffer rendered earlier: a pull between that render and the apply reads as the user reverting whatever the remote gained meanwhile.
 	let pre_pull = !matches!(modifier, Modifier::Write { .. })
@@ -163,9 +159,8 @@ pub async fn modify_and_sync_issue(mut issue: Issue, mode: SyncMode, modifier: M
 			let mode = sync_opts.take_merge_mode();
 			match issue.is_linked() {
 				true => {
-					let consensus = load_consensus_issue(issue_index).await?;
 					let synced = match core::fetch_remote(&issue).await {
-						Ok(remote) => core::sync(&mut issue, consensus, remote, mode).await,
+						Ok(remote) => core::sync(&mut issue, remote, mode).await,
 						Err(e) => Err(e),
 					};
 					match synced {
@@ -189,6 +184,7 @@ pub async fn modify_and_sync_issue(mut issue: Issue, mode: SyncMode, modifier: M
 						.enumerate()
 						.find(|(_, s)| matches!(s, IssueSelector::Title(_) | IssueSelector::Exact(_)))
 					{
+						let store = lock_store().await?;
 						// 1. Sink current issue to local so ancestor can find it
 						<Issue as Sink<LocalFs>>::sink(&mut issue, None).await?;
 
@@ -204,10 +200,13 @@ pub async fn modify_and_sync_issue(mut issue: Issue, mode: SyncMode, modifier: M
 
 						// 4. Commit
 						<Issue as Sink<Consensus>>::sink(&mut ancestor, None).await?;
+						drop(store);
 					} else {
+						let store = lock_store().await?;
 						<Issue as Sink<Remote>>::sink(&mut issue, None).await?;
 						<Issue as Sink<LocalFs>>::sink(&mut issue, None).await?;
 						<Issue as Sink<Consensus>>::sink(&mut issue, None).await?;
+						drop(store);
 					}
 				}
 			}
@@ -268,8 +267,10 @@ pub(crate) async fn fetch_and_store_missing(links: &[IssueLink]) -> Vec<IssueLin
 		let landed = match tree {
 			Ok(mut tree) =>
 				async {
+					let store = lock_store().await?;
 					<Issue as Sink<LocalFs>>::sink(&mut tree, None).await?;
 					<Issue as Sink<Consensus>>::sink(&mut tree, None).await?;
+					drop(store);
 					Ok::<_, color_eyre::Report>(())
 				}
 				.await,
@@ -284,8 +285,7 @@ pub(crate) async fn fetch_and_store_missing(links: &[IssueLink]) -> Vec<IssueLin
 		let synced = async {
 			let mut tree = crate::sprints::load_local_issue(&root).await?;
 			let remote = core::fetch_remote(&tree).await?;
-			let consensus = load_consensus_issue(IssueIndex::from(&tree)).await?;
-			core::sync(&mut tree, consensus, remote, MergeMode::Normal).await
+			core::sync(&mut tree, remote, MergeMode::Normal).await
 		}
 		.await;
 		if let Err(e) = synced {
@@ -623,8 +623,9 @@ mod core {
 	}
 
 	/// Returns every issue the synced tree's blocker links reach, on either end.
-	#[instrument(skip_all, fields(?mode, has_consensus = consensus.is_some()))]
-	pub(super) async fn sync(current_issue: &mut Issue, consensus: Option<Issue>, remote: Issue, mode: MergeMode) -> Result<Vec<IssueLink>> {
+	/// Consensus is read under the store lock: another writer may have committed since the caller loaded.
+	#[instrument(skip_all, fields(?mode))]
+	pub(super) async fn sync(current_issue: &mut Issue, remote: Issue, mode: MergeMode) -> Result<Vec<IssueLink>> {
 		fn linked(issue: &Issue, out: &mut Vec<IssueLink>) {
 			out.extend(issue.contents.blockers.issue_links(issue.repo_info()));
 			out.extend(issue.identity.as_linked().and_then(|m| m.blocking.clone()).into_iter().flatten());
@@ -639,6 +640,8 @@ mod core {
 		let mut links = Vec::new();
 		linked(&remote, &mut links);
 
+		let store = lock_store().await?;
+		let consensus = load_consensus_issue(IssueIndex::from(&*current_issue)).await?;
 		let (resolved, changed) = core::resolve_merge(current_issue.clone(), consensus, remote, mode, repo_info, issue_number).await?;
 		super::rehome_detached(current_issue, &resolved).await?;
 		*current_issue = resolved;
@@ -651,6 +654,7 @@ mod core {
 			}
 			false => println!("No changes."),
 		}
+		drop(store);
 		linked(current_issue, &mut links);
 		Ok(links)
 	}

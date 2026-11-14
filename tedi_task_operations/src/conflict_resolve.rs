@@ -171,9 +171,11 @@ async fn land_resolution(issue_index: IssueIndex, conflict_fpath: &Path, content
 	};
 
 	let remote = fetch_remote(&new_issue).await?;
+	let store = crate::local::lock_store().await?;
 	<Issue as Sink<Remote>>::sink(&mut new_issue, Some(&remote)).await?;
 	<Issue as Sink<LocalFs>>::sink(&mut new_issue, None).await?; // after the remote sink: it records the links Github now holds
 	<Issue as Sink<Consensus>>::sink(&mut new_issue, None).await?;
+	drop(store);
 	std::fs::remove_file(remote_snapshot(conflict_fpath))?;
 	std::fs::remove_file(conflict_fpath)?;
 	Ok(())
@@ -240,9 +242,11 @@ pub async fn check_for_existing_milestone_conflict(link: &crate::MilestoneLink) 
 		m
 	};
 
+	let store = crate::local::lock_store().await?;
 	<crate::Milestone as Sink<LocalFs>>::sink(&mut milestone, None).await?;
 	<crate::Milestone as Sink<Remote>>::sink(&mut milestone, None).await?;
 	<crate::Milestone as Sink<Consensus>>::sink(&mut milestone, None).await?;
+	drop(store);
 	std::fs::remove_file(remote_snapshot(&conflict_fpath))?;
 	std::fs::remove_file(&conflict_fpath)?;
 	Ok(None)

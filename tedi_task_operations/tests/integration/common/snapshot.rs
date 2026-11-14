@@ -25,7 +25,9 @@ impl<'a> FixtureIssuesExt<'a> for FixtureRenderer<'a> {
 	fn try_new(ctx: &'a TestContext) -> Result<FixtureRenderer<'a>> {
 		let issues_dir = ctx.xdg.data_dir().join("issues");
 
-		let fixture = Fixture::read_from_directory(&issues_dir).ok_or_else(|| eyre!("issues directory doesn't exist: {}", issues_dir.display()))?;
+		let mut fixture = Fixture::read_from_directory(&issues_dir).ok_or_else(|| eyre!("issues directory doesn't exist: {}", issues_dir.display()))?;
+		let lock = format!("/{}", tedi_task_operations::local::LOCK_FILE);
+		fixture.files.retain(|f| f.path != lock); // empty, and present only once anything synced
 
 		if fixture.files.is_empty() {
 			bail!("issues directory is empty: {}", issues_dir.display());

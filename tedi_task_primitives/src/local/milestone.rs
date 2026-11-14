@@ -169,6 +169,7 @@ impl Sink<Consensus> for Milestone {
 	type Error = crate::local::ConsensusSinkError;
 
 	async fn sink(&mut self, _old: Option<&Milestone>) -> Result<bool, Self::Error> {
+		assert!(super::store_lock::store_locked(), "a consensus commit is made under `lock_store`");
 		use std::process::Command;
 
 		let repo = self.identity.link.repo_info();
@@ -176,7 +177,16 @@ impl Sink<Consensus> for Milestone {
 		let data_dir_str = data_dir.to_str().ok_or_else(crate::local::ConsensusSinkError::new_invalid_data_dir)?;
 
 		let add = Command::new("git")
-			.args(["-C", data_dir_str, "add", "-A", "--", ".", &format!(":!{}", super::conflict_detect::CONFLICTS_DIR)])
+			.args([
+				"-C",
+				data_dir_str,
+				"add",
+				"-A",
+				"--",
+				".",
+				&format!(":!{}", super::conflict_detect::CONFLICTS_DIR),
+				&format!(":!{}", super::LOCK_FILE),
+			])
 			.output()?;
 		if !add.status.success() {
 			return Err(crate::local::ConsensusSinkError::new_git_add(String::from_utf8_lossy(&add.stderr).into_owned()));

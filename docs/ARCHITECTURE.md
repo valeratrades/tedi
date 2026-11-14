@@ -82,6 +82,8 @@ When Github is reached depends on the sync mode:
 
 A pending conflict is always reconciled against a fresh pull, Offline included; its resolution becomes consensus.
 
+One writer at a time: from a merge to its consensus commit, a writer holds the store lock (a flock on `issues/.lock`, behind an in-process mutex), so the CLI and a server never interleave; consensus is read under it, and every consensus commit asserts it.
+
 A conflict is data: `Conflict { link, clashes: [{ node, field, consensus, local, remote }], files }`. Each clashing node is recorded to its own file under `issues/.conflicts/{owner}/{repo}/`, named by lineage (`1_5.md`), both sides between markers; consensus never commits it. It blocks only that line — the node, its ancestors and descendants — and removing the markers is the resolution.
 
 A buffer is folded back against the state it was rendered from, never against a pull made after it. A field changed on both sides since consensus is a conflict, never a timestamp race: neither edit was made knowing of the other.

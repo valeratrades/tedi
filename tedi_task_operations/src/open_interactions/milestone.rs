@@ -115,6 +115,7 @@ async fn sync(milestone: &mut Milestone, consensus: Option<Milestone>, mode: Mer
 	}
 	let remote = load_remote_milestone(&link).await?;
 
+	let store = crate::local::lock_store().await?;
 	let (resolved, changed) = resolve_merge(milestone.clone(), consensus, remote, mode).await?;
 	*milestone = resolved;
 
@@ -125,6 +126,7 @@ async fn sync(milestone: &mut Milestone, consensus: Option<Milestone>, mode: Mer
 		}
 		false => println!("No milestone changes."),
 	}
+	drop(store);
 	Ok(())
 }
 

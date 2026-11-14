@@ -16,6 +16,7 @@ mod pull;
 mod reset_conflict;
 mod search;
 mod sprints;
+mod store_lock;
 mod sync;
 mod touch;
 mod touch_parent;
