@@ -3,6 +3,7 @@
 mod common;
 pub use common::*;
 
+mod assignees;
 mod blocker_dependencies;
 mod blocker_integrated;
 mod closed_subtree;

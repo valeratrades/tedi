@@ -207,6 +207,7 @@ mod tests {
 			contents: IssueContents {
 				title: title.to_string(),
 				labels: vec![],
+				assignees: vec![],
 				state: CloseState::Open,
 				comments: Comments::new(vec![Comment {
 					identity: CommentIdentity::Body,

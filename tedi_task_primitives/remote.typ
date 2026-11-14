@@ -39,12 +39,14 @@ GET issues/{n}                               │
                                              │    reattaches it on the way out. The section has to
                                              │    be the tail for that round trip to close.
     user.login                               │  LinkedIssueMeta.user
+    assignees[].login                        │  IssueContents.assignees, sorted
 GET issues/{n}/comments                      │  comments[1..], CommentIdentity::Created { user, id }
                                              │    comments[0] is always the body
 GET issues/{n}/sub_issues                    │  children, recursively, each through this same path.
                                              │    A `duplicate` state_reason is dropped here, so a
                                              │    duplicate never enters the tree at all.
-GQL timeline                                 │  IssueTimestamps { title, description, labels, state }
+GQL timeline                                 │  IssueTimestamps { title, description, labels, state,
+                                             │    assignees }
                                              │    REST carries one `updated_at` for the whole issue
                                              │    while the merge resolves field by field, so the
                                              │    stamps are read off the timeline instead
@@ -116,6 +118,7 @@ sink(&mut self, old: Option<&Issue>)
   is_virtual            ─▶ Ok(false)                     local-only, never crosses
   is_local  (pending)   ─▶ POST issues                   creation comes first: everything under it
                            POST labels        if any     needs the number, and the child sink needs
+                           set_assignees      if any
                            PATCH state        if closed   it to root the children's parent_index
                            POST sub_issues    if parented
                            identity becomes linked
@@ -127,6 +130,9 @@ sink(&mut self, old: Option<&Issue>)
   remote_labels()       ─▶ PATCH issues/{n} { labels }   labels + the state's `p:` label; compared
                                                          over the same view, since a `[ ] → [.]`
                                                          flip moves nothing else
+  assignees             ─▶ DELETE / POST                  the add/remove endpoints, not a PATCH: one
+                           issues/{n}/assignees          login the repo can't take is dropped there,
+                                                         where a PATCH would reject the whole set
   to_github_state()     ─▶ PATCH issues/{n} { state }    compared at GitHub's granularity, so the
                                                          local Closed / NotPlanned split does not
                                                          travel, and InProgress reads as open

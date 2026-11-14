@@ -404,6 +404,9 @@ impl TestContext {
 					if !i.labels.is_empty() {
 						json["labels"] = serde_json::json!(i.labels);
 					}
+					if !i.assignees.is_empty() {
+						json["assignees"] = serde_json::json!(i.assignees);
+					}
 					// Add timestamps if provided
 					if let Some(ts) = &i.timestamps {
 						if let Some(t) = ts.title {
@@ -417,6 +420,9 @@ impl TestContext {
 						}
 						if let Some(t) = ts.state {
 							json["state_timestamp"] = serde_json::Value::String(t.to_string());
+						}
+						if let Some(t) = ts.assignees {
+							json["assignees_timestamp"] = serde_json::Value::String(t.to_string());
 						}
 					}
 					json
@@ -884,6 +890,7 @@ pub fn timestamps_from_seed(seed: Seed) -> IssueTimestamps {
 		description: Some(timestamp_for_field(seed, DESCRIPTION_FIELD_INDEX)),
 		labels: Some(timestamp_for_field(seed, 0)),
 		state: Some(timestamp_for_field(seed, 1)),
+		assignees: Some(timestamp_for_field(seed, 2)),
 		comments: vec![],
 	}
 }
@@ -1162,6 +1169,7 @@ fn add_issue_recursive(state: &mut GitState, repo_info: tedi_task_operations::Re
 		state: issue.contents.state.to_github_state().to_string(),
 		state_reason: issue.contents.state.to_github_state_reason().map(|s| s.to_string()),
 		labels: issue.contents.labels.clone(),
+		assignees: issue.contents.assignees.clone(),
 		owner_login: issue_owner_login,
 		timestamps: timestamps.cloned(),
 	});
@@ -1232,6 +1240,7 @@ struct MockIssue {
 	state: String,
 	state_reason: Option<String>,
 	labels: Vec<String>,
+	assignees: Vec<String>,
 	owner_login: String,
 	/// Timestamps for this issue (if provided via seed)
 	timestamps: Option<IssueTimestamps>,

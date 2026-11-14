@@ -498,6 +498,7 @@ mod core {
 			|| clash(labels(local), labels(base), labels(remote))
 			|| clash(local.body().to_string(), base.body().to_string(), remote.body().to_string())
 			|| clash(&local.contents.state, &base.contents.state, &remote.contents.state)
+			|| clash(&local.contents.assignees, &base.contents.assignees, &remote.contents.assignees)
 			|| clash(comments(local), comments(base), comments(remote));
 		match edited {
 			true => Some((local, remote)),
@@ -634,6 +635,7 @@ mod types {
 					let mut child = existing.clone();
 					child.contents.title = edited_child.contents.title;
 					child.contents.labels = edited_child.contents.labels;
+					child.contents.assignees = edited_child.contents.assignees;
 					child.contents.state = edited_child.contents.state;
 					child
 				}

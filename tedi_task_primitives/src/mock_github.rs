@@ -147,6 +147,7 @@ impl MockGithubClient {
 				let description_timestamp = parse_ts("description_timestamp");
 				let labels_timestamp = parse_ts("labels_timestamp");
 				let state_timestamp = parse_ts("state_timestamp");
+				let assignees_timestamp = parse_ts("assignees_timestamp");
 
 				let issue_data = MockIssueData {
 					number,
@@ -161,6 +162,7 @@ impl MockGithubClient {
 					description_timestamp,
 					labels_timestamp,
 					state_timestamp,
+					assignees_timestamp,
 					milestone,
 					assignees,
 				};
@@ -305,6 +307,7 @@ impl MockGithubClient {
 			description_timestamp: timestamp,
 			labels_timestamp: timestamp,
 			state_timestamp: timestamp,
+			assignees_timestamp: timestamp,
 			milestone: None,
 			assignees: Vec::new(),
 		};
@@ -493,6 +496,7 @@ struct MockIssueData {
 	labels_timestamp: Option<jiff::Timestamp>,
 	/// Timestamp for state changes (open/closed)
 	state_timestamp: Option<jiff::Timestamp>,
+	assignees_timestamp: Option<jiff::Timestamp>,
 	milestone: Option<u64>,
 	assignees: Vec<String>,
 }
@@ -777,6 +781,7 @@ impl GithubClient for MockGithubClient {
 			description_timestamp: now,
 			labels_timestamp: now,
 			state_timestamp: now,
+			assignees_timestamp: now,
 			milestone: None,
 			assignees: Vec::new(),
 		};
@@ -994,6 +999,7 @@ impl GithubClient for MockGithubClient {
 				description: issue.description_timestamp.max(linked_at),
 				labels: issue.labels_timestamp,
 				state: issue.state_timestamp,
+				assignees: issue.assignees_timestamp,
 				blocked_by,
 				blocking,
 			});
@@ -1142,10 +1148,10 @@ impl GithubClient for MockGithubClient {
 		Ok(self.labels.lock().unwrap().get(&RepoKey::from(repo)).cloned().unwrap_or_default())
 	}
 
-	async fn add_assignees(&self, repo: RepoInfo, issue_number: u64, assignees: &[String]) -> Result<(), GithubError> {
+	async fn set_assignees(&self, repo: RepoInfo, issue_number: u64, assignees: &[String]) -> Result<(), GithubError> {
 		let (owner, repo_name) = (repo.owner().expect("github repo"), repo.repo());
-		self.log_call(&format!("add_assignees({owner}, {repo_name}, {issue_number}, {assignees:?})"));
-		self.with_issue_mut(repo, issue_number, |issue| issue.assignees.extend(assignees.iter().cloned()))
+		self.log_call(&format!("set_assignees({owner}, {repo_name}, {issue_number}, {assignees:?})"));
+		self.with_issue_mut(repo, issue_number, |issue| issue.assignees = assignees.to_vec())
 	}
 }
 

@@ -155,6 +155,7 @@ async fn test_only_local_changed_pushes_local() {
 	        [REDACTED - non-deterministic timestamp]
 	        "labels": "2001-09-12T01:55:52Z",
 	        "state": "2001-09-12T00:39:25Z",
+	        "assignees": "2001-09-11T23:22:58Z",
 	        "comments": []
 	      }
 	    }
@@ -621,6 +622,7 @@ async fn test_divergence_conflicts_before_editor() {
 	        "description": "2001-09-12T10:04:12Z",
 	        "labels": "2001-09-12T01:55:52Z",
 	        "state": "2001-09-12T00:39:25Z",
+	        "assignees": "2001-09-11T23:22:58Z",
 	        "comments": []
 	      }
 	    }
@@ -667,6 +669,7 @@ async fn test_closing_issue_syncs_state_change() {
 	        "description": "2001-09-11T04:30:34Z",
 	        "labels": "2001-09-11T06:38:10Z",
 	        [REDACTED - non-deterministic timestamp]
+	        "assignees": "2001-09-11T21:17:40Z",
 	        "comments": []
 	      }
 	    }
@@ -817,6 +820,7 @@ async fn test_reset_syncs_changes_after_editor() {
 	        "description": null,
 	        "labels": null,
 	        [REDACTED - non-deterministic timestamp]
+	        "assignees": null,
 	        "comments": []
 	      }
 	    }
@@ -1050,6 +1054,7 @@ async fn test_consensus_sink_writes_meta_json_with_timestamps() {
 	        [REDACTED - non-deterministic timestamp]
 	        "labels": null,
 	        "state": null,
+	        "assignees": null,
 	        "comments": []
 	      }
 	    }

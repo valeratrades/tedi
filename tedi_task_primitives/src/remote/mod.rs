@@ -267,6 +267,7 @@ impl crate::LazyIssue<RemoteSource> for Issue {
 			description: timeline.description,
 			labels: timeline.labels,
 			state: timeline.state,
+			assignees: timeline.assignees,
 			comments: vec![], // Will be populated when contents() fetches comments
 		};
 
@@ -321,6 +322,7 @@ impl crate::LazyIssue<RemoteSource> for Issue {
 					description: timeline.description,
 					labels: timeline.labels,
 					state: timeline.state,
+					assignees: timeline.assignees,
 					comments: comments_ts,
 				};
 				self.identity = IssueIdentity::new_linked(parent_index, Some(issue.user.login.clone()), source.link.clone(), timestamps, timeline.blocked_by);
@@ -447,9 +449,13 @@ fn build_contents_from_github(repo: RepoInfo, issue: &GithubIssue, comments: &[G
 		});
 	}
 
+	let mut assignees: Vec<String> = issue.assignees.iter().map(|a| a.login.clone()).collect();
+	assignees.sort_unstable();
+
 	Ok(IssueContents {
 		title: issue.title.clone(),
 		labels,
+		assignees,
 		state: close_state,
 		comments: issue_comments.into(),
 		blockers,
@@ -501,6 +507,10 @@ impl Sink<Remote> for Issue {
 				gh.set_labels(repo_info, created.number, &labels).await?;
 			}
 
+			if !self.contents.assignees.is_empty() {
+				gh.set_assignees(repo_info, created.number, &self.contents.assignees).await?;
+			}
+
 			// Close if needed
 			if closed {
 				gh.update_issue_state(repo_info, created.number, &self.contents.state).await?;
@@ -539,6 +549,12 @@ impl Sink<Remote> for Issue {
 			let body: String = self.body().into();
 			println!("Updating issue #{issue_number} body...");
 			gh.update_issue_body(repo_info, issue_number, &body).await?;
+			changed = true;
+		}
+
+		if old.is_some_and(|old| old.contents.assignees != self.contents.assignees) {
+			println!("Updating issue #{issue_number} assignees...");
+			gh.set_assignees(repo_info, issue_number, &self.contents.assignees).await?;
 			changed = true;
 		}
 

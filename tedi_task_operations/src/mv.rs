@@ -163,6 +163,8 @@ async fn recreate(old: &Issue, target: RepoInfo, target_labels: &[String]) -> Re
 			children: HashMap::new(),
 		};
 		copy.contents.labels.retain(|l| target_labels.contains(l));
+		let assignees: Vec<String> = original.assignees.into_iter().map(|a| a.login).collect();
+		copy.contents.assignees = assignees.clone();
 		for comment in copy.contents.comments.iter_mut() {
 			match &comment.identity {
 				CommentIdentity::Body =>
@@ -181,10 +183,6 @@ async fn recreate(old: &Issue, target: RepoInfo, target_labels: &[String]) -> Re
 		<Issue as Sink<Remote>>::sink(&mut copy, None).await?;
 		let new = copy.identity.link().expect("linked by the remote sink").clone();
 
-		let assignees: Vec<String> = original.assignees.into_iter().map(|a| a.login).collect();
-		if !assignees.is_empty() {
-			gh.add_assignees(target, new.number(), &assignees).await?;
-		}
 		originals.push((n, new.clone(), assignees));
 		moved.insert(linked(node).clone(), new);
 

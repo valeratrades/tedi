@@ -183,6 +183,7 @@ pub struct IssueTimestamps {
 	pub labels: Option<Timestamp>,
 	/// Last state change (open/closed). Optional because we can't always get this from GitHub.
 	pub state: Option<Timestamp>,
+	pub assignees: Option<Timestamp>,
 	/// Per-comment timestamps (indexed by position, excluding body at index 0).
 	/// Empty vec means no timestamp info available.
 	pub comments: Vec<Timestamp>,
@@ -195,6 +196,7 @@ impl IssueTimestamps {
 			description: Some(now),
 			labels: Some(now),
 			state: Some(now),
+			assignees: Some(now),
 			comments: Vec::new(),
 		}
 	}
@@ -221,6 +223,10 @@ impl IssueTimestamps {
 
 		if old.state != new.state {
 			self.state = Some(now);
+		}
+
+		if old.assignees != new.assignees {
+			self.assignees = Some(now);
 		}
 
 		// Per-comment timestamps (skip body at index 0)
@@ -534,6 +540,8 @@ impl From<Vec<Comment>> for Comments {
 pub struct IssueContents {
 	pub title: String,
 	pub labels: Vec<String>,
+	/// Logins, sorted: GitHub holds a set.
+	pub assignees: Vec<String>,
 	pub state: CloseState,
 	pub comments: Comments,
 	pub blockers: Blockers,
@@ -1103,6 +1111,7 @@ impl VirtualIssue {
 			contents: IssueContents {
 				title: title.title,
 				labels: title.labels,
+				assignees: title.assignees,
 				state: title.state,
 				comments: comments.into(),
 				blockers: {
@@ -1563,6 +1572,7 @@ impl From<Issue> for HollowIssue {
 pub(crate) struct TitleLine {
 	state: CloseState,
 	labels: Vec<String>,
+	assignees: Vec<String>,
 	title: String,
 	marker: IssueMarker,
 }
@@ -1571,6 +1581,7 @@ impl TitleLine {
 		Self {
 			state: issue.contents.state.clone(),
 			labels: issue.contents.labels.clone(),
+			assignees: issue.contents.assignees.clone(),
 			title: issue.contents.title.clone(),
 			marker: IssueMarker::from(&issue.identity),
 		}
@@ -1589,10 +1600,12 @@ impl TitleLine {
 		}
 	}
 
-	/// Empty `()` when there are no labels but the title opens with `(`, so it isn't read back as labels.
+	/// Labels, then `@`-prefixed assignees, in one paren group. Empty `()` when there are none but the
+	/// title opens with `(`, so it isn't read back as tags.
 	fn labels_prefix(&self) -> String {
-		match self.labels.is_empty() {
-			false => format!("({}) ", self.labels.join(", ")),
+		let tags: Vec<String> = self.labels.iter().cloned().chain(self.assignees.iter().map(|a| format!("@{a}"))).collect();
+		match tags.is_empty() {
+			false => format!("({}) ", tags.join(", ")),
 			true if self.title.starts_with('(') => "() ".to_string(),
 			true => String::new(),
 		}
@@ -1698,24 +1711,23 @@ impl TitleLine {
 			pos += 1;
 		}
 
-		// Parse labels from title text
 		let title_text = title_text.trim_end();
-		let (labels, title) = if title_text.starts_with('(') {
-			if let Some(paren_end) = title_text.find(") ") {
-				let labels_str = &title_text[1..paren_end];
-				let labels: Vec<String> = labels_str.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
-				(labels, title_text[paren_end + 2..].to_string())
-			} else {
-				(vec![], title_text.to_string())
-			}
-		} else {
-			(vec![], title_text.to_string())
+		let (tags, title): (Vec<&str>, &str) = match title_text.strip_prefix('(').and_then(|t| t.split_once(") ")) {
+			Some((tags, title)) => (tags.split(',').map(str::trim).filter(|s| !s.is_empty()).collect(), title),
+			None => (vec![], title_text),
 		};
+		let (assignees, labels): (Vec<&str>, Vec<&str>) = tags.into_iter().partition(|t| t.starts_with('@'));
+		let labels = labels.into_iter().map(str::to_string).collect();
+		let mut assignees: Vec<String> = assignees.into_iter().map(|a| a[1..].to_string()).collect();
+		assignees.sort_unstable();
+		assignees.dedup();
+		let title = title.to_string();
 
 		Ok((
 			Self {
 				state: close_state,
 				labels,
+				assignees,
 				title,
 				marker: identity_info,
 			},

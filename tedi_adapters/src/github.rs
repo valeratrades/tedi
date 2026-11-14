@@ -107,7 +107,8 @@ pub trait GithubClient: Send + Sync {
 	async fn list_labels(&self, repo: RepoInfo) -> Result<Vec<String>, GithubError>;
 
 	/// Add assignees to an issue. GitHub silently skips those who can't be assigned in `repo`.
-	async fn add_assignees(&self, repo: RepoInfo, issue_number: u64, assignees: &[String]) -> Result<(), GithubError>;
+	/// Replace the issue's assignees. A login the repo can't take is dropped by GitHub, not an error.
+	async fn set_assignees(&self, repo: RepoInfo, issue_number: u64, assignees: &[String]) -> Result<(), GithubError>;
 }
 
 /// A milestone as returned by the GitHub REST API.
@@ -226,6 +227,7 @@ pub struct GraphqlTimeline {
 	pub labels: Option<jiff::Timestamp>,
 	/// Most recent state change (from ClosedEvent/ReopenedEvent)
 	pub state: Option<jiff::Timestamp>,
+	pub assignees: Option<jiff::Timestamp>,
 	pub blocked_by: Vec<tedi_core::IssueLink>,
 	pub blocking: Vec<tedi_core::IssueLink>,
 }
@@ -576,7 +578,7 @@ impl GithubClient for RealGithubClient {
 						createdAt
 						blockedBy(first: 100) { nodes { url } }
 						blocking(first: 100) { nodes { url } }
-						timelineItems(last: 100, itemTypes: [RENAMED_TITLE_EVENT, LABELED_EVENT, UNLABELED_EVENT, CLOSED_EVENT, REOPENED_EVENT, BLOCKED_BY_ADDED_EVENT, BLOCKED_BY_REMOVED_EVENT]) {
+						timelineItems(last: 100, itemTypes: [RENAMED_TITLE_EVENT, LABELED_EVENT, UNLABELED_EVENT, CLOSED_EVENT, REOPENED_EVENT, BLOCKED_BY_ADDED_EVENT, BLOCKED_BY_REMOVED_EVENT, ASSIGNED_EVENT, UNASSIGNED_EVENT]) {
 							nodes {
 								__typename
 								... on RenamedTitleEvent {
@@ -598,6 +600,12 @@ impl GithubClient for RealGithubClient {
 									createdAt
 								}
 								... on BlockedByRemovedEvent {
+									createdAt
+								}
+								... on AssignedEvent {
+									createdAt
+								}
+								... on UnassignedEvent {
 									createdAt
 								}
 							}
@@ -672,6 +680,13 @@ impl GithubClient for RealGithubClient {
 							let ts: Option<jiff::Timestamp> = created_at.parse().ok();
 							if ts > timeline.description {
 								timeline.description = ts;
+							}
+						},
+					"AssignedEvent" | "UnassignedEvent" =>
+						if let Some(created_at) = node.get("createdAt").and_then(|v| v.as_str()) {
+							let ts: Option<jiff::Timestamp> = created_at.parse().ok();
+							if ts > timeline.assignees {
+								timeline.assignees = ts;
 							}
 						},
 					"ClosedEvent" | "ReopenedEvent" =>
@@ -812,13 +827,28 @@ impl GithubClient for RealGithubClient {
 		Ok(names)
 	}
 
-	async fn add_assignees(&self, repo: RepoInfo, issue_number: u64, assignees: &[String]) -> Result<(), GithubError> {
+	/// Through the add/remove endpoints rather than a PATCH, which rejects the whole set over one login the repo can't take.
+	async fn set_assignees(&self, repo: RepoInfo, issue_number: u64, assignees: &[String]) -> Result<(), GithubError> {
 		let url = format!(
 			"https://api.github.com/repos/{}/{}/issues/{issue_number}/assignees",
 			repo.owner().expect("github repo"),
 			repo.repo()
 		);
-		self.post_json(&url, &serde_json::json!({ "assignees": assignees }), "Failed to add assignees").await
+		let current: Vec<String> = self.fetch_issue(repo, issue_number).await?.assignees.into_iter().map(|u| u.login).collect();
+		let gone: Vec<&String> = current.iter().filter(|a| !assignees.contains(a)).collect();
+		if !gone.is_empty() {
+			let res = self.delete(&url).json(&serde_json::json!({ "assignees": gone })).send().await?;
+			if !res.status().is_success() {
+				let status = res.status();
+				let body = res.text().await.unwrap_or_default();
+				return Err(GithubError::new_api(status, body, "Failed to remove assignees".to_string()));
+			}
+		}
+		let new: Vec<&String> = assignees.iter().filter(|a| !current.contains(a)).collect();
+		match new.is_empty() {
+			true => Ok(()),
+			false => self.post_json(&url, &serde_json::json!({ "assignees": new }), "Failed to add assignees").await,
+		}
 	}
 }
 
@@ -984,8 +1014,8 @@ impl GithubClient for RetryingGithubClient {
 		retrying!(self.inner.list_labels(repo))
 	}
 
-	async fn add_assignees(&self, repo: RepoInfo, issue_number: u64, assignees: &[String]) -> Result<(), GithubError> {
-		retrying!(self.inner.add_assignees(repo, issue_number, assignees))
+	async fn set_assignees(&self, repo: RepoInfo, issue_number: u64, assignees: &[String]) -> Result<(), GithubError> {
+		retrying!(self.inner.set_assignees(repo, issue_number, assignees))
 	}
 }
 

@@ -99,6 +99,10 @@ impl Merge for Issue {
 			self.contents.state = other.contents.state.clone();
 		}
 
+		if dominated_by(self_ts.assignees, other_ts.assignees) {
+			self.contents.assignees = other.contents.assignees.clone();
+		}
+
 		// Merge comments (excluding body which is first comment)
 		// Compare using max timestamp from each side's comment timestamps
 		let self_comments_ts = self_ts.comments.iter().max().copied();
@@ -219,6 +223,7 @@ mod tests {
 			description: Some(ts),
 			labels: Some(ts),
 			state: Some(ts),
+			assignees: None,
 			comments: vec![],
 		};
 		let linked = make_linked_issue("test", 1, timestamps);
@@ -237,6 +242,7 @@ mod tests {
 			description: None,
 			labels: None,
 			state: None,
+			assignees: None,
 			comments: vec![],
 		};
 		let new_timestamps = IssueTimestamps {
@@ -244,6 +250,7 @@ mod tests {
 			description: None,
 			labels: None,
 			state: None,
+			assignees: None,
 			comments: vec![],
 		};
 
@@ -265,6 +272,7 @@ mod tests {
 			description: None,
 			labels: None,
 			state: None,
+			assignees: None,
 			comments: vec![],
 		};
 		let old_timestamps = IssueTimestamps {
@@ -272,6 +280,7 @@ mod tests {
 			description: None,
 			labels: None,
 			state: None,
+			assignees: None,
 			comments: vec![],
 		};
 
@@ -293,6 +302,7 @@ mod tests {
 			description: None,
 			labels: None,
 			state: None,
+			assignees: None,
 			comments: vec![],
 		};
 
@@ -315,6 +325,7 @@ mod tests {
 			description: None,
 			labels: None,
 			state: None,
+			assignees: None,
 			comments: vec![],
 		};
 		let old_timestamps = IssueTimestamps {
@@ -322,6 +333,7 @@ mod tests {
 			description: None,
 			labels: None,
 			state: None,
+			assignees: None,
 			comments: vec![],
 		};
 
@@ -342,6 +354,7 @@ mod tests {
 			description: None,
 			labels: None,
 			state: None,
+			assignees: None,
 			comments: vec![],
 		};
 
@@ -363,6 +376,7 @@ mod tests {
 			description: None,
 			labels: None,
 			state: None,
+			assignees: None,
 			comments: vec![],
 		};
 

@@ -2313,6 +2313,7 @@ async fn test_mv_cross_owner_recreates_and_closes_original() {
 	let original = state["issues"].as_array_mut().unwrap().iter_mut().find(|i| i["number"] == 10).unwrap();
 	original["owner_login"] = serde_json::json!("other"); // fixtures author every issue as `mock_user`
 	original["assignees"] = serde_json::json!(["a"]);
+	original["assignees_timestamp"] = serde_json::json!("2026-01-01T00:00:00Z"); // its AssignedEvent
 	std::fs::write(&ctx.mock_state_path, state.to_string()).unwrap();
 
 	let out = mv_edit(&ctx, "issues/10 -->", " !mv ev/repo_c");
@@ -2320,7 +2321,7 @@ async fn test_mv_cross_owner_recreates_and_closes_original() {
 
 	let calls = ctx.github_calls();
 	assert!(calls.iter().any(|c| c.starts_with("create_issue(ev, repo_c, Fix button, ")), "{calls:?}");
-	assert!(calls.iter().any(|c| c == r#"add_assignees(ev, repo_c, 1, ["a"])"#), "{calls:?}");
+	assert!(calls.iter().any(|c| c == r#"set_assignees(ev, repo_c, 1, ["a"])"#), "{calls:?}");
 	assert!(calls.iter().any(|c| c == "update_issue_state(o, r, 10, closed/duplicate)"), "{calls:?}");
 	assert!(
 		calls
