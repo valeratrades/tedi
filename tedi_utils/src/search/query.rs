@@ -1,5 +1,3 @@
-use std::ops::Range;
-
 use nucleo_matcher::{
 	Matcher, Utf32Str, Utf32String,
 	pattern::{Atom, AtomKind, CaseMatching, Normalization},
@@ -15,6 +13,7 @@ pub(super) struct Prepared {
 	pub index: usize,
 	/// The displayed row: context, then title.
 	pub line: String,
+	#[cfg(feature = "picker")]
 	pub body: String,
 	title: Utf32String,
 	context: Utf32String,
@@ -32,6 +31,7 @@ impl Prepared {
 		let title_offset = line.chars().count() - c.title.chars().count();
 		Self {
 			index,
+			#[cfg(feature = "picker")]
 			body: c.body.clone(),
 			title: c.title.as_str().into(),
 			context: context.as_str().into(),
@@ -98,6 +98,7 @@ pub(super) enum Query {
 pub(super) struct Hit {
 	pub score: i32,
 	/// Char indices into the displayed row.
+	#[cfg(feature = "picker")]
 	pub line_indices: Vec<usize>,
 }
 
@@ -136,12 +137,17 @@ impl Query {
 	pub fn score(&self, c: &Prepared, m: &mut Matcher) -> Option<Hit> {
 		let terms = match self {
 			Self::Regex(re) => {
-				let found = re.find(&c.line)?;
-				let start = c.line[..found.start()].chars().count();
-				return Some(Hit {
-					score: 0,
-					line_indices: (start..start + found.as_str().chars().count()).collect(),
-				});
+				#[cfg(not(feature = "picker"))]
+				return re.is_match(&c.line).then_some(Hit { score: 0 });
+				#[cfg(feature = "picker")]
+				{
+					let found = re.find(&c.line)?;
+					let start = c.line[..found.start()].chars().count();
+					return Some(Hit {
+						score: 0,
+						line_indices: (start..start + found.as_str().chars().count()).collect(),
+					});
+				}
 			}
 			Self::Terms(groups) => groups,
 		};
@@ -188,15 +194,17 @@ impl Query {
 		let [body, context, title] = fields;
 		Some(Hit {
 			score: pack(contiguous, title, context, body, quality, nucleo),
+			#[cfg(feature = "picker")]
 			line_indices,
 		})
 	}
 
 	/// Char ranges of `body` hit by the query's positive terms, in order.
-	pub fn body_highlights(&self, body: &str) -> Vec<Range<usize>> {
+	#[cfg(feature = "picker")]
+	pub fn body_highlights(&self, body: &str) -> Vec<std::ops::Range<usize>> {
 		let Self::Terms(groups) = self else { return Vec::new() };
 		let body32 = Utf32String::from(body);
-		let mut ranges: Vec<Range<usize>> = groups
+		let mut ranges: Vec<std::ops::Range<usize>> = groups
 			.iter()
 			.flatten()
 			.filter(|t| t.exclude.is_none())

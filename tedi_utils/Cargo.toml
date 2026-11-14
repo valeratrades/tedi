@@ -7,10 +7,15 @@ description = "Leaf utilities for tedi, independent of its domain model"
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = ["picker"]
+## the interactive skim picker; `rank` alone builds without it (wasm)
+picker = ["dep:skim"]
+
 [dependencies]
 nucleo-matcher = { workspace = true }
 regex.workspace = true
-skim = { workspace = true }
+skim = { workspace = true, optional = true }
 thiserror.workspace = true
 
 [lints]

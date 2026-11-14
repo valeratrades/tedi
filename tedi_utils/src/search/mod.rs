@@ -1,5 +1,6 @@
 //! Ranked search over titled documents; grammar and ranking rule in docs/ARCHITECTURE.md#search.
 
+#[cfg(feature = "picker")]
 mod picker;
 mod query;
 
@@ -44,8 +45,10 @@ impl TryFrom<u8> for SearchKind {
 pub enum SearchError {
 	#[error("invalid regex: {0}")]
 	InvalidRegex(#[from] regex::Error),
+	#[cfg(feature = "picker")]
 	#[error("selection aborted")]
 	Aborted,
+	#[cfg(feature = "picker")]
 	#[error("picker failed: {0}")]
 	Picker(Box<dyn std::error::Error + Send + Sync>),
 }
@@ -58,6 +61,7 @@ pub fn rank(candidates: &[Candidate], kind: SearchKind, query: &str) -> Result<V
 }
 
 /// 0 matches → `None`; 1 → it; more → interactive picker over all candidates, prefilled with `query`.
+#[cfg(feature = "picker")]
 pub async fn pick(candidates: Vec<Candidate>, kind: SearchKind, query: Option<&str>) -> Result<Option<usize>, SearchError> {
 	let prepared: Vec<Prepared> = candidates.iter().enumerate().map(|(i, c)| Prepared::new(i, c)).collect();
 	let shortlist = match query {
