@@ -1829,7 +1829,7 @@ async fn test_sync_on_exit_concurrent_description_edit_conflicts() {
 		"the remote body was overwritten: {:?}",
 		ctx.github_calls()
 	);
-	let conflict = std::fs::read_to_string(tedi_task_operations::local::conflict_detect::conflict_file_path("o")).unwrap();
+	let conflict = std::fs::read_to_string(ctx.conflict_file(("o", "r").into(), 10)).unwrap();
 	assert!(conflict.contains("<<<<<<<"), "{conflict}");
 }
 

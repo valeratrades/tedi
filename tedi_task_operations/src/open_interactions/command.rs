@@ -189,11 +189,7 @@ pub async fn open_command(args: OpenArgs, mode: SyncMode, mock: Option<MockType>
 			<Issue as Sink<LocalFs>>::sink(&mut issue, None).await?;
 			<Issue as Sink<Consensus>>::sink(&mut issue, None).await?;
 
-			// Clean up conflict file if it exists
-			let conflict_path = crate::local::conflict_detect::conflict_file_path(&owner);
-			if conflict_path.exists() {
-				std::fs::remove_file(&conflict_path)?;
-			}
+			crate::conflict_resolve::discard_conflicts(issue.full_index())?;
 
 			issue
 		} else if let Some(path) = existing_path {

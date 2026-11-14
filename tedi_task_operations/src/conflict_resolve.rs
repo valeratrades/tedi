@@ -1,28 +1,75 @@
 //! Conflict resolution: the operation-layer counterpart to `conflict_detect`.
 //!
-//! Opens the editor on an unresolved conflict, sinks the resolved state to local + remote, and
-//! drives the git branch-merge that *creates* a conflict when local and remote diverge.
-//!
-//! 1. Commit local state to current branch
-//! 2. Create `remote-state` branch from parent commit
-//! 3. Write remote state (virtual format) to `{owner}/__conflict.md`
-//! 4. Attempt git merge — if conflicts, user resolves with standard git tools
+//! A divergence is recorded as a file holding both sides between markers, one per issue tree (named
+//! by the root the sync ran from) or milestone. Resolving it is removing the markers: the file is then
+//! taken as the new state, sunk to GitHub, local and consensus. Until then it blocks only its own node.
 
-use std::{path::Path, process::Command};
+use std::path::{Path, PathBuf};
 
-use color_eyre::eyre::{Result, WrapErr, bail, eyre};
+use color_eyre::eyre::{Result, WrapErr};
 
 use crate::{
-	Issue, IssueIndex, IssueLink, LazyIssue as _, RepoInfo, VirtualIssue,
+	Issue, IssueIndex, IssueLink, LazyIssue as _, VirtualIssue,
 	local::{
 		Consensus, FsReader, GitReader, Local, LocalFs, LocalIssueSource, LocalPath,
-		conflict_detect::{ConflictBlockedError, ConflictError, ConflictOutcome, conflict_file_path, has_conflict_markers, is_merge_in_progress, milestone_conflict_file_path},
-		consensus::is_git_initialized,
+		conflict_detect::{ConflictBlockedError, conflicts_on_line, has_conflict_markers, milestone_conflict_path},
+		consensus::load_consensus_issue,
 	},
 	open_interactions::{apply_edited_buffer, fetch_remote},
 	remote::{Remote, RemoteSource},
 	sink::Sink,
 };
+
+/// A sync that can't settle: each field both sides changed since consensus, every clashing node recorded
+/// to a file of its own for resolution. Blocks only the line of issues those nodes sit on.
+#[derive(Debug, miette::Diagnostic, thiserror::Error)]
+#[diagnostic(code(tedi::conflict))]
+pub struct Conflict {
+	pub link: IssueLink,
+	pub clashes: Vec<Clash>,
+	pub files: Vec<PathBuf>,
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Clash {
+	pub node: IssueLink,
+	pub field: Field,
+	/// `None` when there is no consensus: never synced from here.
+	pub consensus: Option<String>,
+	pub local: String,
+	pub remote: String,
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq, strum::Display)]
+#[strum(serialize_all = "snake_case")]
+pub enum Field {
+	Title,
+	Labels,
+	Assignees,
+	Body,
+	State,
+	Comments,
+	SubIssues,
+}
+impl std::fmt::Display for Conflict {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		let home = self.link.project();
+		writeln!(f, "{home}#{} changed on both sides since the last sync:", self.link.number())?;
+		for c in &self.clashes {
+			// the first line the sides differ on
+			let at = c.local.lines().zip(c.remote.lines()).take_while(|(l, r)| l == r).count();
+			let line = |v: &str| v.lines().nth(at).map_or_else(|| "nothing".to_string(), |l| format!("{:?}", l.trim()));
+			write!(f, "  {} {}: {} here, {} on GitHub", c.node.shorthand(home), c.field, line(&c.local), line(&c.remote))?;
+			match &c.consensus {
+				Some(was) => writeln!(f, " (was {})", line(was))?,
+				None => writeln!(f)?,
+			}
+		}
+		writeln!(f, "Resolve the markers (<<<<<<< ||||||| ======= >>>>>>>) in:")?;
+		for file in &self.files {
+			writeln!(f, "  {}", file.display())?;
+		}
+		write!(f, "then re-run.")
+	}
+}
 
 /// Load a local source at `index`, first resolving any pending conflict via the editor.
 /// Use at user-facing load sites; ancestor/internal loads use the pure `LocalIssueSource::build`.
@@ -56,96 +103,95 @@ pub async fn resolve_pending_conflict(index: IssueIndex) -> Result<()> {
 	Ok(())
 }
 
-/// Check for conflict file. If user fixed it, sinks.
-///
-/// Returns `Some(path)` if conflict markers are still present, `None` if resolved (or no conflict).
-/// When the file exists but markers are gone, syncs the resolved content to local + remote sinks.
-pub async fn check_for_existing_conflict(issue_index: IssueIndex) -> Result<Option<std::path::PathBuf>> {
-	// virtual issues never sync, so they can never conflict
-	if issue_index.repo_info().is_virtual() {
-		return Ok(None);
-	}
-	let conflict_fpath = conflict_file_path(issue_index.owner().expect("github project"));
-
-	if !conflict_fpath.exists() {
-		return Ok(None);
-	}
-
-	let content = std::fs::read_to_string(&conflict_fpath)?;
-
-	if has_conflict_markers(&content) {
-		Ok(Some(conflict_fpath))
-	} else {
-		if !names(&content, &conflict_fpath, issue_index)? {
-			return Ok(None); // waits for its own issue to be loaded
-		}
-		{
-			let mut new_issue = {
-				let mut new_issue_but_old_local_timestamps = {
-					let virtual_issue = VirtualIssue::parse(&content, conflict_fpath.clone())?;
-					// the resolution holds children as links only; their subtrees come from storage
-					let local = Issue::load(LocalIssueSource::<FsReader>::build(LocalPath::from(issue_index)).await?).await?;
-					let mut folded = local.clone();
-					apply_edited_buffer(&mut folded, &local, virtual_issue.clone()).wrap_err_with(|| format!("{} can't be taken as the resolution", conflict_fpath.display()))?;
-					let hollow = Local::read_hollow_from_project_meta(issue_index)?;
-					let mut resolved = Issue::from_combined(hollow, virtual_issue, issue_index.parent().unwrap(), issue_index.repo_info().is_virtual())?;
-					resolved.children = folded.children;
-					resolved
-				};
-
-				let last_consensus_issue = Issue::load(LocalIssueSource::<GitReader>::build(LocalPath::from(issue_index))?).await?;
-
-				new_issue_but_old_local_timestamps.post_update(&last_consensus_issue);
-				new_issue_but_old_local_timestamps
-			};
-
-			let remote = fetch_remote(&new_issue).await?;
-			<Issue as Sink<Remote>>::sink(&mut new_issue, Some(&remote)).await?;
-			<Issue as Sink<LocalFs>>::sink(&mut new_issue, None).await?; // after the remote sink: it records the links Github now holds
-			std::fs::remove_file(&conflict_fpath)?;
-			<Issue as Sink<Consensus>>::sink(&mut new_issue, None).await?; // `add -A` records the removal, concluding a pending merge
-		}
-		conflict_resolution_cleanup()?;
-		Ok(None)
-	}
+/// Write `path` holding both sides between markers, the remote's kept aside to tell whether GitHub
+/// moved on before it is resolved.
+pub fn record_conflict(path: &Path, local: &str, consensus: Option<&str>, remote: &str) -> Result<()> {
+	std::fs::create_dir_all(path.parent().expect("conflicts live in a repo dir"))?;
+	let side = |s: &str| match s.ends_with('\n') {
+		true => s.to_string(),
+		false => format!("{s}\n"),
+	};
+	std::fs::write(
+		path,
+		format!(
+			"<<<<<<< local\n{}||||||| consensus\n{}=======\n{}>>>>>>> remote\n",
+			side(local),
+			consensus.map(side).unwrap_or_default(),
+			side(remote)
+		),
+	)?;
+	std::fs::write(remote_snapshot(path), remote)?;
+	Ok(())
 }
 
-/// Does the conflict file `content` resolve `issue_index`? Read off its title line's link.
-fn names(content: &str, conflict_fpath: &Path, issue_index: IssueIndex) -> Result<bool> {
-	let title_line = content.lines().next().expect("a conflict side holds the issue it was written for");
-	let Some((crate::IssueMarker::Linked { link, .. }, _)) = crate::IssueMarker::parse_from_end(title_line) else {
-		bail!("{} has no linked issue marker on its title line; can't tell which issue it resolves", conflict_fpath.display());
+/// A reset took one side whole: nothing on its line is left to resolve.
+pub fn discard_conflicts(index: IssueIndex) -> Result<()> {
+	for (_, path) in conflicts_on_line(index)? {
+		std::fs::remove_file(remote_snapshot(&path))?;
+		std::fs::remove_file(path)?;
+	}
+	Ok(())
+}
+
+fn remote_snapshot(path: &Path) -> PathBuf {
+	path.with_extension("remote")
+}
+
+/// `Some(path)` while markers remain on `index`'s line. A file whose markers are gone is the
+/// resolution of its node: sunk to GitHub, local and consensus, and that conflict is over.
+pub async fn check_for_existing_conflict(index: IssueIndex) -> Result<Option<PathBuf>> {
+	for (node, path) in conflicts_on_line(index)? {
+		let content = std::fs::read_to_string(&path)?;
+		match has_conflict_markers(&content) {
+			true => return Ok(Some(path)),
+			false => land_resolution(node, &path, &content).await?,
+		}
+	}
+	Ok(None)
+}
+
+async fn land_resolution(issue_index: IssueIndex, conflict_fpath: &Path, content: &str) -> Result<()> {
+	let mut new_issue = {
+		let mut new_issue_but_old_local_timestamps = {
+			let virtual_issue = VirtualIssue::parse(content, conflict_fpath.to_path_buf())?;
+			// the resolution holds children as links only; their subtrees come from storage
+			let local = Issue::load(LocalIssueSource::<FsReader>::build(LocalPath::from(issue_index)).await?).await?;
+			let mut folded = local.clone();
+			apply_edited_buffer(&mut folded, &local, virtual_issue.clone()).wrap_err_with(|| format!("{} can't be taken as the resolution", conflict_fpath.display()))?;
+			let hollow = Local::read_hollow_from_project_meta(issue_index)?;
+			let mut resolved = Issue::from_combined(hollow, virtual_issue, issue_index.parent().unwrap(), issue_index.repo_info().is_virtual())?;
+			resolved.children = folded.children;
+			resolved
+		};
+
+		let last_consensus_issue = Issue::load(LocalIssueSource::<GitReader>::build(LocalPath::from(issue_index))?).await?;
+
+		new_issue_but_old_local_timestamps.post_update(&last_consensus_issue);
+		new_issue_but_old_local_timestamps
 	};
-	let number = *issue_index.git_num_path()?.last().expect("a github issue index ends in its number");
-	Ok(link.project() == issue_index.repo_info() && link.number() == number)
+
+	let remote = fetch_remote(&new_issue).await?;
+	<Issue as Sink<Remote>>::sink(&mut new_issue, Some(&remote)).await?;
+	<Issue as Sink<LocalFs>>::sink(&mut new_issue, None).await?; // after the remote sink: it records the links Github now holds
+	<Issue as Sink<Consensus>>::sink(&mut new_issue, None).await?;
+	std::fs::remove_file(remote_snapshot(conflict_fpath))?;
+	std::fs::remove_file(conflict_fpath)?;
+	Ok(())
 }
 
 /// A conflict still carrying markers is re-raised against a fresh pull if Github moved since it was
 /// written, so the user never resolves against a stale remote. Unchanged remote keeps the file as is.
-async fn refresh_pending_conflict(issue_index: IssueIndex) -> Result<()> {
-	if issue_index.repo_info().is_virtual() {
-		return Ok(());
+async fn refresh_pending_conflict(index: IssueIndex) -> Result<()> {
+	for (node, path) in conflicts_on_line(index)? {
+		if has_conflict_markers(&std::fs::read_to_string(&path)?) {
+			refresh(node, &path).await?;
+		}
 	}
-	let conflict_fpath = conflict_file_path(issue_index.owner().expect("github project"));
-	if !conflict_fpath.exists() || !has_conflict_markers(&std::fs::read_to_string(&conflict_fpath)?) {
-		return Ok(());
-	}
-	let data_dir = Local::issues_dir();
-	let data_dir_str = data_dir.to_str().ok_or_else(|| eyre!("Invalid data directory path"))?;
-	let rel = conflict_fpath.strip_prefix(&data_dir).expect("conflict file lives in the issues dir");
-	let show = Command::new("git").args(["-C", data_dir_str, "show", &format!("remote-state:./{}", rel.display())]).output()?;
-	if !show.status.success() {
-		bail!(
-			"{} has conflict markers but no `remote-state` branch records its remote side: {}",
-			conflict_fpath.display(),
-			String::from_utf8_lossy(&show.stderr).trim()
-		);
-	}
-	let recorded_remote = String::from_utf8(show.stdout)?;
-	if !names(&recorded_remote, &conflict_fpath, issue_index)? {
-		return Ok(());
-	}
+	Ok(())
+}
 
+async fn refresh(issue_index: IssueIndex, conflict_fpath: &Path) -> Result<()> {
+	let recorded_remote = std::fs::read_to_string(remote_snapshot(conflict_fpath))?;
 	let num_path = issue_index.git_num_path()?;
 	let (&number, lineage) = num_path.split_last().expect("a github issue index ends in its number");
 	let remote = Issue::load(RemoteSource::build(IssueLink::in_project(issue_index.repo_info(), number), Some(lineage))?).await?;
@@ -153,37 +199,17 @@ async fn refresh_pending_conflict(issue_index: IssueIndex) -> Result<()> {
 	if remote_side == recorded_remote {
 		return Ok(());
 	}
-	if is_merge_in_progress() {
-		let abort = Command::new("git").args(["-C", data_dir_str, "merge", "--abort"]).output()?;
-		if !abort.status.success() {
-			bail!("git merge --abort failed: {}", String::from_utf8_lossy(&abort.stderr).trim());
-		}
-	}
-	// the rebuilt merge's base must not hold either side, or git resolves it for us; the local issue file is the local side
-	let rm = Command::new("git").args(["-C", data_dir_str, "rm", "-q", "-f", "--ignore-unmatch", "--"]).arg(rel).output()?;
-	if !rm.status.success() {
-		bail!("git rm of the stale conflict file failed: {}", String::from_utf8_lossy(&rm.stderr).trim());
-	}
-	if !Command::new("git").args(["-C", data_dir_str, "diff", "--cached", "--quiet"]).status()?.success() {
-		let commit = Command::new("git")
-			.args(["-C", data_dir_str, "commit", "-q", "-m", "__conflict: drop stale remote side"])
-			.output()?;
-		if !commit.status.success() {
-			bail!("committing the stale conflict file's removal failed: {}", String::from_utf8_lossy(&commit.stderr).trim());
-		}
-	}
+	std::fs::remove_file(conflict_fpath)?; // the stale one would block reading the local side; a sync re-raises it if this fails midway
 	let local = Issue::load(LocalIssueSource::<FsReader>::build(LocalPath::new(issue_index)).await?).await?;
-	// a marker-free outcome (Github now agrees with local) is left for `check_for_existing_conflict` to consume as a resolution
-	initiate_conflict_merge(issue_index.repo_info(), number, &local.to_string(), &remote_side, conflict_fpath)?;
-	Ok(())
+	let consensus = load_consensus_issue(issue_index).await?;
+	record_conflict(conflict_fpath, &local.to_string(), consensus.map(|c| c.to_string()).as_deref(), &remote_side)
 }
 
 /// Milestone counterpart to `check_for_existing_conflict`: if the resolution file's markers
 /// are gone, rebuild the milestone from it (identity from meta, timestamps bumped against
 /// consensus) and sink to local + remote, then clean up.
-pub async fn check_for_existing_milestone_conflict(link: &crate::MilestoneLink) -> Result<Option<std::path::PathBuf>> {
-	let owner = link.repo_info().owner().expect("github project").to_string();
-	let conflict_fpath = milestone_conflict_file_path(&owner);
+pub async fn check_for_existing_milestone_conflict(link: &crate::MilestoneLink) -> Result<Option<PathBuf>> {
+	let conflict_fpath = milestone_conflict_path(link);
 	if !conflict_fpath.exists() {
 		return Ok(None);
 	}
@@ -216,181 +242,8 @@ pub async fn check_for_existing_milestone_conflict(link: &crate::MilestoneLink) 
 
 	<crate::Milestone as Sink<LocalFs>>::sink(&mut milestone, None).await?;
 	<crate::Milestone as Sink<Remote>>::sink(&mut milestone, None).await?;
+	<crate::Milestone as Sink<Consensus>>::sink(&mut milestone, None).await?;
+	std::fs::remove_file(remote_snapshot(&conflict_fpath))?;
 	std::fs::remove_file(&conflict_fpath)?;
-	<crate::Milestone as Sink<Consensus>>::sink(&mut milestone, None).await?; // `add -A` records the removal, concluding a pending merge
-	conflict_resolution_cleanup()?;
 	Ok(None)
-}
-
-//==============================================================================
-// Conflict Creation (Git Branch Merge)
-//==============================================================================
-
-/// Initiate a git merge conflict between local and remote node states.
-///
-/// This creates a real git conflict by:
-/// 1. Committing current local state
-/// 2. Creating a `remote-state` branch with remote's state
-/// 3. Merging that branch (which may produce conflicts)
-///
-/// Both `local_serialized` and `remote_serialized` are written to `conflict_file`.
-/// Node-agnostic: the caller serializes (issue or milestone) and picks the conflict path.
-pub fn initiate_conflict_merge(
-	repo_info: RepoInfo,
-	node_number: u64,
-	local_serialized: &str,
-	remote_serialized: &str,
-	conflict_file: std::path::PathBuf,
-) -> Result<ConflictOutcome, ConflictError> {
-	let issue_number = node_number;
-	if !is_git_initialized() {
-		return Err(ConflictError::new_git_not_initialized());
-	}
-
-	let owner = repo_info.owner().expect("github project");
-	let repo = repo_info.repo();
-
-	let data_dir = Local::issues_dir();
-	let data_dir_str = data_dir.to_str().ok_or_else(|| ConflictError::new_git_error("Invalid data directory path".into()))?;
-
-	// Ensure the conflict file's parent directory exists
-	if let Some(parent) = conflict_file.parent() {
-		std::fs::create_dir_all(parent)?;
-	}
-
-	let conflict_file_rel = conflict_file.strip_prefix(&data_dir).unwrap_or(&conflict_file);
-	let conflict_file_rel_str = conflict_file_rel.to_string_lossy();
-
-	// Get current branch name
-	let branch_output = Command::new("git").args(["-C", data_dir_str, "rev-parse", "--abbrev-ref", "HEAD"]).output()?;
-	let current_branch = String::from_utf8_lossy(&branch_output.stdout).trim().to_string();
-
-	// Write local state to conflict file (node + child links)
-	std::fs::write(&conflict_file, local_serialized)?;
-
-	// Stage and commit local state
-	let add_status = Command::new("git").args(["-C", data_dir_str, "add", "-A"]).status()?;
-	if !add_status.success() {
-		return Err(ConflictError::new_git_error("git add -A failed".into()));
-	}
-
-	let commit_msg = format!("__conflict: local state for {owner}/{repo}#{issue_number}");
-	let commit_output = Command::new("git").args(["-C", data_dir_str, "commit", "-m", &commit_msg]).output()?;
-
-	let local_committed = commit_output.status.success();
-	if local_committed {
-		tracing::debug!("[conflict] Committed local state");
-	}
-
-	// Get base commit (parent of our commit, or HEAD if nothing to commit)
-	let base_commit = if local_committed {
-		let parent_output = Command::new("git").args(["-C", data_dir_str, "rev-parse", "HEAD~1"]).output()?;
-		if parent_output.status.success() {
-			String::from_utf8_lossy(&parent_output.stdout).trim().to_string()
-		} else {
-			"HEAD".to_string()
-		}
-	} else {
-		"HEAD".to_string()
-	};
-
-	// Delete remote-state branch if it exists
-	let _ = Command::new("git").args(["-C", data_dir_str, "branch", "-D", "remote-state"]).output();
-
-	// Create remote-state branch from base
-	let branch_status = Command::new("git").args(["-C", data_dir_str, "branch", "remote-state", &base_commit]).status()?;
-
-	if !branch_status.success() {
-		return Err(ConflictError::new_git_error("Failed to create remote-state branch".into()));
-	}
-
-	// Checkout remote-state branch
-	let checkout_status = Command::new("git").args(["-C", data_dir_str, "checkout", "remote-state"]).status()?;
-
-	if !checkout_status.success() {
-		cleanup_branch(data_dir_str, &current_branch);
-		return Err(ConflictError::new_git_error("Failed to checkout remote-state branch".into()));
-	}
-
-	// Write remote state to conflict file (node + child links)
-	std::fs::write(&conflict_file, remote_serialized)?;
-
-	// Stage and commit remote state
-	let add_status = Command::new("git").args(["-C", data_dir_str, "add", "-A"]).status()?;
-	if !add_status.success() {
-		cleanup_branch(data_dir_str, &current_branch);
-		return Err(ConflictError::new_git_error("git add -A failed".into()));
-	}
-
-	// Check if there are changes to commit
-	let diff_status = Command::new("git").args(["-C", data_dir_str, "diff", "--cached", "--quiet"]).status()?;
-
-	if diff_status.success() {
-		// No changes - states are identical
-		let _ = Command::new("git").args(["-C", data_dir_str, "checkout", &current_branch]).status();
-		cleanup_branch(data_dir_str, &current_branch);
-		return Ok(ConflictOutcome::NoChanges);
-	}
-
-	let remote_commit_msg = format!("__conflict: remote state for {owner}/{repo}#{issue_number}");
-	let commit_status = Command::new("git").args(["-C", data_dir_str, "commit", "-m", &remote_commit_msg]).status()?;
-
-	if !commit_status.success() {
-		let _ = Command::new("git").args(["-C", data_dir_str, "checkout", &current_branch]).status();
-		cleanup_branch(data_dir_str, &current_branch);
-		return Err(ConflictError::new_git_error("Failed to commit remote state".into()));
-	}
-
-	// Switch back to original branch
-	let _ = Command::new("git").args(["-C", data_dir_str, "checkout", &current_branch]).status()?;
-
-	// Attempt merge
-	tracing::debug!("[conflict] Attempting merge of remote-state into {current_branch}");
-	let merge_output = Command::new("git")
-		.args([
-			"-C",
-			data_dir_str,
-			"merge",
-			"remote-state",
-			"-m",
-			&format!("Merge remote state for {owner}/{repo}#{issue_number}"),
-		])
-		.output()?;
-
-	if merge_output.status.success() {
-		// Merge succeeded without conflicts
-		cleanup_branch(data_dir_str, &current_branch);
-		tracing::debug!("[conflict] Merge succeeded automatically");
-		return Ok(ConflictOutcome::AutoMerged);
-	}
-
-	// Check if it's a conflict or other error
-	let stdout = String::from_utf8_lossy(&merge_output.stdout);
-	let stderr = String::from_utf8_lossy(&merge_output.stderr);
-
-	//TODO: switch all actual git operations to [gitoxide](https://docs.rs/gitoxide/latest/gitoxide/), to not have to parse STDOUT
-	if stdout.contains("CONFLICT") || stderr.contains("CONFLICT") || stdout.contains("Automatic merge failed") {
-		tracing::debug!("[conflict] Merge produced conflicts in {conflict_file_rel_str}");
-		// Don't cleanup branch - user needs it for resolution
-		Ok(ConflictOutcome::NeedsResolution)
-	} else {
-		// Some other error
-		let _ = Command::new("git").args(["-C", data_dir_str, "merge", "--abort"]).status();
-		cleanup_branch(data_dir_str, &current_branch);
-		Err(ConflictError::new_git_error(format!("Merge failed: {}\n{}", stdout.trim(), stderr.trim())))
-	}
-}
-
-/// Drop the `remote-state` branch once the resolution is committed to consensus.
-fn conflict_resolution_cleanup() -> Result<()> {
-	let data_dir = Local::issues_dir();
-	let data_dir_str = data_dir.to_str().ok_or_else(|| eyre!("Invalid data directory path"))?;
-	assert!(!is_merge_in_progress(), "the consensus commit concludes the conflict merge");
-	let _ = Command::new("git").args(["-C", data_dir_str, "branch", "-D", "remote-state"]).output(); // absent when the merge was concluded by an earlier run
-	Ok(())
-}
-
-/// Cleanup the remote-state branch after merge completes.
-fn cleanup_branch(data_dir_str: &str, _current_branch: &str) {
-	let _ = Command::new("git").args(["-C", data_dir_str, "branch", "-D", "remote-state"]).output();
 }

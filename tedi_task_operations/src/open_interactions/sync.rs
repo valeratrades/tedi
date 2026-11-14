@@ -30,12 +30,8 @@ pub use types::*;
 use super::merge::Merge;
 use crate::{
 	BlockerSetState, Issue, IssueIndex, IssueLink, IssueSelector, LazyIssue, RepoInfo, VirtualIssue,
-	conflict_resolve::initiate_conflict_merge,
-	local::{
-		Consensus, FsReader, Local, LocalFs, LocalIssueSource, LocalPath,
-		conflict_detect::{ConflictOutcome, conflict_file_path},
-		consensus::load_consensus_issue,
-	},
+	conflict_resolve::{Clash, Conflict, Field},
+	local::{Consensus, FsReader, Local, LocalFs, LocalIssueSource, LocalPath, consensus::load_consensus_issue},
 	remote::{Remote, RemoteSource},
 	selection::Selected,
 	sink::Sink,
@@ -449,10 +445,10 @@ mod core {
 			_ => (false, false),
 		};
 
-		let clash = match (mode, &consensus) {
-			(MergeMode::Normal, Some(base)) => concurrent_edit(&local, base, &view).map(|(l, r)| (l.git_id().expect("on the remote, so linked"), l.to_string(), r.to_string())),
-			_ => None,
-		};
+		let mut found = Vec::new();
+		if let (MergeMode::Normal, Some(base)) = (mode, &consensus) {
+			clashes(&local, Some(base), &view, true, &mut found);
+		}
 
 		// Apply four-merge algorithm
 		let mut local_merged = local.clone();
@@ -473,36 +469,108 @@ mod core {
 			drop_detached(&mut remote_merged, consensus, &local, &view);
 		}
 
-		let divergence = clash.or_else(|| (local_merged != remote_merged).then(|| (issue_number, local_merged.to_string(), remote_merged.to_string())));
-		match divergence {
-			None => {
-				// Auto-resolved - sink to both sides
-				let mut resolved = local_merged;
-				prs_from(&mut resolved, &remote);
-				<Issue as Sink<LocalFs>>::sink(&mut resolved, None).await?;
-				<Issue as Sink<Remote>>::sink(&mut resolved, Some(&remote)).await?;
-				Ok((resolved, true))
+		if found.is_empty() && local_merged != remote_merged {
+			clashes(&local_merged, consensus.as_ref(), &remote_merged, false, &mut found);
+			if found.is_empty() {
+				let children = |i: &Issue| {
+					let mut titles: Vec<String> = i.children.values().map(|c| c.contents.title.clone()).collect();
+					titles.sort();
+					titles.join("\n")
+				};
+				found.push(Found {
+					index: local_merged.full_index(),
+					local: local_merged.to_string(),
+					consensus: consensus.as_ref().map(Issue::to_string),
+					remote: remote_merged.to_string(),
+					clashes: vec![Clash {
+						node: IssueLink::in_project(repo_info, issue_number),
+						field: Field::SubIssues,
+						consensus: consensus.as_ref().map(children),
+						local: children(&local_merged),
+						remote: children(&remote_merged),
+					}],
+				});
 			}
-			Some((issue_number, local_side, remote_side)) => {
-				// Conflict - initiate git merge
-				match initiate_conflict_merge(repo_info, issue_number, &local_side, &remote_side, conflict_file_path(repo_info.owner().expect("github project")))? {
-					ConflictOutcome::AutoMerged => {
-						unreachable!(
-							"AutoMerged means when we triggered a merge of local against remote (which we've already checked are divergent), it succeeded. Which would be an implementation error, - whole point of the call is to record the conflict before getting user to resolve it manually."
-						);
-					}
-					ConflictOutcome::NeedsResolution => {
-						//TODO!: switch to a preview Error return type. This branch is EXPECTED to be reached during real-world usage, and must have first-class formatting and a miette error nicely propagated to user.
-						bail!(
-							"Conflict detected for {repo_info}#{issue_number}.\n\
-							Resolve using standard git tools, then re-run."
-						);
-					}
-					ConflictOutcome::NoChanges => {
-						// Git says no changes - take local
-						Ok((local_merged, false))
-					}
-				}
+		}
+		if found.is_empty() {
+			let mut resolved = local_merged;
+			prs_from(&mut resolved, &remote);
+			<Issue as Sink<LocalFs>>::sink(&mut resolved, None).await?;
+			<Issue as Sink<Remote>>::sink(&mut resolved, Some(&remote)).await?;
+			return Ok((resolved, true));
+		}
+		let mut files = Vec::new();
+		for f in &found {
+			let path = crate::local::conflict_detect::conflict_path(f.index);
+			crate::conflict_resolve::record_conflict(&path, &f.local, f.consensus.as_deref(), &f.remote)?;
+			files.push(path);
+		}
+		Err(Conflict {
+			link: IssueLink::in_project(repo_info, issue_number),
+			clashes: found.into_iter().flat_map(|f| f.clashes).collect(),
+			files,
+		}
+		.into())
+	}
+
+	struct Found {
+		index: IssueIndex,
+		local: String,
+		consensus: Option<String>,
+		remote: String,
+		clashes: Vec<Clash>,
+	}
+
+	/// Each node's fields that differ between `local` and `remote`: changed on both sides since `base` when
+	/// `since_base` (neither edit was made knowing of the other, so no timestamp can order them), else at all.
+	fn clashes(local: &Issue, base: Option<&Issue>, remote: &Issue, since_base: bool, out: &mut Vec<Found>) {
+		if since_base && base.is_none() {
+			return;
+		}
+		let fields: [(Field, fn(&Issue) -> String); 6] = [
+			(Field::Title, |i| i.contents.title.clone()),
+			(Field::Labels, |i| {
+				let mut labels = i.contents.labels.clone();
+				labels.sort_unstable();
+				labels.join(", ")
+			}),
+			(Field::Assignees, |i| i.contents.assignees.join(", ")),
+			(Field::Body, |i| i.body().to_string()),
+			(Field::State, |i| format!("{:?}", i.contents.state)),
+			(Field::Comments, |i| {
+				i.contents.comments.iter().skip(1).map(|c| format!("{:?}: {}", c.id(), c.body)).collect::<Vec<_>>().join("\n")
+			}),
+		];
+		let node = local.identity.link().expect("on the remote, so linked").clone();
+		let found: Vec<Clash> = fields
+			.into_iter()
+			.filter_map(|(field, read)| {
+				let (l, b, r) = (read(local), base.map(read), read(remote));
+				let differs = match since_base {
+					true => clash(&l, b.as_ref().expect("checked above"), &r),
+					false => l != r,
+				};
+				differs.then(|| Clash {
+					node: node.clone(),
+					field,
+					consensus: b,
+					local: l,
+					remote: r,
+				})
+			})
+			.collect();
+		if !found.is_empty() {
+			out.push(Found {
+				index: local.full_index(),
+				local: local.to_string(),
+				consensus: base.map(Issue::to_string),
+				remote: remote.to_string(),
+				clashes: found,
+			});
+		}
+		for (selector, child) in &local.children {
+			if let Some(remote) = remote.children.get(selector) {
+				clashes(child, base.and_then(|b| b.children.get(selector)), remote, since_base, out);
 			}
 		}
 	}
@@ -541,30 +609,6 @@ mod core {
 			if let (Some(b), Some(l), Some(r)) = (base.children.get(s), local.children.get(s), remote.children.get(s)) {
 				drop_detached(child, b, l, r);
 			}
-		}
-	}
-
-	/// The first node with a field both sides edited since `base`: neither edit was made knowing of
-	/// the other, so no timestamp can order them.
-	fn concurrent_edit<'a>(local: &'a Issue, base: &Issue, remote: &'a Issue) -> Option<(&'a Issue, &'a Issue)> {
-		let labels = |i: &Issue| {
-			let mut labels = i.contents.labels.clone();
-			labels.sort_unstable();
-			labels
-		};
-		let comments = |i: &Issue| i.contents.comments.iter().skip(1).map(|c| (c.id(), c.body.to_string())).collect::<Vec<_>>();
-		let edited = clash(&local.contents.title, &base.contents.title, &remote.contents.title)
-			|| clash(labels(local), labels(base), labels(remote))
-			|| clash(local.body().to_string(), base.body().to_string(), remote.body().to_string())
-			|| clash(&local.contents.state, &base.contents.state, &remote.contents.state)
-			|| clash(&local.contents.assignees, &base.contents.assignees, &remote.contents.assignees)
-			|| clash(comments(local), comments(base), comments(remote));
-		match edited {
-			true => Some((local, remote)),
-			false => local
-				.children
-				.iter()
-				.find_map(|(selector, child)| concurrent_edit(child, base.children.get(selector)?, remote.children.get(selector)?)),
 		}
 	}
 

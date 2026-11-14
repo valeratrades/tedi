@@ -29,7 +29,9 @@ impl Sink<Consensus> for Issue {
 		let data_dir_str = data_dir.to_str().ok_or_else(ConsensusSinkError::new_invalid_data_dir)?;
 
 		// Stage changes
-		let add_output = Command::new("git").args(["-C", data_dir_str, "add", "-A"]).output()?;
+		let add_output = Command::new("git")
+			.args(["-C", data_dir_str, "add", "-A", "--", ".", &format!(":!{}", crate::local::conflict_detect::CONFLICTS_DIR)])
+			.output()?;
 		if !add_output.status.success() {
 			return Err(ConsensusSinkError::new_git_add(String::from_utf8_lossy(&add_output.stderr).into_owned()));
 		}

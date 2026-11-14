@@ -309,6 +309,12 @@ impl TestContext {
 		self.rebuild_mock_state();
 	}
 
+	/// Where a clash on `repo#number` waits for resolution.
+	pub fn conflict_file(&self, repo: tedi_task_operations::RepoInfo, number: u64) -> PathBuf {
+		self.set_issues_dir_override();
+		tedi_task_operations::local::conflict_detect::conflict_path(tedi_task_operations::IssueIndex::with_index(repo, vec![tedi_task_operations::IssueSelector::GitId(number)]))
+	}
+
 	/// Github holds a pull request referencing `issue`.
 	pub fn remote_pr(&self, issue: &Issue, url: &str, state: &str) {
 		let link = issue.identity.link().expect("seed a linked issue").clone();
@@ -1310,7 +1316,7 @@ pub fn issue_tree(ctx: &TestContext) -> String {
 	let mut tree: Vec<String> = walkdir::WalkDir::new(&issues)
 		.into_iter()
 		.map(|e| e.unwrap().path().strip_prefix(&issues).unwrap().display().to_string())
-		.filter(|p| (p.ends_with(".md") || p.ends_with(".md.bak")) && !p.starts_with("__milestones__") && !p.starts_with(".git"))
+		.filter(|p| (p.ends_with(".md") || p.ends_with(".md.bak")) && !p.starts_with("__milestones__") && !p.starts_with('.'))
 		.collect();
 	tree.sort();
 	tree.join("\n")

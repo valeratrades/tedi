@@ -360,8 +360,8 @@ async fn test_markdown_in_remote_title_roundtrips() {
 	assert!(link_line.contains(&format!("[{title}](")), "child link must carry the title verbatim. Got: {link_line}");
 }
 
-/// The conflict file is per owner, so it can sit resolved while a different issue of that owner
-/// is opened. It names its own issue in its title line — anyone else's content must not land in it.
+/// A resolved conflict file sits waiting for its own issue: opening another one of the same repo
+/// neither consumes it nor takes its content.
 #[tokio::test]
 async fn test_resolved_conflict_file_only_resolves_the_issue_it_names() {
 	let ctx = TestContext::build_with_preexisting_state_unsafe("");
@@ -374,7 +374,8 @@ async fn test_resolved_conflict_file_only_resolves_the_issue_it_names() {
 	ctx.remote(&bystander, Some(Seed::new(15)));
 
 	let bystander_path = ctx.flat_issue_path(("o", "r").into(), 2, "two");
-	let conflict = bystander_path.parent().unwrap().parent().unwrap().join("__conflict.md");
+	let conflict = ctx.conflict_file(("o", "r").into(), 1);
+	std::fs::create_dir_all(conflict.parent().unwrap()).unwrap();
 	std::fs::write(&conflict, "- [ ] one <!-- @mock_user https://github.com/o/r/issues/1 -->\n  resolved one\n").unwrap();
 
 	let out = ctx.open_url(("o", "r").into(), 2).run();
@@ -452,7 +453,7 @@ async fn test_two_paragraph_body_is_a_roundtrip_fixpoint() {
 
 	let reopen = ctx.open_url(("o", "r").into(), 1).run();
 	assert!(reopen.status.success(), "stderr: {}", reopen.stderr);
-	let conflict = path.parent().unwrap().parent().unwrap().join("__conflict.md");
+	let conflict = ctx.conflict_file(("o", "r").into(), 1);
 	assert!(!conflict.exists(), "a body neither side edited must not conflict");
 	assert_eq!(first, read_issue_file(&path), "reparsing our own render must reproduce it byte for byte");
 }
@@ -602,15 +603,20 @@ async fn test_divergence_conflicts_before_editor() {
 
 	// Ensure conflict is opened
 	assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap(), &out), @r#"
-	//- /o/__conflict.md
-	<<<<<<< HEAD
+	//- /.conflicts/o/r/1.md
+	<<<<<<< local
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
 	  local diverged body
-	||||||| [hash]
+	||||||| consensus
+	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+	  consensus body
 	=======
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
 	  remote diverged body
-	>>>>>>> remote-state
+	>>>>>>> remote
+	//- /.conflicts/o/r/1.remote
+	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+	  remote diverged body
 	//- /o/r/.meta.json
 	{
 	  "next_virtual_issue_number": 0,
@@ -870,8 +876,8 @@ async fn test_comment_shorthand_creates_comment() {
 
 	// Capture the resulting directory state
 	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().skip_meta(), &out), @"
-	//- /o/__conflict.md
-	<<<<<<< HEAD
+	//- /.conflicts/o/r/1.md
+	<<<<<<< local
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
 	  issue body
 
@@ -880,11 +886,16 @@ async fn test_comment_shorthand_creates_comment() {
 	  My new comment content
 
 	  <!--,}}}-->
-	||||||| [hash]
+	||||||| consensus
+	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+	  issue body
 	=======
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
 	  issue body
-	>>>>>>> remote-state
+	>>>>>>> remote
+	//- /.conflicts/o/r/1.remote
+	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
+	  issue body
 	//- /o/r/1_-_Test_Issue.md
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
 	  issue body
@@ -1145,7 +1156,7 @@ async fn test_edit_on_top_of_resolved_conflict_syncs(#[case] args: &[&str]) {
 	let out = ctx.open_issue(&local).run();
 	assert!(!out.status.success(), "divergence must conflict first. stdout: {}", out.stdout);
 	let path = ctx.flat_issue_path(("o", "r").into(), 1, "Test Issue");
-	let conflict = path.parent().unwrap().parent().unwrap().join("__conflict.md");
+	let conflict = ctx.conflict_file(("o", "r").into(), 1);
 	assert!(conflict.exists());
 
 	std::fs::write(&conflict, "- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n  resolved body\n").unwrap();
@@ -1197,7 +1208,7 @@ async fn test_resolved_conflict_without_further_edit_syncs(#[case] args: &[&str]
 	let out = ctx.open_issue(&local).run();
 	assert!(!out.status.success(), "divergence must conflict first. stdout: {}", out.stdout);
 	let path = ctx.flat_issue_path(("o", "r").into(), 1, "Test Issue");
-	let conflict = path.parent().unwrap().parent().unwrap().join("__conflict.md");
+	let conflict = ctx.conflict_file(("o", "r").into(), 1);
 
 	std::fs::write(&conflict, "- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->\n  resolved body\n").unwrap();
 
@@ -1241,8 +1252,7 @@ async fn test_pending_conflict_rebuilt_on_remote_change() {
 
 	let out = ctx.open_issue(&local).run();
 	assert!(!out.status.success(), "divergence must conflict first. stdout: {}", out.stdout);
-	let path = ctx.flat_issue_path(("o", "r").into(), 1, "Test Issue");
-	let conflict = path.parent().unwrap().parent().unwrap().join("__conflict.md");
+	let conflict = ctx.conflict_file(("o", "r").into(), 1);
 
 	ctx.set_remote_body(("o", "r").into(), 1, "remote moved on\n");
 	let out = ctx.open_issue(&local).run();

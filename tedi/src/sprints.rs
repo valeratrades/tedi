@@ -588,7 +588,7 @@ async fn edit_milestone(settings: &LiveSettings, tf: Timeframe, mode: SyncMode, 
 		}
 		SyncMode::OnExit =>
 			if let Some(conflict_file) = tedi_task_operations::conflict_resolve::check_for_existing_milestone_conflict(&link).await? {
-				bail!("Unresolved milestone conflict in {}. Resolve with git tools, then re-run.", conflict_file.display());
+				bail!("Unresolved milestone conflict in {}. Resolve the markers, then re-run.", conflict_file.display());
 			},
 		SyncMode::Offline => {}
 	}

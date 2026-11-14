@@ -82,6 +82,8 @@ When Github is reached depends on the sync mode:
 
 A pending conflict is always reconciled against a fresh pull, Offline included; its resolution becomes consensus.
 
+A conflict is data: `Conflict { link, clashes: [{ node, field, consensus, local, remote }], files }`. Each clashing node is recorded to its own file under `issues/.conflicts/{owner}/{repo}/`, named by lineage (`1_5.md`), both sides between markers; consensus never commits it. It blocks only that line — the node, its ancestors and descendants — and removing the markers is the resolution.
+
 A buffer is folded back against the state it was rendered from, never against a pull made after it. A field changed on both sides since consensus is a conflict, never a timestamp race: neither edit was made knowing of the other.
 
 A sprint stores links only, so an issue expanded into an edit buffer has no second home there: its block is sliced back out of the buffer verbatim and committed whole through the same `VirtualIssue::parse` its own file goes through (`Modifier::Write`) — body, state, labels, comments and blockers alike. A block that doesn't compose fails the edit rather than being dropped.

@@ -175,7 +175,9 @@ impl Sink<Consensus> for Milestone {
 		let data_dir = Local::issues_dir();
 		let data_dir_str = data_dir.to_str().ok_or_else(crate::local::ConsensusSinkError::new_invalid_data_dir)?;
 
-		let add = Command::new("git").args(["-C", data_dir_str, "add", "-A"]).output()?;
+		let add = Command::new("git")
+			.args(["-C", data_dir_str, "add", "-A", "--", ".", &format!(":!{}", super::conflict_detect::CONFLICTS_DIR)])
+			.output()?;
 		if !add.status.success() {
 			return Err(crate::local::ConsensusSinkError::new_git_add(String::from_utf8_lossy(&add.stderr).into_owned()));
 		}

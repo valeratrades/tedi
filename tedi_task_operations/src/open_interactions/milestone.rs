@@ -1,6 +1,6 @@
 //! Three-way sync for milestones — the milestone mirror of `sync.rs`.
 //!
-//! Three-way merge (local ⇄ consensus ⇄ remote) and the same git-branch conflict flow,
+//! Three-way merge (local ⇄ consensus ⇄ remote) and the same recorded-conflict flow,
 //! over the simpler `Milestone` primitive (no children, no comments).
 
 use color_eyre::eyre::{Result, bail};
@@ -8,11 +8,8 @@ use color_eyre::eyre::{Result, bail};
 use super::sync::{MergeMode, Side, SyncMode, SyncOptions, clash};
 use crate::{
 	IssueLink, Milestone, MilestoneBody, MilestoneLink,
-	conflict_resolve::{check_for_existing_milestone_conflict, initiate_conflict_merge},
-	local::{
-		Consensus, GitReader, Local, LocalFs,
-		conflict_detect::{ConflictOutcome, milestone_conflict_file_path},
-	},
+	conflict_resolve::{check_for_existing_milestone_conflict, record_conflict},
+	local::{Consensus, GitReader, Local, LocalFs, conflict_detect::milestone_conflict_path},
 	remote::{Remote, load_remote_milestone},
 	sink::Sink,
 };
@@ -114,7 +111,7 @@ async fn sync(milestone: &mut Milestone, consensus: Option<Milestone>, mode: Mer
 	println!("Syncing milestone...");
 	let link = milestone.identity.link.clone();
 	if let Some(conflict_file) = check_for_existing_milestone_conflict(&link).await? {
-		bail!("Unresolved milestone conflict in {}. Resolve with git tools, then re-run.", conflict_file.display());
+		bail!("Unresolved milestone conflict in {}. Resolve the markers, then re-run.", conflict_file.display());
 	}
 	let remote = load_remote_milestone(&link).await?;
 
@@ -131,7 +128,7 @@ async fn sync(milestone: &mut Milestone, consensus: Option<Milestone>, mode: Mer
 	Ok(())
 }
 
-/// Three-way resolution; a divergence produces a git-branch conflict in `__milestone_conflict.md`.
+/// Three-way resolution; a divergence is recorded for resolution in its own conflict file.
 async fn resolve_merge(local: Milestone, consensus: Option<Milestone>, remote: Milestone, mode: MergeMode) -> Result<(Milestone, bool)> {
 	if let MergeMode::Reset { prefer } = mode {
 		return match prefer {
@@ -210,11 +207,9 @@ async fn resolve_merge(local: Milestone, consensus: Option<Milestone>, remote: M
 			Local::milestone_project_dir(repo).join(".meta.json").display()
 		);
 	}
-	match initiate_conflict_merge(repo, number, &local_side, &remote_side, milestone_conflict_file_path(repo.owner().expect("github project")))? {
-		ConflictOutcome::AutoMerged => unreachable!("divergent states cannot auto-merge; the conflict must be recorded for manual resolution"),
-		ConflictOutcome::NeedsResolution => bail!("Conflict detected for milestone {repo}#{number}.\nResolve using standard git tools, then re-run."),
-		ConflictOutcome::NoChanges => Ok((local_merged, false)),
-	}
+	let path = milestone_conflict_path(&local.identity.link);
+	record_conflict(&path, &local_side, consensus.as_ref().map(Milestone::to_string).as_deref(), &remote_side)?;
+	bail!("Conflict detected for milestone {repo}#{number}.\nResolve the markers in {}, then re-run.", path.display())
 }
 
 /// A field both sides edited since `base`: neither edit was made knowing of the other, so no

@@ -1,11 +1,11 @@
-//! Conflict detection: file paths, marker checks, and the pure "is a conflict pending?" query.
+//! Conflict detection: where a pending conflict lives, and the pure "is one pending?" query.
 //!
-//! Resolution (opening the editor, sinking the resolved state, driving the git merge) lives
-//! in the operation layer (`tedi_task_operations::conflict_resolve`). This module only *detects*.
+//! Resolution (opening the editor, sinking the resolved state) lives in the operation layer
+//! (`tedi_task_operations::conflict_resolve`). This module only *detects*.
 //!
-//! When local and remote diverge, resolution creates a real git merge conflict written to
-//! `{owner}/__conflict.md` in virtual format (all children inlined) so standard git merge tools
-//! work on a single file.
+//! A conflict is pending per node — an issue tree synced from its root, or a milestone — in its own
+//! file under `{issues_dir}/.conflicts/`, outside what consensus commits, so one clash never blocks
+//! anything else.
 
 use std::path::PathBuf;
 
@@ -15,91 +15,87 @@ use thiserror::Error;
 use v_utils::macros::wrap_err;
 
 use super::Local;
-use crate::IssueIndex;
+use crate::{IssueIndex, IssueSelector, MilestoneLink, RepoInfo};
 
-//==============================================================================
-// Error Types
-//==============================================================================
-
-/// Error returned when there are unresolved conflicts blocking operations.
+/// Error returned when an unresolved conflict blocks an operation.
 #[wrap_err]
 #[derive(Debug, Diagnostic, Error)]
 #[error("Unresolved merge conflict")]
 #[diagnostic(
 	code(tedi::conflict::unresolved),
-	help(
-		"Resolve the conflict in:\n  {0}\n\n\
-		 Options:\n\
-		 1. Edit the file to resolve conflict markers (<<<<<<< ======= >>>>>>>)\n\
-		 2. Use: git checkout --ours {0} (keep local)\n\
-		 3. Use: git checkout --theirs {0} (keep remote)\n\
-		 4. Use: git mergetool\n\n\
-		 Then: git add {0} && git commit",
-		conflict_file.display()
-	)
+	help("Resolve the conflict markers (<<<<<<< ||||||| ======= >>>>>>>) in:\n  {0}\nthen re-run.", conflict_file.display())
 )]
 pub struct ConflictBlockedError {
 	pub conflict_file: PathBuf,
 }
 
-/// Error from conflict operations.
-#[wrap_err]
-#[derive(Debug, Error)]
-pub enum ConflictError {
-	#[leaf]
-	#[error("git is not initialized in issues directory")]
-	GitNotInitialized,
+/// Relative to the issues dir; consensus commits never take it.
+pub const CONFLICTS_DIR: &str = ".conflicts";
 
-	#[leaf]
-	#[error("git operation failed: {message}")]
-	GitError { message: String },
-
-	#[foreign]
-	Io(std::io::Error),
+fn repo_conflicts_dir(repo: RepoInfo) -> PathBuf {
+	Local::issues_dir().join(CONFLICTS_DIR).join(repo.owner().expect("github project")).join(repo.repo())
 }
 
-//==============================================================================
-// Conflict File Path
-//==============================================================================
-
-/// Get the conflict file path for a given owner.
-/// Format: `{issues_dir}/{owner}/__conflict.md`
-pub fn conflict_file_path(owner: &str) -> PathBuf {
-	Local::issues_dir().join(owner).join("__conflict.md")
+/// Named by the node's lineage, `{root}_{…}_{n}.md`: a pending conflict blocks its whole line,
+/// ancestors (whose sync carries it) and descendants alike.
+pub fn conflict_path(index: IssueIndex) -> PathBuf {
+	let lineage = index.git_num_path().expect("a node that synced is numbered all the way");
+	repo_conflicts_dir(index.repo_info()).join(format!("{}.md", lineage.iter().map(u64::to_string).collect::<Vec<_>>().join("_")))
 }
 
-/// Milestone conflict file — distinct from the issue one so the two never collide.
-/// Format: `{issues_dir}/{owner}/__milestone_conflict.md`
-pub fn milestone_conflict_file_path(owner: &str) -> PathBuf {
-	Local::issues_dir().join(owner).join("__milestone_conflict.md")
-}
-
-//==============================================================================
-// Conflict Detection
-//==============================================================================
-
-/// Outcome of initiating a conflict merge.
-pub enum ConflictOutcome {
-	/// Merge succeeded automatically (no conflicts).
-	AutoMerged,
-	/// Merge has conflicts that need user resolution.
-	NeedsResolution,
-	/// Both sides are identical, no merge needed.
-	NoChanges,
-}
-
-/// A pending (unresolved) conflict blocking `index`: the conflict file exists and still carries
-/// git markers. Pure — no editor, no sink. Virtual issues never sync, so they can never conflict.
-pub fn pending_conflict(index: IssueIndex) -> Result<Option<PathBuf>> {
+/// Every conflict file on `index`'s line, with the node it holds, ancestors first.
+pub fn conflicts_on_line(index: IssueIndex) -> Result<Vec<(IssueIndex, PathBuf)>> {
 	if index.repo_info().is_virtual() {
-		return Ok(None);
+		return Ok(Vec::new());
 	}
-	let conflict_fpath = conflict_file_path(index.owner().expect("github project"));
-	if !conflict_fpath.exists() {
-		return Ok(None);
+	let numbered: Vec<u64> = index
+		.index()
+		.iter()
+		.map_while(|s| match s {
+			IssueSelector::GitId(n) => Some(*n),
+			_ => None,
+		})
+		.collect();
+	let dir = repo_conflicts_dir(index.repo_info());
+	let entries = match std::fs::read_dir(&dir) {
+		Ok(entries) => entries,
+		Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+		Err(e) => return Err(e.into()),
+	};
+	let mut found = Vec::new();
+	for entry in entries {
+		let name = entry?.file_name();
+		let Some(stem) = name.to_str().and_then(|n| n.strip_suffix(".md")) else { continue }; // the kept-aside remote sides
+		let lineage: Vec<u64> = stem.split('_').map(|n| n.parse().expect("conflict files are named by lineage")).collect();
+		let shared = lineage.iter().zip(&numbered).take_while(|(a, b)| a == b).count();
+		if shared == lineage.len().min(numbered.len()) && shared > 0 {
+			let node = IssueIndex::with_index(index.repo_info(), lineage.iter().map(|n| IssueSelector::GitId(*n)).collect());
+			found.push((node, dir.join(&name)));
+		}
 	}
-	let content = std::fs::read_to_string(&conflict_fpath)?;
-	Ok(has_conflict_markers(&content).then_some(conflict_fpath))
+	found.sort_by_key(|(node, _)| node.index().len());
+	Ok(found)
+}
+
+/// Apart from issue conflicts: no GitHub owner is named `__milestones__`.
+pub fn milestone_conflict_path(link: &MilestoneLink) -> PathBuf {
+	Local::issues_dir()
+		.join(CONFLICTS_DIR)
+		.join("__milestones__")
+		.join(link.repo_info().owner().expect("github project"))
+		.join(link.repo_info().repo())
+		.join(format!("{}.md", link.number()))
+}
+
+/// A pending (unresolved) conflict blocking `index`: one still carrying markers on its line.
+/// Pure — no editor, no sink. Virtual issues never sync, so they can never conflict.
+pub fn pending_conflict(index: IssueIndex) -> Result<Option<PathBuf>> {
+	for (_, path) in conflicts_on_line(index)? {
+		if has_conflict_markers(&std::fs::read_to_string(&path)?) {
+			return Ok(Some(path));
+		}
+	}
+	Ok(None)
 }
 
 /// Check if file content contains git conflict markers.
@@ -108,13 +104,6 @@ pub fn has_conflict_markers(content: &str) -> bool {
 	let has_separator = content.contains("=======");
 	let has_theirs = content.contains(">>>>>>>");
 	has_ours && has_separator && has_theirs
-}
-
-/// Check if we're in the middle of a git merge.
-pub fn is_merge_in_progress() -> bool {
-	let data_dir = Local::issues_dir();
-	let merge_head = data_dir.join(".git/MERGE_HEAD");
-	merge_head.exists()
 }
 
 #[cfg(test)]
@@ -142,12 +131,5 @@ Remote changes
 
 		// Two of three markers
 		assert!(!has_conflict_markers("<<<<<<< HEAD\nSome text\n======="));
-	}
-
-	#[test]
-	fn test_conflict_file_path() {
-		let path = conflict_file_path("myowner");
-		assert!(path.to_string_lossy().contains("myowner"));
-		assert!(path.to_string_lossy().ends_with("__conflict.md"));
 	}
 }

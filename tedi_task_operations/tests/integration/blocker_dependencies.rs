@@ -200,5 +200,5 @@ async fn test_link_dropped_on_github_while_blockers_edited_conflicts() {
 		.run();
 
 	assert!(!out.status.success(), "a field edited on both sides must conflict");
-	assert!(out.stderr.contains("Conflict detected"), "stderr: {}", out.stderr);
+	assert!(out.stderr.contains("changed on both sides"), "stderr: {}", out.stderr);
 }
