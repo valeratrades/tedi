@@ -29,7 +29,7 @@ web = [
 server = [
     "dioxus/server",
     "dioxus/fullstack",
-	"dep:dioxus-server",
+    "dep:dioxus-server",
     "dep:tedi_task_operations",
     "dep:tokio",
     "dep:tokio-stream",
@@ -60,8 +60,8 @@ wasm-bindgen = { workspace = true, optional = true }
 web-sys = { workspace = true, features = ["Storage", "Window"], optional = true }
 
 # server
-dioxus-server = { workspace = true, optional = true }
 color-eyre = { workspace = true, optional = true }
+dioxus-server = { workspace = true, optional = true }
 hex = { workspace = true, optional = true }
 hmac = { workspace = true, optional = true }
 jiff = { workspace = true, optional = true }
