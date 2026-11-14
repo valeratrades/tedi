@@ -11,6 +11,7 @@ mod file_naming;
 mod issue_preservation;
 mod label_scheme;
 mod linked_prs;
+mod pull;
 mod reset_conflict;
 mod search;
 mod sprints;

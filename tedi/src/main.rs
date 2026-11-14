@@ -51,6 +51,8 @@ enum Commands {
 	Monitors(tedi_eval::watch_monitors::MonitorsArgs),
 	/// Open a Github issue in $EDITOR
 	Open(tedi_task_operations::open_interactions::OpenArgs),
+	/// Store every issue of orgs (`owner`) and repos (`owner/repo`); the config's `watch` when none are named
+	Pull { targets: Vec<String> },
 }
 #[tokio::main]
 async fn main() {
@@ -65,7 +67,7 @@ async fn main() {
 	let settings = Arc::new(exit_on_error(config::LiveSettings::new(cli.settings_flags.clone(), Duration::from_secs(3))));
 
 	// Commands that may need GitHub client (always construct it - offline only skips network calls)
-	let has_github_commands = matches!(cli.command, Commands::Open(_) | Commands::Sprints(_));
+	let has_github_commands = matches!(cli.command, Commands::Open(_) | Commands::Sprints(_) | Commands::Pull { .. });
 
 	let github_client: Option<tedi_adapters::github::BoxedGithubClient> = if cli.mock.is_some() {
 		Some(Arc::new(tedi_task_operations::mock_github::MockGithubClient::new("mock_user")))
@@ -119,6 +121,11 @@ async fn main() {
 		Commands::PerfEval(args) => tedi_eval::perf_eval::main(args).await,
 		Commands::Monitors(args) => tedi_eval::watch_monitors::main(args).await,
 		Commands::Open(args) => tedi_task_operations::open_interactions::open_command(args, mode, cli.mock).await,
+		Commands::Pull { targets } => match (targets.is_empty(), exit_on_error(settings.config()).watch) {
+			(false, _) => tedi_task_operations::pull::pull_repos(&targets).await,
+			(true, Some(watch)) => tedi_task_operations::pull::pull_repos(&watch).await,
+			(true, None) => Err(color_eyre::eyre::eyre!("name what to pull, or list it under `watch` in the config")),
+		},
 	});
 }
 

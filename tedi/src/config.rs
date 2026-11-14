@@ -10,6 +10,8 @@ pub struct AppConfig {
 	pub timer: Option<Timer>,
 	pub milestones: Option<Milestones>,
 	pub manual_stats: Option<ManualStats>,
+	/// Orgs (`owner`) and repos (`owner/repo`) `tedi pull` stores when none are named.
+	pub watch: Option<Vec<String>>,
 	#[settings(skip)]
 	#[serde(default)]
 	pub yes: bool,

@@ -131,6 +131,8 @@ Ranking: each term takes its best hit by (contiguous over fuzzy — a scatter is
 
 GitHub is reached through one module in `tedi_task_primitives` — `LazyIssue<RemoteSource>` in, `Sink<Remote>` out, for both issues and milestones. Field by field, in both directions: [`tedi_task_primitives/remote.typ`](../tedi_task_primitives/remote.typ).
 
+`tedi pull [owner|owner/repo]…` (the config's `watch` when none are named) stores every issue those hold: one not stored yet arrives with its whole tree, one stored is pulled through the same merge as any other sync. Each repo keeps the time of its last complete pull, and the next lists only issues updated since; a pull that left any issue unstored doesn't move it.
+
 ### Local
 
 Each issue is one file under `issues/{owner}/{repo}/…`; a node with children is a directory `{n}_-_{title}/` holding `__main__.md` plus one file per child. `impl Display for Issue` is the single rendering — the exact bytes on disk, in the editor, and embedded in a sprint: title line (`- [ ] (labels, @assignees) Title`) · body · comments (folded) · `# Blockers` · child issues as `[Title](./rel.md)` links. One level only — a child is a link, and the subtree is loaded from the child files (`LazyIssue<Local>`), never from the buffer. Editing opens the real file in place; `VirtualIssue::parse` is the inverse of `Display` (a link parses to a shallow child).

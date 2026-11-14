@@ -9,7 +9,7 @@ use std::{
 	process::Command,
 };
 
-use crate::common::{ENV_MOCK_CALL_LOG, RunOutput, Seed, TestContext, drain_pipe, get_binary_path, parse_virtual, set_nonblocking};
+use crate::common::{ENV_MOCK_CALL_LOG, RunOutput, Seed, TestContext, drain_pipe, get_binary_path, issue_tree, parse_virtual, set_nonblocking};
 
 const ENV_MOCK_MILESTONE: &str = concat!("tedi", "_MOCK_MILESTONE");
 const ENV_MOCK_PIPE: &str = concat!("tedi", "_MOCK_PIPE");
@@ -2230,18 +2230,6 @@ fn on_line(content: &str, needle: &str, suffix: &str) -> String {
 		.find(|l| l.trim_start().starts_with("- ") && l.contains(needle))
 		.unwrap_or_else(|| panic!("no list line holds {needle}:\n{content}"));
 	content.replacen(line, &format!("{line}{suffix}"), 1)
-}
-
-/// Every stored issue file, relative to the issues dir.
-fn issue_tree(ctx: &TestContext) -> String {
-	let issues = ctx.xdg.data_dir().join("issues");
-	let mut tree: Vec<String> = walkdir::WalkDir::new(&issues)
-		.into_iter()
-		.map(|e| e.unwrap().path().strip_prefix(&issues).unwrap().display().to_string())
-		.filter(|p| p.ends_with(".md") && !p.starts_with("__milestones__") && !p.starts_with(".git"))
-		.collect();
-	tree.sort();
-	tree.join("\n")
 }
 
 fn sprint_body() -> String {

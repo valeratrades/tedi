@@ -401,6 +401,7 @@ impl Local {
 				next_virtual_issue_number: 1,
 				issues: BTreeMap::new(),
 				labels: Vec::new(),
+				pulled_at: None,
 			};
 			Self::save_project_meta(RepoInfo::Virtual, &project_meta)?;
 			Ok(project_meta)
@@ -475,9 +476,9 @@ impl Local {
 		Self::save_project_meta(repo_info, &project_meta)
 	}
 
-	pub fn cache_repo_labels(repo_info: RepoInfo, labels: Vec<String>) -> std::io::Result<()> {
+	pub fn update_project_meta(repo_info: RepoInfo, update: impl FnOnce(&mut ProjectMeta)) -> std::io::Result<()> {
 		let mut project_meta = Self::load_project_meta(repo_info);
-		project_meta.labels = labels;
+		update(&mut project_meta);
 		Self::save_project_meta(repo_info, &project_meta)
 	}
 
@@ -1083,6 +1084,9 @@ pub struct ProjectMeta {
 	/// The repo's labels as of the last `list_labels`; only ever stale by missing a newer one.
 	#[serde(default, skip_serializing_if = "Vec::is_empty")]
 	pub labels: Vec<String>,
+	/// When the last `tedi pull` of the repo that stored everything it listed started: the next one lists from there.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub pulled_at: Option<jiff::Timestamp>,
 }
 
 /// Type for local filesystem operations.

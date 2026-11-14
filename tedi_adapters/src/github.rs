@@ -106,9 +106,14 @@ pub trait GithubClient: Send + Sync {
 	/// Names of every label defined in a repository.
 	async fn list_labels(&self, repo: RepoInfo) -> Result<Vec<String>, GithubError>;
 
-	/// Add assignees to an issue. GitHub silently skips those who can't be assigned in `repo`.
 	/// Replace the issue's assignees. A login the repo can't take is dropped by GitHub, not an error.
 	async fn set_assignees(&self, repo: RepoInfo, issue_number: u64, assignees: &[String]) -> Result<(), GithubError>;
+
+	/// The org's repos, archived ones aside.
+	async fn list_org_repos(&self, org: &str) -> Result<Vec<RepoInfo>, GithubError>;
+
+	/// Every issue updated at or after `since`, open and closed, pull requests aside.
+	async fn list_repo_issues(&self, repo: RepoInfo, since: Option<jiff::Timestamp>) -> Result<Vec<GithubIssue>, GithubError>;
 }
 
 /// A milestone as returned by the GitHub REST API.
@@ -845,6 +850,55 @@ impl GithubClient for RealGithubClient {
 			.ok_or_else(|| GithubError::new_graphql(format!("transferIssue returned no number: {moved}")))
 	}
 
+	async fn list_org_repos(&self, org: &str) -> Result<Vec<RepoInfo>, GithubError> {
+		#[derive(Deserialize)]
+		struct Repo {
+			name: String,
+			archived: bool,
+		}
+		let mut repos = Vec::new();
+		for page in 1.. {
+			let res = self.get(&format!("https://api.github.com/orgs/{org}/repos?per_page=100&page={page}")).send().await?;
+			if !res.status().is_success() {
+				let status = res.status();
+				let body = res.text().await.unwrap_or_default();
+				return Err(GithubError::new_api(status, body, format!("list repos of {org}")));
+			}
+			let batch = res.json::<Vec<Repo>>().await?;
+			let last = batch.len() < 100;
+			repos.extend(batch.into_iter().filter(|r| !r.archived).map(|r| RepoInfo::new(org, &r.name)));
+			if last {
+				break;
+			}
+		}
+		Ok(repos)
+	}
+
+	async fn list_repo_issues(&self, repo: RepoInfo, since: Option<jiff::Timestamp>) -> Result<Vec<GithubIssue>, GithubError> {
+		let since = since.map(|t| format!("&since={t}")).unwrap_or_default();
+		let mut issues = Vec::new();
+		for page in 1.. {
+			let url = format!(
+				"https://api.github.com/repos/{}/{}/issues?state=all&per_page=100&page={page}{since}",
+				repo.owner().expect("github repo"),
+				repo.repo()
+			);
+			let res = self.get(&url).send().await?;
+			if !res.status().is_success() {
+				let status = res.status();
+				let body = res.text().await.unwrap_or_default();
+				return Err(GithubError::new_api(status, body, format!("list issues of {repo}")));
+			}
+			let batch = res.json::<Vec<GithubIssue>>().await?;
+			let last = batch.len() < 100;
+			issues.extend(batch.into_iter().filter(|i| i.pull_request.is_none()));
+			if last {
+				break;
+			}
+		}
+		Ok(issues)
+	}
+
 	async fn list_labels(&self, repo: RepoInfo) -> Result<Vec<String>, GithubError> {
 		let mut names = Vec::new();
 		for page in 1.. {
@@ -1058,6 +1112,14 @@ impl GithubClient for RetryingGithubClient {
 
 	async fn set_assignees(&self, repo: RepoInfo, issue_number: u64, assignees: &[String]) -> Result<(), GithubError> {
 		retrying!(self.inner.set_assignees(repo, issue_number, assignees))
+	}
+
+	async fn list_org_repos(&self, org: &str) -> Result<Vec<RepoInfo>, GithubError> {
+		retrying!(self.inner.list_org_repos(org))
+	}
+
+	async fn list_repo_issues(&self, repo: RepoInfo, since: Option<jiff::Timestamp>) -> Result<Vec<GithubIssue>, GithubError> {
+		retrying!(self.inner.list_repo_issues(repo, since))
 	}
 }
 

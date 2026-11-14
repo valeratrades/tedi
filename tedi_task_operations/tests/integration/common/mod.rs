@@ -131,6 +131,8 @@ impl TestContext {
 		for (key, value) in self.xdg.env_vars() {
 			cmd.env(key, value);
 		}
+		cmd.env(ENV_MOCK_STATE, &self.mock_state_path);
+		cmd.env(ENV_MOCK_CALL_LOG, self.call_log_path());
 		let output = cmd.output().unwrap();
 		RunOutput {
 			status: output.status,
@@ -1300,4 +1302,16 @@ struct SubIssueRelation {
 	repo: String,
 	parent: u64,
 	child: u64,
+}
+
+/// Every stored issue file, relative to the issues dir.
+pub fn issue_tree(ctx: &TestContext) -> String {
+	let issues = ctx.xdg.data_dir().join("issues");
+	let mut tree: Vec<String> = walkdir::WalkDir::new(&issues)
+		.into_iter()
+		.map(|e| e.unwrap().path().strip_prefix(&issues).unwrap().display().to_string())
+		.filter(|p| (p.ends_with(".md") || p.ends_with(".md.bak")) && !p.starts_with("__milestones__") && !p.starts_with(".git"))
+		.collect();
+	tree.sort();
+	tree.join("\n")
 }

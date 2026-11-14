@@ -334,7 +334,7 @@ async fn check_repo_labels(before: &Issue, after: &Issue) -> Result<Result<(), S
 	let mut known = Local::load_project_meta(repo).labels;
 	if labels.iter().any(|l| !known.iter().any(|k| k == l)) {
 		known = crate::github::client::get()?.list_labels(repo).await?;
-		Local::cache_repo_labels(repo, known.clone())?;
+		Local::update_project_meta(repo, |m| m.labels = known.clone())?;
 	}
 	let mut missing: Vec<&str> = labels.into_iter().filter(|l| !known.iter().any(|k| k == l)).collect();
 	missing.sort_unstable();

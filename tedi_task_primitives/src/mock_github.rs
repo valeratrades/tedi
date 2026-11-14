@@ -1162,6 +1162,46 @@ impl GithubClient for MockGithubClient {
 		Ok(self.labels.lock().unwrap().get(&RepoKey::from(repo)).cloned().unwrap_or_default())
 	}
 
+	async fn list_org_repos(&self, org: &str) -> Result<Vec<RepoInfo>, GithubError> {
+		self.log_call(&format!("list_org_repos({org})"));
+		let mut repos: Vec<RepoInfo> = self
+			.issues
+			.lock()
+			.unwrap()
+			.keys()
+			.chain(self.labels.lock().unwrap().keys())
+			.filter(|k| k.owner == org)
+			.map(|k| RepoInfo::new(&k.owner, &k.repo))
+			.collect();
+		repos.sort_by_key(|r| r.to_string());
+		repos.dedup();
+		Ok(repos)
+	}
+
+	/// An issue counts as updated at its newest field timestamp; one with none always does.
+	async fn list_repo_issues(&self, repo: RepoInfo, since: Option<jiff::Timestamp>) -> Result<Vec<GithubIssue>, GithubError> {
+		self.log_call(&format!("list_repo_issues({repo}, {since:?})"));
+		let key = RepoKey::from(repo);
+		let issues = self.issues.lock().unwrap();
+		let mut listed: Vec<&MockIssueData> = issues
+			.get(&key)
+			.into_iter()
+			.flat_map(|m| m.values())
+			.filter(|i| {
+				let updated = [i.title_timestamp, i.description_timestamp, i.labels_timestamp, i.state_timestamp, i.assignees_timestamp]
+					.into_iter()
+					.flatten()
+					.max();
+				match (since, updated) {
+					(Some(since), Some(updated)) => updated >= since,
+					_ => true,
+				}
+			})
+			.collect();
+		listed.sort_by_key(|i| i.number);
+		Ok(listed.into_iter().map(|i| self.convert_issue_data(&key, i)).collect())
+	}
+
 	async fn set_assignees(&self, repo: RepoInfo, issue_number: u64, assignees: &[String]) -> Result<(), GithubError> {
 		let (owner, repo_name) = (repo.owner().expect("github repo"), repo.repo());
 		self.log_call(&format!("set_assignees({owner}, {repo_name}, {issue_number}, {assignees:?})"));
