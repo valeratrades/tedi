@@ -1082,6 +1082,7 @@ async fn test_adding_labels_syncs_to_remote() {
 	);
 	let issue = ctx.consensus(&vi, Some(Seed::new(5))).await;
 	ctx.remote(&vi, Some(Seed::new(5)));
+	ctx.remote_labels("o", "r", &["bug", "urgent"]);
 
 	// Edit to add labels
 	let mut labeled_vi = vi.clone();

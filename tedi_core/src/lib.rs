@@ -29,6 +29,7 @@ pub mod current_user {
 pub mod blockers;
 pub mod error;
 pub mod issue;
+pub mod labels;
 pub mod locate;
 pub mod marker;
 pub mod milestone;

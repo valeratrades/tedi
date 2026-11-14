@@ -9,6 +9,7 @@ mod blocker_integrated;
 mod closed_subtree;
 mod file_naming;
 mod issue_preservation;
+mod label_scheme;
 mod linked_prs;
 mod reset_conflict;
 mod search;

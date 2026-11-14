@@ -23,6 +23,8 @@ A completed issue (`[x]`) never has an open descendant: a user edit producing on
 
 Dropping a child's link from its parent detaches it, on either side: the sub-issue relation is gone, and the child lives on as a top-level issue.
 
+Labels follow the scheme `v_flakes/github/labels.nix` puts on every repo (`t:` type, `i:` importance 0–9, `h:` Fibonacci hours, `c:` categories, `ext:`, and `s:` stage pins); they are stored as the strings GitHub holds, and `tedi_core::labels` reads them typed. An edit may not leave two values of `t:`, `i:`, `h:` or `s:`, nor add a label its repo lacks — rejected before anything is written. Remote state breaking either is pulled as-is.
+
 ### Blockers
 blockers form a definitive ordering, covering the tasks necessary for completion of a given objective.
 Note that the `Blockers` list is not a superset of the underlying Task Objectives, - Blocker is only reasoning about the parts we are aware about and have had sorted explicitly. For example, - a blocker sequence can easily end in an `- evaluate the path, given grown knowledge` item. Thus we keep them distinctly separate from the success-criterions asosciated with the task they have been added on.

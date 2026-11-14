@@ -127,8 +127,8 @@ pub async fn modify_and_sync_issue(mut issue: Issue, mode: SyncMode, modifier: M
 	}
 
 	// expose for modification (by user or procedural)
+	let before = issue.clone();
 	let new_modified = {
-		let before = issue.clone();
 		let result = modifier.apply(&mut issue).await?;
 		match result.file_modified {
 			true => {
@@ -145,6 +145,15 @@ pub async fn modify_and_sync_issue(mut issue: Issue, mode: SyncMode, modifier: M
 		}
 		result
 	};
+
+	if mode != SyncMode::Offline
+		&& !repo_info.is_virtual()
+		&& let Err(missing) = check_repo_labels(&before, &issue).await?
+	{
+		crate::utils::persist_rejected_changes(&issue.to_string())?;
+		<Issue as Sink<LocalFs>>::sink(&mut before.clone(), Some(&issue)).await?;
+		return Err(RejectedEdit(missing.into()).into());
+	}
 
 	match mode == SyncMode::Offline || repo_info.is_virtual() {
 		true => {
@@ -298,6 +307,42 @@ pub(crate) async fn fetch_and_store_missing(links: &[IssueLink]) -> Vec<IssueLin
 /// Local moved past consensus with no sync landing it: a run killed mid-sync, or an outage deferred to local.
 pub(crate) async fn unsynced(issue: &Issue) -> Result<bool> {
 	Ok(issue.is_linked() && load_consensus_issue(IssueIndex::from(issue)).await?.as_ref() != Some(issue))
+}
+
+/// Labels the edit added that the repo lacks, as the error naming them. The cached label list is
+/// refreshed once before a label counts as missing: it can only lack ones created since.
+async fn check_repo_labels(before: &Issue, after: &Issue) -> Result<Result<(), String>> {
+	fn added<'a>(before: Option<&Issue>, after: &'a Issue, out: &mut Vec<&'a str>) {
+		out.extend(
+			after
+				.contents
+				.labels
+				.iter()
+				.map(String::as_str)
+				.filter(|l| !before.is_some_and(|b| b.contents.labels.iter().any(|h| h == l))),
+		);
+		for (selector, child) in &after.children {
+			added(before.and_then(|b| b.children.get(selector)), child, out);
+		}
+	}
+	let mut labels = Vec::new();
+	added(Some(before), after, &mut labels);
+	if labels.is_empty() {
+		return Ok(Ok(()));
+	}
+	let repo = after.repo_info();
+	let mut known = Local::load_project_meta(repo).labels;
+	if labels.iter().any(|l| !known.iter().any(|k| k == l)) {
+		known = crate::github::client::get()?.list_labels(repo).await?;
+		Local::cache_repo_labels(repo, known.clone())?;
+	}
+	let mut missing: Vec<&str> = labels.into_iter().filter(|l| !known.iter().any(|k| k == l)).collect();
+	missing.sort_unstable();
+	missing.dedup();
+	Ok(match missing.is_empty() {
+		true => Ok(()),
+		false => Err(format!("{repo} has no label {}: create it there first, or fix the name", missing.join(", "))),
+	})
 }
 
 /// Linked children of `before` that `after` no longer holds were detached: they live on as top-level issues.
@@ -635,7 +680,7 @@ mod types {
 	/// The buffer carries this node's own contents plus its children as one-line links (shallow —
 	/// state/title/labels only). The children's real subtrees stay as loaded; we apply link-level
 	/// changes, drop links the user removed, and add newly-typed pending children. Errors if the
-	/// resulting tree breaks `Issue::check_completed_subtree`.
+	/// resulting tree breaks `Issue::check_edit`.
 	pub(crate) fn apply_edited_buffer(issue: &mut Issue, old: &Issue, edited: VirtualIssue) -> Result<(), crate::IssueError> {
 		use std::collections::HashMap;
 
@@ -666,7 +711,7 @@ mod types {
 			children.insert(selector, child);
 		}
 		issue.children = children;
-		issue.check_completed_subtree()
+		issue.check_edit()
 	}
 
 	/// A modifier that can be applied to an issue file.

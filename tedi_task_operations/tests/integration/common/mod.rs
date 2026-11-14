@@ -299,6 +299,14 @@ impl TestContext {
 		self.rebuild_mock_state();
 	}
 
+	/// The labels Github has defined in `owner/repo`.
+	pub fn remote_labels(&self, owner: &str, repo: &str, names: &[&str]) {
+		with_state(self, |s| {
+			s.remote_labels.push((owner.to_string(), repo.to_string(), names.iter().map(|n| n.to_string()).collect()))
+		});
+		self.rebuild_mock_state();
+	}
+
 	/// Github holds a pull request referencing `issue`.
 	pub fn remote_pr(&self, issue: &Issue, url: &str, state: &str) {
 		let link = issue.identity.link().expect("seed a linked issue").clone();
@@ -505,6 +513,13 @@ impl TestContext {
 			let mut mock_state = serde_json::json!({ "issues": issues });
 			if !prs.is_empty() {
 				mock_state["prs"] = serde_json::Value::Array(prs);
+			}
+			if !state.remote_labels.is_empty() {
+				mock_state["labels"] = state
+					.remote_labels
+					.iter()
+					.map(|(owner, repo, names)| serde_json::json!({ "owner": owner, "repo": repo, "names": names }))
+					.collect();
 			}
 			if !dependencies.is_empty() {
 				mock_state["dependencies"] = serde_json::Value::Array(dependencies);
@@ -1240,6 +1255,8 @@ struct GitState {
 	remote_comments: Vec<MockComment>,
 	/// (blocked, blocker, linked at)
 	remote_dependencies: Vec<(tedi_task_operations::IssueLink, tedi_task_operations::IssueLink, Option<jiff::Timestamp>)>,
+	/// (owner, repo, label names)
+	remote_labels: Vec<(String, String, Vec<String>)>,
 	/// (issue, pr url, `draft` | `open` | `merged` | `closed`)
 	remote_prs: Vec<(tedi_task_operations::IssueLink, String, String)>,
 	/// (blocked, blocker, unlinked at)

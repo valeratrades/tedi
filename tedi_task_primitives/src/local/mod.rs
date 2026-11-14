@@ -400,6 +400,7 @@ impl Local {
 			let project_meta = ProjectMeta {
 				next_virtual_issue_number: 1,
 				issues: BTreeMap::new(),
+				labels: Vec::new(),
 			};
 			Self::save_project_meta(RepoInfo::Virtual, &project_meta)?;
 			Ok(project_meta)
@@ -471,6 +472,12 @@ impl Local {
 			meta.user = project_meta.issues.get(&issue_number).and_then(|m| m.user.clone());
 		}
 		project_meta.issues.insert(issue_number, meta);
+		Self::save_project_meta(repo_info, &project_meta)
+	}
+
+	pub fn cache_repo_labels(repo_info: RepoInfo, labels: Vec<String>) -> std::io::Result<()> {
+		let mut project_meta = Self::load_project_meta(repo_info);
+		project_meta.labels = labels;
 		Self::save_project_meta(repo_info, &project_meta)
 	}
 
@@ -1073,6 +1080,9 @@ pub struct ProjectMeta {
 	pub next_virtual_issue_number: u64,
 	#[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
 	pub issues: BTreeMap<u64, IssueMeta>,
+	/// The repo's labels as of the last `list_labels`; only ever stale by missing a newer one.
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub labels: Vec<String>,
 }
 
 /// Type for local filesystem operations.

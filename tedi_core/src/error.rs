@@ -83,6 +83,9 @@ pub enum IssueError {
 	#[leaf]
 	#[error("a completed issue can't have open descendants — close them too, or reopen it:\n{detail}")]
 	OpenUnderCompleted { detail: String },
+	#[leaf]
+	#[error("{detail}")]
+	LabelScheme { detail: String },
 }
 
 /// Error when converting IssueIndex to a git number path.

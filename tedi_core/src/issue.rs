@@ -672,9 +672,9 @@ impl Issue /*{{{1*/ {
 		}
 	}
 
-	/// A completed issue never has an open descendant (ARCHITECTURE.md, `### Issue`). Errors naming
-	/// every (completed ancestor, open descendant) pair in this subtree.
-	pub fn check_completed_subtree(&self) -> Result<(), crate::IssueError> {
+	/// What an edit may not leave in this subtree: a completed issue over an open descendant
+	/// (ARCHITECTURE.md, `### Issue`), or two values of a single-valued label (`labels::check`).
+	pub fn check_edit(&self) -> Result<(), crate::IssueError> {
 		fn name(issue: &Issue) -> String {
 			match issue.git_id() {
 				Some(n) => format!("{:?} (#{n})", issue.contents.title),
@@ -703,11 +703,26 @@ impl Issue /*{{{1*/ {
 
 		let mut violations = Vec::new();
 		walk(self, &mut Vec::new(), &mut violations);
-		match violations.is_empty() {
+		if !violations.is_empty() {
+			violations.sort();
+			return Err(crate::IssueError::new_open_under_completed(violations.join("\n")));
+		}
+
+		fn labels(issue: &Issue, out: &mut Vec<String>) {
+			if let Err(e) = crate::labels::check(&issue.contents.labels) {
+				out.push(format!("{}: {e}", name(issue)));
+			}
+			for child in issue.children.values() {
+				labels(child, out);
+			}
+		}
+		let mut clashes = Vec::new();
+		labels(self, &mut clashes);
+		match clashes.is_empty() {
 			true => Ok(()),
 			false => {
-				violations.sort();
-				Err(crate::IssueError::new_open_under_completed(violations.join("\n")))
+				clashes.sort();
+				Err(crate::IssueError::new_label_scheme(clashes.join("\n")))
 			}
 		}
 	}
