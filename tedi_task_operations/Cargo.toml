@@ -36,9 +36,12 @@ xdg.workspace = true
 [dev-dependencies]
 ctor.workspace = true
 derive_builder.workspace = true
+hex.workspace = true
+hmac.workspace = true
 insta.workspace = true
 libc.workspace = true
 rstest.workspace = true
+sha2.workspace = true
 v_fixtures.workspace = true
 walkdir.workspace = true
 

@@ -12,7 +12,7 @@ tedi web --addr 127.0.0.1:7341                                      # add --mock
 ```
 
 Production: `dx bundle --web --release -p tedi_web` writes the bundle; `tedi web --addr … --public <bundle>/public
---pull-every 10m` serves it. `tedi_web/deploy/` holds the image and the k8s objects (not applied from here).
+--pull-every 10m` serves it. The team instance is `nix build .#tedi-web-container` (its contract in `flake.nix`), released on every tag and deployed by EV-invest/devops.
 
 The client's stylesheet is built by `tedi_web/build.rs` with `tailwindcss`; `wasm-bindgen` is pinned to the CLI
 the flake carries. Both come with `nix develop`.

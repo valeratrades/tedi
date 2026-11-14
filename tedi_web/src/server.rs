@@ -37,8 +37,10 @@ pub struct Settings {
 	pub scopes: BTreeMap<String, Scope>,
 	/// Where the sprint milestones live.
 	pub milestones: Option<RepoInfo>,
-	/// What to pull how often, catching whatever no webhook announced.
-	pub pull: Option<(Duration, Vec<String>)>,
+	/// Owners and `owner/repo`s: what the periodic pull pulls, and the only repos a webhook delivery is pulled for.
+	pub watch: Vec<String>,
+	/// Pull all of `watch` this often, catching whatever no webhook announced.
+	pub pull_every: Option<Duration>,
 	/// Mounts `/webhook`, checking each delivery's `X-Hub-Signature-256` against it.
 	pub webhook_secret: Option<String>,
 }
@@ -77,7 +79,7 @@ pub async fn serve(config: Settings) -> Result<()> {
 /// Runs every pull, one at a time: what a webhook announced, and the whole `watch` every `pull_every`.
 /// Owned by `serve`, so a client hanging up never cancels a pull midway.
 async fn puller(mut announced: mpsc::UnboundedReceiver<String>) -> Result<()> {
-	let mut every = settings().pull.as_ref().map(|(every, _)| tokio::time::interval(*every));
+	let mut every = settings().pull_every.map(tokio::time::interval);
 	loop {
 		let targets = tokio::select! {
 			repo = announced.recv() => {
@@ -89,7 +91,7 @@ async fn puller(mut announced: mpsc::UnboundedReceiver<String>) -> Result<()> {
 				repos.dedup();
 				repos
 			}
-			_ = async { every.as_mut().expect("guarded").tick().await }, if every.is_some() => settings().pull.as_ref().expect("ticks only with it").1.clone(),
+			_ = async { every.as_mut().expect("guarded").tick().await }, if every.is_some() => settings().watch.clone(),
 		};
 		if let Err(e) = tedi_task_operations::pull::pull_repos(&targets).await {
 			tracing::warn!("pull of {targets:?}: {e:#}"); // GitHub unreachable or an issue unstorable: the cursor holds, the next pull retries
@@ -126,6 +128,10 @@ async fn webhook(headers: HeaderMap, body: Bytes, announce: mpsc::UnboundedSende
 	}
 	match serde_json::from_slice::<Delivery>(&body) {
 		Ok(Delivery { repository: Some(repo) }) => {
+			let owner = repo.full_name.split_once('/').map_or(repo.full_name.as_str(), |(owner, _)| owner);
+			if !settings().watch.iter().any(|w| w.eq_ignore_ascii_case(owner) || w.eq_ignore_ascii_case(&repo.full_name)) {
+				return StatusCode::NO_CONTENT; // the App is public: anyone's install delivers here
+			}
 			announce.send(repo.full_name).expect("the puller lives as long as the server");
 			StatusCode::ACCEPTED
 		}

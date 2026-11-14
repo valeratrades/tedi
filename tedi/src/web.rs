@@ -22,10 +22,15 @@ pub struct WebArgs {
 pub async fn web_command(settings: &LiveSettings, args: WebArgs, mode: SyncMode) -> Result<()> {
 	let config = settings.config()?;
 	let board = config.board.ok_or_else(|| eyre!("`tedi web` reads the config's `board` (`archive_after`, `views`, `scopes`)"))?;
-	let pull = match (args.pull_every, config.watch) {
-		(Some(every), Some(watch)) => Some((every.to_duration(jiff::SpanRelativeTo::days_are_24_hours())?.unsigned_abs(), watch)),
-		(Some(_), None) => bail!("--pull-every pulls the config's `watch`, and there is none"),
-		(None, _) => None,
+	let pull_every = match args.pull_every {
+		Some(every) => Some(every.to_duration(jiff::SpanRelativeTo::days_are_24_hours())?.unsigned_abs()),
+		None => None,
+	};
+	let watch = match (config.watch, pull_every, &config.github_webhook_secret) {
+		(Some(watch), ..) => watch,
+		(None, Some(_), _) => bail!("--pull-every pulls the config's `watch`, and there is none"),
+		(None, _, Some(_)) => bail!("a webhook delivery is pulled only for what the config's `watch` names, and there is none"),
+		(None, None, None) => Vec::new(),
 	};
 	let milestones = match &config.milestones {
 		Some(m) => {
@@ -42,7 +47,8 @@ pub async fn web_command(settings: &LiveSettings, args: WebArgs, mode: SyncMode)
 		views: board.views,
 		scopes: board.scopes,
 		milestones,
-		pull,
+		watch,
+		pull_every,
 		webhook_secret: config.github_webhook_secret,
 	})
 	.await

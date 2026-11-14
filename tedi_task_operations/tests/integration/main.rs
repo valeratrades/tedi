@@ -22,6 +22,7 @@ mod sync;
 mod touch;
 mod touch_parent;
 mod view;
+mod web;
 
 #[ctor::ctor]
 fn init() {

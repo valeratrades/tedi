@@ -44,6 +44,7 @@
               lastSupportedVersion = "nightly-${v_flakes.rs.nightly_version}";
               enable = true;
               publishCachix = "valeratrades";
+              containerRelease = { registry = "ghcr.io/valeratrades"; };
               jobs.default = true;
               jobs.errors.install = jobDeps;
               jobs.warnings.install = jobDeps;
@@ -65,32 +66,120 @@
           };
           combined = v_flakes.utils.combine { inherit rust; modules = [ rs github readme ]; };
           #,}}}1
-        in
-        {
-          packages =
-            let
-              build_rust = v_flakes.rs.build_nightly system;
-              rustc = build_rust;
-              cargo = build_rust;
-              rustPlatform = pkgs.makeRustPlatform {
-                inherit rustc cargo stdenv;
-              };
-            in
-            {
-              default = rustPlatform.buildRustPackage {
-                inherit pname;
-                version = workspaceManifest.version;
 
-                buildInputs = alwaysPkgs;
-                nativeBuildInputs = with pkgs; [ pkg-config ];
+          build_rust = v_flakes.rs.build_nightly system;
+          rustPlatform = pkgs.makeRustPlatform {
+            rustc = build_rust;
+            cargo = build_rust;
+            inherit stdenv;
+          };
+          src = pkgs.lib.cleanSourceWith {
+            src = pkgs.lib.cleanSource ./.;
+            filter = path: _type: ! builtins.elem (baseNameOf path) [ "target" ".cargo" ]; # .cargo holds dev-only accelerators the sandbox lacks
+          };
+          tediBin = rustPlatform.buildRustPackage {
+            inherit pname src;
+            version = workspaceManifest.version;
 
-                cargoLock.lockFile = ./Cargo.lock;
-                src = pkgs.lib.cleanSource ./.;
+            buildInputs = alwaysPkgs;
+            nativeBuildInputs = with pkgs; [ pkg-config ];
 
-                RUSTC_WRAPPER = ""; # .cargo/config.toml sets sccache, absent in sandbox
-                doCheck = false; # snapshot tests are colour-sensitive in the sandbox; CI test jobs run them
+            cargoLock.lockFile = ./Cargo.lock;
+
+            RUSTC_WRAPPER = "";
+            doCheck = false; # snapshot tests are colour-sensitive in the sandbox; CI test jobs run them
+          };
+          # The board's client, what `tedi web --public` serves.
+          webBundle = rustPlatform.buildRustPackage {
+            pname = "tedi_web-bundle";
+            inherit src;
+            version = workspaceManifest.version;
+            cargoLock.lockFile = ./Cargo.lock;
+            nativeBuildInputs = with pkgs; [ dioxus-cli wasm-bindgen-cli_0_2_129 tailwindcss_4 binaryen ];
+            RUSTC_WRAPPER = "";
+            buildPhase = ''
+              runHook preBuild
+              export HOME="$TMPDIR"
+              dx bundle --web --release -p tedi_web --out-dir "$TMPDIR/bundle"
+              runHook postBuild
+            '';
+            installPhase = ''
+              cp -r "$TMPDIR/bundle/public" "$out"
+            '';
+            doCheck = false;
+          };
+          # The team instance: its own store on the volume, git-initialized on first boot.
+          board = pkgs.writeShellApplication {
+            name = "tedi-board";
+            runtimeInputs = [ tediBin pkgs.git pkgs.coreutils ];
+            text = ''
+              issues="$XDG_DATA_HOME/tedi/issues"
+              if [ ! -d "$issues/.git" ]; then
+                mkdir -p "$issues"
+                git -C "$issues" init -q
+                git -C "$issues" config user.name "tedi web"
+                git -C "$issues" config user.email "tedi-web@localhost"
+              fi
+              exec tedi web --addr 0.0.0.0:7341 --public ${webBundle} --pull-every 10m
+            '';
+          };
+          containerStd = v_flakes.container.implement {
+            inherit pkgs pname;
+            containers.web = {
+              port = 7341;
+              healthPath = "/";
+              criticality = "normal";
+              entrypoint = [ "${board}/bin/tedi-board" ];
+              mounts = [ "/data" ];
+              sqlite = [ ]; # the store is git and files, recovered from GitHub by the next pull
+              workingDir = "/data";
+              imageEnv = [ "HOME=/data" "XDG_DATA_HOME=/data" "XDG_STATE_HOME=/data/state" "XDG_CACHE_HOME=/data/cache" ];
+              settings = {
+                pkg = pname;
+                values = {
+                  github_token.file = "/secrets/GITHUB_TOKEN";
+                  github_webhook_secret.file = "/secrets/GITHUB_WEBHOOK_SECRET";
+                  watch = [ "EV-Main" "EV-Estate" "EV-Service-Arb" ];
+                  board = {
+                    archive_after = "1w";
+                    views = [
+                      {
+                        name = "Triage";
+                        query = "is:open stage:icebox,triage,selected,in_progress,in_review";
+                        layout = "board";
+                        group_by = "stage";
+                        sort = "rank";
+                        shown = [ "repo" "assignees" "importance" "hours" "type" "blockers" ];
+                      }
+                      {
+                        name = "My issues";
+                        query = "assignee:@me is:open";
+                        layout = "list";
+                        group_by = "stage";
+                        sort = "rank";
+                        shown = [ "repo" "stage" "importance" "hours" ];
+                      }
+                    ];
+                    scopes = {
+                      EV-Main.repos = [ "EV-Main/*" ];
+                      EV-Estate.repos = [ "EV-Estate/*" ];
+                      EV-Service-Arb.repos = [ "EV-Service-Arb/*" ];
+                    };
+                  };
+                };
               };
             };
+          };
+          # Read by the devops generator beside `implement`'s contract, which refuses keys it does not know.
+          deploy.ingress = {
+            # GitHub delivers from a few shared IPs, so the generator's default of 10 a minute would throttle it.
+            rateLimitPathPrefixes = [ "/webhook" ];
+            rateLimit = { average = 300; period = "1m"; burst = 100; };
+          };
+        in
+        {
+          packages = { default = tediBin; inherit webBundle; } // containerStd.packages;
+          containers = pkgs.lib.mapAttrs (_: c: c // { contract = c.contract // deploy; }) containerStd.containers;
 
           apps.help = {
             type = "app";
