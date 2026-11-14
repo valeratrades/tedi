@@ -1329,7 +1329,7 @@ pub fn issue_tree(ctx: &TestContext) -> String {
 	let mut tree: Vec<String> = walkdir::WalkDir::new(&issues)
 		.into_iter()
 		.map(|e| e.unwrap().path().strip_prefix(&issues).unwrap().display().to_string())
-		.filter(|p| (p.ends_with(".md") || p.ends_with(".md.bak")) && !p.starts_with("__milestones__") && !p.starts_with('.'))
+		.filter(|p| (p.ends_with(".md") || p.ends_with(".md.bak")) && !p.starts_with("__milestones__") && !p.starts_with(".git") && !p.starts_with(".conflicts"))
 		.collect();
 	tree.sort();
 	tree.join("\n")

@@ -1112,6 +1112,14 @@ impl VirtualIssue {
 	/// `item_ordinal`: index of this slice's first `Start(Item)` among all of the source's items.
 	fn parse_from_events_inner(events: &[crate::OwnedEvent], ctx: &ParseContext, item_lines: &[&str], item_ordinal: usize, default_pending: bool) -> Result<Self, ParseError> {
 		let (title, pos) = TitleLine::decode(events, ctx, item_lines[item_ordinal], default_pending)?;
+		if matches!(title.marker, IssueMarker::Pending | IssueMarker::Virtual { link: None }) && title.title.len() > crate::MAX_TITLE_LENGTH {
+			let span = ctx.find_line_span(item_lines[item_ordinal].trim(), 1);
+			return Err(ParseError::invalid_title(
+				ctx.named_source(),
+				span,
+				format!("a new issue's title is at most {} bytes, this one is {}", crate::MAX_TITLE_LENGTH, title.title.len()),
+			));
+		}
 		let selector = title.marker.selector(&title.title);
 
 		let seg = Self::segment_item(events, pos, ctx)?;

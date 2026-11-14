@@ -8,7 +8,7 @@ use std::{collections::BTreeSet, str::FromStr};
 /// `h:` values: Fibonacci hours, the estimate at 68 % certainty.
 pub const HOURS: [u16; 12] = [1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233];
 
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, strum::Display, strum::EnumString)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Deserialize, strum::Display, strum::EnumString, serde::Serialize)]
 pub enum Type {
 	#[strum(serialize = "t:bug")]
 	Bug,

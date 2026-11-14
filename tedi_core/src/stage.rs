@@ -5,7 +5,8 @@ use jiff::{SignedDuration, Timestamp};
 
 use crate::{CloseState, LinkedPr, PrState, labels::Pin};
 
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, strum::Display, strum::EnumIter, strum::EnumString)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Deserialize, strum::Display, strum::EnumIter, strum::EnumString, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
 pub enum Stage {
 	Icebox,

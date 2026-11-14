@@ -12,6 +12,7 @@
 // resolving `crate::X` (model types, `local`, `remote`, `sink`, `paths`, …).
 pub use tedi_task_primitives::*;
 
+pub mod board;
 pub mod clockify_tracking;
 pub mod conflict_resolve;
 pub mod mv;

@@ -295,8 +295,8 @@ impl Local {
 			for entry in std::fs::read_dir(dir)? {
 				let path = entry?.path();
 				if path.is_dir() {
-					// milestones live under a sentinel subdir and are not issue files
-					if path.file_name().is_some_and(|n| n == "__milestones__") {
+					// milestones live under a sentinel subdir; a repo may be named `.github`, so only these dot dirs hold no issues
+					if path.file_name().is_some_and(|n| n == "__milestones__" || n == ".git" || n == conflict_detect::CONFLICTS_DIR) {
 						continue;
 					}
 					walk(&path, files)?;
