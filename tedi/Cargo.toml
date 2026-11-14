@@ -38,6 +38,7 @@ tedi_core.workspace = true
 tedi_eval.workspace = true
 tedi_task_operations.workspace = true
 tedi_utils = { workspace = true, features = ["picker"] }
+tedi_web = { workspace = true, features = ["server"] }
 tempfile.workspace = true
 thiserror.workspace = true
 tokio.workspace = true

@@ -111,9 +111,10 @@ If a milestone technically covers a wider area of tasks, that could be added und
 
 ## Crates
 ```
-tedi_md → tedi_core → tedi_task_primitives → tedi_task_operations → tedi
-              ↑                 ↑    ↑                                ↑
-        tedi_adapters ──────────┘    └──── tedi_utils             tedi_eval
+tedi_md → tedi_core → tedi_task_primitives → tedi_task_operations → tedi_web (server) → tedi
+            ↑  │   ↑            ↑    ↑                                                   ↑
+   tedi_utils ─┘   │   tedi_adapters ┘    └──── tedi_utils                           tedi_eval
+                   └──────────────────────────────────────→ tedi_web (client, wasm)
 ```
 - `tedi_md` — markdown primitives: owned pulldown_cmark `Events` ⇄ `String`.
 - `tedi_core` — the pure model: the primitives above (Issue/Blockers/Milestone), their locators/markers, and parse/serialize over `Events`. No IO, no async, no transport. A primitive cannot reach fs/network/app-state — the crate boundary enforces it. It builds for wasm (the web client runs the board model and reads conflicts): `v_utils` with `macros` only. Its `board` is the board model — cards, query, views, grouping, restaging; `tedi_task_operations::board` cards the store and edits through the sync.
@@ -122,6 +123,7 @@ tedi_md → tedi_core → tedi_task_primitives → tedi_task_operations → tedi
 - `tedi_task_operations` — what we *do* with issues: sync/merge/touch/conflict, sprint flows + per-sprint selection, per-issue Clockify.
 - `tedi_eval` — performance evaluation and manual-stats tracking.
 - `tedi_utils` — leaf utilities on plain data, no tedi deps. `search`: the one engine every issue search goes through ([below](#search)), and its skim picker.
+- `tedi_web` — the board in a browser (dioxus). The client (wasm, `--features web`, built by `dx`) holds every card and runs `tedi_core::board` over them; the server half (`--features server`, linked into `tedi web`) is server fns over `tedi_task_operations`, a GitHub App webhook, the periodic pull of `watch`, and the client bundle. An edit is a `Modifier::Field` made against what the card showed; changes reach open boards as server-sent ticks.
 - `tedi` — interface only: clap enums/dispatch, config, shell init. Parses args, resolves config, calls ops. Owns `config` (v_utils `LiveSettings` binds app identity to the crate that derives it).
 
 ## Search

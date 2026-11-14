@@ -1,0 +1,10 @@
+[application]
+name = "tedi_web"
+default_platform = "web"
+
+[web.app]
+title = "tedi"
+
+# `dx serve` builds and hot-reloads the client; the API is `tedi web --addr 127.0.0.1:7341` on the same store.
+[[web.proxy]]
+backend = "http://127.0.0.1:7341/api/"

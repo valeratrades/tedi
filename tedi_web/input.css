@@ -1,0 +1,23 @@
+@import "tailwindcss";
+@import "./assets/tokens.css";
+
+@source "./uikit-classes.txt";
+@source "./src";
+/* literals ev_lib 0.32's dioxus components carry outside its class inventory */
+@source inline("duration-300 group-data-[state=open]:rotate-180 isolate md:block md:hidden sm:block rotate-45 rounded-tl-sm size-3 top-[1px] top-[60%] right-2 z-10 z-40 mb-1");
+
+/* tilers' tiles in the kit's colours */
+:root {
+	--tl-accent: var(--primary);
+	--tl-fg: var(--ink);
+	--tl-group-bg: var(--card);
+	--tl-tab-bg: var(--muted);
+	--tl-tab-active-bg: var(--card);
+	--tl-tab-active-fg: var(--ink);
+	--tl-tab-border: var(--border);
+	--tl-tabstrip-bg: var(--background);
+}
+body {
+	background: var(--background);
+	color: var(--ink);
+}

@@ -5,6 +5,8 @@ pub const EXE_NAME: &str = env!("CARGO_PKG_NAME");
 #[derive(Clone, Debug, Default, v_macros::LiveSettings, v_macros::MyConfigPrimitives, v_macros::Settings)]
 pub struct AppConfig {
 	pub github_token: String,
+	/// The GitHub App's webhook secret: `tedi web` takes deliveries only with it.
+	pub github_webhook_secret: Option<String>,
 	/// Max GitHub requests in flight at once (default: 32). GitHub's secondary rate limit trips around 100.
 	pub github_max_in_flight: Option<usize>,
 	pub timer: Option<Timer>,
@@ -25,6 +27,9 @@ pub struct Board {
 	/// A closed issue leaves Done / Won't do for Backlog this long after closing (`1w`, `10d`).
 	pub archive_after: String,
 	pub views: Vec<tedi_task_operations::board::View>,
+	/// Named slices of the team's repos, nesting narrower ones (`[board.scopes.EV-Main.tooling] repos = ["EV-Main/tilers"]`).
+	#[serde(default)] // a board may have none
+	pub scopes: std::collections::BTreeMap<String, tedi_task_operations::board::Scope>,
 }
 impl Board {
 	pub fn archive_after(&self) -> color_eyre::Result<jiff::SignedDuration> {

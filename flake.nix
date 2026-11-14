@@ -127,6 +127,9 @@
                 [
                   rust
                   pkg-config
+                  dioxus-cli # `dx serve` / `dx bundle -p tedi_web`: the board's client
+                  tailwindcss_4 # tedi_web's build.rs builds its stylesheet with it
+                  wasm-bindgen-cli_0_2_129 # dx needs the CLI the crate graph pins (`tedi_web`: `wasm-bindgen = "=0.2.129"`)
                 ] ++ pre-commit-check.enabledPackages ++ combined.enabledPackages;
 
               env.RUST_BACKTRACE = 1;
