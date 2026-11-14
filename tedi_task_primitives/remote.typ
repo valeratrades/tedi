@@ -58,6 +58,9 @@ GQL timeline                                 │  IssueTimestamps { title, descr
                                              │    later pull's unlinks are told apart by (the merge
                                              │    drops refs linked then and unlinked since)
     blocking                                 │  LinkedIssueMeta.blocking — this read only
+    closedByPullRequestsReferences           │  LinkedIssueMeta.prs — persisted, read-only: each
+    + Connected / DisconnectedEvent          │    { url, Draft | Open | Merged | Closed }. The
+                                             │    merged result always takes GitHub's list
     comment.updated_at ?? created_at         │  IssueTimestamps.comments[i]
 ```
 

@@ -284,6 +284,7 @@ async fn test_comment_only_on_remote_is_not_deleted() {
 				user: Some(crate::common::USER.to_string()),
 				timestamps,
 				blocked_by: Vec::new(),
+				prs: Vec::new(),
 			},
 		)
 		.unwrap();

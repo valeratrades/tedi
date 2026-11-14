@@ -273,7 +273,9 @@ impl crate::LazyIssue<RemoteSource> for Issue {
 
 		let parent_index = source.resolve_parent_index().await?;
 		self.identity = IssueIdentity::new_linked(parent_index, Some(issue.user.login.clone()), source.link.clone(), timestamps, timeline.blocked_by);
-		self.identity.mut_linked_issue_meta().expect("just linked").blocking = Some(timeline.blocking);
+		let meta = self.identity.mut_linked_issue_meta().expect("just linked");
+		meta.blocking = Some(timeline.blocking);
+		meta.prs = timeline.prs;
 		Ok(self.identity.clone())
 	}
 
@@ -314,6 +316,7 @@ impl crate::LazyIssue<RemoteSource> for Issue {
 				meta.timestamps.comments = comments_ts;
 				meta.blocked_by = timeline.blocked_by;
 				meta.blocking = Some(timeline.blocking);
+				meta.prs = timeline.prs;
 			}
 			None => {
 				let parent_index = source.resolve_parent_index().await?;
@@ -326,7 +329,9 @@ impl crate::LazyIssue<RemoteSource> for Issue {
 					comments: comments_ts,
 				};
 				self.identity = IssueIdentity::new_linked(parent_index, Some(issue.user.login.clone()), source.link.clone(), timestamps, timeline.blocked_by);
-				self.identity.mut_linked_issue_meta().expect("just linked").blocking = Some(timeline.blocking);
+				let meta = self.identity.mut_linked_issue_meta().expect("just linked");
+				meta.blocking = Some(timeline.blocking);
+				meta.prs = timeline.prs;
 			}
 		}
 

@@ -63,6 +63,9 @@ pub struct MockGithubClient {
 	/// `blocked by` links removed on Github: their removal event stamps the blocked issue
 	unlinked: Mutex<Vec<MockDependency>>,
 
+	/// Pull requests referencing an issue
+	prs: Mutex<HashMap<(RepoKey, u64), Vec<crate::LinkedPr>>>,
+
 	/// Where a transferred issue went: GitHub redirects its old address there
 	transferred: Mutex<HashMap<(RepoKey, u64), (RepoKey, u64)>>,
 
@@ -86,6 +89,7 @@ impl MockGithubClient {
 			labels: Mutex::new(HashMap::new()),
 			dependencies: Mutex::new(Vec::new()),
 			unlinked: Mutex::new(Vec::new()),
+			prs: Mutex::new(HashMap::new()),
 			transferred: Mutex::new(HashMap::new()),
 			fail_status: std::env::var(ENV_MOCK_FAIL_GET_MILESTONE)
 				.ok()
@@ -238,6 +242,15 @@ impl MockGithubClient {
 					for dep in arr {
 						list.push(parse(dep)?);
 					}
+				}
+			}
+			if let Some(arr) = state.get("prs").and_then(|v| v.as_array()) {
+				let mut prs = self.prs.lock().unwrap();
+				for pr in arr {
+					let issue = node(pr, "issue")?;
+					let url = pr.get("url").and_then(|v| v.as_str()).ok_or("missing url")?.to_string();
+					let state = pr.get("state").and_then(|v| v.as_str()).ok_or("missing state")?.parse().map_err(|e| format!("pr state: {e}"))?;
+					prs.entry(issue).or_default().push(crate::LinkedPr { url, state });
 				}
 			}
 		}
@@ -1002,6 +1015,7 @@ impl GithubClient for MockGithubClient {
 				assignees: issue.assignees_timestamp,
 				blocked_by,
 				blocking,
+				prs: self.prs.lock().unwrap().get(&this).cloned().unwrap_or_default(),
 			});
 		}
 

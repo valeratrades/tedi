@@ -230,6 +230,8 @@ pub struct GraphqlTimeline {
 	pub assignees: Option<jiff::Timestamp>,
 	pub blocked_by: Vec<tedi_core::IssueLink>,
 	pub blocking: Vec<tedi_core::IssueLink>,
+	/// Closing references, plus PRs connected by hand and not disconnected since.
+	pub prs: Vec<tedi_core::LinkedPr>,
 }
 
 //==============================================================================
@@ -578,7 +580,8 @@ impl GithubClient for RealGithubClient {
 						createdAt
 						blockedBy(first: 100) { nodes { url } }
 						blocking(first: 100) { nodes { url } }
-						timelineItems(last: 100, itemTypes: [RENAMED_TITLE_EVENT, LABELED_EVENT, UNLABELED_EVENT, CLOSED_EVENT, REOPENED_EVENT, BLOCKED_BY_ADDED_EVENT, BLOCKED_BY_REMOVED_EVENT, ASSIGNED_EVENT, UNASSIGNED_EVENT]) {
+						closedByPullRequestsReferences(first: 50, includeClosedPrs: true) { nodes { url isDraft state } }
+						timelineItems(last: 100, itemTypes: [RENAMED_TITLE_EVENT, LABELED_EVENT, UNLABELED_EVENT, CLOSED_EVENT, REOPENED_EVENT, BLOCKED_BY_ADDED_EVENT, BLOCKED_BY_REMOVED_EVENT, ASSIGNED_EVENT, UNASSIGNED_EVENT, CONNECTED_EVENT, DISCONNECTED_EVENT]) {
 							nodes {
 								__typename
 								... on RenamedTitleEvent {
@@ -607,6 +610,12 @@ impl GithubClient for RealGithubClient {
 								}
 								... on UnassignedEvent {
 									createdAt
+								}
+								... on ConnectedEvent {
+									subject { ... on PullRequest { url isDraft state } }
+								}
+								... on DisconnectedEvent {
+									subject { ... on PullRequest { url isDraft state } }
 								}
 							}
 						}
@@ -641,6 +650,27 @@ impl GithubClient for RealGithubClient {
 		};
 		timeline.blocked_by = links("blockedBy")?;
 		timeline.blocking = links("blocking")?;
+		let pr = |node: &serde_json::Value| -> Result<tedi_core::LinkedPr, GithubError> {
+			let field = |name: &str| node.get(name).ok_or_else(|| GithubError::new_graphql(format!("pull request without {name}: {node}")));
+			let url = field("url")?
+				.as_str()
+				.ok_or_else(|| GithubError::new_graphql(format!("pull request url is not a string: {node}")))?;
+			let state = match (field("state")?.as_str(), field("isDraft")?.as_bool()) {
+				(Some("MERGED"), _) => tedi_core::PrState::Merged,
+				(Some("CLOSED"), _) => tedi_core::PrState::Closed,
+				(Some("OPEN"), Some(true)) => tedi_core::PrState::Draft,
+				(Some("OPEN"), Some(false)) => tedi_core::PrState::Open,
+				_ => return Err(GithubError::new_graphql(format!("unknown pull request state: {node}"))),
+			};
+			Ok(tedi_core::LinkedPr { url: url.to_string(), state })
+		};
+		timeline.prs = response
+			.pointer("/data/repository/issue/closedByPullRequestsReferences/nodes")
+			.and_then(|v| v.as_array())
+			.ok_or_else(|| GithubError::new_graphql(format!("no closedByPullRequestsReferences in {response}")))?
+			.iter()
+			.map(pr)
+			.collect::<Result<_, _>>()?;
 
 		// Extract body edit timestamp (description).
 		// `lastEditedAt` is null if the body was never edited after creation, so fall back to `createdAt`.
@@ -682,6 +712,18 @@ impl GithubClient for RealGithubClient {
 								timeline.description = ts;
 							}
 						},
+					// a subject that is an issue, not a pull request, comes back as `{}`
+					"ConnectedEvent" | "DisconnectedEvent" if node.pointer("/subject/url").is_some() => {
+						let linked = pr(&node["subject"])?;
+						let at = timeline.prs.iter().position(|p| p.url == linked.url);
+						match (typename, at) {
+							("ConnectedEvent", None) => timeline.prs.push(linked),
+							("DisconnectedEvent", Some(at)) => {
+								timeline.prs.remove(at);
+							}
+							_ => {}
+						}
+					}
 					"AssignedEvent" | "UnassignedEvent" =>
 						if let Some(created_at) = node.get("createdAt").and_then(|v| v.as_str()) {
 							let ts: Option<jiff::Timestamp> = created_at.parse().ok();

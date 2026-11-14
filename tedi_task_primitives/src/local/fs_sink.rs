@@ -151,6 +151,7 @@ fn sink_issue_node<R: LocalReader>(new: &Issue, maybe_old: Option<&Issue>, reade
 			user: linked.user.clone(),
 			timestamps: linked.timestamps.clone(),
 			blocked_by: linked.blocked_by.clone(),
+			prs: linked.prs.clone(),
 		};
 		Local::save_issue_meta(repo_info, issue_num, &meta)?;
 	}

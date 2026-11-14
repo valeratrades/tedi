@@ -247,6 +247,25 @@ impl IssueTimestamps {
 	}
 }
 
+/// A pull request referencing an issue, as GitHub last showed it.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct LinkedPr {
+	pub url: String,
+	pub state: PrState,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, strum::Display, strum::EnumString)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+pub enum PrState {
+	Draft,
+	/// Open and ready for review.
+	Open,
+	Merged,
+	/// Closed without a merge.
+	Closed,
+}
+
 /// Metadata for an issue linked to Github.
 /// Parent chain is stored in `IssueIdentity.parent_index`.
 #[derive(Clone, Debug, PartialEq)]
@@ -263,6 +282,8 @@ pub struct LinkedIssueMeta {
 	pub blocked_by: Vec<IssueLink>,
 	/// Github's `blocking` links; known only on a state just read from Github, stale once any other issue changes.
 	pub blocking: Option<Vec<IssueLink>>,
+	/// Read-only: tedi never edits a pull request.
+	pub prs: Vec<LinkedPr>,
 }
 impl LinkedIssueMeta {
 	pub fn new(user: Option<String>, link: IssueLink, timestamps: IssueTimestamps, blocked_by: Vec<IssueLink>) -> Self {
@@ -272,6 +293,7 @@ impl LinkedIssueMeta {
 			timestamps,
 			blocked_by,
 			blocking: None,
+			prs: Vec::new(),
 		}
 	}
 

@@ -299,6 +299,13 @@ impl TestContext {
 		self.rebuild_mock_state();
 	}
 
+	/// Github holds a pull request referencing `issue`.
+	pub fn remote_pr(&self, issue: &Issue, url: &str, state: &str) {
+		let link = issue.identity.link().expect("seed a linked issue").clone();
+		with_state(self, |s| s.remote_prs.push((link, url.to_string(), state.to_string())));
+		self.rebuild_mock_state();
+	}
+
 	/// Overwrite a seeded issue's Github body verbatim — for bodies our own renderer would never
 	/// produce, because a human typed them into the Github UI.
 	pub fn set_remote_body(&self, repo_info: tedi_task_operations::RepoInfo, number: u64, body: &str) {
@@ -378,6 +385,7 @@ impl TestContext {
 				user: Some(USER.to_string()),
 				timestamps,
 				blocked_by: Vec::new(),
+				prs: Vec::new(),
 			};
 			Local::save_issue_meta(tedi_task_operations::RepoInfo::new(&owner, &repo), number, &meta).expect("save_issue_meta failed");
 		}
@@ -488,7 +496,16 @@ impl TestContext {
 				.map(|(blocked, blocker, at)| serde_json::json!({ "blocked": node(blocked), "blocker": node(blocker), "at": at.to_string() }))
 				.collect();
 
+			let prs: Vec<serde_json::Value> = state
+				.remote_prs
+				.iter()
+				.map(|(issue, url, pr_state)| serde_json::json!({ "issue": node(issue), "url": url, "state": pr_state }))
+				.collect();
+
 			let mut mock_state = serde_json::json!({ "issues": issues });
+			if !prs.is_empty() {
+				mock_state["prs"] = serde_json::Value::Array(prs);
+			}
 			if !dependencies.is_empty() {
 				mock_state["dependencies"] = serde_json::Value::Array(dependencies);
 			}
@@ -1223,6 +1240,8 @@ struct GitState {
 	remote_comments: Vec<MockComment>,
 	/// (blocked, blocker, linked at)
 	remote_dependencies: Vec<(tedi_task_operations::IssueLink, tedi_task_operations::IssueLink, Option<jiff::Timestamp>)>,
+	/// (issue, pr url, `draft` | `open` | `merged` | `closed`)
+	remote_prs: Vec<(tedi_task_operations::IssueLink, String, String)>,
 	/// (blocked, blocker, unlinked at)
 	remote_unlinked: Vec<(tedi_task_operations::IssueLink, tedi_task_operations::IssueLink, jiff::Timestamp)>,
 	/// Track which (owner, repo, number) have been added to remote
