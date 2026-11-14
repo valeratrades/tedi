@@ -95,11 +95,6 @@ pub enum RemoteError {
 	#[error("{rendered}")]
 	Duplicate { rendered: String },
 
-	/// Required executable not found.
-	#[leaf]
-	#[error("`{executable}` not found in PATH (required for {operation})")]
-	MissingExecutable { executable: &'static str, operation: &'static str },
-
 	/// GitHub client not available.
 	#[own]
 	NoClient(crate::github::GithubError),
@@ -168,16 +163,11 @@ impl RemoteSource {
 	/// `lineage`: parent issue numbers from root to immediate parent.
 	/// `None` means lineage is unknown and will be fetched from GitHub on demand;
 	/// `Some(&[])` means the issue is known to be at root level.
-	///
-	/// Checks that `gh` executable is available.
-	pub fn build(link: IssueLink, lineage: Option<&[u64]>) -> Result<Self, Box<RemoteError>> {
-		if std::process::Command::new("gh").arg("--version").output().is_err() {
-			return Err(Box::new(RemoteError::new_missing_executable("gh", "GitHub operations")));
-		}
-		Ok(Self {
+	pub fn build(link: IssueLink, lineage: Option<&[u64]>) -> Self {
+		Self {
 			link,
 			lineage: lineage.map(|l| l.iter().copied().collect()),
-		})
+		}
 	}
 
 	fn lineage_slice(&self) -> Option<&[u64]> {

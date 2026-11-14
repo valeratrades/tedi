@@ -104,7 +104,7 @@ async fn move_issue(link: &IssueLink, target: RepoInfo) -> Result<HashMap<IssueL
 		false => recreate(&old, target, &target_labels).await?,
 	};
 
-	let pulled = Issue::load(RemoteSource::build(moved[link].clone(), Some(&[]))?).await?;
+	let pulled = Issue::load(RemoteSource::build(moved[link].clone(), Some(&[]))).await?;
 	let was: HashMap<IssueLink, &Issue> = nodes(&old).into_iter().map(|n| (moved[linked(n)].clone(), n)).collect();
 	let mut placed = pulled.clone();
 	settle(&mut placed, &was, &moved, &target_labels, source);

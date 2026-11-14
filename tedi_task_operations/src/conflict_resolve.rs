@@ -134,7 +134,7 @@ async fn refresh(issue_index: IssueIndex, conflict_fpath: &Path) -> Result<()> {
 	let recorded_remote = std::fs::read_to_string(remote_snapshot(conflict_fpath))?;
 	let num_path = issue_index.git_num_path()?;
 	let (&number, lineage) = num_path.split_last().expect("a github issue index ends in its number");
-	let remote = Issue::load(RemoteSource::build(IssueLink::in_project(issue_index.repo_info(), number), Some(lineage))?).await?;
+	let remote = Issue::load(RemoteSource::build(IssueLink::in_project(issue_index.repo_info(), number), Some(lineage))).await?;
 	let remote_side = remote.to_string();
 	if remote_side == recorded_remote {
 		return Ok(());

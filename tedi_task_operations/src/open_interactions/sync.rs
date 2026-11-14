@@ -239,7 +239,7 @@ pub(crate) async fn fetch_and_store_missing(links: &[IssueLink]) -> Vec<IssueLin
 		if crate::github::client::get()?.fetch_issue(link.project(), link.number()).await?.pull_request.is_some() {
 			return Ok(None); // a blocker may name a pull request; there's no issue to store
 		}
-		let lineage = RemoteSource::build((*link).clone(), None)?
+		let lineage = RemoteSource::build((*link).clone(), None)
 			.resolve_parent_index()
 			.await?
 			.expect("a remote source always resolves its parent index");
@@ -262,7 +262,7 @@ pub(crate) async fn fetch_and_store_missing(links: &[IssueLink]) -> Vec<IssueLin
 		}
 	}
 	let (held, fresh): (Vec<IssueLink>, Vec<IssueLink>) = trees.into_iter().partition(|root| stored(root));
-	let fetched: Vec<Result<Issue>> = futures::future::join_all(fresh.iter().map(|root| async move { Ok(Issue::load(RemoteSource::build(root.clone(), Some(&[]))?).await?) })).await;
+	let fetched: Vec<Result<Issue>> = futures::future::join_all(fresh.iter().map(|root| async move { Ok(Issue::load(RemoteSource::build(root.clone(), Some(&[]))).await?) })).await;
 	for (root, tree) in fresh.iter().zip(fetched) {
 		let landed = match tree {
 			Ok(mut tree) =>
@@ -600,7 +600,7 @@ mod core {
 			"can't be linked and not have number associated\nunless we die in a weird moment I guess. If this ever triggers, should fix it to set issue as pending (not linked) and sink",
 		);
 		let link = IssueLink::in_project(current_issue.repo_info(), issue_number);
-		let remote_source = RemoteSource::build(link, Some(&current_issue.identity.git_lineage()?))?; //DEPENDS: git_lineage() will error if any parent is not synced. //Q: should I move the logic for traversing IssueIndex in search of pending parents right here?
+		let remote_source = RemoteSource::build(link, Some(&current_issue.identity.git_lineage()?)); //DEPENDS: git_lineage() will error if any parent is not synced. //Q: should I move the logic for traversing IssueIndex in search of pending parents right here?
 		Ok(Issue::load(remote_source).await?)
 	}
 

@@ -111,7 +111,7 @@
           # The team instance: its own store on the volume, git-initialized on first boot.
           board = pkgs.writeShellApplication {
             name = "tedi-board";
-            runtimeInputs = [ tediBin pkgs.git pkgs.coreutils ];
+            runtimeInputs = [ tediBin pkgs.git pkgs.fd pkgs.coreutils ];
             text = ''
               issues="$XDG_DATA_HOME/tedi/issues"
               if [ ! -d "$issues/.git" ]; then

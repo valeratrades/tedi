@@ -182,7 +182,7 @@ pub async fn open_command(args: OpenArgs, mode: SyncMode, mock: Option<MockType>
 			println!("Resetting to remote state...");
 			let url = format!("https://github.com/{owner}/{repo}/issues/{issue_number}");
 			let link = IssueLink::parse(&url).expect("valid URL");
-			let source = RemoteSource::build(link, None)?;
+			let source = RemoteSource::build(link, None);
 			let mut issue = Issue::load(source).await?;
 
 			// Overwrite local with remote
@@ -206,7 +206,7 @@ pub async fn open_command(args: OpenArgs, mode: SyncMode, mock: Option<MockType>
 			// Load from GitHub (lineage=None means it will be fetched if needed)
 			let url = format!("https://github.com/{owner}/{repo}/issues/{issue_number}");
 			let link = IssueLink::parse(&url).expect("valid URL");
-			let source = RemoteSource::build(link, None)?;
+			let source = RemoteSource::build(link, None);
 			let mut issue = Issue::load(source).await?;
 
 			// Write to local filesystem
