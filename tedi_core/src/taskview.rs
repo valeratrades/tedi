@@ -478,6 +478,8 @@ pub struct HomelessTask {
 	pub block: String,
 	/// The inlined milestone it lives under.
 	pub milestone: Option<MilestoneLink>,
+	/// The repo its checkbox names: `(owner, repo)`, owner left to context when written as `[repo]`.
+	pub repo: Option<(Option<String>, String)>,
 	/// Issues listed directly under it, which become its children.
 	pub adopts: Vec<IssueLink>,
 }
@@ -924,6 +926,10 @@ fn collect_homeless(items: &[TaskItem], section: &[String], path: &mut Vec<usize
 				}
 			}
 			own.children.retain(|sec| !matches!(sec, Section::List(list) if list.is_empty()));
+			let repo = named_repo(own.checkbox.as_deref().expect("is_new_task admits only checkbox items"));
+			if repo.is_some() {
+				own.checkbox = Some(" ".into()); // the issue is born open; its checkbox named where
+			}
 			let mut block = String::new();
 			serialize_item(&own, Render::unfolded(&HashMap::new()), &mut block);
 			out.push(HomelessTask {
@@ -933,6 +939,7 @@ fn collect_homeless(items: &[TaskItem], section: &[String], path: &mut Vec<usize
 				},
 				block,
 				milestone: milestone.cloned(),
+				repo,
 				adopts,
 			});
 		} else if !matches!(item.content, TaskContent::Issue { .. }) {
@@ -980,7 +987,7 @@ fn collect_milestone_bodies(items: &[TaskItem], out: &mut Vec<(MilestoneLink, St
 
 fn is_new_task(item: &TaskItem) -> bool {
 	let Some(checkbox) = &item.checkbox else { return false };
-	if !matches!(crate::CloseState::from_checkbox(checkbox), Ok(crate::CloseState::Open)) {
+	if !matches!(crate::CloseState::from_checkbox(checkbox), Ok(crate::CloseState::Open)) && named_repo(checkbox).is_none() {
 		return false;
 	}
 	let TaskContent::Virtual(events) = &item.content else { return false };
@@ -1000,6 +1007,19 @@ fn is_new_task(item: &TaskItem) -> bool {
 		}),
 		Section::FreeContent(_) => true,
 	})
+}
+
+/// The repo a new task's checkbox names: `[repo]` or `[owner/repo]`. Close states (`x`, `-`, `.`, `?`, numbers) win.
+fn named_repo(checkbox: &str) -> Option<(Option<String>, String)> {
+	if crate::CloseState::from_checkbox(checkbox).is_ok() {
+		return None;
+	}
+	let valid = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c));
+	match checkbox.split_once('/') {
+		Some((owner, repo)) if valid(owner) && valid(repo) => Some((Some(owner.to_string()), repo.to_string())),
+		None if valid(checkbox) => Some((None, checkbox.to_string())),
+		_ => None,
+	}
 }
 
 fn has_ref_descendant(item: &TaskItem) -> bool {

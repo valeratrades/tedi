@@ -2137,6 +2137,44 @@ async fn test_checkbox_on_category_header_adopts_grouped_issues() {
 	insta::assert_snapshot!(sprint, @"- https://github.com/o/r/issues/12");
 }
 
+/// A task's checkbox naming a repo creates it there: `[repo]` under the sprint's owner, `[owner/repo]` as written.
+#[tokio::test]
+async fn test_checkbox_naming_repo_creates_issue_there() {
+	use tedi_task_operations::RepoInfo;
+
+	let ctx = TestContext::build_with_preexisting_state_unsafe("");
+	ctx.set_issues_dir_override();
+	ctx.xdg.write_config("config.toml", "github_token = \"test_token\"\n\n[milestones]\nurl = \"o/todos\"\n");
+
+	let mock_state = serde_json::json!({ "milestones": [{
+		"owner": "o", "repo": "todos", "number": 7, "title": "1d", "state": "open",
+		"description": "- placeholder",
+		"due_on": "2099-01-01T00:00:00Z",
+		"updated_at": "2020-01-01T00:00:00Z",
+	}]});
+	std::fs::write(&ctx.mock_state_path, mock_state.to_string()).unwrap();
+
+	let out = ctx.milestone_client_edit(
+		&["--mock", "sprints", "edit", "1d"],
+		None,
+		Some(Box::new(|tmp: &Path| {
+			std::fs::write(tmp, "- [r] fix the button\n  why it matters\n- [other/x] (bug) cross owner thing\n").unwrap();
+		}) as EditFn),
+	);
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+
+	let created: Vec<String> = ctx.github_calls().into_iter().filter(|c| c.starts_with("create_issue(")).collect();
+	insta::assert_snapshot!(created.join("\n"), @r#"
+	create_issue(o, r, fix the button, "why it matters")
+	create_issue(other, x, cross owner thing, "")
+	"#);
+	let sprint = std::fs::read_to_string(tedi_task_operations::local::Local::milestone_file_path(RepoInfo::new("o", "todos"), 7, "1d")).unwrap();
+	insta::assert_snapshot!(sprint, @"
+	- https://github.com/o/r/issues/1
+	- https://github.com/other/x/issues/1
+	");
+}
+
 /// Dropping a child's link line from its parent's block, as `tme` runs it, detaches it: unlinked upstream,
 /// kept locally as a top-level issue, and gone from the parent when the sprint is reopened.
 #[tokio::test]

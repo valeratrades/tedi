@@ -19,11 +19,11 @@ todo clockify start                       # Start tracking current blocker
 todo clockify stop                        # Stop tracking
 
 # Editor shorthands (inside issue files)
-# !n  on title line end: mark issue as pending   (expands to <!-- pending -->)
 # !b  on its own line:   insert blockers section (expands to # Blockers)
 # !c  on its own line:   insert new comment      (expands to <!-- new comment -->)
 # !u  on last line:      undo — abort sync, treat as if no changes were made
 # !mv [owner/]repo  on an issue line in a sprint/urgent buffer: move it (and its subtree) to another repo
+# - [[owner/]repo] Title  a new line in a sprint/urgent buffer: create the issue in that repo on save
 
 # Shell integration (add to your shell rc)
 eval "$(todo init zsh)"                   # Or: bash, fish

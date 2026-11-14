@@ -125,11 +125,12 @@ pub async fn refresh_milestone_cache(links: &[MilestoneLink]) -> Result<()> {
 /// Materialize every item of an edited task view: linked refs not stored locally are fetched,
 /// unlinked open `- [ ]` items become issues (replaced by their link). Returns the created links.
 ///
-/// A task's home decides its kind: a task belonging to a milestone (its own inlined milestone
-/// ref, else `ambient` — the milestone whose body is being edited) is created upstream as a
-/// pending (`!n`) Github issue, since milestones host only real issues. A task with no milestone
-/// (a plain sprint item) becomes a local-only numbered virtual issue. A task listing issues directly
-/// under it is created in their project instead, and adopts them as its children.
+/// A task's home decides its kind: a task naming a repo in its checkbox (`- [repo] Title`, owner
+/// taken from its milestone else the current user; or `- [owner/repo] Title`) or belonging to a
+/// milestone (its own inlined milestone ref, else `ambient` — the milestone whose body is being
+/// edited) is created upstream as a pending Github issue, since milestones host only real issues.
+/// A task with neither (a plain urgent item) becomes a local-only numbered virtual issue. A task
+/// listing issues directly under it is created in their project instead, and adopts them as its children.
 ///
 /// Offline, a milestone task can't be uploaded — it's left as text and retried on the next online
 /// edit. Tasks living inside an inlined milestone leave their new link in that milestone's body;
@@ -146,15 +147,35 @@ pub async fn materialize_new_tasks(doc: &mut TaskView, ambient: Option<Milestone
 	let mut created = Vec::new();
 	for task in candidates {
 		let block = &task.block;
+		let title_line = block.lines().next().expect("serialized block always has a title line").trim_end();
+		if title_line.ends_with("!n") || title_line.ends_with("!N") {
+			bail!("`!n` no longer makes an issue here; name its repo in the checkbox, `- [repo] Title`:\n{block}");
+		}
+		let context = task.milestone.or_else(|| ambient.clone()).map(|m| m.repo_info());
+		let named = match task.repo {
+			Some((owner, repo)) => {
+				let owner = owner
+					.or_else(|| context.and_then(|c| c.owner().map(String::from)))
+					.or_else(crate::current_user::get)
+					.ok_or_else(|| eyre!("no owner to put `[{repo}]` under; write `[owner/{repo}]`:\n{block}"))?;
+				Some(RepoInfo::new(&owner, &repo))
+			}
+			None => None,
+		};
 		let home = match task.adopts.split_first() {
 			Some((first, rest)) => {
 				let repo = first.project();
 				if let Some(other) = rest.iter().find(|l| l.project() != repo) {
 					bail!("can't make an issue of:\n{block}\nit groups issues of different projects ({first}, {other}) — an issue's children live in its own");
 				}
+				if let Some(named) = named
+					&& named != repo
+				{
+					bail!("can't make an issue of:\n{block}\nin {named}: it groups issues of {repo} — an issue's children live in its own");
+				}
 				Some(repo)
 			}
-			None => task.milestone.or_else(|| ambient.clone()).map(|m| m.repo_info()),
+			None => named.or(context),
 		};
 		let link = match home {
 			Some(repo) if repo != RepoInfo::Virtual && mode == SyncMode::Offline => {
@@ -609,11 +630,11 @@ async fn materialize_virtual(block: &str) -> Result<Option<IssueLink>> {
 	Ok(Some(link))
 }
 
-/// Task → pending (`!n`) issue created upstream in `repo`, then synced to local + consensus.
+/// Task → pending issue created upstream in `repo`, then synced to local + consensus.
 /// Returns the created issue's real link. `Ok(None)` if the block failed to parse (already
 /// warned; the item stays as text).
 async fn create_pending_upstream(block: &str, repo: RepoInfo) -> Result<Option<IssueLink>> {
-	let vi = match VirtualIssue::parse(&mark_task_block(block, "!n"), PathBuf::from("<milestone item>")) {
+	let vi = match VirtualIssue::parse(&mark_task_block(block, "<!-- pending -->"), PathBuf::from("<milestone item>")) {
 		Ok(vi) => vi,
 		Err(e) => {
 			tracing::warn!("skipping materialization of milestone item:\n{block}\n{e}");

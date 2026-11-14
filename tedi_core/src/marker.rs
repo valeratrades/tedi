@@ -85,14 +85,14 @@ impl IssueMarker {
 	/// - `<!-- pending -->` or `<!-- -->` (pending)
 	/// - `<!-- virtual -->` (virtual)
 	/// - `<!--sub ... -->` (legacy sub prefix, stripped)
-	/// - `!n` shorthand for pending (case insensitive)
+	/// - `!n` shorthand for pending (case insensitive), deprecated
 	///
 	/// Returns `None` if no valid marker is found at the end.
 	pub fn parse_from_end(s: &str) -> Option<(Self, &str)> {
 		let trimmed = s.trim_end();
 
-		// Shorthand: `!n` or `!N` for pending
 		if trimmed.ends_with("!n") || trimmed.ends_with("!N") {
+			tracing::warn!("`!n` is deprecated: write `<!-- pending -->`, or in a sprint name the repo in the checkbox, `- [repo] Title`");
 			let rest = trimmed[..trimmed.len() - 2].trim_end();
 			return Some((Self::Pending, rest));
 		}

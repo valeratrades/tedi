@@ -1,6 +1,6 @@
 ---
 name: tedi-format
-description: How to read and write tedi task files — issues, blockers, milestones, sprints. Use when editing a file that opens with `- [ ] Title <!-- @user https://github.com/…/issues/N -->`, anything under an `issues/` store or `urgent.md`, a `# Blockers` section, a `<!-- pending -->` / `<!-- virtual -->` / `<!-- new comment -->` marker, a `!n` / `!b` / `!c` / `!s` / `!u` shorthand, an `o/r#42` ref, or a sprint keyed `1d` / `2w` / `1Q` / `1y`.
+description: How to read and write tedi task files — issues, blockers, milestones, sprints. Use when editing a file that opens with `- [ ] Title <!-- @user https://github.com/…/issues/N -->`, anything under an `issues/` store or `urgent.md`, a `# Blockers` section, a `<!-- pending -->` / `<!-- virtual -->` / `<!-- new comment -->` marker, a `!b` / `!c` / `!s` / `!u` shorthand, a `- [repo] Title` new-issue line, an `o/r#42` ref, or a sprint keyed `1d` / `2w` / `1Q` / `1y`.
 ---
 
 # tedi format
@@ -71,11 +71,11 @@ never the label. Other labels go in `(a, b) ` before the title, comma-separated.
 |------------------------------|------------------------------------------------------|
 | `<!-- @user URL -->`         | lives on GitHub, authored by `user`                  |
 | `<!-- URL -->`               | lives on GitHub, author unknown                      |
-| `<!-- pending -->` / `!n`    | will be created on GitHub at next sync               |
+| `<!-- pending -->`           | will be created on GitHub at next sync               |
 | `<!-- virtual -->`           | local only, never synced                             |
 
 **Never hand-write a `@user URL` marker.** It claims an issue that already exists upstream;
-composition fails loudly rather than adopting it. New issue → `!n`.
+composition fails loudly rather than adopting it. New issue → `<!-- pending -->`; in a view, `- [repo] Title`.
 
 ### Body and comments
 
@@ -144,7 +144,6 @@ Typed while editing, expanded on save.
 
 | type | where             | does                                          |
 |------|-------------------|-----------------------------------------------|
-| `!n` | end of title line | mark pending — create this issue on sync      |
 | `!b` | own line          | insert `# Blockers`                           |
 | `!c` | own line          | start a new comment                           |
 | `!s` | own line, or `# Blockers !s` | make this block the active selection |
@@ -180,6 +179,10 @@ sprint 1d  (stored in the GitHub milestone description, keyed by timeframe:
   `- discretionary_engine` above it is meaningful context, not decoration. Inside a
   milestone body it needs no such line: `#N` means the milestone's own repo, and `repo#N`
   inherits the milestone's owner. A parent item still overrides both.
+- A new open line becomes an issue on save. Name its repo in the checkbox: `- [repo] Title`
+  (owner: the milestone's, else yours) or `- [owner/repo] Title`. Unnamed, it lands in its
+  milestone's repo, or turns virtual (local-only) when it has none. `x`, `-`, `.`, `?` and
+  numbers stay close states, so a repo named like one needs its owner.
 
 While you edit a sprint, each issue ref is expanded in place into that issue's exact file
 bytes, wrapped in `<!--{{{1-->` / `<!--}}}1-->` folds. Edit it there as you would its own
