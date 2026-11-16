@@ -2,6 +2,7 @@
 //! an issue. Cards arrive whole and are queried here; edits leave as server fns. What is on screen, and what
 //! the viewer keeps, is their library on the server.
 
+mod facets;
 mod issue;
 mod library;
 mod view;
@@ -13,7 +14,7 @@ use ev_lib::uikit_dioxus::*;
 use futures::StreamExt as _;
 use tedi_core::{
 	IssueLink,
-	board::{Board, Card, GroupBy, Layout, Scope, Shown, Sort, View},
+	board::{Board, Card, GroupBy, Layout, Scope, Shown, Sort, SortKey, View},
 	conflict::{Conflict, FieldEdit},
 };
 use tilers_dioxus::{Band, DockPanel, Group, GroupId, MinSize, PackedApi, PackedArea, PanelId};
@@ -560,7 +561,7 @@ fn scope_view(name: &str, scope: &Scope) -> View {
 		query: format!("{} is:open", scope.filter()),
 		layout: Layout::Board,
 		group_by: GroupBy::Stage,
-		sort: Sort::Rank,
+		sort: Sort { by: SortKey::Rank, reversed: false },
 		shown: vec![Shown::Repo, Shown::Assignees, Shown::Importance, Shown::Hours, Shown::Type, Shown::Blockers],
 	}
 }

@@ -4,15 +4,19 @@ use std::str::FromStr as _;
 
 use dioxus::prelude::*;
 use ev_lib::uikit_dioxus::{Card as Tile, *};
+use strum::IntoEnumIterator as _;
 use tedi_core::{
-	board::{Card, GroupBy, Layout, Query, Shown, View, group, restage},
+	board::{Card, Facet, GroupBy, Layout, Query, Shown, Sort, SortKey, View, group, restage},
 	conflict::{Field, FieldEdit, list},
 	labels::{HOURS, Scheme},
 	stage::Stage,
 };
 use tilers_dioxus::{Band, DockPanel, Group, MinSize, PackedApi, PackedArea, PanelId};
 
-use super::Ctx;
+use super::{
+	Ctx,
+	facets::{FacetBar, FacetMenu, InView, Pick},
+};
 use crate::api::{Dock, Kept, LibraryEdit, Shelf, Sprint};
 
 #[component]
@@ -20,14 +24,16 @@ pub fn ViewPanel(view: View) -> Element {
 	let ctx = use_context::<Ctx>();
 	let toaster = use_toaster();
 	let mut view = use_signal(|| view);
+	use_context_provider(|| InView(view));
 	let board = ctx.board.read();
 	let Some(board) = board.as_ref() else {
 		return rsx! { Spinner {} };
 	};
 	let v = view.read().clone();
-	let hits = Query::from_str(&v.query).and_then(|q| q.run(&board.cards, ctx.me().as_deref())).map(|mut hits| {
+	let hits = Query::from_str(&v.query).and_then(|q| {
+		let mut hits = q.run(&board.cards, ctx.me().as_deref())?;
 		v.sort.apply(&board.cards, &mut hits);
-		hits
+		Ok((q, hits))
 	});
 	let save = EventHandler::new(move |name: String| {
 		let view = View {
@@ -41,37 +47,41 @@ pub fn ViewPanel(view: View) -> Element {
 		});
 	});
 	let mine: Vec<String> = ctx.library.read().as_ref().expect("views render once the library arrived").filters.keys().cloned().collect();
+	let sorts: Vec<Sort> = SortKey::iter().flat_map(|by| [false, true].map(|reversed| Sort { by, reversed })).collect();
 	rsx! {
 		div { class: "flex h-full flex-col gap-2 p-2",
 			div { class: "flex flex-wrap items-center gap-2",
 				Input {
 					class: "min-w-64 flex-1 font-mono",
 					value: v.query.clone(),
-					placeholder: "stage:triage,selected repo:EV-Service-Arb/* t:bug i:>=5 text",
+					placeholder: "stage:triage,selected repo:EV-Service-Arb/* -t:chore i:>=5,none text",
 					oninput: move |e: FormEvent| view.write().query = e.value(),
 				}
-				Choice { value: v.layout, on_change: move |l| view.write().layout = l }
-				Choice { value: v.group_by, on_change: move |g| view.write().group_by = g }
-				Choice { value: v.sort, on_change: move |s| view.write().sort = s }
+				Choice { value: v.layout, options: Layout::iter().collect(), on_change: move |l| view.write().layout = l }
+				Choice { value: v.group_by, options: GroupBy::iter().collect(), on_change: move |g| view.write().group_by = g }
+				Choice { value: v.sort, options: sorts, on_change: move |s| view.write().sort = s }
 				super::library::Menu { shelf: Shelf::Filters, names: mine, on_pick: move |name: String| ctx.open(PanelId(format!("view:{name}"))), on_save: Some(save) }
 			}
 			match hits {
 				Err(e) => rsx! { Badge { variant: BadgeVariant::Error, "{e}" } },
-				Ok(hits) => {
+				Ok((query, hits)) => {
 					let groups = group(&board.cards, &hits, v.group_by);
-					match v.layout {
-						Layout::Board => rsx! { Columns { key: "{v.group_by}", view: v.name.clone(), groups, by: v.group_by, shown: v.shown.clone() } },
-						Layout::Table => rsx! { Rows { groups, shown: v.shown.clone() } },
-						Layout::List => rsx! {
-							div { class: "flex flex-col gap-1 overflow-auto",
-								for (key , members) in groups {
-									if !key.is_empty() { h3 { class: "text-sm font-semibold mt-2", "{key}" } }
-									for i in members {
-										CardView { key: "{board.cards[i].link}", card: board.cards[i].clone(), shown: v.shown.clone() }
+					rsx! {
+						FacetBar { query: query.clone() }
+						match v.layout {
+							Layout::Board => rsx! { Columns { key: "{v.group_by}", view: v.name.clone(), groups, by: v.group_by, shown: v.shown.clone() } },
+							Layout::Table => rsx! { Rows { groups, shown: v.shown.clone(), sort: v.sort, query } },
+							Layout::List => rsx! {
+								div { class: "flex flex-col gap-1 overflow-auto",
+									for (key , members) in groups {
+										if !key.is_empty() { h3 { class: "text-sm font-semibold mt-2", "{key}" } }
+										for i in members {
+											CardView { key: "{board.cards[i].link}", card: board.cards[i].clone(), shown: v.shown.clone() }
+										}
 									}
 								}
-							}
-						},
+							},
+						}
 					}
 				}
 			}
@@ -81,14 +91,14 @@ pub fn ViewPanel(view: View) -> Element {
 
 /// One of a closed set (layout, grouping, order), shown by its name.
 #[component]
-fn Choice<T: strum::IntoEnumIterator + std::fmt::Display + std::str::FromStr + Copy + PartialEq + 'static>(value: T, on_change: EventHandler<T>) -> Element {
+fn Choice<T: std::fmt::Display + std::str::FromStr + Copy + PartialEq + 'static>(value: T, options: Vec<T>, on_change: EventHandler<T>) -> Element {
 	rsx! {
 		Select {
 			value: value.to_string(),
 			on_value_change: move |s: String| on_change.call(T::from_str(&s).ok().expect("offered from the same set")),
 			SelectTrigger { size: Size::Sm, SelectValue {} }
 			SelectContent {
-				for option in T::iter() {
+				for option in options {
 					SelectItem { value: option.to_string(), text_value: option.to_string(), "{option}" }
 				}
 			}
@@ -309,8 +319,26 @@ fn Column(group: String) -> Element {
 }
 
 #[component]
-fn Rows(groups: Vec<(String, Vec<usize>)>, shown: Vec<Shown>) -> Element {
+fn Rows(groups: Vec<(String, Vec<usize>)>, shown: Vec<Shown>, sort: Sort, query: Query) -> Element {
 	let ctx = use_context::<Ctx>();
+	let mut in_view = use_context::<InView>();
+	// natural, then reversed, then back to rank
+	let mut cycle = move |by: SortKey| {
+		in_view.0.write().sort = match sort {
+			Sort { by: at, reversed: false } if at == by => Sort { by, reversed: true },
+			Sort { by: at, reversed: true } if at == by => Sort { by: SortKey::Rank, reversed: false },
+			_ => Sort { by, reversed: false },
+		}
+	};
+	let arrow = move |by: SortKey| match sort {
+		Sort { by: at, reversed } if at == by =>
+			if reversed {
+				" ↑"
+			} else {
+				" ↓"
+			},
+		_ => "",
+	};
 	let board = ctx.board.read();
 	let cards = &board.as_ref().expect("views render once the board loaded").cards;
 	rsx! {
@@ -318,8 +346,22 @@ fn Rows(groups: Vec<(String, Vec<usize>)>, shown: Vec<Shown>) -> Element {
 			Table {
 				TableHeader {
 					TableRow {
-						TableHead { "Issue" }
-						for s in shown.iter() { TableHead { "{s}" } }
+						TableHead {
+							button { r#type: "button", class: "hover:text-ink", onclick: move |_| cycle(SortKey::Title), "Issue{arrow(SortKey::Title)}" }
+						}
+						for s in shown.iter().copied() {
+							TableHead { key: "{s}",
+								span { class: "inline-flex items-center gap-0.5",
+									match SortKey::try_from(s) {
+										Ok(by) => rsx! { button { r#type: "button", class: "hover:text-ink", onclick: move |_| cycle(by), "{s}{arrow(by)}" } },
+										Err(_) => rsx! { "{s}" },
+									}
+									if let Ok(facet) = Facet::try_from(s) {
+										FacetMenu { facet, query: query.clone() }
+									}
+								}
+							}
+						}
 					}
 				}
 				TableBody {
@@ -335,7 +377,7 @@ fn Rows(groups: Vec<(String, Vec<usize>)>, shown: Vec<Shown>) -> Element {
 									}
 								}
 								for s in shown.iter() {
-									TableCell { Facet { card: cards[i].clone(), shown: *s } }
+									TableCell { Shows { card: cards[i].clone(), shown: *s } }
 								}
 							}
 						}
@@ -356,7 +398,7 @@ pub fn CardView(card: Card, shown: Vec<Shown>) -> Element {
 			button { class: "text-left text-sm font-medium hover:underline", onclick: move |_| ctx.open_issue(link.clone()), "{card.title}" }
 			div { class: "flex flex-wrap items-center gap-1 text-xs text-ink-soft",
 				for s in shown {
-					Facet { card: card.clone(), shown: s }
+					Shows { card: card.clone(), shown: s }
 				}
 				if card.conflicted { Badge { variant: BadgeVariant::Error, "clash" } }
 			}
@@ -365,14 +407,15 @@ pub fn CardView(card: Card, shown: Vec<Shown>) -> Element {
 }
 
 #[component]
-fn Facet(card: Card, shown: Shown) -> Element {
+fn Shows(card: Card, shown: Shown) -> Element {
 	let ctx = use_context::<Ctx>();
 	match shown {
-		Shown::Repo => rsx! { span { "{card.link.project().repo()}" } },
-		Shown::Assignees => rsx! { for a in card.assignees.iter() { span { "@{a}" } } },
-		Shown::Stage => rsx! { Badge { "{card.stage}" } },
-		Shown::Type => rsx! { if let Some(k) = card.kind { Badge { variant: BadgeVariant::Info, "{k}" } } },
-		Shown::Labels => rsx! { for l in card.labels.iter() { Badge { "{l}" } } },
+		Shown::Repo => rsx! { Pick { facet: Facet::Repo, value: card.link.project().to_string(), "{card.link.project().repo()}" } },
+		Shown::Assignees => rsx! { for a in card.assignees.iter() { Pick { facet: Facet::Assignee, value: a.clone(), "@{a}" } } },
+		Shown::Stage => rsx! { Pick { facet: Facet::Stage, value: card.stage.to_string(), Badge { "{card.stage}" } } },
+		Shown::Type =>
+			rsx! { if let Some(k) = card.kind { Pick { facet: Facet::Type, value: k.to_string().trim_start_matches("t:").to_string(), Badge { variant: BadgeVariant::Info, "{k}" } } } },
+		Shown::Labels => rsx! { for l in card.labels.iter() { Pick { facet: Facet::Label, value: l.clone(), Badge { "{l}" } } } },
 		Shown::Importance => rsx! { Stepper { card: card.clone(), axis: Axis::Importance } },
 		Shown::Hours => rsx! { Stepper { card: card.clone(), axis: Axis::Hours } },
 		Shown::Blockers => {
@@ -395,9 +438,9 @@ enum Axis {
 #[component]
 fn Stepper(card: Card, axis: Axis) -> Element {
 	let ctx = use_context::<Ctx>();
-	let (prefix, value, counts_as) = match axis {
-		Axis::Importance => ("i", card.importance.map(u16::from), Some(3)), // `labels.nix`: "`i:3` is the default"
-		Axis::Hours => ("h", card.hours, None),
+	let (prefix, facet, value, counts_as) = match axis {
+		Axis::Importance => ("i", Facet::Importance, card.importance.map(u16::from), Some(3)), // `labels.nix`: "`i:3` is the default"
+		Axis::Hours => ("h", Facet::Hours, card.hours, None),
 	};
 	let steps: Vec<u16> = match axis {
 		Axis::Importance => (0..=9).collect(),
@@ -437,7 +480,7 @@ fn Stepper(card: Card, axis: Axis) -> Element {
 	let shown = value.map_or_else(|| "?".to_string(), |v| v.to_string());
 	rsx! {
 		span { class: "inline-flex items-center gap-0.5 rounded border px-1",
-			"{prefix}[{shown}]"
+			Pick { facet, value: value.map_or_else(|| "none".to_string(), |v| v.to_string()), "{prefix}[{shown}]" }
 			button { class: "px-0.5 hover:text-ink", title: "lower", onclick: { let step = step.clone(); move |_| step(false) }, "−" }
 			button { class: "px-0.5 hover:text-ink", title: "raise", onclick: move |_| step(true), "+" }
 		}
