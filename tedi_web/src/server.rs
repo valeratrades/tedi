@@ -35,6 +35,7 @@ pub struct Settings {
 	pub archive_after: jiff::SignedDuration,
 	pub views: Vec<View>,
 	pub scopes: BTreeMap<String, Scope>,
+	pub columns: BTreeMap<String, crate::api::Columns>,
 	/// Where the sprint milestones live.
 	pub milestones: Option<RepoInfo>,
 	/// Owners and `owner/repo`s: what the periodic pull pulls, and the only repos a webhook delivery is pulled for.
@@ -173,6 +174,7 @@ pub async fn setup() -> Result<Setup> {
 		me: editor(),
 		team: s.views.clone(),
 		scopes: s.scopes.clone(),
+		columns: s.columns.clone(),
 		sprints: match s.milestones {
 			Some(repo) => sprints(repo).await?,
 			None => Vec::new(),
@@ -290,6 +292,8 @@ fn apply(library: &mut Library, edit: LibraryEdit) -> Result<()> {
 		} => {
 			library.on_screen.columns.entry(view).or_default().entry(by).or_default().insert(band, layout);
 		}
+		LibraryEdit::Viewed(view) => _ = library.on_screen.views.insert(view.name.clone(), view),
+		LibraryEdit::Tinted { view, by, tints } => _ = library.on_screen.tints.entry(view).or_default().insert(by, tints),
 		LibraryEdit::Keep(Kept::Filter(view)) => {
 			if view.name.trim().is_empty() {
 				bail!("a filter is kept under a name");
@@ -300,22 +304,27 @@ fn apply(library: &mut Library, edit: LibraryEdit) -> Result<()> {
 			library.filters.insert(view.name.clone(), view);
 		}
 		LibraryEdit::Keep(Kept::Workspace { name, band, layout }) => _ = library.workspaces.entry(named(name)?).or_default().insert(band, layout),
-		LibraryEdit::Keep(Kept::Columns { name, by, band, layout }) => {
-			let kept = library
-				.columns
-				.entry(named(name.clone())?)
-				.or_insert_with(|| crate::api::Columns { by, layout: Default::default() });
+		LibraryEdit::Keep(Kept::Columns { name, by, band, layout, tints }) => {
+			if settings().columns.contains_key(&name) {
+				bail!("{name} are the team's columns: keep yours under another name");
+			}
+			let kept = library.columns.entry(named(name.clone())?).or_insert_with(|| crate::api::Columns {
+				by,
+				layout: BTreeMap::new(),
+				tints: BTreeMap::new(),
+			});
 			if kept.by != by {
 				bail!("the columns {name} are by {}, not {by}", kept.by);
 			}
 			kept.layout.insert(band, layout);
+			kept.tints = tints;
 		}
 		LibraryEdit::Rename { shelf, from, to } => {
 			let to = named(to)?;
 			let taken = match shelf {
 				Shelf::Filters => library.filters.contains_key(&to) || settings().views.iter().any(|v| v.name == to),
 				Shelf::Workspaces => library.workspaces.contains_key(&to),
-				Shelf::Columns => library.columns.contains_key(&to),
+				Shelf::Columns => library.columns.contains_key(&to) || settings().columns.contains_key(&to),
 			};
 			if taken {
 				bail!("{to} is taken");
@@ -328,6 +337,13 @@ fn apply(library: &mut Library, edit: LibraryEdit) -> Result<()> {
 					library.filters.insert(to.clone(), view);
 					if let Some(columns) = library.on_screen.columns.remove(&from) {
 						library.on_screen.columns.insert(to.clone(), columns);
+					}
+					if let Some(tints) = library.on_screen.tints.remove(&from) {
+						library.on_screen.tints.insert(to.clone(), tints);
+					}
+					if let Some(mut shown) = library.on_screen.views.remove(&from) {
+						shown.name = to.clone();
+						library.on_screen.views.insert(to.clone(), shown);
 					}
 				}
 				Shelf::Workspaces => {
@@ -363,7 +379,7 @@ fn apply(library: &mut Library, edit: LibraryEdit) -> Result<()> {
 				Favorite::View(name) => library.filters.contains_key(name) || settings().views.iter().any(|v| &v.name == name),
 				Favorite::Scope(path) => scope_at(&settings().scopes, path),
 				Favorite::Workspace(name) => library.workspaces.contains_key(name),
-				Favorite::Columns(name) => library.columns.contains_key(name),
+				Favorite::Columns(name) => library.columns.contains_key(name) || settings().columns.contains_key(name),
 			};
 			if !known {
 				bail!("no {what:?} to favorite");

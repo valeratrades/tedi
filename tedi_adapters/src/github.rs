@@ -1,10 +1,10 @@
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::Deserialize;
-use tedi_core::CloseState;
 pub use tedi_core::RepoInfo;
+use tedi_core::{CloseState, labels::Color};
 use v_utils::macros::wrap_err;
 
 mod auth;
@@ -87,8 +87,8 @@ pub trait GithubClient: Send + Sync {
 	/// Transfer an issue to `target` (same owner only). Returns its number there.
 	async fn transfer_issue(&self, repo: RepoInfo, issue_number: u64, target: RepoInfo) -> Result<u64, GithubError>;
 
-	/// Names of every label defined in a repository.
-	async fn list_labels(&self, repo: RepoInfo) -> Result<Vec<String>, GithubError>;
+	/// Every label defined in a repository, by name.
+	async fn list_labels(&self, repo: RepoInfo) -> Result<BTreeMap<String, Color>, GithubError>;
 
 	/// Replace the issue's assignees. A login the repo can't take is dropped by GitHub, not an error.
 	async fn set_assignees(&self, repo: RepoInfo, issue_number: u64, assignees: &[String]) -> Result<(), GithubError>;
@@ -703,8 +703,13 @@ impl GithubClient for RealGithubClient {
 		})
 	}
 
-	async fn list_labels(&self, repo: RepoInfo) -> Result<Vec<String>, GithubError> {
-		let mut names = Vec::new();
+	async fn list_labels(&self, repo: RepoInfo) -> Result<BTreeMap<String, Color>, GithubError> {
+		#[derive(Deserialize)]
+		struct Label {
+			name: String,
+			color: Color,
+		}
+		let mut labels = BTreeMap::new();
 		for page in 1.. {
 			let url = format!(
 				"https://api.github.com/repos/{}/{}/labels?per_page=100&page={page}",
@@ -717,14 +722,14 @@ impl GithubClient for RealGithubClient {
 				let body = res.text().await.unwrap_or_default();
 				return Err(GithubError::new_api(status, body, "list labels".to_string()));
 			}
-			let labels = res.json::<Vec<GithubLabel>>().await?;
-			let last = labels.len() < 100;
-			names.extend(labels.into_iter().map(|l| l.name));
+			let page = res.json::<Vec<Label>>().await?;
+			let last = page.len() < 100;
+			labels.extend(page.into_iter().map(|l| (l.name, l.color)));
 			if last {
 				break;
 			}
 		}
-		Ok(names)
+		Ok(labels)
 	}
 
 	/// Through the add/remove endpoints rather than a PATCH, which rejects the whole set over one login the repo can't take.
@@ -1128,7 +1133,7 @@ impl GithubClient for RetryingGithubClient {
 		retrying!(self.inner.transfer_issue(repo, issue_number, target))
 	}
 
-	async fn list_labels(&self, repo: RepoInfo) -> Result<Vec<String>, GithubError> {
+	async fn list_labels(&self, repo: RepoInfo) -> Result<BTreeMap<String, Color>, GithubError> {
 		retrying!(self.inner.list_labels(repo))
 	}
 

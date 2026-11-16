@@ -27,7 +27,7 @@ tedi_md = { path = "tedi_md", version = "0.17.14" }
 tedi_task_operations = { path = "tedi_task_operations", version = "0.17.14" }
 tedi_task_primitives = { path = "tedi_task_primitives", version = "0.17.14" }
 tedi_utils = { path = "tedi_utils", version = "0.17.14", default-features = false }
-tedi_web = { path = "tedi_web" }
+tedi_web = { path = "tedi_web", version = "0.17.14" }
 
 arrayvec = "0.7"
 ask_llm = { version = "^3.0.1" }

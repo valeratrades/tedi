@@ -75,7 +75,7 @@ async fn move_issue(link: &IssueLink, target: RepoInfo) -> Result<HashMap<IssueL
 		bail!("{link} holds {:?}, which isn't on GitHub yet — sync it before moving the tree", pending.contents.title);
 	}
 
-	let target_labels = gh.list_labels(target).await?;
+	let target_labels: Vec<String> = gh.list_labels(target).await?.into_keys().collect();
 	for node in nodes(&old) {
 		let missing: Vec<&str> = node.contents.labels.iter().filter(|l| !target_labels.contains(l)).map(String::as_str).collect();
 		if !missing.is_empty() {

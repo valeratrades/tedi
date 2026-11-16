@@ -43,6 +43,8 @@ pub async fn pull_repos(targets: &[String]) -> Result<()> {
 /// so a pull cut short (by the rate limit, say) is picked up there.
 async fn pull_repo(repo: RepoInfo) -> Result<()> {
 	let gh = crate::github::client::get()?;
+	let labels = gh.list_labels(repo).await?;
+	Local::update_project_meta(repo, |m| m.label_colors = labels)?;
 	let since = Local::load_project_meta(repo).pulled_at;
 	let mut after = None;
 	loop {

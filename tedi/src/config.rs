@@ -58,6 +58,9 @@ pub struct Board {
 	/// Named slices of the team's repos, nesting narrower ones (`[board.scopes.EV-Main.tooling] repos = ["EV-Main/tilers"]`).
 	#[serde(default)] // a board may have none
 	pub scopes: std::collections::BTreeMap<String, tedi_task_operations::board::Scope>,
+	/// Column colorings every viewer is offered (`[board.columns.notion] by = "stage"`, `tints = { triage = "orange" }`).
+	#[serde(default)] // a board may have none
+	pub columns: std::collections::BTreeMap<String, tedi_web::api::Columns>,
 }
 impl Board {
 	pub fn archive_after(&self) -> color_eyre::Result<jiff::SignedDuration> {

@@ -21,6 +21,8 @@ pub struct Setup {
 	pub team: Vec<View>,
 	pub scopes: BTreeMap<String, Scope>,
 	pub sprints: Vec<Sprint>,
+	/// The team's columns, offered beside each viewer's own.
+	pub columns: BTreeMap<String, Columns>,
 }
 
 /// An open sprint milestone: its task view's issues, in order.
@@ -47,15 +49,42 @@ pub type Arrangement = BTreeMap<Band, String>;
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct OnScreen {
 	pub tiles: Arrangement,
+	/// Each view as last edited: it reopens so.
+	#[serde(default)]
+	pub views: BTreeMap<String, View>,
 	/// Each view's columns, per grouping.
 	pub columns: BTreeMap<String, BTreeMap<GroupBy, Arrangement>>,
+	#[serde(default)]
+	pub tints: BTreeMap<String, BTreeMap<GroupBy, Tints>>,
 }
 
 /// A view's columns, kept for the grouping whose keys they are.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct Columns {
 	pub by: GroupBy,
+	#[serde(default)]
 	pub layout: Arrangement,
+	#[serde(default)]
+	pub tints: Tints,
+}
+
+/// Each group's column color.
+pub type Tints = BTreeMap<String, Tint>;
+
+/// Notion's palette.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, strum::Display, strum::EnumIter)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+pub enum Tint {
+	Gray,
+	Brown,
+	Orange,
+	Yellow,
+	Green,
+	Blue,
+	Purple,
+	Pink,
+	Red,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -89,11 +118,13 @@ pub enum Kept {
 		band: Band,
 		layout: String,
 	},
+	/// Replaces `name`'s `band` and its tints.
 	Columns {
 		name: String,
 		by: GroupBy,
 		band: Band,
 		layout: String,
+		tints: Tints,
 	},
 }
 
@@ -105,6 +136,13 @@ pub enum LibraryEdit {
 		dock: Dock,
 		band: Band,
 		layout: String,
+	},
+	/// What a view on screen now shows.
+	Viewed(View),
+	Tinted {
+		view: String,
+		by: GroupBy,
+		tints: Tints,
 	},
 	Keep(Kept),
 	Rename {
@@ -134,7 +172,7 @@ pub async fn setup() -> Result<Setup, ServerFnError> {
 	crate::server::setup().await.map_err(failed)
 }
 
-#[server]
+#[get("/api/board")]
 pub async fn board() -> Result<Board, ServerFnError> {
 	Ok((*crate::server::board().await.map_err(failed)?).clone())
 }

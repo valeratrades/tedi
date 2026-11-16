@@ -50,6 +50,7 @@ pub async fn web_command(settings: &LiveSettings, args: WebArgs, mode: SyncMode)
 		archive_after: board.archive_after()?,
 		views: board.views,
 		scopes: board.scopes,
+		columns: board.columns,
 		milestones,
 		watch,
 		pull_every,

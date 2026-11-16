@@ -55,7 +55,9 @@ pub async fn load(archive_after: SignedDuration, now: Timestamp) -> Result<Board
 	for card in &mut cards {
 		card.rank = ranking.ranks.get(&card.link.to_string()).copied();
 	}
-	Ok(Board { cards, unreadable })
+	let repos: std::collections::HashSet<_> = cards.iter().map(|c| c.link.project()).collect();
+	let colors = repos.into_iter().map(|repo| (repo.to_string(), Local::load_project_meta(repo).label_colors)).collect();
+	Ok(Board { cards, unreadable, colors })
 }
 
 fn card_tree(issue: &Issue, parent: Option<&IssueLink>, conflicted: bool, archive_after: SignedDuration, now: Timestamp, out: &mut Vec<Card>) {

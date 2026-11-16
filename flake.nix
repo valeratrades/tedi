@@ -163,6 +163,16 @@
                         shown = [ "repo" "stage" "importance" "hours" ];
                       }
                     ];
+                    columns.notion = {
+                      by = "stage";
+                      tints = {
+                        triage = "orange";
+                        selected = "blue";
+                        in_progress = "blue";
+                        in_review = "purple";
+                        done = "green";
+                      };
+                    };
                     scopes = {
                       EV-Main.repos = [ "EV-Main/*" ];
                       EV-Estate.repos = [ "EV-Estate/*" ];

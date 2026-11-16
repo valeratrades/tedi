@@ -102,13 +102,16 @@ impl Ctx {
 	fn panel(&self, id: PanelId) -> DockPanel {
 		let setup = self.setup.peek();
 		let setup = setup.as_ref().expect("panels are hosted once setup arrived");
+		let library = self.library.peek();
+		let on_screen = &library.as_ref().expect("arrives with setup").on_screen.views;
+		let shown = |defined: View| rsx! { view::ViewPanel { view: on_screen.get(&defined.name).cloned().unwrap_or_else(|| defined.clone()), defined } };
 		let (title, content) = match id.0.split_once(':') {
 			Some(("view", name)) => match self.views().into_iter().find(|v| v.name == name) {
-				Some(view) => (name.to_string(), rsx! { view::ViewPanel { view } }),
+				Some(view) => (name.to_string(), shown(view)),
 				None => (name.to_string(), rsx! { "The view {name} is no longer saved" }),
 			},
 			Some(("scope", path)) => match find_scope(&setup.scopes, path) {
-				Some(scope) => (path.to_string(), rsx! { view::ViewPanel { view: scope_view(path, scope) } }),
+				Some(scope) => (path.to_string(), shown(scope_view(path, scope))),
 				None => (path.to_string(), rsx! { "The scope {path} is no longer configured" }),
 			},
 			Some(("sprint", title)) => match setup.sprints.iter().find(|s| s.title == title) {

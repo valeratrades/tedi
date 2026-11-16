@@ -1,5 +1,5 @@
 //! `tedi web`: its webhook pulls only what `watch` names (the GitHub App is public, so a stranger's install delivers signed with
-//! our secret), and each viewer's library is their own.
+//! our secret), each viewer's library is their own, and the board wears its labels' colours.
 
 use std::{
 	io::{Read as _, Write as _},
@@ -176,4 +176,23 @@ fn a_library_keeps_each_band_and_its_names_straight() {
 	let library = library(port, me);
 	assert_eq!(library["favorites"], serde_json::json!([{ "Scope": "Main" }]), "a dropped workspace takes its favorite with it");
 	assert_eq!(library["workspaces"], serde_json::json!({ "other": { "Xl": "x" } }));
+}
+
+#[test]
+fn the_board_carries_its_repos_label_colors_as_of_the_last_pull() {
+	let ctx = TestContext::build();
+	ctx.remote(
+		&crate::common::parse_virtual("- [ ] (t:bug, wontfix) Fix it <!-- @mock_user https://github.com/o/r/issues/1 -->\n  body\n"),
+		Some(crate::common::Seed::new(0)),
+	);
+	ctx.remote_labels("o", "r", &["t:bug", "wontfix"]);
+	assert!(ctx.run(&["--mock", "pull", "o/r"]).status.success());
+	ctx.remote_labels("o", "r", &["t:bug", "won't fix"]);
+	assert!(ctx.run(&["--mock", "pull", "o/r"]).status.success());
+
+	let (_server, port) = serve(&ctx, BOARD, &[]);
+	let (status, body) = call(port, "GET", "/api/board", None, None);
+	assert_eq!(status, 200, "{body}");
+	let board: serde_json::Value = serde_json::from_str(&body).unwrap();
+	assert_eq!(board["colors"], serde_json::json!({ "o/r": { "t:bug": "ededed", "won't fix": "ededed" } }));
 }

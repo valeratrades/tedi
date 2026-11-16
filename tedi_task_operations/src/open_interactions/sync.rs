@@ -344,12 +344,12 @@ async fn check_repo_labels(before: &Issue, after: &Issue) -> Result<Result<(), S
 		return Ok(Ok(()));
 	}
 	let repo = after.repo_info();
-	let mut known = Local::load_project_meta(repo).labels;
-	if labels.iter().any(|l| !known.iter().any(|k| k == l)) {
+	let mut known = Local::load_project_meta(repo).label_colors;
+	if labels.iter().any(|l| !known.contains_key(*l)) {
 		known = crate::github::client::get()?.list_labels(repo).await?;
-		Local::update_project_meta(repo, |m| m.labels = known.clone())?;
+		Local::update_project_meta(repo, |m| m.label_colors = known.clone())?;
 	}
-	let mut missing: Vec<&str> = labels.into_iter().filter(|l| !known.iter().any(|k| k == l)).collect();
+	let mut missing: Vec<&str> = labels.into_iter().filter(|l| !known.contains_key(*l)).collect();
 	missing.sort_unstable();
 	missing.dedup();
 	Ok(match missing.is_empty() {

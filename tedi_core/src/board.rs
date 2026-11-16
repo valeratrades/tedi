@@ -48,6 +48,8 @@ pub struct Board {
 	pub cards: Vec<Card>,
 	/// Stored issues that don't parse, with why: shown beside the board, not hidden by it.
 	pub unreadable: Vec<(std::path::PathBuf, String)>,
+	/// Per `owner/repo`, its labels' colours as last read from GitHub; a label missing here is uncoloured.
+	pub colors: BTreeMap<String, BTreeMap<String, crate::labels::Color>>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -83,7 +85,7 @@ struct Clause {
 	any: Vec<Filter>,
 }
 /// One value of one facet.
-#[derive(Clone, Debug, PartialEq, strum::EnumDiscriminants)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, strum::EnumDiscriminants)]
 #[strum_discriminants(name(Facet), vis(pub), derive(Hash, strum::Display, strum::EnumIter, strum::EnumString), strum(serialize_all = "snake_case"))]
 enum Filter {
 	/// `owner/repo`, `owner/*`, or a bare repo name.
@@ -99,13 +101,13 @@ enum Filter {
 	Label(String),
 	Is(Is),
 }
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 enum Assignee {
 	Me,
 	Nobody,
 	Login(String),
 }
-#[derive(Clone, Copy, Debug, PartialEq, strum::Display, strum::EnumString)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, strum::Display, strum::EnumString)]
 #[strum(serialize_all = "snake_case")]
 enum Is {
 	Open,
@@ -114,7 +116,7 @@ enum Is {
 	Blocked,
 	Conflicted,
 }
-#[derive(Clone, Copy, Debug, PartialEq, strum::Display)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, strum::Display)]
 enum Cmp {
 	#[strum(to_string = "<")]
 	Lt,
@@ -172,13 +174,13 @@ impl FromStr for Query {
 			};
 			let any = match Facet::from_str(key) {
 				Ok(facet) => {
-					let any = value.split(',').filter(|v| !v.is_empty()).map(|v| Filter::parse(facet, v)).collect::<Result<Vec<_>, _>>()?;
+					let any = items(value).iter().map(|v| Filter::parse(facet, v)).collect::<Result<Vec<_>, _>>()?;
 					if any.is_empty() {
 						return Err(QueryError::Empty(facet));
 					}
 					any
 				}
-				// `c:ci`, `ext:hack`, `s:wip` and any other label read as typed; shortcut: a label holding `,` doesn't survive `Display`, spell it out if one turns up
+				// `c:ci`, `ext:hack`, `s:wip` and any other label read as typed
 				Err(_) => vec![Filter::Label(clause.to_string())],
 			};
 			query.clauses.push(Clause { negated, any });
@@ -200,7 +202,7 @@ impl std::fmt::Display for Query {
 }
 impl std::fmt::Display for Clause {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		let values: Vec<String> = self.any.iter().map(ToString::to_string).collect();
+		let values: Vec<String> = self.any.iter().map(|v| v.to_string().replace(',', "\\,")).collect();
 		write!(f, "{}{}:{}", if self.negated { "-" } else { "" }, self.facet(), values.join(","))
 	}
 }
@@ -288,16 +290,15 @@ impl Query {
 				counted.push((value.clone(), hits.iter().filter(|&&i| value.holds(&cards[i], me, &open)).count()));
 			}
 		}
-		let mut tallies: Vec<Tally> = counted
+		counted.sort_by(|(a, an), (b, bn)| bn.cmp(an).then_with(|| a.cmp(b)));
+		Ok(counted
 			.into_iter()
 			.map(|(value, count)| Tally {
 				picked: own.iter().find(|c| c.any.contains(&value)).map(|c| !c.negated),
 				value: value.to_string(),
 				count,
 			})
-			.collect();
-		tallies.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.value.cmp(&b.value)));
-		Ok(tallies)
+			.collect())
 	}
 }
 
@@ -379,6 +380,22 @@ fn takes(card: &Card, facet: Facet, open: &HashSet<&IssueLink>) -> Vec<Filter> {
 		.filter_map(|(holds, is)| holds.then_some(Filter::Is(is)))
 		.collect(),
 	}
+}
+
+/// A clause's `,`-separated values; `\\,` is a comma inside one.
+fn items(value: &str) -> Vec<String> {
+	let mut items = vec![String::new()];
+	let mut chars = value.chars().peekable();
+	while let Some(c) = chars.next() {
+		let item = items.last_mut().expect("starts with one");
+		match c {
+			'\\' if chars.peek() == Some(&',') => item.push(chars.next().expect("peeked")),
+			',' => items.push(String::new()),
+			c => item.push(c),
+		}
+	}
+	items.retain(|i| !i.is_empty());
+	items
 }
 
 fn open(cards: &[Card]) -> HashSet<&IssueLink> {
@@ -515,7 +532,10 @@ impl Sort {
 		}
 		let r = self.reversed;
 		match self.by {
-			SortKey::Rank if r => hits.reverse(),
+			SortKey::Rank if r => {
+				hits.reverse();
+				hits.sort_by_key(|&i| cards[i].rank.is_none());
+			}
 			SortKey::Rank => {}
 			SortKey::Title => by(hits, r, |i| Some(cards[i].title.to_lowercase())),
 			SortKey::Repo => by(hits, r, |i| Some(cards[i].link.project().to_string())),
@@ -688,6 +708,7 @@ mod tests {
 			"-t:chore,none t:bug i:>=5,none,=3 h:<=8,<2",
 			"repo:o/*,o/app,lib -repo:o/lib",
 			"c:ci -s:wip label:x,y",
+			r"label:a\,b odd:x,y",
 			"stage:triage free  text -not:a:flag -plain",
 		];
 		let out: Vec<String> = corpus
@@ -699,7 +720,7 @@ mod tests {
 				format!("{q}\n  → {shown}")
 			})
 			.collect();
-		insta::assert_snapshot!(out.join("\n"), @"
+		insta::assert_snapshot!(out.join("\n"), @r"
 		is:open stage:icebox,triage,selected,in_progress,in_review
 		  → is:open stage:icebox,triage,selected,in_progress,in_review
 		assignee:@me,none,@ann is:open,blocked
@@ -710,6 +731,8 @@ mod tests {
 		  → repo:o/*,o/app,lib -repo:o/lib
 		c:ci -s:wip label:x,y
 		  → label:c:ci -label:s:wip label:x,y
+		label:a\,b odd:x,y
+		  → label:a\,b label:odd:x\,y
 		stage:triage free  text -not:a:flag -plain
 		  → stage:triage -label:not:a:flag free text -plain
 		");
@@ -781,9 +804,9 @@ mod tests {
 		})
 		.collect();
 		insta::assert_snapshot!(out.join("\n"), @"
-		stage:triage -t:chore | stage: done 1, icebox 1, selected 1, +triage 1
+		stage:triage -t:chore | stage: icebox 1, +triage 1, selected 1, done 1
 		stage:triage -t:chore | t: bug 1, -chore 1
-		i:>=5 | i: +>=5 2, none 2, 2 1, 5 1, 8 1
+		i:>=5 | i: none 2, +>=5 2, 2 1, 5 1, 8 1
 		is:open | assignee: none 2, ann 1, bob 1
 		 | is: open 4, blocked 2, closed 1
 		");

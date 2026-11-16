@@ -8,6 +8,40 @@ use std::{collections::BTreeSet, str::FromStr};
 /// `h:` values: Fibonacci hours, the estimate at 68 % certainty.
 pub const HOURS: [u16; 12] = [1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233];
 
+/// A label's colour as GitHub holds it: `rrggbb`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct Color(pub [u8; 3]);
+impl FromStr for Color {
+	type Err = String;
+
+	fn from_str(s: &str) -> Result<Self, String> {
+		if s.len() != 6 || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
+			return Err(format!("a label colour is 6 hex digits, got {s:?}"));
+		}
+		let channel = |i: usize| u8::from_str_radix(&s[i..i + 2], 16).expect("checked hex above");
+		Ok(Color([channel(0), channel(2), channel(4)]))
+	}
+}
+impl std::fmt::Display for Color {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		let [r, g, b] = self.0;
+		write!(f, "{r:02x}{g:02x}{b:02x}")
+	}
+}
+impl TryFrom<String> for Color {
+	type Error = String;
+
+	fn try_from(s: String) -> Result<Self, String> {
+		s.parse()
+	}
+}
+impl From<Color> for String {
+	fn from(color: Color) -> String {
+		color.to_string()
+	}
+}
+
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Deserialize, strum::Display, strum::EnumString, serde::Serialize)]
 pub enum Type {
 	#[strum(serialize = "t:bug")]

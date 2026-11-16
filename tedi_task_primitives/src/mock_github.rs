@@ -4,7 +4,7 @@
 //! all data in memory and can be used for integration testing without hitting the real API.
 
 use std::{
-	collections::HashMap,
+	collections::{BTreeMap, HashMap},
 	path::Path,
 	sync::{
 		Mutex,
@@ -13,6 +13,7 @@ use std::{
 };
 
 use async_trait::async_trait;
+use tedi_core::labels::Color;
 use tracing::instrument;
 
 use crate::{
@@ -1107,9 +1108,16 @@ impl GithubClient for MockGithubClient {
 		Ok(number)
 	}
 
-	async fn list_labels(&self, repo: RepoInfo) -> Result<Vec<String>, GithubError> {
+	/// Seeded labels are names only: each wears GitHub's default grey.
+	async fn list_labels(&self, repo: RepoInfo) -> Result<BTreeMap<String, Color>, GithubError> {
 		self.log_call(&format!("list_labels({repo})"));
-		Ok(self.labels.lock().unwrap().get(&RepoKey::from(repo)).cloned().unwrap_or_default())
+		let labels = self.labels.lock().unwrap();
+		Ok(labels
+			.get(&RepoKey::from(repo))
+			.into_iter()
+			.flatten()
+			.map(|name| (name.clone(), Color([0xed, 0xed, 0xed])))
+			.collect())
 	}
 
 	async fn list_org_repos(&self, org: &str) -> Result<Vec<RepoInfo>, GithubError> {

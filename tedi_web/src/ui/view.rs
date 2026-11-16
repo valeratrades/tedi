@@ -8,7 +8,7 @@ use strum::IntoEnumIterator as _;
 use tedi_core::{
 	board::{Card, Facet, GroupBy, Layout, Query, Shown, Sort, SortKey, View, group, restage},
 	conflict::{Field, FieldEdit, list},
-	labels::{HOURS, Scheme},
+	labels::{Color, HOURS, Scheme},
 	stage::Stage,
 };
 use tilers_dioxus::{Band, DockPanel, Group, MinSize, PackedApi, PackedArea, PanelId};
@@ -17,14 +17,31 @@ use super::{
 	Ctx,
 	facets::{FacetBar, FacetMenu, InView, Pick},
 };
-use crate::api::{Dock, Kept, LibraryEdit, Shelf, Sprint};
+use crate::api::{Dock, Kept, LibraryEdit, Shelf, Sprint, Tint, Tints};
 
+/// `view` as last edited on screen, `defined` as it is kept: an edit is saved as it settles, and `↺` goes back.
 #[component]
-pub fn ViewPanel(view: View) -> Element {
+pub fn ViewPanel(view: View, defined: View) -> Element {
 	let ctx = use_context::<Ctx>();
 	let toaster = use_toaster();
 	let mut view = use_signal(|| view);
 	use_context_provider(|| InView(view));
+	let mut sent = use_signal(|| view.peek().clone());
+	let mut pending = use_signal(|| None::<dioxus::core::Task>);
+	use_effect(move || {
+		let now = view.read().clone();
+		if *sent.peek() == now {
+			return;
+		}
+		if let Some(task) = pending.take() {
+			task.cancel();
+		}
+		pending.set(Some(spawn(async move {
+			gloo_timers::future::sleep(std::time::Duration::from_millis(800)).await;
+			sent.set(now.clone());
+			ctx.keep(LibraryEdit::Viewed(now)).await;
+		})));
+	});
 	let board = ctx.board.read();
 	let Some(board) = board.as_ref() else {
 		return rsx! { Spinner {} };
@@ -60,6 +77,16 @@ pub fn ViewPanel(view: View) -> Element {
 				Choice { value: v.layout, options: Layout::iter().collect(), on_change: move |l| view.write().layout = l }
 				Choice { value: v.group_by, options: GroupBy::iter().collect(), on_change: move |g| view.write().group_by = g }
 				Choice { value: v.sort, options: sorts, on_change: move |s| view.write().sort = s }
+				if v != defined {
+					Button {
+						variant: ButtonVariant::Ghost,
+						size: Size::Sm,
+						r#type: "button",
+						title: "back to {defined.name} as kept",
+						onclick: { let defined = defined.clone(); move |_| view.set(defined.clone()) },
+						"↺"
+					}
+				}
 				super::library::Menu { shelf: Shelf::Filters, names: mine, on_pick: move |name: String| ctx.open(PanelId(format!("view:{name}"))), on_save: Some(save) }
 			}
 			match hits {
@@ -113,6 +140,7 @@ struct Lanes {
 	by: GroupBy,
 	shown: Signal<Vec<Shown>>,
 	dragged: Signal<Option<tedi_core::IssueLink>>,
+	tints: Signal<Tints>,
 }
 
 /// Columns, one per group, each a tile of a dock nested in the view's: resized, reordered, tabbed together,
@@ -120,11 +148,17 @@ struct Lanes {
 #[component]
 fn Columns(view: String, groups: Vec<(String, Vec<usize>)>, by: GroupBy, shown: Vec<Shown>) -> Element {
 	let ctx = use_context::<Ctx>();
+	let tints: Tints = {
+		let library = ctx.library.read();
+		let on_screen = &library.as_ref().expect("views render once the library arrived").on_screen.tints;
+		on_screen.get(&view).and_then(|t| t.get(&by)).cloned().unwrap_or_default() // never tinted
+	};
 	let lanes = use_context_provider(|| Lanes {
 		groups: Signal::new(groups.clone()),
 		by,
 		shown: Signal::new(shown.clone()),
 		dragged: Signal::new(None),
+		tints: Signal::new(tints.clone()),
 	});
 	let mut panels = use_signal(Vec::<DockPanel>::new);
 	let mut api = use_signal(|| None::<PackedApi>);
@@ -151,13 +185,16 @@ fn Columns(view: String, groups: Vec<(String, Vec<usize>)>, by: GroupBy, shown: 
 		a.load(layout).expect("parsed above");
 		true
 	};
-	use_effect(use_reactive!(|groups, shown| {
-		let (mut g, mut s) = (lanes.groups, lanes.shown);
+	use_effect(use_reactive!(|groups, shown, tints| {
+		let (mut g, mut s, mut t) = (lanes.groups, lanes.shown, lanes.tints);
 		if *g.peek() != groups {
 			g.set(groups);
 		}
 		if *s.peek() != shown {
 			s.set(shown);
+		}
+		if *t.peek() != tints {
+			t.set(tints);
 		}
 	}));
 	// every group hosted, its count in the title; a group the query no longer yields keeps its tile, empty
@@ -190,28 +227,78 @@ fn Columns(view: String, groups: Vec<(String, Vec<usize>)>, by: GroupBy, shown: 
 		.filter(|n| library.favorites.contains(&crate::api::Favorite::Columns((*n).clone())))
 		.cloned()
 		.collect();
+	let team: Vec<String> = {
+		let setup = ctx.setup.read();
+		let setup = setup.as_ref().expect("views render once setup arrived");
+		setup.columns.iter().filter(|(_, c)| c.by == by).map(|(n, _)| n.clone()).collect()
+	};
+	let tint = {
+		let view = view.clone();
+		move |tints: Tints| {
+			let edit = LibraryEdit::Tinted { view: view.clone(), by, tints };
+			spawn(async move { _ = ctx.keep(edit).await });
+		}
+	};
 	let apply = {
-		let show = show.clone();
+		let (show, tint) = (show.clone(), tint.clone());
 		move |name: String| {
 			let (mut api, mut arranged) = (api, arranged);
 			let a = (*api.peek()).expect("the column dock entered a band before its menu shows");
 			let band = a.band();
-			let layout = ctx.library.peek().as_ref().and_then(|l| l.columns.get(&name)).and_then(|c| c.layout.get(&band)).cloned();
-			match layout {
-				Some(layout) => {
-					if show(a, &layout) {
+			let mine = ctx.library.peek().as_ref().expect("arrived before the menu").columns.get(&name).cloned();
+			let kept = mine
+				.or_else(|| ctx.setup.peek().as_ref().expect("arrived before the menu").columns.get(&name).cloned())
+				.expect("offered from the viewer's columns or the team's");
+			match kept.layout.get(&band) {
+				Some(layout) =>
+					if show(a, layout) {
 						arranged.set(Some(band));
 						api.set(Some(a)); // re-runs the placing of groups it lacks
-					}
-				}
-				None => _ = ctx.toaster.info(format!("{name} keeps no columns for a {band} view: arrange these, then save them as {name}")),
+					},
+				None if kept.tints.is_empty() => _ = ctx.toaster.info(format!("{name} keeps no columns for a {band} view: arrange these, then save them as {name}")),
+				None => {}
+			}
+			if *lanes.tints.peek() != kept.tints {
+				tint(kept.tints);
 			}
 		}
 	};
 	rsx! {
 		div { class: "flex items-center gap-1 text-xs",
+			for name in team {
+				Button { key: "team-{name}", variant: ButtonVariant::Ghost, size: Size::Xs, r#type: "button", onclick: { let (apply, name) = (apply.clone(), name.clone()); move |_| apply(name.clone()) }, "{name}" }
+			}
 			for name in favorites {
 				Button { key: "{name}", variant: ButtonVariant::Ghost, size: Size::Xs, r#type: "button", onclick: { let (apply, name) = (apply.clone(), name.clone()); move |_| apply(name.clone()) }, "★ {name}" }
+			}
+			Popover {
+				PopoverTrigger { class: "px-1 text-ink-soft hover:text-ink", aria_label: "column colors", "colors▾" }
+				PopoverContent { align: "start", class: "flex flex-col gap-1 p-2 text-xs",
+					for (key , _) in lanes.groups.read().iter() {
+						div { key: "{key}", class: "flex items-center gap-1",
+							span { class: "w-24 truncate", "{key}" }
+							for choice in std::iter::once(None).chain(Tint::iter().map(Some)) {
+								button {
+									r#type: "button",
+									title: choice.map_or_else(|| "none".to_string(), |t| t.to_string()),
+									class: if lanes.tints.read().get(key).copied() == choice { "size-4 rounded-full border border-ink" } else { "size-4 rounded-full border border-border" },
+									style: choice.map_or_else(String::new, |t| format!("background-color: {}", hue(t))),
+									onclick: {
+										let (key, tint) = (key.clone(), tint.clone());
+										move |_| {
+											let mut tints = lanes.tints.peek().clone();
+											match choice {
+												Some(t) => _ = tints.insert(key.clone(), t),
+												None => _ = tints.remove(&key),
+											}
+											tint(tints);
+										}
+									},
+								}
+							}
+						}
+					}
+				}
 			}
 			super::library::Menu {
 				shelf: Shelf::Columns,
@@ -219,7 +306,7 @@ fn Columns(view: String, groups: Vec<(String, Vec<usize>)>, by: GroupBy, shown: 
 				on_pick: { let apply = apply.clone(); move |name: String| apply(name) },
 				on_save: Some(EventHandler::new(move |name: String| {
 					let a = (*api.peek()).expect("the column dock entered a band before its menu shows");
-					let edit = LibraryEdit::Keep(Kept::Columns { name, by, band: a.band(), layout: a.save() });
+					let edit = LibraryEdit::Keep(Kept::Columns { name, by, band: a.band(), layout: a.save(), tints: lanes.tints.peek().clone() });
 					spawn(async move { _ = ctx.keep(edit).await });
 				})),
 			}
@@ -272,9 +359,22 @@ fn Column(group: String) -> Element {
 	let groups = lanes.groups.read();
 	let members = groups.iter().find(|(k, _)| *k == group).map_or(&[][..], |(_, m)| m.as_slice());
 	let shown = lanes.shown.read();
+	let tint = lanes.tints.read().get(&group).copied();
+	// `--card` can't be mixed from itself on one element: the column mixes it, each card takes the mix
+	let (style, card_style) = match tint {
+		Some(t) => (
+			format!(
+				"background-color: color-mix(in srgb, {0} 4%, transparent); --tinted-card: color-mix(in srgb, {0} 14%, var(--card))",
+				hue(t)
+			),
+			"--card: var(--tinted-card)",
+		),
+		None => (String::new(), ""),
+	};
 	rsx! {
 		div {
 			class: "flex h-full flex-col gap-2 overflow-y-auto p-1",
+			style,
 			ondragover: move |e| e.prevent_default(),
 			ondrop: {
 				let key = group.clone();
@@ -310,11 +410,27 @@ fn Column(group: String) -> Element {
 				div {
 					key: "{cards[i].link}",
 					draggable: "true",
+					style: card_style,
 					ondragstart: { let link = cards[i].link.clone(); move |_| dragged.set(Some(link.clone())) },
 					CardView { card: cards[i].clone(), shown: shown.clone() }
 				}
 			}
 		}
+	}
+}
+
+/// Notion's palette, as its dark theme writes text: a column takes a little of it, its cards more.
+fn hue(tint: Tint) -> &'static str {
+	match tint {
+		Tint::Gray => "#9b9b9b",
+		Tint::Brown => "#ba856f",
+		Tint::Orange => "#c77d48",
+		Tint::Yellow => "#ca9849",
+		Tint::Green => "#529e72",
+		Tint::Blue => "#379ad3",
+		Tint::Purple => "#9d68d3",
+		Tint::Pink => "#d15796",
+		Tint::Red => "#df5452",
 	}
 }
 
@@ -413,9 +529,18 @@ fn Shows(card: Card, shown: Shown) -> Element {
 		Shown::Repo => rsx! { Pick { facet: Facet::Repo, value: card.link.project().to_string(), "{card.link.project().repo()}" } },
 		Shown::Assignees => rsx! { for a in card.assignees.iter() { Pick { facet: Facet::Assignee, value: a.clone(), "@{a}" } } },
 		Shown::Stage => rsx! { Pick { facet: Facet::Stage, value: card.stage.to_string(), Badge { "{card.stage}" } } },
-		Shown::Type =>
-			rsx! { if let Some(k) = card.kind { Pick { facet: Facet::Type, value: k.to_string().trim_start_matches("t:").to_string(), Badge { variant: BadgeVariant::Info, "{k}" } } } },
-		Shown::Labels => rsx! { for l in card.labels.iter() { Pick { facet: Facet::Label, value: l.clone(), Badge { "{l}" } } } },
+		Shown::Type => {
+			let color = card.kind.and_then(|k| label_color(&ctx, &card, &k.to_string()));
+			rsx! { if let Some(k) = card.kind { Pick { facet: Facet::Type, value: k.to_string().trim_start_matches("t:").to_string(), Chip { color, variant: BadgeVariant::Info, "{k}" } } } }
+		}
+		Shown::Labels => {
+			let own_facet = |l: &String| {
+				let scheme = Scheme::from(std::slice::from_ref(l));
+				scheme.kind.is_some() || scheme.importance.is_some() || scheme.hours.is_some() || scheme.pin.is_some()
+			};
+			let labels: Vec<(String, Option<Color>)> = card.labels.iter().filter(|l| !own_facet(l)).map(|l| (l.clone(), label_color(&ctx, &card, l))).collect();
+			rsx! { for (l, color) in labels { Pick { facet: Facet::Label, value: l.clone(), Chip { color, "{l}" } } } }
+		}
 		Shown::Importance => rsx! { Stepper { card: card.clone(), axis: Axis::Importance } },
 		Shown::Hours => rsx! { Stepper { card: card.clone(), axis: Axis::Hours } },
 		Shown::Blockers => {
@@ -425,6 +550,31 @@ fn Shows(card: Card, shown: Shown) -> Element {
 			rsx! { if blocking > 0 { span { title: "blocked by {blocking} open", "⛓{blocking}" } } }
 		}
 		Shown::Prs => rsx! { for pr in card.prs.iter() { a { href: "{pr.url}", target: "_blank", Badge { "PR {pr.state}" } } } },
+	}
+}
+
+fn label_color(ctx: &Ctx, card: &Card, label: &str) -> Option<Color> {
+	let board = ctx.board.read();
+	let colors = &board.as_ref().expect("cards render from the board").colors;
+	colors.get(&card.link.project().to_string())?.get(label).copied()
+}
+
+/// A label in its GitHub colour, as GitHub's dark theme wears one: a faint fill and edge, the text lifted
+/// toward white as far as the colour is dark.
+#[component]
+fn Chip(color: Option<Color>, #[props(default)] variant: BadgeVariant, children: Element) -> Element {
+	let Some(hex) = color else {
+		return rsx! { Badge { variant, {children} } };
+	};
+	let Color([r, g, b]) = hex;
+	let perceived = (0.2126 * f32::from(r) + 0.7152 * f32::from(g) + 0.0722 * f32::from(b)) / 255.;
+	let lift = ((0.6 - perceived) * 100.).max(0.);
+	rsx! {
+		span {
+			class: "inline-flex h-5 items-center rounded-[var(--chip-radius)] border px-1.5 text-caption font-medium whitespace-nowrap",
+			style: "background-color: #{hex}2e; border-color: hsl(from #{hex} h s calc(l + {lift}) / 0.3); color: hsl(from #{hex} h s calc(l + {lift}))",
+			{children}
+		}
 	}
 }
 
