@@ -101,9 +101,12 @@ async fn run() {
 		Some(Arc::new(tedi_task_operations::mock_github::MockGithubClient::new("mock_user")))
 	} else if has_github_commands {
 		let config = exit_on_error(settings.config());
-		let client = match config.github {
+		let client = match exit_on_error(config.github()) {
 			config::GithubAuth::Token(token) => tedi_adapters::github::RealGithubClient::new(token),
-			config::GithubAuth::App(app) => exit_on_error(tedi_adapters::github::RealGithubClient::app(app.id, &app.private_key)),
+			config::GithubAuth::App(app) => exit_on_error(color_eyre::eyre::WrapErr::wrap_err(
+				tedi_adapters::github::RealGithubClient::app(app.id, &app.private_key),
+				"`github_app.private_key`",
+			)),
 		};
 		let retrying = tedi_adapters::github::RetryingGithubClient::new(Arc::new(client), config.github_max_in_flight.unwrap_or(32));
 		Some(Arc::new(retrying) as tedi_adapters::github::BoxedGithubClient)

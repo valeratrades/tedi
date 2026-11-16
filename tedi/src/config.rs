@@ -4,9 +4,11 @@ pub const EXE_NAME: &str = env!("CARGO_PKG_NAME");
 
 #[derive(Clone, Debug, v_macros::LiveSettings, v_macros::MyConfigPrimitives, v_macros::Settings)]
 pub struct AppConfig {
+	/// Exactly one of `github_token` and `github_app` is set: [`AppConfig::github`] reads them.
+	github_token: Option<String>,
+	/// As a GitHub App, whose installations each carry their own rate budget.
 	#[settings(skip)]
-	#[serde(flatten)]
-	pub github: GithubAuth,
+	github_app: Option<GithubApp>,
 	/// The GitHub App's webhook secret: `tedi web` takes deliveries only with it.
 	pub github_webhook_secret: Option<String>,
 	/// Max GitHub requests in flight at once (default: 32). GitHub's secondary rate limit trips around 100.
@@ -23,10 +25,19 @@ pub struct AppConfig {
 	#[serde(default)]
 	pub yes: bool,
 }
+// Two keys rather than one flattened enum: v_utils' Settings warns of every key a flattened field takes as unknown.
+impl AppConfig {
+	pub fn github(&self) -> color_eyre::Result<GithubAuth> {
+		match (&self.github_token, &self.github_app) {
+			(Some(token), None) => Ok(GithubAuth::Token(token.clone())),
+			(None, Some(app)) => Ok(GithubAuth::App(app.clone())),
+			(Some(_), Some(_)) => Err(color_eyre::eyre::eyre!("both `github_token` and `github_app` are set: tedi acts as one of them")),
+			(None, None) => Err(color_eyre::eyre::eyre!("neither `github_token` nor `github_app` is set")),
+		}
+	}
+}
 
-/// Whom tedi acts as on GitHub: `github_token`, or `[github_app]`, whose installations each carry their own rate budget.
-#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
-#[serde(try_from = "GithubAuthKeys", into = "GithubAuthKeys")]
+/// Whom tedi acts as on GitHub.
 pub enum GithubAuth {
 	Token(String),
 	App(GithubApp),
@@ -37,37 +48,6 @@ pub struct GithubApp {
 	pub id: u64,
 	/// The PEM GitHub hands out.
 	pub private_key: String,
-}
-#[derive(Clone, Debug, v_macros::MyConfigPrimitives)]
-struct GithubAuthKeys {
-	github_token: Option<String>,
-	github_app: Option<GithubApp>,
-}
-impl TryFrom<GithubAuthKeys> for GithubAuth {
-	type Error = &'static str;
-
-	fn try_from(keys: GithubAuthKeys) -> Result<Self, Self::Error> {
-		match (keys.github_token, keys.github_app) {
-			(Some(token), None) => Ok(Self::Token(token)),
-			(None, Some(app)) => Ok(Self::App(app)),
-			(Some(_), Some(_)) => Err("both `github_token` and `github_app` are set: tedi acts as one of them"),
-			(None, None) => Err("neither `github_token` nor `github_app` is set"),
-		}
-	}
-}
-impl From<GithubAuth> for GithubAuthKeys {
-	fn from(auth: GithubAuth) -> Self {
-		match auth {
-			GithubAuth::Token(token) => Self {
-				github_token: Some(token),
-				github_app: None,
-			},
-			GithubAuth::App(app) => Self {
-				github_token: None,
-				github_app: Some(app),
-			},
-		}
-	}
 }
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
