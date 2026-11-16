@@ -4,7 +4,7 @@
 //! in data structures without lifetime concerns. Events are parsed using pulldown_cmark
 //! and rendered back to markdown on demand.
 
-use std::fmt;
+use std::{collections::HashMap, fmt};
 
 use pulldown_cmark::{Alignment, BlockQuoteKind, CodeBlockKind, Event, HeadingLevel, LinkType, MetadataBlockKind, Tag, TagEnd};
 
@@ -438,7 +438,7 @@ impl Events {
 	}
 }
 
-/// Preserve blank lines between block elements by inserting `Html("\n")` after `End(Paragraph)`.
+/// Preserve blank lines between block elements by inserting `Html("\n")` after `End(Paragraph)`; before a `Rule` it is what keeps the paragraph from reading as a setext heading.
 ///
 /// `newlines_after_paragraph: 1` in cmark options means `End(P)` only emits 1 newline.
 /// When followed by another block element (Start(P), Start(Heading), etc.), the original blank line
@@ -456,7 +456,7 @@ fn preserve_paragraph_spacing(events: Vec<OwnedEvent>) -> Vec<OwnedEvent> {
 			_ => {}
 		}
 		out.push(events[i].clone());
-		if item_depth == 0 && matches!(&events[i], OwnedEvent::End(OwnedTagEnd::Paragraph)) && matches!(events.get(i + 1), Some(OwnedEvent::Start(_))) {
+		if item_depth == 0 && matches!(&events[i], OwnedEvent::End(OwnedTagEnd::Paragraph)) && matches!(events.get(i + 1), Some(OwnedEvent::Start(_) | OwnedEvent::Rule)) {
 			out.push(OwnedEvent::Html("\n".to_string()));
 		}
 	}
@@ -862,12 +862,22 @@ fn prepare_for_render(events: &[OwnedEvent]) -> Vec<Event<'_>> {
 		}
 	}
 
+	let cuts = markup_cuts(events);
+	fn pieces<'t>(t: &'t str, at: Option<&Vec<usize>>) -> impl Iterator<Item = &'t str> {
+		let mut at: Vec<usize> = at.into_iter().flatten().copied().chain([0, t.len()]).collect();
+		at.sort_unstable();
+		at.dedup();
+		(0..at.len() - 1).map(move |w| &t[at[w]..at[w + 1]])
+	}
 	let mut item_depth = 0usize;
+	let mut in_code_block = false;
 	let mut after_inline = false;
 	for (i, ev) in events.iter().enumerate() {
 		match ev {
 			OwnedEvent::Start(OwnedTag::Item) => item_depth += 1,
 			OwnedEvent::End(OwnedTagEnd::Item) => item_depth -= 1,
+			OwnedEvent::Start(OwnedTag::CodeBlock(_)) => in_code_block = true,
+			OwnedEvent::End(OwnedTagEnd::CodeBlock) => in_code_block = false,
 			_ => {}
 		}
 		// a heading opening right after a title line would otherwise be written onto it
@@ -896,8 +906,13 @@ fn prepare_for_render(events: &[OwnedEvent]) -> Vec<Event<'_>> {
 				"x" => out.push(Event::TaskListMarker(true)),
 				_ => out.push(Event::Text(format!("[{inner}] ").into())),
 			},
-			// the writer escapes any text opening on `#`, but `#` before a digit can't open a heading: `#2` is an issue ref
-			OwnedEvent::Text(t) if t.strip_prefix('#').is_some_and(|r| r.starts_with(|c: char| c.is_ascii_digit())) && !t.contains('|') => out.push(Event::InlineHtml(t.as_str().into())),
+			OwnedEvent::Text(t) if !in_code_block =>
+				for (k, piece) in pieces(t, cuts.get(&i)).enumerate() {
+					match k == 0 && piece.strip_prefix('#').is_some_and(|r| r.starts_with(|c: char| c.is_ascii_digit())) && !piece.contains('|') {
+						true => out.push(Event::InlineHtml(piece.into())), // the writer escapes any text opening on `#`, but `#` before a digit can't open a heading: `#2` is an issue ref
+						false => out.push(Event::Text(piece.into())),
+					}
+				},
 			_ => out.push(ev.to_event()),
 		}
 		if loose_item_ends.contains(&i) {
@@ -906,6 +921,108 @@ fn prepare_for_render(events: &[OwnedEvent]) -> Vec<Event<'_>> {
 	}
 
 	out
+}
+
+/// Byte offsets, per `Text` event, before which a char would open markup where it stands. The writer
+/// escapes only a `Text`'s first char, leaning on pulldown-cmark splitting text at each delimiter it
+/// read; `Events` merges those splits back, so the cuts restore them.
+fn markup_cuts(events: &[OwnedEvent]) -> HashMap<usize, Vec<usize>> {
+	struct Run {
+		event: usize,
+		bytes: std::ops::Range<usize>,
+		delim: char,
+		opens: bool,
+		closes: bool,
+	}
+	// CommonMark's flanking rules; `None` is another event's char, so both readings count
+	fn flanking(delim: char, prev: Option<char>, next: Option<char>) -> (bool, bool) {
+		let ws = |c: char| c.is_whitespace();
+		let punct = |c: char| !c.is_alphanumeric() && !c.is_whitespace();
+		let mut out = (false, false);
+		for p in prev.map_or(vec!['a', '!'], |c| vec![c]) {
+			for n in next.map_or(vec!['a', '!'], |c| vec![c]) {
+				let left = !ws(n) && (!punct(n) || ws(p) || punct(p));
+				let right = !ws(p) && (!punct(p) || ws(n) || punct(n));
+				let (opens, closes) = match delim {
+					'_' => (left && (!right || punct(p)), right && (!left || punct(n))),
+					_ => (left, right),
+				};
+				out = (out.0 || opens, out.1 || closes);
+			}
+		}
+		out
+	}
+
+	let mut cuts: HashMap<usize, Vec<usize>> = HashMap::new();
+	let mut runs: Vec<Run> = Vec::new();
+	let mut emphasis_in_scope = false;
+	let mut in_code_block = false;
+	let close_scope = |runs: &mut Vec<Run>, emphasis_in_scope: &mut bool, cuts: &mut HashMap<usize, Vec<usize>>| {
+		for delim in ['*', '_'] {
+			let of: Vec<&Run> = runs.iter().filter(|r| r.delim == delim).collect();
+			// the writer draws emphasis with `*`
+			let pairs = (delim == '*' && *emphasis_in_scope) || of.iter().enumerate().any(|(a, r)| r.opens && of[a + 1..].iter().any(|r| r.closes));
+			if pairs {
+				for r in of.into_iter().filter(|r| r.opens || r.closes) {
+					cuts.entry(r.event).or_default().extend(r.bytes.clone());
+				}
+			}
+		}
+		runs.clear();
+		*emphasis_in_scope = false;
+	};
+	for (i, ev) in events.iter().enumerate() {
+		match ev {
+			OwnedEvent::Start(OwnedTag::CodeBlock(_)) => in_code_block = true,
+			OwnedEvent::End(OwnedTagEnd::CodeBlock) => in_code_block = false,
+			_ => {}
+		}
+		match ev {
+			OwnedEvent::Text(t) if !in_code_block => {
+				let chars: Vec<(usize, char)> = t.char_indices().collect();
+				let mut k = 0;
+				while k < chars.len() {
+					let (at, c) = chars[k];
+					let prev = k.checked_sub(1).map(|p| chars[p].1);
+					let next = chars.get(k + 1).map(|&(_, n)| n);
+					match c {
+						'*' | '_' => {
+							let end = chars[k..].iter().position(|&(_, x)| x != c).map_or(chars.len(), |len| k + len);
+							let (opens, closes) = flanking(c, prev, chars.get(end).map(|&(_, n)| n));
+							runs.push(Run {
+								event: i,
+								bytes: at..chars.get(end).map_or(t.len(), |&(b, _)| b),
+								delim: c,
+								opens,
+								closes,
+							});
+							k = end;
+							continue;
+						}
+						'`' | '[' => cuts.entry(i).or_default().push(at),
+						'\\' if next.is_none_or(|n| n.is_ascii_punctuation()) => cuts.entry(i).or_default().push(at),
+						'<' if next.is_none_or(|n| n.is_ascii_alphabetic() || matches!(n, '/' | '!' | '?')) => cuts.entry(i).or_default().push(at),
+						_ => {}
+					}
+					k += 1;
+				}
+			}
+			OwnedEvent::Start(OwnedTag::Emphasis | OwnedTag::Strong) | OwnedEvent::End(OwnedTagEnd::Emphasis | OwnedTagEnd::Strong) => emphasis_in_scope = true,
+			OwnedEvent::Start(OwnedTag::Strikethrough | OwnedTag::Link { .. } | OwnedTag::Image { .. })
+			| OwnedEvent::End(OwnedTagEnd::Strikethrough | OwnedTagEnd::Link | OwnedTagEnd::Image)
+			| OwnedEvent::Code(_)
+			| OwnedEvent::InlineHtml(_)
+			| OwnedEvent::InlineMath(_)
+			| OwnedEvent::FootnoteReference(_)
+			| OwnedEvent::SoftBreak
+			| OwnedEvent::HardBreak
+			| OwnedEvent::CheckBox(_)
+			| OwnedEvent::Text(_) => {}
+			_ => close_scope(&mut runs, &mut emphasis_in_scope, &mut cuts),
+		}
+	}
+	close_scope(&mut runs, &mut emphasis_in_scope, &mut cuts);
+	cuts
 }
 
 /// Render a slice of `OwnedEvent`s to markdown using the shared cmark options.

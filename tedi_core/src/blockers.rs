@@ -115,7 +115,7 @@ impl Blockers {
 			if let Some(item_text) = content.strip_prefix("- ") {
 				*pos += 1;
 				let mut item = BlockerItem {
-					text: item_text.to_string(),
+					text: item_text.trim_end().to_string(), // trailing whitespace isn't markdown content: the local file's render drops it
 					comments: Vec::new(),
 					children: Vec::new(),
 				};
@@ -145,7 +145,7 @@ impl Blockers {
 						if !item.children.is_empty() {
 							tracing::warn!("comment after nested blockers at indent level {child_indent}: {child_content:?}");
 						}
-						item.comments.push(child_content.to_string());
+						item.comments.push(child_content.trim_end().to_string());
 						*pos += 1;
 					}
 				}

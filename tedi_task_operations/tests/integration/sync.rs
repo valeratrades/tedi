@@ -458,6 +458,53 @@ async fn test_two_paragraph_body_is_a_roundtrip_fixpoint() {
 	assert_eq!(first, read_issue_file(&path), "reparsing our own render must reproduce it byte for byte");
 }
 
+/// Bodies as `tedi pull` met them on live repos: each read back from its own file as something
+/// else, so a re-pull of an issue nobody touched reported a conflict — or rewrote Github.
+#[tokio::test]
+async fn test_github_bodies_survive_repull_untouched() {
+	for (n, body) in (1..).zip([
+		"# Blockers\n- wait for the upload \n",
+		"_From `docs/refs/amazon_product_page.html:2366` at generation time._\n\n<!-- todo-id: 76848cc633998460 -->\n\n<!-- todo-sync: auto-closed -->\n",
+		"_From `frontend/entities/team/model.ts:21` at generation time._\n\n<!-- todo-id: f7465bb668c6bcfd -->\n",
+		"\\*not emphasis\\*, \\_nor this\\_, while snake_case and 1_-_paths stay bare\n\na paragraph before a rule\n\n---\n",
+		r#"\`@evinvest/i18n\` 0.14 (31e0a85) takes a \`Key\` (\`scope("x")\`, nested by property access) in \`t\`/\`translator\`/\`useT\`; string keys are gone. Every non-English locale is \`common.auto.json\` (generated) under \`common.json\` (hand overrides), and \`evinvest-i18n-check\` now fails on anything untranslated.
+
+Per consumer:
+1. \`npx evinvest-i18n-rekey --root <app> --exclude …\` — \`t("hero.title", en)\` → \`t(hero.title, en)\`, one \`const hero = scope("hero")\` per root a file uses. Keys keep their strings. Lift roots into the slice they belong to by hand where it reads better.
+2. Data-picked keys (template literals / computed) → closed tables by hand; the codemod lists them.
+3. Per locale: move the existing \`common.json\` → \`common.auto.json\` if machine-written, or keep it as overrides; add the other as \`{}\`.
+4. \`resolveCatalogue(locale, en, auto, overrides)\` at the load site; \`messages\` now omits untranslated keys.
+
+Consumers (\`t("…\` call-site files):
+- [ ] admin/frontend (81)
+- [ ] concierge/web (50)
+- [ ] banking/wallet/frontend (59)
+- [ ] EV-Main/site_conductor frontend (45)
+- [ ] EV-Estate/site_conductor frontend (64)
+- [ ] EV-Estate/invest cabinet/frontend (113)
+- [ ] EV-Service-Arb aquafix, vifnet, sites_tools — depend on the package, no \`t(\` calls: version bump only
+- [x] EV-Service-Arb/site_conductor (migrated in the 0.14 change itself)
+
+Out of scope: Rust \`t!\` consumers (literal keys, unchanged)."#,
+	]) {
+		let ctx = TestContext::build_with_preexisting_state_unsafe("");
+		ctx.remote(&parse_virtual(&format!("- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/{n} -->\n  placeholder\n")), Some(Seed::new(15)));
+		ctx.set_remote_body(("o", "r").into(), n, body);
+
+		let out = ctx.run(&["--mock", "pull", "o/r"]);
+		assert!(out.status.success(), "body {body:?}\nstderr: {}", out.stderr);
+		let path = ctx.flat_issue_path(("o", "r").into(), n, "Test Issue");
+		let first = read_issue_file(&path);
+
+		let again = ctx.open_url(("o", "r").into(), n).run();
+		assert!(again.status.success(), "body {body:?}\nfile:\n{first}\nstderr: {}", again.stderr);
+		assert!(!ctx.conflict_file(("o", "r").into(), n).exists(), "body {body:?}: nobody edited it");
+		assert_eq!(first, read_issue_file(&path), "body {body:?}: the file must read back as itself");
+		let calls = ctx.github_calls();
+		assert!(!calls.iter().any(|c| c.starts_with("update_issue_body")), "body {body:?}: Github's text was rewritten: {calls:?}");
+	}
+}
+
 /// When opening via URL with --reset, local state should be completely replaced with remote.
 /// No merge conflicts, no prompts - just nuke and replace.
 #[tokio::test]
@@ -1074,7 +1121,10 @@ async fn test_consensus_sink_writes_meta_json_with_timestamps() {
 	//- /o/r/1_-_Test_Issue.md
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
 	  remote body
-	  \---<!-- comment 1001 @commenter -->
+
+	  ---
+
+	  <!-- comment 1001 @commenter -->
 
 	  A test comment
 	"#);

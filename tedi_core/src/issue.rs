@@ -1219,7 +1219,7 @@ impl VirtualIssue {
 					continue;
 				}
 
-				// HtmlBlock wrappers — skip (the inner Html event is handled below)
+				// the inner Html event is handled below, its wrapper going wherever it goes
 				OwnedEvent::Start(OwnedTag::HtmlBlock) | OwnedEvent::End(OwnedTagEnd::HtmlBlock) => {
 					pos += 1;
 					continue;
@@ -1260,13 +1260,20 @@ impl VirtualIssue {
 						}
 					}
 
-					// Fallthrough: treat as body/comment content
+					// Fallthrough: body/comment content. Unwrapped, it would glue onto the paragraph before it.
+					let opens = matches!(events[..pos].last(), Some(OwnedEvent::Start(OwnedTag::HtmlBlock)));
+					let closes = matches!(events.get(pos + 1), Some(OwnedEvent::End(OwnedTagEnd::HtmlBlock)));
+					let block = opens
+						.then_some(OwnedEvent::Start(OwnedTag::HtmlBlock))
+						.into_iter()
+						.chain([events[pos].clone()])
+						.chain(closes.then_some(OwnedEvent::End(OwnedTagEnd::HtmlBlock)));
 					if in_blockers {
-						blocker_events.push(events[pos].clone());
+						blocker_events.extend(block);
 					} else if in_body {
-						body_events.push(events[pos].clone());
+						body_events.extend(block);
 					} else if current_comment_meta.is_some() {
-						current_comment_events.push(events[pos].clone());
+						current_comment_events.extend(block);
 					}
 					pos += 1;
 				}

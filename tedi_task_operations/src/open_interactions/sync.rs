@@ -541,13 +541,15 @@ mod core {
 			return;
 		}
 		let node = local.identity.link().expect("on the remote, so linked").clone();
-		let found: Vec<Clash> = [Field::Title, Field::Labels, Field::Assignees, Field::Body, Field::State, Field::Comments]
+		let found: Vec<Clash> = [Field::Title, Field::Labels, Field::Assignees, Field::Body, Field::State, Field::Comments, Field::SubIssues]
 			.into_iter()
+			.filter(|field| !since_base || *field != Field::SubIssues)
 			.filter_map(|field| {
 				let (l, b, r) = (field.read(local), base.map(|b| field.read(b)), field.read(remote));
 				let differs = match since_base {
 					true => clash(&l, b.as_ref().expect("checked above"), &r),
-					false => l != r,
+					// a body can differ below what its rendering shows
+					false => l != r || (field == Field::Body && local.body() != remote.body()),
 				};
 				differs.then(|| Clash {
 					node: node.clone(),
