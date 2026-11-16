@@ -10,6 +10,7 @@ use tedi_core::{
 	labels::{HOURS, Scheme},
 	stage::Stage,
 };
+use tilers_dioxus::{DockPanel, Group, MinSize, PackedApi, PackedArea, PanelId, keys::Keymap};
 
 use super::Ctx;
 use crate::api::{self, Sprint};
@@ -56,7 +57,7 @@ pub fn ViewPanel(view: View) -> Element {
 				Ok(hits) => {
 					let groups = group(&board.cards, &hits, v.group_by);
 					match v.layout {
-						Layout::Board => rsx! { Columns { groups, by: v.group_by, shown: v.shown.clone() } },
+						Layout::Board => rsx! { Columns { key: "{v.group_by}", view: v.name.clone(), groups, by: v.group_by, shown: v.shown.clone() } },
 						Layout::Table => rsx! { Rows { groups, shown: v.shown.clone() } },
 						Layout::List => rsx! {
 							div { class: "flex flex-col gap-1 overflow-auto",
@@ -92,65 +93,152 @@ fn Choice<T: strum::IntoEnumIterator + std::fmt::Display + std::str::FromStr + C
 	}
 }
 
-/// Columns, one per group. Grouped by stage, a card dropped on a column moves there.
+/// What every column of a view reads: its tiles are hosted by a dock of their own, so they don't take props from the view.
+#[derive(Clone, Copy)]
+struct Lanes {
+	groups: Signal<Vec<(String, Vec<usize>)>>,
+	by: GroupBy,
+	shown: Signal<Vec<Shown>>,
+	dragged: Signal<Option<tedi_core::IssueLink>>,
+}
+
+/// Columns, one per group, each a tile of a dock nested in the view's: resized, reordered, tabbed together
+/// and cached per view and grouping. Grouped by stage, a card dropped on a column moves there.
 #[component]
-fn Columns(groups: Vec<(String, Vec<usize>)>, by: GroupBy, shown: Vec<Shown>) -> Element {
+fn Columns(view: String, groups: Vec<(String, Vec<usize>)>, by: GroupBy, shown: Vec<Shown>) -> Element {
+	let lanes = use_context_provider(|| Lanes {
+		groups: Signal::new(groups.clone()),
+		by,
+		shown: Signal::new(shown.clone()),
+		dragged: Signal::new(None),
+	});
+	let mut panels = use_signal(Vec::<DockPanel>::new);
+	let mut api = use_signal(|| None::<PackedApi>);
+	use_effect(use_reactive!(|groups, shown| {
+		let (mut g, mut s) = (lanes.groups, lanes.shown);
+		if *g.peek() != groups {
+			g.set(groups);
+		}
+		if *s.peek() != shown {
+			s.set(shown);
+		}
+	}));
+	// every group hosted, its count in the title; a group the query no longer yields keeps its tile, empty
+	use_effect(move || {
+		let groups = lanes.groups.read();
+		let Some(mut api) = *api.read() else { return };
+		let hosted = api.tab_ids();
+		let w = (api.cols() / groups.len().max(1) as u32).max(1);
+		let h = api.rows();
+		for (key, members) in groups.iter() {
+			let id = PanelId(format!("col:{key}"));
+			let title = format!("{key} · {}", members.len());
+			let at = panels.peek().iter().position(|p| p.id == id);
+			match at {
+				Some(i) if panels.peek()[i].title != title => panels.write()[i].title = title,
+				Some(_) => {}
+				None => panels.write().push(column(id.clone(), key.clone(), title)),
+			}
+			if !hosted.contains(&id) {
+				let group = api.mint_group_id();
+				api.place(Group::new(group, id), w, h);
+			}
+		}
+	});
+	let config = tilers_dioxus::Config {
+		storage_key: Some(format!("tedi-columns-{view}-{by}")),
+		keymap: Keymap {
+			scope: Vec::new(),
+			root: Vec::new(),
+			..Default::default()
+		}, // the view's dock holds the keys; two docks would both answer them
+		..Default::default()
+	};
+	rsx! {
+		div { class: "relative min-h-0 flex-1",
+			div { class: "absolute inset-0",
+				PackedArea {
+					panels,
+					on_band: Some(Callback::new(move |a: PackedApi| {
+						let groups = lanes.groups.peek();
+						let mut panels = panels;
+						for id in a.tab_ids() {
+							if !panels.peek().iter().any(|p| p.id == id) {
+								let key = id.0.strip_prefix("col:").expect("this dock hosts only columns").to_string();
+								let count = groups.iter().find(|(k, _)| *k == key).map_or(0, |(_, m)| m.len());
+								panels.write().push(column(id, key.clone(), format!("{key} · {count}")));
+							}
+						}
+						api.set(Some(a));
+					})),
+					config: Some(config),
+				}
+			}
+		}
+	}
+}
+
+fn column(id: PanelId, key: String, title: String) -> DockPanel {
+	DockPanel {
+		id,
+		title,
+		content: rsx! { Column { key: "{key}", group: key.clone() } },
+		min: MinSize::Rem { w: 14.0, h: 8.0 },
+	}
+}
+
+#[component]
+fn Column(group: String) -> Element {
 	let ctx = use_context::<Ctx>();
 	let toaster = use_toaster();
-	let mut dragged = use_signal(|| None::<tedi_core::IssueLink>);
+	let lanes = use_context::<Lanes>();
+	let mut dragged = lanes.dragged;
+	let by = lanes.by;
 	let board = ctx.board.read();
 	let cards = &board.as_ref().expect("views render once the board loaded").cards;
+	let groups = lanes.groups.read();
+	let members = groups.iter().find(|(k, _)| *k == group).map_or(&[][..], |(_, m)| m.as_slice());
+	let shown = lanes.shown.read();
 	rsx! {
-		div { class: "flex min-h-0 flex-1 gap-2 overflow-x-auto",
-			for (key , members) in groups {
+		div {
+			class: "flex h-full flex-col gap-2 overflow-y-auto p-1",
+			ondragover: move |e| e.prevent_default(),
+			ondrop: {
+				let key = group.clone();
+				move |e: DragEvent| {
+					e.prevent_default();
+					let Some(link) = dragged.take() else { return };
+					if by != GroupBy::Stage {
+						toaster.info(format!("Only stage columns take a drop; this view groups by {by}"));
+						return;
+					}
+					let to = Stage::from_str(&key).expect("stage columns are keyed by stage");
+					let Some(card) = ctx.card(&link) else { return }; // gone from the board since the drag began
+					if card.stage == to {
+						return;
+					}
+					match restage(&card.labels, to) {
+						Ok((labels, state)) => {
+							let mut edits = vec![FieldEdit { field: Field::Labels, seen: list(&card.labels), new: list(&labels) }];
+							if state != card.state {
+								edits.push(FieldEdit {
+									field: Field::State,
+									seen: card.state.to_checkbox_contents(),
+									new: state.to_checkbox_contents(),
+								});
+							}
+							spawn(ctx.edit(card.link.clone(), edits));
+						}
+						Err(e) => _ = toaster.info(e.to_string()),
+					}
+				}
+			},
+			for &i in members {
 				div {
-					key: "{key}",
-					class: "flex w-64 shrink-0 flex-col gap-2 rounded-md bg-muted p-2",
-					ondragover: move |e| e.prevent_default(),
-					ondrop: {
-						let key = key.clone();
-						move |e: DragEvent| {
-							e.prevent_default();
-							let Some(link) = dragged.take() else { return };
-							if by != GroupBy::Stage {
-								toaster.info(format!("Only stage columns take a drop; this view groups by {by}"));
-								return;
-							}
-							let to = Stage::from_str(&key).expect("stage columns are keyed by stage");
-							let Some(card) = ctx.card(&link) else { return }; // gone from the board since the drag began
-							if card.stage == to {
-								return;
-							}
-							match restage(&card.labels, to) {
-								Ok((labels, state)) => {
-									let mut edits = vec![FieldEdit { field: Field::Labels, seen: list(&card.labels), new: list(&labels) }];
-									if state != card.state {
-										edits.push(FieldEdit {
-											field: Field::State,
-											seen: card.state.to_checkbox_contents(),
-											new: state.to_checkbox_contents(),
-										});
-									}
-									spawn(ctx.edit(card.link.clone(), edits));
-								}
-								Err(e) => _ = toaster.info(e.to_string()),
-							}
-						}
-					},
-					div { class: "flex items-center justify-between text-sm font-semibold",
-						span { "{key}" }
-						Badge { "{members.len()}" }
-					}
-					div { class: "flex flex-col gap-2 overflow-y-auto",
-						for i in members {
-							div {
-								key: "{cards[i].link}",
-								draggable: "true",
-								ondragstart: { let link = cards[i].link.clone(); move |_| dragged.set(Some(link.clone())) },
-								CardView { card: cards[i].clone(), shown: shown.clone() }
-							}
-						}
-					}
+					key: "{cards[i].link}",
+					draggable: "true",
+					ondragstart: { let link = cards[i].link.clone(); move |_| dragged.set(Some(link.clone())) },
+					CardView { card: cards[i].clone(), shown: shown.clone() }
 				}
 			}
 		}
