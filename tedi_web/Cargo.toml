@@ -7,6 +7,7 @@ description = "The board in a browser: tedi's own store and sync, served"
 license.workspace = true
 repository.workspace = true
 publish = false
+include = ["src/**/*", "README.md", "build.rs"]
 
 [[bin]]
 name = "tedi_web"
