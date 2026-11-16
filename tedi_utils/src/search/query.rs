@@ -97,6 +97,8 @@ pub(super) enum Query {
 
 pub(super) struct Hit {
 	pub score: i32,
+	/// Every positive term sits contiguously in the displayed row.
+	pub in_row: bool,
 	/// Char indices into the displayed row.
 	#[cfg(feature = "picker")]
 	pub line_indices: Vec<usize>,
@@ -138,13 +140,14 @@ impl Query {
 		let terms = match self {
 			Self::Regex(re) => {
 				#[cfg(not(feature = "picker"))]
-				return re.is_match(&c.line).then_some(Hit { score: 0 });
+				return re.is_match(&c.line).then_some(Hit { score: 0, in_row: true });
 				#[cfg(feature = "picker")]
 				{
 					let found = re.find(&c.line)?;
 					let start = c.line[..found.start()].chars().count();
 					return Some(Hit {
 						score: 0,
+						in_row: true,
 						line_indices: (start..start + found.as_str().chars().count()).collect(),
 					});
 				}
@@ -153,6 +156,7 @@ impl Query {
 		};
 		let mut fields = [0u32; 3];
 		let (mut contiguous, mut quality, mut nucleo) = (0u32, 0u32, 0u32);
+		let mut in_row = true;
 		let mut line_indices = Vec::new();
 		for group in terms {
 			let mut satisfied = false;
@@ -180,6 +184,7 @@ impl Query {
 			}
 			let Some(hit) = best else { continue };
 			contiguous += u32::from(hit.quality != Quality::Fuzzy);
+			in_row &= hit.quality != Quality::Fuzzy && hit.field != Field::Body;
 			fields[hit.field as usize] += 1;
 			quality += hit.quality as u32;
 			nucleo += u32::from(hit.score);
@@ -194,6 +199,7 @@ impl Query {
 		let [body, context, title] = fields;
 		Some(Hit {
 			score: pack(contiguous, title, context, body, quality, nucleo),
+			in_row,
 			#[cfg(feature = "picker")]
 			line_indices,
 		})

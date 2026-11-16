@@ -135,6 +135,7 @@ Every issue search — `open`, `sprints select`, `sprints search`, `open --touch
 - **Regex** (`-ee`) / **RegexLine** (`-eee`, anchored): one regex over the displayed row; the body is not consulted. An invalid regex on the CLI is an error.
 
 Ranking: each term takes its best hit by (contiguous over fuzzy — a scatter is a typo, not a hit; then field: title > context > body; then quality: whole word > word prefix > substring; then matcher score); word boundaries are string edges and non-alphanumerics. An item's score is the sum over its terms, so more terms in the title wins; ties keep input order. The body is never fuzzy-matched — a fuzzy term tests it as a substring. Selection maps back by index, never by display string.
+A pattern resolves without the picker when one item matches, or when exactly one item has every term contiguous in its row (title or context — not body).
 
 ## Sources
 
@@ -144,7 +145,7 @@ GitHub is reached through one module in `tedi_task_primitives` — `LazyIssue<Re
 
 tedi acts as `github_token`'s user or as a `github_app`; the App reaches each account through that account's installation, each with its own rate budget, and edits as its bot (`<slug>[bot]`).
 
-`tedi pull [owner|owner/repo]…` (the config's `watch` when none are named) stores every issue those hold: one not stored yet arrives with its whole tree, one stored is pulled through the same merge as any other sync. Each repo keeps the time of its last complete pull, and the next lists only issues updated since; a pull that left any issue unstored doesn't move it.
+`tedi pull [owner|owner/repo]…` (the config's `watch` when none are named) stores every issue those hold: one not stored yet arrives with its whole tree, one stored is pulled through the same merge as any other sync. It lists a repo a page of whole issues per GraphQL call, least recently updated first, and keeps the update time of the last page it stored whole: the next pull, or one picking up after the rate limit cut it short, lists from there. A clash it meets is recorded as a conflict and doesn't hold the cursor back.
 
 ### Local
 

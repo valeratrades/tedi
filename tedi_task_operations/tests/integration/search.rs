@@ -104,3 +104,23 @@ async fn test_select_resolves_by_real_title() {
 	let out = ctx.run(&["--offline", "sprints", "selected", "list"]);
 	assert!(out.stdout.contains("task two"), "stdout: {}", out.stdout);
 }
+
+/// A pattern sitting whole in exactly one row takes it, however many rows only scatter over it.
+#[tokio::test]
+async fn test_select_takes_sole_contiguous_row_over_scatters() {
+	let ctx = with_issues(&[
+		&issue(1, "Futures unordered crash", "# Blockers\n  - task one"),
+		&issue(2, "Functions in Reals", "# Blockers\n  - task two"),
+		&issue(3, "unrelated", "func in the body\n  # Blockers\n  - task three"),
+	])
+	.await;
+	ctx.xdg.write_cache(
+		"sprints_selection.json",
+		&serde_json::json!({ "normal": { "key": "1d", "content": "- https://github.com/o/r/issues/1\n- https://github.com/o/r/issues/2\n- https://github.com/o/r/issues/3\n" } }).to_string(),
+	);
+
+	let out = ctx.run(&["--offline", "sprints", "select", "func"]);
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+	let out = ctx.run(&["--offline", "sprints", "selected", "list"]);
+	assert!(out.stdout.contains("task two"), "stdout: {}", out.stdout);
+}

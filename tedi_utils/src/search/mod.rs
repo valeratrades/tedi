@@ -57,28 +57,30 @@ pub enum SearchError {
 pub fn rank(candidates: &[Candidate], kind: SearchKind, query: &str) -> Result<Vec<usize>, SearchError> {
 	let query = Query::parse(kind, query)?;
 	let prepared: Vec<Prepared> = candidates.iter().enumerate().map(|(i, c)| Prepared::new(i, c)).collect();
-	Ok(ranked(&prepared, &query))
+	Ok(ranked(&prepared, &query).into_iter().map(|(index, _)| index).collect())
 }
 
-/// 0 matches → `None`; 1 → it; more → interactive picker over all candidates, prefilled with `query`.
+/// 0 matches → `None`; 1, or 1 with every term contiguous in its row → it; else interactive picker over all candidates, prefilled with `query`.
 #[cfg(feature = "picker")]
 pub async fn pick(candidates: Vec<Candidate>, kind: SearchKind, query: Option<&str>) -> Result<Option<usize>, SearchError> {
 	let prepared: Vec<Prepared> = candidates.iter().enumerate().map(|(i, c)| Prepared::new(i, c)).collect();
-	let shortlist = match query {
-		Some(q) => ranked(&prepared, &Query::parse(kind, q)?),
-		None => (0..prepared.len()).collect(),
+	let Some(q) = query else {
+		return picker::run(prepared, kind, "").await;
 	};
-	match shortlist[..] {
-		[] => Ok(None),
-		[only] => Ok(Some(only)),
-		_ => picker::run(prepared, kind, query.unwrap_or_default()).await,
+	let shortlist = ranked(&prepared, &Query::parse(kind, q)?);
+	let in_row: Vec<usize> = shortlist.iter().filter_map(|&(index, in_row)| in_row.then_some(index)).collect();
+	match (&shortlist[..], &in_row[..]) {
+		([], _) => Ok(None),
+		([(only, _)], _) | (_, [only]) => Ok(Some(*only)),
+		_ => picker::run(prepared, kind, q).await,
 	}
 }
 
-fn ranked(prepared: &[Prepared], query: &Query) -> Vec<usize> {
-	let mut scored: Vec<(i32, usize)> = with_matcher(|m| prepared.iter().filter_map(|p| query.score(p, m).map(|hit| (hit.score, p.index))).collect());
-	scored.sort_by_key(|&(score, index)| (Reverse(score), index));
-	scored.into_iter().map(|(_, index)| index).collect()
+/// `(index, in_row)` of the matches, best first.
+fn ranked(prepared: &[Prepared], query: &Query) -> Vec<(usize, bool)> {
+	let mut scored: Vec<(i32, usize, bool)> = with_matcher(|m| prepared.iter().filter_map(|p| query.score(p, m).map(|hit| (hit.score, p.index, hit.in_row))).collect());
+	scored.sort_by_key(|&(score, index, _)| (Reverse(score), index));
+	scored.into_iter().map(|(_, index, in_row)| (index, in_row)).collect()
 }
 
 thread_local! {
