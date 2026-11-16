@@ -108,6 +108,46 @@
             '';
             doCheck = false;
           };
+          # What the team instance and `nix run .#dev` show.
+          teamBoard = {
+            watch = [ "EV-Main" "EV-Estate" "EV-Service-Arb" ];
+            board = {
+              archive_after = "1w";
+              views = [
+                {
+                  name = "Triage";
+                  query = "is:open stage:icebox,triage,selected,in_progress,in_review";
+                  layout = "board";
+                  group_by = "stage";
+                  sort = "rank";
+                  shown = [ "repo" "assignees" "importance" "hours" "type" "blockers" ];
+                }
+                {
+                  name = "My issues";
+                  query = "assignee:@me is:open";
+                  layout = "list";
+                  group_by = "stage";
+                  sort = "rank";
+                  shown = [ "repo" "stage" "importance" "hours" ];
+                }
+              ];
+              columns.notion = {
+                by = "stage";
+                tints = {
+                  triage = "orange";
+                  selected = "blue";
+                  in_progress = "blue";
+                  in_review = "purple";
+                  done = "green";
+                };
+              };
+              scopes = {
+                EV-Main.repos = [ "EV-Main/*" ];
+                EV-Estate.repos = [ "EV-Estate/*" ];
+                EV-Service-Arb.repos = [ "EV-Service-Arb/*" ];
+              };
+            };
+          };
           # The team instance, at evinvest.ltd/team/tasks: its own store on the volume, git-initialized on first boot.
           board = pkgs.writeShellApplication {
             name = "tedi-board";
@@ -136,49 +176,12 @@
               imageEnv = [ "HOME=/data" "XDG_DATA_HOME=/data" "XDG_STATE_HOME=/data/state" "XDG_CACHE_HOME=/data/cache" ];
               settings = {
                 pkg = pname;
-                values = {
+                values = teamBoard // {
                   github_app = {
                     id.file = "/secrets/GITHUB_APP_ID";
                     private_key.file = "/secrets/GITHUB_APP_PRIVATE_KEY";
                   };
                   github_webhook_secret.file = "/secrets/GITHUB_WEBHOOK_SECRET";
-                  watch = [ "EV-Main" "EV-Estate" "EV-Service-Arb" ];
-                  board = {
-                    archive_after = "1w";
-                    views = [
-                      {
-                        name = "Triage";
-                        query = "is:open stage:icebox,triage,selected,in_progress,in_review";
-                        layout = "board";
-                        group_by = "stage";
-                        sort = "rank";
-                        shown = [ "repo" "assignees" "importance" "hours" "type" "blockers" ];
-                      }
-                      {
-                        name = "My issues";
-                        query = "assignee:@me is:open";
-                        layout = "list";
-                        group_by = "stage";
-                        sort = "rank";
-                        shown = [ "repo" "stage" "importance" "hours" ];
-                      }
-                    ];
-                    columns.notion = {
-                      by = "stage";
-                      tints = {
-                        triage = "orange";
-                        selected = "blue";
-                        in_progress = "blue";
-                        in_review = "purple";
-                        done = "green";
-                      };
-                    };
-                    scopes = {
-                      EV-Main.repos = [ "EV-Main/*" ];
-                      EV-Estate.repos = [ "EV-Estate/*" ];
-                      EV-Service-Arb.repos = [ "EV-Service-Arb/*" ];
-                    };
-                  };
                 };
               };
             };
@@ -194,6 +197,21 @@
           packages = { default = tediBin; webBundle = webBundle null; } // containerStd.packages;
           containers = pkgs.lib.mapAttrs (_: c: c // { contract = c.contract // deploy; }) containerStd.containers;
 
+          # The team board over this machine's store, on http://127.0.0.1:8080: the client hot-reloads, the server restarts on its sources.
+          apps.dev = {
+            type = "app";
+            program = "${pkgs.writeShellScriptBin "tedi-dev" ''
+              set -euo pipefail
+              [ -f tedi_web/Dioxus.toml ] || { echo "run from the tedi checkout" >&2; exit 1; }
+              exec nix develop -c bash -c '
+                trap "kill 0" EXIT
+                ${pkgs.watchexec}/bin/watchexec --restart --exts rs,toml --ignore "tedi_web/src/ui/**" -- \
+                  cargo run -q -p tedi -- --config ${(pkgs.formats.toml { }).generate "tedi-dev.toml" (teamBoard // { github_token.env = "GITHUB_KEY"; })} \
+                  web --addr 127.0.0.1:7341 --pull-every 10m &
+                cd tedi_web && dx serve --platform web --port 8080 --open false
+              '
+            ''}/bin/tedi-dev";
+          };
           apps.help = {
             type = "app";
             program = "${pkgs.writeShellScriptBin "help" ''
@@ -202,6 +220,7 @@
 
               Commands:
                 nix develop                    dev shell (rust nightly, pre-commit, generated configs)
+                nix run .#dev                  the team board over your store at http://127.0.0.1:8080, reloading as you edit
                 nix build                      build the `${pname}` binary
                 nix run . -- --help            CLI help: open, sprints, manual, clockify, perf-eval, monitors, init
                 cargo t                        tests (integration: tedi_task_operations/tests/)
