@@ -137,7 +137,10 @@
               settings = {
                 pkg = pname;
                 values = {
-                  github_token.file = "/secrets/GITHUB_TOKEN";
+                  github_app = {
+                    id.file = "/secrets/GITHUB_APP_ID";
+                    private_key.file = "/secrets/GITHUB_APP_PRIVATE_KEY";
+                  };
                   github_webhook_secret.file = "/secrets/GITHUB_WEBHOOK_SECRET";
                   watch = [ "EV-Main" "EV-Estate" "EV-Service-Arb" ];
                   board = {

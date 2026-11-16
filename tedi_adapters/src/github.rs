@@ -7,6 +7,8 @@ use tedi_core::CloseState;
 pub use tedi_core::RepoInfo;
 use v_utils::macros::wrap_err;
 
+mod auth;
+
 pub type BoxedGithubClient = Arc<dyn GithubClient>;
 use color_eyre::eyre::{Result, bail, eyre};
 
@@ -136,6 +138,10 @@ pub enum GithubError {
 	#[foreign]
 	Request(reqwest::Error),
 
+	/// Signing the GitHub App's JWT failed.
+	#[foreign]
+	Jwt(jsonwebtoken::errors::Error),
+
 	/// GitHub API returned a non-success status code.
 	#[leaf]
 	#[error("{context}: {status} - {body}")]
@@ -148,7 +154,7 @@ pub enum GithubError {
 
 	/// Client not initialized.
 	#[leaf]
-	#[error("GitHub client not initialized. Is the config file missing a github_token?")]
+	#[error("GitHub client not initialized. Is the config file missing `github_token` or `github_app`?")]
 	NotInitialized,
 
 	/// Generic error (for mocks and other non-HTTP contexts).
@@ -250,37 +256,53 @@ pub struct GraphqlTimeline {
 /// Real Github API client that makes HTTP requests
 pub struct RealGithubClient {
 	http_client: Client,
-	github_token: String,
+	auth: auth::Auth,
 }
 
 impl RealGithubClient {
 	pub fn new(github_token: String) -> Self {
 		Self {
 			http_client: Client::new(),
-			github_token,
+			auth: auth::Auth::Token(github_token),
 		}
 	}
 
-	fn request(&self, method: reqwest::Method, url: &str) -> reqwest::RequestBuilder {
-		self.http_client
-			.request(method, url)
-			.header("User-Agent", "Rust Github Client")
-			.header("Authorization", format!("token {}", self.github_token))
+	/// As a GitHub App: each account it acts on through that account's installation.
+	pub fn app(id: u64, private_key: &str) -> Result<Self, GithubError> {
+		Ok(Self {
+			http_client: Client::new(),
+			auth: auth::Auth::App(auth::App::new(id, private_key)?),
+		})
 	}
 
-	fn get(&self, url: &str) -> reqwest::RequestBuilder {
+	/// The account is the one the url addresses (`/repos/{owner}/…`, `/orgs/{org}/…`).
+	fn request(&self, method: reqwest::Method, url: &str) -> Request<'_> {
+		let path = url.strip_prefix("https://api.github.com/").expect("REST calls go to the API");
+		let owner = path.split_once('/').and_then(|(scope, rest)| matches!(scope, "repos" | "orgs").then(|| rest.split('/').next()).flatten());
+		self.request_as(method, url, owner)
+	}
+
+	fn request_as(&self, method: reqwest::Method, url: &str, owner: Option<&str>) -> Request<'_> {
+		Request {
+			client: self,
+			owner: owner.map(str::to_owned),
+			builder: self.http_client.request(method, url).header("User-Agent", "Rust Github Client"),
+		}
+	}
+
+	fn get(&self, url: &str) -> Request<'_> {
 		self.request(reqwest::Method::GET, url)
 	}
 
-	fn post(&self, url: &str) -> reqwest::RequestBuilder {
+	fn post(&self, url: &str) -> Request<'_> {
 		self.request(reqwest::Method::POST, url)
 	}
 
-	fn patch(&self, url: &str) -> reqwest::RequestBuilder {
+	fn patch(&self, url: &str) -> Request<'_> {
 		self.request(reqwest::Method::PATCH, url)
 	}
 
-	fn delete(&self, url: &str) -> reqwest::RequestBuilder {
+	fn delete(&self, url: &str) -> Request<'_> {
 		self.request(reqwest::Method::DELETE, url)
 	}
 
@@ -297,10 +319,10 @@ impl RealGithubClient {
 		Ok(())
 	}
 
-	/// Run a GraphQL request, surfacing both HTTP and GraphQL-level errors.
-	async fn graphql(&self, query: &str, variables: serde_json::Value, error_context: &str) -> Result<serde_json::Value, GithubError> {
+	/// Run a GraphQL request, surfacing both HTTP and GraphQL-level errors. `repo` is what it acts on, so an App picks its owner's installation.
+	async fn graphql(&self, repo: RepoInfo, query: &str, variables: serde_json::Value, error_context: &str) -> Result<serde_json::Value, GithubError> {
 		let res = self
-			.post("https://api.github.com/graphql")
+			.request_as(reqwest::Method::POST, "https://api.github.com/graphql", Some(repo.owner().expect("github repo")))
 			.json(&serde_json::json!({ "query": query, "variables": variables }))
 			.send()
 			.await?;
@@ -330,9 +352,32 @@ impl RealGithubClient {
 	}
 }
 
+/// A request whose token is picked at `send`, by the account it acts on.
+struct Request<'a> {
+	client: &'a RealGithubClient,
+	owner: Option<String>,
+	builder: reqwest::RequestBuilder,
+}
+impl Request<'_> {
+	fn json<T: serde::Serialize + ?Sized>(self, json: &T) -> Self {
+		Self {
+			builder: self.builder.json(json),
+			..self
+		}
+	}
+
+	async fn send(self) -> Result<reqwest::Response, GithubError> {
+		let token = self.client.auth.token(&self.client.http_client, self.owner.as_deref()).await?;
+		Ok(self.builder.bearer_auth(token).send().await?)
+	}
+}
+
 #[async_trait]
 impl GithubClient for RealGithubClient {
 	async fn fetch_authenticated_user(&self) -> Result<String, GithubError> {
+		if let auth::Auth::App(app) = &self.auth {
+			return app.login(&self.http_client).await;
+		}
 		let res = self.get("https://api.github.com/user").send().await?;
 
 		if !res.status().is_success() {
@@ -635,7 +680,7 @@ impl GithubClient for RealGithubClient {
 			"number": issue_number as i64
 		});
 
-		let response = self.graphql(query, variables, "Failed to fetch timeline via GraphQL").await?;
+		let response = self.graphql(repo, query, variables, "Failed to fetch timeline via GraphQL").await?;
 
 		let mut timeline = GraphqlTimeline::default();
 		let links = |field: &str| -> Result<Vec<tedi_core::IssueLink>, GithubError> {
@@ -821,6 +866,7 @@ impl GithubClient for RealGithubClient {
 		"#;
 		let ids = self
 			.graphql(
+				repo,
 				query,
 				serde_json::json!({ "owner": repo.owner().expect("github repo"), "repo": repo.repo(), "number": issue_number as i64, "target": target.repo() }),
 				"resolve transfer ids",
@@ -839,6 +885,7 @@ impl GithubClient for RealGithubClient {
 		"#;
 		let moved = self
 			.graphql(
+				repo,
 				mutation,
 				serde_json::json!({ "issue": id("/data/repository/issue/id")?, "target": id("/data/target/id")? }),
 				"transfer issue",

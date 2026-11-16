@@ -101,7 +101,10 @@ async fn run() {
 		Some(Arc::new(tedi_task_operations::mock_github::MockGithubClient::new("mock_user")))
 	} else if has_github_commands {
 		let config = exit_on_error(settings.config());
-		let client = tedi_adapters::github::RealGithubClient::new(config.github_token.clone());
+		let client = match config.github {
+			config::GithubAuth::Token(token) => tedi_adapters::github::RealGithubClient::new(token),
+			config::GithubAuth::App(app) => exit_on_error(tedi_adapters::github::RealGithubClient::app(app.id, &app.private_key)),
+		};
 		let retrying = tedi_adapters::github::RetryingGithubClient::new(Arc::new(client), config.github_max_in_flight.unwrap_or(32));
 		Some(Arc::new(retrying) as tedi_adapters::github::BoxedGithubClient)
 	} else {

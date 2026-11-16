@@ -142,6 +142,8 @@ Ranking: each term takes its best hit by (contiguous over fuzzy — a scatter is
 
 GitHub is reached through one module in `tedi_task_primitives` — `LazyIssue<RemoteSource>` in, `Sink<Remote>` out, for both issues and milestones. Field by field, in both directions: [`tedi_task_primitives/remote.typ`](../tedi_task_primitives/remote.typ).
 
+tedi acts as `github_token`'s user or as a `github_app`; the App reaches each account through that account's installation, each with its own rate budget, and edits as its bot (`<slug>[bot]`).
+
 `tedi pull [owner|owner/repo]…` (the config's `watch` when none are named) stores every issue those hold: one not stored yet arrives with its whole tree, one stored is pulled through the same merge as any other sync. Each repo keeps the time of its last complete pull, and the next lists only issues updated since; a pull that left any issue unstored doesn't move it.
 
 ### Local

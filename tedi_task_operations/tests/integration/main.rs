@@ -10,6 +10,7 @@ mod closed_subtree;
 mod conflict;
 mod field_edit;
 mod file_naming;
+mod github_auth;
 mod issue_preservation;
 mod label_scheme;
 mod linked_prs;
