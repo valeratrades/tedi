@@ -140,10 +140,10 @@ pub async fn open_command(args: OpenArgs, mode: SyncMode, mock: Option<MockType>
 		let project_is_virtual = issue.identity.is_virtual;
 
 		if is_create {
-			if !issue.identity.parent_index.index().is_empty() {
-				println!("Creating pending sub-issue: {}", issue.contents.title);
-			} else {
+			if issue.identity.parent_index.index().is_empty() {
 				println!("Creating pending issue: {}", issue.contents.title);
+			} else {
+				println!("Creating pending sub-issue: {}", issue.contents.title);
 			}
 			if !project_is_virtual {
 				println!("Issue will be created on Github when you save and sync.");

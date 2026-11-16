@@ -9,6 +9,13 @@ repository.workspace = true
 publish = false
 include = ["src/**/*", "README.md", "build.rs"]
 
+[package.metadata.cargo-machete]
+ignored = [
+    "dioxus-server",
+    "getrandom",
+    "wasm-bindgen",
+] # `#[server]` expands to `dioxus_server` paths; the other two are a feature switch and a version pin
+
 [[bin]]
 name = "tedi_web"
 path = "src/main.rs"

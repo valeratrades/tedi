@@ -359,7 +359,11 @@ Where HH:MM is the UTC time, monitor_number is the monitor index, and descriptio
 
 		let annotation_lines: Vec<&str> = annotations_raw.lines().map(|l| l.trim()).filter(|l| !l.is_empty()).collect();
 
-		if annotation_lines.len() != llm_screenshots.len() {
+		if annotation_lines.len() == llm_screenshots.len() {
+			for (line, (orig_idx, _)) in annotation_lines.iter().zip(llm_screenshots.iter()) {
+				results.push((*orig_idx, line.to_string()));
+			}
+		} else {
 			tracing::warn!(
 				"LLM returned {} annotations but we sent {} screenshots — printing raw",
 				annotation_lines.len(),
@@ -367,10 +371,6 @@ Where HH:MM is the UTC time, monitor_number is the monitor index, and descriptio
 			);
 			for line in &annotation_lines {
 				results.push((usize::MAX, line.to_string()));
-			}
-		} else {
-			for (line, (orig_idx, _)) in annotation_lines.iter().zip(llm_screenshots.iter()) {
-				results.push((*orig_idx, line.to_string()));
 			}
 		}
 

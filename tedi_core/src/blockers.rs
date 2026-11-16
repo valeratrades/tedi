@@ -427,10 +427,10 @@ fn add_child_to_current(items: &mut Vec<BlockerItem>, item: BlockerItem) {
 		items.push(item);
 		return;
 	};
-	if !last.children.is_empty() {
-		add_child_to_current(&mut last.children, item);
-	} else {
+	if last.children.is_empty() {
 		last.children.push(item);
+	} else {
+		add_child_to_current(&mut last.children, item);
 	}
 }
 

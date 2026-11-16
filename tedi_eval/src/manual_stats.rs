@@ -306,7 +306,9 @@ impl Day {
 				Some(v) => v.as_str().expect("The only way this panics is if user manually changes pbs file") == yd_date,
 				None => false,
 			};
-			if !skip {
+			if skip {
+				pbs_as_value["streaks"][metric] = serde_json::to_value(read_streak).unwrap();
+			} else {
 				let mut new_streak = if is_validated {
 					Streak {
 						pb: read_streak.pb,
@@ -320,8 +322,6 @@ impl Day {
 					new_streak.pb = new_streak.current;
 				}
 				pbs_as_value["streaks"][metric] = serde_json::to_value(new_streak).unwrap();
-			} else {
-				pbs_as_value["streaks"][metric] = serde_json::to_value(read_streak).unwrap();
 			}
 
 			is_validated

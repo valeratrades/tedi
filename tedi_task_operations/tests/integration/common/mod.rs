@@ -1130,7 +1130,7 @@ fn timestamp_for_field(seed: Seed, field_index: i64) -> jiff::Timestamp {
 
 	// Deterministic offset: seed maps linearly to ±12h
 	// -100 → -12h, 0 → 0, +100 → +12h
-	let deterministic_offset = (*seed * HALF_DAY_SECS) / 100;
+	let deterministic_offset = (*seed * HALF_DAY_SECS).div_euclid(100);
 
 	let total_offset = random_offset + deterministic_offset;
 	jiff::Timestamp::from_second(BASE_TIMESTAMP_SECS + total_offset).expect("valid timestamp")

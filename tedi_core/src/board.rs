@@ -283,7 +283,7 @@ impl Sort {
 		match self {
 			Sort::Rank => {}
 			Sort::Importance => hits.sort_by_key(|&i| std::cmp::Reverse(cards[i].importance)),
-			Sort::Hours => hits.sort_by_key(|&i| cards[i].hours.map_or(u16::MAX, |h| h)), // unestimated last
+			Sort::Hours => hits.sort_by_key(|&i| cards[i].hours.unwrap_or(u16::MAX)), // unestimated last
 			Sort::Title => hits.sort_by_cached_key(|&i| cards[i].title.to_lowercase()),
 		}
 	}
