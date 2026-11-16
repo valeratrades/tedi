@@ -24,32 +24,33 @@ this module a body it has already resolved.
 ```
 GITHUB                                       │  what the boundary makes of it
 ─────────────────────────────────────────────┼───────────────────────────────────────────────────
-GET issues/{n}                               │
+GQL issue (one read, `FULL_ISSUE`)           │
     title                                    │  IssueContents.title
     labels                                   │  IssueContents.labels, minus the `p:` ones
-    state         "open" | "closed"          │  ┐ CloseState::from_github
-    state_reason  completed | not_planned |  │  │   → Open | InProgress | Closed | NotPlanned
-                  duplicate                  │  │ `p:partial` / `p:maybe` are no GitHub concept
+    state         OPEN | CLOSED              │  ┐ CloseState::from_github
+    stateReason   COMPLETED | NOT_PLANNED |  │  │   → Open | InProgress | Closed | NotPlanned
+                  DUPLICATE  (lowercased)    │  │ `p:partial` / `p:maybe` are no GitHub concept
     labels        p:*                        │  ┘ either: they ride as labels, are cut here, and
                                              │    `remote_labels` reattaches them on the way out.
                                              │    On a closed issue one is stale — dropped, warned.
-    body          Option<String>             │  split_blockers → (body text, Blockers)
+    body          "" read as none            │  split_blockers → (body text, Blockers)
                                              │    `# Blockers` is no GitHub concept: it rides the
                                              │    tail of the body, is cut here, and `body()`
                                              │    reattaches it on the way out. The section has to
                                              │    be the tail for that round trip to close.
-    user.login                               │  LinkedIssueMeta.user
-    assignees[].login                        │  IssueContents.assignees, sorted
-GET issues/{n}/comments                      │  comments[1..], CommentIdentity::Created { user, id }
+    author.login  null: `ghost`, as REST     │  LinkedIssueMeta.user
+    assignees.login                          │  IssueContents.assignees, sorted
+    comments                                 │  comments[1..], CommentIdentity::Created { user, id }
                                              │    comments[0] is always the body
-GET issues/{n}/sub_issues                    │  children, recursively, each through this same path.
+    subIssues                                │  children, recursively, each through this same path.
                                              │    A `duplicate` state_reason is dropped here, so a
                                              │    duplicate never enters the tree at all.
-GQL timeline                                 │  IssueTimestamps { title, description, labels, state,
+    timelineItems (last 100)                 │  IssueTimestamps { title, description, labels, state,
                                              │    assignees }
-                                             │    REST carries one `updated_at` for the whole issue
-                                             │    while the merge resolves field by field, so the
-                                             │    stamps are read off the timeline instead
+                                             │    `updatedAt` is one for the whole issue while the
+                                             │    merge resolves field by field, so the stamps are
+                                             │    read off the timeline instead; `updatedAt` is
+                                             │    `tedi pull`'s cursor
     blockedBy                                │  each one the blockers don't name already goes atop
                                              │    them — last in sequence — as the shortest ref
                                              │    from here: `#n`, `repo#n`, `owner/repo#n`.
@@ -65,18 +66,18 @@ GQL timeline                                 │  IssueTimestamps { title, descr
 ```
 
 ```
-Three methods, so a caller pays for what it reads:
+Each issue is one GraphQL read (`fetch_full_issue`), made once per load and shared by the
+sources of its tree; `RemoteSource::prefetched` starts from a listed page instead.
 
-  parent_index(source)   lineage → IssueIndex. A `None` lineage walks `fetch_parent_issue` to the
+  parent_index(source)   lineage → IssueIndex. A `None` lineage walks the reads' `parent` to the
                          root; a child source pushes its parent's number, so descending the tree
                          never walks back up.
-  identity(&mut self)    memoized on `is_linked()`        ┐ both re-fetch the issue — each is an
-  contents(&mut self)    memoized on `title.is_empty()`   ┘ entry point in its own right
+  identity(&mut self)    memoized on `is_linked()`
+  contents(&mut self)    memoized on `title.is_empty()`
   children(&mut self)    memoized on `!children.is_empty()`
   load(source)           all three, in that order
 
-`RemoteSource::build` probes for `gh` before any of it, so a missing executable fails at
-construction rather than mid-tree.
+A connection is read whole or the read fails: one cut at its page would read as removals.
 ```
 
 #align(center, diagram(
@@ -85,14 +86,14 @@ construction rather than mid-tree.
   node-stroke: 0.7pt,
   label-size: 7.5pt,
 
-  node((0, 0), align(center)[GitHub \ #text(7pt)[REST + GraphQL]], fill: luma(235), name: <gh>),
+  node((0, 0), align(center)[GitHub \ #text(7pt)[one GraphQL read per issue]], fill: luma(235), name: <gh>),
 
   node((-1.4, 1.2), [`identity()`], name: <id>),
   node((0, 1.2), [`contents()`], name: <cont>),
   node((1.5, 1.2), [`children()`], name: <kids>),
 
-  edge(<gh>, <id>, "->", label: [issue + timeline], label-pos: 0.7, label-side: left),
-  edge(<gh>, <cont>, "->", label: [and comments], label-size: 7pt),
+  edge(<gh>, <id>, "->", label: [identity + timeline], label-pos: 0.7, label-side: left),
+  edge(<gh>, <cont>, "->", label: [contents + comments], label-size: 7pt),
   edge(<gh>, <kids>, "->", label: [sub-issues], label-size: 7pt),
 
   node((-1.4, 2.4), align(center)[`IssueLink` \ `IssueIndex`], name: <link>),

@@ -16,7 +16,7 @@ use async_trait::async_trait;
 use tracing::instrument;
 
 use crate::{
-	github::{CreatedIssue, GithubClient, GithubComment, GithubError, GithubIssue, GithubLabel, GithubMilestone, GithubUser, RepoInfo},
+	github::{CreatedIssue, FetchedIssue, GithubClient, GithubComment, GithubError, GithubIssue, GithubLabel, GithubMilestone, GithubUser, GraphqlTimeline, IssuePage, RepoInfo, SubIssue},
 	local::Local,
 };
 
@@ -28,6 +28,8 @@ const ENV_MOCK_FAIL_GET_MILESTONE: &str = "tedi_MOCK_FAIL_GET_MILESTONE";
 /// State in the `{app}_MOCK_STATE` shape, merged in on the first call after the file appears — a
 /// remote edit made by someone else mid-run (e.g. while the editor is open).
 const ENV_MOCK_REMOTE_EDIT: &str = "tedi_MOCK_REMOTE_EDIT";
+/// Once this many issue pages are listed, every issue read fails as GitHub's spent budget does.
+const ENV_MOCK_RATE_LIMITED_AFTER_PAGES: &str = "tedi_MOCK_RATE_LIMITED_AFTER_PAGES";
 /// Every call is appended here as it happens, so a test can see what reached GitHub up to a point.
 const ENV_MOCK_CALL_LOG: &str = "tedi_MOCK_CALL_LOG";
 /// Mock Github client that stores all state in memory.
@@ -72,6 +74,9 @@ pub struct MockGithubClient {
 	/// When set, `get_milestone`/`update_milestone` fail with this status (fault injection).
 	fail_status: Option<reqwest::StatusCode>,
 
+	rate_limited_after_pages: Option<u64>,
+	pages_listed: AtomicU64,
+
 	/// Call log for debugging
 	call_log: Mutex<Vec<String>>,
 }
@@ -95,6 +100,10 @@ impl MockGithubClient {
 				.ok()
 				.and_then(|v| v.parse::<u16>().ok())
 				.and_then(|c| reqwest::StatusCode::from_u16(c).ok()),
+			rate_limited_after_pages: std::env::var(ENV_MOCK_RATE_LIMITED_AFTER_PAGES)
+				.ok()
+				.map(|v| v.parse().expect("a page count")),
+			pages_listed: AtomicU64::new(0),
 			call_log: Mutex::new(Vec::new()),
 		};
 
@@ -415,6 +424,91 @@ impl MockGithubClient {
 		Ok(f(comment))
 	}
 
+	fn within_rate_limit(&self) -> Result<(), GithubError> {
+		match self.rate_limited_after_pages {
+			Some(pages) if self.pages_listed.load(Ordering::SeqCst) >= pages => Err(GithubError::new_api(
+				reqwest::StatusCode::FORBIDDEN,
+				"API rate limit exceeded".to_string(),
+				"mock budget".to_string(),
+			)),
+			_ => Ok(()),
+		}
+	}
+
+	fn full_issue(&self, key: &RepoKey, number: u64) -> Result<FetchedIssue, GithubError> {
+		let data = self
+			.issues
+			.lock()
+			.unwrap()
+			.get(key)
+			.and_then(|m| m.get(&number))
+			.cloned()
+			.ok_or_else(|| GithubError::new_api(reqwest::StatusCode::NOT_FOUND, format!("no issue #{number} in {key:?}"), "fetch issue".to_string()))?;
+		let comments = self
+			.comments
+			.lock()
+			.unwrap()
+			.get(key)
+			.into_iter()
+			.flat_map(|m| m.values())
+			.filter(|c| c.issue_number == number)
+			.map(|c| GithubComment {
+				id: c.id,
+				body: if c.body.is_empty() { None } else { Some(c.body.clone()) },
+				user: GithubUser { login: c.owner_login.clone() },
+				created_at: c.created_at.clone(),
+				updated_at: c.updated_at.clone(),
+			})
+			.collect();
+		let (children, parent) = {
+			let sub_issues = self.sub_issues.lock().unwrap();
+			let repo_sub_issues = sub_issues.get(key);
+			let children = repo_sub_issues.and_then(|m| m.get(&number)).cloned().unwrap_or_default();
+			let parent = repo_sub_issues.and_then(|m| m.iter().find_map(|(p, c)| c.contains(&number).then_some(*p)));
+			(children, parent)
+		};
+		let sub_issues = {
+			let issues = self.issues.lock().unwrap();
+			children
+				.iter()
+				.filter_map(|n| issues.get(key).and_then(|m| m.get(n)))
+				.map(|c| SubIssue {
+					id: c.id,
+					number: c.number,
+					state_reason: c.state_reason.clone(),
+				})
+				.collect()
+		};
+		let this = (key.clone(), number);
+		let (blocked_by, blocking, linked_at) = {
+			let dependencies = self.dependencies.lock().unwrap();
+			let linked_at = dependencies.iter().chain(self.unlinked.lock().unwrap().iter()).filter(|d| d.blocked == this).filter_map(|d| d.at).max();
+			(
+				dependencies.iter().filter(|d| d.blocked == this).map(|d| d.blocker.0.link(d.blocker.1)).collect(),
+				dependencies.iter().filter(|d| d.blocker == this).map(|d| d.blocked.0.link(d.blocked.1)).collect(),
+				linked_at,
+			)
+		};
+		Ok(FetchedIssue {
+			issue: self.convert_issue_data(key, &data),
+			comments,
+			sub_issues,
+			parent,
+			timeline: GraphqlTimeline {
+				title: data.title_timestamp,
+				description: data.description_timestamp.max(linked_at),
+				labels: data.labels_timestamp,
+				state: data.state_timestamp,
+				assignees: data.assignees_timestamp,
+				blocked_by,
+				blocking,
+				prs: self.prs.lock().unwrap().get(&this).cloned().unwrap_or_default(),
+			},
+			// an untimed mock issue: older than any cursor, which lists it anyway
+			updated_at: data.updated().unwrap_or(jiff::Timestamp::UNIX_EPOCH),
+		})
+	}
+
 	fn convert_issue_data(&self, key: &RepoKey, data: &MockIssueData) -> GithubIssue {
 		GithubIssue {
 			id: data.id,
@@ -512,6 +606,15 @@ struct MockIssueData {
 	assignees_timestamp: Option<jiff::Timestamp>,
 	milestone: Option<u64>,
 	assignees: Vec<String>,
+}
+
+impl MockIssueData {
+	fn updated(&self) -> Option<jiff::Timestamp> {
+		[self.title_timestamp, self.description_timestamp, self.labels_timestamp, self.state_timestamp, self.assignees_timestamp]
+			.into_iter()
+			.flatten()
+			.max()
+	}
 }
 
 /// `blocked` is blocked by `blocker`, linked at `at`.
@@ -617,64 +720,16 @@ impl GithubClient for MockGithubClient {
 	}
 
 	#[instrument(skip_all, fields(issue_number))]
-	async fn fetch_comments(&self, repo: RepoInfo, issue_number: u64) -> Result<Vec<GithubComment>, GithubError> {
-		let owner = repo.owner().expect("github repo");
-		let repo_name = repo.repo();
-		tracing::info!(target: "mock_github", owner, repo_name, issue_number, "fetch_comments");
-		self.log_call(&format!("fetch_comments({owner}, {repo_name}, {issue_number})"));
-
-		let key = RepoKey::new(owner, repo_name);
-		let comments = self.comments.lock().unwrap();
-
-		let repo_comments = match comments.get(&key) {
-			Some(c) => c,
-			None => return Ok(Vec::new()),
+	async fn fetch_full_issue(&self, repo: RepoInfo, issue_number: u64) -> Result<FetchedIssue, GithubError> {
+		let (owner, repo_name) = (repo.owner().expect("github repo"), repo.repo());
+		tracing::info!(target: "mock_github", owner, repo_name, issue_number, "fetch_full_issue");
+		self.log_call(&format!("fetch_full_issue({owner}, {repo_name}, {issue_number})"));
+		self.within_rate_limit()?;
+		let (key, number) = match self.transferred.lock().unwrap().get(&(RepoKey::new(owner, repo_name), issue_number)) {
+			Some(to) => to.clone(),
+			None => (RepoKey::new(owner, repo_name), issue_number),
 		};
-
-		let issue_comments: Vec<GithubComment> = repo_comments
-			.values()
-			.filter(|c| c.issue_number == issue_number)
-			.map(|c| GithubComment {
-				id: c.id,
-				body: if c.body.is_empty() { None } else { Some(c.body.clone()) },
-				user: GithubUser { login: c.owner_login.clone() },
-				created_at: c.created_at.clone(),
-				updated_at: c.updated_at.clone(),
-			})
-			.collect();
-
-		Ok(issue_comments)
-	}
-
-	#[instrument(skip_all, fields(issue_number))]
-	async fn fetch_sub_issues(&self, repo: RepoInfo, issue_number: u64) -> Result<Vec<GithubIssue>, GithubError> {
-		let owner = repo.owner().expect("github repo");
-		let repo_name = repo.repo();
-		tracing::info!(target: "mock_github", owner, repo_name, issue_number, "fetch_sub_issues");
-		self.log_call(&format!("fetch_sub_issues({owner}, {repo_name}, {issue_number})"));
-
-		let key = RepoKey::new(owner, repo_name);
-
-		let sub_issue_numbers = {
-			let sub_issues = self.sub_issues.lock().unwrap();
-			match sub_issues.get(&key).and_then(|m| m.get(&issue_number)) {
-				Some(numbers) => numbers.clone(),
-				None => return Ok(Vec::new()),
-			}
-		};
-
-		let issues = self.issues.lock().unwrap();
-		let repo_issues = match issues.get(&key) {
-			Some(i) => i,
-			None => return Ok(Vec::new()),
-		};
-
-		let result: Vec<GithubIssue> = sub_issue_numbers
-			.iter()
-			.filter_map(|num| repo_issues.get(num).map(|data| self.convert_issue_data(&key, data)))
-			.collect();
-
-		Ok(result)
+		self.full_issue(&key, number)
 	}
 
 	#[instrument(skip_all, fields(issue_number))]
@@ -908,120 +963,6 @@ impl GithubClient for MockGithubClient {
 		Ok(())
 	}
 
-	#[instrument(skip_all, fields(title))]
-	async fn find_issue_by_title(&self, repo: RepoInfo, title: &str) -> Result<Option<u64>, GithubError> {
-		let owner = repo.owner().expect("github repo");
-		let repo_name = repo.repo();
-		tracing::info!(target: "mock_github", owner, repo_name, title, "find_issue_by_title");
-		self.log_call(&format!("find_issue_by_title({owner}, {repo_name}, {title})"));
-
-		let key = RepoKey::new(owner, repo_name);
-		let issues = self.issues.lock().unwrap();
-
-		let repo_issues = match issues.get(&key) {
-			Some(i) => i,
-			None => return Ok(None),
-		};
-
-		for issue in repo_issues.values() {
-			if issue.title == title {
-				return Ok(Some(issue.number));
-			}
-		}
-
-		Ok(None)
-	}
-
-	#[instrument(skip_all, fields(issue_number))]
-	async fn issue_exists(&self, repo: RepoInfo, issue_number: u64) -> Result<bool, GithubError> {
-		let owner = repo.owner().expect("github repo");
-		let repo_name = repo.repo();
-		tracing::info!(target: "mock_github", owner, repo_name, issue_number, "issue_exists");
-		self.log_call(&format!("issue_exists({owner}, {repo_name}, {issue_number})"));
-
-		let key = RepoKey::new(owner, repo_name);
-		let issues = self.issues.lock().unwrap();
-
-		if let Some(repo_issues) = issues.get(&key) {
-			return Ok(repo_issues.contains_key(&issue_number));
-		}
-
-		Ok(false)
-	}
-
-	#[instrument(skip_all, fields(issue_number))]
-	async fn fetch_parent_issue(&self, repo: RepoInfo, issue_number: u64) -> Result<Option<GithubIssue>, GithubError> {
-		let owner = repo.owner().expect("github repo");
-		let repo_name = repo.repo();
-		tracing::info!(target: "mock_github", owner, repo_name, issue_number, "fetch_parent_issue");
-		self.log_call(&format!("fetch_parent_issue({owner}, {repo_name}, {issue_number})"));
-
-		let key = RepoKey::new(owner, repo_name);
-
-		// Find the parent by searching through sub_issues relationships
-		let parent_number = {
-			let sub_issues = self.sub_issues.lock().unwrap();
-			if let Some(repo_sub_issues) = sub_issues.get(&key) {
-				// Find which parent has this issue as a child
-				repo_sub_issues
-					.iter()
-					.find_map(|(parent, children)| if children.contains(&issue_number) { Some(*parent) } else { None })
-			} else {
-				None
-			}
-		};
-
-		match parent_number {
-			Some(parent_num) => {
-				let issues = self.issues.lock().unwrap();
-				let repo_issues = issues.get(&key).ok_or_else(|| GithubError::new_other(format!("Repository not found: {owner}/{repo_name}")))?;
-				let parent_data = repo_issues
-					.get(&parent_num)
-					.ok_or_else(|| GithubError::new_other(format!("Parent issue not found: #{parent_num}")))?;
-				Ok(Some(self.convert_issue_data(&key, parent_data)))
-			}
-			None => Ok(None),
-		}
-	}
-
-	#[instrument(skip_all, fields(issue_number))]
-	async fn fetch_timeline(&self, repo: RepoInfo, issue_number: u64) -> Result<crate::github::GraphqlTimeline, GithubError> {
-		let owner = repo.owner().expect("github repo");
-		let repo_name = repo.repo();
-		tracing::info!(target: "mock_github", owner, repo_name, issue_number, "fetch_timeline");
-		self.log_call(&format!("fetch_timeline({owner}, {repo_name}, {issue_number})"));
-
-		let issues = self.issues.lock().unwrap();
-		let key = RepoKey::new(owner, repo_name);
-		let this = (key.clone(), issue_number);
-		let dependencies = self.dependencies.lock().unwrap();
-		let blocked_by = dependencies.iter().filter(|d| d.blocked == this).map(|d| d.blocker.0.link(d.blocker.1)).collect();
-		let blocking = dependencies.iter().filter(|d| d.blocker == this).map(|d| d.blocked.0.link(d.blocked.1)).collect();
-		let linked_at = dependencies
-			.iter()
-			.chain(self.unlinked.lock().unwrap().iter())
-			.filter(|d| d.blocked == this)
-			.filter_map(|d| d.at)
-			.max();
-
-		if let Some(repo_issues) = issues.get(&key)
-			&& let Some(issue) = repo_issues.get(&issue_number)
-		{
-			return Ok(crate::github::GraphqlTimeline {
-				title: issue.title_timestamp,
-				description: issue.description_timestamp.max(linked_at),
-				labels: issue.labels_timestamp,
-				state: issue.state_timestamp,
-				assignees: issue.assignees_timestamp,
-				blocked_by,
-				blocking,
-				prs: self.prs.lock().unwrap().get(&this).cloned().unwrap_or_default(),
-			});
-		}
-
-		Ok(crate::github::GraphqlTimeline::default())
-	}
-
 	#[instrument(skip_all, fields(issue_number, ?milestone))]
 	async fn set_issue_milestone(&self, repo: RepoInfo, issue_number: u64, milestone: Option<u64>) -> Result<(), GithubError> {
 		let owner = repo.owner().expect("github repo");
@@ -1178,28 +1119,34 @@ impl GithubClient for MockGithubClient {
 		Ok(repos)
 	}
 
-	/// An issue counts as updated at its newest field timestamp; one with none always does.
-	async fn list_repo_issues(&self, repo: RepoInfo, since: Option<jiff::Timestamp>) -> Result<Vec<GithubIssue>, GithubError> {
-		self.log_call(&format!("list_repo_issues({repo}, {since:?})"));
+	/// An issue counts as updated at its newest field timestamp; one with none always does. Two a
+	/// page, so every pull test pages.
+	async fn list_repo_issues(&self, repo: RepoInfo, since: Option<jiff::Timestamp>, after: Option<&str>) -> Result<IssuePage, GithubError> {
+		const PAGE: usize = 2;
+		self.log_call(&format!("list_repo_issues({repo}, {since:?}, {after:?})"));
+		self.within_rate_limit()?;
 		let key = RepoKey::from(repo);
-		let issues = self.issues.lock().unwrap();
-		let mut listed: Vec<&MockIssueData> = issues
+		let mut listed: Vec<(jiff::Timestamp, u64)> = self
+			.issues
+			.lock()
+			.unwrap()
 			.get(&key)
 			.into_iter()
 			.flat_map(|m| m.values())
-			.filter(|i| {
-				let updated = [i.title_timestamp, i.description_timestamp, i.labels_timestamp, i.state_timestamp, i.assignees_timestamp]
-					.into_iter()
-					.flatten()
-					.max();
-				match (since, updated) {
-					(Some(since), Some(updated)) => updated >= since,
-					_ => true,
-				}
+			.filter(|i| match (since, i.updated()) {
+				(Some(since), Some(updated)) => updated >= since,
+				_ => true,
 			})
+			.map(|i| (i.updated().unwrap_or(jiff::Timestamp::UNIX_EPOCH), i.number))
 			.collect();
-		listed.sort_by_key(|i| i.number);
-		Ok(listed.into_iter().map(|i| self.convert_issue_data(&key, i)).collect())
+		listed.sort_unstable();
+		let start: usize = after.map(|a| a.parse().expect("a cursor this mock handed out")).unwrap_or(0);
+		let issues = listed.iter().skip(start).take(PAGE).map(|(_, n)| self.full_issue(&key, *n)).collect::<Result<_, _>>()?;
+		self.pages_listed.fetch_add(1, Ordering::SeqCst);
+		Ok(IssuePage {
+			issues,
+			next: (start + PAGE < listed.len()).then(|| (start + PAGE).to_string()),
+		})
 	}
 
 	async fn set_assignees(&self, repo: RepoInfo, issue_number: u64, assignees: &[String]) -> Result<(), GithubError> {
@@ -1259,8 +1206,8 @@ mod tests {
 		client.add_sub_issue_relation(repo, 1, 2);
 
 		// Fetch sub-issues
-		let sub_issues = client.fetch_sub_issues(repo, 1).await.unwrap();
-		assert_debug_snapshot!(format!("{sub_issues:?}"), @r#""[GithubIssue { id: 1001, number: 2, title: \"Child Issue\", body: None, labels: [], user: GithubUser { login: \"testuser\" }, state: \"open\", state_reason: None, assignees: [], pull_request: None, html_url: \"https://github.com/owner/repo/issues/2\" }]""#);
+		let sub_issues = client.fetch_full_issue(repo, 1).await.unwrap().sub_issues;
+		assert_debug_snapshot!(format!("{sub_issues:?}"), @r#""[SubIssue { id: 1001, number: 2, state_reason: None }]""#);
 	}
 
 	#[tokio::test]
@@ -1286,12 +1233,12 @@ mod tests {
 		client.add_comment(repo, 1, 100, "First comment", "testuser", test_ts());
 		client.add_comment(repo, 1, 101, "Second comment", "other", test_ts());
 
-		let comments = client.fetch_comments(repo, 1).await.unwrap();
+		let comments = client.fetch_full_issue(repo, 1).await.unwrap().comments;
 		assert_eq!(comments.len(), 2);
 
 		// Delete a comment
 		client.delete_comment(repo, 100).await.unwrap();
-		let comments = client.fetch_comments(repo, 1).await.unwrap();
+		let comments = client.fetch_full_issue(repo, 1).await.unwrap().comments;
 		assert_eq!(comments.len(), 1);
 	}
 
@@ -1302,19 +1249,19 @@ mod tests {
 
 		client.add_issue(repo, 1, "Issue", "", "open", vec![], "testuser", Some(test_ts()));
 		let _ = client.fetch_issue(repo, 1).await;
-		let _ = client.fetch_comments(repo, 1).await;
+		let _ = client.fetch_full_issue(repo, 1).await;
 
 		let log = client.get_call_log();
 		assert_eq!(log.len(), 2);
 		assert!(log[0].contains("fetch_issue"));
-		assert!(log[1].contains("fetch_comments"));
+		assert!(log[1].contains("fetch_full_issue"));
 
 		client.clear_call_log();
 		assert!(client.get_call_log().is_empty());
 	}
 
 	#[tokio::test]
-	async fn test_mock_fetch_parent_issue() {
+	async fn test_mock_parent_issue() {
 		let client = MockGithubClient::new("testuser");
 		let repo = RepoInfo::new("owner", "repo");
 
@@ -1327,18 +1274,8 @@ mod tests {
 		client.add_sub_issue_relation(repo, 1, 2);
 		client.add_sub_issue_relation(repo, 2, 3);
 
-		// Root issue has no parent
-		let parent = client.fetch_parent_issue(repo, 1).await.unwrap();
-		assert!(parent.is_none());
-
-		// Child issue has parent
-		let parent = client.fetch_parent_issue(repo, 2).await.unwrap();
-		assert!(parent.is_some());
-		assert_eq!(parent.unwrap().number, 1);
-
-		// Grandchild has child as parent
-		let parent = client.fetch_parent_issue(repo, 3).await.unwrap();
-		assert!(parent.is_some());
-		assert_eq!(parent.unwrap().number, 2);
+		assert_eq!(client.fetch_full_issue(repo, 1).await.unwrap().parent, None);
+		assert_eq!(client.fetch_full_issue(repo, 2).await.unwrap().parent, Some(1));
+		assert_eq!(client.fetch_full_issue(repo, 3).await.unwrap().parent, Some(2));
 	}
 }

@@ -123,8 +123,13 @@ impl TestContext {
 	///
 	/// Used in cases where we don't have to simulate additional user input. If you're testing `open` command, you probably want to run it through [open builder](Self::open)
 	pub fn run(&self, args: &[&str]) -> RunOutput {
+		self.run_with_env(args, &[])
+	}
+
+	pub fn run_with_env(&self, args: &[&str], env: &[(&str, &str)]) -> RunOutput {
 		let mut cmd = Command::new(get_binary_path());
 		cmd.args(args);
+		cmd.envs(env.iter().copied());
 		cmd.envs(BINARY_ENV);
 		cmd.env("EDITOR", "true"); // an unmocked editor exits untouched instead of hanging the suite
 		cmd.env(ENV_GITHUB_TOKEN, "test_token");

@@ -22,11 +22,8 @@ pub trait GithubClient: Send + Sync {
 	/// Fetch a single issue by number
 	async fn fetch_issue(&self, repo: RepoInfo, issue_number: u64) -> Result<GithubIssue, GithubError>;
 
-	/// Fetch all comments on an issue
-	async fn fetch_comments(&self, repo: RepoInfo, issue_number: u64) -> Result<Vec<GithubComment>, GithubError>;
-
-	/// Fetch all sub-issues of an issue
-	async fn fetch_sub_issues(&self, repo: RepoInfo, issue_number: u64) -> Result<Vec<GithubIssue>, GithubError>;
+	/// Everything the store keeps of an issue, in one GraphQL read.
+	async fn fetch_full_issue(&self, repo: RepoInfo, issue_number: u64) -> Result<FetchedIssue, GithubError>;
 
 	/// Update an issue's body
 	async fn update_issue_body(&self, repo: RepoInfo, issue_number: u64, body: &str) -> Result<(), GithubError>;
@@ -61,21 +58,6 @@ pub trait GithubClient: Send + Sync {
 
 	/// `blocker_id` is the resource ID (not the issue number)
 	async fn remove_blocked_by(&self, repo: RepoInfo, issue_number: u64, blocker_id: u64) -> Result<(), GithubError>;
-
-	/// Find an issue by exact title match
-	#[allow(dead_code)]
-	async fn find_issue_by_title(&self, repo: RepoInfo, title: &str) -> Result<Option<u64>, GithubError>;
-
-	/// Check if an issue exists by number
-	#[allow(dead_code)]
-	async fn issue_exists(&self, repo: RepoInfo, issue_number: u64) -> Result<bool, GithubError>;
-
-	/// Fetch the parent issue of a sub-issue (returns None if issue has no parent)
-	async fn fetch_parent_issue(&self, repo: RepoInfo, issue_number: u64) -> Result<Option<GithubIssue>, GithubError>;
-
-	/// Field-change timestamps and dependency links, in one GraphQL round trip.
-	/// Note: Comment timestamps should be extracted from GithubComment's created_at/updated_at fields.
-	async fn fetch_timeline(&self, repo: RepoInfo, issue_number: u64) -> Result<GraphqlTimeline, GithubError>;
 
 	/// Replace all labels on an issue.
 	async fn set_labels(&self, repo: RepoInfo, issue_number: u64, labels: &[String]) -> Result<(), GithubError>;
@@ -114,8 +96,32 @@ pub trait GithubClient: Send + Sync {
 	/// The org's repos, archived ones aside.
 	async fn list_org_repos(&self, org: &str) -> Result<Vec<RepoInfo>, GithubError>;
 
-	/// Every issue updated at or after `since`, open and closed, pull requests aside.
-	async fn list_repo_issues(&self, repo: RepoInfo, since: Option<jiff::Timestamp>) -> Result<Vec<GithubIssue>, GithubError>;
+	/// The page from `after` of every issue updated at or after `since`, open and closed, least recently updated first.
+	async fn list_repo_issues(&self, repo: RepoInfo, since: Option<jiff::Timestamp>, after: Option<&str>) -> Result<IssuePage, GithubError>;
+}
+
+#[derive(Clone, Debug)]
+pub struct FetchedIssue {
+	pub issue: GithubIssue,
+	pub comments: Vec<GithubComment>,
+	pub sub_issues: Vec<SubIssue>,
+	pub parent: Option<u64>,
+	pub timeline: GraphqlTimeline,
+	pub updated_at: jiff::Timestamp,
+}
+
+#[derive(Clone, Debug)]
+pub struct SubIssue {
+	pub id: u64,
+	pub number: u64,
+	pub state_reason: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct IssuePage {
+	pub issues: Vec<FetchedIssue>,
+	/// `None` on the last page
+	pub next: Option<String>,
 }
 
 /// A milestone as returned by the GitHub REST API.
@@ -225,9 +231,8 @@ pub struct CreatedIssue {
 	pub html_url: String,
 }
 
-/// From the GraphQL timeline API: when issue fields last changed, and the issue's dependency links.
+/// When issue fields last changed, and the issue's dependency links.
 /// Timestamps are optional because GitHub's timeline only retains events for 90 days.
-/// Note: Comment timestamps are fetched via REST API (in GithubComment), not here.
 #[derive(Clone, Debug, Default)]
 pub struct GraphqlTimeline {
 	/// Most recent title change (from RenamedTitleEvent)
@@ -278,7 +283,9 @@ impl RealGithubClient {
 	/// The account is the one the url addresses (`/repos/{owner}/…`, `/orgs/{org}/…`).
 	fn request(&self, method: reqwest::Method, url: &str) -> Request<'_> {
 		let path = url.strip_prefix("https://api.github.com/").expect("REST calls go to the API");
-		let owner = path.split_once('/').and_then(|(scope, rest)| matches!(scope, "repos" | "orgs").then(|| rest.split('/').next()).flatten());
+		let owner = path
+			.split_once('/')
+			.and_then(|(scope, rest)| matches!(scope, "repos" | "orgs").then(|| rest.split('/').next()).flatten());
 		self.request_as(method, url, owner)
 	}
 
@@ -404,40 +411,18 @@ impl GithubClient for RealGithubClient {
 		Ok(issue)
 	}
 
-	async fn fetch_comments(&self, repo: RepoInfo, issue_number: u64) -> Result<Vec<GithubComment>, GithubError> {
-		let url = format!(
-			"https://api.github.com/repos/{}/{}/issues/{issue_number}/comments",
-			repo.owner().expect("github repo"),
-			repo.repo()
-		);
-		let res = self.get(&url).send().await?;
-
-		if !res.status().is_success() {
-			let status = res.status();
-			let body = res.text().await.unwrap_or_default();
-			return Err(GithubError::new_api(status, body, "Failed to fetch comments".to_string()));
+	async fn fetch_full_issue(&self, repo: RepoInfo, issue_number: u64) -> Result<FetchedIssue, GithubError> {
+		let query = format!("query($owner: String!, $repo: String!, $number: Int!) {{ repository(owner: $owner, name: $repo) {{ issue(number: $number) {{ ...Full }} }} }} {FULL_ISSUE}");
+		let variables = serde_json::json!({ "owner": repo.owner().expect("github repo"), "repo": repo.repo(), "number": issue_number as i64 });
+		let context = format!("fetch {repo}#{issue_number}");
+		let mut response = self.graphql(repo, &query, variables, &context).await.map_err(|e| not_found_as_404(e, &context))?;
+		let issue = response.pointer_mut("/data/repository/issue").map(serde_json::Value::take).unwrap_or_default();
+		if issue.is_null() {
+			return Err(GithubError::new_api(reqwest::StatusCode::NOT_FOUND, response.to_string(), context));
 		}
-
-		let comments = res.json::<Vec<GithubComment>>().await?;
-		Ok(comments)
-	}
-
-	async fn fetch_sub_issues(&self, repo: RepoInfo, issue_number: u64) -> Result<Vec<GithubIssue>, GithubError> {
-		let url = format!(
-			"https://api.github.com/repos/{}/{}/issues/{issue_number}/sub_issues",
-			repo.owner().expect("github repo"),
-			repo.repo()
-		);
-		let res = self.get(&url).send().await?;
-
-		if !res.status().is_success() {
-			// Sub-issues API might not be available or issue has no sub-issues
-			// Return empty vec instead of erroring
-			return Ok(Vec::new());
-		}
-
-		let sub_issues = res.json::<Vec<GithubIssue>>().await?;
-		Ok(sub_issues)
+		serde_json::from_value::<GqlIssue>(issue)
+			.map_err(|e| GithubError::new_graphql(format!("{context}: {e}")))?
+			.into_fetched()
 	}
 
 	async fn update_issue_body(&self, repo: RepoInfo, issue_number: u64, body: &str) -> Result<(), GithubError> {
@@ -556,244 +541,6 @@ impl GithubClient for RealGithubClient {
 			return Err(GithubError::new_api(status, body, "Failed to remove blocked-by dependency".to_string()));
 		}
 		Ok(())
-	}
-
-	async fn find_issue_by_title(&self, repo: RepoInfo, title: &str) -> Result<Option<u64>, GithubError> {
-		// Search for issues with this title (search in open and closed)
-		let encoded_title = urlencoding::encode(title);
-		let url = format!(
-			"https://api.github.com/search/issues?q=repo:{}/{}+in:title+{encoded_title}",
-			repo.owner().expect("github repo"),
-			repo.repo()
-		);
-		let res = self.get(&url).send().await?;
-
-		if !res.status().is_success() {
-			return Ok(None);
-		}
-
-		#[derive(Deserialize)]
-		struct SearchResult {
-			items: Vec<SearchItem>,
-		}
-		#[derive(Deserialize)]
-		struct SearchItem {
-			number: u64,
-			title: String,
-		}
-
-		let result: SearchResult = res.json().await?;
-
-		// Find exact title match
-		for item in result.items {
-			if item.title == title {
-				return Ok(Some(item.number));
-			}
-		}
-
-		Ok(None)
-	}
-
-	async fn issue_exists(&self, repo: RepoInfo, issue_number: u64) -> Result<bool, GithubError> {
-		let url = format!("https://api.github.com/repos/{}/{}/issues/{issue_number}", repo.owner().expect("github repo"), repo.repo());
-		let res = self.get(&url).send().await?;
-		Ok(res.status().is_success())
-	}
-
-	async fn fetch_parent_issue(&self, repo: RepoInfo, issue_number: u64) -> Result<Option<GithubIssue>, GithubError> {
-		let url = format!("https://api.github.com/repos/{}/{}/issues/{issue_number}/parent", repo.owner().expect("github repo"), repo.repo());
-		let res = self.get(&url).send().await?;
-
-		if res.status() == reqwest::StatusCode::NOT_FOUND {
-			// Issue has no parent
-			return Ok(None);
-		}
-
-		if !res.status().is_success() {
-			let status = res.status();
-			let body = res.text().await.unwrap_or_default();
-			return Err(GithubError::new_api(status, body, "Failed to fetch parent issue".to_string()));
-		}
-
-		let parent = res.json::<GithubIssue>().await?;
-		Ok(Some(parent))
-	}
-
-	async fn fetch_timeline(&self, repo: RepoInfo, issue_number: u64) -> Result<GraphqlTimeline, GithubError> {
-		// Note: GitHub timeline only retains events for 90 days, so all timestamps are optional.
-		// Comment timestamps are fetched via REST API (GithubComment has created_at/updated_at).
-		let query = r#"
-			query($owner: String!, $repo: String!, $number: Int!) {
-				repository(owner: $owner, name: $repo) {
-					issue(number: $number) {
-						lastEditedAt
-						createdAt
-						blockedBy(first: 100) { nodes { url } }
-						blocking(first: 100) { nodes { url } }
-						closedByPullRequestsReferences(first: 50, includeClosedPrs: true) { nodes { url isDraft state } }
-						timelineItems(last: 100, itemTypes: [RENAMED_TITLE_EVENT, LABELED_EVENT, UNLABELED_EVENT, CLOSED_EVENT, REOPENED_EVENT, BLOCKED_BY_ADDED_EVENT, BLOCKED_BY_REMOVED_EVENT, ASSIGNED_EVENT, UNASSIGNED_EVENT, CONNECTED_EVENT, DISCONNECTED_EVENT]) {
-							nodes {
-								__typename
-								... on RenamedTitleEvent {
-									createdAt
-								}
-								... on LabeledEvent {
-									createdAt
-								}
-								... on UnlabeledEvent {
-									createdAt
-								}
-								... on ClosedEvent {
-									createdAt
-								}
-								... on ReopenedEvent {
-									createdAt
-								}
-								... on BlockedByAddedEvent {
-									createdAt
-								}
-								... on BlockedByRemovedEvent {
-									createdAt
-								}
-								... on AssignedEvent {
-									createdAt
-								}
-								... on UnassignedEvent {
-									createdAt
-								}
-								... on ConnectedEvent {
-									subject { ... on PullRequest { url isDraft state } }
-								}
-								... on DisconnectedEvent {
-									subject { ... on PullRequest { url isDraft state } }
-								}
-							}
-						}
-					}
-				}
-			}
-		"#;
-
-		let variables = serde_json::json!({
-			"owner": repo.owner().expect("github repo"),
-			"repo": repo.repo(),
-			"number": issue_number as i64
-		});
-
-		let response = self.graphql(repo, query, variables, "Failed to fetch timeline via GraphQL").await?;
-
-		let mut timeline = GraphqlTimeline::default();
-		let links = |field: &str| -> Result<Vec<tedi_core::IssueLink>, GithubError> {
-			let nodes = response
-				.pointer(&format!("/data/repository/issue/{field}/nodes"))
-				.and_then(|v| v.as_array())
-				.ok_or_else(|| GithubError::new_graphql(format!("no {field} in {response}")))?;
-			nodes
-				.iter()
-				.map(|n| {
-					n.get("url")
-						.and_then(|u| u.as_str())
-						.and_then(tedi_core::IssueLink::parse)
-						.ok_or_else(|| GithubError::new_graphql(format!("{field} node is not an issue: {n}")))
-				})
-				.collect()
-		};
-		timeline.blocked_by = links("blockedBy")?;
-		timeline.blocking = links("blocking")?;
-		let pr = |node: &serde_json::Value| -> Result<tedi_core::LinkedPr, GithubError> {
-			let field = |name: &str| node.get(name).ok_or_else(|| GithubError::new_graphql(format!("pull request without {name}: {node}")));
-			let url = field("url")?
-				.as_str()
-				.ok_or_else(|| GithubError::new_graphql(format!("pull request url is not a string: {node}")))?;
-			let state = match (field("state")?.as_str(), field("isDraft")?.as_bool()) {
-				(Some("MERGED"), _) => tedi_core::PrState::Merged,
-				(Some("CLOSED"), _) => tedi_core::PrState::Closed,
-				(Some("OPEN"), Some(true)) => tedi_core::PrState::Draft,
-				(Some("OPEN"), Some(false)) => tedi_core::PrState::Open,
-				_ => return Err(GithubError::new_graphql(format!("unknown pull request state: {node}"))),
-			};
-			Ok(tedi_core::LinkedPr { url: url.to_string(), state })
-		};
-		timeline.prs = response
-			.pointer("/data/repository/issue/closedByPullRequestsReferences/nodes")
-			.and_then(|v| v.as_array())
-			.ok_or_else(|| GithubError::new_graphql(format!("no closedByPullRequestsReferences in {response}")))?
-			.iter()
-			.map(pr)
-			.collect::<Result<_, _>>()?;
-
-		// Extract body edit timestamp (description).
-		// `lastEditedAt` is null if the body was never edited after creation, so fall back to `createdAt`.
-		let description_ts = response
-			.pointer("/data/repository/issue/lastEditedAt")
-			.and_then(|v| v.as_str())
-			.or_else(|| response.pointer("/data/repository/issue/createdAt").and_then(|v| v.as_str()));
-		if let Some(ts_str) = description_ts {
-			timeline.description = ts_str.parse().ok();
-		}
-
-		// Process timeline items
-		if let Some(nodes) = response.pointer("/data/repository/issue/timelineItems/nodes").and_then(|v| v.as_array()) {
-			for node in nodes {
-				let Some(typename) = node.get("__typename").and_then(|v| v.as_str()) else {
-					tracing::warn!("GraphQL timeline node missing __typename: {node:?}");
-					continue;
-				};
-
-				match typename {
-					"RenamedTitleEvent" =>
-						if let Some(created_at) = node.get("createdAt").and_then(|v| v.as_str()) {
-							let ts: Option<jiff::Timestamp> = created_at.parse().ok();
-							if ts > timeline.title {
-								timeline.title = ts;
-							}
-						},
-					"LabeledEvent" | "UnlabeledEvent" =>
-						if let Some(created_at) = node.get("createdAt").and_then(|v| v.as_str()) {
-							let ts: Option<jiff::Timestamp> = created_at.parse().ok();
-							if ts > timeline.labels {
-								timeline.labels = ts;
-							}
-						},
-					"BlockedByAddedEvent" | "BlockedByRemovedEvent" =>
-						if let Some(created_at) = node.get("createdAt").and_then(|v| v.as_str()) {
-							let ts: Option<jiff::Timestamp> = created_at.parse().ok();
-							if ts > timeline.description {
-								timeline.description = ts;
-							}
-						},
-					// a subject that is an issue, not a pull request, comes back as `{}`
-					"ConnectedEvent" | "DisconnectedEvent" if node.pointer("/subject/url").is_some() => {
-						let linked = pr(&node["subject"])?;
-						let at = timeline.prs.iter().position(|p| p.url == linked.url);
-						match (typename, at) {
-							("ConnectedEvent", None) => timeline.prs.push(linked),
-							("DisconnectedEvent", Some(at)) => {
-								timeline.prs.remove(at);
-							}
-							_ => {}
-						}
-					}
-					"AssignedEvent" | "UnassignedEvent" =>
-						if let Some(created_at) = node.get("createdAt").and_then(|v| v.as_str()) {
-							let ts: Option<jiff::Timestamp> = created_at.parse().ok();
-							if ts > timeline.assignees {
-								timeline.assignees = ts;
-							}
-						},
-					"ClosedEvent" | "ReopenedEvent" =>
-						if let Some(created_at) = node.get("createdAt").and_then(|v| v.as_str()) {
-							let ts: Option<jiff::Timestamp> = created_at.parse().ok();
-							if ts > timeline.state {
-								timeline.state = ts;
-							}
-						},
-					_ => {}
-				}
-			}
-		}
-
-		Ok(timeline)
 	}
 
 	async fn repo_exists(&self, repo: RepoInfo) -> Result<bool, GithubError> {
@@ -921,29 +668,39 @@ impl GithubClient for RealGithubClient {
 		Ok(repos)
 	}
 
-	async fn list_repo_issues(&self, repo: RepoInfo, since: Option<jiff::Timestamp>) -> Result<Vec<GithubIssue>, GithubError> {
-		let since = since.map(|t| format!("&since={t}")).unwrap_or_default();
-		let mut issues = Vec::new();
-		for page in 1.. {
-			let url = format!(
-				"https://api.github.com/repos/{}/{}/issues?state=all&per_page=100&page={page}{since}",
-				repo.owner().expect("github repo"),
-				repo.repo()
-			);
-			let res = self.get(&url).send().await?;
-			if !res.status().is_success() {
-				let status = res.status();
-				let body = res.text().await.unwrap_or_default();
-				return Err(GithubError::new_api(status, body, format!("list issues of {repo}")));
-			}
-			let batch = res.json::<Vec<GithubIssue>>().await?;
-			let last = batch.len() < 100;
-			issues.extend(batch.into_iter().filter(|i| i.pull_request.is_none()));
-			if last {
-				break;
-			}
+	async fn list_repo_issues(&self, repo: RepoInfo, since: Option<jiff::Timestamp>, after: Option<&str>) -> Result<IssuePage, GithubError> {
+		// 50 a page: GitHub charges a page by the connections it opens, ~4 points here
+		let query = format!(
+			"query($owner: String!, $repo: String!, $since: DateTime, $after: String) {{ repository(owner: $owner, name: $repo) {{ issues(first: 50, after: $after, orderBy: {{field: UPDATED_AT, direction: ASC}}, filterBy: {{since: $since}}) {{ pageInfo {{ hasNextPage endCursor }} nodes {{ ...Full }} }} }} }} {FULL_ISSUE}"
+		);
+		let variables = serde_json::json!({ "owner": repo.owner().expect("github repo"), "repo": repo.repo(), "since": since, "after": after });
+		let context = format!("list issues of {repo}");
+		let mut response = self.graphql(repo, &query, variables, &context).await.map_err(|e| not_found_as_404(e, &context))?;
+		#[derive(Deserialize)]
+		#[serde(rename_all = "camelCase")]
+		struct PageInfo {
+			has_next_page: bool,
+			end_cursor: Option<String>,
 		}
-		Ok(issues)
+		#[derive(Deserialize)]
+		#[serde(rename_all = "camelCase")]
+		struct Page {
+			page_info: PageInfo,
+			nodes: Vec<GqlIssue>,
+		}
+		let page: Page = serde_json::from_value(response.pointer_mut("/data/repository/issues").map(serde_json::Value::take).unwrap_or_default())
+			.map_err(|e| GithubError::new_graphql(format!("{context}: {e} in {response}")))?;
+		Ok(IssuePage {
+			issues: page.nodes.into_iter().map(GqlIssue::into_fetched).collect::<Result<_, _>>()?,
+			next: match page.page_info.has_next_page {
+				true => Some(
+					page.page_info
+						.end_cursor
+						.ok_or_else(|| GithubError::new_graphql(format!("{context}: a next page without a cursor")))?,
+				),
+				false => None,
+			},
+		})
 	}
 
 	async fn list_labels(&self, repo: RepoInfo) -> Result<Vec<String>, GithubError> {
@@ -992,6 +749,244 @@ impl GithubClient for RealGithubClient {
 			true => Ok(()),
 			false => self.post_json(&url, &serde_json::json!({ "assignees": new }), "Failed to add assignees").await,
 		}
+	}
+}
+
+//==============================================================================
+// GraphQL issue reads
+//==============================================================================
+
+/// Everything `FetchedIssue` holds. A connection is read whole or not at all: one cut at its page
+/// would read as removals.
+const FULL_ISSUE: &str = r#"
+fragment Full on Issue {
+	databaseId number title body url state stateReason updatedAt lastEditedAt createdAt
+	author { login }
+	labels(first: 100) { totalCount nodes { name } }
+	assignees(first: 100) { totalCount nodes { login } }
+	comments(first: 100) { totalCount nodes { databaseId body author { login } createdAt updatedAt } }
+	subIssues(first: 100) { totalCount nodes { databaseId number stateReason } }
+	parent { number }
+	blockedBy(first: 100) { totalCount nodes { url } }
+	blocking(first: 100) { totalCount nodes { url } }
+	closedByPullRequestsReferences(first: 100, includeClosedPrs: true) { totalCount nodes { url isDraft state } }
+	timelineItems(last: 100, itemTypes: [RENAMED_TITLE_EVENT, LABELED_EVENT, UNLABELED_EVENT, CLOSED_EVENT, REOPENED_EVENT, BLOCKED_BY_ADDED_EVENT, BLOCKED_BY_REMOVED_EVENT, ASSIGNED_EVENT, UNASSIGNED_EVENT, CONNECTED_EVENT, DISCONNECTED_EVENT]) {
+		nodes {
+			__typename
+			... on RenamedTitleEvent { createdAt }
+			... on LabeledEvent { createdAt }
+			... on UnlabeledEvent { createdAt }
+			... on ClosedEvent { createdAt }
+			... on ReopenedEvent { createdAt }
+			... on BlockedByAddedEvent { createdAt }
+			... on BlockedByRemovedEvent { createdAt }
+			... on AssignedEvent { createdAt }
+			... on UnassignedEvent { createdAt }
+			... on ConnectedEvent { subject { ... on PullRequest { url isDraft state } } }
+			... on DisconnectedEvent { subject { ... on PullRequest { url isDraft state } } }
+		}
+	}
+}"#;
+
+/// GraphQL names a missing repo or issue `NOT_FOUND` where REST answers 404.
+fn not_found_as_404(e: GithubError, context: &str) -> GithubError {
+	match &e {
+		GithubError::Graphql { msg, .. } if msg.contains(r#""type":"NOT_FOUND""#) => GithubError::new_api(reqwest::StatusCode::NOT_FOUND, msg.clone(), context.to_string()),
+		_ => e,
+	}
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Connection<T> {
+	total_count: usize,
+	nodes: Vec<T>,
+}
+impl<T> Connection<T> {
+	fn whole(self, what: &str, number: u64) -> Result<Vec<T>, GithubError> {
+		match self.nodes.len() == self.total_count {
+			true => Ok(self.nodes),
+			false => Err(GithubError::new_other(format!("#{number} has {} {what}, more than one read takes", self.total_count))),
+		}
+	}
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GqlComment {
+	database_id: u64,
+	body: String,
+	author: Option<GithubUser>,
+	created_at: String,
+	updated_at: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GqlSubIssue {
+	database_id: u64,
+	number: u64,
+	state_reason: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct GqlNumber {
+	number: u64,
+}
+
+#[derive(Deserialize)]
+struct GqlUrl {
+	url: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GqlPr {
+	url: String,
+	is_draft: bool,
+	state: String,
+}
+impl TryFrom<GqlPr> for tedi_core::LinkedPr {
+	type Error = GithubError;
+
+	fn try_from(pr: GqlPr) -> Result<Self, GithubError> {
+		let state = match (pr.state.as_str(), pr.is_draft) {
+			("MERGED", _) => tedi_core::PrState::Merged,
+			("CLOSED", _) => tedi_core::PrState::Closed,
+			("OPEN", true) => tedi_core::PrState::Draft,
+			("OPEN", false) => tedi_core::PrState::Open,
+			(other, _) => return Err(GithubError::new_graphql(format!("unknown pull request state {other} of {}", pr.url))),
+		};
+		Ok(tedi_core::LinkedPr { url: pr.url, state })
+	}
+}
+
+#[derive(Deserialize)]
+struct Nodes<T> {
+	nodes: Vec<T>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GqlIssue {
+	database_id: u64,
+	number: u64,
+	title: String,
+	body: String,
+	url: String,
+	state: String,
+	state_reason: Option<String>,
+	updated_at: jiff::Timestamp,
+	last_edited_at: Option<jiff::Timestamp>,
+	created_at: jiff::Timestamp,
+	author: Option<GithubUser>,
+	labels: Connection<GithubLabel>,
+	assignees: Connection<GithubUser>,
+	comments: Connection<GqlComment>,
+	sub_issues: Connection<GqlSubIssue>,
+	parent: Option<GqlNumber>,
+	blocked_by: Connection<GqlUrl>,
+	blocking: Connection<GqlUrl>,
+	closed_by_pull_requests_references: Connection<GqlPr>,
+	timeline_items: Nodes<serde_json::Value>,
+}
+impl GqlIssue {
+	fn into_fetched(self) -> Result<FetchedIssue, GithubError> {
+		let n = self.number;
+		// a deleted account: REST names it `ghost`, GraphQL leaves it null
+		let ghost = || GithubUser { login: "ghost".into() };
+		let links = |c: Connection<GqlUrl>, what: &str| -> Result<Vec<tedi_core::IssueLink>, GithubError> {
+			c.whole(what, n)?
+				.into_iter()
+				.map(|u| tedi_core::IssueLink::parse(&u.url).ok_or_else(|| GithubError::new_graphql(format!("#{n}'s {what} {} is not an issue", u.url))))
+				.collect()
+		};
+		let mut timeline = GraphqlTimeline {
+			// never edited since it was opened
+			description: Some(self.last_edited_at.unwrap_or(self.created_at)),
+			blocked_by: links(self.blocked_by, "blocked by")?,
+			blocking: links(self.blocking, "blocking")?,
+			prs: self
+				.closed_by_pull_requests_references
+				.whole("closing pull requests", n)?
+				.into_iter()
+				.map(tedi_core::LinkedPr::try_from)
+				.collect::<Result<_, _>>()?,
+			..Default::default()
+		};
+		for node in self.timeline_items.nodes {
+			let typename = node
+				.get("__typename")
+				.and_then(|v| v.as_str())
+				.ok_or_else(|| GithubError::new_graphql(format!("#{n}: timeline node without __typename: {node}")))?;
+			if let ("ConnectedEvent" | "DisconnectedEvent", Some(subject)) = (typename, node.get("subject"))
+				&& subject.get("url").is_some()
+			{
+				let linked = tedi_core::LinkedPr::try_from(serde_json::from_value::<GqlPr>(subject.clone()).map_err(|e| GithubError::new_graphql(format!("#{n}: {e} in {subject}")))?)?;
+				let at = timeline.prs.iter().position(|p| p.url == linked.url);
+				match (typename, at) {
+					("ConnectedEvent", None) => timeline.prs.push(linked),
+					("DisconnectedEvent", Some(at)) => _ = timeline.prs.remove(at),
+					_ => {}
+				}
+				continue;
+			}
+			let field = match typename {
+				"RenamedTitleEvent" => &mut timeline.title,
+				"LabeledEvent" | "UnlabeledEvent" => &mut timeline.labels,
+				// tedi's blockers hold both the body and the `blocked by` links
+				"BlockedByAddedEvent" | "BlockedByRemovedEvent" => &mut timeline.description,
+				"AssignedEvent" | "UnassignedEvent" => &mut timeline.assignees,
+				"ClosedEvent" | "ReopenedEvent" => &mut timeline.state,
+				_ => continue, // a subject that is an issue, not a pull request, comes back as `{}`
+			};
+			let at: jiff::Timestamp = node
+				.get("createdAt")
+				.and_then(|v| v.as_str())
+				.and_then(|s| s.parse().ok())
+				.ok_or_else(|| GithubError::new_graphql(format!("#{n}: {typename} without a createdAt: {node}")))?;
+			*field = (*field).max(Some(at));
+		}
+		Ok(FetchedIssue {
+			issue: GithubIssue {
+				id: self.database_id,
+				number: n,
+				title: self.title,
+				body: (!self.body.is_empty()).then_some(self.body),
+				labels: self.labels.whole("labels", n)?,
+				user: self.author.unwrap_or_else(ghost),
+				state: self.state.to_lowercase(),
+				state_reason: self.state_reason.map(|r| r.to_lowercase()),
+				assignees: self.assignees.whole("assignees", n)?,
+				pull_request: None,
+				html_url: self.url,
+			},
+			comments: self
+				.comments
+				.whole("comments", n)?
+				.into_iter()
+				.map(|c| GithubComment {
+					id: c.database_id,
+					body: (!c.body.is_empty()).then_some(c.body),
+					user: c.author.unwrap_or_else(ghost),
+					created_at: c.created_at,
+					updated_at: c.updated_at,
+				})
+				.collect(),
+			sub_issues: self
+				.sub_issues
+				.whole("sub-issues", n)?
+				.into_iter()
+				.map(|s| SubIssue {
+					id: s.database_id,
+					number: s.number,
+					state_reason: s.state_reason.map(|r| r.to_lowercase()),
+				})
+				.collect(),
+			parent: self.parent.map(|p| p.number),
+			timeline,
+			updated_at: self.updated_at,
+		})
 	}
 }
 
@@ -1049,12 +1044,8 @@ impl GithubClient for RetryingGithubClient {
 		retrying!(self.inner.fetch_issue(repo, issue_number))
 	}
 
-	async fn fetch_comments(&self, repo: RepoInfo, issue_number: u64) -> Result<Vec<GithubComment>, GithubError> {
-		retrying!(self.inner.fetch_comments(repo, issue_number))
-	}
-
-	async fn fetch_sub_issues(&self, repo: RepoInfo, issue_number: u64) -> Result<Vec<GithubIssue>, GithubError> {
-		retrying!(self.inner.fetch_sub_issues(repo, issue_number))
+	async fn fetch_full_issue(&self, repo: RepoInfo, issue_number: u64) -> Result<FetchedIssue, GithubError> {
+		retrying!(self.inner.fetch_full_issue(repo, issue_number))
 	}
 
 	async fn update_issue_body(&self, repo: RepoInfo, issue_number: u64, body: &str) -> Result<(), GithubError> {
@@ -1091,22 +1082,6 @@ impl GithubClient for RetryingGithubClient {
 
 	async fn remove_sub_issue(&self, repo: RepoInfo, parent_issue_number: u64, child_issue_id: u64) -> Result<(), GithubError> {
 		retrying!(self.inner.remove_sub_issue(repo, parent_issue_number, child_issue_id))
-	}
-
-	async fn find_issue_by_title(&self, repo: RepoInfo, title: &str) -> Result<Option<u64>, GithubError> {
-		retrying!(self.inner.find_issue_by_title(repo, title))
-	}
-
-	async fn issue_exists(&self, repo: RepoInfo, issue_number: u64) -> Result<bool, GithubError> {
-		retrying!(self.inner.issue_exists(repo, issue_number))
-	}
-
-	async fn fetch_parent_issue(&self, repo: RepoInfo, issue_number: u64) -> Result<Option<GithubIssue>, GithubError> {
-		retrying!(self.inner.fetch_parent_issue(repo, issue_number))
-	}
-
-	async fn fetch_timeline(&self, repo: RepoInfo, issue_number: u64) -> Result<GraphqlTimeline, GithubError> {
-		retrying!(self.inner.fetch_timeline(repo, issue_number))
 	}
 
 	async fn add_blocked_by(&self, repo: RepoInfo, issue_number: u64, blocker_id: u64) -> Result<(), GithubError> {
@@ -1165,8 +1140,8 @@ impl GithubClient for RetryingGithubClient {
 		retrying!(self.inner.list_org_repos(org))
 	}
 
-	async fn list_repo_issues(&self, repo: RepoInfo, since: Option<jiff::Timestamp>) -> Result<Vec<GithubIssue>, GithubError> {
-		retrying!(self.inner.list_repo_issues(repo, since))
+	async fn list_repo_issues(&self, repo: RepoInfo, since: Option<jiff::Timestamp>, after: Option<&str>) -> Result<IssuePage, GithubError> {
+		retrying!(self.inner.list_repo_issues(repo, since, after))
 	}
 }
 

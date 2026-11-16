@@ -8,7 +8,11 @@
 //==============================================================================
 // Error Types
 //==============================================================================
-use std::{collections::HashMap, str::FromStr as _};
+use std::{
+	collections::HashMap,
+	str::FromStr as _,
+	sync::{Arc, Mutex},
+};
 
 use color_eyre::eyre::Result;
 use copy_arrayvec::CopyArrayVec;
@@ -17,7 +21,7 @@ use v_utils::macros::wrap_err;
 
 use crate::{
 	CloseState, Comment, CommentIdentity, Issue, IssueContents, IssueIdentity, IssueIndex, IssueLink, IssueSelector, IssueTimestamps, MAX_LINEAGE_DEPTH, RepoInfo,
-	github::{self, GithubComment, GithubIssue},
+	github::{self, FetchedIssue, GithubComment, GithubIssue},
 	sink::{Sink, compute_node_diff},
 	split_blockers,
 };
@@ -32,46 +36,6 @@ pub enum RemoteError {
 	/// Failed to fetch issue from GitHub.
 	#[error("failed to fetch issue #{number} from {repo}")]
 	FetchIssue {
-		repo: RepoInfo,
-		number: u64,
-		#[source]
-		#[backtrace]
-		source: crate::github::GithubError,
-	},
-
-	/// Failed to fetch issue comments from GitHub.
-	#[error("failed to fetch comments for issue #{number} from {repo}")]
-	FetchComments {
-		repo: RepoInfo,
-		number: u64,
-		#[source]
-		#[backtrace]
-		source: crate::github::GithubError,
-	},
-
-	/// Failed to fetch sub-issues from GitHub.
-	#[error("failed to fetch sub-issues for issue #{number} from {repo}")]
-	FetchSubIssues {
-		repo: RepoInfo,
-		number: u64,
-		#[source]
-		#[backtrace]
-		source: crate::github::GithubError,
-	},
-
-	/// Failed to resolve ancestry (parent issue chain).
-	#[error("failed to resolve ancestry for issue #{number} in {repo}")]
-	ResolveAncestry {
-		repo: RepoInfo,
-		number: u64,
-		#[source]
-		#[backtrace]
-		source: crate::github::GithubError,
-	},
-
-	/// Failed to fetch timestamps from GitHub GraphQL API.
-	#[error("failed to fetch timestamps for issue #{number} from {repo}")]
-	FetchTimestamps {
 		repo: RepoInfo,
 		number: u64,
 		#[source]
@@ -150,78 +114,99 @@ pub enum Remote {}
 ///
 /// Contains the issue link and optional lineage (parent issue numbers from root to immediate parent).
 /// If lineage is None, it will be fetched from GitHub by traversing parent issues.
-/// Use `build()` to construct with validation of required tools.
 #[derive(Clone, Debug)]
 pub struct RemoteSource {
 	pub link: IssueLink,
 	lineage: Option<CopyArrayVec<u64, MAX_LINEAGE_DEPTH>>,
+	/// By number in `link`'s repo: a load reads each issue once, whichever of its parts asks first.
+	read: Arc<Mutex<HashMap<u64, Arc<FetchedIssue>>>>,
 }
 
 impl RemoteSource {
-	/// Build source for loading an issue from GitHub.
-	///
 	/// `lineage`: parent issue numbers from root to immediate parent.
 	/// `None` means lineage is unknown and will be fetched from GitHub on demand;
 	/// `Some(&[])` means the issue is known to be at root level.
 	pub fn build(link: IssueLink, lineage: Option<&[u64]>) -> Self {
+		Self::prefetched(link, lineage, &[])
+	}
+
+	/// `read`: issues of `link`'s repo read already, as a listed page.
+	pub fn prefetched(link: IssueLink, lineage: Option<&[u64]>, read: &[Arc<FetchedIssue>]) -> Self {
 		Self {
 			link,
 			lineage: lineage.map(|l| l.iter().copied().collect()),
+			read: Arc::new(Mutex::new(read.iter().map(|f| (f.issue.number, f.clone())).collect())),
 		}
 	}
 
-	fn lineage_slice(&self) -> Option<&[u64]> {
-		self.lineage.as_ref().map(|v| v.as_slice())
+	async fn read(&self, number: u64) -> Result<Arc<FetchedIssue>, RemoteError> {
+		if let Some(read) = self.read.lock().expect("never held across a panic").get(&number) {
+			return Ok(read.clone());
+		}
+		let gh = github::client::get().map_err(RemoteError::NoClient)?;
+		let repo = self.link.project();
+		let fetched = Arc::new(gh.fetch_full_issue(repo, number).await.map_err(|e| RemoteError::fetch_issue(repo, number, e))?);
+		self.read.lock().expect("never held across a panic").insert(number, fetched.clone());
+		Ok(fetched)
 	}
 
 	/// Resolve parent_index, fetching lineage from GitHub if not provided.
 	pub async fn resolve_parent_index(&self) -> Result<Option<IssueIndex>, RemoteError> {
 		let repo_info = self.link.project();
-		let number = self.link.number();
-
-		let lineage = match self.lineage_slice() {
-			Some(l) => l.to_vec(),
+		let lineage = match &self.lineage {
+			Some(l) => l.as_slice().to_vec(),
 			None => {
-				// Fetch lineage from GitHub by traversing parent chain
-				let gh = github::client::get().map_err(RemoteError::NoClient)?;
-				let mut current = number;
 				let mut parents = Vec::new();
-
-				loop {
-					match gh.fetch_parent_issue(repo_info, current).await {
-						Ok(Some(parent)) => {
-							parents.push(parent.number);
-							current = parent.number;
-						}
-						Ok(None) => break,
-						Err(e) => {
-							return Err(RemoteError::ResolveAncestry { repo: repo_info, number, source: e });
-						}
-					}
+				let mut current = self.link.number();
+				while let Some(parent) = self.read(current).await?.parent {
+					parents.push(parent);
+					current = parent;
 				}
 				parents.reverse();
 				parents
 			}
 		};
-		// Build parent_index with all parent numbers as GitId selectors
-		// Return None for root-level issues (empty lineage)
-		if lineage.is_empty() {
-			Ok(Some(IssueIndex::repo_only(repo_info)))
-		} else {
-			let selectors: Vec<IssueSelector> = lineage.iter().map(|&n| IssueSelector::GitId(n)).collect();
-			Ok(Some(IssueIndex::with_index(repo_info, selectors)))
+		match lineage.is_empty() {
+			true => Ok(Some(IssueIndex::repo_only(repo_info))),
+			false => Ok(Some(IssueIndex::with_index(repo_info, lineage.iter().map(|&n| IssueSelector::GitId(n)).collect()))),
 		}
 	}
 
-	/// Create a child source for a sub-issue.
 	fn child(&self, child_link: IssueLink, parent_number: u64) -> Self {
-		let mut new_lineage: CopyArrayVec<u64, MAX_LINEAGE_DEPTH> = self.lineage_slice().unwrap_or(&[]).iter().copied().collect();
-		new_lineage.push(parent_number);
+		let mut lineage: CopyArrayVec<u64, MAX_LINEAGE_DEPTH> = self.lineage.as_ref().map(|l| l.as_slice()).unwrap_or(&[]).iter().copied().collect();
+		lineage.push(parent_number);
 		Self {
 			link: child_link,
-			lineage: Some(new_lineage),
+			lineage: Some(lineage),
+			read: self.read.clone(),
 		}
 	}
+
+	async fn linked_identity(&self) -> Result<IssueIdentity, RemoteError> {
+		let fetched = self.read(self.link.number()).await?;
+		let t = &fetched.timeline;
+		let timestamps = IssueTimestamps {
+			title: t.title,
+			description: t.description,
+			labels: t.labels,
+			state: t.state,
+			assignees: t.assignees,
+			comments: comment_timestamps(&fetched.comments),
+		};
+		let mut identity = IssueIdentity::new_linked(self.resolve_parent_index().await?, Some(fetched.issue.user.login.clone()), self.link.clone(), timestamps, t.blocked_by.clone());
+		let meta = identity.mut_linked_issue_meta().expect("just linked");
+		meta.blocking = Some(t.blocking.clone());
+		meta.prs = t.prs.clone();
+		Ok(identity)
+	}
+}
+
+/// Per comment, its last edit.
+fn comment_timestamps(comments: &[GithubComment]) -> Vec<jiff::Timestamp> {
+	comments
+		.iter()
+		.filter_map(|c| jiff::Timestamp::from_str(&c.updated_at).or_else(|_| jiff::Timestamp::from_str(&c.created_at)).ok())
+		.collect()
 }
 
 impl crate::LazyIssue<RemoteSource> for Issue {
@@ -233,39 +218,9 @@ impl crate::LazyIssue<RemoteSource> for Issue {
 
 	#[instrument(skip_all)]
 	async fn identity(&mut self, source: RemoteSource) -> Result<IssueIdentity, Self::Error> {
-		if self.identity.is_linked() {
-			return Ok(self.identity.clone());
+		if !self.identity.is_linked() {
+			self.identity = source.linked_identity().await?;
 		}
-
-		let gh = github::client::get().map_err(RemoteError::NoClient)?;
-		let repo_info = source.link.project();
-		let number = source.link.number();
-
-		// Fetch issue and timeline timestamps in parallel
-		// Note: We don't have comment timestamps here since we don't fetch comments in identity()
-		let issue_fut = gh.fetch_issue(repo_info, number);
-		let timeline_fut = gh.fetch_timeline(repo_info, number);
-
-		let (issue_result, timeline_result) = tokio::join!(issue_fut, timeline_fut);
-
-		let issue = issue_result.map_err(|e| RemoteError::fetch_issue(repo_info, number, e))?;
-
-		// Build IssueTimestamps from GraphQL timeline (comments will be empty here)
-		let timeline = timeline_result.map_err(|e| RemoteError::FetchTimestamps { repo: repo_info, number, source: e })?;
-		let timestamps = IssueTimestamps {
-			title: timeline.title,
-			description: timeline.description,
-			labels: timeline.labels,
-			state: timeline.state,
-			assignees: timeline.assignees,
-			comments: vec![], // Will be populated when contents() fetches comments
-		};
-
-		let parent_index = source.resolve_parent_index().await?;
-		self.identity = IssueIdentity::new_linked(parent_index, Some(issue.user.login.clone()), source.link.clone(), timestamps, timeline.blocked_by);
-		let meta = self.identity.mut_linked_issue_meta().expect("just linked");
-		meta.blocking = Some(timeline.blocking);
-		meta.prs = timeline.prs;
 		Ok(self.identity.clone())
 	}
 
@@ -274,57 +229,18 @@ impl crate::LazyIssue<RemoteSource> for Issue {
 		if !self.contents.title.is_empty() {
 			return Ok(self.contents.clone());
 		}
-
-		let gh = github::client::get().map_err(RemoteError::NoClient)?;
-		let repo_info = source.link.project();
-		let number = source.link.number();
-
-		let issue_fut = gh.fetch_issue(repo_info, number);
-		let comments_fut = gh.fetch_comments(repo_info, number);
-		let timeline_fut = gh.fetch_timeline(repo_info, number);
-
-		let (issue_result, comments_result, timeline_result) = tokio::join!(issue_fut, comments_fut, timeline_fut);
-
-		let issue = issue_result.map_err(|e| RemoteError::fetch_issue(repo_info, number, e))?;
-		let comments = comments_result.map_err(|e| RemoteError::FetchComments { repo: repo_info, number, source: e })?;
-		let timeline = timeline_result.map_err(|e| RemoteError::FetchTimestamps { repo: repo_info, number, source: e })?;
-
-		self.contents = build_contents_from_github(repo_info, &issue, &comments, &timeline.blocked_by)?;
-
-		// Per-comment timestamps from REST API data (updated_at, falling back to created_at).
-		let comments_ts: Vec<_> = comments
-			.iter()
-			.filter_map(|c| jiff::Timestamp::from_str(&c.updated_at).or_else(|_| jiff::Timestamp::from_str(&c.created_at)).ok())
-			.collect();
-
+		let fetched = source.read(source.link.number()).await?;
+		self.contents = build_contents_from_github(source.link.project(), &fetched.issue, &fetched.comments, &fetched.timeline.blocked_by)?;
+		// an identity linked before this load may hold another read's comments and links
 		match self.identity.mut_linked_issue_meta() {
-			// `identity()` has no comment data of its own, so it can only ever leave `comments`
-			// empty — this is the one place that can fill it. Left empty, a comment posted on
-			// Github since the last sync loses the merge to a local list that never had it, and
-			// the remote sink deletes it upstream as one the user removed.
 			Some(meta) => {
-				meta.timestamps.comments = comments_ts;
-				meta.blocked_by = timeline.blocked_by;
-				meta.blocking = Some(timeline.blocking);
-				meta.prs = timeline.prs;
+				meta.timestamps.comments = comment_timestamps(&fetched.comments);
+				meta.blocked_by = fetched.timeline.blocked_by.clone();
+				meta.blocking = Some(fetched.timeline.blocking.clone());
+				meta.prs = fetched.timeline.prs.clone();
 			}
-			None => {
-				let parent_index = source.resolve_parent_index().await?;
-				let timestamps = IssueTimestamps {
-					title: timeline.title,
-					description: timeline.description,
-					labels: timeline.labels,
-					state: timeline.state,
-					assignees: timeline.assignees,
-					comments: comments_ts,
-				};
-				self.identity = IssueIdentity::new_linked(parent_index, Some(issue.user.login.clone()), source.link.clone(), timestamps, timeline.blocked_by);
-				let meta = self.identity.mut_linked_issue_meta().expect("just linked");
-				meta.blocking = Some(timeline.blocking);
-				meta.prs = timeline.prs;
-			}
+			None => self.identity = source.linked_identity().await?,
 		}
-
 		Ok(self.contents.clone())
 	}
 
@@ -334,16 +250,9 @@ impl crate::LazyIssue<RemoteSource> for Issue {
 			return Ok(self.children.clone());
 		}
 
-		let gh = github::client::get().map_err(RemoteError::NoClient)?;
 		let repo_info = source.link.project();
-		let number = source.link.number();
-
-		let sub_issues = gh
-			.fetch_sub_issues(repo_info, number)
-			.await
-			.map_err(|e| RemoteError::FetchSubIssues { repo: repo_info, number, source: e })?;
-
-		let filtered: Vec<&GithubIssue> = sub_issues.iter().filter(|si| !CloseState::is_duplicate_reason(si.state_reason.as_deref())).collect();
+		let fetched = source.read(source.link.number()).await?;
+		let filtered: Vec<&github::SubIssue> = fetched.sub_issues.iter().filter(|si| !CloseState::is_duplicate_reason(si.state_reason.as_deref())).collect();
 
 		if filtered.is_empty() {
 			return Ok(HashMap::new());
@@ -691,10 +600,7 @@ mod tests {
 	}
 
 	fn source(repo: RepoInfo) -> RemoteSource {
-		RemoteSource {
-			link: IssueLink::in_project(repo, 1),
-			lineage: Some(CopyArrayVec::new()),
-		}
+		RemoteSource::build(IssueLink::in_project(repo, 1), Some(&[]))
 	}
 
 	/// A `p:` label is the state, not a label: it parses back into `InProgress` and never

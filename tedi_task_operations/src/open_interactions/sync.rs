@@ -21,7 +21,7 @@
 //! The merge mode is consumed after first use (pre-editor sync), so post-editor
 //! sync always uses `Normal`. This prevents accidental data loss.
 
-pub(crate) use core::fetch_remote;
+pub(crate) use core::{fetch_remote, sync as merge_with_remote};
 
 use color_eyre::eyre::{Result, bail};
 use tracing::instrument;
@@ -253,14 +253,24 @@ pub(crate) async fn fetch_and_store_missing(links: &[IssueLink]) -> Vec<IssueLin
 
 	let mut trees: Vec<IssueLink> = Vec::new();
 	let mut pull_requests: Vec<&IssueLink> = Vec::new();
+	let mut failed: Vec<&IssueLink> = Vec::new();
+	let mut root_of: Vec<(&IssueLink, IssueLink)> = Vec::new();
 	for (link, root) in missing.iter().zip(roots) {
 		match root {
-			Ok(Some(root)) if !trees.contains(&root) => trees.push(root),
-			Ok(Some(_)) => {}
+			Ok(Some(root)) => {
+				if !trees.contains(&root) {
+					trees.push(root.clone());
+				}
+				root_of.push((link, root));
+			}
 			Ok(None) => pull_requests.push(link),
-			Err(e) => tracing::warn!("failed to fetch {link}: {e}"),
+			Err(e) => {
+				tracing::warn!("failed to fetch {link}: {e}");
+				failed.push(link);
+			}
 		}
 	}
+	let mut failed_trees: Vec<&IssueLink> = Vec::new();
 	let (held, fresh): (Vec<IssueLink>, Vec<IssueLink>) = trees.into_iter().partition(|root| stored(root));
 	let fetched: Vec<Result<Issue>> = futures::future::join_all(fresh.iter().map(|root| async move { Ok(Issue::load(RemoteSource::build(root.clone(), Some(&[]))).await?) })).await;
 	for (root, tree) in fresh.iter().zip(fetched) {
@@ -278,8 +288,10 @@ pub(crate) async fn fetch_and_store_missing(links: &[IssueLink]) -> Vec<IssueLin
 		};
 		if let Err(e) = landed {
 			tracing::warn!("failed to fetch {root}: {e}");
+			failed_trees.push(root);
 		}
 	}
+	failed.extend(root_of.iter().filter(|(_, root)| failed_trees.contains(&root)).map(|(link, _)| *link));
 	// a sub-issue new on GitHub under a tree stored here
 	for root in held {
 		let synced = async {
@@ -293,7 +305,8 @@ pub(crate) async fn fetch_and_store_missing(links: &[IssueLink]) -> Vec<IssueLin
 		}
 	}
 
-	let unavailable: Vec<IssueLink> = missing.into_iter().filter(|l| !stored(l) && !pull_requests.contains(l)).cloned().collect();
+	// a tree written to disk whose commit failed is on disk all the same
+	let unavailable: Vec<IssueLink> = missing.into_iter().filter(|l| failed.contains(l) || (!stored(l) && !pull_requests.contains(l))).cloned().collect();
 	for link in &unavailable {
 		tracing::warn!("{link} is not stored locally"); // its ref stays a bare link
 	}
@@ -607,7 +620,7 @@ mod core {
 	/// Returns every issue the synced tree's blocker links reach, on either end.
 	/// Consensus is read under the store lock: another writer may have committed since the caller loaded.
 	#[instrument(skip_all, fields(?mode))]
-	pub(super) async fn sync(current_issue: &mut Issue, remote: Issue, mode: MergeMode) -> Result<Vec<IssueLink>> {
+	pub(crate) async fn sync(current_issue: &mut Issue, remote: Issue, mode: MergeMode) -> Result<Vec<IssueLink>> {
 		fn linked(issue: &Issue, out: &mut Vec<IssueLink>) {
 			out.extend(issue.contents.blockers.issue_links(issue.repo_info()));
 			out.extend(issue.identity.as_linked().and_then(|m| m.blocking.clone()).into_iter().flatten());

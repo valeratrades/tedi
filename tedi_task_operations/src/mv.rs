@@ -133,7 +133,7 @@ async fn transfer(old: &Issue, target: RepoInfo) -> Result<HashMap<IssueLink, Is
 	// nor is it documented whether sub-issue links survive
 	for parent in nodes(old) {
 		let p = moved[linked(parent)].number();
-		let held = gh.fetch_sub_issues(target, p).await?;
+		let held = gh.fetch_full_issue(target, p).await?.sub_issues;
 		for child in parent.children.values() {
 			let c = moved[linked(child)].number();
 			if !held.iter().any(|i| i.number == c) {
