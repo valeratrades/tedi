@@ -47,7 +47,12 @@ async fn pull_repo(repo: RepoInfo) -> Result<()> {
 	let mut after = None;
 	loop {
 		let page = gh.list_repo_issues(repo, since, after.as_deref()).await?;
-		let read: Vec<Arc<FetchedIssue>> = page.issues.into_iter().filter(|f| !CloseState::is_duplicate_reason(f.issue.state_reason.as_deref())).map(Arc::new).collect();
+		let read: Vec<Arc<FetchedIssue>> = page
+			.issues
+			.into_iter()
+			.filter(|f| !CloseState::is_duplicate_reason(f.issue.state_reason.as_deref()))
+			.map(Arc::new)
+			.collect();
 
 		let mut roots: Vec<u64> = Vec::new();
 		for issue in &read {

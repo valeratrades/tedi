@@ -80,7 +80,10 @@ async fn a_pull_reads_whole_issues_a_page_at_a_time() {
 async fn a_pull_cut_short_resumes_after_the_last_page_it_stored() {
 	let ctx = TestContext::build();
 	for (n, seed) in [(1, -60), (2, -30), (3, 0)] {
-		ctx.remote(&parse_virtual(&format!("- [ ] Issue {n} <!-- @mock_user https://github.com/o/r/issues/{n} -->\n  body\n")), Some(Seed::new(seed)));
+		ctx.remote(
+			&parse_virtual(&format!("- [ ] Issue {n} <!-- @mock_user https://github.com/o/r/issues/{n} -->\n  body\n")),
+			Some(Seed::new(seed)),
+		);
 	}
 
 	let cut = ctx.run_with_env(&["--mock", "pull", "o/r"], &[(ENV_MOCK_RATE_LIMITED_AFTER_PAGES, "1")]);

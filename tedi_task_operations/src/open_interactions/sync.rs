@@ -306,7 +306,11 @@ pub(crate) async fn fetch_and_store_missing(links: &[IssueLink]) -> Vec<IssueLin
 	}
 
 	// a tree written to disk whose commit failed is on disk all the same
-	let unavailable: Vec<IssueLink> = missing.into_iter().filter(|l| failed.contains(l) || (!stored(l) && !pull_requests.contains(l))).cloned().collect();
+	let unavailable: Vec<IssueLink> = missing
+		.into_iter()
+		.filter(|l| failed.contains(l) || (!stored(l) && !pull_requests.contains(l)))
+		.cloned()
+		.collect();
 	for link in &unavailable {
 		tracing::warn!("{link} is not stored locally"); // its ref stays a bare link
 	}

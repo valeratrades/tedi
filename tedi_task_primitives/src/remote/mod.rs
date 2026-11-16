@@ -193,7 +193,13 @@ impl RemoteSource {
 			assignees: t.assignees,
 			comments: comment_timestamps(&fetched.comments),
 		};
-		let mut identity = IssueIdentity::new_linked(self.resolve_parent_index().await?, Some(fetched.issue.user.login.clone()), self.link.clone(), timestamps, t.blocked_by.clone());
+		let mut identity = IssueIdentity::new_linked(
+			self.resolve_parent_index().await?,
+			Some(fetched.issue.user.login.clone()),
+			self.link.clone(),
+			timestamps,
+			t.blocked_by.clone(),
+		);
 		let meta = identity.mut_linked_issue_meta().expect("just linked");
 		meta.blocking = Some(t.blocking.clone());
 		meta.prs = t.prs.clone();

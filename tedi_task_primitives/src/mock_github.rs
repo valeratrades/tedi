@@ -100,9 +100,7 @@ impl MockGithubClient {
 				.ok()
 				.and_then(|v| v.parse::<u16>().ok())
 				.and_then(|c| reqwest::StatusCode::from_u16(c).ok()),
-			rate_limited_after_pages: std::env::var(ENV_MOCK_RATE_LIMITED_AFTER_PAGES)
-				.ok()
-				.map(|v| v.parse().expect("a page count")),
+			rate_limited_after_pages: std::env::var(ENV_MOCK_RATE_LIMITED_AFTER_PAGES).ok().map(|v| v.parse().expect("a page count")),
 			pages_listed: AtomicU64::new(0),
 			call_log: Mutex::new(Vec::new()),
 		};
@@ -482,7 +480,12 @@ impl MockGithubClient {
 		let this = (key.clone(), number);
 		let (blocked_by, blocking, linked_at) = {
 			let dependencies = self.dependencies.lock().unwrap();
-			let linked_at = dependencies.iter().chain(self.unlinked.lock().unwrap().iter()).filter(|d| d.blocked == this).filter_map(|d| d.at).max();
+			let linked_at = dependencies
+				.iter()
+				.chain(self.unlinked.lock().unwrap().iter())
+				.filter(|d| d.blocked == this)
+				.filter_map(|d| d.at)
+				.max();
 			(
 				dependencies.iter().filter(|d| d.blocked == this).map(|d| d.blocker.0.link(d.blocker.1)).collect(),
 				dependencies.iter().filter(|d| d.blocker == this).map(|d| d.blocked.0.link(d.blocked.1)).collect(),
@@ -610,10 +613,16 @@ struct MockIssueData {
 
 impl MockIssueData {
 	fn updated(&self) -> Option<jiff::Timestamp> {
-		[self.title_timestamp, self.description_timestamp, self.labels_timestamp, self.state_timestamp, self.assignees_timestamp]
-			.into_iter()
-			.flatten()
-			.max()
+		[
+			self.title_timestamp,
+			self.description_timestamp,
+			self.labels_timestamp,
+			self.state_timestamp,
+			self.assignees_timestamp,
+		]
+		.into_iter()
+		.flatten()
+		.max()
 	}
 }
 
