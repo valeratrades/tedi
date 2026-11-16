@@ -370,7 +370,7 @@ fn get_milestone(tf: Timeframe, retrieved_milestones: &[GithubMilestone]) -> Res
 static KEY_MILESTONES: [Timeframe; 6] = [
 	Timeframe::from_naive(1, TimeframeDesignator::Days),
 	Timeframe::from_naive(2, TimeframeDesignator::Weeks),
-	Timeframe::from_naive(1, TimeframeDesignator::Quarters),
+	Timeframe::from_naive(1, TimeframeDesignator::IfcQuarters),
 	Timeframe::from_naive(1, TimeframeDesignator::Years),
 	Timeframe::from_naive(3, TimeframeDesignator::Years),
 	Timeframe::from_naive(7, TimeframeDesignator::Years),
