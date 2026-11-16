@@ -6790,6 +6790,7 @@ dependencies = [
  "strum",
  "tedi_core",
  "tedi_task_operations",
+ "tilers_core",
  "tilers_dioxus",
  "tokio",
  "tokio-stream",
@@ -6979,9 +6980,9 @@ dependencies = [
 
 [[package]]
 name = "tilers_core"
-version = "0.3.4"
+version = "0.3.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4d2ed9470ba4849593839ccdcd920c50a48911276370912b8fcc4070f07ab771"
+checksum = "cca87739bac6d67a078be21478bde03d8b1dd8eee2176f655b81b39ea04052f1"
 dependencies = [
  "serde",
  "serde_json",
@@ -6991,9 +6992,9 @@ dependencies = [
 
 [[package]]
 name = "tilers_dioxus"
-version = "0.3.4"
+version = "0.3.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0f43e50262c328dc256c6aac6f6a62cff5decb1c63552133ac88921b5ac92e5d"
+checksum = "5abf213ba7570bcce3df446199f302e2cd8b98cf9a00d8400eb3ff1c69aa2b47"
 dependencies = [
  "dioxus",
  "tilers_core",

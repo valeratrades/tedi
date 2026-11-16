@@ -10,10 +10,10 @@ use tedi_core::{
 	labels::{HOURS, Scheme},
 	stage::Stage,
 };
-use tilers_dioxus::{DockPanel, Group, MinSize, PackedApi, PackedArea, PanelId, keys::Keymap};
+use tilers_dioxus::{Band, DockPanel, Group, MinSize, PackedApi, PackedArea, PanelId};
 
 use super::Ctx;
-use crate::api::{self, Sprint};
+use crate::api::{Dock, Kept, LibraryEdit, Shelf, Sprint};
 
 #[component]
 pub fn ViewPanel(view: View) -> Element {
@@ -29,15 +29,18 @@ pub fn ViewPanel(view: View) -> Element {
 		v.sort.apply(&board.cards, &mut hits);
 		hits
 	});
-	let save = move |_| {
-		let view = view.read().clone();
+	let save = EventHandler::new(move |name: String| {
+		let view = View {
+			name: name.clone(),
+			..view.read().clone()
+		};
 		spawn(async move {
-			match api::save_view(view.clone()).await {
-				Ok(()) => _ = toaster.positive(format!("Saved {} to your views", view.name)),
-				Err(e) => _ = toaster.error(e.to_string()),
+			if ctx.keep(LibraryEdit::Keep(Kept::Filter(view))).await {
+				toaster.positive(format!("Saved {name} to your views"));
 			}
 		});
-	};
+	});
+	let mine: Vec<String> = ctx.library.read().as_ref().expect("views render once the library arrived").filters.keys().cloned().collect();
 	rsx! {
 		div { class: "flex h-full flex-col gap-2 p-2",
 			div { class: "flex flex-wrap items-center gap-2",
@@ -50,7 +53,7 @@ pub fn ViewPanel(view: View) -> Element {
 				Choice { value: v.layout, on_change: move |l| view.write().layout = l }
 				Choice { value: v.group_by, on_change: move |g| view.write().group_by = g }
 				Choice { value: v.sort, on_change: move |s| view.write().sort = s }
-				Button { variant: ButtonVariant::Outline, size: Size::Sm, r#type: "button", onclick: save, "Save as mine" }
+				super::library::Menu { shelf: Shelf::Filters, names: mine, on_pick: move |name: String| ctx.open(PanelId(format!("view:{name}"))), on_save: Some(save) }
 			}
 			match hits {
 				Err(e) => rsx! { Badge { variant: BadgeVariant::Error, "{e}" } },
@@ -102,10 +105,11 @@ struct Lanes {
 	dragged: Signal<Option<tedi_core::IssueLink>>,
 }
 
-/// Columns, one per group, each a tile of a dock nested in the view's: resized, reordered, tabbed together
-/// and cached per view and grouping. Grouped by stage, a card dropped on a column moves there.
+/// Columns, one per group, each a tile of a dock nested in the view's: resized, reordered, tabbed together,
+/// kept per view and grouping in the viewer's library. Grouped by stage, a card dropped on a column moves there.
 #[component]
 fn Columns(view: String, groups: Vec<(String, Vec<usize>)>, by: GroupBy, shown: Vec<Shown>) -> Element {
+	let ctx = use_context::<Ctx>();
 	let lanes = use_context_provider(|| Lanes {
 		groups: Signal::new(groups.clone()),
 		by,
@@ -114,6 +118,29 @@ fn Columns(view: String, groups: Vec<(String, Vec<usize>)>, by: GroupBy, shown: 
 	});
 	let mut panels = use_signal(Vec::<DockPanel>::new);
 	let mut api = use_signal(|| None::<PackedApi>);
+	let mut arranged = use_signal(|| None::<Band>);
+	super::use_autosave(ctx, api, arranged, Dock::Columns { view: view.clone(), by });
+	// `layout`'s columns hosted, then shown; the effect below adds any group it lacks
+	let show = move |mut a: PackedApi, layout: &str| -> bool {
+		let grid = match tilers_dioxus::model::serial::load(layout) {
+			Ok(grid) => grid,
+			Err(e) => {
+				ctx.toaster
+					.error(format!("the kept columns don't load ({e:?}); nothing kept is overwritten until others are shown"));
+				return false;
+			}
+		};
+		let (groups, mut panels) = (lanes.groups.peek(), panels);
+		for id in grid.cells.iter().flat_map(|c| c.group.tabs.iter()) {
+			if !panels.peek().iter().any(|p| &p.id == id) {
+				let key = id.0.strip_prefix("col:").expect("a column dock hosts only columns").to_string();
+				let count = groups.iter().find(|(k, _)| *k == key).map_or(0, |(_, m)| m.len());
+				panels.write().push(column(id.clone(), key.clone(), format!("{key} · {count}")));
+			}
+		}
+		a.load(layout).expect("parsed above");
+		true
+	};
 	use_effect(use_reactive!(|groups, shown| {
 		let (mut g, mut s) = (lanes.groups, lanes.shown);
 		if *g.peek() != groups {
@@ -145,33 +172,69 @@ fn Columns(view: String, groups: Vec<(String, Vec<usize>)>, by: GroupBy, shown: 
 			}
 		}
 	});
-	let config = tilers_dioxus::Config {
-		storage_key: Some(format!("tedi-columns-{view}-{by}")),
-		keymap: Keymap {
-			scope: Vec::new(),
-			root: Vec::new(),
-			..Default::default()
-		}, // the view's dock holds the keys; two docks would both answer them
-		..Default::default()
+	let library = ctx.library.read();
+	let library = library.as_ref().expect("views render once the library arrived");
+	let kept: Vec<String> = library.columns.iter().filter(|(_, c)| c.by == by).map(|(n, _)| n.clone()).collect();
+	let favorites: Vec<String> = kept
+		.iter()
+		.filter(|n| library.favorites.contains(&crate::api::Favorite::Columns((*n).clone())))
+		.cloned()
+		.collect();
+	let apply = {
+		let show = show.clone();
+		move |name: String| {
+			let (mut api, mut arranged) = (api, arranged);
+			let a = (*api.peek()).expect("the column dock entered a band before its menu shows");
+			let band = a.band();
+			let layout = ctx.library.peek().as_ref().and_then(|l| l.columns.get(&name)).and_then(|c| c.layout.get(&band)).cloned();
+			match layout {
+				Some(layout) => {
+					if show(a, &layout) {
+						arranged.set(Some(band));
+						api.set(Some(a)); // re-runs the placing of groups it lacks
+					}
+				}
+				None => _ = ctx.toaster.info(format!("{name} keeps no columns for a {band} view: arrange these, then save them as {name}")),
+			}
+		}
 	};
 	rsx! {
+		div { class: "flex items-center gap-1 text-xs",
+			for name in favorites {
+				Button { key: "{name}", variant: ButtonVariant::Ghost, size: Size::Xs, r#type: "button", onclick: { let (apply, name) = (apply.clone(), name.clone()); move |_| apply(name.clone()) }, "★ {name}" }
+			}
+			super::library::Menu {
+				shelf: Shelf::Columns,
+				names: kept,
+				on_pick: { let apply = apply.clone(); move |name: String| apply(name) },
+				on_save: Some(EventHandler::new(move |name: String| {
+					let a = (*api.peek()).expect("the column dock entered a band before its menu shows");
+					let edit = LibraryEdit::Keep(Kept::Columns { name, by, band: a.band(), layout: a.save() });
+					spawn(async move { _ = ctx.keep(edit).await });
+				})),
+			}
+		}
 		div { class: "relative min-h-0 flex-1",
 			div { class: "absolute inset-0",
 				PackedArea {
 					panels,
-					on_band: Some(Callback::new(move |a: PackedApi| {
-						let groups = lanes.groups.peek();
-						let mut panels = panels;
-						for id in a.tab_ids() {
-							if !panels.peek().iter().any(|p| p.id == id) {
-								let key = id.0.strip_prefix("col:").expect("this dock hosts only columns").to_string();
-								let count = groups.iter().find(|(k, _)| *k == key).map_or(0, |(_, m)| m.len());
-								panels.write().push(column(id, key.clone(), format!("{key} · {count}")));
+					on_band: Some(Callback::new({
+						let view = view.clone();
+						move |a: PackedApi| {
+							let band = a.band();
+							arranged.set(None);
+							let kept = ctx.library.peek().as_ref().and_then(|l| l.on_screen.columns.get(&view)?.get(&by)?.get(&band).cloned());
+							let shown = match kept {
+								Some(layout) => show(a, &layout),
+								None => true, // the effect below seeds a tile per group
+							};
+							if shown {
+								arranged.set(Some(band));
 							}
+							api.set(Some(a));
 						}
-						api.set(Some(a));
 					})),
-					config: Some(config),
+					config: None,
 				}
 			}
 		}

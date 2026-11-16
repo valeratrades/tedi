@@ -120,7 +120,7 @@
                 git -C "$issues" config user.name "tedi web"
                 git -C "$issues" config user.email "tedi-web@localhost"
               fi
-              exec tedi web --addr 0.0.0.0:7341 --public ${webBundle "team/tasks"} --pull-every 10m
+              exec tedi web --addr 0.0.0.0:7341 --public ${webBundle "team/tasks"} --pull-every 10m --viewer-header X-Auth-User
             '';
           };
           containerStd = v_flakes.container.implement {

@@ -25,7 +25,7 @@ use tedi_core::{
 use tedi_task_operations::open_interactions::SyncMode;
 use tokio::sync::{Mutex, broadcast, mpsc};
 
-use crate::api::{Edited, Setup, Sprint};
+use crate::api::{Dock, Edited, Favorite, Kept, Library, LibraryEdit, Setup, Shelf, Sprint};
 
 pub struct Settings {
 	pub addr: SocketAddr,
@@ -43,12 +43,23 @@ pub struct Settings {
 	pub pull_every: Option<Duration>,
 	/// Mounts `/webhook`, checking each delivery's `X-Hub-Signature-256` against it.
 	pub webhook_secret: Option<String>,
+	pub viewer: Viewer,
+}
+
+/// Whose library a request reads and edits.
+pub enum Viewer {
+	/// Behind a gate naming the signed-in user in this header; a request without it is refused.
+	Header(String),
+	/// Ungated: whoever runs this instance, as its GitHub user.
+	Operator,
 }
 
 static SETTINGS: OnceLock<Settings> = OnceLock::new();
 static CHANGES: LazyLock<broadcast::Sender<()>> = LazyLock::new(|| broadcast::channel(16).0);
 /// Loaded once per change rather than once per open board.
 static BOARD: Mutex<Option<Arc<Board>>> = Mutex::const_new(None);
+/// Held across each library's read-modify-write.
+static LIBRARIES: Mutex<()> = Mutex::const_new(());
 
 fn settings() -> &'static Settings {
 	SETTINGS.get().expect("set by `serve` before the router exists")
@@ -158,13 +169,8 @@ fn editor() -> Option<String> {
 
 pub async fn setup() -> Result<Setup> {
 	let s = settings();
-	let me = editor();
 	Ok(Setup {
-		personal: match &me {
-			Some(me) => personal_views(me)?,
-			None => Vec::new(),
-		},
-		me,
+		me: editor(),
 		team: s.views.clone(),
 		scopes: s.scopes.clone(),
 		sprints: match s.milestones {
@@ -227,40 +233,170 @@ pub async fn resolve(link: &IssueLink, resolution: String) -> Result<Option<Stri
 	still
 }
 
-fn views_file(me: &str) -> PathBuf {
-	tedi_task_operations::paths::data_dir("web").join(format!("{me}.json"))
+/// The viewer's key, as their library's file stem.
+fn viewer(headers: &HeaderMap) -> Result<String> {
+	let key = match &settings().viewer {
+		Viewer::Header(name) => headers
+			.get(name)
+			.ok_or_else(|| eyre!("the request carries no `{name}`: the gate in front of this board names the signed-in user in it"))?
+			.to_str()?
+			.to_string(),
+		Viewer::Operator => editor().ok_or_else(|| eyre!("a library belongs to a viewer, and this ungated instance doesn't know its GitHub user"))?,
+	};
+	let plain = !key.is_empty() && !key.starts_with('.') && key.chars().all(|c| c.is_ascii_alphanumeric() || "._@[]-".contains(c));
+	if !plain {
+		bail!("{key:?} is not a viewer this board keeps a library for");
+	}
+	Ok(key)
 }
 
-fn personal_views(me: &str) -> Result<Vec<View>> {
-	match std::fs::read_to_string(views_file(me)) {
+fn library_file(key: &str) -> PathBuf {
+	tedi_task_operations::paths::data_dir("web").join(format!("{key}.json"))
+}
+
+fn read_library(key: &str) -> Result<Library> {
+	match std::fs::read_to_string(library_file(key)) {
 		Ok(json) => Ok(serde_json::from_str(&json)?),
-		Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+		Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Library::default()), // a viewer who never kept anything
 		Err(e) => Err(e.into()),
 	}
 }
 
-fn write_views(me: &str, views: &[View]) -> Result<()> {
-	std::fs::write(views_file(me), serde_json::to_string_pretty(views)?)?;
+pub async fn library(headers: &HeaderMap) -> Result<Library> {
+	let key = viewer(headers)?;
+	let _held = LIBRARIES.lock().await;
+	read_library(&key)
+}
+
+pub async fn edit_library(headers: &HeaderMap, edit: LibraryEdit) -> Result<Library> {
+	let key = viewer(headers)?;
+	let _held = LIBRARIES.lock().await;
+	let mut library = read_library(&key)?;
+	apply(&mut library, edit)?;
+	let file = library_file(&key);
+	let fresh = file.with_extension("json.new");
+	std::fs::write(&fresh, serde_json::to_string_pretty(&library)?)?;
+	std::fs::rename(&fresh, &file)?; // whole or not at all: a crash mid-write keeps the last library
+	Ok(library)
+}
+
+fn apply(library: &mut Library, edit: LibraryEdit) -> Result<()> {
+	match edit {
+		LibraryEdit::Arranged { dock: Dock::Tiles, band, layout } => _ = library.on_screen.tiles.insert(band, layout),
+		LibraryEdit::Arranged {
+			dock: Dock::Columns { view, by },
+			band,
+			layout,
+		} => {
+			library.on_screen.columns.entry(view).or_default().entry(by).or_default().insert(band, layout);
+		}
+		LibraryEdit::Keep(Kept::Filter(view)) => {
+			if view.name.trim().is_empty() {
+				bail!("a filter is kept under a name");
+			}
+			if settings().views.iter().any(|v| v.name == view.name) {
+				bail!("{} is a team view's name: keep yours under another", view.name);
+			}
+			library.filters.insert(view.name.clone(), view);
+		}
+		LibraryEdit::Keep(Kept::Workspace { name, band, layout }) => _ = library.workspaces.entry(named(name)?).or_default().insert(band, layout),
+		LibraryEdit::Keep(Kept::Columns { name, by, band, layout }) => {
+			let kept = library
+				.columns
+				.entry(named(name.clone())?)
+				.or_insert_with(|| crate::api::Columns { by, layout: Default::default() });
+			if kept.by != by {
+				bail!("the columns {name} are by {}, not {by}", kept.by);
+			}
+			kept.layout.insert(band, layout);
+		}
+		LibraryEdit::Rename { shelf, from, to } => {
+			let to = named(to)?;
+			let taken = match shelf {
+				Shelf::Filters => library.filters.contains_key(&to) || settings().views.iter().any(|v| v.name == to),
+				Shelf::Workspaces => library.workspaces.contains_key(&to),
+				Shelf::Columns => library.columns.contains_key(&to),
+			};
+			if taken {
+				bail!("{to} is taken");
+			}
+			let missing = || eyre!("{from} is not kept");
+			match shelf {
+				Shelf::Filters => {
+					let mut view = library.filters.remove(&from).ok_or_else(missing)?;
+					view.name = to.clone();
+					library.filters.insert(to.clone(), view);
+					if let Some(columns) = library.on_screen.columns.remove(&from) {
+						library.on_screen.columns.insert(to.clone(), columns);
+					}
+				}
+				Shelf::Workspaces => {
+					let kept = library.workspaces.remove(&from).ok_or_else(missing)?;
+					library.workspaces.insert(to.clone(), kept);
+				}
+				Shelf::Columns => {
+					let kept = library.columns.remove(&from).ok_or_else(missing)?;
+					library.columns.insert(to.clone(), kept);
+				}
+			}
+			if library.favorites.remove(&favorite(shelf, from)) {
+				library.favorites.insert(favorite(shelf, to));
+			}
+		}
+		LibraryEdit::Drop { shelf, name } => {
+			let dropped = match shelf {
+				Shelf::Filters => library.filters.remove(&name).is_some(),
+				Shelf::Workspaces => library.workspaces.remove(&name).is_some(),
+				Shelf::Columns => library.columns.remove(&name).is_some(),
+			};
+			if !dropped {
+				bail!("{name} is not kept");
+			}
+			library.favorites.remove(&favorite(shelf, name));
+		}
+		LibraryEdit::Favorite { what, on: false } =>
+			if !library.favorites.remove(&what) {
+				bail!("{what:?} is not a favorite");
+			},
+		LibraryEdit::Favorite { what, on: true } => {
+			let known = match &what {
+				Favorite::View(name) => library.filters.contains_key(name) || settings().views.iter().any(|v| &v.name == name),
+				Favorite::Scope(path) => scope_at(&settings().scopes, path),
+				Favorite::Workspace(name) => library.workspaces.contains_key(name),
+				Favorite::Columns(name) => library.columns.contains_key(name),
+			};
+			if !known {
+				bail!("no {what:?} to favorite");
+			}
+			library.favorites.insert(what);
+		}
+	}
 	Ok(())
 }
 
-fn signed_in() -> Result<String> {
-	editor().ok_or_else(|| eyre!("personal views belong to an editor, and this instance doesn't know its GitHub user"))
-}
-
-pub fn save_view(view: View) -> Result<()> {
-	let me = signed_in()?;
-	let mut views = personal_views(&me)?;
-	match views.iter_mut().find(|v| v.name == view.name) {
-		Some(old) => *old = view,
-		None => views.push(view),
+fn named(name: String) -> Result<String> {
+	match name.trim().is_empty() {
+		true => bail!("kept under a name, and this one is blank"),
+		false => Ok(name),
 	}
-	write_views(&me, &views)
 }
 
-pub fn delete_view(name: &str) -> Result<()> {
-	let me = signed_in()?;
-	let mut views = personal_views(&me)?;
-	views.retain(|v| v.name != name);
-	write_views(&me, &views)
+fn favorite(shelf: Shelf, name: String) -> Favorite {
+	match shelf {
+		Shelf::Filters => Favorite::View(name),
+		Shelf::Workspaces => Favorite::Workspace(name),
+		Shelf::Columns => Favorite::Columns(name),
+	}
+}
+
+fn scope_at(scopes: &BTreeMap<String, Scope>, path: &str) -> bool {
+	let mut names = path.split(" / ");
+	let Some(mut scope) = names.next().and_then(|n| scopes.get(n)) else { return false };
+	for name in names {
+		match scope.children.get(name) {
+			Some(child) => scope = child,
+			None => return false,
+		}
+	}
+	true
 }

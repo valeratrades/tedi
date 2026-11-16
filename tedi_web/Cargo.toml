@@ -50,6 +50,7 @@ dioxus-fullstack = { workspace = true }
 serde.workspace = true
 strum.workspace = true
 tedi_core.workspace = true
+tilers_core.workspace = true
 
 # web
 ev_lib = { workspace = true, features = ["uikit_dioxus", "wasm"], optional = true }

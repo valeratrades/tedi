@@ -1,14 +1,17 @@
 //! The one client↔server seam: what crosses it, and the server fns.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-use dioxus_fullstack::{ServerEvents, ServerFnError, server};
+#[cfg(feature = "server")]
+use dioxus_fullstack::HeaderMap;
+use dioxus_fullstack::{ServerEvents, ServerFnError, get, post, server};
 use serde::{Deserialize, Serialize};
 use tedi_core::{
 	IssueLink,
-	board::{Board, Scope, View},
+	board::{Board, GroupBy, Scope, View},
 	conflict::{Conflict, FieldEdit},
 };
+use tilers_core::Band;
 
 /// What the sidebar and every view start from.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -16,7 +19,6 @@ pub struct Setup {
 	/// Who edits. Today the instance's own GitHub user, for every request; per request once editors sign in.
 	pub me: Option<String>,
 	pub team: Vec<View>,
-	pub personal: Vec<View>,
 	pub scopes: BTreeMap<String, Scope>,
 	pub sprints: Vec<Sprint>,
 }
@@ -26,6 +28,98 @@ pub struct Setup {
 pub struct Sprint {
 	pub title: String,
 	pub links: Vec<IssueLink>,
+}
+
+/// One viewer's board as they left it, and the filters and arrangements they keep, each kept by
+/// copy: switching to one copies it onto the screen, saving copies the screen's band out.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+pub struct Library {
+	pub on_screen: OnScreen,
+	pub filters: BTreeMap<String, View>,
+	pub workspaces: BTreeMap<String, Arrangement>,
+	pub columns: BTreeMap<String, Columns>,
+	pub favorites: BTreeSet<Favorite>,
+}
+
+/// A dock's layout per band, as tilers saves it: a phone's is not a desktop's.
+pub type Arrangement = BTreeMap<Band, String>;
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+pub struct OnScreen {
+	pub tiles: Arrangement,
+	/// Each view's columns, per grouping.
+	pub columns: BTreeMap<String, BTreeMap<GroupBy, Arrangement>>,
+}
+
+/// A view's columns, kept for the grouping whose keys they are.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct Columns {
+	pub by: GroupBy,
+	pub layout: Arrangement,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+pub enum Favorite {
+	View(String),
+	/// Its path: names ` / `-joined.
+	Scope(String),
+	Workspace(String),
+	Columns(String),
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+pub enum Shelf {
+	Filters,
+	Workspaces,
+	Columns,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub enum Dock {
+	Tiles,
+	Columns { view: String, by: GroupBy },
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub enum Kept {
+	Filter(View),
+	/// Replaces `name`'s `band`, keeping its other bands.
+	Workspace {
+		name: String,
+		band: Band,
+		layout: String,
+	},
+	Columns {
+		name: String,
+		by: GroupBy,
+		band: Band,
+		layout: String,
+	},
+}
+
+/// One change to a library, each touching only what it names, so two tabs of one viewer don't undo each other.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub enum LibraryEdit {
+	/// What a dock on screen now shows.
+	Arranged {
+		dock: Dock,
+		band: Band,
+		layout: String,
+	},
+	Keep(Kept),
+	Rename {
+		shelf: Shelf,
+		from: String,
+		to: String,
+	},
+	Drop {
+		shelf: Shelf,
+		name: String,
+	},
+	Favorite {
+		what: Favorite,
+		on: bool,
+	},
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -68,15 +162,16 @@ pub async fn resolve(link: IssueLink, resolution: String) -> Result<Option<Strin
 	crate::server::resolve(&link, resolution).await.map_err(failed)
 }
 
-/// Saved among the editor's own views, replacing one of the same name.
-#[server]
-pub async fn save_view(view: View) -> Result<(), ServerFnError> {
-	crate::server::save_view(view).map_err(failed)
+/// The requesting viewer's.
+#[get("/api/library", headers: HeaderMap)]
+pub async fn library() -> Result<Library, ServerFnError> {
+	crate::server::library(&headers).await.map_err(failed)
 }
 
-#[server]
-pub async fn delete_view(name: String) -> Result<(), ServerFnError> {
-	crate::server::delete_view(&name).map_err(failed)
+/// The requesting viewer's, after `edit`.
+#[post("/api/library/edit", headers: HeaderMap)]
+pub async fn edit_library(edit: LibraryEdit) -> Result<Library, ServerFnError> {
+	crate::server::edit_library(&headers, edit).await.map_err(failed)
 }
 
 #[cfg(feature = "server")]

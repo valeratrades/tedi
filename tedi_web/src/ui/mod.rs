@@ -1,7 +1,9 @@
-//! The client: a sidebar of views, scopes and sprints over a tiled workspace, every tile a view or an
-//! issue. Cards arrive whole and are queried here; edits leave as server fns.
+//! The client: a sidebar of workspaces, views, scopes and sprints over a tiled workspace, every tile a view or
+//! an issue. Cards arrive whole and are queried here; edits leave as server fns. What is on screen, and what
+//! the viewer keeps, is their library on the server.
 
 mod issue;
+mod library;
 mod view;
 
 use std::collections::{BTreeMap, HashMap};
@@ -14,19 +16,22 @@ use tedi_core::{
 	board::{Board, Card, GroupBy, Layout, Scope, Shown, Sort, View},
 	conflict::{Conflict, FieldEdit},
 };
-use tilers_dioxus::{DockPanel, Group, GroupId, MinSize, PackedApi, PackedArea, PanelId};
+use tilers_dioxus::{Band, DockPanel, Group, GroupId, MinSize, PackedApi, PackedArea, PanelId};
 
-use crate::api::{self, Edited, Setup, Sprint};
+use crate::api::{self, Dock, Edited, Favorite, Library, LibraryEdit, Setup, Shelf};
 
 /// Shared by every tile.
 #[derive(Clone, Copy)]
 struct Ctx {
 	setup: Signal<Option<Setup>>,
+	library: Signal<Option<Library>>,
 	board: Signal<Option<Board>>,
 	/// Edits that came back clashing, shown on their issue until answered.
 	conflicts: Signal<HashMap<IssueLink, Conflict>>,
 	panels: Signal<Vec<DockPanel>>,
 	api: Signal<Option<PackedApi>>,
+	/// The band the dock was last arranged for from the library: until then, what it shows isn't the viewer's to keep.
+	arranged: Signal<Option<Band>>,
 	toaster: ToasterHandle,
 }
 impl Ctx {
@@ -38,53 +43,91 @@ impl Ctx {
 		self.setup.read().as_ref()?.me.clone()
 	}
 
-	fn open_view(&self, view: View) {
-		let title = view.name.clone();
-		self.open(PanelId(format!("view:{}", view.name)), title, rsx! { view::ViewPanel { view } }, (40, 18), None);
+	/// Team views, then the viewer's own.
+	fn views(&self) -> Vec<View> {
+		let setup = self.setup.read();
+		let library = self.library.read();
+		let team = setup.as_ref().map(|s| s.team.clone()).into_iter().flatten();
+		team.chain(library.as_ref().map(|l| l.filters.values().cloned().collect::<Vec<_>>()).into_iter().flatten())
+			.collect()
 	}
 
-	/// `path`: the scope's name under each scope it nests in, ` / `-joined.
-	fn open_scope(&self, path: String, scope: &Scope) {
-		let view = scope_view(&path, scope);
-		self.open(PanelId(format!("scope:{path}")), path, rsx! { view::ViewPanel { view } }, (40, 18), None);
+	fn favorite(&self, what: &Favorite) -> bool {
+		self.library.read().as_ref().is_some_and(|l| l.favorites.contains(what))
 	}
 
-	fn open_sprint(&self, sprint: Sprint) {
-		let title = sprint.title.clone();
-		self.open(PanelId(format!("sprint:{}", sprint.title)), title, rsx! { view::SprintPanel { sprint } }, (24, 18), None);
-	}
-
-	/// Issues share one tile, a tab each.
 	fn open_issue(&self, link: IssueLink) {
-		let title = self.card(&link).map_or_else(|| link.to_string(), |c| format!("#{} {}", link.number(), c.title));
-		self.open(PanelId(format!("issue:{link}")), title, rsx! { issue::IssuePanel { link } }, (40, 14), Some("issue:"));
+		self.open(PanelId(format!("issue:{link}")));
 	}
 
-	/// Shows `id`, hosting it first if it isn't: as a tab of the tile holding a `join`-prefixed panel, else in a tile of its own.
-	fn open(&self, id: PanelId, title: String, content: Element, (w, h): (u32, u32), join: Option<&str>) {
+	/// Shows `id`, hosting it first if it isn't: an issue as a tab of the tile holding another, anything else in a tile of its own.
+	fn open(&self, id: PanelId) {
 		let mut api = (*self.api.peek()).expect("a band is entered before anything can be opened");
 		if api.tab_ids().contains(&id) {
 			return;
 		}
-		let mut panels = self.panels;
-		if !panels.peek().iter().any(|p| p.id == id) {
-			panels.write().push(DockPanel {
-				id: id.clone(),
-				title,
-				content,
-				min: MinSize::Rem { w: 16.0, h: 8.0 },
-			});
-		}
-		let host = join.and_then(|prefix| {
+		self.host(&id);
+		let host = id.0.starts_with("issue:").then(|| {
 			let grid = tilers_dioxus::model::serial::load(&api.save()).expect("a layout loads back from its own save");
-			grid.cells.iter().find(|c| c.group.tabs.iter().any(|t| t.0.starts_with(prefix))).map(|c| c.group.id)
+			grid.cells.iter().find(|c| c.group.tabs.iter().any(|t| t.0.starts_with("issue:"))).map(|c| c.group.id)
 		});
-		match host {
+		match host.flatten() {
 			Some(group) => api.add_tab(group, id),
 			None => {
+				let (w, h) = size(&id);
 				let group = api.mint_group_id();
 				api.place(Group::new(group, id), w, h);
 			}
+		}
+	}
+
+	/// A sidebar item started a drag: wherever it drops on the dock, `id` lands.
+	fn carry(&self, id: PanelId) {
+		let mut api = (*self.api.peek()).expect("a band is entered before the sidebar can be dragged from");
+		self.host(&id);
+		let (w, h) = size(&id);
+		api.carry(id, w, h);
+	}
+
+	fn host(&self, id: &PanelId) {
+		let mut panels = self.panels;
+		if !panels.peek().iter().any(|p| &p.id == id) {
+			let panel = self.panel(id.clone());
+			panels.write().push(panel);
+		}
+	}
+
+	/// The panel `id` names, its content looked up afresh: a layout holds ids only.
+	fn panel(&self, id: PanelId) -> DockPanel {
+		let setup = self.setup.peek();
+		let setup = setup.as_ref().expect("panels are hosted once setup arrived");
+		let (title, content) = match id.0.split_once(':') {
+			Some(("view", name)) => match self.views().into_iter().find(|v| v.name == name) {
+				Some(view) => (name.to_string(), rsx! { view::ViewPanel { view } }),
+				None => (name.to_string(), rsx! { "The view {name} is no longer saved" }),
+			},
+			Some(("scope", path)) => match find_scope(&setup.scopes, path) {
+				Some(scope) => (path.to_string(), rsx! { view::ViewPanel { view: scope_view(path, scope) } }),
+				None => (path.to_string(), rsx! { "The scope {path} is no longer configured" }),
+			},
+			Some(("sprint", title)) => match setup.sprints.iter().find(|s| s.title == title) {
+				Some(sprint) => (title.to_string(), rsx! { view::SprintPanel { sprint: sprint.clone() } }),
+				None => (title.to_string(), rsx! { "The sprint {title} is closed" }),
+			},
+			Some(("issue", link)) => match IssueLink::parse(link) {
+				Some(link) => {
+					let title = self.card(&link).map_or_else(|| format!("#{}", link.number()), |c| format!("#{} {}", link.number(), c.title));
+					(title, rsx! { issue::IssuePanel { link } })
+				}
+				None => (id.0.clone(), rsx! { "Not an issue: {link}" }),
+			},
+			_ => (id.0.clone(), rsx! { "Unknown panel {id.0}" }),
+		};
+		DockPanel {
+			id,
+			title,
+			content,
+			min: MinSize::Rem { w: 16.0, h: 8.0 },
 		}
 	}
 
@@ -103,6 +146,110 @@ impl Ctx {
 			Err(e) => _ = self.toaster.error(e.to_string()),
 		}
 	}
+
+	/// Whether it landed; why not is toasted.
+	async fn keep(self, edit: LibraryEdit) -> bool {
+		match api::edit_library(edit).await {
+			Ok(library) => {
+				let mut l = self.library;
+				l.set(Some(library));
+				true
+			}
+			Err(e) => {
+				self.toaster.error(e.to_string());
+				false
+			}
+		}
+	}
+
+	/// The band's tiles as the library has them, else the first view.
+	fn arrange(self, api: PackedApi) {
+		let (Some(setup), Some(library)) = (self.setup.peek().clone(), self.library.peek().clone()) else {
+			return; // `Live` arranges once both arrived
+		};
+		let band = api.band();
+		let shown = match library.on_screen.tiles.get(&band) {
+			Some(layout) => self.show(api, layout),
+			None => {
+				if let Some(view) = setup.team.first().cloned().or_else(|| library.filters.values().next().cloned()) {
+					self.open(PanelId(format!("view:{}", view.name)));
+				}
+				true
+			}
+		};
+		if shown {
+			let mut arranged = self.arranged;
+			arranged.set(Some(band));
+		}
+	}
+
+	/// `layout` on the dock, its panels hosted first.
+	fn show(self, mut api: PackedApi, layout: &str) -> bool {
+		match tilers_dioxus::model::serial::load(layout) {
+			Ok(grid) => {
+				for id in grid.cells.iter().flat_map(|c| c.group.tabs.iter()) {
+					self.host(id);
+				}
+				api.load(layout).expect("parsed above");
+				true
+			}
+			Err(e) => {
+				self.toaster
+					.error(format!("the kept layout doesn't load ({e:?}); nothing kept is overwritten until another is shown"));
+				false
+			}
+		}
+	}
+
+	/// Workspace `name` onto the dock, if it has this band's.
+	fn switch(self, name: &str) {
+		let api = (*self.api.peek()).expect("a band is entered before a workspace can be switched to");
+		let band = api.band();
+		let library = self.library.peek();
+		let workspace = library.as_ref().and_then(|l| l.workspaces.get(name)).expect("offered from the library");
+		match workspace.get(&band) {
+			Some(layout) => {
+				let layout = layout.clone();
+				drop(library);
+				if self.show(api, &layout) {
+					let mut arranged = self.arranged;
+					arranged.set(Some(band));
+				}
+			}
+			None => _ = self.toaster.info(format!("{name} keeps no {band} arrangement: arrange this screen, then save it as {name}")),
+		}
+	}
+}
+
+/// What a tile wants when it opens.
+fn size(id: &PanelId) -> (u32, u32) {
+	match id.0.split_once(':').map(|(kind, _)| kind) {
+		Some("sprint") => (24, 18),
+		Some("issue") => (40, 14),
+		_ => (40, 18),
+	}
+}
+
+/// Sends what `api`'s dock shows as `dock`'s, once it settles, from the moment it was arranged for its band.
+fn use_autosave(ctx: Ctx, api: Signal<Option<PackedApi>>, arranged: Signal<Option<Band>>, dock: Dock) {
+	let mut pending = use_signal(|| None::<dioxus::core::Task>);
+	let mut sent = use_signal(|| None::<(Band, String)>);
+	use_effect(move || {
+		let Some(api) = *api.read() else { return };
+		let (band, layout) = (api.band(), api.save());
+		if *arranged.read() != Some(band) || sent.peek().as_ref() == Some(&(band, layout.clone())) {
+			return;
+		}
+		if let Some(task) = pending.take() {
+			task.cancel();
+		}
+		let dock = dock.clone();
+		pending.set(Some(spawn(async move {
+			gloo_timers::future::sleep(std::time::Duration::from_millis(800)).await;
+			sent.set(Some((band, layout.clone())));
+			ctx.keep(LibraryEdit::Arranged { dock, band, layout }).await;
+		})));
+	});
 }
 
 #[component]
@@ -121,13 +268,16 @@ fn Shell() -> Element {
 	let toaster = use_toaster();
 	let ctx = use_context_provider(|| Ctx {
 		setup: Signal::new(None),
+		library: Signal::new(None),
 		board: Signal::new(None),
 		conflicts: Signal::new(HashMap::new()),
 		panels: Signal::new(Vec::new()),
 		api: Signal::new(None),
+		arranged: Signal::new(None),
 		toaster,
 	});
 	use_context_provider(|| Callback::new(|_: GroupId| {})); // tilers' `+`: new tabs come from the sidebar and palette
+	use_autosave(ctx, ctx.api, ctx.arranged, Dock::Tiles);
 	rsx! {
 		Live {}
 		SidebarProvider {
@@ -136,8 +286,13 @@ fn Shell() -> Element {
 				div { class: "absolute inset-0",
 					PackedArea {
 						panels: ctx.panels,
-						on_band: Some(Callback::new(move |api: PackedApi| ctx.entered(api))),
-						config: Some(tilers_dioxus::Config { storage_key: Some("tedi-board".into()), ..Default::default() }),
+						on_band: Some(Callback::new(move |api: PackedApi| {
+							let (mut handle, mut arranged) = (ctx.api, ctx.arranged);
+							handle.set(Some(api));
+							arranged.set(None);
+							ctx.arrange(api);
+						})),
+						config: None,
 					}
 				}
 			}
@@ -146,79 +301,23 @@ fn Shell() -> Element {
 	}
 }
 
-impl Ctx {
-	/// Each band keeps its own layout (a phone's is not a desktop's): a restored one gets its panels back
-	/// from their ids, a fresh one opens the first team view.
-	fn entered(self, api: PackedApi) {
-		let mut handle = self.api;
-		handle.set(Some(api));
-		let Some(setup) = self.setup.peek().clone() else { return }; // `Live` opens the first view once setup arrives
-		match api.restored() {
-			true => self.rehost(&setup, api.tab_ids()),
-			false => self.open_first(&setup),
-		}
-	}
-
-	fn open_first(&self, setup: &Setup) {
-		if let Some(view) = setup.team.first().or(setup.personal.first()) {
-			self.open_view(view.clone());
-		}
-	}
-
-	/// Panels a restored layout hosts, rebuilt from their ids.
-	fn rehost(&self, setup: &Setup, ids: Vec<PanelId>) {
-		let mut panels = self.panels;
-		for id in ids {
-			if panels.peek().iter().any(|p| p.id == id) {
-				continue;
-			}
-			let (title, content) = match id.0.split_once(':') {
-				Some(("view", name)) => match setup.team.iter().chain(&setup.personal).find(|v| v.name == name) {
-					Some(view) => (name.to_string(), rsx! { view::ViewPanel { view: view.clone() } }),
-					None => (name.to_string(), rsx! { "The view {name} is no longer saved" }),
-				},
-				Some(("scope", path)) => match find_scope(&setup.scopes, path) {
-					Some(scope) => (path.to_string(), rsx! { view::ViewPanel { view: scope_view(path, scope) } }),
-					None => (path.to_string(), rsx! { "The scope {path} is no longer configured" }),
-				},
-				Some(("sprint", title)) => match setup.sprints.iter().find(|s| s.title == title) {
-					Some(sprint) => (title.to_string(), rsx! { view::SprintPanel { sprint: sprint.clone() } }),
-					None => (title.to_string(), rsx! { "The sprint {title} is closed" }),
-				},
-				Some(("issue", link)) => match IssueLink::parse(link) {
-					Some(link) => (format!("#{}", link.number()), rsx! { issue::IssuePanel { link } }),
-					None => (id.0.clone(), rsx! { "Not an issue: {link}" }),
-				},
-				_ => (id.0.clone(), rsx! { "Unknown panel {id.0}" }),
-			};
-			panels.write().push(DockPanel {
-				id,
-				title,
-				content,
-				min: MinSize::Rem { w: 16.0, h: 8.0 },
-			});
-		}
-	}
-}
-
-/// Setup, then the board, reloaded on every change the server announces.
+/// Setup and the library, then the board, reloaded on every change the server announces.
 #[component]
 fn Live() -> Element {
 	let ctx = use_context::<Ctx>();
 	let toaster = ctx.toaster;
 	use_future(move || async move {
-		match api::setup().await {
-			Ok(setup) => {
-				let mut s = ctx.setup;
-				s.set(Some(setup.clone()));
+		match futures::join!(api::setup(), api::library()) {
+			(Ok(setup), Ok(library)) => {
+				let (mut s, mut l) = (ctx.setup, ctx.library);
+				s.set(Some(setup));
+				l.set(Some(library));
 				if let Some(api) = *ctx.api.peek() {
-					match api.restored() {
-						true => ctx.rehost(&setup, api.tab_ids()),
-						false => ctx.open_first(&setup),
-					}
+					ctx.arrange(api);
 				}
 			}
-			Err(e) => _ = toaster.error(format!("setup: {e}")),
+			(Err(e), _) => _ = toaster.error(format!("setup: {e}")),
+			(_, Err(e)) => _ = toaster.error(format!("your library: {e}")),
 		}
 		loop {
 			match api::changes().await {
@@ -269,21 +368,75 @@ fn Nav() -> Element {
 fn NavMenu() -> Element {
 	let ctx = use_context::<Ctx>();
 	let setup = ctx.setup.read();
-	let Some(setup) = setup.as_ref() else {
+	let library = ctx.library.read();
+	let (Some(setup), Some(library)) = (setup.as_ref(), library.as_ref()) else {
 		return rsx! { SidebarContent { Spinner {} } };
 	};
 	let unreadable = ctx.board.read().as_ref().map_or(0, |b| b.unreadable.len());
+	let favorite_workspaces: Vec<String> = library
+		.workspaces
+		.keys()
+		.filter(|n| library.favorites.contains(&Favorite::Workspace((*n).clone())))
+		.cloned()
+		.collect();
+	let mut views = ctx.views();
+	views.sort_by_key(|v| !library.favorites.contains(&Favorite::View(v.name.clone()))); // stable: favorites first, else as configured
+	let mut scopes: Vec<(String, Scope)> = setup.scopes.clone().into_iter().collect();
+	scopes.sort_by_key(|(name, _)| !library.favorites.contains(&Favorite::Scope(name.clone())));
+	// a favorite whose view or scope is gone stays listed until unfavorited
+	let stale: Vec<Favorite> = library
+		.favorites
+		.iter()
+		.filter(|f| match f {
+			Favorite::View(name) => !views.iter().any(|v| &v.name == name),
+			Favorite::Scope(path) => find_scope(&setup.scopes, path).is_none(),
+			Favorite::Workspace(_) | Favorite::Columns(_) => false, // dropped with their entry
+		})
+		.cloned()
+		.collect();
+	let workspaces: Vec<String> = library.workspaces.keys().cloned().collect();
+	let filters: Vec<String> = library.filters.keys().cloned().collect();
 	rsx! {
 		SidebarHeader { class: "font-semibold px-3", "tedi" }
 		SidebarContent {
 			SidebarGroup {
-				SidebarGroupLabel { "Views" }
+				div { class: "flex items-center justify-between",
+					SidebarGroupLabel { "Workspaces" }
+					library::Menu {
+						shelf: Shelf::Workspaces,
+						names: workspaces,
+						on_pick: move |name: String| ctx.switch(&name),
+						on_save: Some(EventHandler::new(move |name: String| {
+							let api = (*ctx.api.peek()).expect("a band is entered before the screen can be saved");
+							let edit = LibraryEdit::Keep(api::Kept::Workspace { name, band: api.band(), layout: api.save() });
+							spawn(async move { _ = ctx.keep(edit).await });
+						})),
+					}
+				}
 				SidebarGroupContent {
 					SidebarMenu {
-						for view in setup.team.iter().chain(&setup.personal).cloned() {
-							SidebarMenuItem { key: "{view.name}",
-								SidebarMenuButton { onclick: { let view = view.clone(); move |_| ctx.open_view(view.clone()) }, "★ {view.name}" }
+						for name in favorite_workspaces {
+							SidebarMenuItem { key: "{name}",
+								SidebarMenuButton { onclick: { let name = name.clone(); move |_| ctx.switch(&name) }, "★ {name}" }
 							}
+						}
+					}
+				}
+			}
+			SidebarGroup {
+				div { class: "flex items-center justify-between",
+					SidebarGroupLabel { "Views" }
+					library::Menu {
+						shelf: Shelf::Filters,
+						names: filters,
+						on_pick: move |name: String| ctx.open(PanelId(format!("view:{name}"))),
+						on_save: None,
+					}
+				}
+				SidebarGroupContent {
+					SidebarMenu {
+						for view in views {
+							Item { key: "{view.name}", id: PanelId(format!("view:{}", view.name)), label: view.name.clone(), favorite: Some(Favorite::View(view.name.clone())), depth: 0 }
 						}
 					}
 				}
@@ -293,7 +446,7 @@ fn NavMenu() -> Element {
 					SidebarGroupLabel { "Scopes" }
 					SidebarGroupContent {
 						SidebarMenu {
-							for (name, scope) in setup.scopes.clone() {
+							for (name, scope) in scopes {
 								ScopeItem { key: "{name}", path: name.clone(), name, scope, depth: 0 }
 							}
 						}
@@ -306,8 +459,24 @@ fn NavMenu() -> Element {
 					SidebarGroupContent {
 						SidebarMenu {
 							for sprint in setup.sprints.clone() {
-								SidebarMenuItem { key: "{sprint.title}",
-									SidebarMenuButton { onclick: { let sprint = sprint.clone(); move |_| ctx.open_sprint(sprint.clone()) }, "{sprint.title}" }
+								Item { key: "{sprint.title}", id: PanelId(format!("sprint:{}", sprint.title)), label: sprint.title.clone(), favorite: None, depth: 0 }
+							}
+						}
+					}
+				}
+			}
+			if !stale.is_empty() {
+				SidebarGroup {
+					SidebarGroupLabel { "Favorites gone" }
+					SidebarGroupContent {
+						SidebarMenu {
+							for what in stale {
+								SidebarMenuItem { key: "{what:?}",
+									SidebarMenuButton {
+										class: "line-through",
+										onclick: { let what = what.clone(); move |_| { let what = what.clone(); spawn(async move { _ = ctx.keep(LibraryEdit::Favorite { what, on: false }).await; }); } },
+										"{gone(&what)}"
+									}
 								}
 							}
 						}
@@ -323,15 +492,52 @@ fn NavMenu() -> Element {
 	}
 }
 
+fn gone(what: &Favorite) -> String {
+	match what {
+		Favorite::View(n) | Favorite::Scope(n) | Favorite::Workspace(n) | Favorite::Columns(n) => format!("{n} (click to unfavorite)"),
+	}
+}
+
+/// A sidebar entry: a click opens `id`, a drag drops it on the dock where it lands; `favorite` gets a ★ toggle.
 #[component]
-fn ScopeItem(path: String, name: String, scope: Scope, depth: usize) -> Element {
+fn Item(id: PanelId, label: String, favorite: Option<Favorite>, depth: usize) -> Element {
 	let ctx = use_context::<Ctx>();
+	let starred = favorite.as_ref().is_some_and(|f| ctx.favorite(f));
 	rsx! {
 		SidebarMenuItem {
-			div { style: "padding-left: {depth * 12}px",
-				SidebarMenuButton { onclick: { let (path, scope) = (path.clone(), scope.clone()); move |_| ctx.open_scope(path.clone(), &scope) }, "{name}" }
+			div {
+				class: "flex items-center gap-1",
+				style: "padding-left: {depth * 12}px",
+				draggable: "true",
+				ondragstart: {
+					let id = id.clone();
+					move |e: DragEvent| {
+						e.data_transfer().set_data("text/plain", &id.0).expect("a dragstart's transfer is writable"); // Firefox starts no drag without data
+						ctx.carry(id.clone());
+					}
+				},
+				if let Some(what) = favorite.clone() {
+					button {
+						class: if starred { "px-1 text-accent" } else { "px-1 text-ink-soft opacity-50 hover:opacity-100" },
+						title: if starred { "Unfavorite" } else { "Favorite" },
+						onclick: move |e: MouseEvent| {
+							e.stop_propagation();
+							let what = what.clone();
+							spawn(async move { _ = ctx.keep(LibraryEdit::Favorite { what, on: !starred }).await; });
+						},
+						if starred { "★" } else { "☆" }
+					}
+				}
+				SidebarMenuButton { class: "flex-1", onclick: { let id = id.clone(); move |_| ctx.open(id.clone()) }, "{label}" }
 			}
 		}
+	}
+}
+
+#[component]
+fn ScopeItem(path: String, name: String, scope: Scope, depth: usize) -> Element {
+	rsx! {
+		Item { id: PanelId(format!("scope:{path}")), label: name, favorite: Some(Favorite::Scope(path.clone())), depth }
 		for (child, nested) in scope.children.clone() {
 			ScopeItem { key: "{child}", path: format!("{path} / {child}"), name: child, scope: nested, depth: depth + 1 }
 		}
@@ -365,47 +571,29 @@ fn Palette() -> Element {
 	let ctx = use_context::<Ctx>();
 	let mut open = use_signal(|| false);
 	use_command_palette_shortcut(move || open.toggle(), true);
-	let item = |id: String, label: String, on_select: EventHandler<()>| CommandPaletteItem {
-		id,
+	let item = |id: PanelId, label: String| CommandPaletteItem {
+		id: id.0.clone(),
 		label,
 		icon: None,
 		shortcut: None,
 		keywords: Vec::new(),
 		disabled: false,
-		on_select,
+		on_select: EventHandler::new(move |_| ctx.open(id.clone())),
 	};
 	let mut groups = Vec::new();
 	if let Some(setup) = ctx.setup.read().as_ref() {
-		let mut views: Vec<CommandPaletteItem> = setup
-			.team
-			.iter()
-			.chain(&setup.personal)
-			.cloned()
-			.map(|v| item(format!("view:{}", v.name), v.name.clone(), EventHandler::new(move |_| ctx.open_view(v.clone()))))
-			.collect();
-		fn scopes(prefix: &str, all: &BTreeMap<String, Scope>, out: &mut Vec<(String, Scope)>) {
+		let mut views: Vec<CommandPaletteItem> = ctx.views().into_iter().map(|v| item(PanelId(format!("view:{}", v.name)), v.name)).collect();
+		fn scopes(prefix: &str, all: &BTreeMap<String, Scope>, out: &mut Vec<String>) {
 			for (name, scope) in all {
 				let path = format!("{prefix}{name}");
-				out.push((path.clone(), scope.clone()));
+				out.push(path.clone());
 				scopes(&format!("{path} / "), &scope.children, out);
 			}
 		}
 		let mut all = Vec::new();
 		scopes("", &setup.scopes, &mut all);
-		views.extend(all.into_iter().map(|(path, scope)| {
-			item(
-				format!("scope:{path}"),
-				format!("Scope: {path}"),
-				EventHandler::new(move |_| ctx.open_scope(path.clone(), &scope)),
-			)
-		}));
-		views.extend(setup.sprints.iter().cloned().map(|s| {
-			item(
-				format!("sprint:{}", s.title),
-				format!("Sprint: {}", s.title),
-				EventHandler::new(move |_| ctx.open_sprint(s.clone())),
-			)
-		}));
+		views.extend(all.into_iter().map(|path| item(PanelId(format!("scope:{path}")), format!("Scope: {path}"))));
+		views.extend(setup.sprints.iter().map(|s| item(PanelId(format!("sprint:{}", s.title)), format!("Sprint: {}", s.title))));
 		groups.push(CommandPaletteGroup {
 			id: "views".into(),
 			heading: Some("Views".into()),
@@ -420,14 +608,7 @@ fn Palette() -> Element {
 				.cards
 				.iter()
 				.filter(|c| c.open())
-				.map(|c| {
-					let link = c.link.clone();
-					item(
-						format!("issue:{link}"),
-						format!("{} #{} {}", c.link.project(), c.link.number(), c.title),
-						EventHandler::new(move |_| ctx.open_issue(link.clone())),
-					)
-				})
+				.map(|c| item(PanelId(format!("issue:{}", c.link)), format!("{} #{} {}", c.link.project(), c.link.number(), c.title)))
 				.collect(),
 		});
 	}

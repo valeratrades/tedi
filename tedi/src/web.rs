@@ -17,6 +17,10 @@ pub struct WebArgs {
 	/// Pull the config's `watch` this often (`10m`), catching what no webhook announced.
 	#[arg(long)]
 	pull_every: Option<jiff::Span>,
+	/// The header a gate in front of this board names the signed-in user in (`X-Auth-User`): each keeps their own library.
+	/// Without it the board is ungated, and the library is the instance's GitHub user's.
+	#[arg(long)]
+	viewer_header: Option<String>,
 }
 
 pub async fn web_command(settings: &LiveSettings, args: WebArgs, mode: SyncMode) -> Result<()> {
@@ -50,6 +54,10 @@ pub async fn web_command(settings: &LiveSettings, args: WebArgs, mode: SyncMode)
 		watch,
 		pull_every,
 		webhook_secret: config.github_webhook_secret,
+		viewer: match args.viewer_header {
+			Some(header) => tedi_web::Viewer::Header(header),
+			None => tedi_web::Viewer::Operator,
+		},
 	})
 	.await
 }
