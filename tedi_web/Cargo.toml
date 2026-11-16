@@ -58,7 +58,7 @@ getrandom = { workspace = true, features = ["wasm_js"], optional = true } # v_ut
 gloo-timers = { workspace = true, features = ["futures"], optional = true }
 tilers_dioxus = { workspace = true, features = ["web"], optional = true }
 wasm-bindgen = { workspace = true, optional = true }
-web-sys = { workspace = true, features = ["Storage", "Window"], optional = true }
+web-sys = { workspace = true, features = ["Location", "Storage", "Window"], optional = true }
 
 # server
 color-eyre = { workspace = true, optional = true }

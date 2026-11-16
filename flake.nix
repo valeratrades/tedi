@@ -89,8 +89,8 @@
             RUSTC_WRAPPER = "";
             doCheck = false; # snapshot tests are colour-sensitive in the sandbox; CI test jobs run them
           };
-          # The board's client, what `tedi web --public` serves.
-          webBundle = rustPlatform.buildRustPackage {
+          # The board's client, what `tedi web --public` serves; `basePath` is the path it is served under.
+          webBundle = basePath: rustPlatform.buildRustPackage {
             pname = "tedi_web-bundle";
             inherit src;
             version = workspaceManifest.version;
@@ -100,7 +100,7 @@
             buildPhase = ''
               runHook preBuild
               export HOME="$TMPDIR"
-              dx bundle --web --release -p tedi_web --out-dir "$TMPDIR/bundle"
+              dx bundle --web --release -p tedi_web --out-dir "$TMPDIR/bundle"${pkgs.lib.optionalString (basePath != null) " --base-path ${basePath}"}
               runHook postBuild
             '';
             installPhase = ''
@@ -108,7 +108,7 @@
             '';
             doCheck = false;
           };
-          # The team instance: its own store on the volume, git-initialized on first boot.
+          # The team instance, at evinvest.ltd/team/tasks: its own store on the volume, git-initialized on first boot.
           board = pkgs.writeShellApplication {
             name = "tedi-board";
             runtimeInputs = [ tediBin pkgs.git pkgs.fd pkgs.coreutils ];
@@ -120,7 +120,7 @@
                 git -C "$issues" config user.name "tedi web"
                 git -C "$issues" config user.email "tedi-web@localhost"
               fi
-              exec tedi web --addr 0.0.0.0:7341 --public ${webBundle} --pull-every 10m
+              exec tedi web --addr 0.0.0.0:7341 --public ${webBundle "team/tasks"} --pull-every 10m
             '';
           };
           containerStd = v_flakes.container.implement {
@@ -181,7 +181,7 @@
           };
         in
         {
-          packages = { default = tediBin; inherit webBundle; } // containerStd.packages;
+          packages = { default = tediBin; webBundle = webBundle null; } // containerStd.packages;
           containers = pkgs.lib.mapAttrs (_: c: c // { contract = c.contract // deploy; }) containerStd.containers;
 
           apps.help = {

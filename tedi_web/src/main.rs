@@ -5,6 +5,12 @@ use dioxus::prelude::*;
 const TAILWIND: Asset = asset!("/assets/tailwind.css");
 
 fn main() {
+	// a bundle built with `--base-path` calls its server functions under it, which `dioxus/fullstack` would
+	// arrange and the client goes without (see Cargo.toml); the url parses as absolute
+	if let Some(base) = dioxus::cli_config::base_path() {
+		let origin = web_sys::window().expect("runs in a browser").location().origin().expect("a page has an origin");
+		dioxus_fullstack::set_server_url(format!("{origin}/{}", base.trim_matches('/')).leak());
+	}
 	dioxus::launch(|| {
 		rsx! {
 			document::Stylesheet { href: TAILWIND }
