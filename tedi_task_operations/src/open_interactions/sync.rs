@@ -471,9 +471,11 @@ mod core {
 			_ => (false, false),
 		};
 
+		let mut local = local;
 		let mut found = Vec::new();
 		if let (MergeMode::Normal, Some(base)) = (mode, &consensus) {
 			clashes(&local, Some(base), &view, true, &mut found);
+			take_one_sided(&mut local, base, &mut view);
 		}
 
 		// Apply four-merge algorithm
@@ -606,6 +608,44 @@ mod core {
 		for (selector, child) in &mut remote.children {
 			if let Some(local) = local.children.get(selector) {
 				unlinked_on_github(local, child);
+			}
+		}
+	}
+
+	/// A field only one side moved off `base` is that side's, whatever the timestamps say: Github
+	/// can change one without a newer one (a label deleted from its repo leaves no event).
+	fn take_one_sided(local: &mut Issue, base: &Issue, remote: &mut Issue) {
+		fn copy(field: Field, from: &Issue, to: &mut Issue) {
+			match field {
+				Field::Title => to.contents.title = from.contents.title.clone(),
+				Field::Labels => to.contents.labels = from.contents.labels.clone(),
+				Field::Assignees => to.contents.assignees = from.contents.assignees.clone(),
+				Field::State => to.contents.state = from.contents.state.clone(),
+				Field::Body => {
+					to.contents.comments[0].body = from.contents.comments[0].body.clone();
+					let set_state = to.contents.blockers.set_state;
+					to.contents.blockers = from.contents.blockers.clone();
+					to.contents.blockers.set_state = set_state;
+				}
+				Field::Comments => {
+					let body = to.contents.comments[0].clone();
+					to.contents.comments = from.contents.comments.clone();
+					to.contents.comments[0] = body;
+				}
+				Field::SubIssues => unreachable!("structure is merged by selector, not copied"),
+			}
+		}
+		for field in [Field::Title, Field::Labels, Field::Assignees, Field::Body, Field::State, Field::Comments] {
+			let b = field.read(base);
+			match (field.read(local) == b, field.read(remote) == b) {
+				(true, false) => copy(field, remote, local),
+				(false, true) => copy(field, local, remote),
+				_ => {}
+			}
+		}
+		for (selector, child) in &mut local.children {
+			if let (Some(b), Some(r)) = (base.children.get(selector), remote.children.get_mut(selector)) {
+				take_one_sided(child, b, r);
 			}
 		}
 	}

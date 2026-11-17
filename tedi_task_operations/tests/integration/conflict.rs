@@ -38,10 +38,10 @@ async fn a_clash_names_each_field_both_sides_changed() {
 #[tokio::test]
 async fn a_clash_blocks_only_its_own_issue() {
 	let ctx = TestContext::build();
-	let local = clash_on_one(&ctx).await;
 	let two = parse_virtual("- [ ] Two <!-- @mock_user https://github.com/o/r/issues/2 -->\n  body\n");
 	let bystander = ctx.consensus(&two, Some(Seed::new(0))).await;
 	ctx.remote(&two, Some(Seed::new(0)));
+	let local = clash_on_one(&ctx).await; // after: a consensus commit takes in every local divergence standing
 
 	assert!(!ctx.open_issue(&local).run().status.success());
 	let out = ctx.open_issue(&bystander).run();

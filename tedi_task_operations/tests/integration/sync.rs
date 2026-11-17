@@ -923,8 +923,7 @@ async fn test_comment_shorthand_creates_comment() {
 
 	// Capture the resulting directory state
 	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().skip_meta(), &out), @"
-	//- /.conflicts/o/r/1.md
-	<<<<<<< local
+	//- /o/r/1_-_Test_Issue.md
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
 	  issue body
 
@@ -933,23 +932,8 @@ async fn test_comment_shorthand_creates_comment() {
 	  My new comment content
 
 	  <!--,}}}-->
-	||||||| consensus
-	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-	  issue body
-	=======
-	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-	  issue body
-	>>>>>>> remote
-	//- /.conflicts/o/r/1.remote
-	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-	  issue body
-	//- /o/r/1_-_Test_Issue.md
-	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
-	  issue body
-
-	  !c
-	  My new comment content
 	");
+	assert!(ctx.github_calls().iter().any(|c| c.starts_with("create_comment(o, r, 1,")), "{:?}", ctx.github_calls());
 }
 
 /// When local and remote have different sub-issues, force merge should preserve both.

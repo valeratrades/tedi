@@ -86,7 +86,7 @@ One writer at a time: from a merge to its consensus commit, a writer holds the s
 
 A conflict is data: `Conflict { link, clashes: [{ node, field, consensus, local, remote }], files }`. Each clashing node is recorded to its own file under `issues/.conflicts/{owner}/{repo}/`, named by lineage (`1_5.md`), both sides between markers; consensus never commits it. It blocks only that line — the node, its ancestors and descendants — and removing the markers is the resolution.
 
-A buffer is folded back against the state it was rendered from, never against a pull made after it. A field changed on both sides since consensus is a conflict, never a timestamp race: neither edit was made knowing of the other.
+A buffer is folded back against the state it was rendered from, never against a pull made after it. A field changed on both sides since consensus is a conflict, never a timestamp race: neither edit was made knowing of the other. One changed on one side only is that side's, timestamps aside: GitHub can change a field without a newer one.
 
 A field edit (`Modifier::Field`: what the web board and `tedi set` send) carries the value it was made against. If, after the pull, the field moved off it to anything but the same new value, the edit comes back as a `Conflict` naming that field, and nothing is written or recorded: the store holds no divergence, so nobody else's line is blocked. Answering it is another edit, made against the value it clashed with.
 

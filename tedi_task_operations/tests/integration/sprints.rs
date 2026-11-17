@@ -1950,6 +1950,19 @@ async fn test_sync_on_exit_pulls_untouched_issues() {
 	assert!(local_issue(10).contains("Title github gave it"), "{}", local_issue(10));
 }
 
+/// GitHub can change a field without a newer timestamp (a label deleted from its repo leaves no
+/// event): changed on that side alone, it is taken, not a conflict.
+#[tokio::test]
+async fn test_remote_change_tied_with_consensus_timestamp_is_taken() {
+	let ctx = TestContext::build();
+	seed_sprint(&ctx, ISSUE_10, &ISSUE_10.replace("Titre application", "Title github gave it"), -100, "2099-01-01T00:00:00Z").await;
+
+	let out = ctx.milestone_client_edit(&["--mock", "--sync-on-exit", "sprints", "edit", "1d"], None, None);
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+	assert!(!out.stderr.contains("changed on both sides"), "stderr: {}", out.stderr);
+	assert!(local_issue(10).contains("Title github gave it"), "{}", local_issue(10));
+}
+
 /// An issue closed by the time the sprint is opened has left it: not shown, and gone from what is stored.
 #[tokio::test]
 async fn test_closed_issue_leaves_sprint_on_open() {
