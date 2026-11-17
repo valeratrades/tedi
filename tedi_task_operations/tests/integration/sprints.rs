@@ -695,9 +695,9 @@ async fn test_sprint_edit_leaves_body_task_list_alone() {
 }
 
 /// Stray text under `# Blockers` belongs to no blocker item, so the edit can't be committed
-/// faithfully — it must fail loudly with the buffer preserved, never be silently dropped.
+/// faithfully — it is refused loudly with the buffer preserved, never silently dropped.
 #[tokio::test]
-async fn test_sprint_edit_orphan_blocker_line_fails_loudly() {
+async fn test_sprint_edit_orphan_blocker_line_is_refused_loudly() {
 	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 
 	let vi = parse_virtual("- [ ] Blocked Issue <!-- @mock_user https://github.com/o/r/issues/62 -->\n\t# Blockers\n\t- real blocker\n");
@@ -707,8 +707,13 @@ async fn test_sprint_edit_orphan_blocker_line_fails_loudly() {
 		let content = std::fs::read_to_string(tmp_path).unwrap();
 		std::fs::write(tmp_path, content.replacen("  # Blockers\n", "  # Blockers\n  orphan line\n", 1)).unwrap();
 	});
-	assert!(!out.status.success(), "orphan blocker line must fail the edit. stdout: {}", out.stdout);
-	assert!(out.stderr.contains("rejected-changes.md"), "stderr: {}", out.stderr);
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+	assert!(
+		out.stderr.contains("issues/62 was not saved") && out.stderr.contains("rejected-changes.md"),
+		"stderr: {}",
+		out.stderr
+	);
+	assert!(!local_issue(62).contains("orphan line"), "{}", local_issue(62));
 }
 
 /// With no milestones repo configured (mock, offline), a top-level task in an edited milestone
@@ -1823,7 +1828,11 @@ async fn test_sync_on_exit_concurrent_description_edit_conflicts() {
 			std::fs::write(tmp, c.replace("first step", "first step, reworded")).unwrap();
 		}) as EditFn),
 	);
-	assert!(!out.status.success(), "a concurrent edit must not resolve silently. stdout: {}", out.stdout);
+	assert!(
+		out.stderr.contains("issues/10 was not saved"),
+		"a concurrent edit must not resolve silently. stderr: {}",
+		out.stderr
+	);
 	assert!(
 		!ctx.github_calls().iter().any(|c| c.starts_with("update_issue_body(o, r, 10")),
 		"the remote body was overwritten: {:?}",
@@ -1855,12 +1864,13 @@ async fn test_sync_on_exit_disjoint_edits_both_kept() {
 }
 
 /// GitHub already closed the sub-issues, but the editor opened on local state, where they are open.
-/// Closing only the parent there closes it over open children.
+/// Closing only the parent there closes it over open children: refused, and the tree pulled, so the
+/// next open shows them closed.
 #[tokio::test]
 async fn test_sync_on_exit_closing_parent_of_remotely_closed_children() {
 	const PARENT_10: &str = "- [ ] Parent <!-- @mock_user https://github.com/o/r/issues/10 -->\n  parent body\n\n  - [ ] Child one <!--sub @mock_user https://github.com/o/r/issues/11 -->\n\n    one body\n\n  - [ ] Child two <!--sub @mock_user https://github.com/o/r/issues/12 -->\n\n    two body\n";
 	let ctx = TestContext::build();
-	seed_sprint(&ctx, PARENT_10, &PARENT_10.replace("- [ ] Child", "- [x] Child"), -100, "2099-01-01T00:00:00Z").await;
+	seed_sprint(&ctx, PARENT_10, &PARENT_10.replace("- [ ] Child", "- [x] Child"), 100, "2099-01-01T00:00:00Z").await;
 
 	let out = ctx.milestone_client_edit(
 		&["--mock", "--sync-on-exit", "sprints", "edit", "1d"],
@@ -1871,9 +1881,20 @@ async fn test_sync_on_exit_closing_parent_of_remotely_closed_children() {
 			std::fs::write(tmp, c.replace("- [ ] Parent", "- [x] Parent")).unwrap();
 		}) as EditFn),
 	);
-	assert!(!out.status.success(), "stdout: {}", out.stdout);
-	assert!(out.stderr.contains("rejected-changes.md"), "stderr: {}", out.stderr);
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+	assert!(
+		out.stderr.contains("issues/10 was not saved") && out.stderr.contains("rejected-changes.md"),
+		"stderr: {}",
+		out.stderr
+	);
 	assert!(local_issue(10).contains("- [ ] Parent"), "{}", local_issue(10));
+	assert!(
+		local_issue(10).contains("- [x] [Child one]"),
+		"{}\nstdout: {}\nstderr: {}",
+		local_issue(10),
+		out.stdout,
+		out.stderr
+	);
 	assert!(!ctx.github_calls().iter().any(|c| c.starts_with("update_issue_state(")), "{:?}", ctx.github_calls());
 }
 
@@ -1897,10 +1918,10 @@ async fn test_sprint_closing_parent_and_child_across_blocks() {
 	assert!(local_issue(11).contains("- [x] Child"), "{}", local_issue(11));
 }
 
-/// Closing the parent block alone leaves its child open: the whole save is refused, including the
-/// unrelated edit made to the child's block in it.
+/// Closing the parent block alone leaves its child open: that edit is refused, while the unrelated
+/// edit made to the child's block lands.
 #[tokio::test]
-async fn test_sprint_closing_parent_over_open_child_commits_nothing() {
+async fn test_sprint_closing_parent_over_open_child_commits_the_rest() {
 	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 	ctx.local(&parse_virtual(PARENT_WITH_CHILD), Some(Seed::new(0))).await;
 
@@ -1908,10 +1929,60 @@ async fn test_sprint_closing_parent_over_open_child_commits_nothing() {
 		let c = std::fs::read_to_string(tmp).unwrap();
 		std::fs::write(tmp, c.replace("- [ ] Parent <!--", "- [x] Parent <!--").replace("child body", "child body, edited")).unwrap();
 	});
-	assert!(!out.status.success(), "stdout: {}", out.stdout);
-	assert!(out.stderr.contains("rejected-changes.md"), "stderr: {}", out.stderr);
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+	assert!(
+		out.stderr.contains("issues/10 was not saved") && out.stderr.contains("rejected-changes.md"),
+		"stderr: {}",
+		out.stderr
+	);
 	assert!(local_issue(10).contains("- [ ] Parent"), "{}", local_issue(10));
-	assert!(!local_issue(11).contains("edited"), "{}", local_issue(11));
+	assert!(local_issue(11).contains("child body, edited"), "{}", local_issue(11));
+}
+
+/// `--sync-on-exit` reaches GitHub only after the editor: an issue left untouched there is pulled then too.
+#[tokio::test]
+async fn test_sync_on_exit_pulls_untouched_issues() {
+	let ctx = TestContext::build();
+	seed_sprint(&ctx, ISSUE_10, &ISSUE_10.replace("Titre application", "Title github gave it"), 100, "2099-01-01T00:00:00Z").await;
+
+	let out = ctx.milestone_client_edit(&["--mock", "--sync-on-exit", "sprints", "edit", "1d"], None, None);
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+	assert!(local_issue(10).contains("Title github gave it"), "{}", local_issue(10));
+}
+
+/// An issue closed by the time the sprint is opened has left it: not shown, and gone from what is stored.
+#[tokio::test]
+async fn test_closed_issue_leaves_sprint_on_open() {
+	use tedi_task_operations::{RepoInfo, local::Local};
+
+	let ctx = TestContext::build();
+	for vi in [
+		"- [x] Done <!-- @mock_user https://github.com/o/r/issues/10 -->\n  body 10\n",
+		"- [ ] Still open <!-- @mock_user https://github.com/o/r/issues/11 -->\n  body 11\n",
+	] {
+		ctx.remote(&parse_virtual(vi), Some(Seed::new(-100)));
+		ctx.consensus(&parse_virtual(vi), Some(Seed::new(-100))).await;
+	}
+	seed_sprint_milestone(
+		&ctx,
+		"- https://github.com/o/r/issues/10\n- https://github.com/o/r/issues/11",
+		"2099-01-01T00:00:00Z",
+		"2099-01-01T00:00:00Z",
+	);
+
+	let out = ctx.milestone_client_edit(
+		&["--mock", "--sync-on-exit", "sprints", "edit", "1d"],
+		None,
+		Some(Box::new(|tmp: &Path| {
+			let c = std::fs::read_to_string(tmp).unwrap();
+			assert!(!c.contains("Done"), "{c}");
+			assert!(c.contains("Still open"), "{c}");
+		}) as EditFn),
+	);
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+	let stored = std::fs::read_to_string(Local::milestone_file_path(RepoInfo::new("o", "r"), 7, "1d")).unwrap();
+	assert!(!stored.contains("issues/10"), "{stored}");
+	assert!(stored.contains("issues/11"), "{stored}");
 }
 
 /// Sub-issue bodies opening on an html line, as GitHub's image upload writes them, untouched on either
@@ -2040,7 +2111,7 @@ async fn rollover(edit_fn: Option<EditFn>) -> String {
 	std::fs::read_to_string(Local::milestone_file_path(RepoInfo::new("o", "r"), 7, "1d")).unwrap()
 }
 
-/// Rolling a sprint over archives it; an issue that archive recorded as closed leaves the live sprint.
+/// Rolling a sprint over archives it; a closed issue leaves the live sprint.
 #[tokio::test]
 async fn test_rollover_prunes_archived_closed_issues() {
 	let stored = rollover(None).await;

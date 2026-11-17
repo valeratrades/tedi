@@ -23,7 +23,7 @@
 
 pub(crate) use core::{fetch_remote, sync as merge_with_remote};
 
-use color_eyre::eyre::{Result, bail};
+use color_eyre::eyre::{Result, bail, eyre};
 use tracing::instrument;
 pub use types::*;
 
@@ -52,9 +52,9 @@ pub(crate) fn is_transient_sync_error(e: &color_eyre::Report) -> bool {
 /// applied on top of a body Github has moved past folds back as a deletion of everything it gained
 /// since. A transient outage degrades to the local copy; a genuine divergence is a loud conflict.
 ///
-/// Remotes are fetched concurrently; merges run one at a time — the consensus sink commits through
-/// the one git index, and a conflict is recorded on a git branch once per run, so the first failed
-/// merge stops the batch. An issue nested under another one in the batch is synced as part of that
+/// Remotes are fetched concurrently; merges run one at a time, the consensus sink committing through
+/// the one git index. A failed issue doesn't stop the batch: the rest still sync, and the failures
+/// come back together. An issue nested under another one in the batch is synced as part of that
 /// ancestor's tree, then re-read from disk.
 pub async fn pull_issues(issues: &mut [Issue], mode: MergeMode) -> Result<()> {
 	let indices: Vec<IssueIndex> = issues.iter().map(Issue::full_index).collect();
@@ -75,6 +75,7 @@ pub async fn pull_issues(issues: &mut [Issue], mode: MergeMode) -> Result<()> {
 	.await;
 
 	let mut linked = Vec::new();
+	let mut failed = Vec::new();
 	for (issue, remote) in issues.iter_mut().zip(remotes) {
 		let Some(remote) = remote else { continue };
 		let result = match remote {
@@ -84,14 +85,22 @@ pub async fn pull_issues(issues: &mut [Issue], mode: MergeMode) -> Result<()> {
 		match result {
 			Ok(links) => linked.extend(links),
 			Err(e) if is_transient_sync_error(&e) => tracing::warn!("GitHub transient during pre-open issue sync — proceeding with local: {e}"),
-			Err(e) => return Err(e),
+			Err(e) => failed.push(e),
 		}
 	}
 	fetch_and_store_missing(&linked).await;
 	for (issue, _) in issues.iter_mut().zip(&nested).filter(|(_, nested)| **nested) {
 		*issue = Issue::load(LocalIssueSource::<FsReader>::build(LocalPath::new(issue.full_index())).await?).await?;
 	}
-	Ok(())
+	match failed.len() {
+		0 => Ok(()),
+		1 => Err(failed.pop().expect("one failure")), // kept whole: a lone `Conflict` is downcast by callers
+		_ => Err(eyre!(
+			"{} issues failed to sync:\n{}",
+			failed.len(),
+			failed.iter().map(|e| format!("{e:#}")).collect::<Vec<_>>().join("\n")
+		)),
+	}
 }
 
 /// Modify a local issue, then sync changes back to Github.

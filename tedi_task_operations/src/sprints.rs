@@ -231,8 +231,10 @@ pub async fn sync_milestone_changes(doc: &TaskView, mode: SyncMode) -> Result<()
 /// Each block is parsed by the same `VirtualIssue::parse` an issue's own file goes through, so a
 /// block that doesn't compose (stray text under `# Blockers`, say) is a loud error, not a drop.
 ///
-/// Every block is folded and validated before any is committed, so a rejected save commits nothing.
+/// An issue whose edit fails is left as stored and warned about, the buffer kept in rejected-changes;
+/// the other issues still land.
 pub async fn sync_embedded_issue_changes(content: &str, mode: SyncMode) -> Result<()> {
+	let mut rejected: Vec<(IssueLink, color_eyre::Report)> = Vec::new();
 	// An issue can be rendered several times in one buffer (held by the sprint *and* by an inlined
 	// milestone). Grouping is what keeps the untouched copies from reverting the edited one.
 	let mut grouped: Vec<(IssueLink, Vec<VirtualIssue>)> = Vec::new();
@@ -241,26 +243,30 @@ pub async fn sync_embedded_issue_changes(content: &str, mode: SyncMode) -> Resul
 			IssueLink::Virtual(p) => p.clone(),
 			IssueLink::Owned(_) => PathBuf::from(format!("<sprint block for {link}>")),
 		};
-		let edited = VirtualIssue::parse(&block, path)?;
-		// `VirtualIssue::parse` only rejects stray content *after* the blocker list; inside the
-		// section it is `Blockers::parse` that drops what belongs to no item.
-		if edited.contents.blockers.had_orphans {
-			bail!(
+		let edited = match VirtualIssue::parse(&block, path) {
+			// `VirtualIssue::parse` only rejects stray content *after* the blocker list; inside the
+			// section it is `Blockers::parse` that drops what belongs to no item.
+			Ok(edited) if edited.contents.blockers.had_orphans => Err(eyre!(
 				"blocker section for {link} contains lines that don't belong to any blocker item — \
 				fix the format (all text must be under a `- ` blocker line)",
-			);
-		}
-		match grouped.iter_mut().find(|(l, _)| *l == link) {
-			Some((_, copies)) => copies.push(edited),
-			None => grouped.push((link, vec![edited])),
+			)),
+			parsed => parsed.map_err(Into::into),
+		};
+		match edited {
+			Ok(edited) => match grouped.iter_mut().find(|(l, _)| *l == link) {
+				Some((_, copies)) => copies.push(edited),
+				None => grouped.push((link, vec![edited])),
+			},
+			Err(e) => rejected.push((link, e)),
 		}
 	}
+	grouped.retain(|(link, _)| !rejected.iter().any(|(r, _)| r == link));
 
 	let mut blocks: Vec<(IssueLink, Issue, Vec<VirtualIssue>)> = Vec::new();
 	for (link, copies) in grouped {
 		match load_local_issue(&link).await {
 			Ok(issue) => blocks.push((link, issue, copies)),
-			Err(e) => tracing::warn!("failed to load {link} for sync: {e}"),
+			Err(e) => rejected.push((link, e)),
 		}
 	}
 
@@ -277,12 +283,14 @@ pub async fn sync_embedded_issue_changes(content: &str, mode: SyncMode) -> Resul
 		});
 		let mut edited = copies.iter().chain(in_parents).map(|copy| &copy.contents.state).filter(|state| **state != issue.contents.state);
 		let state = match edited.next() {
-			Some(first) => {
-				if edited.any(|other| other != first) {
-					bail!("{link}'s state is rendered more than once here and its copies were edited differently — leave a single version of it and retry");
-				}
-				first.clone()
+			Some(first) if edited.any(|other| other != first) => {
+				rejected.push((
+					link.clone(),
+					eyre!("{link}'s state is rendered more than once here and its copies were edited differently — leave a single version of it and retry"),
+				));
+				issue.contents.state.clone()
 			}
+			Some(first) => first.clone(),
 			None => issue.contents.state.clone(),
 		};
 		states.insert(index, state);
@@ -299,43 +307,63 @@ pub async fn sync_embedded_issue_changes(content: &str, mode: SyncMode) -> Resul
 	}
 
 	let mut edits = Vec::new();
-	let mut unfinished = Vec::new();
+	let mut untouched = Vec::new();
 	for (link, issue, copies) in blocks {
+		if rejected.iter().any(|(r, _)| *r == link) {
+			continue;
+		}
 		let rendered = VirtualIssue::parse(&issue.to_string(), PathBuf::from(format!("<{link} as stored>")))?;
 		let mut changed = copies.into_iter().filter(|copy| *copy != rendered);
 		let Some(edited) = changed.next() else {
-			if mode != SyncMode::Offline && unsynced(&issue).await? {
-				unfinished.push(link);
+			// on exit is the only time `--sync-on-exit` reaches Github: an issue nobody edits has no other pull
+			if mode == SyncMode::OnExit || (mode == SyncMode::Full && unsynced(&issue).await?) {
+				untouched.push(link);
 			}
 			continue;
 		};
 		if changed.any(|other| other != edited) {
-			bail!("{link} is rendered more than once here and its copies were edited differently — leave a single version of it and retry");
+			rejected.push((
+				link.clone(),
+				eyre!("{link} is rendered more than once here and its copies were edited differently — leave a single version of it and retry"),
+			));
+			continue;
 		}
 
 		let mut folded = issue.clone();
 		overlay_states(&mut folded, &states);
-		crate::open_interactions::apply_edited_buffer(&mut folded, &issue, edited.clone())?;
-		edits.push((link, issue.full_index().index().len(), edited));
+		match crate::open_interactions::apply_edited_buffer(&mut folded, &issue, edited.clone()) {
+			Ok(()) => edits.push((link, issue.full_index().index().len(), edited)),
+			Err(e) => {
+				if mode == SyncMode::OnExit {
+					untouched.push(link.clone()); // judged against local state, which Github may have moved past
+				}
+				rejected.push((link, e.into()));
+			}
+		}
 	}
 
 	// An ancestor's commit reloads its subtree from disk, so its descendants' edits must land first.
 	edits.sort_by_key(|(_, depth, _)| std::cmp::Reverse(*depth));
 	for (link, _, edited) in edits {
 		println!("Syncing changes for {link}");
-		modify_and_sync_issue(load_local_issue(&link).await?, mode, Modifier::Write { edited: Box::new(edited) }, SyncOptions::default()).await?;
+		if let Err(e) = modify_and_sync_issue(load_local_issue(&link).await?, mode, Modifier::Write { edited: Box::new(edited) }, SyncOptions::default()).await {
+			rejected.push((link, e));
+		}
 	}
 
 	// Reloaded: an edited descendant has moved on disk since `blocks` was read.
-	let mut unfinished = futures::future::try_join_all(unfinished.iter().map(load_local_issue)).await?;
-	if !unfinished.is_empty() {
-		println!(
-			"Resuming unfinished sync of {}",
-			unfinished.iter().map(|i| i.full_index().to_string()).collect::<Vec<_>>().join(", ")
-		);
-		pull_issues(&mut unfinished, MergeMode::Normal).await?;
+	let mut untouched = futures::future::try_join_all(untouched.iter().map(load_local_issue)).await?;
+	if let Err(e) = pull_issues(&mut untouched, MergeMode::Normal).await {
+		eprintln!("warning: pulling the issues left untouched failed (they stay as stored):\n{e:#}");
 	}
 
+	if !rejected.is_empty() {
+		crate::utils::persist_rejected_changes(content)?;
+		for (link, e) in &rejected {
+			eprintln!("warning: {link} was not saved: {e:#}");
+		}
+		eprintln!("Your changes were saved to /tmp/tedi/rejected-changes.md — you can recover them from there.");
+	}
 	Ok(())
 }
 /// Descendants that are blocks of the same buffer take their state from there, not from disk.
