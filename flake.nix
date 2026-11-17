@@ -48,7 +48,6 @@
               jobs.default = true;
               jobs.errors.install = jobDeps;
               jobs.warnings.install = jobDeps;
-              jobs.warnings.augment = [ "code-duplication" ];
               release.default = true;
               release.cargoTomlPath = "tedi/Cargo.toml";
               labels.extra = [
