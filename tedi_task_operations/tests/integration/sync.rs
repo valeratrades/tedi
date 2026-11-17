@@ -885,10 +885,8 @@ async fn test_reset_syncs_changes_after_editor() {
 	"#);
 }
 
-/// `!c` shorthand should expand to `<!-- new comment -->` and trigger comment creation.
-/// When the user types `!c` on its own line, it should:
-/// 1. Be expanded to `<!-- new comment -->` in the file
-/// 2. Result in a new comment being created on Github
+/// `!c` creates a comment on Github, which comes back holding the id Github gave it: a re-open
+/// finds it on both sides and neither creates it again nor clashes on it.
 #[tokio::test]
 async fn test_comment_shorthand_creates_comment() {
 	let ctx = TestContext::build_with_preexisting_state_unsafe("");
@@ -915,25 +913,25 @@ async fn test_comment_shorthand_creates_comment() {
 	let issue_path = ctx.resolve_issue_path(&issue);
 	write_to_path(&issue_path, edited_content);
 
-	// Run open to trigger sync (which should expand !c and create the comment)
 	let out = ctx.open_issue(&issue).run();
-
-	//eprintln!("stdout: {}", out.stdout);
-	//eprintln!("stderr: {}", out.stderr);
-
-	// Capture the resulting directory state
-	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().skip_meta(), &out), @"
+	let created = render_fixture(FixtureRenderer::try_new(&ctx).unwrap().skip_meta(), &out);
+	insta::assert_snapshot!(created, @"
 	//- /o/r/1_-_Test_Issue.md
 	- [ ] Test Issue <!-- @mock_user https://github.com/o/r/issues/1 -->
 	  issue body
 
 	  <!--omitted {{{always-->
-	  <!-- new comment -->
+	  <!-- @mock_user https://github.com/o/r/issues/1#issuecomment-5000 -->
 	  My new comment content
 
 	  <!--,}}}-->
 	");
-	assert!(ctx.github_calls().iter().any(|c| c.starts_with("create_comment(o, r, 1,")), "{:?}", ctx.github_calls());
+
+	let reopen = ctx.open_issue(&issue).run();
+	assert!(reopen.status.success(), "stderr: {}", reopen.stderr);
+	assert_eq!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().skip_meta(), &reopen), created);
+	let creates = ctx.github_calls().into_iter().filter(|c| c.starts_with("create_comment(o, r, 1,")).count();
+	assert_eq!(creates, 1, "{:?}", ctx.github_calls());
 }
 
 /// When local and remote have different sub-issues, force merge should preserve both.

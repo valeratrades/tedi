@@ -539,7 +539,11 @@ impl Sink<Remote> for Issue {
 			if comment.is_pending() && !comment.body.is_empty() {
 				let body_str = comment.body.to_string();
 				println!("Creating new comment on issue #{issue_number}...");
-				gh.create_comment(repo_info, issue_number, &body_str).await?;
+				let created = gh.create_comment(repo_info, issue_number, &body_str).await?;
+				comment.identity = CommentIdentity::Created {
+					user: created.user.login,
+					id: created.id,
+				};
 				changed = true;
 			}
 		}

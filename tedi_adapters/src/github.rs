@@ -38,7 +38,7 @@ pub trait GithubClient: Send + Sync {
 	async fn update_comment(&self, repo: RepoInfo, comment_id: u64, body: &str) -> Result<(), GithubError>;
 
 	/// Create a new comment on an issue
-	async fn create_comment(&self, repo: RepoInfo, issue_number: u64, body: &str) -> Result<(), GithubError>;
+	async fn create_comment(&self, repo: RepoInfo, issue_number: u64, body: &str) -> Result<GithubComment, GithubError>;
 
 	/// Delete a comment
 	async fn delete_comment(&self, repo: RepoInfo, comment_id: u64) -> Result<(), GithubError>;
@@ -457,13 +457,19 @@ impl GithubClient for RealGithubClient {
 		self.patch_json(&url, &serde_json::json!({ "body": body }), "Failed to update comment").await
 	}
 
-	async fn create_comment(&self, repo: RepoInfo, issue_number: u64, body: &str) -> Result<(), GithubError> {
+	async fn create_comment(&self, repo: RepoInfo, issue_number: u64, body: &str) -> Result<GithubComment, GithubError> {
 		let url = format!(
 			"https://api.github.com/repos/{}/{}/issues/{issue_number}/comments",
 			repo.owner().expect("github repo"),
 			repo.repo()
 		);
-		self.post_json(&url, &serde_json::json!({ "body": body }), "Failed to create comment").await
+		let res = self.post(&url).json(&serde_json::json!({ "body": body })).send().await?;
+		if !res.status().is_success() {
+			let status = res.status();
+			let body = res.text().await.unwrap_or_default();
+			return Err(GithubError::new_api(status, body, "Failed to create comment".to_string()));
+		}
+		Ok(res.json::<GithubComment>().await?)
 	}
 
 	async fn delete_comment(&self, repo: RepoInfo, comment_id: u64) -> Result<(), GithubError> {
@@ -1069,7 +1075,7 @@ impl GithubClient for RetryingGithubClient {
 		retrying!(self.inner.update_comment(repo, comment_id, body))
 	}
 
-	async fn create_comment(&self, repo: RepoInfo, issue_number: u64, body: &str) -> Result<(), GithubError> {
+	async fn create_comment(&self, repo: RepoInfo, issue_number: u64, body: &str) -> Result<GithubComment, GithubError> {
 		retrying!(self.inner.create_comment(repo, issue_number, body))
 	}
 

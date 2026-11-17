@@ -5,7 +5,7 @@
 
 use std::{
 	collections::{BTreeMap, HashMap},
-	path::Path,
+	path::{Path, PathBuf},
 	sync::{
 		Mutex,
 		atomic::{AtomicU64, Ordering},
@@ -21,7 +21,7 @@ use crate::{
 	local::Local,
 };
 
-/// Environment variable name for mock state file (integration tests)
+/// Mock state file (integration tests): read on start, rewritten after every mutation, so the next process sees it as GitHub would
 const ENV_MOCK_STATE: &str = "tedi_MOCK_STATE";
 /// When set to an HTTP status (e.g. `503`), `get_milestone`/`update_milestone` return that status as
 /// an `Api` error — lets tests inject a GitHub outage and exercise the deferral path.
@@ -80,6 +80,8 @@ pub struct MockGithubClient {
 
 	/// Call log for debugging
 	call_log: Mutex<Vec<String>>,
+
+	state_file: Option<PathBuf>,
 }
 impl MockGithubClient {
 	/// Create a new mock client with the given authenticated user login
@@ -104,16 +106,16 @@ impl MockGithubClient {
 			rate_limited_after_pages: std::env::var(ENV_MOCK_RATE_LIMITED_AFTER_PAGES).ok().map(|v| v.parse().expect("a page count")),
 			pages_listed: AtomicU64::new(0),
 			call_log: Mutex::new(Vec::new()),
+			state_file: std::env::var_os(ENV_MOCK_STATE).map(PathBuf::from),
 		};
 
-		// Load initial state from file if {PKG_NAME}_MOCK_STATE is set (integration tests)
-		if let Ok(state_file) = std::env::var(ENV_MOCK_STATE)
-			&& let Ok(content) = std::fs::read_to_string(&state_file)
+		if let Some(state_file) = &client.state_file
+			&& let Ok(content) = std::fs::read_to_string(state_file)
 		{
 			if let Err(e) = client.load_state_json(&content) {
-				eprintln!("[mock] Failed to load state from {state_file}: {e}");
+				eprintln!("[mock] Failed to load state from {}: {e}", state_file.display());
 			} else {
-				eprintln!("[mock] Loaded state from {state_file}");
+				eprintln!("[mock] Loaded state from {}", state_file.display());
 			}
 		}
 
@@ -226,6 +228,7 @@ impl MockGithubClient {
 				};
 
 				comments.entry(key).or_default().insert(comment_id, comment_data);
+				self.next_comment_id.fetch_max(comment_id + 1, Ordering::SeqCst);
 			}
 		}
 
@@ -250,6 +253,12 @@ impl MockGithubClient {
 					for dep in arr {
 						list.push(parse(dep)?);
 					}
+				}
+			}
+			if let Some(arr) = state.get("transferred").and_then(|v| v.as_array()) {
+				let mut transferred = self.transferred.lock().unwrap();
+				for t in arr {
+					transferred.insert(node(t, "from")?, node(t, "to")?);
 				}
 			}
 			if let Some(arr) = state.get("prs").and_then(|v| v.as_array()) {
@@ -375,6 +384,81 @@ impl MockGithubClient {
 	#[cfg(test)]
 	pub fn clear_call_log(&self) {
 		self.call_log.lock().unwrap().clear();
+	}
+
+	/// Writes the whole state back in the shape [`load_state_json`](Self::load_state_json) reads.
+	fn persist(&self) {
+		use serde_json::{Value, json};
+		let Some(path) = &self.state_file else { return };
+		let node = |(key, number): &(RepoKey, u64)| json!({ "owner": key.owner, "repo": key.repo, "number": number });
+		let ts = |t: Option<jiff::Timestamp>| t.map(|t| t.to_string());
+
+		let mut issues: Vec<Value> = Vec::new();
+		for (key, repo_issues) in self.issues.lock().unwrap().iter() {
+			for i in repo_issues.values() {
+				issues.push(json!({
+					"owner": key.owner, "repo": key.repo, "number": i.number, "title": i.title, "body": i.body,
+					"state": i.state, "state_reason": i.state_reason, "owner_login": i.owner_login, "milestone": i.milestone,
+					"labels": i.labels, "assignees": i.assignees,
+					"title_timestamp": ts(i.title_timestamp), "description_timestamp": ts(i.description_timestamp),
+					"labels_timestamp": ts(i.labels_timestamp), "state_timestamp": ts(i.state_timestamp),
+					"assignees_timestamp": ts(i.assignees_timestamp),
+				}));
+			}
+		}
+		// resource ids follow load order
+		issues.sort_by_key(|i| (i["owner"].to_string(), i["repo"].to_string(), i["number"].as_u64()));
+
+		let mut sub_issues: Vec<Value> = Vec::new();
+		for (key, relations) in self.sub_issues.lock().unwrap().iter() {
+			for (parent, children) in relations {
+				sub_issues.push(json!({ "owner": key.owner, "repo": key.repo, "parent": parent, "children": children }));
+			}
+		}
+		let mut comments: Vec<Value> = Vec::new();
+		for (key, repo_comments) in self.comments.lock().unwrap().iter() {
+			for c in repo_comments.values() {
+				comments.push(json!({
+					"owner": key.owner, "repo": key.repo, "issue_number": c.issue_number, "comment_id": c.id, "body": c.body,
+					"owner_login": c.owner_login, "created_at": c.created_at, "updated_at": c.updated_at,
+				}));
+			}
+		}
+		let dependency = |d: &MockDependency| json!({ "blocked": node(&d.blocked), "blocker": node(&d.blocker), "at": ts(d.at) });
+		let dependencies: Vec<Value> = self.dependencies.lock().unwrap().iter().map(dependency).collect();
+		let unlinked: Vec<Value> = self.unlinked.lock().unwrap().iter().map(dependency).collect();
+		let mut prs: Vec<Value> = Vec::new();
+		for (issue, linked) in self.prs.lock().unwrap().iter() {
+			for pr in linked {
+				prs.push(json!({ "issue": node(issue), "url": pr.url, "state": pr.state }));
+			}
+		}
+		let transferred: Vec<Value> = self.transferred.lock().unwrap().iter().map(|(from, to)| json!({ "from": node(from), "to": node(to) })).collect();
+		let labels: Vec<Value> = self
+			.labels
+			.lock()
+			.unwrap()
+			.iter()
+			.map(|(key, names)| json!({ "owner": key.owner, "repo": key.repo, "names": names }))
+			.collect();
+		let mut milestones: Vec<Value> = Vec::new();
+		for (key, repo_milestones) in self.milestones.lock().unwrap().iter() {
+			for m in repo_milestones.values() {
+				milestones.push(json!({
+					"owner": key.owner, "repo": key.repo, "number": m.number, "title": m.title, "state": m.state,
+					"description": m.description, "due_on": ts(m.due_on), "updated_at": ts(m.updated_at),
+				}));
+			}
+		}
+
+		let state = json!({
+			"issues": issues, "sub_issues": sub_issues, "comments": comments, "dependencies": dependencies, "unlinked": unlinked,
+			"prs": prs, "transferred": transferred, "labels": labels, "milestones": milestones,
+		});
+		// renamed into place, so another process never reads it half-written
+		let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
+		std::fs::write(&tmp, serde_json::to_string_pretty(&state).expect("mock state is plain json")).expect("mock state file is writable");
+		std::fs::rename(&tmp, path).expect("mock state file is writable");
 	}
 
 	fn log_call(&self, call: &str) {
@@ -748,13 +832,13 @@ impl GithubClient for MockGithubClient {
 		let repo_name = repo.repo();
 		tracing::info!(target: "mock_github", owner, repo_name, issue_number, "update_issue_body");
 		self.log_call(&format!("update_issue_body({owner}, {repo_name}, {issue_number}, <body>)"));
-		self.with_issue_mut(repo, issue_number, |issue| issue.body = body.to_string())
+		self.with_issue_mut(repo, issue_number, |issue| issue.body = body.to_string()).inspect(|()| self.persist())
 	}
 
 	async fn update_issue_title(&self, repo: RepoInfo, issue_number: u64, title: &str) -> Result<(), GithubError> {
 		let (owner, repo_name) = (repo.owner().expect("github repo"), repo.repo());
 		self.log_call(&format!("update_issue_title({owner}, {repo_name}, {issue_number}, {title})"));
-		self.with_issue_mut(repo, issue_number, |issue| issue.title = title.to_string())
+		self.with_issue_mut(repo, issue_number, |issue| issue.title = title.to_string()).inspect(|()| self.persist())
 	}
 
 	#[instrument(skip_all, fields(issue_number, state))]
@@ -771,6 +855,7 @@ impl GithubClient for MockGithubClient {
 			issue.state = state.to_string();
 			issue.state_reason = reason.map(str::to_owned);
 		})
+		.inspect(|()| self.persist())
 	}
 
 	#[instrument(skip_all, fields(issue_number))]
@@ -779,7 +864,7 @@ impl GithubClient for MockGithubClient {
 		let repo_name = repo.repo();
 		tracing::info!(target: "mock_github", owner, repo_name, issue_number, ?labels, "set_labels");
 		self.log_call(&format!("set_labels({owner}, {repo_name}, {issue_number}, {labels:?})"));
-		self.with_issue_mut(repo, issue_number, |issue| issue.labels = labels.to_vec())
+		self.with_issue_mut(repo, issue_number, |issue| issue.labels = labels.to_vec()).inspect(|()| self.persist())
 	}
 
 	#[instrument(skip_all, fields(comment_id))]
@@ -788,11 +873,11 @@ impl GithubClient for MockGithubClient {
 		let repo_name = repo.repo();
 		tracing::info!(target: "mock_github", owner, repo_name, comment_id, "update_comment");
 		self.log_call(&format!("update_comment({owner}, {repo_name}, {comment_id}, <body>)"));
-		self.with_comment_mut(repo, comment_id, |comment| comment.body = body.to_string())
+		self.with_comment_mut(repo, comment_id, |comment| comment.body = body.to_string()).inspect(|()| self.persist())
 	}
 
 	#[instrument(skip_all, fields(issue_number))]
-	async fn create_comment(&self, repo: RepoInfo, issue_number: u64, body: &str) -> Result<(), GithubError> {
+	async fn create_comment(&self, repo: RepoInfo, issue_number: u64, body: &str) -> Result<GithubComment, GithubError> {
 		let owner = repo.owner().expect("github repo");
 		let repo_name = repo.repo();
 		tracing::info!(target: "mock_github", owner, repo_name, issue_number, "create_comment");
@@ -808,13 +893,18 @@ impl GithubClient for MockGithubClient {
 			body: body.to_string(),
 			owner_login: self.user_login.clone(),
 			created_at: now.clone(),
-			updated_at: now,
+			updated_at: now.clone(),
 		};
+		self.comments.lock().unwrap().entry(key).or_default().insert(comment_id, comment);
+		self.persist();
 
-		let mut comments = self.comments.lock().unwrap();
-		comments.entry(key).or_default().insert(comment_id, comment);
-
-		Ok(())
+		Ok(GithubComment {
+			id: comment_id,
+			body: Some(body.to_string()),
+			user: GithubUser { login: self.user_login.clone() },
+			created_at: now.clone(),
+			updated_at: now,
+		})
 	}
 
 	#[instrument(skip_all, fields(comment_id))]
@@ -825,11 +915,10 @@ impl GithubClient for MockGithubClient {
 		self.log_call(&format!("delete_comment({owner}, {repo_name}, {comment_id})"));
 
 		let key = RepoKey::new(owner, repo_name);
-		let mut comments = self.comments.lock().unwrap();
-
-		if let Some(repo_comments) = comments.get_mut(&key) {
+		if let Some(repo_comments) = self.comments.lock().unwrap().get_mut(&key) {
 			repo_comments.remove(&comment_id);
 		}
+		self.persist();
 
 		Ok(())
 	}
@@ -864,8 +953,8 @@ impl GithubClient for MockGithubClient {
 			assignees: Vec::new(),
 		};
 
-		let mut issues = self.issues.lock().unwrap();
-		issues.entry(key).or_default().insert(number, issue);
+		self.issues.lock().unwrap().entry(key).or_default().insert(number, issue);
+		self.persist();
 
 		Ok(CreatedIssue {
 			id,
@@ -895,8 +984,8 @@ impl GithubClient for MockGithubClient {
 				.ok_or_else(|| GithubError::new_other(format!("Child issue with id {child_issue_id} not found")))?
 		};
 
-		let mut sub_issues = self.sub_issues.lock().unwrap();
-		sub_issues.entry(key).or_default().entry(parent_issue_number).or_default().push(child_number);
+		self.sub_issues.lock().unwrap().entry(key).or_default().entry(parent_issue_number).or_default().push(child_number);
+		self.persist();
 
 		Ok(())
 	}
@@ -919,16 +1008,19 @@ impl GithubClient for MockGithubClient {
 				.ok_or_else(|| GithubError::new_other(format!("Child issue with id {child_issue_id} not found")))?
 		};
 
-		let mut sub_issues = self.sub_issues.lock().unwrap();
-		let children = sub_issues
-			.get_mut(&key)
-			.and_then(|m| m.get_mut(&parent_issue_number))
-			.ok_or_else(|| GithubError::new_other(format!("#{parent_issue_number} has no sub-issues")))?;
-		let before = children.len();
-		children.retain(|&n| n != child_number);
-		if children.len() == before {
-			return Err(GithubError::new_other(format!("#{child_number} is not a sub-issue of #{parent_issue_number}")));
+		{
+			let mut sub_issues = self.sub_issues.lock().unwrap();
+			let children = sub_issues
+				.get_mut(&key)
+				.and_then(|m| m.get_mut(&parent_issue_number))
+				.ok_or_else(|| GithubError::new_other(format!("#{parent_issue_number} has no sub-issues")))?;
+			let before = children.len();
+			children.retain(|&n| n != child_number);
+			if children.len() == before {
+				return Err(GithubError::new_other(format!("#{child_number} is not a sub-issue of #{parent_issue_number}")));
+			}
 		}
+		self.persist();
 		Ok(())
 	}
 
@@ -949,6 +1041,8 @@ impl GithubClient for MockGithubClient {
 			));
 		}
 		dependencies.push(MockDependency { blocked, blocker, at: None });
+		drop(dependencies);
+		self.persist();
 		Ok(())
 	}
 
@@ -970,6 +1064,8 @@ impl GithubClient for MockGithubClient {
 				"Failed to remove blocked-by dependency".into(),
 			));
 		}
+		drop(dependencies);
+		self.persist();
 		Ok(())
 	}
 
@@ -982,6 +1078,7 @@ impl GithubClient for MockGithubClient {
 		if let Some(issue) = self.issues.lock().unwrap().get_mut(&RepoKey::new(owner, repo_name)).and_then(|m| m.get_mut(&issue_number)) {
 			issue.milestone = milestone;
 		}
+		self.persist();
 		Ok(())
 	}
 
@@ -1039,15 +1136,14 @@ impl GithubClient for MockGithubClient {
 		if let Some(status) = self.fail_status {
 			return Err(GithubError::new_api(status, "mock injected failure".to_string(), "update milestone".to_string()));
 		}
-		let key = RepoKey::from(repo);
-		let mut milestones = self.milestones.lock().unwrap();
-		if let Some(m) = milestones.get_mut(&key).and_then(|m| m.get_mut(&number)) {
+		if let Some(m) = self.milestones.lock().unwrap().get_mut(&RepoKey::from(repo)).and_then(|m| m.get_mut(&number)) {
 			m.description = Some(description.to_string());
 			if due_on.is_some() {
 				m.due_on = due_on;
 			}
 			m.updated_at = Some(jiff::Timestamp::now());
 		}
+		self.persist();
 		Ok(())
 	}
 
@@ -1098,6 +1194,7 @@ impl GithubClient for MockGithubClient {
 			c.issue_number = number;
 			target_comments.insert(c.id, c);
 		}
+		drop(comments);
 
 		if let Some(relations) = self.sub_issues.lock().unwrap().get_mut(&RepoKey::from(repo)) {
 			relations.remove(&issue_number);
@@ -1105,6 +1202,7 @@ impl GithubClient for MockGithubClient {
 				children.retain(|&c| c != issue_number);
 			}
 		}
+		self.persist();
 		Ok(number)
 	}
 
@@ -1169,7 +1267,7 @@ impl GithubClient for MockGithubClient {
 	async fn set_assignees(&self, repo: RepoInfo, issue_number: u64, assignees: &[String]) -> Result<(), GithubError> {
 		let (owner, repo_name) = (repo.owner().expect("github repo"), repo.repo());
 		self.log_call(&format!("set_assignees({owner}, {repo_name}, {issue_number}, {assignees:?})"));
-		self.with_issue_mut(repo, issue_number, |issue| issue.assignees = assignees.to_vec())
+		self.with_issue_mut(repo, issue_number, |issue| issue.assignees = assignees.to_vec()).inspect(|()| self.persist())
 	}
 }
 
