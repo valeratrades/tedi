@@ -1148,13 +1148,14 @@ fn serialize_item(item: &TaskItem, r: Render, output: &mut String) {
 		}
 		None => serialize_plain_item(item, inner, &mut block),
 	}
-	match (level, block.trim_end_matches('\n').split_once('\n')) {
-		(Some(level), Some((title, rest))) => {
-			let level = crate::FoldLevel::Level(level.try_into().expect("base is at least 1"));
+	match (level, r.fold, block.trim_end_matches('\n').split_once('\n')) {
+		(Some(level), Some(outer), Some((title, rest))) => {
+			let open = crate::FoldLevel::Level(level.try_into().expect("base is at least 1"));
+			let close = crate::FoldLevel::Level(std::num::NonZeroU8::MIN.saturating_add(outer.enclosing)); // `{{{N` opens every level up to N; this leaves only the enclosing one open
 			output.push_str(&format!(
 				"{title} {}\n{rest}\n  {}",
-				crate::Marker::FoldStart(level).encode(),
-				crate::Marker::FoldEnd(level).encode()
+				crate::Marker::FoldStart(open).encode(),
+				crate::Marker::FoldEnd(close).encode()
 			));
 		}
 		_ => output.push_str(&block),
@@ -1450,7 +1451,7 @@ mod tests {
 		- [ ] First <!-- @user https://github.com/owner/repo/issues/1 --> <!--{{{3-->
 			# Blockers
 			- task A
-		  <!--}}}3-->
+		  <!--}}}1-->
 
 		- [ ] Second <!-- @user https://github.com/owner/repo/issues/2 -->
 
@@ -1490,10 +1491,52 @@ mod tests {
 		- [ ] v2_interface <!-- @valeratrades https://github.com/valeratrades/discretionary_engine/issues/77 --> <!--{{{3-->
 			# Blockers
 			- new protocols
-		  <!--}}}3-->
+		  <!--}}}1-->
 
 		- [ ] risk <!-- @valeratrades https://github.com/valeratrades/discretionary_engine/issues/78 -->
 		");
+	}
+
+	/// Vim's marker folds: `{{{N` puts its line at level N, `}}}N` leaves level N-1 after it. A header
+	/// under a fold folds away with it whenever `foldlevel` is below that.
+	#[test]
+	fn test_headers_are_never_inside_a_fold() {
+		let stored = "\
+# first
+- https://github.com/o/r/issues/1
+- https://github.com/o/r/milestone/3
+# second
+- https://github.com/o/r/issues/2
+# third
+";
+		let mut exp = expansions(&[
+			("https://github.com/o/r/issues/1", "- [ ] One <!-- @user https://github.com/o/r/issues/1 -->\n  body"),
+			("https://github.com/o/r/issues/2", "- [ ] Two <!-- @user https://github.com/o/r/issues/2 -->\n  body"),
+			("https://github.com/o/r/issues/5", "- [ ] Inner <!-- @user https://github.com/o/r/issues/5 -->\n  inner body"),
+		]);
+		exp.insert(
+			"https://github.com/o/r/milestone/3".into(),
+			milestone("- [ ] big_feature <!-- https://github.com/o/r/milestone/3 -->", "- https://github.com/o/r/issues/5\n\ntail"),
+		);
+		let rendered = TaskView::parse(stored).render(&exp);
+
+		let mut level = 0;
+		for line in rendered.lines() {
+			let marker = |m: &str| {
+				line.split(m)
+					.nth(1)
+					.map(|rest| rest.split("-->").next().expect("marker is closed").parse::<u8>().expect("numbered"))
+			};
+			if let Some(n) = marker("<!--{{{") {
+				level = n;
+			}
+			if line.starts_with('#') {
+				assert_eq!(level, 0, "{line:?} sits at fold level {level}:\n{rendered}");
+			}
+			if let Some(n) = marker("<!--}}}") {
+				level = n - 1;
+			}
+		}
 	}
 
 	#[test]
@@ -1712,7 +1755,7 @@ mod tests {
 
 		  - [ ] Inner <!-- @user https://github.com/o/r/issues/5 --> <!--{{{4-->
 		    inner body
-		    <!--}}}4-->
+		    <!--}}}2-->
 		  <!--}}}1-->
 		");
 	}

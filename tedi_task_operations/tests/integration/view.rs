@@ -43,7 +43,7 @@ async fn a_view_shows_what_matches_and_its_edits_sync() {
 
 	- [ ] (t:bug, s:selected) Fix it <!-- @mock_user https://github.com/o/r/issues/1 --> <!--{{{3-->
 	  body
-	  <!--}}}3-->
+	  <!--}}}1-->
 	");
 	assert!(read_issue_file(&ctx.resolve_issue_path(&bug)).contains("edited body"));
 	assert_eq!(read_issue_file(&ctx.resolve_issue_path(&chore)), CHORE);

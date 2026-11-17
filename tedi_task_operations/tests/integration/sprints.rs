@@ -290,7 +290,7 @@ async fn test_must_section_materialized_when_absent() {
 
 	- [ ] My Issue <!-- @mock_user https://github.com/o/r/issues/10 --> <!--{{{3-->
 	  body
-	  <!--}}}3-->
+	  <!--}}}1-->
 	");
 	insta::assert_snapshot!(milestone, @"
 	# Must
@@ -326,7 +326,7 @@ async fn test_partial_state_survives_sprint_edit() {
 
 	- \[.] Half Done <!-- @mock_user https://github.com/o/r/issues/10 --> <!--{{{3-->
 	  body
-	  <!--}}}3-->
+	  <!--}}}1-->
 	");
 	insta::assert_snapshot!(milestone, @"
 	# Must
@@ -1148,19 +1148,19 @@ async fn test_sprint_fold_levels_follow_nesting() {
 	  - category <!--{{{2-->
 	    - [ ] Inner Issue <!-- @mock_user https://github.com/o/r/issues/20 --> <!--{{{5-->
 	      Inner Issue body
-	      <!--}}}5-->
+	      <!--}}}3-->
 	    <!--}}}2-->
 	  <!--}}}1-->
 
 	- category <!--{{{1-->
 	  - [ ] Grouped Issue <!-- @mock_user https://github.com/o/r/issues/10 --> <!--{{{4-->
 	    Grouped Issue body
-	    <!--}}}4-->
+	    <!--}}}2-->
 	  <!--}}}1-->
 
 	- [ ] Top Issue <!-- @mock_user https://github.com/o/r/issues/11 --> <!--{{{3-->
 	  Top Issue body
-	  <!--}}}3-->
+	  <!--}}}1-->
 	");
 }
 
