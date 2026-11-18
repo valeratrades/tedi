@@ -7,7 +7,7 @@ mod issue;
 mod library;
 mod view;
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use dioxus::prelude::*;
 use ev_lib::uikit_dioxus::*;
@@ -16,6 +16,7 @@ use tedi_core::{
 	IssueLink,
 	board::{Board, Card, Scope, View, scope_at},
 	conflict::{Conflict, FieldEdit},
+	workflow::{State, Workflow},
 };
 use tilers_dioxus::{Band, DockPanel, Group, GroupId, MinSize, PackedApi, PackedArea, PanelId};
 
@@ -38,6 +39,11 @@ struct Ctx {
 impl Ctx {
 	fn card(&self, link: &IssueLink) -> Option<Card> {
 		self.board.read().as_ref()?.cards.iter().find(|c| &c.link == link).cloned()
+	}
+
+	/// What cards sit in, by name.
+	fn workflows(&self) -> BTreeMap<String, Workflow> {
+		self.setup.read().as_ref().expect("tiles render once setup arrived").workflows.clone()
 	}
 
 	fn me(&self) -> Option<String> {
@@ -164,6 +170,25 @@ impl Ctx {
 				conflicts.write().insert(link.clone(), conflict);
 				self.open_issue(link);
 			}
+			Ok(Edited::Rejected(why)) => _ = self.toaster.info(why),
+			Err(e) => _ = self.toaster.error(e.to_string()),
+		}
+	}
+
+	/// `card` to `to` of `workflow`, from where it shows sitting: a hook's refusal is toasted, a clash lands on the issue's tab.
+	async fn move_card(self, card: Card, workflow: String, to: State) {
+		let seen = card.states[&workflow].clone();
+		match api::move_card(card.link.clone(), workflow, to, seen).await {
+			Ok(Edited::Landed) => {
+				let mut conflicts = self.conflicts;
+				conflicts.write().remove(&card.link);
+			}
+			Ok(Edited::Conflict(conflict)) => {
+				let mut conflicts = self.conflicts;
+				conflicts.write().insert(card.link.clone(), conflict);
+				self.open_issue(card.link);
+			}
+			Ok(Edited::Rejected(why)) => _ = self.toaster.info(why),
 			Err(e) => _ = self.toaster.error(e.to_string()),
 		}
 	}

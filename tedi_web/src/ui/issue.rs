@@ -5,12 +5,11 @@ use std::str::FromStr as _;
 
 use dioxus::prelude::*;
 use ev_lib::uikit_dioxus::*;
-use strum::IntoEnumIterator as _;
 use tedi_core::{
 	IssueLink,
-	board::{Card, restage},
+	board::{Card, Shown},
 	conflict::{Conflict, Field, FieldEdit, list, sides},
-	stage::Stage,
+	workflow::State,
 };
 
 use super::{Ctx, view::CardView};
@@ -28,7 +27,7 @@ pub fn IssuePanel(link: IssueLink) -> Element {
 				div { class: "flex flex-wrap items-center gap-2",
 					a { class: "text-ink-soft hover:underline", href: "{link}", target: "_blank", "{link.project()}#{link.number()}" }
 					Badge { variant: BadgeVariant::Info, "PR {pr.state}" }
-					Badge { "{card.stage}" }
+					for (workflow , at) in card.states.iter() { Badge { key: "{workflow}", "{at}" } }
 					span { class: "text-ink-soft", "by @{pr.author}" }
 				}
 				div { class: "font-medium", "{card.title}" }
@@ -63,7 +62,7 @@ pub fn IssuePanel(link: IssueLink) -> Element {
 			if card.conflicted { Recorded { link: link.clone() } }
 			div { class: "flex items-center gap-2",
 				a { class: "text-ink-soft hover:underline", href: "{link}", target: "_blank", "{link.project()}#{link.number()}" }
-				StagePicker { card: card.clone() }
+				StatePicker { card: card.clone() }
 			}
 			Editable { link: link.clone(), field: Field::Title, current: card.title.clone(), multiline: false }
 			Editable { link: link.clone(), field: Field::Labels, current: list(&card.labels), multiline: false }
@@ -86,7 +85,7 @@ pub fn IssuePanel(link: IssueLink) -> Element {
 				div { class: "flex flex-col gap-1",
 					span { class: "text-ink-soft", "sub-issues" }
 					for child in children {
-						CardView { key: "{child.link}", card: child.clone(), shown: vec![tedi_core::board::Shown::Stage, tedi_core::board::Shown::Assignees] }
+						CardView { key: "{child.link}", card: child.clone(), shown: ctx.workflows().into_keys().map(Shown::State).chain([Shown::Assignees]).collect::<Vec<_>>() }
 					}
 				}
 			}
@@ -94,31 +93,29 @@ pub fn IssuePanel(link: IssueLink) -> Element {
 	}
 }
 
-/// A drop on another column, for when there is no board to drag on (a phone).
+/// A drop on another column of each workflow, for when there is no board to drag on (a phone).
 #[component]
-fn StagePicker(card: Card) -> Element {
+fn StatePicker(card: Card) -> Element {
 	let ctx = use_context::<Ctx>();
-	let toaster = use_toaster();
 	rsx! {
-		Select {
-			value: card.stage.to_string(),
-			on_value_change: move |s: String| {
-				let to = Stage::from_str(&s).expect("offered from `Stage`");
-				match restage(&card.labels, to) {
-					Ok((labels, state)) => {
-						let mut edits = vec![FieldEdit { field: Field::Labels, seen: list(&card.labels), new: list(&labels) }];
-						if state != card.state {
-							edits.push(FieldEdit { field: Field::State, seen: card.state.to_checkbox_contents(), new: state.to_checkbox_contents() });
+		for (name , workflow) in ctx.workflows() {
+			Select {
+				key: "{name}",
+				value: card.states[&name].to_string(),
+				on_value_change: {
+					let (card, name) = (card.clone(), name.clone());
+					move |s: String| {
+						let to = State::from_str(&s).expect("offered from the workflow's leaves");
+						if card.states[&name] != to {
+							spawn(ctx.move_card(card.clone(), name.clone(), to));
 						}
-						spawn(ctx.edit(card.link.clone(), edits));
 					}
-					Err(e) => _ = toaster.info(e.to_string()),
-				}
-			},
-			SelectTrigger { size: Size::Sm, SelectValue {} }
-			SelectContent {
-				for stage in Stage::iter() {
-					SelectItem { value: stage.to_string(), text_value: stage.to_string(), "{stage}" }
+				},
+				SelectTrigger { size: Size::Sm, SelectValue {} }
+				SelectContent {
+					for leaf in workflow.leaves() {
+						SelectItem { value: leaf.to_string(), text_value: leaf.to_string(), "{leaf}" }
+					}
 				}
 			}
 		}

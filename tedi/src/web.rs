@@ -57,7 +57,7 @@ pub async fn web_command(settings: &LiveSettings, args: WebArgs, mode: SyncMode)
 		addr: args.addr,
 		public: args.public,
 		mode,
-		archive_after: board.archive_after()?,
+		workflows: board.workflows()?,
 		views: board.views,
 		scopes: board.scopes,
 		columns: board.columns,

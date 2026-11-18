@@ -1,0 +1,13 @@
+language = "C"
+include_guard = "TEDI_H"
+autogen_warning = "/* Generated from tedi_hooks/src/abi.rs by cbindgen; `TEDI_BLESS=1 cargo test -p tedi_hooks --test header` regenerates it. */"
+sys_includes = ["stdbool.h", "stddef.h", "stdint.h"]
+no_includes = true
+documentation_style = "c99"
+usize_is_size_t = true
+
+[export]
+include = ["TediHook"]
+
+[parse]
+parse_deps = false

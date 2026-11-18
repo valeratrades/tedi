@@ -1,9 +1,11 @@
 //! `tedi pull`: every issue of the named orgs and repos, into the store, through the same paths any
-//! other sync takes; and their pull requests, mirrored read-only.
+//! other sync takes; and their pull requests, mirrored read-only. Each stored, every workflow's rules
+//! may move it.
 
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 
 use color_eyre::eyre::{Result, bail};
+use jiff::Timestamp;
 use tedi_core::conflict::Conflict;
 
 use crate::{
@@ -13,10 +15,11 @@ use crate::{
 	open_interactions::{MergeMode, fetch_and_store_missing, merge_with_remote},
 	remote::RemoteSource,
 	sink::Sink,
+	workflow::{MovedOn, Rejected, Workflows, apply_rules},
 };
 
 /// `targets`: an org (`owner`) or a repo (`owner/repo`) each.
-pub async fn pull_repos(targets: &[String]) -> Result<()> {
+pub async fn pull_repos(targets: &[String], workflows: &Workflows, now: Timestamp) -> Result<()> {
 	let gh = crate::github::client::get()?;
 	let mut repos = Vec::new();
 	for target in targets {
@@ -28,7 +31,7 @@ pub async fn pull_repos(targets: &[String]) -> Result<()> {
 
 	let mut behind = Vec::new();
 	for repo in repos {
-		if let Err(e) = pull_repo(repo).await {
+		if let Err(e) = pull_repo(repo, workflows, now).await {
 			eprintln!("{repo}: {e:?}");
 			behind.push(repo.to_string());
 		}
@@ -41,8 +44,9 @@ pub async fn pull_repos(targets: &[String]) -> Result<()> {
 
 /// Page by page, least recently updated first: the cursor moves past a page once all of it is stored,
 /// so a pull cut short (by the rate limit, say) is picked up there.
-async fn pull_repo(repo: RepoInfo) -> Result<()> {
+async fn pull_repo(repo: RepoInfo, workflows: &Workflows, now: Timestamp) -> Result<()> {
 	let gh = crate::github::client::get()?;
+	let mut moved = HashSet::new();
 	let labels = gh.list_labels(repo).await?;
 	Local::update_project_meta(repo, |m| m.label_colors = labels)?;
 	let since = Local::load_project_meta(repo).pulled_at;
@@ -80,6 +84,7 @@ async fn pull_repo(repo: RepoInfo) -> Result<()> {
 				<Issue as Sink<LocalFs>>::sink(&mut remote, None).await?;
 				<Issue as Sink<Consensus>>::sink(&mut remote, None).await?;
 				drop(store);
+				rules(&remote, workflows, &mut moved, now).await?;
 				continue;
 			};
 			let source = match LocalIssueSource::<FsReader>::build_from_path(&path).await {
@@ -92,7 +97,10 @@ async fn pull_repo(repo: RepoInfo) -> Result<()> {
 			};
 			let mut local = Issue::load(source).await?;
 			match merge_with_remote(&mut local, remote, MergeMode::Normal).await {
-				Ok(links) => linked.extend(links),
+				Ok(links) => {
+					linked.extend(links);
+					rules(&local, workflows, &mut moved, now).await?;
+				}
 				Err(e) if e.downcast_ref::<Conflict>().is_some() => eprintln!("{repo}#{root}: {e}"), // recorded, for the user to resolve
 				Err(e) => return Err(e),
 			}
@@ -107,12 +115,38 @@ async fn pull_repo(repo: RepoInfo) -> Result<()> {
 			None => break,
 		}
 	}
-	pull_prs(repo).await
+	pull_prs(repo, workflows, &mut moved, now).await
+}
+
+/// Every node of `tree` through each workflow's rules. A move that can't land is told, and the pull goes on.
+async fn rules(tree: &Issue, workflows: &Workflows, moved: &mut HashSet<(IssueLink, String)>, now: Timestamp) -> Result<()> {
+	fn links(node: &Issue, out: &mut Vec<IssueLink>) {
+		out.extend(node.identity.link().cloned());
+		for child in node.children.values() {
+			links(child, out);
+		}
+	}
+	let mut all = Vec::new();
+	links(tree, &mut all);
+	for link in all {
+		rule(&link, workflows, moved, now).await?;
+	}
+	Ok(())
+}
+
+async fn rule(link: &IssueLink, workflows: &Workflows, moved: &mut HashSet<(IssueLink, String)>, now: Timestamp) -> Result<()> {
+	match apply_rules(link, workflows, moved, now).await {
+		Err(e) if e.downcast_ref::<Conflict>().is_some() || e.downcast_ref::<Rejected>().is_some() || e.downcast_ref::<MovedOn>().is_some() => {
+			eprintln!("{link}: a rule's move didn't land: {e}"); // stays where it sat; the next pull of it tries again
+			Ok(())
+		}
+		other => other,
+	}
 }
 
 /// Newest first, down to the last whole walk's newest: the cursor moves only once a walk is whole, so
 /// one cut short walks again from the top.
-async fn pull_prs(repo: RepoInfo) -> Result<()> {
+async fn pull_prs(repo: RepoInfo, workflows: &Workflows, moved: &mut HashSet<(IssueLink, String)>, now: Timestamp) -> Result<()> {
 	let gh = crate::github::client::get()?;
 	let since = Local::load_project_meta(repo).prs_pulled_at;
 	let mut newest = since;
@@ -125,6 +159,9 @@ async fn pull_prs(repo: RepoInfo) -> Result<()> {
 		{
 			let _store = lock_store().await?;
 			Local::update_prs(repo, |stored| stored.extend(fresh.iter().map(|pr| (pr.number, pr.clone()))))?;
+		}
+		for pr in &fresh {
+			rule(&IssueLink::in_project(repo, pr.number), workflows, moved, now).await?;
 		}
 		match page.next {
 			Some(next) if fresh.len() == listed => after = Some(next),

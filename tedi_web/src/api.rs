@@ -10,6 +10,7 @@ use tedi_core::{
 	IssueLink,
 	board::{Board, GroupBy, Scope, View},
 	conflict::{Conflict, FieldEdit},
+	workflow::{State, Workflow},
 };
 use tilers_core::Band;
 
@@ -18,6 +19,8 @@ use tilers_core::Band;
 pub struct Setup {
 	/// Who edits. Today the instance's own GitHub user, for every request; per request once editors sign in.
 	pub me: Option<String>,
+	/// What a card sits in, by name: their buckets are a state grouping's columns.
+	pub workflows: BTreeMap<String, Workflow>,
 	pub scopes: BTreeMap<String, Scope>,
 	pub views: Vec<View>,
 	pub sprints: Vec<Sprint>,
@@ -169,6 +172,8 @@ pub enum Edited {
 	Landed,
 	/// Nothing landed: a field moved on since it was seen, or GitHub and the store clashed on the pull.
 	Conflict(Conflict),
+	/// Nothing landed: a hook refused the move, or the card left the state it was moved from.
+	Rejected(String),
 }
 
 #[server]
@@ -190,6 +195,12 @@ pub async fn changes() -> Result<ServerEvents<()>, ServerFnError> {
 #[server]
 pub async fn edit(link: IssueLink, edits: Vec<FieldEdit>) -> Result<Edited, ServerFnError> {
 	crate::server::edit(link, edits).await.map_err(failed)
+}
+
+/// `link`'s card to `to` of `workflow`, moved from `seen`: each bucket it enters runs its hooks.
+#[server]
+pub async fn move_card(link: IssueLink, workflow: String, to: State, seen: State) -> Result<Edited, ServerFnError> {
+	crate::server::move_card(link, workflow, to, seen).await.map_err(failed)
 }
 
 /// The clash file waiting on `link`'s line, markers and all.

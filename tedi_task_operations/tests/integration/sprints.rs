@@ -2408,6 +2408,26 @@ async fn test_mv_cross_owner_recreates_and_closes_original() {
 	insta::assert_snapshot!(sprint_body(), @"- https://github.com/ev/repo_c/issues/1");
 }
 
+/// Where it sits in each workflow is the issue's: it moves with it, under its new number.
+#[tokio::test]
+async fn test_mv_carries_workflow_states() {
+	let ctx = TestContext::build();
+	let issue = "- [ ] Fix button <!-- @mock_user https://github.com/o/r/issues/10 -->\n  body\n";
+	seed_sprint(&ctx, issue, issue, -100, "2099-01-01T00:00:00Z").await;
+	seed_labels(&ctx, &[("o", "repo_b", &[])]);
+	let held = |repo: &str| ctx.xdg.data_dir().join("issues/o").join(repo).join(".states.json");
+	std::fs::write(held("r"), r#"{"kanban":{"10":"selected","11":"done"}}"#).unwrap();
+
+	let out = mv_edit(&ctx, "issues/10 -->", " !mv repo_b");
+
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+	let read = |repo: &str| serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(held(repo)).unwrap()).unwrap().to_string();
+	insta::assert_snapshot!(format!("o/r {}\no/repo_b {}", read("r"), read("repo_b")), @r#"
+	o/r {"kanban":{"11":"done"}}
+	o/repo_b {"kanban":{"1":"selected"}}
+	"#);
+}
+
 /// `!mv repo_b` typed on the line holding `needle` of the sprint `PARENT_WITH_CHILD` sits in.
 async fn mv_in_parent_with_child(needle: &'static str) -> TestContext {
 	let ctx = TestContext::build();

@@ -25,6 +25,7 @@ mod touch;
 mod touch_parent;
 mod view;
 mod web;
+mod workflow;
 
 #[ctor::ctor]
 fn init() {

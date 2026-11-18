@@ -2,26 +2,27 @@
 
 use std::{collections::BTreeMap, path::PathBuf};
 
-use color_eyre::eyre::{Result, eyre};
-use jiff::{SignedDuration, Timestamp};
-use tedi_core::PrState;
+use color_eyre::eyre::{Result, bail, eyre};
 pub use tedi_core::board::*;
+use tedi_core::{PrState, PullRequest, workflow::State};
 
 use crate::{
 	CloseState, Issue, IssueIndex, IssueLink, LazyIssue,
 	conflict_resolve::{FieldEdit, check_for_existing_conflict},
 	labels::Scheme,
-	local::{FsReader, GitReader, Local, LocalError, LocalIssueSource, LocalPath},
+	local::{FsReader, GitReader, Local, LocalError, LocalIssueSource, LocalPath, States},
 	open_interactions::{Modifier, SyncMode, SyncOptions, modify_and_sync_issue},
 	rank::{Task, rank},
-	stage::{pr_stage, stage},
+	workflow::Workflows,
 };
 
 /// What an issue without `i:` counts as (`labels.nix`: "`i:3` is the default").
 const DEFAULT_IMPORTANCE: u8 = 3;
 
-/// Every issue in the store, one card per node, and every pull request, ranked over their `blocked by` links.
-pub async fn load(archive_after: SignedDuration, now: Timestamp) -> Result<Board> {
+/// Every issue in the store, one card per node, and every pull request, ranked over their `blocked by` links;
+/// each placed in every one of `workflows`.
+pub async fn load(workflows: &Workflows) -> Result<Board> {
+	let mut held: std::collections::HashMap<crate::RepoInfo, States> = std::collections::HashMap::new();
 	let mut cards = Vec::new();
 	let mut unreadable = Vec::new();
 	for rel in Local::issue_file_relpaths()? {
@@ -36,38 +37,23 @@ pub async fn load(archive_after: SignedDuration, now: Timestamp) -> Result<Board
 			Err(e) => Err(e),
 		};
 		match loaded {
-			Ok((issue, conflicted)) => card_tree(&issue, None, conflicted, archive_after, now, &mut cards),
+			Ok((issue, conflicted)) => {
+				let repo = index.repo_info();
+				if let std::collections::hash_map::Entry::Vacant(e) = held.entry(repo) {
+					e.insert(Local::load_states(repo)?);
+				}
+				let states = &held[&repo];
+				card_tree(&issue, None, conflicted, states, workflows, &mut cards)?
+			}
 			Err(e) => unreadable.push((path, e.to_string())),
 		}
 	}
 	for (repo, pr) in Local::stored_prs()? {
-		let scheme = Scheme::from(pr.labels.as_slice());
-		cards.push(Card {
-			link: IssueLink::in_project(repo, pr.number),
-			title: pr.title,
-			stage: pr_stage(pr.state, pr.closed_at, archive_after, now),
-			state: match pr.state {
-				PrState::Draft | PrState::Open => CloseState::Open,
-				PrState::Merged => CloseState::Closed,
-				PrState::Closed => CloseState::NotPlanned,
-			},
-			labels: pr.labels,
-			assignees: pr.assignees,
-			rank: None,
-			importance: scheme.importance,
-			hours: scheme.hours,
-			kind: scheme.kind,
-			prs: Vec::new(),
-			blocked_by: Vec::new(),
-			parent: None,
-			body: pr.body,
-			conflicted: false,
-			pr: Some(Pr {
-				state: pr.state,
-				author: pr.author,
-				closes: pr.closes,
-			}),
-		});
+		if let std::collections::hash_map::Entry::Vacant(e) = held.entry(repo) {
+			e.insert(Local::load_states(repo)?);
+		}
+		let states = &held[&repo];
+		cards.push(pr_card(repo, pr, states, workflows)?);
 	}
 
 	let tasks: BTreeMap<String, Task> = cards
@@ -90,31 +76,90 @@ pub async fn load(archive_after: SignedDuration, now: Timestamp) -> Result<Board
 	Ok(Board { cards, unreadable, colors })
 }
 
-fn card_tree(issue: &Issue, parent: Option<&IssueLink>, conflicted: bool, archive_after: SignedDuration, now: Timestamp, out: &mut Vec<Card>) {
+fn card_tree(issue: &Issue, parent: Option<&IssueLink>, conflicted: bool, states: &States, workflows: &Workflows, out: &mut Vec<Card>) -> Result<()> {
+	let link = issue.identity.as_linked().expect("stored github issues are linked").link().clone();
+	out.push(card(issue, parent.cloned(), conflicted, states, workflows)?);
+	for child in issue.children.values() {
+		card_tree(child, Some(&link), conflicted, states, workflows, out)?;
+	}
+	Ok(())
+}
+
+/// `issue`'s own node, carded.
+pub(crate) fn card(issue: &Issue, parent: Option<IssueLink>, conflicted: bool, states: &States, workflows: &Workflows) -> Result<Card> {
 	let meta = issue.identity.as_linked().expect("stored github issues are linked");
 	let scheme = Scheme::from(issue.contents.labels.as_slice());
 	let link = meta.link().clone();
-	out.push(Card {
-		link: link.clone(),
+	Ok(Card {
+		states: placed(states, link.number(), workflows)?,
+		link,
 		title: issue.contents.title.clone(),
 		labels: issue.contents.labels.clone(),
 		assignees: issue.contents.assignees.clone(),
 		state: issue.contents.state.clone(),
-		stage: stage(scheme.pin, &issue.contents.state, &meta.prs, meta.timestamps.state, archive_after, now),
+		closed_at: meta.timestamps.state.filter(|_| issue.contents.state.is_closed()),
 		rank: None,
 		importance: scheme.importance,
 		hours: scheme.hours,
 		kind: scheme.kind,
 		prs: meta.prs.clone(),
 		blocked_by: meta.blocked_by.clone(),
-		parent: parent.cloned(),
+		parent,
 		body: issue.body().to_string(),
 		conflicted,
 		pr: None,
-	});
-	for child in issue.children.values() {
-		card_tree(child, Some(&link), conflicted, archive_after, now, out);
-	}
+	})
+}
+
+pub(crate) fn pr_card(repo: crate::RepoInfo, pr: PullRequest, states: &States, workflows: &Workflows) -> Result<Card> {
+	let scheme = Scheme::from(pr.labels.as_slice());
+	Ok(Card {
+		link: IssueLink::in_project(repo, pr.number),
+		states: placed(states, pr.number, workflows)?,
+		title: pr.title,
+		state: match pr.state {
+			PrState::Draft | PrState::Open => CloseState::Open,
+			PrState::Merged => CloseState::Closed,
+			PrState::Closed => CloseState::NotPlanned,
+		},
+		closed_at: pr.closed_at,
+		labels: pr.labels,
+		assignees: pr.assignees,
+		rank: None,
+		importance: scheme.importance,
+		hours: scheme.hours,
+		kind: scheme.kind,
+		prs: Vec::new(),
+		blocked_by: Vec::new(),
+		parent: None,
+		body: pr.body,
+		conflicted: false,
+		pr: Some(Pr {
+			state: pr.state,
+			author: pr.author,
+			closes: pr.closes,
+		}),
+	})
+}
+
+/// Where issue `number` of `states`' project sits in each workflow: as held, else the intake.
+fn placed(states: &States, number: u64, workflows: &Workflows) -> Result<BTreeMap<String, State>> {
+	workflows
+		.iter()
+		.map(|(name, loaded)| {
+			let at = match states.held.get(name).and_then(|issues| issues.get(&number)) {
+				Some(held) => held.clone(),
+				None => loaded.workflow.intake.clone(),
+			};
+			if let Err(e) = loaded.workflow.leaf(&at) {
+				bail!(
+					"{}#{number} sits at {at} in {name}: {e}. Move it to a bucket {name} has (`tedi move`), or name its old one again",
+					states.repo
+				);
+			}
+			Ok((name.clone(), at))
+		})
+		.collect()
 }
 
 /// `edits` applied to `link`'s stored issue and synced, without an editor: a clash pending on its line
@@ -131,7 +176,7 @@ pub async fn pending_conflict(link: &IssueLink) -> Result<Option<PathBuf>> {
 	check_for_existing_conflict(stored_index(link)?).await
 }
 
-fn stored_index(link: &IssueLink) -> Result<IssueIndex> {
+pub(crate) fn stored_index(link: &IssueLink) -> Result<IssueIndex> {
 	let path = Local::find_by_number(link.project(), link.number(), FsReader).ok_or_else(|| eyre!("{link} is not stored here: pull it first"))?;
 	Local::extract_index_from_path(&path)
 }

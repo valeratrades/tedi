@@ -1,0 +1,38 @@
+# Where a pull request stands, read off GitHub alone: nothing moves one by hand.
+intake = "draft"
+
+[[buckets]]
+name = "draft"
+on_enter = [{ builtin = "reject", reason = "a pull request's state moves it" }]
+
+[[buckets]]
+name = "review"
+on_enter = [{ builtin = "reject", reason = "a pull request's state moves it" }]
+
+[[buckets]]
+name = "merged"
+on_enter = [{ builtin = "reject", reason = "a pull request's state moves it" }]
+
+[[buckets]]
+name = "closed"
+on_enter = [{ builtin = "reject", reason = "a pull request's state moves it" }]
+
+[[rules]]
+builtin = "on_pr"
+state = "draft"
+to = "draft"
+
+[[rules]]
+builtin = "on_pr"
+state = "open"
+to = "review"
+
+[[rules]]
+builtin = "on_pr"
+state = "merged"
+to = "merged"
+
+[[rules]]
+builtin = "on_pr"
+state = "closed"
+to = "closed"

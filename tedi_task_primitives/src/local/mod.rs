@@ -7,6 +7,7 @@
 //! XDG_DATA_HOME/todo/issues/{owner}/{repo}/
 //!   .meta.json                           # Project + per-issue metadata
 //!   .prs.json                            # Pull requests, mirrored read-only
+//!   .states.json                         # Where each issue sits in each workflow (tedi's own)
 //!   {number}_-_{title}.md                # Flat issue file
 //!   {number}_-_{title}/                  # Directory format (when has children)
 //!     __main__.md                        # The issue content
@@ -1084,6 +1085,7 @@ pub use local_path::{LocalPath, LocalPathError, LocalPathErrorKind, LocalPathRes
 
 mod fs_sink;
 mod milestone;
+mod states;
 //==============================================================================
 // Error Types
 //==============================================================================
@@ -1097,6 +1099,7 @@ pub use consensus::Consensus;
 pub use fs_sink::{LocalFs, LocalFsSinkError};
 pub use milestone::{MilestoneMeta, MilestoneProjectMeta};
 use serde::{Deserialize, Serialize};
+pub use states::States;
 use tedi_utils::search::Candidate;
 use tracing::{instrument, warn};
 use v_utils::macros::wrap_err;

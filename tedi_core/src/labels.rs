@@ -92,17 +92,6 @@ pub enum Ext {
 	Invalid,
 }
 
-/// The stages GitHub can't tell: everything else about a stage is derived (`crate::Stage`).
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, strum::Display, strum::EnumString)]
-pub enum Pin {
-	#[strum(serialize = "s:icebox")]
-	Icebox,
-	#[strum(serialize = "s:selected")]
-	Selected,
-	#[strum(serialize = "s:wip")]
-	Wip,
-}
-
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 enum Label {
 	Type(Type),
@@ -111,7 +100,6 @@ enum Label {
 	Hours(u16),
 	Category(Category),
 	Ext(Ext),
-	Pin(Pin),
 }
 impl Label {
 	fn parse(name: &str) -> Option<Self> {
@@ -123,7 +111,6 @@ impl Label {
 			.map(Label::Type)
 			.or_else(|_| Category::from_str(name).map(Label::Category))
 			.or_else(|_| Ext::from_str(name).map(Label::Ext))
-			.or_else(|_| Pin::from_str(name).map(Label::Pin))
 			.ok()
 			.or_else(|| name.strip_prefix("i:").and_then(canonical::<u8>).filter(|i| *i <= 9).map(Label::Importance))
 			.or_else(|| name.strip_prefix("h:").and_then(canonical::<u16>).filter(|h| HOURS.contains(h)).map(Label::Hours))
@@ -135,7 +122,6 @@ impl Label {
 			Label::Type(_) => Some("t:"),
 			Label::Importance(_) => Some("i:"),
 			Label::Hours(_) => Some("h:"),
-			Label::Pin(_) => Some("s:"),
 			Label::Category(_) | Label::Ext(_) => None,
 		}
 	}
@@ -149,7 +135,6 @@ pub struct Scheme {
 	pub hours: Option<u16>,
 	pub categories: BTreeSet<Category>,
 	pub ext: BTreeSet<Ext>,
-	pub pin: Option<Pin>,
 }
 /// Lenient, as GitHub is: of two values for a single-valued field the first by name is read. An edit can't
 /// leave two (`check`).
@@ -163,7 +148,6 @@ impl<S: AsRef<str>> From<&[S]> for Scheme {
 				Label::Type(t) => _ = scheme.kind.get_or_insert(t),
 				Label::Importance(i) => _ = scheme.importance.get_or_insert(i),
 				Label::Hours(h) => _ = scheme.hours.get_or_insert(h),
-				Label::Pin(p) => _ = scheme.pin.get_or_insert(p),
 				Label::Category(c) => _ = scheme.categories.insert(c),
 				Label::Ext(e) => _ = scheme.ext.insert(e),
 			}
@@ -172,7 +156,7 @@ impl<S: AsRef<str>> From<&[S]> for Scheme {
 	}
 }
 
-/// At most one `t:`, `i:`, `h:` and `s:`. Errors naming each field holding more.
+/// At most one `t:`, `i:` and `h:`. Errors naming each field holding more.
 pub fn check<S: AsRef<str>>(labels: &[S]) -> Result<(), String> {
 	let mut held: Vec<(&'static str, &str)> = labels.iter().map(AsRef::as_ref).filter_map(|name| Some((Label::parse(name)?.single()?, name))).collect();
 	held.sort_unstable();
@@ -206,7 +190,6 @@ mod tests {
 				hours: Some(13),
 				categories: BTreeSet::from([Category::Cq, Category::Test]),
 				ext: BTreeSet::from([Ext::Claude]),
-				pin: Some(Pin::Wip),
 			},
 		);
 	}

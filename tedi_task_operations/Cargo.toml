@@ -23,6 +23,7 @@ serde.workspace = true
 serde_json.workspace = true
 tedi_adapters.workspace = true
 tedi_core.workspace = true
+tedi_hooks.workspace = true
 tedi_task_primitives.workspace = true
 tedi_utils = { workspace = true, features = ["picker"] }
 thiserror.workspace = true

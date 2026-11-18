@@ -70,6 +70,23 @@ enum Commands {
 		#[arg(long)]
 		seen: String,
 	},
+	/// Move a stored issue or pull request to a bucket of a workflow: each bucket it enters runs its hooks, whose edits sync
+	Move {
+		#[arg(value_parser = |s: &str| tedi_task_operations::IssueLink::parse(s).ok_or("not an issue link"))]
+		link: tedi_task_operations::IssueLink,
+		/// `<workflow>/<bucket>[/<bucket>…]`, a leaf
+		#[arg(value_parser = placement)]
+		to: (String, tedi_core::workflow::State),
+		/// Where you saw it sit, `<workflow>/<bucket>…`: if it left since, nothing moves. Without it, from wherever it sits
+		#[arg(long, value_parser = placement)]
+		seen: Option<(String, tedi_core::workflow::State)>,
+	},
+}
+
+/// `<workflow>/<bucket>[/<bucket>…]`
+fn placement(s: &str) -> Result<(String, tedi_core::workflow::State), String> {
+	let (workflow, path) = s.split_once('/').ok_or_else(|| format!("{s:?}: a workflow, then its bucket path (`kanban/selected`)"))?;
+	Ok((workflow.to_string(), path.parse().map_err(|e: tedi_core::workflow::WorkflowError| e.to_string())?))
 }
 fn main() {
 	// `tedi web` runs syncs on threads it doesn't spawn (dioxus' server-fn pool), and a sync's futures run deeper than std's 2MiB
@@ -94,7 +111,7 @@ async fn run() {
 	// Commands that may need GitHub client (always construct it - offline only skips network calls)
 	let has_github_commands = matches!(
 		cli.command,
-		Commands::Open(_) | Commands::Sprints(_) | Commands::Pull { .. } | Commands::View(_) | Commands::Set { .. } | Commands::Web(_)
+		Commands::Open(_) | Commands::Sprints(_) | Commands::Pull { .. } | Commands::View(_) | Commands::Set { .. } | Commands::Move { .. } | Commands::Web(_)
 	);
 
 	let github_client: Option<tedi_adapters::github::BoxedGithubClient> = if cli.mock.is_some() {
@@ -138,6 +155,18 @@ async fn run() {
 		tedi_task_operations::current_user::set(user);
 	}
 
+	// a mock run's clock can be set, as the GitHub mock's state is
+	let now = match (&cli.mock, std::env::var(concat!("tedi", "_MOCK_NOW"))) {
+		(Some(_), Ok(at)) => exit_on_error(at.parse::<jiff::Timestamp>().map_err(color_eyre::Report::from)),
+		_ => jiff::Timestamp::now(),
+	};
+	let workflows = || -> color_eyre::Result<tedi_task_operations::workflow::Workflows> {
+		match settings.config()?.board {
+			Some(board) => board.workflows(),
+			None => Ok(Default::default()), // no board: nothing to place issues in
+		}
+	};
+
 	// All the functions here can rely on config being correct.
 	exit_on_error(match cli.command {
 		Commands::Manual(manual_args) => {
@@ -158,9 +187,25 @@ async fn run() {
 		Commands::View(args) => view::view_command(&settings, args, mode).await,
 		Commands::Web(args) => web::web_command(&settings, args, mode).await,
 		Commands::Set { link, field, new, seen } => tedi_task_operations::board::edit(&link, vec![tedi_task_operations::conflict_resolve::FieldEdit { field, seen, new }], mode).await,
+		Commands::Move { link, to: (workflow, to), seen } => {
+			let workflows = exit_on_error(workflows());
+			let seen = match seen {
+				Some((w, _)) if w != workflow => Err(color_eyre::eyre::eyre!("--seen names {w}, the move {workflow}")),
+				Some((_, seen)) => Ok(Some(seen)),
+				None => Ok(None),
+			};
+			match (seen, tedi_task_operations::current_user::get()) {
+				(Err(e), _) => Err(e),
+				(Ok(_), None) => Err(color_eyre::eyre::eyre!("who moves it is unknown: run once online, so tedi knows your GitHub user")),
+				(Ok(seen), Some(me)) => {
+					let mover = tedi_task_operations::workflow::Mover::Person(me);
+					tedi_task_operations::workflow::move_card(&link, &workflow, &to, seen.as_ref(), &mover, &workflows, mode, now).await
+				}
+			}
+		}
 		Commands::Pull { targets } => match (targets.is_empty(), exit_on_error(settings.config()).watch) {
-			(false, _) => tedi_task_operations::pull::pull_repos(&targets).await,
-			(true, Some(watch)) => tedi_task_operations::pull::pull_repos(&watch).await,
+			(false, _) => tedi_task_operations::pull::pull_repos(&targets, &exit_on_error(workflows()), now).await,
+			(true, Some(watch)) => tedi_task_operations::pull::pull_repos(&watch, &exit_on_error(workflows()), now).await,
 			(true, None) => Err(color_eyre::eyre::eyre!("name what to pull, or list it under `watch` in the config")),
 		},
 	});

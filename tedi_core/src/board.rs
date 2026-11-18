@@ -11,9 +11,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
 	CloseState, IssueLink, LinkedPr, PrState,
-	labels::{Pin, Type},
+	labels::Type,
 	rank::Rank,
-	stage::Stage,
+	workflow::{State, Workflow, WorkflowError},
 };
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -23,7 +23,10 @@ pub struct Card {
 	pub labels: Vec<String>,
 	pub assignees: Vec<String>,
 	pub state: CloseState,
-	pub stage: Stage,
+	/// When it closed; `None` while open, or when GitHub kept no such event.
+	pub closed_at: Option<jiff::Timestamp>,
+	/// Where it sits in each workflow the board was loaded with.
+	pub states: BTreeMap<String, State>,
 	/// `None` once closed: rank orders open work only.
 	pub rank: Option<Rank>,
 	pub importance: Option<u8>,
@@ -36,7 +39,7 @@ pub struct Card {
 	pub body: String,
 	/// Shown as of consensus: a clash on it waits for resolution.
 	pub conflicted: bool,
-	/// `Some` on a pull request: read-only, with no blockers, children or pins of its own.
+	/// `Some` on a pull request: read-only, with no blockers or children of its own.
 	pub pr: Option<Pr>,
 }
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -62,8 +65,8 @@ pub struct Board {
 
 #[derive(Debug, thiserror::Error)]
 pub enum QueryError {
-	#[error("no stage {0:?}")]
-	Stage(String),
+	#[error("state: takes <workflow>/<bucket>[/<bucket>…], got {0:?}")]
+	State(String),
 	#[error("no type t:{0}")]
 	Type(String),
 	#[error("i: takes 0–9 or none, got {0:?}")]
@@ -78,7 +81,7 @@ pub enum QueryError {
 	Search(#[from] tedi_utils::search::SearchError),
 }
 
-/// `repo:EV-Service-Arb/*,EV-Main/tilers assignee:@me stage:triage,selected -t:chore i:>=5,none h:<=8 is:blocked label:x free text`.
+/// `repo:EV-Service-Arb/*,EV-Main/tilers assignee:@me state:kanban/triage,kanban/selected -t:chore i:>=5,none h:<=8 is:blocked label:x free text`.
 /// Clauses AND, the values of one OR, a `-` clause holds none of them; `none` is a value unset.
 /// What isn't a clause is free text, ranked by `tedi_utils::search`.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -99,7 +102,11 @@ enum Filter {
 	/// `owner/repo`, `owner/*`, or a bare repo name.
 	Repo(String),
 	Assignee(Assignee),
-	Stage(Stage),
+	/// A bucket of a workflow, holding its sub-buckets.
+	State {
+		workflow: String,
+		under: Vec<String>,
+	},
 	#[strum_discriminants(strum(serialize = "t"))]
 	Type(Option<Type>),
 	#[strum_discriminants(strum(serialize = "i"))]
@@ -190,7 +197,7 @@ impl FromStr for Query {
 					}
 					any
 				}
-				// `c:ci`, `ext:hack`, `s:wip` and any other label read as typed
+				// `c:ci`, `ext:hack` and any other label read as typed
 				Err(_) => vec![Filter::Label(clause.to_string())],
 			};
 			query.clauses.push(Clause { negated, any });
@@ -222,7 +229,7 @@ impl std::fmt::Display for Filter {
 			Filter::Repo(s) | Filter::Label(s) | Filter::Assignee(Assignee::Login(s)) => f.write_str(s),
 			Filter::Assignee(Assignee::Me) => f.write_str("@me"),
 			Filter::Assignee(Assignee::Nobody) | Filter::Type(None) | Filter::Importance(None) | Filter::Hours(None) => f.write_str("none"),
-			Filter::Stage(s) => write!(f, "{s}"),
+			Filter::State { workflow, under } => write!(f, "{workflow}/{}", under.join("/")),
 			Filter::Type(Some(k)) => f.write_str(&k.to_string()["t:".len()..]),
 			Filter::Importance(Some((cmp, n))) => write!(f, "{cmp}{n}"),
 			Filter::Hours(Some((cmp, n))) => write!(f, "{cmp}{n}"),
@@ -332,7 +339,13 @@ impl Filter {
 				"none" => Assignee::Nobody,
 				login => Assignee::Login(login.trim_start_matches('@').to_string()),
 			}),
-			Facet::Stage => Filter::Stage(Stage::from_str(v).map_err(|_| QueryError::Stage(v.into()))?),
+			Facet::State => match v.split_once('/') {
+				Some((workflow, under)) if !workflow.is_empty() && !under.split('/').any(str::is_empty) => Filter::State {
+					workflow: workflow.into(),
+					under: under.split('/').map(str::to_string).collect(),
+				},
+				_ => return Err(QueryError::State(v.into())),
+			},
 			Facet::Type if none => Filter::Type(None),
 			Facet::Type => Filter::Type(Some(Type::from_str(&format!("t:{v}")).map_err(|_| QueryError::Type(v.into()))?)),
 			Facet::Importance if none => Filter::Importance(None),
@@ -364,6 +377,7 @@ impl Filter {
 			Filter::Assignee(Assignee::Me) => me.is_some_and(|me| card.assignees.iter().any(|a| a == me)),
 			Filter::Importance(Some((cmp, n))) => card.importance.is_some_and(|i| cmp.holds(i, *n)),
 			Filter::Hours(Some((cmp, n))) => card.hours.is_some_and(|h| cmp.holds(h, *n)),
+			Filter::State { workflow, under } => card.states.get(workflow).is_some_and(|s| s.is_under(under)),
 			exact => takes(card, exact.into(), open).contains(exact),
 		}
 	}
@@ -375,7 +389,14 @@ fn takes(card: &Card, facet: Facet, open: &HashSet<&IssueLink>) -> Vec<Filter> {
 		Facet::Repo => vec![Filter::Repo(card.link.project().to_string())],
 		Facet::Assignee if card.assignees.is_empty() => vec![Filter::Assignee(Assignee::Nobody)],
 		Facet::Assignee => card.assignees.iter().map(|a| Filter::Assignee(Assignee::Login(a.clone()))).collect(),
-		Facet::Stage => vec![Filter::Stage(card.stage)],
+		Facet::State => card
+			.states
+			.iter()
+			.map(|(workflow, s)| Filter::State {
+				workflow: workflow.clone(),
+				under: s.names().to_vec(),
+			})
+			.collect(),
 		Facet::Type => vec![Filter::Type(card.kind)],
 		Facet::Importance => vec![Filter::Importance(card.importance.map(|i| (Cmp::Eq, i)))],
 		Facet::Hours => vec![Filter::Hours(card.hours.map(|h| (Cmp::Eq, h)))],
@@ -421,7 +442,7 @@ impl TryFrom<Shown> for Facet {
 		Ok(match shown {
 			Shown::Repo => Facet::Repo,
 			Shown::Assignees => Facet::Assignee,
-			Shown::Stage => Facet::Stage,
+			Shown::State(_) => Facet::State,
 			Shown::Importance => Facet::Importance,
 			Shown::Hours => Facet::Hours,
 			Shown::Type => Facet::Type,
@@ -450,11 +471,12 @@ pub enum Layout {
 	Table,
 	List,
 }
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize, strum::Display, strum::EnumIter, strum::EnumString)]
-#[serde(rename_all = "snake_case")]
-#[strum(serialize_all = "snake_case")]
+/// How a view splits its cards: by `state:<workflow>`, `repo`, `assignee`, `type`, `importance` or `nothing`.
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(try_from = "String", into = "String")]
 pub enum GroupBy {
-	Stage,
+	/// Into that workflow's leaves, every one present even when empty: the kanban, laid out as a board.
+	State(String),
 	Repo,
 	Assignee,
 	Type,
@@ -462,40 +484,129 @@ pub enum GroupBy {
 	Nothing,
 }
 /// `importance`, or `-importance` reversed. Each key's own order: importance high→low, hours low→high,
-/// stage board order, names A→Z, most blockers first; a card lacking the key last either way.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+/// a workflow's states in its order, names A→Z, most blockers first; a card lacking the key last either way.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct Sort {
 	pub by: SortKey,
 	pub reversed: bool,
 }
-#[derive(Clone, Copy, Debug, Eq, PartialEq, strum::Display, strum::EnumIter, strum::EnumString)]
-#[strum(serialize_all = "snake_case")]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SortKey {
 	/// As the query ordered them: by free-text relevance when there is any, else by rank.
 	Rank,
 	Title,
 	Repo,
-	Stage,
+	/// `state:<workflow>`
+	State(String),
 	Assignee,
 	Type,
 	Importance,
 	Hours,
 	Blockers,
 }
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, strum::Display, strum::EnumIter, strum::EnumString)]
-#[serde(rename_all = "snake_case")]
-#[strum(serialize_all = "snake_case")]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(try_from = "String", into = "String")]
 pub enum Shown {
 	Repo,
 	Assignees,
-	Stage,
+	/// `state:<workflow>`
+	State(String),
 	Importance,
 	Hours,
 	Type,
 	Labels,
 	Blockers,
 	Prs,
+}
+
+/// `state:<workflow>`, or one of `plain` by its name.
+fn parse_keyed<T: Clone>(s: &str, plain: &[(&str, T)], state: impl FnOnce(String) -> T) -> Result<T, strum::ParseError> {
+	match s.strip_prefix("state:") {
+		Some(workflow) if !workflow.is_empty() => Ok(state(workflow.into())),
+		Some(_) => Err(strum::ParseError::VariantNotFound),
+		None => plain.iter().find(|(name, _)| *name == s).map(|(_, v)| v.clone()).ok_or(strum::ParseError::VariantNotFound),
+	}
+}
+macro_rules! keyed {
+	($t:ident { $($v:ident = $name:literal),* $(,)? }) => {
+		impl std::fmt::Display for $t {
+			fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+				match self {
+					$t::State(workflow) => write!(f, "state:{workflow}"),
+					$($t::$v => f.write_str($name),)*
+				}
+			}
+		}
+		impl FromStr for $t {
+			type Err = strum::ParseError;
+
+			fn from_str(s: &str) -> Result<Self, strum::ParseError> {
+				parse_keyed(s, &[$(($name, $t::$v)),*], $t::State)
+			}
+		}
+		impl TryFrom<String> for $t {
+			type Error = strum::ParseError;
+
+			fn try_from(s: String) -> Result<Self, strum::ParseError> {
+				s.parse()
+			}
+		}
+		impl From<$t> for String {
+			fn from(v: $t) -> String {
+				v.to_string()
+			}
+		}
+	};
+}
+keyed!(GroupBy {
+	Repo = "repo",
+	Assignee = "assignee",
+	Type = "type",
+	Importance = "importance",
+	Nothing = "nothing",
+});
+keyed!(Shown {
+	Repo = "repo",
+	Assignees = "assignees",
+	Importance = "importance",
+	Hours = "hours",
+	Type = "type",
+	Labels = "labels",
+	Blockers = "blockers",
+	Prs = "prs",
+});
+impl std::fmt::Display for SortKey {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.write_str(match self {
+			SortKey::State(workflow) => return write!(f, "state:{workflow}"),
+			SortKey::Rank => "rank",
+			SortKey::Title => "title",
+			SortKey::Repo => "repo",
+			SortKey::Assignee => "assignee",
+			SortKey::Type => "type",
+			SortKey::Importance => "importance",
+			SortKey::Hours => "hours",
+			SortKey::Blockers => "blockers",
+		})
+	}
+}
+impl FromStr for SortKey {
+	type Err = strum::ParseError;
+
+	fn from_str(s: &str) -> Result<Self, strum::ParseError> {
+		let plain = [
+			("rank", SortKey::Rank),
+			("title", SortKey::Title),
+			("repo", SortKey::Repo),
+			("assignee", SortKey::Assignee),
+			("type", SortKey::Type),
+			("importance", SortKey::Importance),
+			("hours", SortKey::Hours),
+			("blockers", SortKey::Blockers),
+		];
+		parse_keyed(s, &plain, SortKey::State)
+	}
 }
 
 impl std::fmt::Display for Sort {
@@ -529,7 +640,7 @@ impl From<Sort> for String {
 
 impl Sort {
 	/// Reorders `hits` (as `Query::run` ordered them); ties keep that order.
-	pub fn apply(self, cards: &[Card], hits: &mut [usize]) {
+	pub fn apply(&self, cards: &[Card], hits: &mut [usize], workflows: &BTreeMap<String, Workflow>) -> Result<(), WorkflowError> {
 		use std::cmp::Reverse;
 		fn by<K: Ord>(hits: &mut [usize], reversed: bool, key: impl Fn(usize) -> Option<K>) {
 			let mut keyed: Vec<(Option<K>, usize)> = hits.iter().map(|&i| (key(i), i)).collect();
@@ -543,7 +654,7 @@ impl Sort {
 			}
 		}
 		let r = self.reversed;
-		match self.by {
+		match &self.by {
 			SortKey::Rank if r => {
 				hits.reverse();
 				hits.sort_by_key(|&i| cards[i].rank.is_none());
@@ -551,7 +662,10 @@ impl Sort {
 			SortKey::Rank => {}
 			SortKey::Title => by(hits, r, |i| Some(cards[i].title.to_lowercase())),
 			SortKey::Repo => by(hits, r, |i| Some(cards[i].link.project().to_string())),
-			SortKey::Stage => by(hits, r, |i| Some(cards[i].stage)),
+			SortKey::State(w) => {
+				let workflow = workflows.get(w).ok_or_else(|| WorkflowError::Unknown(w.clone()))?;
+				by(hits, r, |i| Some(workflow.order(&cards[i].states[w])))
+			}
 			SortKey::Assignee => by(hits, r, |i| cards[i].assignees.iter().map(|a| a.to_lowercase()).min()),
 			SortKey::Type => by(hits, r, |i| cards[i].kind.map(|k| k.to_string())),
 			SortKey::Importance => by(hits, r, |i| cards[i].importance.map(Reverse)),
@@ -561,6 +675,7 @@ impl Sort {
 				by(hits, r, |i| Some(Reverse(cards[i].blocked_by.iter().filter(|b| open.contains(b)).count())))
 			}
 		}
+		Ok(())
 	}
 }
 
@@ -571,7 +686,7 @@ impl TryFrom<Shown> for SortKey {
 		Ok(match shown {
 			Shown::Repo => SortKey::Repo,
 			Shown::Assignees => SortKey::Assignee,
-			Shown::Stage => SortKey::Stage,
+			Shown::State(w) => SortKey::State(w),
 			Shown::Importance => SortKey::Importance,
 			Shown::Hours => SortKey::Hours,
 			Shown::Type => SortKey::Type,
@@ -622,13 +737,12 @@ pub fn scope_at(scopes: &BTreeMap<String, Scope>, path: &str) -> Option<(String,
 	Some((at?.filter(), views.clone()))
 }
 
-/// `hits` (as `Query::run` ordered them) split into groups, each keeping that order. Stages come in
-/// board order, every stage present even when empty; other keys sort by name, the ungrouped last.
-pub fn group(cards: &[Card], hits: &[usize], by: GroupBy) -> Vec<(String, Vec<usize>)> {
-	use strum::IntoEnumIterator as _;
+/// `hits` (as `Query::run` ordered them) split into groups, each keeping that order. A workflow's states
+/// come in its order, every leaf present even when empty; other keys sort by name, the ungrouped last.
+pub fn group(cards: &[Card], hits: &[usize], by: &GroupBy, workflows: &BTreeMap<String, Workflow>) -> Result<Vec<(String, Vec<usize>)>, WorkflowError> {
 	let key = |c: &Card| -> Vec<String> {
 		match by {
-			GroupBy::Stage => vec![c.stage.to_string()],
+			GroupBy::State(w) => vec![c.states[w].to_string()],
 			GroupBy::Repo => vec![c.link.project().to_string()],
 			GroupBy::Assignee if c.assignees.is_empty() => vec!["unassigned".into()],
 			GroupBy::Assignee => c.assignees.iter().map(|a| format!("@{a}")).collect(),
@@ -638,7 +752,13 @@ pub fn group(cards: &[Card], hits: &[usize], by: GroupBy) -> Vec<(String, Vec<us
 		}
 	};
 	let mut groups: Vec<(String, Vec<usize>)> = match by {
-		GroupBy::Stage => Stage::iter().map(|s| (s.to_string(), Vec::new())).collect(),
+		GroupBy::State(w) => workflows
+			.get(w)
+			.ok_or_else(|| WorkflowError::Unknown(w.clone()))?
+			.leaves()
+			.iter()
+			.map(|s| (s.to_string(), Vec::new()))
+			.collect(),
 		_ => Vec::new(),
 	};
 	for &i in hits {
@@ -649,40 +769,10 @@ pub fn group(cards: &[Card], hits: &[usize], by: GroupBy) -> Vec<(String, Vec<us
 			}
 		}
 	}
-	if by != GroupBy::Stage {
+	if !matches!(by, GroupBy::State(_)) {
 		groups.sort_by(|a, b| a.0.cmp(&b.0));
 	}
-	groups
-}
-
-#[derive(Debug, thiserror::Error)]
-#[error("{0} is read off GitHub: a ready pull request, or a close long enough ago")]
-pub struct NotDroppable(pub Stage);
-
-/// Where a card's stage moves when it is dropped on `to`: the labels and close state that read as it.
-/// Review and the closed-by-age stage are GitHub's to tell, so they can't be dropped on.
-pub fn restage(labels: &[String], to: Stage) -> Result<(Vec<String>, CloseState), NotDroppable> {
-	let mut labels: Vec<String> = labels.iter().filter(|l| Pin::from_str(l).is_err()).cloned().collect();
-	let mut pin = |p: Pin| labels.push(p.to_string());
-	let state = match to {
-		Stage::Icebox => {
-			pin(Pin::Icebox);
-			CloseState::Open
-		}
-		Stage::Triage => CloseState::Open,
-		Stage::Selected => {
-			pin(Pin::Selected);
-			CloseState::Open
-		}
-		Stage::InProgress => {
-			pin(Pin::Wip);
-			CloseState::Open
-		}
-		Stage::Done => CloseState::Closed,
-		Stage::WontDo => CloseState::NotPlanned,
-		Stage::InReview | Stage::Backlog => return Err(NotDroppable(to)),
-	};
-	Ok((labels, state))
+	Ok(groups)
 }
 
 #[cfg(test)]
@@ -690,17 +780,34 @@ mod tests {
 	use super::*;
 	use crate::labels::Scheme;
 
-	fn card(n: u64, title: &str, repo: &str, stage: Stage, labels: &[&str], assignees: &[&str], blocked_by: &[u64]) -> Card {
+	fn kanban() -> BTreeMap<String, Workflow> {
+		let buckets = ["icebox", "triage", "selected", "in_progress", "in_review", "done", "wont_do", "backlog"]
+			.map(|name| crate::workflow::Bucket {
+				name: name.into(),
+				on_enter: Vec::new(),
+				buckets: Vec::new(),
+			})
+			.to_vec();
+		let workflow = Workflow {
+			intake: "triage".parse().unwrap(),
+			buckets,
+			rules: Vec::new(),
+		};
+		BTreeMap::from([("kanban".to_string(), workflow)])
+	}
+
+	fn card(n: u64, title: &str, repo: &str, state: &str, labels: &[&str], assignees: &[&str], blocked_by: &[u64]) -> Card {
 		let link = |n: u64| IssueLink::parse(&format!("https://github.com/o/{repo}/issues/{n}")).expect("a github issue url");
 		let labels: Vec<String> = labels.iter().map(|l| l.to_string()).collect();
 		let scheme = Scheme::from(labels.as_slice());
-		let open = !matches!(stage, Stage::Done | Stage::WontDo | Stage::Backlog);
+		let open = !["done", "wont_do", "backlog"].contains(&state);
 		Card {
 			link: link(n),
 			title: title.into(),
 			assignees: assignees.iter().map(|a| a.to_string()).collect(),
 			state: if open { CloseState::Open } else { CloseState::Closed },
-			stage,
+			closed_at: None,
+			states: BTreeMap::from([("kanban".to_string(), state.parse().unwrap())]),
 			rank: None,
 			importance: scheme.importance,
 			hours: scheme.hours,
@@ -717,11 +824,11 @@ mod tests {
 
 	fn cards() -> Vec<Card> {
 		vec![
-			card(1, "Crash on save", "app", Stage::Triage, &["t:bug", "i:8", "h:3"], &["ann"], &[]),
-			card(2, "Dark mode", "app", Stage::Selected, &["t:feature", "i:5"], &["bob"], &[1]),
-			card(3, "bump deps", "lib", Stage::Triage, &["t:chore", "h:1", "c:ci"], &[], &[]),
-			card(4, "Typo in README", "lib", Stage::Done, &["t:bug", "i:2", "h:1"], &["ann", "bob"], &[]),
-			card(5, "Untyped idea", "app", Stage::Icebox, &[], &[], &[1, 2]),
+			card(1, "Crash on save", "app", "triage", &["t:bug", "i:8", "h:3"], &["ann"], &[]),
+			card(2, "Dark mode", "app", "selected", &["t:feature", "i:5"], &["bob"], &[1]),
+			card(3, "bump deps", "lib", "triage", &["t:chore", "h:1", "c:ci"], &[], &[]),
+			card(4, "Typo in README", "lib", "done", &["t:bug", "i:2", "h:1"], &["ann", "bob"], &[]),
+			card(5, "Untyped idea", "app", "icebox", &[], &[], &[1, 2]),
 		]
 	}
 
@@ -732,14 +839,14 @@ mod tests {
 	#[test]
 	fn display_parses_back_to_the_query() {
 		let corpus = [
-			"is:open stage:icebox,triage,selected,in_progress,in_review",
+			"is:open state:kanban/icebox,kanban/triage,kanban/in_progress",
 			"assignee:@me,none,@ann is:open,blocked",
 			"is:pr,issue -is:conflicted",
 			"-t:chore,none t:bug i:>=5,none,=3 h:<=8,<2",
 			"repo:o/*,o/app,lib -repo:o/lib",
-			"c:ci -s:wip label:x,y",
+			"c:ci -x:wip label:x,y",
 			r"label:a\,b odd:x,y",
-			"stage:triage free  text -not:a:flag -plain",
+			"state:kanban/triage free  text -not:a:flag -plain",
 		];
 		let out: Vec<String> = corpus
 			.iter()
@@ -751,8 +858,8 @@ mod tests {
 			})
 			.collect();
 		insta::assert_snapshot!(out.join("\n"), @r"
-		is:open stage:icebox,triage,selected,in_progress,in_review
-		  → is:open stage:icebox,triage,selected,in_progress,in_review
+		is:open state:kanban/icebox,kanban/triage,kanban/in_progress
+		  → is:open state:kanban/icebox,kanban/triage,kanban/in_progress
 		assignee:@me,none,@ann is:open,blocked
 		  → assignee:@me,none,ann is:open,blocked
 		is:pr,issue -is:conflicted
@@ -761,24 +868,24 @@ mod tests {
 		  → -t:chore,none t:bug i:>=5,none,3 h:<=8,<2
 		repo:o/*,o/app,lib -repo:o/lib
 		  → repo:o/*,o/app,lib -repo:o/lib
-		c:ci -s:wip label:x,y
-		  → label:c:ci -label:s:wip label:x,y
+		c:ci -x:wip label:x,y
+		  → label:c:ci -label:x:wip label:x,y
 		label:a\,b odd:x,y
 		  → label:a\,b label:odd:x\,y
-		stage:triage free  text -not:a:flag -plain
-		  → stage:triage -label:not:a:flag free text -plain
+		state:kanban/triage free  text -not:a:flag -plain
+		  → state:kanban/triage -label:not:a:flag free text -plain
 		");
 	}
 
 	#[test]
 	fn toggling_rewrites_one_clause() {
 		let steps: [(Facet, &str, bool); 8] = [
-			(Facet::Stage, "triage", false),
-			(Facet::Stage, "selected", false),
+			(Facet::State, "kanban/triage", false),
+			(Facet::State, "kanban/selected", false),
 			(Facet::Type, "chore", true),
-			(Facet::Type, "chore", false),     // flips polarity
-			(Facet::Stage, "triage", false),   // again: dropped
-			(Facet::Stage, "selected", false), // last value: clause dropped
+			(Facet::Type, "chore", false),            // flips polarity
+			(Facet::State, "kanban/triage", false),   // again: dropped
+			(Facet::State, "kanban/selected", false), // last value: clause dropped
 			(Facet::Assignee, "@ann", true),
 			(Facet::Importance, "none", false),
 		];
@@ -792,12 +899,12 @@ mod tests {
 		out.push(format!("clear assignee → {q}"));
 		insta::assert_snapshot!(out.join("\n"), @"
 		is:open some text
-		stage:triage → is:open stage:triage some text
-		stage:selected → is:open stage:triage,selected some text
-		alt t:chore → is:open stage:triage,selected -t:chore some text
-		t:chore → is:open stage:triage,selected t:chore some text
-		stage:triage → is:open stage:selected t:chore some text
-		stage:selected → is:open t:chore some text
+		state:kanban/triage → is:open state:kanban/triage some text
+		state:kanban/selected → is:open state:kanban/triage,kanban/selected some text
+		alt t:chore → is:open state:kanban/triage,kanban/selected -t:chore some text
+		t:chore → is:open state:kanban/triage,kanban/selected t:chore some text
+		state:kanban/triage → is:open state:kanban/selected t:chore some text
+		state:kanban/selected → is:open t:chore some text
 		alt assignee:@ann → is:open t:chore -assignee:ann some text
 		i:none → is:open t:chore -assignee:ann i:none some text
 		clear assignee → is:open t:chore i:none some text
@@ -808,8 +915,8 @@ mod tests {
 	fn tally_lifts_the_facets_own_clauses() {
 		let cards = cards();
 		let out: Vec<String> = [
-			("stage:triage -t:chore", Facet::Stage),
-			("stage:triage -t:chore", Facet::Type),
+			("state:kanban/triage -t:chore", Facet::State),
+			("state:kanban/triage -t:chore", Facet::Type),
 			("i:>=5", Facet::Importance),
 			("is:open", Facet::Assignee),
 			("", Facet::Is),
@@ -836,8 +943,8 @@ mod tests {
 		})
 		.collect();
 		insta::assert_snapshot!(out.join("\n"), @"
-		stage:triage -t:chore | stage: icebox 1, +triage 1, selected 1, done 1
-		stage:triage -t:chore | t: bug 1, -chore 1
+		state:kanban/triage -t:chore | state: kanban/done 1, kanban/icebox 1, kanban/selected 1, +kanban/triage 1
+		state:kanban/triage -t:chore | t: bug 1, -chore 1
 		i:>=5 | i: none 2, +>=5 2, 2 1, 5 1, 8 1
 		is:open | assignee: none 2, ann 1, bob 1
 		 | is: issue 5, open 4, blocked 2, closed 1
@@ -861,14 +968,14 @@ mod tests {
 		let cards = cards();
 		let hits: Vec<usize> = (0..cards.len()).collect();
 		let out: Vec<String> = [
-			"rank", "-rank", "title", "importance", "-importance", "hours", "-hours", "stage", "assignee", "-assignee", "type", "blockers", "-repo",
+			"rank", "-rank", "title", "importance", "-importance", "hours", "-hours", "state:kanban", "assignee", "-assignee", "type", "blockers", "-repo",
 		]
 		.into_iter()
 		.map(|s| {
 			let sort = Sort::try_from(s.to_string()).expect("a sort as views store it");
 			assert_eq!(sort.to_string(), s);
 			let mut sorted = hits.clone();
-			sort.apply(&cards, &mut sorted);
+			sort.apply(&cards, &mut sorted, &kanban()).unwrap();
 			format!("{s}: {}", titles(&cards, &sorted))
 		})
 		.collect();
@@ -880,7 +987,7 @@ mod tests {
 		-importance: Typo in README · Dark mode · Crash on save · bump deps · Untyped idea
 		hours: bump deps · Typo in README · Crash on save · Dark mode · Untyped idea
 		-hours: Crash on save · bump deps · Typo in README · Dark mode · Untyped idea
-		stage: Untyped idea · Crash on save · bump deps · Dark mode · Typo in README
+		state:kanban: Untyped idea · Crash on save · bump deps · Dark mode · Typo in README
 		assignee: Crash on save · Typo in README · Dark mode · bump deps · Untyped idea
 		-assignee: Dark mode · Crash on save · Typo in README · bump deps · Untyped idea
 		type: Crash on save · Typo in README · bump deps · Dark mode · Untyped idea

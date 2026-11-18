@@ -21,8 +21,12 @@ use tedi_core::{
 	IssueLink, RepoInfo, TaskView,
 	board::{Board, Scope, View, scope_at},
 	conflict::{Conflict, FieldEdit},
+	workflow::State,
 };
-use tedi_task_operations::open_interactions::SyncMode;
+use tedi_task_operations::{
+	open_interactions::SyncMode,
+	workflow::{MovedOn, Mover, Rejected, Workflows},
+};
 use tokio::sync::{Mutex, broadcast, mpsc};
 
 use crate::api::{Dock, Edited, Favorite, Kept, Library, LibraryEdit, Setup, Shelf, Sprint};
@@ -32,7 +36,7 @@ pub struct Settings {
 	/// The client bundle (`dx bundle` output); without it only the API is served, as under `dx serve`.
 	pub public: Option<PathBuf>,
 	pub mode: SyncMode,
-	pub archive_after: jiff::SignedDuration,
+	pub workflows: Workflows,
 	pub views: Vec<View>,
 	pub scopes: BTreeMap<String, Scope>,
 	pub columns: BTreeMap<String, crate::api::Columns>,
@@ -105,7 +109,7 @@ async fn puller(mut announced: mpsc::UnboundedReceiver<String>) -> Result<()> {
 			}
 			_ = async { every.as_mut().expect("guarded").tick().await }, if every.is_some() => settings().watch.clone(),
 		};
-		if let Err(e) = tedi_task_operations::pull::pull_repos(&targets).await {
+		if let Err(e) = tedi_task_operations::pull::pull_repos(&targets, &settings().workflows, jiff::Timestamp::now()).await {
 			tracing::warn!("pull of {targets:?}: {e:#}"); // GitHub unreachable or an issue unstorable: the cursor holds, the next pull retries
 		}
 		changed().await;
@@ -172,6 +176,7 @@ pub async fn setup() -> Result<Setup> {
 	let s = settings();
 	Ok(Setup {
 		me: editor(),
+		workflows: s.workflows.iter().map(|(name, w)| (name.clone(), w.workflow.clone())).collect(),
 		views: s.views.clone(),
 		scopes: s.scopes.clone(),
 		columns: s.columns.clone(),
@@ -201,7 +206,7 @@ pub async fn board() -> Result<Arc<Board>> {
 	if let Some(board) = &*cached {
 		return Ok(board.clone());
 	}
-	let board = Arc::new(tedi_task_operations::board::load(settings().archive_after, jiff::Timestamp::now()).await?);
+	let board = Arc::new(tedi_task_operations::board::load(&settings().workflows).await?);
 	*cached = Some(board.clone());
 	Ok(board)
 }
@@ -213,6 +218,23 @@ pub async fn edit(link: IssueLink, edits: Vec<FieldEdit>) -> Result<Edited> {
 		Ok(()) => Ok(Edited::Landed),
 		Err(e) => match e.downcast::<Conflict>() {
 			Ok(conflict) => Ok(Edited::Conflict(conflict)),
+			Err(e) => Err(e),
+		},
+	}
+}
+
+pub async fn move_card(link: IssueLink, workflow: String, to: State, seen: State) -> Result<Edited> {
+	let Some(me) = editor() else {
+		bail!("who moves it is unknown: this instance never learned its GitHub user");
+	};
+	let s = settings();
+	let moved = tedi_task_operations::workflow::move_card(&link, &workflow, &to, Some(&seen), &Mover::Person(me), &s.workflows, s.mode, jiff::Timestamp::now()).await;
+	changed().await; // a failed move may still have pulled
+	match moved {
+		Ok(()) => Ok(Edited::Landed),
+		Err(e) => match e.downcast::<Conflict>() {
+			Ok(conflict) => Ok(Edited::Conflict(conflict)),
+			Err(e) if e.downcast_ref::<Rejected>().is_some() || e.downcast_ref::<MovedOn>().is_some() => Ok(Edited::Rejected(e.to_string())),
 			Err(e) => Err(e),
 		},
 	}
@@ -309,7 +331,7 @@ fn apply(library: &mut Library, edit: LibraryEdit) -> Result<()> {
 				bail!("{name} are the team's columns: keep yours under another name");
 			}
 			let kept = library.columns.entry(named(name.clone())?).or_insert_with(|| crate::api::Columns {
-				by,
+				by: by.clone(),
 				layout: BTreeMap::new(),
 				tints: BTreeMap::new(),
 			});

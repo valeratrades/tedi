@@ -1,0 +1,83 @@
+# Every issue's stage, icebox to backlog. Closing, reopening and pull requests move it on each pull;
+# review and backlog are the rules' alone.
+intake = "triage"
+
+[[buckets]]
+name = "icebox"
+on_enter = [{ builtin = "reopen" }]
+
+[[buckets]]
+name = "triage"
+on_enter = [{ builtin = "reopen" }]
+
+[[buckets]]
+name = "selected"
+on_enter = [{ builtin = "reopen" }, { builtin = "assign_mover" }]
+
+[[buckets]]
+name = "in_progress"
+on_enter = [{ builtin = "reopen" }, { builtin = "assign_mover" }]
+
+[[buckets]]
+name = "in_review"
+on_enter = [{ builtin = "reject", reason = "a ready pull request moves it here" }]
+
+[[buckets]]
+name = "done"
+on_enter = [{ builtin = "close", reason = "completed" }]
+
+[[buckets]]
+name = "wont_do"
+on_enter = [{ builtin = "close", reason = "not_planned" }]
+
+[[buckets]]
+name = "backlog"
+on_enter = [{ builtin = "reject", reason = "closing a week ago moves it here" }]
+
+[[rules]]
+builtin = "closed_for"
+after = "1w"
+to = "backlog"
+forward_only = true
+
+[[rules]]
+builtin = "on_closed"
+reason = "completed"
+to = "done"
+forward_only = true
+
+[[rules]]
+builtin = "on_closed"
+reason = "not_planned"
+to = "wont_do"
+forward_only = true
+
+[[rules]]
+builtin = "on_reopened"
+from = ["done", "wont_do", "backlog"]
+to = "triage"
+
+[[rules]]
+builtin = "on_pr"
+state = "open"
+to = "in_review"
+forward_only = true
+
+[[rules]]
+builtin = "on_pr"
+state = "draft"
+to = "in_progress"
+forward_only = true
+
+# a pull request closed or merged while the issue stays open: back to work
+[[rules]]
+builtin = "on_pr"
+state = "closed"
+from = ["in_review"]
+to = "in_progress"
+
+[[rules]]
+builtin = "on_pr"
+state = "merged"
+from = ["in_review"]
+to = "in_progress"

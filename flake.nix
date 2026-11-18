@@ -111,13 +111,16 @@
           teamBoard = {
             watch = [ "EV-Main" "EV-Estate" "EV-Service-Arb" ];
             board = {
-              archive_after = "1w";
+              workflows = {
+                kanban = "preset:kanban";
+                pull_requests = "preset:pull_requests";
+              };
               views = [
                 {
                   name = "Triage";
-                  query = "is:issue is:open stage:icebox,triage,selected,in_progress,in_review";
+                  query = "is:issue is:open state:kanban/icebox,kanban/triage,kanban/selected,kanban/in_progress,kanban/in_review";
                   layout = "board";
-                  group_by = "stage";
+                  group_by = "state:kanban";
                   sort = "rank";
                   shown = [ "repo" "assignees" "importance" "hours" "type" "blockers" ];
                 }
@@ -125,7 +128,7 @@
                   name = "PRs";
                   query = "is:pr is:open";
                   layout = "list";
-                  group_by = "stage";
+                  group_by = "state:pull_requests";
                   sort = "rank";
                   shown = [ "repo" "assignees" "prs" "labels" ];
                 }
@@ -133,13 +136,13 @@
                   name = "Assigned";
                   query = "assignee:@me is:open";
                   layout = "list";
-                  group_by = "stage";
+                  group_by = "state:kanban";
                   sort = "rank";
-                  shown = [ "repo" "stage" "importance" "hours" ];
+                  shown = [ "repo" "state:kanban" "importance" "hours" ];
                 }
               ];
               columns.notion = {
-                by = "stage";
+                by = "state:kanban";
                 tints = {
                   triage = "orange";
                   selected = "blue";

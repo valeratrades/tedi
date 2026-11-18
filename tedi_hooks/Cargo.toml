@@ -1,0 +1,23 @@
+[package]
+name = "tedi_hooks"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Workflow hooks for tedi: builtins, and shared libraries over a C ABI"
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+jiff.workspace = true
+libloading.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tedi_core.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+
+[dev-dependencies]
+cbindgen.workspace = true
+
+[lints]
+workspace = true

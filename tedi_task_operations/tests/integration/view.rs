@@ -11,7 +11,7 @@ use crate::{
 	sprints::EditFn,
 };
 
-const BUG: &str = "- [ ] (t:bug, s:selected) Fix it <!-- @mock_user https://github.com/o/r/issues/1 -->\n  body\n";
+const BUG: &str = "- [ ] (t:bug) Fix it <!-- @mock_user https://github.com/o/r/issues/1 -->\n  body\n";
 const CHORE: &str = "- [ ] (t:chore) Tidy <!-- @mock_user https://github.com/o/r/issues/2 -->\n  chore body\n";
 
 #[tokio::test]
@@ -21,12 +21,13 @@ async fn a_view_shows_what_matches_and_its_edits_sync() {
 	let chore = ctx.consensus(&parse_virtual(CHORE), Some(Seed::new(0))).await;
 	ctx.remote(&parse_virtual(BUG), Some(Seed::new(0)));
 	ctx.remote(&parse_virtual(CHORE), Some(Seed::new(0)));
-	std::fs::write(ctx.xdg.inner.root.join("config/tedi.toml"), "[board]\narchive_after = \"1w\"\nviews = []\n").unwrap();
+	std::fs::write(ctx.xdg.inner.root.join("config/tedi.toml"), "[board]\nviews = []\nworkflows = { kanban = \"preset:kanban\" }\n").unwrap();
+	std::fs::write(ctx.xdg.data_dir().join("issues/o/r/.states.json"), r#"{"kanban":{"1":"selected"}}"#).unwrap();
 
 	let shown = Rc::new(RefCell::new(String::new()));
 	let seen = shown.clone();
 	let mut cmd = Command::new(get_binary_path());
-	cmd.args(["--mock", "view", "stage:selected", "--group", "stage"]);
+	cmd.args(["--mock", "view", "state:kanban/selected", "--group", "state:kanban"]);
 	cmd.env(concat!("tedi", "_MOCK_STATE"), &ctx.mock_state_path);
 	let out = ctx.drive_editor_session(
 		cmd,
@@ -41,7 +42,7 @@ async fn a_view_shows_what_matches_and_its_edits_sync() {
 	insta::assert_snapshot!(shown.borrow(), @"
 	# selected
 
-	- [ ] (t:bug, s:selected) Fix it <!-- @mock_user https://github.com/o/r/issues/1 --> <!--{{{3-->
+	- [ ] (t:bug) Fix it <!-- @mock_user https://github.com/o/r/issues/1 --> <!--{{{3-->
 	  body
 	  <!--}}}1-->
 	");

@@ -13,7 +13,7 @@ use crate::config::LiveSettings;
 
 #[derive(clap::Args)]
 pub struct ViewArgs {
-	/// A view named in the config's `board.views`, or a query: `stage:triage,selected t:bug i:>=5 repo:owner/* text`.
+	/// A view named in the config's `board.views`, or a query: `state:kanban/triage,kanban/selected t:bug i:>=5 repo:owner/* text`.
 	query: Vec<String>,
 	/// Split into one section per value; a named view brings its own.
 	#[arg(long)]
@@ -22,14 +22,15 @@ pub struct ViewArgs {
 
 pub async fn view_command(settings: &LiveSettings, args: ViewArgs, mode: SyncMode) -> Result<()> {
 	let config = settings.config()?;
-	let board_config = config.board.ok_or_else(|| eyre!("`tedi view` reads the config's `board` (`archive_after`, `views`)"))?;
+	let board_config = config.board.ok_or_else(|| eyre!("`tedi view` reads the config's `board` (`workflows`, `views`)"))?;
+	let workflows = board_config.workflows()?;
 	let named = args.query.join(" ");
 	let (query, group) = match board_config.views.iter().find(|v| v.name == named) {
-		Some(view) => (view.query.clone(), args.group.unwrap_or(view.group_by)),
+		Some(view) => (view.query.clone(), args.group.unwrap_or_else(|| view.group_by.clone())),
 		None => (named, args.group.unwrap_or(GroupBy::Nothing)),
 	};
 
-	let board = board::load(board_config.archive_after()?, jiff::Timestamp::now()).await?;
+	let board = board::load(&workflows).await?;
 	for (path, e) in &board.unreadable {
 		eprintln!("unreadable, left out: {}: {}", path.display(), e.lines().next().unwrap_or_default());
 	}
@@ -41,7 +42,8 @@ pub async fn view_command(settings: &LiveSettings, args: ViewArgs, mode: SyncMod
 		eprintln!("{} pull requests match, left out: a task view holds issues", issues - hits.len());
 	}
 	let mut content = String::new();
-	for (key, members) in board::group(&board.cards, &hits, group).into_iter().filter(|(_, m)| !m.is_empty()) {
+	let trees = workflows.iter().map(|(name, w)| (name.clone(), w.workflow.clone())).collect();
+	for (key, members) in board::group(&board.cards, &hits, &group, &trees)?.into_iter().filter(|(_, m)| !m.is_empty()) {
 		if group != GroupBy::Nothing {
 			content.push_str(&format!("# {key}\n"));
 		}

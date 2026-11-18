@@ -36,9 +36,9 @@ pub mod locate;
 pub mod marker;
 pub mod milestone;
 pub mod rank;
-pub mod stage;
 pub mod taskview;
 pub mod uri;
+pub mod workflow;
 pub use blockers::{BlockerItem, BlockerSetState, Blockers, split_blockers};
 pub use error::{IssueError, ParseContext, ParseError, TitleInGitPathError};
 pub use issue::{

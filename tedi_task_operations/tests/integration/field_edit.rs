@@ -13,7 +13,7 @@ const ISSUE: &str = "- [ ] Task <!-- @mock_user https://github.com/o/r/issues/1 
 async fn check(ctx: &TestContext, remote: &str, field: &str, seen: &str, new: &str) -> (RunOutput, String) {
 	let issue = ctx.consensus(&parse_virtual(ISSUE), Some(Seed::new(-100))).await;
 	ctx.remote(&parse_virtual(remote), Some(Seed::new(100)));
-	ctx.remote_labels("o", "r", &["s:selected", "t:bug"]);
+	ctx.remote_labels("o", "r", &["t:bug"]);
 	let out = ctx.run(&["--mock", "set", URL, field, new, "--seen", seen]);
 	(out, read_issue_file(&ctx.resolve_issue_path(&issue)))
 }
@@ -43,19 +43,6 @@ async fn an_edit_against_a_stale_value_is_a_conflict_and_writes_nothing() {
 	  body
 	");
 	assert!(!ctx.conflict_file(("o", "r").into(), 1).exists(), "a stale edit blocks nobody: nothing diverged in the store");
-}
-
-/// Dropping a card on Selected is a labels edit; it lands `s:selected`, and selecting takes the issue.
-#[tokio::test]
-async fn a_card_dropped_on_selected_lands_the_pin() {
-	let ctx = TestContext::build();
-	let (out, stored) = check(&ctx, ISSUE, "labels", "", "s:selected").await;
-
-	assert!(out.status.success(), "stderr: {}", out.stderr);
-	insta::assert_snapshot!(stored, @"
-	- [ ] (s:selected, @mock_user) Task <!-- @mock_user https://github.com/o/r/issues/1 -->
-	  body
-	");
 }
 
 #[tokio::test]

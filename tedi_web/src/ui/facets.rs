@@ -35,7 +35,7 @@ pub(super) fn FacetBar(query: Query) -> Element {
 	}
 }
 
-/// `stage▾`: the values the view's other clauses leave, each with its count; `×` when the query narrows on it.
+/// `state▾`: the values the view's other clauses leave, each with its count; `×` when the query narrows on it.
 #[component]
 pub(super) fn FacetMenu(facet: Facet, query: Query, #[props(default)] label: String) -> Element {
 	let in_view = use_context::<InView>();

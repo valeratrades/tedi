@@ -115,9 +115,30 @@ async fn move_issue(link: &IssueLink, target: RepoInfo) -> Result<HashMap<IssueL
 		<Issue as Sink<LocalFs>>::sink(&mut after, Some(&before)).await?;
 	}
 	<Issue as Sink<Consensus>>::sink(&mut placed, None).await?;
+	carry_states(&moved).await?;
 	drop(store);
 	println!("Moved {link} → {}", moved[link]);
 	Ok(moved)
+}
+
+/// Where each moved issue sits in each workflow goes with it, under its new number. Under the store lock.
+async fn carry_states(moved: &HashMap<IssueLink, IssueLink>) -> Result<()> {
+	let Some((from, to)) = moved.iter().next().map(|(f, t)| (f.project(), t.project())) else {
+		return Ok(());
+	};
+	assert!(moved.iter().all(|(f, t)| f.project() == from && t.project() == to), "one tree moves between two repos");
+	let (old_from, old_to) = (Local::load_states(from)?, Local::load_states(to)?);
+	let (mut new_from, mut new_to) = (old_from.clone(), old_to.clone());
+	for (workflow, issues) in &mut new_from.held {
+		for (f, t) in moved {
+			if let Some(state) = issues.remove(&f.number()) {
+				new_to.held.entry(workflow.clone()).or_default().insert(t.number(), state);
+			}
+		}
+	}
+	<crate::local::States as Sink<LocalFs>>::sink(&mut new_from, Some(&old_from)).await?;
+	<crate::local::States as Sink<LocalFs>>::sink(&mut new_to, Some(&old_to)).await?;
+	Ok(())
 }
 
 /// Same owner: GitHub's own transfer, which keeps comments, authorship and assignees.

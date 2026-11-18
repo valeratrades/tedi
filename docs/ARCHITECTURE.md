@@ -23,9 +23,21 @@ A completed issue (`[x]`) never has an open descendant: a user edit producing on
 
 Dropping a child's link from its parent detaches it, on either side: the sub-issue relation is gone, and the child lives on as a top-level issue.
 
-Labels follow the scheme `v_flakes/github/labels.nix` puts on every repo (`t:` type, `i:` importance 0–9, `h:` Fibonacci hours, `c:` categories, `ext:`, and `s:` stage pins); they are stored as the strings GitHub holds, and `tedi_core::labels` reads them typed; their colours are read from GitHub with the repo's labels, on every pull. An edit may not leave two values of `t:`, `i:`, `h:` or `s:`, nor add a label its repo lacks — rejected before anything is written. Remote state breaking either is pulled as-is.
+Labels follow the scheme `v_flakes/github/labels.nix` puts on every repo (`t:` type, `i:` importance 0–9, `h:` Fibonacci hours, `c:` categories, `ext:`); they are stored as the strings GitHub holds, and `tedi_core::labels` reads them typed; their colours are read from GitHub with the repo's labels, on every pull. An edit may not leave two values of `t:`, `i:` or `h:`, nor add a label its repo lacks — rejected before anything is written. Remote state breaking either is pulled as-is.
 
-A stage is derived, never stored whole (`tedi_core::stage`): closed reads Done / Won't do from the close reason, and Backlog once closed longer than `archive_after`; open reads In review on a ready PR, In progress on `s:wip` or a draft PR, then Selected / Icebox from their pins, else Triage. An edit pinning an unassigned issue `s:selected` or `s:wip` takes it: the editor becomes its assignee. Rank (`tedi_core::rank`) orders open issues so a blocker sorts above what it blocks, importance flowing up the `blocked by` graph. A pull request's stage is its state's: draft In progress, open In review, merged Done, closed Won't do, Backlog past `archive_after`.
+An issue's properties are **inherent** — what GitHub holds, edited only through the sync — or **extended**: tedi's own, kept beside the store (`.states.json` per project), never on GitHub, following `!mv`. The one extended kind is a workflow state.
+
+A **workflow** (`tedi_core::workflow`) is data a team declares in one self-contained file: an ordered tree of buckets (a state is a leaf; "forward" is preorder), each bucket's `on_enter` hooks, an intake (where an issue absent from the store sits), and rules. tedi ships presets (`kanban`, `pull_requests`) in the same format; a team forks one by copying it. Nothing in the framework knows a particular workflow.
+```
+drop on a column / tedi move ─┐
+pull stores an issue ─► rules ┴► move(link, workflow, to, seen, mover)
+                                   ├ seen ≠ held ⇒ nothing lands
+                                   ├ on_enter of each bucket entered, outermost first:
+                                   │   all edits, made against the card shown — or a refusal
+                                   ├ edits → the field-edit sync (a clash ⇒ nothing lands); none on a PR
+                                   └ state written, under the store lock
+```
+A pull tries each workflow's rules in order on every issue and pull request it stores, making at most one move per issue per workflow. Hooks are builtins or shared libraries over a C ABI ([`tedi_hooks`](../tedi_hooks/README.md)), loaded at startup from the operator's config. Rank (`tedi_core::rank`) orders open issues so a blocker sorts above what it blocks, importance flowing up the `blocked by` graph. 
 
 ### Blockers
 blockers form a definitive ordering, covering the tasks necessary for completion of a given objective.
@@ -104,7 +116,7 @@ Header sections tedi assigns meaning to are the `ManagedSection` variants — cu
 The selected issue is where day-to-day blocker work lands: `sprints selected add/pop/set/list/open` route through the issue coordinator (`modify_and_sync_issue` + `Modifier::Blocker*`) — blockers keep zero runtime, the issue owns save/sync. `sprints selected resume/halt` drive a per-issue Clockify timer (keyed by the selected `repo#number`, description = title + current blocker); a selection change restarts it on the new issue.
 
 #### Views
-A view is a named board query (`tedi_core::board`: `repo:` `assignee:` `stage:` `t:` `i:` `h:` `is:` `label:`, free text through [search](#search)) with a layout, a grouping and an order. A card is an issue or a pull request (`is:issue`, `is:pr`). Each clause takes a `,` list of values, any of which holds; `-key:` holds none of them; `none` is the value unset (`t:none`, `i:none`). An order is a key (`importance`), `-` reversing it (`-importance`); unset sorts last either way. The query string is the whole of a view's narrowing: the board's quick filters (a facet's values with their counts, a click on a card's value) only rewrite it. `tedi view` opens one as a task view — one `#` section per group, its issues expanded (pull requests left out) — through the sprint flow's expand-and-fold-back; it stores nothing, so only the issues it expanded change. The web board runs the same query in the browser.
+A view is a named board query (`tedi_core::board`: `repo:` `assignee:` `state:<workflow>/<bucket>` (holding its sub-buckets) `t:` `i:` `h:` `is:` `label:`, free text through [search](#search)) with a layout, a grouping and an order. A card is an issue or a pull request (`is:issue`, `is:pr`). Each clause takes a `,` list of values, any of which holds; `-key:` holds none of them; `none` is the value unset (`t:none`, `i:none`). An order is a key (`importance`, `state:kanban`), `-` reversing it (`-importance`); unset sorts last either way. Grouped by `state:<workflow>`, every leaf is a group, empty ones included; a board laid out so is the kanban, and a drop on a column is a move. The query string is the whole of a view's narrowing: the board's quick filters (a facet's values with their counts, a click on a card's value) only rewrite it. `tedi view` opens one as a task view — one `#` section per group, its issues expanded (pull requests left out) — through the sprint flow's expand-and-fold-back; it stores nothing, so only the issues it expanded change. The web board runs the same query in the browser.
 
 A scope is a named slice of repos, nesting narrower ones, naming the team views it cares for (else its parent's). The web screen sits in one scope at a time, everything on it narrowed by the scope's `repo:` clause.
 
@@ -117,18 +129,20 @@ If a milestone technically covers a wider area of tasks, that could be added und
 ## Crates
 ```
 tedi_md → tedi_core → tedi_task_primitives → tedi_task_operations → tedi_web (server) → tedi
-            ↑  │   ↑            ↑    ↑                                                   ↑
-   tedi_utils ─┘   │   tedi_adapters ┘    └──── tedi_utils                           tedi_eval
-                   └──────────────────────────────────────→ tedi_web (client, wasm)
+            ↑  │ │  ↑            ↑    ↑            ↑                                     ↑
+   tedi_utils ─┘ │  │   tedi_adapters ┘    └ tedi_utils  │                                 tedi_eval
+                 │  └─────────────→ tedi_hooks ─────────┘
+                 └───────────────────────────────────────→ tedi_web (client, wasm)
 ```
 - `tedi_md` — markdown primitives: owned pulldown_cmark `Events` ⇄ `String`.
-- `tedi_core` — the pure model: the primitives above (Issue/Blockers/Milestone), their locators/markers, and parse/serialize over `Events`. No IO, no async, no transport. A primitive cannot reach fs/network/app-state — the crate boundary enforces it. It builds for wasm (the web client runs the board model and reads conflicts): `v_utils` with `macros` only. Its `board` is the board model — cards, query, views, grouping, restaging; `tedi_task_operations::board` cards the store and edits through the sync.
+- `tedi_core` — the pure model: the primitives above (Issue/Blockers/Milestone), their locators/markers, and parse/serialize over `Events`. No IO, no async, no transport. A primitive cannot reach fs/network/app-state — the crate boundary enforces it. It builds for wasm (the web client runs the board model and reads conflicts): `v_utils` with `macros` only. Its `board` is the board model — cards, query, views, grouping — and `workflow` the workflow tree; `tedi_task_operations::board` cards the store and edits through the sync, `tedi_task_operations::workflow` moves cards.
+- `tedi_hooks` — workflows as run: a workflow file parsed and checked, its hooks loaded (builtins, or C-ABI libraries) and called. A hook only asks; what lands is the operations' call.
 - `tedi_adapters` — transport at the edge: `GithubClient`, Clockify. Depends on core for the domain locator (`RepoInfo`).
 - `tedi_task_primitives` — what a stored issue *is*: local/remote sources+sinks, storage layout, path resolution, the `LazyIssue` loading protocol, the GitHub mock.
 - `tedi_task_operations` — what we *do* with issues: sync/merge/touch/conflict, sprint flows + per-sprint selection, per-issue Clockify.
 - `tedi_eval` — performance evaluation and manual-stats tracking.
 - `tedi_utils` — leaf utilities on plain data, no tedi deps. `search`: the one engine every issue search goes through ([below](#search)), and its skim picker.
-- `tedi_web` — the board in a browser (dioxus). The client (wasm, `--features web`, built by `dx`) holds every card and runs `tedi_core::board` over them; the server half (`--features server`, linked into `tedi web`) is server fns over `tedi_task_operations`, a GitHub App webhook, the periodic pull of `watch`, and the client bundle. An edit is a `Modifier::Field` made against what the card showed; changes reach open boards as server-sent ticks. Each viewer (the user a gate names in `--viewer-header`, else the instance's own GitHub user) has a library beside the store, never in it (`$XDG_DATA_HOME/tedi/web/{viewer}.json`): what their screen shows (tiles and columns per band, each view as last edited), saved as it settles; and the filters, workspaces and column layouts (arrangement and tints) they keep, which go onto the screen and off it by copy. Column layouts the config names are offered to every viewer beside their own.
+- `tedi_web` — the board in a browser (dioxus). The client (wasm, `--features web`, built by `dx`) holds every card and runs `tedi_core::board` over them; the server half (`--features server`, linked into `tedi web`) is server fns over `tedi_task_operations`, a GitHub App webhook, the periodic pull of `watch`, and the client bundle. An edit is a `Modifier::Field` made against what the card showed, a drop a move made against the state it showed; changes reach open boards as server-sent ticks. Each viewer (the user a gate names in `--viewer-header`, else the instance's own GitHub user) has a library beside the store, never in it (`$XDG_DATA_HOME/tedi/web/{viewer}.json`): what their screen shows (tiles and columns per band, each view as last edited), saved as it settles; and the filters, workspaces and column layouts (arrangement and tints) they keep, which go onto the screen and off it by copy. Column layouts the config names are offered to every viewer beside their own.
 - `tedi` — interface only: clap enums/dispatch, config, shell init. Parses args, resolves config, calls ops. Owns `config` (v_utils `LiveSettings` binds app identity to the crate that derives it).
 
 ## Search

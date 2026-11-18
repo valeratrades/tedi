@@ -1,9 +1,12 @@
-//! A pulled repo's pull requests are mirrored read-only and carded beside its issues: each one's stage
-//! is read off its state, and `is:pr` / `is:issue` tell them apart.
+//! A pulled repo's pull requests are mirrored read-only and carded beside its issues: `kanban` places
+//! each by its state, and `is:pr` / `is:issue` tell them apart.
 
 use jiff::{SignedDuration, Timestamp};
 use tedi_core::{IssueLink, PrState, PullRequest};
-use tedi_task_operations::board::{self, Query};
+use tedi_task_operations::{
+	board::{self, Query},
+	workflow::{Loaded, Workflows},
+};
 
 use crate::common::{Seed, TestContext, parse_virtual};
 
@@ -28,7 +31,12 @@ fn pr(number: u64, title: &str, state: PrState, assignees: &[&str], closes: &[u6
 	}
 }
 
+fn pull(ctx: &TestContext) -> crate::common::RunOutput {
+	ctx.run_with_env(&["--mock", "pull", "o/r"], &[(concat!("tedi", "_MOCK_NOW"), NOW)])
+}
+
 fn seed(ctx: &TestContext) {
+	std::fs::write(ctx.xdg.inner.root.join("config/tedi.toml"), "[board]\nviews = []\nworkflows = { kanban = \"preset:kanban\" }\n").unwrap();
 	ctx.remote(
 		&parse_virtual("- [ ] (@mock_user) Fix it <!-- @mock_user https://github.com/o/r/issues/1 -->\n  body\n"),
 		Some(Seed::new(0)),
@@ -46,7 +54,8 @@ fn seed(ctx: &TestContext) {
 
 async fn shown(ctx: &TestContext, queries: &[&str]) -> String {
 	ctx.set_issues_dir_override();
-	let board = board::load(SignedDuration::from_hours(24 * 7), NOW.parse().unwrap()).await.unwrap();
+	let workflows: Workflows = [("kanban".to_string(), Loaded::load("preset:kanban").unwrap())].into();
+	let board = board::load(&workflows).await.unwrap();
 	let mut out = Vec::new();
 	for q in queries {
 		let hits = q.parse::<Query>().unwrap().run(&board.cards, Some("mock_user")).unwrap();
@@ -58,7 +67,7 @@ async fn shown(ctx: &TestContext, queries: &[&str]) -> String {
 					Some(pr) => format!("PR {}{}", pr.state, pr.closes.iter().map(|l| format!(" closes #{}", l.number())).collect::<String>()),
 					None => "issue".into(),
 				};
-				format!("  #{} {} [{}] {what}", c.link.number(), c.title, c.stage)
+				format!("  #{} {} [{}] {what}", c.link.number(), c.title, c.states["kanban"])
 			})
 			.collect();
 		cards.sort();
@@ -72,7 +81,7 @@ async fn a_pull_cards_prs_by_their_state_beside_the_issues() {
 	let ctx = TestContext::build();
 	seed(&ctx);
 
-	let out = ctx.run(&["--mock", "pull", "o/r"]);
+	let out = pull(&ctx);
 
 	assert!(out.status.success(), "stderr: {}", out.stderr);
 	insta::assert_snapshot!(shown(&ctx, &["is:pr", "is:issue", "assignee:@me is:open"]).await, @"
@@ -95,10 +104,10 @@ async fn a_pull_cards_prs_by_their_state_beside_the_issues() {
 async fn a_pr_changed_since_is_reread_and_the_walk_stops_at_the_last_ones_newest() {
 	let ctx = TestContext::build();
 	seed(&ctx);
-	assert!(ctx.run(&["--mock", "pull", "o/r"]).status.success());
+	assert!(pull(&ctx).status.success());
 	ctx.remote_pull_request(("o", "r").into(), pr(3, "Ready", PrState::Merged, &["mock_user"], &[], 0, Some(0)));
 
-	let out = ctx.run(&["--mock", "pull", "o/r"]);
+	let out = pull(&ctx);
 
 	assert!(out.status.success(), "stderr: {}", out.stderr);
 	let walks: Vec<String> = ctx.github_calls().into_iter().filter(|c| c.starts_with("list_repo_prs")).collect();

@@ -52,20 +52,49 @@ pub struct GithubApp {
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub struct Board {
-	/// A closed issue leaves Done / Won't do for Backlog this long after closing (`1w`, `10d`).
-	pub archive_after: String,
+	/// By name: `preset:<name>` (`kanban`, `pull_requests`) or a workflow file's path.
+	#[serde(default)] // a board may place issues in none
+	pub workflows: std::collections::BTreeMap<String, String>,
 	pub views: Vec<tedi_task_operations::board::View>,
 	/// Named slices of the team's repos, nesting narrower ones (`[board.scopes.EV-Main.tooling] repos = ["EV-Main/tilers"]`).
 	#[serde(default)] // a board may have none
 	pub scopes: std::collections::BTreeMap<String, tedi_task_operations::board::Scope>,
-	/// Column colorings every viewer is offered (`[board.columns.notion] by = "stage"`, `tints = { triage = "orange" }`).
+	/// Column colorings every viewer is offered (`[board.columns.notion] by = "state:kanban"`, `tints = { triage = "orange" }`).
 	#[serde(default)] // a board may have none
 	pub columns: std::collections::BTreeMap<String, tedi_web::api::Columns>,
 }
 impl Board {
-	pub fn archive_after(&self) -> color_eyre::Result<jiff::SignedDuration> {
-		let span: jiff::Span = self.archive_after.parse()?;
-		Ok(span.to_duration(jiff::SpanRelativeTo::days_are_24_hours())?)
+	/// Its workflows, loaded with their hooks; every workflow a view or a column coloring names is among them.
+	pub fn workflows(&self) -> color_eyre::Result<tedi_task_operations::workflow::Workflows> {
+		use color_eyre::eyre::{WrapErr as _, bail};
+		use tedi_task_operations::board::{GroupBy, Shown, SortKey};
+
+		let loaded: tedi_task_operations::workflow::Workflows = self
+			.workflows
+			.iter()
+			.map(|(name, spec)| {
+				Ok((
+					name.clone(),
+					tedi_task_operations::workflow::Loaded::load(spec).wrap_err_with(|| format!("the workflow {name} ({spec})"))?,
+				))
+			})
+			.collect::<color_eyre::Result<_>>()?;
+		for view in &self.views {
+			let mut named: Vec<&String> = view.shown.iter().filter_map(|s| if let Shown::State(w) = s { Some(w) } else { None }).collect();
+			named.extend(if let GroupBy::State(w) = &view.group_by { Some(w) } else { None });
+			named.extend(if let SortKey::State(w) = &view.sort.by { Some(w) } else { None });
+			if let Some(w) = named.into_iter().find(|w| !loaded.contains_key(*w)) {
+				bail!("the view {} names the workflow {w}, and `board.workflows` doesn't", view.name);
+			}
+		}
+		for (name, columns) in &self.columns {
+			if let GroupBy::State(w) = &columns.by
+				&& !loaded.contains_key(w)
+			{
+				bail!("the columns {name} are by the workflow {w}, and `board.workflows` doesn't name it");
+			}
+		}
+		Ok(loaded)
 	}
 }
 
