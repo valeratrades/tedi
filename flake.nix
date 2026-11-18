@@ -122,7 +122,15 @@
                   shown = [ "repo" "assignees" "importance" "hours" "type" "blockers" ];
                 }
                 {
-                  name = "My issues";
+                  name = "PRs";
+                  query = "is:pr";
+                  layout = "board";
+                  group_by = "stage";
+                  sort = "rank";
+                  shown = [ "repo" "assignees" "labels" ];
+                }
+                {
+                  name = "Assigned";
                   query = "assignee:@me is:open";
                   layout = "list";
                   group_by = "stage";
@@ -140,7 +148,8 @@
                   done = "green";
                 };
               };
-              scopes = {
+              scopes.EV = {
+                views = [ "Triage" "PRs" "Assigned" ];
                 EV-Main.repos = [ "EV-Main/*" ];
                 EV-Estate.repos = [ "EV-Estate/*" ];
                 EV-Service-Arb.repos = [ "EV-Service-Arb/*" ];

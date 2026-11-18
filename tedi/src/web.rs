@@ -48,7 +48,7 @@ pub async fn web_command(settings: &LiveSettings, args: WebArgs, mode: SyncMode)
 		public: args.public,
 		mode,
 		archive_after: board.archive_after()?,
-		views: board.views,
+		views: tedi_task_operations::board::scoped_views(&board.scopes, &board.views),
 		scopes: board.scopes,
 		columns: board.columns,
 		milestones,

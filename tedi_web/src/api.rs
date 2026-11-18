@@ -18,8 +18,9 @@ use tilers_core::Band;
 pub struct Setup {
 	/// Who edits. Today the instance's own GitHub user, for every request; per request once editors sign in.
 	pub me: Option<String>,
-	pub team: Vec<View>,
 	pub scopes: BTreeMap<String, Scope>,
+	/// Each scope's views, by its path.
+	pub views: BTreeMap<String, Vec<View>>,
 	pub sprints: Vec<Sprint>,
 	/// The team's columns, offered beside each viewer's own.
 	pub columns: BTreeMap<String, Columns>,

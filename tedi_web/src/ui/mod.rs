@@ -14,7 +14,7 @@ use ev_lib::uikit_dioxus::*;
 use futures::StreamExt as _;
 use tedi_core::{
 	IssueLink,
-	board::{Board, Card, GroupBy, Layout, Scope, Shown, Sort, SortKey, View},
+	board::{Board, Card, Scope, View},
 	conflict::{Conflict, FieldEdit},
 };
 use tilers_dioxus::{Band, DockPanel, Group, GroupId, MinSize, PackedApi, PackedArea, PanelId};
@@ -44,11 +44,11 @@ impl Ctx {
 		self.setup.read().as_ref()?.me.clone()
 	}
 
-	/// Team views, then the viewer's own.
+	/// Every scope's views, then the viewer's own.
 	fn views(&self) -> Vec<View> {
 		let setup = self.setup.read();
 		let library = self.library.read();
-		let team = setup.as_ref().map(|s| s.team.clone()).into_iter().flatten();
+		let team = setup.as_ref().map(|s| s.views.values().flatten().cloned().collect::<Vec<_>>()).into_iter().flatten();
 		team.chain(library.as_ref().map(|l| l.filters.values().cloned().collect::<Vec<_>>()).into_iter().flatten())
 			.collect()
 	}
@@ -109,10 +109,6 @@ impl Ctx {
 			Some(("view", name)) => match self.views().into_iter().find(|v| v.name == name) {
 				Some(view) => (name.to_string(), shown(view)),
 				None => (name.to_string(), rsx! { "The view {name} is no longer saved" }),
-			},
-			Some(("scope", path)) => match find_scope(&setup.scopes, path) {
-				Some(scope) => (path.to_string(), shown(scope_view(path, scope))),
-				None => (path.to_string(), rsx! { "The scope {path} is no longer configured" }),
 			},
 			Some(("sprint", title)) => match setup.sprints.iter().find(|s| s.title == title) {
 				Some(sprint) => (title.to_string(), rsx! { view::SprintPanel { sprint: sprint.clone() } }),
@@ -175,7 +171,7 @@ impl Ctx {
 		let shown = match library.on_screen.tiles.get(&band) {
 			Some(layout) => self.show(api, layout),
 			None => {
-				if let Some(view) = setup.team.first().cloned().or_else(|| library.filters.values().next().cloned()) {
+				if let Some(view) = setup.views.values().flatten().next().cloned().or_else(|| library.filters.values().next().cloned()) {
 					self.open(PanelId(format!("view:{}", view.name)));
 				}
 				true
@@ -383,8 +379,9 @@ fn NavMenu() -> Element {
 		.filter(|n| library.favorites.contains(&Favorite::Workspace((*n).clone())))
 		.cloned()
 		.collect();
-	let mut views = ctx.views();
-	views.sort_by_key(|v| !library.favorites.contains(&Favorite::View(v.name.clone()))); // stable: favorites first, else as configured
+	let views = ctx.views();
+	let mut own: Vec<View> = library.filters.values().cloned().collect();
+	own.sort_by_key(|v| !library.favorites.contains(&Favorite::View(v.name.clone()))); // stable: favorites first, else by name
 	let mut scopes: Vec<(String, Scope)> = setup.scopes.clone().into_iter().collect();
 	scopes.sort_by_key(|(name, _)| !library.favorites.contains(&Favorite::Scope(name.clone())));
 	// a favorite whose view or scope is gone stays listed until unfavorited
@@ -393,7 +390,7 @@ fn NavMenu() -> Element {
 		.iter()
 		.filter(|f| match f {
 			Favorite::View(name) => !views.iter().any(|v| &v.name == name),
-			Favorite::Scope(path) => find_scope(&setup.scopes, path).is_none(),
+			Favorite::Scope(path) => !setup.views.contains_key(path),
 			Favorite::Workspace(_) | Favorite::Columns(_) => false, // dropped with their entry
 		})
 		.cloned()
@@ -439,7 +436,7 @@ fn NavMenu() -> Element {
 				}
 				SidebarGroupContent {
 					SidebarMenu {
-						for view in views {
+						for view in own {
 							Item { key: "{view.name}", id: PanelId(format!("view:{}", view.name)), label: view.name.clone(), favorite: Some(Favorite::View(view.name.clone())), depth: 0 }
 						}
 					}
@@ -451,7 +448,7 @@ fn NavMenu() -> Element {
 					SidebarGroupContent {
 						SidebarMenu {
 							for (name, scope) in scopes {
-								ScopeItem { key: "{name}", path: name.clone(), name, scope, depth: 0 }
+								ScopeItem { key: "{name}", path: name.clone(), name, scope, views: setup.views.clone(), depth: 0 }
 							}
 						}
 					}
@@ -538,34 +535,34 @@ fn Item(id: PanelId, label: String, favorite: Option<Favorite>, depth: usize) ->
 	}
 }
 
+/// A scope's name, its views under it, then the scopes nested in it.
 #[component]
-fn ScopeItem(path: String, name: String, scope: Scope, depth: usize) -> Element {
+fn ScopeItem(path: String, name: String, scope: Scope, views: BTreeMap<String, Vec<View>>, depth: usize) -> Element {
+	let ctx = use_context::<Ctx>();
+	let what = Favorite::Scope(path.clone());
+	let starred = ctx.favorite(&what);
+	let own = views.get(&path).cloned().expect("every configured scope has its views listed");
 	rsx! {
-		Item { id: PanelId(format!("scope:{path}")), label: name, favorite: Some(Favorite::Scope(path.clone())), depth }
-		for (child, nested) in scope.children.clone() {
-			ScopeItem { key: "{child}", path: format!("{path} / {child}"), name: child, scope: nested, depth: depth + 1 }
+		SidebarMenuItem {
+			div { class: "flex items-center gap-1 text-xs font-medium text-ink-soft", style: "padding-left: {depth * 12}px",
+				button {
+					class: if starred { "px-1 text-accent" } else { "px-1 opacity-50 hover:opacity-100" },
+					title: if starred { "Unfavorite" } else { "Favorite" },
+					onclick: move |_| {
+						let what = what.clone();
+						spawn(async move { _ = ctx.keep(LibraryEdit::Favorite { what, on: !starred }).await; });
+					},
+					if starred { "★" } else { "☆" }
+				}
+				span { "{name}" }
+			}
 		}
-	}
-}
-
-fn find_scope<'a>(scopes: &'a BTreeMap<String, Scope>, path: &str) -> Option<&'a Scope> {
-	let mut names = path.split(" / ");
-	let mut scope = scopes.get(names.next()?)?;
-	for name in names {
-		scope = scope.children.get(name)?;
-	}
-	Some(scope)
-}
-
-/// A scope opens as the open work of its repos, by stage.
-fn scope_view(name: &str, scope: &Scope) -> View {
-	View {
-		name: name.to_string(),
-		query: format!("{} is:open", scope.filter()),
-		layout: Layout::Board,
-		group_by: GroupBy::Stage,
-		sort: Sort { by: SortKey::Rank, reversed: false },
-		shown: vec![Shown::Repo, Shown::Assignees, Shown::Importance, Shown::Hours, Shown::Type, Shown::Blockers],
+		for view in own {
+			Item { key: "{view.name}", id: PanelId(format!("view:{}", view.name)), label: view.name.rsplit(" · ").next().expect("rsplit yields at least one part").to_string(), favorite: Some(Favorite::View(view.name.clone())), depth: depth + 1 }
+		}
+		for (child, nested) in scope.children.clone() {
+			ScopeItem { key: "{child}", path: format!("{path} / {child}"), name: child, scope: nested, views: views.clone(), depth: depth + 1 }
+		}
 	}
 }
 
@@ -587,16 +584,6 @@ fn Palette() -> Element {
 	let mut groups = Vec::new();
 	if let Some(setup) = ctx.setup.read().as_ref() {
 		let mut views: Vec<CommandPaletteItem> = ctx.views().into_iter().map(|v| item(PanelId(format!("view:{}", v.name)), v.name)).collect();
-		fn scopes(prefix: &str, all: &BTreeMap<String, Scope>, out: &mut Vec<String>) {
-			for (name, scope) in all {
-				let path = format!("{prefix}{name}");
-				out.push(path.clone());
-				scopes(&format!("{path} / "), &scope.children, out);
-			}
-		}
-		let mut all = Vec::new();
-		scopes("", &setup.scopes, &mut all);
-		views.extend(all.into_iter().map(|path| item(PanelId(format!("scope:{path}")), format!("Scope: {path}"))));
 		views.extend(setup.sprints.iter().map(|s| item(PanelId(format!("sprint:{}", s.title)), format!("Sprint: {}", s.title))));
 		groups.push(CommandPaletteGroup {
 			id: "views".into(),

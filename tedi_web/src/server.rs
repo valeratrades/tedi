@@ -33,7 +33,8 @@ pub struct Settings {
 	pub public: Option<PathBuf>,
 	pub mode: SyncMode,
 	pub archive_after: jiff::SignedDuration,
-	pub views: Vec<View>,
+	/// Each scope's views, by its path.
+	pub views: BTreeMap<String, Vec<View>>,
 	pub scopes: BTreeMap<String, Scope>,
 	pub columns: BTreeMap<String, crate::api::Columns>,
 	/// Where the sprint milestones live.
@@ -172,7 +173,7 @@ pub async fn setup() -> Result<Setup> {
 	let s = settings();
 	Ok(Setup {
 		me: editor(),
-		team: s.views.clone(),
+		views: s.views.clone(),
 		scopes: s.scopes.clone(),
 		columns: s.columns.clone(),
 		sprints: match s.milestones {
@@ -298,7 +299,7 @@ fn apply(library: &mut Library, edit: LibraryEdit) -> Result<()> {
 			if view.name.trim().is_empty() {
 				bail!("a filter is kept under a name");
 			}
-			if settings().views.iter().any(|v| v.name == view.name) {
+			if team_view(&view.name) {
 				bail!("{} is a team view's name: keep yours under another", view.name);
 			}
 			library.filters.insert(view.name.clone(), view);
@@ -322,7 +323,7 @@ fn apply(library: &mut Library, edit: LibraryEdit) -> Result<()> {
 		LibraryEdit::Rename { shelf, from, to } => {
 			let to = named(to)?;
 			let taken = match shelf {
-				Shelf::Filters => library.filters.contains_key(&to) || settings().views.iter().any(|v| v.name == to),
+				Shelf::Filters => library.filters.contains_key(&to) || team_view(&to),
 				Shelf::Workspaces => library.workspaces.contains_key(&to),
 				Shelf::Columns => library.columns.contains_key(&to) || settings().columns.contains_key(&to),
 			};
@@ -376,8 +377,8 @@ fn apply(library: &mut Library, edit: LibraryEdit) -> Result<()> {
 			},
 		LibraryEdit::Favorite { what, on: true } => {
 			let known = match &what {
-				Favorite::View(name) => library.filters.contains_key(name) || settings().views.iter().any(|v| &v.name == name),
-				Favorite::Scope(path) => scope_at(&settings().scopes, path),
+				Favorite::View(name) => library.filters.contains_key(name) || team_view(name),
+				Favorite::Scope(path) => settings().views.contains_key(path),
 				Favorite::Workspace(name) => library.workspaces.contains_key(name),
 				Favorite::Columns(name) => library.columns.contains_key(name) || settings().columns.contains_key(name),
 			};
@@ -388,6 +389,10 @@ fn apply(library: &mut Library, edit: LibraryEdit) -> Result<()> {
 		}
 	}
 	Ok(())
+}
+
+fn team_view(name: &str) -> bool {
+	settings().views.values().flatten().any(|v| v.name == name)
 }
 
 fn named(name: String) -> Result<String> {
@@ -403,16 +408,4 @@ fn favorite(shelf: Shelf, name: String) -> Favorite {
 		Shelf::Workspaces => Favorite::Workspace(name),
 		Shelf::Columns => Favorite::Columns(name),
 	}
-}
-
-fn scope_at(scopes: &BTreeMap<String, Scope>, path: &str) -> bool {
-	let mut names = path.split(" / ");
-	let Some(mut scope) = names.next().and_then(|n| scopes.get(n)) else { return false };
-	for name in names {
-		match scope.children.get(name) {
-			Some(child) => scope = child,
-			None => return false,
-		}
-	}
-	true
 }

@@ -10,7 +10,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-	CloseState, IssueLink, LinkedPr,
+	CloseState, IssueLink, LinkedPr, PrState,
 	labels::{Pin, Type},
 	rank::Rank,
 	stage::Stage,
@@ -36,6 +36,14 @@ pub struct Card {
 	pub body: String,
 	/// Shown as of consensus: a clash on it waits for resolution.
 	pub conflicted: bool,
+	/// `Some` on a pull request: read-only, with no blockers, children or pins of its own.
+	pub pr: Option<Pr>,
+}
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct Pr {
+	pub state: PrState,
+	pub author: String,
+	pub closes: Vec<IssueLink>,
 }
 impl Card {
 	pub fn open(&self) -> bool {
@@ -62,7 +70,7 @@ pub enum QueryError {
 	Importance(String),
 	#[error("h: takes hours or none, got {0:?}")]
 	Hours(String),
-	#[error("is: takes open, closed, blocked or conflicted, got {0:?}")]
+	#[error("is: takes open, closed, blocked, conflicted, issue or pr, got {0:?}")]
 	Is(String),
 	#[error("{0}: takes a value")]
 	Empty(Facet),
@@ -115,6 +123,8 @@ enum Is {
 	/// By an open issue on the board.
 	Blocked,
 	Conflicted,
+	Issue,
+	Pr,
 }
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, strum::Display)]
 enum Cmp {
@@ -375,6 +385,8 @@ fn takes(card: &Card, facet: Facet, open: &HashSet<&IssueLink>) -> Vec<Filter> {
 			(!card.open(), Is::Closed),
 			(card.blocked_by.iter().any(|b| open.contains(b)), Is::Blocked),
 			(card.conflicted, Is::Conflicted),
+			(card.pr.is_none(), Is::Issue),
+			(card.pr.is_some(), Is::Pr),
 		]
 		.into_iter()
 		.filter_map(|(holds, is)| holds.then_some(Filter::Is(is)))
@@ -575,6 +587,9 @@ impl TryFrom<Shown> for SortKey {
 pub struct Scope {
 	#[serde(default)] // a scope may only group nested ones
 	pub repos: Vec<String>,
+	/// The team views it shows, by name; none: its parent's.
+	#[serde(default)]
+	pub views: Vec<String>,
 	#[serde(flatten)]
 	pub children: BTreeMap<String, Scope>,
 }
@@ -592,6 +607,35 @@ impl Scope {
 		assert!(!repos.is_empty(), "a configured scope names at least one repo, itself or nested");
 		format!("repo:{}", repos.join(","))
 	}
+}
+
+/// Each scope's views by path (names ` / `-joined): the `team` views it names, narrowed to it and named `{path} · {view}`.
+pub fn scoped_views(scopes: &BTreeMap<String, Scope>, team: &[View]) -> BTreeMap<String, Vec<View>> {
+	fn walk(prefix: &str, scopes: &BTreeMap<String, Scope>, inherited: &[String], team: &[View], out: &mut BTreeMap<String, Vec<View>>) {
+		for (name, scope) in scopes {
+			let path = format!("{prefix}{name}");
+			let names = if scope.views.is_empty() { inherited } else { &scope.views };
+			let views = names
+				.iter()
+				.map(|n| {
+					let view = team
+						.iter()
+						.find(|v| &v.name == n)
+						.unwrap_or_else(|| panic!("the scope {path} shows the view {n}, which no team view is named"));
+					View {
+						name: format!("{path} · {n}"),
+						query: format!("{} {}", scope.filter(), view.query),
+						..view.clone()
+					}
+				})
+				.collect();
+			out.insert(path.clone(), views);
+			walk(&format!("{path} / "), &scope.children, names, team, out);
+		}
+	}
+	let mut out = BTreeMap::new();
+	walk("", scopes, &[], team, &mut out);
+	out
 }
 
 /// `hits` (as `Query::run` ordered them) split into groups, each keeping that order. Stages come in
@@ -683,6 +727,7 @@ mod tests {
 			parent: None,
 			body: String::new(),
 			conflicted: false,
+			pr: None,
 		}
 	}
 
@@ -705,6 +750,7 @@ mod tests {
 		let corpus = [
 			"is:open stage:icebox,triage,selected,in_progress,in_review",
 			"assignee:@me,none,@ann is:open,blocked",
+			"is:pr,issue -is:conflicted",
 			"-t:chore,none t:bug i:>=5,none,=3 h:<=8,<2",
 			"repo:o/*,o/app,lib -repo:o/lib",
 			"c:ci -s:wip label:x,y",

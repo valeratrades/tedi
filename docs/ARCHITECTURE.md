@@ -106,6 +106,8 @@ The selected issue is where day-to-day blocker work lands: `sprints selected add
 #### Views
 A view is a named board query (`tedi_core::board`: `repo:` `assignee:` `stage:` `t:` `i:` `h:` `is:` `label:`, free text through [search](#search)) with a layout, a grouping and an order. Each clause takes a `,` list of values, any of which holds; `-key:` holds none of them; `none` is the value unset (`t:none`, `i:none`). An order is a key (`importance`), `-` reversing it (`-importance`); unset sorts last either way. The query string is the whole of a view's narrowing: the board's quick filters (a facet's values with their counts, a click on a card's value) only rewrite it. `tedi view` opens one as a task view — one `#` section per group, its issues expanded — through the sprint flow's expand-and-fold-back; it stores nothing, so only the issues it expanded change. The web board runs the same query in the browser.
 
+A scope is a named slice of repos, nesting narrower ones; it shows the team views it names (else its parent's), each narrowed to it by its `repo:` clause. The web sidebar is the scopes, their views inside.
+
 #### Bottlenecks
 a primitive over Milestones; name is immutable, can contain other milestones. In many ways it's much like [sprints](#sprints), - except it reasons in terms of current global priorities, serving as guideline for compiling the latter.
 
