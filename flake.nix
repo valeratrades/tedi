@@ -115,7 +115,7 @@
               views = [
                 {
                   name = "Triage";
-                  query = "is:open stage:icebox,triage,selected,in_progress,in_review";
+                  query = "is:issue is:open stage:icebox,triage,selected,in_progress,in_review";
                   layout = "board";
                   group_by = "stage";
                   sort = "rank";
