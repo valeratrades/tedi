@@ -24,13 +24,7 @@ pub enum Stage {
 /// `closed_at`: when the state last changed, `None` when the timeline holds no such event.
 pub fn stage(pin: Option<Pin>, state: &CloseState, prs: &[LinkedPr], closed_at: Option<Timestamp>, archive_after: SignedDuration, now: Timestamp) -> Stage {
 	if state.is_closed() {
-		// no close event on the timeline: it predates what GitHub keeps
-		let archived = closed_at.is_none_or(|at| now.duration_since(at) > archive_after);
-		return match (archived, state) {
-			(true, _) => Stage::Backlog,
-			(false, CloseState::Closed) => Stage::Done,
-			(false, _) => Stage::WontDo,
-		};
+		return closed(matches!(state, CloseState::Closed), closed_at, archive_after, now);
 	}
 	let pr = |s: PrState| prs.iter().any(|p| p.state == s);
 	match pin {
@@ -40,6 +34,25 @@ pub fn stage(pin: Option<Pin>, state: &CloseState, prs: &[LinkedPr], closed_at: 
 		Some(Pin::Selected) => Stage::Selected,
 		Some(Pin::Icebox) => Stage::Icebox,
 		None => Stage::Triage,
+	}
+}
+
+/// A pull request's own: its state alone tells it.
+pub fn pr_stage(state: PrState, closed_at: Option<Timestamp>, archive_after: SignedDuration, now: Timestamp) -> Stage {
+	match state {
+		PrState::Draft => Stage::InProgress,
+		PrState::Open => Stage::InReview,
+		PrState::Merged => closed(true, closed_at, archive_after, now),
+		PrState::Closed => closed(false, closed_at, archive_after, now),
+	}
+}
+
+/// `closed_at` `None`: no close event on the timeline, it predates what GitHub keeps.
+fn closed(completed: bool, closed_at: Option<Timestamp>, archive_after: SignedDuration, now: Timestamp) -> Stage {
+	match (closed_at.is_none_or(|at| now.duration_since(at) > archive_after), completed) {
+		(true, _) => Stage::Backlog,
+		(false, true) => Stage::Done,
+		(false, false) => Stage::WontDo,
 	}
 }
 
@@ -83,5 +96,16 @@ mod tests {
 		check(None, CloseState::NotPlanned, &[], Some(1), Stage::WontDo);
 		check(None, CloseState::Closed, &[], Some(8), Stage::Backlog);
 		check(None, CloseState::Closed, &[], None, Stage::Backlog);
+	}
+
+	#[test]
+	fn pr_stages() {
+		let ago = |d: i64| Some(now() - SignedDuration::from_hours(24 * d));
+		let check = |state, closed_at, expected| assert_eq!(pr_stage(state, closed_at, WEEK, now()), expected, "{state} closed {closed_at:?}");
+		check(PrState::Draft, None, Stage::InProgress);
+		check(PrState::Open, None, Stage::InReview);
+		check(PrState::Merged, ago(1), Stage::Done);
+		check(PrState::Closed, ago(1), Stage::WontDo);
+		check(PrState::Merged, ago(8), Stage::Backlog);
 	}
 }

@@ -771,6 +771,8 @@ mod tests {
 		  → is:open stage:icebox,triage,selected,in_progress,in_review
 		assignee:@me,none,@ann is:open,blocked
 		  → assignee:@me,none,ann is:open,blocked
+		is:pr,issue -is:conflicted
+		  → is:pr,issue -is:conflicted
 		-t:chore,none t:bug i:>=5,none,=3 h:<=8,<2
 		  → -t:chore,none t:bug i:>=5,none,3 h:<=8,<2
 		repo:o/*,o/app,lib -repo:o/lib
@@ -854,7 +856,7 @@ mod tests {
 		stage:triage -t:chore | t: bug 1, -chore 1
 		i:>=5 | i: none 2, +>=5 2, 2 1, 5 1, 8 1
 		is:open | assignee: none 2, ann 1, bob 1
-		 | is: open 4, blocked 2, closed 1
+		 | is: issue 5, open 4, blocked 2, closed 1
 		");
 	}
 

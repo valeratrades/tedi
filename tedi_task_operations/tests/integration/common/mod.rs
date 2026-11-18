@@ -331,6 +331,16 @@ impl TestContext {
 		tedi_task_operations::local::conflict_detect::conflict_path(tedi_task_operations::IssueIndex::with_index(repo, vec![tedi_task_operations::IssueSelector::GitId(number)]))
 	}
 
+	/// Github holds `pr` in `repo`, replacing one of its number.
+	pub fn remote_pull_request(&self, repo: tedi_task_operations::RepoInfo, pr: tedi_core::PullRequest) {
+		let (owner, name) = (repo.owner().expect("github project").to_string(), repo.repo().to_string());
+		with_state(self, |s| {
+			s.remote_pull_requests.retain(|(o, r, held)| !(*o == owner && *r == name && held.number == pr.number));
+			s.remote_pull_requests.push((owner, name, pr));
+		});
+		self.rebuild_mock_state();
+	}
+
 	/// Github holds a pull request referencing `issue`.
 	pub fn remote_pr(&self, issue: &Issue, url: &str, state: &str) {
 		let link = issue.identity.link().expect("seed a linked issue").clone();
@@ -539,6 +549,13 @@ impl TestContext {
 			let mut mock_state = serde_json::json!({ "issues": issues });
 			if !prs.is_empty() {
 				mock_state["prs"] = serde_json::Value::Array(prs);
+			}
+			if !state.remote_pull_requests.is_empty() {
+				mock_state["pull_requests"] = state
+					.remote_pull_requests
+					.iter()
+					.map(|(owner, repo, pr)| serde_json::json!({ "owner": owner, "repo": repo, "pr": pr }))
+					.collect();
 			}
 			if !state.remote_labels.is_empty() {
 				mock_state["labels"] = state
@@ -1285,6 +1302,8 @@ struct GitState {
 	remote_labels: Vec<(String, String, Vec<String>)>,
 	/// (issue, pr url, `draft` | `open` | `merged` | `closed`)
 	remote_prs: Vec<(tedi_task_operations::IssueLink, String, String)>,
+	/// (owner, repo, pull request)
+	remote_pull_requests: Vec<(String, String, tedi_core::PullRequest)>,
 	/// (blocked, blocker, unlinked at)
 	remote_unlinked: Vec<(tedi_task_operations::IssueLink, tedi_task_operations::IssueLink, jiff::Timestamp)>,
 	/// Track which (owner, repo, number) have been added to remote

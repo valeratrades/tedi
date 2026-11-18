@@ -409,7 +409,7 @@ fn Column(group: String) -> Element {
 			for &i in members {
 				div {
 					key: "{cards[i].link}",
-					draggable: "true",
+					draggable: if cards[i].pr.is_none() { "true" } else { "false" }, // a pull request's stage is GitHub's
 					style: card_style,
 					ondragstart: { let link = cards[i].link.clone(); move |_| dragged.set(Some(link.clone())) },
 					CardView { card: cards[i].clone(), shown: shown.clone() }
@@ -513,6 +513,7 @@ pub fn CardView(card: Card, shown: Vec<Shown>) -> Element {
 		Tile { class: if card.conflicted { "gap-1 p-2 border-accent-error" } else { "gap-1 p-2" },
 			button { class: "text-left text-sm font-medium hover:underline", onclick: move |_| ctx.open_issue(link.clone()), "{card.title}" }
 			div { class: "flex flex-wrap items-center gap-1 text-xs text-ink-soft",
+				if let Some(pr) = &card.pr { Badge { variant: BadgeVariant::Info, "PR {pr.state}" } }
 				for s in shown {
 					Shows { card: card.clone(), shown: s }
 				}
@@ -549,7 +550,11 @@ fn Shows(card: Card, shown: Shown) -> Element {
 			let blocking = card.blocked_by.iter().filter(|b| cards.iter().any(|c| &c.link == *b && c.open())).count();
 			rsx! { if blocking > 0 { span { title: "blocked by {blocking} open", "⛓{blocking}" } } }
 		}
-		Shown::Prs => rsx! { for pr in card.prs.iter() { a { href: "{pr.url}", target: "_blank", Badge { "PR {pr.state}" } } } },
+		Shown::Prs => match &card.pr {
+			Some(pr) =>
+				rsx! { for issue in pr.closes.iter() { button { class: "hover:underline", onclick: { let issue = issue.clone(); move |_| ctx.open_issue(issue.clone()) }, "closes {issue.shorthand(card.link.project())}" } } },
+			None => rsx! { for pr in card.prs.iter() { a { href: "{pr.url}", target: "_blank", Badge { "PR {pr.state}" } } } },
+		},
 	}
 }
 
@@ -592,6 +597,7 @@ fn Stepper(card: Card, axis: Axis) -> Element {
 		Axis::Importance => ("i", Facet::Importance, card.importance.map(u16::from), Some(3)), // `labels.nix`: "`i:3` is the default"
 		Axis::Hours => ("h", Facet::Hours, card.hours, None),
 	};
+	let editable = card.pr.is_none(); // a pull request is read-only here
 	let steps: Vec<u16> = match axis {
 		Axis::Importance => (0..=9).collect(),
 		Axis::Hours => HOURS.to_vec(),
@@ -631,8 +637,10 @@ fn Stepper(card: Card, axis: Axis) -> Element {
 	rsx! {
 		span { class: "inline-flex items-center gap-0.5 rounded border px-1",
 			Pick { facet, value: value.map_or_else(|| "none".to_string(), |v| v.to_string()), "{prefix}[{shown}]" }
-			button { class: "px-0.5 hover:text-ink", title: "lower", onclick: { let step = step.clone(); move |_| step(false) }, "−" }
-			button { class: "px-0.5 hover:text-ink", title: "raise", onclick: move |_| step(true), "+" }
+			if editable {
+				button { class: "px-0.5 hover:text-ink", title: "lower", onclick: { let step = step.clone(); move |_| step(false) }, "−" }
+				button { class: "px-0.5 hover:text-ink", title: "raise", onclick: move |_| step(true), "+" }
+			}
 		}
 	}
 }

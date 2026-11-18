@@ -15,6 +15,7 @@ mod issue_preservation;
 mod label_scheme;
 mod linked_prs;
 mod pull;
+mod pull_requests;
 mod reset_conflict;
 mod search;
 mod sprints;

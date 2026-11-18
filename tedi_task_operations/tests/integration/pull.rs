@@ -73,6 +73,7 @@ async fn a_pull_reads_whole_issues_a_page_at_a_time() {
 	list_labels(o/r)
 	list_repo_issues(o/r, None, None)
 	list_repo_issues(o/r, None, Some("2"))
+	list_repo_prs(o/r, None)
 	"#);
 }
 

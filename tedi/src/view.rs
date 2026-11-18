@@ -34,7 +34,12 @@ pub async fn view_command(settings: &LiveSettings, args: ViewArgs, mode: SyncMod
 		eprintln!("unreadable, left out: {}: {}", path.display(), e.lines().next().unwrap_or_default());
 	}
 	let me = tedi_task_operations::current_user::get();
-	let hits = query.parse::<Query>()?.run(&board.cards, me.as_deref())?;
+	let mut hits = query.parse::<Query>()?.run(&board.cards, me.as_deref())?;
+	let issues = hits.len();
+	hits.retain(|&i| board.cards[i].pr.is_none());
+	if hits.len() < issues {
+		eprintln!("{} pull requests match, left out: a task view holds issues", issues - hits.len());
+	}
 	let mut content = String::new();
 	for (key, members) in board::group(&board.cards, &hits, group).into_iter().filter(|(_, m)| !m.is_empty()) {
 		if group != GroupBy::Nothing {

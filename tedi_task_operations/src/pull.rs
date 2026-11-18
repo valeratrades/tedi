@@ -1,5 +1,5 @@
 //! `tedi pull`: every issue of the named orgs and repos, into the store, through the same paths any
-//! other sync takes.
+//! other sync takes; and their pull requests, mirrored read-only.
 
 use std::sync::Arc;
 
@@ -104,7 +104,33 @@ async fn pull_repo(repo: RepoInfo) -> Result<()> {
 		}
 		match page.next {
 			Some(next) => after = Some(next),
-			None => return Ok(()),
+			None => break,
 		}
 	}
+	pull_prs(repo).await
+}
+
+/// Newest first, down to the last whole walk's newest: the cursor moves only once a walk is whole, so
+/// one cut short walks again from the top.
+async fn pull_prs(repo: RepoInfo) -> Result<()> {
+	let gh = crate::github::client::get()?;
+	let since = Local::load_project_meta(repo).prs_pulled_at;
+	let mut newest = since;
+	let mut after = None;
+	loop {
+		let page = gh.list_repo_prs(repo, after.as_deref()).await?;
+		let listed = page.prs.len();
+		let fresh: Vec<_> = page.prs.into_iter().take_while(|pr| since.is_none_or(|s| pr.updated_at >= s)).collect();
+		newest = newest.max(fresh.iter().map(|pr| pr.updated_at).max());
+		{
+			let _store = lock_store().await?;
+			Local::update_prs(repo, |stored| stored.extend(fresh.iter().map(|pr| (pr.number, pr.clone()))))?;
+		}
+		match page.next {
+			Some(next) if fresh.len() == listed => after = Some(next),
+			_ => break,
+		}
+	}
+	Local::update_project_meta(repo, |m| m.prs_pulled_at = newest)?;
+	Ok(())
 }

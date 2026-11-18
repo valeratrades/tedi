@@ -1,25 +1,26 @@
-//! The board as the store holds it: every stored issue carded (the model is `tedi_core::board`).
+//! The board as the store holds it: every stored issue and mirrored pull request carded (the model is `tedi_core::board`).
 
 use std::{collections::BTreeMap, path::PathBuf};
 
 use color_eyre::eyre::{Result, eyre};
 use jiff::{SignedDuration, Timestamp};
+use tedi_core::PrState;
 pub use tedi_core::board::*;
 
 use crate::{
-	Issue, IssueIndex, IssueLink, LazyIssue,
+	CloseState, Issue, IssueIndex, IssueLink, LazyIssue,
 	conflict_resolve::{FieldEdit, check_for_existing_conflict},
 	labels::Scheme,
 	local::{FsReader, GitReader, Local, LocalError, LocalIssueSource, LocalPath},
 	open_interactions::{Modifier, SyncMode, SyncOptions, modify_and_sync_issue},
 	rank::{Task, rank},
-	stage::stage,
+	stage::{pr_stage, stage},
 };
 
 /// What an issue without `i:` counts as (`labels.nix`: "`i:3` is the default").
 const DEFAULT_IMPORTANCE: u8 = 3;
 
-/// Every issue in the store, one card per node, ranked over their `blocked by` links.
+/// Every issue in the store, one card per node, and every pull request, ranked over their `blocked by` links.
 pub async fn load(archive_after: SignedDuration, now: Timestamp) -> Result<Board> {
 	let mut cards = Vec::new();
 	let mut unreadable = Vec::new();
@@ -38,6 +39,35 @@ pub async fn load(archive_after: SignedDuration, now: Timestamp) -> Result<Board
 			Ok((issue, conflicted)) => card_tree(&issue, None, conflicted, archive_after, now, &mut cards),
 			Err(e) => unreadable.push((path, e.to_string())),
 		}
+	}
+	for (repo, pr) in Local::stored_prs()? {
+		let scheme = Scheme::from(pr.labels.as_slice());
+		cards.push(Card {
+			link: IssueLink::in_project(repo, pr.number),
+			title: pr.title,
+			stage: pr_stage(pr.state, pr.closed_at, archive_after, now),
+			state: match pr.state {
+				PrState::Draft | PrState::Open => CloseState::Open,
+				PrState::Merged => CloseState::Closed,
+				PrState::Closed => CloseState::NotPlanned,
+			},
+			labels: pr.labels,
+			assignees: pr.assignees,
+			rank: None,
+			importance: scheme.importance,
+			hours: scheme.hours,
+			kind: scheme.kind,
+			prs: Vec::new(),
+			blocked_by: Vec::new(),
+			parent: None,
+			body: pr.body,
+			conflicted: false,
+			pr: Some(Pr {
+				state: pr.state,
+				author: pr.author,
+				closes: pr.closes,
+			}),
+		});
 	}
 
 	let tasks: BTreeMap<String, Task> = cards
@@ -80,6 +110,7 @@ fn card_tree(issue: &Issue, parent: Option<&IssueLink>, conflicted: bool, archiv
 		parent: parent.cloned(),
 		body: issue.body().to_string(),
 		conflicted,
+		pr: None,
 	});
 	for child in issue.children.values() {
 		card_tree(child, Some(&link), conflicted, archive_after, now, out);

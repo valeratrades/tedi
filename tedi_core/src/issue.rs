@@ -266,6 +266,23 @@ pub enum PrState {
 	Closed,
 }
 
+/// A pull request as GitHub last showed it; tedi never edits one.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PullRequest {
+	pub number: u64,
+	pub title: String,
+	pub body: String,
+	pub state: PrState,
+	pub author: String,
+	pub assignees: Vec<String>,
+	pub labels: Vec<String>,
+	/// The issues it closes once merged.
+	pub closes: Vec<IssueLink>,
+	pub updated_at: Timestamp,
+	/// Merged or closed: `None` while open.
+	pub closed_at: Option<Timestamp>,
+}
+
 /// Metadata for an issue linked to Github.
 /// Parent chain is stored in `IssueIdentity.parent_index`.
 #[derive(Clone, Debug, PartialEq)]

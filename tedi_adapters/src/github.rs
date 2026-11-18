@@ -98,6 +98,9 @@ pub trait GithubClient: Send + Sync {
 
 	/// The page from `after` of every issue updated at or after `since`, open and closed, least recently updated first.
 	async fn list_repo_issues(&self, repo: RepoInfo, since: Option<jiff::Timestamp>, after: Option<&str>) -> Result<IssuePage, GithubError>;
+
+	/// The page from `after` of every pull request, most recently updated first.
+	async fn list_repo_prs(&self, repo: RepoInfo, after: Option<&str>) -> Result<PrPage, GithubError>;
 }
 
 #[derive(Clone, Debug)]
@@ -115,6 +118,13 @@ pub struct SubIssue {
 	pub id: u64,
 	pub number: u64,
 	pub state_reason: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct PrPage {
+	pub prs: Vec<tedi_core::PullRequest>,
+	/// `None` on the last page
+	pub next: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -709,6 +719,44 @@ impl GithubClient for RealGithubClient {
 		})
 	}
 
+	async fn list_repo_prs(&self, repo: RepoInfo, after: Option<&str>) -> Result<PrPage, GithubError> {
+		let query = "query($owner: String!, $repo: String!, $after: String) { repository(owner: $owner, name: $repo) { pullRequests(first: 50, after: $after, orderBy: {field: UPDATED_AT, direction: DESC}) { pageInfo { hasNextPage endCursor } nodes {
+			number title body state isDraft updatedAt closedAt
+			author { login }
+			labels(first: 100) { totalCount nodes { name } }
+			assignees(first: 100) { totalCount nodes { login } }
+			closingIssuesReferences(first: 100) { totalCount nodes { url } }
+		} } } }";
+		let variables = serde_json::json!({ "owner": repo.owner().expect("github repo"), "repo": repo.repo(), "after": after });
+		let context = format!("list pull requests of {repo}");
+		let mut response = self.graphql(repo, query, variables, &context).await.map_err(|e| not_found_as_404(e, &context))?;
+		#[derive(Deserialize)]
+		#[serde(rename_all = "camelCase")]
+		struct PageInfo {
+			has_next_page: bool,
+			end_cursor: Option<String>,
+		}
+		#[derive(Deserialize)]
+		#[serde(rename_all = "camelCase")]
+		struct Page {
+			page_info: PageInfo,
+			nodes: Vec<GqlPullRequest>,
+		}
+		let page: Page = serde_json::from_value(response.pointer_mut("/data/repository/pullRequests").map(serde_json::Value::take).unwrap_or_default())
+			.map_err(|e| GithubError::new_graphql(format!("{context}: {e} in {response}")))?;
+		Ok(PrPage {
+			prs: page.nodes.into_iter().map(GqlPullRequest::into_pr).collect::<Result<_, _>>()?,
+			next: match page.page_info.has_next_page {
+				true => Some(
+					page.page_info
+						.end_cursor
+						.ok_or_else(|| GithubError::new_graphql(format!("{context}: a next page without a cursor")))?,
+				),
+				false => None,
+			},
+		})
+	}
+
 	async fn list_labels(&self, repo: RepoInfo) -> Result<BTreeMap<String, Color>, GithubError> {
 		#[derive(Deserialize)]
 		struct Label {
@@ -869,6 +917,51 @@ impl TryFrom<GqlPr> for tedi_core::LinkedPr {
 			(other, _) => return Err(GithubError::new_graphql(format!("unknown pull request state {other} of {}", pr.url))),
 		};
 		Ok(tedi_core::LinkedPr { url: pr.url, state })
+	}
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GqlPullRequest {
+	number: u64,
+	title: String,
+	body: String,
+	state: String,
+	is_draft: bool,
+	updated_at: jiff::Timestamp,
+	closed_at: Option<jiff::Timestamp>,
+	author: Option<GithubUser>,
+	labels: Connection<GithubLabel>,
+	assignees: Connection<GithubUser>,
+	closing_issues_references: Connection<GqlUrl>,
+}
+impl GqlPullRequest {
+	fn into_pr(self) -> Result<tedi_core::PullRequest, GithubError> {
+		let n = self.number;
+		let state = match (self.state.as_str(), self.is_draft) {
+			("MERGED", _) => tedi_core::PrState::Merged,
+			("CLOSED", _) => tedi_core::PrState::Closed,
+			("OPEN", true) => tedi_core::PrState::Draft,
+			("OPEN", false) => tedi_core::PrState::Open,
+			(other, _) => return Err(GithubError::new_graphql(format!("unknown pull request state {other} of #{n}"))),
+		};
+		Ok(tedi_core::PullRequest {
+			number: n,
+			title: self.title,
+			body: self.body,
+			state,
+			author: self.author.map_or_else(|| "ghost".into(), |a| a.login), // a deleted account, as REST names it
+			assignees: self.assignees.whole("assignees", n)?.into_iter().map(|u| u.login).collect(),
+			labels: self.labels.whole("labels", n)?.into_iter().map(|l| l.name).collect(),
+			closes: self
+				.closing_issues_references
+				.whole("closing issues", n)?
+				.into_iter()
+				.map(|u| tedi_core::IssueLink::parse(&u.url).ok_or_else(|| GithubError::new_graphql(format!("#{n} closes {}, which is not an issue", u.url))))
+				.collect::<Result<_, _>>()?,
+			updated_at: self.updated_at,
+			closed_at: self.closed_at,
+		})
 	}
 }
 
@@ -1153,6 +1246,10 @@ impl GithubClient for RetryingGithubClient {
 
 	async fn list_repo_issues(&self, repo: RepoInfo, since: Option<jiff::Timestamp>, after: Option<&str>) -> Result<IssuePage, GithubError> {
 		retrying!(self.inner.list_repo_issues(repo, since, after))
+	}
+
+	async fn list_repo_prs(&self, repo: RepoInfo, after: Option<&str>) -> Result<PrPage, GithubError> {
+		retrying!(self.inner.list_repo_prs(repo, after))
 	}
 }
 

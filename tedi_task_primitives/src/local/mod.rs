@@ -6,6 +6,7 @@
 //! ```text
 //! XDG_DATA_HOME/todo/issues/{owner}/{repo}/
 //!   .meta.json                           # Project + per-issue metadata
+//!   .prs.json                            # Pull requests, mirrored read-only
 //!   {number}_-_{title}.md                # Flat issue file
 //!   {number}_-_{title}/                  # Directory format (when has children)
 //!     __main__.md                        # The issue content
@@ -20,6 +21,9 @@ use std::collections::BTreeMap;
 
 pub mod conflict_detect;
 pub mod consensus;
+
+/// Per repo, beside `.meta.json`: its pull requests as GitHub last showed them, by number.
+const PRS_FILE: &str = ".prs.json";
 
 impl<R: LocalReader> LocalIssueSource<R> {
 	fn new(local_path: LocalPath, reader: R) -> Self {
@@ -402,6 +406,7 @@ impl Local {
 				issues: BTreeMap::new(),
 				label_colors: BTreeMap::new(),
 				pulled_at: None,
+				prs_pulled_at: None,
 			};
 			Self::save_project_meta(RepoInfo::Virtual, &project_meta)?;
 			Ok(project_meta)
@@ -480,6 +485,46 @@ impl Local {
 		let mut project_meta = Self::load_project_meta(repo_info);
 		update(&mut project_meta);
 		Self::save_project_meta(repo_info, &project_meta)
+	}
+
+	/// Every repo's pull requests, as the last pull mirrored them.
+	pub fn stored_prs() -> std::io::Result<Vec<(RepoInfo, tedi_core::PullRequest)>> {
+		let mut out = Vec::new();
+		let root = Self::issues_dir();
+		for owner in std::fs::read_dir(&root)? {
+			let owner = owner?;
+			if !owner.file_type()?.is_dir() || owner.file_name().to_string_lossy().starts_with('.') {
+				continue; // `.git`, `.conflicts`
+			}
+			for repo in std::fs::read_dir(owner.path())? {
+				let repo = repo?;
+				let path = repo.path().join(PRS_FILE);
+				let content = match std::fs::read_to_string(&path) {
+					Ok(c) => c,
+					Err(e) if matches!(e.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory) => continue, // a repo never pulled, or not a repo dir
+					Err(e) => return Err(e),
+				};
+				let prs: BTreeMap<u64, tedi_core::PullRequest> = serde_json::from_str(&content).unwrap_or_else(|e| panic!("corrupted pull requests at {}: {e}", path.display()));
+				let info = RepoInfo::new(&owner.file_name().to_string_lossy(), &repo.file_name().to_string_lossy());
+				out.extend(prs.into_values().map(|pr| (info, pr)));
+			}
+		}
+		Ok(out)
+	}
+
+	/// Read-modify-write of `repo`'s mirrored pull requests, by number; whole or not at all.
+	pub fn update_prs(repo: RepoInfo, update: impl FnOnce(&mut BTreeMap<u64, tedi_core::PullRequest>)) -> std::io::Result<()> {
+		let path = Self::project_dir(repo).join(PRS_FILE);
+		let mut prs: BTreeMap<u64, tedi_core::PullRequest> = match std::fs::read_to_string(&path) {
+			Ok(c) => serde_json::from_str(&c).unwrap_or_else(|e| panic!("corrupted pull requests at {}: {e}", path.display())),
+			Err(e) if e.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
+			Err(e) => return Err(e),
+		};
+		update(&mut prs);
+		std::fs::create_dir_all(Self::project_dir(repo))?;
+		let tmp = path.with_extension("json.tmp");
+		std::fs::write(&tmp, serde_json::to_string_pretty(&prs).expect("pull requests serialize"))?;
+		std::fs::rename(&tmp, &path)
 	}
 
 	/// Remove metadata for a specific issue from the project's .meta.json.
@@ -1088,6 +1133,9 @@ pub struct ProjectMeta {
 	/// When the last `tedi pull` of the repo that stored everything it listed started: the next one lists from there.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub pulled_at: Option<jiff::Timestamp>,
+	/// The newest pull request update the last whole walk of them stored: the next walk stops below it.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub prs_pulled_at: Option<jiff::Timestamp>,
 }
 
 /// Type for local filesystem operations.

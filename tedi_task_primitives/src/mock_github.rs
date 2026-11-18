@@ -17,7 +17,9 @@ use tedi_core::labels::Color;
 use tracing::instrument;
 
 use crate::{
-	github::{CreatedIssue, FetchedIssue, GithubClient, GithubComment, GithubError, GithubIssue, GithubLabel, GithubMilestone, GithubUser, GraphqlTimeline, IssuePage, RepoInfo, SubIssue},
+	github::{
+		CreatedIssue, FetchedIssue, GithubClient, GithubComment, GithubError, GithubIssue, GithubLabel, GithubMilestone, GithubUser, GraphqlTimeline, IssuePage, PrPage, RepoInfo, SubIssue,
+	},
 	local::Local,
 };
 
@@ -69,6 +71,8 @@ pub struct MockGithubClient {
 	/// Pull requests referencing an issue
 	prs: Mutex<HashMap<(RepoKey, u64), Vec<crate::LinkedPr>>>,
 
+	pull_requests: Mutex<HashMap<RepoKey, BTreeMap<u64, tedi_core::PullRequest>>>,
+
 	/// Where a transferred issue went: GitHub redirects its old address there
 	transferred: Mutex<HashMap<(RepoKey, u64), (RepoKey, u64)>>,
 
@@ -98,6 +102,7 @@ impl MockGithubClient {
 			dependencies: Mutex::new(Vec::new()),
 			unlinked: Mutex::new(Vec::new()),
 			prs: Mutex::new(HashMap::new()),
+			pull_requests: Mutex::new(HashMap::new()),
 			transferred: Mutex::new(HashMap::new()),
 			fail_status: std::env::var(ENV_MOCK_FAIL_GET_MILESTONE)
 				.ok()
@@ -272,6 +277,16 @@ impl MockGithubClient {
 			}
 		}
 
+		if let Some(arr) = state.get("pull_requests").and_then(|v| v.as_array()) {
+			let mut pull_requests = self.pull_requests.lock().unwrap();
+			for entry in arr {
+				let owner = entry.get("owner").and_then(|v| v.as_str()).ok_or("missing owner")?;
+				let repo = entry.get("repo").and_then(|v| v.as_str()).ok_or("missing repo")?;
+				let pr: tedi_core::PullRequest = serde_json::from_value(entry.get("pr").ok_or("missing pr")?.clone()).map_err(|e| format!("pull request: {e}"))?;
+				pull_requests.entry(RepoKey::new(owner, repo)).or_default().insert(pr.number, pr);
+			}
+		}
+
 		if let Some(label_arr) = state.get("labels").and_then(|v| v.as_array()) {
 			let mut labels = self.labels.lock().unwrap();
 			for entry in label_arr {
@@ -433,6 +448,13 @@ impl MockGithubClient {
 				prs.push(json!({ "issue": node(issue), "url": pr.url, "state": pr.state }));
 			}
 		}
+		let pull_requests: Vec<Value> = self
+			.pull_requests
+			.lock()
+			.unwrap()
+			.iter()
+			.flat_map(|(key, prs)| prs.values().map(move |pr| json!({ "owner": key.owner, "repo": key.repo, "pr": pr })))
+			.collect();
 		let transferred: Vec<Value> = self.transferred.lock().unwrap().iter().map(|(from, to)| json!({ "from": node(from), "to": node(to) })).collect();
 		let labels: Vec<Value> = self
 			.labels
@@ -453,7 +475,7 @@ impl MockGithubClient {
 
 		let state = json!({
 			"issues": issues, "sub_issues": sub_issues, "comments": comments, "dependencies": dependencies, "unlinked": unlinked,
-			"prs": prs, "transferred": transferred, "labels": labels, "milestones": milestones,
+			"prs": prs, "pull_requests": pull_requests, "transferred": transferred, "labels": labels, "milestones": milestones,
 		});
 		// renamed into place, so another process never reads it half-written
 		let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
@@ -1261,6 +1283,27 @@ impl GithubClient for MockGithubClient {
 		Ok(IssuePage {
 			issues,
 			next: (start + PAGE < listed.len()).then(|| (start + PAGE).to_string()),
+		})
+	}
+
+	/// Two a page, so every pull test pages.
+	async fn list_repo_prs(&self, repo: RepoInfo, after: Option<&str>) -> Result<PrPage, GithubError> {
+		const PAGE: usize = 2;
+		self.log_call(&format!("list_repo_prs({repo}, {after:?})"));
+		self.within_rate_limit()?;
+		let mut listed: Vec<tedi_core::PullRequest> = self
+			.pull_requests
+			.lock()
+			.unwrap()
+			.get(&RepoKey::from(repo))
+			.into_iter()
+			.flat_map(|m| m.values().cloned())
+			.collect();
+		listed.sort_by_key(|pr| (std::cmp::Reverse(pr.updated_at), pr.number));
+		let start: usize = after.map(|a| a.parse().expect("a cursor this mock handed out")).unwrap_or(0);
+		Ok(PrPage {
+			next: (start + PAGE < listed.len()).then(|| (start + PAGE).to_string()),
+			prs: listed.into_iter().skip(start).take(PAGE).collect(),
 		})
 	}
 

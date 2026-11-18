@@ -1,4 +1,5 @@
-//! An issue tab: its fields, each edited against the value it showed, and any clash on it, inline.
+//! An issue tab: its fields, each edited against the value it showed, and any clash on it, inline. A
+//! pull request's tab only shows it.
 
 use std::str::FromStr as _;
 
@@ -21,6 +22,30 @@ pub fn IssuePanel(link: IssueLink) -> Element {
 	let Some(card) = ctx.card(&link) else {
 		return rsx! { div { class: "p-3 text-sm", "{link} is not on the board: not stored here, or not loaded yet" } };
 	};
+	if let Some(pr) = &card.pr {
+		return rsx! {
+			div { class: "flex h-full flex-col gap-3 overflow-auto p-3 text-sm",
+				div { class: "flex flex-wrap items-center gap-2",
+					a { class: "text-ink-soft hover:underline", href: "{link}", target: "_blank", "{link.project()}#{link.number()}" }
+					Badge { variant: BadgeVariant::Info, "PR {pr.state}" }
+					Badge { "{card.stage}" }
+					span { class: "text-ink-soft", "by @{pr.author}" }
+				}
+				div { class: "font-medium", "{card.title}" }
+				if !card.assignees.is_empty() { div { class: "text-ink-soft", for a in card.assignees.iter() { "@{a} " } } }
+				if !card.labels.is_empty() { div { class: "flex flex-wrap gap-1", for l in card.labels.iter() { Badge { "{l}" } } } }
+				if !pr.closes.is_empty() {
+					div { class: "flex flex-wrap items-center gap-1",
+						span { class: "text-ink-soft", "closes" }
+						for issue in pr.closes.clone() {
+							button { class: "hover:underline", onclick: { let issue = issue.clone(); move |_| ctx.open_issue(issue.clone()) }, "{issue.shorthand(link.project())}" }
+						}
+					}
+				}
+				div { class: "whitespace-pre-wrap", "{card.body}" }
+			}
+		};
+	}
 	let conflict = ctx.conflicts.read().get(&link).cloned();
 	let children: Vec<Card> = ctx
 		.board
