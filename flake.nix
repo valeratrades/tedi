@@ -123,11 +123,11 @@
                 }
                 {
                   name = "PRs";
-                  query = "is:pr";
-                  layout = "board";
+                  query = "is:pr is:open";
+                  layout = "list";
                   group_by = "stage";
                   sort = "rank";
-                  shown = [ "repo" "assignees" "labels" ];
+                  shown = [ "repo" "assignees" "prs" "labels" ];
                 }
                 {
                   name = "Assigned";

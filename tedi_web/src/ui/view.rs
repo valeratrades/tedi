@@ -47,8 +47,13 @@ pub fn ViewPanel(view: View, defined: View) -> Element {
 		return rsx! { Spinner {} };
 	};
 	let v = view.read().clone();
+	let scoped = match ctx.scope() {
+		None => v.query.clone(),
+		Some((path, None)) => return rsx! { Badge { variant: BadgeVariant::Error, "the scope {path} is no longer configured" } },
+		Some((_, Some((filter, _)))) => format!("{filter} {}", v.query),
+	};
 	let hits = Query::from_str(&v.query).and_then(|q| {
-		let mut hits = q.run(&board.cards, ctx.me().as_deref())?;
+		let mut hits = Query::from_str(&scoped)?.run(&board.cards, ctx.me().as_deref())?;
 		v.sort.apply(&board.cards, &mut hits);
 		Ok((q, hits))
 	});
@@ -92,7 +97,10 @@ pub fn ViewPanel(view: View, defined: View) -> Element {
 			match hits {
 				Err(e) => rsx! { Badge { variant: BadgeVariant::Error, "{e}" } },
 				Ok((query, hits)) => {
-					let groups = group(&board.cards, &hits, v.group_by);
+					let mut groups = group(&board.cards, &hits, v.group_by);
+					if v.layout != Layout::Board {
+						groups.retain(|(_, members)| !members.is_empty()); // the empty stages are the board's columns only
+					}
 					rsx! {
 						FacetBar { query: query.clone() }
 						match v.layout {
@@ -598,6 +606,7 @@ fn Stepper(card: Card, axis: Axis) -> Element {
 		Axis::Hours => ("h", Facet::Hours, card.hours, None),
 	};
 	let editable = card.pr.is_none(); // a pull request is read-only here
+	let color = value.and_then(|v| label_color(&ctx, &card, &format!("{prefix}:{v}")));
 	let steps: Vec<u16> = match axis {
 		Axis::Importance => (0..=9).collect(),
 		Axis::Hours => HOURS.to_vec(),
@@ -635,11 +644,13 @@ fn Stepper(card: Card, axis: Axis) -> Element {
 	};
 	let shown = value.map_or_else(|| "?".to_string(), |v| v.to_string());
 	rsx! {
-		span { class: "inline-flex items-center gap-0.5 rounded border px-1",
-			Pick { facet, value: value.map_or_else(|| "none".to_string(), |v| v.to_string()), "{prefix}[{shown}]" }
-			if editable {
-				button { class: "px-0.5 hover:text-ink", title: "lower", onclick: { let step = step.clone(); move |_| step(false) }, "−" }
-				button { class: "px-0.5 hover:text-ink", title: "raise", onclick: move |_| step(true), "+" }
+		Chip { color,
+			span { class: "inline-flex items-center gap-0.5",
+				Pick { facet, value: value.map_or_else(|| "none".to_string(), |v| v.to_string()), "{prefix}[{shown}]" }
+				if editable {
+					button { class: "px-0.5 hover:opacity-70", title: "lower", onclick: { let step = step.clone(); move |_| step(false) }, "−" }
+					button { class: "px-0.5 hover:opacity-70", title: "raise", onclick: move |_| step(true), "+" }
+				}
 			}
 		}
 	}

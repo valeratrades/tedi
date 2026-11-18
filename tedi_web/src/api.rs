@@ -19,8 +19,7 @@ pub struct Setup {
 	/// Who edits. Today the instance's own GitHub user, for every request; per request once editors sign in.
 	pub me: Option<String>,
 	pub scopes: BTreeMap<String, Scope>,
-	/// Each scope's views, by its path.
-	pub views: BTreeMap<String, Vec<View>>,
+	pub views: Vec<View>,
 	pub sprints: Vec<Sprint>,
 	/// The team's columns, offered beside each viewer's own.
 	pub columns: BTreeMap<String, Columns>,
@@ -37,6 +36,9 @@ pub struct Sprint {
 /// copy: switching to one copies it onto the screen, saving copies the screen's band out.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct Library {
+	/// What everything on screen is narrowed to, by path; none: the whole store.
+	#[serde(default)]
+	pub scope: Option<String>,
 	pub on_screen: OnScreen,
 	pub filters: BTreeMap<String, View>,
 	pub workspaces: BTreeMap<String, Arrangement>,
@@ -159,6 +161,7 @@ pub enum LibraryEdit {
 		what: Favorite,
 		on: bool,
 	},
+	Scope(Option<String>),
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]

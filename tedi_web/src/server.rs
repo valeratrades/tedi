@@ -19,7 +19,7 @@ use dioxus::server::{
 use dioxus_fullstack::ServerEvents;
 use tedi_core::{
 	IssueLink, RepoInfo, TaskView,
-	board::{Board, Scope, View},
+	board::{Board, Scope, View, scope_at},
 	conflict::{Conflict, FieldEdit},
 };
 use tedi_task_operations::open_interactions::SyncMode;
@@ -33,8 +33,7 @@ pub struct Settings {
 	pub public: Option<PathBuf>,
 	pub mode: SyncMode,
 	pub archive_after: jiff::SignedDuration,
-	/// Each scope's views, by its path.
-	pub views: BTreeMap<String, Vec<View>>,
+	pub views: Vec<View>,
 	pub scopes: BTreeMap<String, Scope>,
 	pub columns: BTreeMap<String, crate::api::Columns>,
 	/// Where the sprint milestones live.
@@ -371,6 +370,14 @@ fn apply(library: &mut Library, edit: LibraryEdit) -> Result<()> {
 			}
 			library.favorites.remove(&favorite(shelf, name));
 		}
+		LibraryEdit::Scope(path) => {
+			if let Some(path) = &path
+				&& scope_at(&settings().scopes, path).is_none()
+			{
+				bail!("no scope {path}");
+			}
+			library.scope = path;
+		}
 		LibraryEdit::Favorite { what, on: false } =>
 			if !library.favorites.remove(&what) {
 				bail!("{what:?} is not a favorite");
@@ -378,7 +385,7 @@ fn apply(library: &mut Library, edit: LibraryEdit) -> Result<()> {
 		LibraryEdit::Favorite { what, on: true } => {
 			let known = match &what {
 				Favorite::View(name) => library.filters.contains_key(name) || team_view(name),
-				Favorite::Scope(path) => settings().views.contains_key(path),
+				Favorite::Scope(path) => scope_at(&settings().scopes, path).is_some(),
 				Favorite::Workspace(name) => library.workspaces.contains_key(name),
 				Favorite::Columns(name) => library.columns.contains_key(name) || settings().columns.contains_key(name),
 			};
@@ -392,7 +399,7 @@ fn apply(library: &mut Library, edit: LibraryEdit) -> Result<()> {
 }
 
 fn team_view(name: &str) -> bool {
-	settings().views.values().flatten().any(|v| v.name == name)
+	settings().views.iter().any(|v| v.name == name)
 }
 
 fn named(name: String) -> Result<String> {

@@ -7,14 +7,14 @@ mod issue;
 mod library;
 mod view;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 
 use dioxus::prelude::*;
 use ev_lib::uikit_dioxus::*;
 use futures::StreamExt as _;
 use tedi_core::{
 	IssueLink,
-	board::{Board, Card, Scope, View},
+	board::{Board, Card, Scope, View, scope_at},
 	conflict::{Conflict, FieldEdit},
 };
 use tilers_dioxus::{Band, DockPanel, Group, GroupId, MinSize, PackedApi, PackedArea, PanelId};
@@ -44,13 +44,34 @@ impl Ctx {
 		self.setup.read().as_ref()?.me.clone()
 	}
 
-	/// Every scope's views, then the viewer's own.
+	/// The team views, then the viewer's own.
 	fn views(&self) -> Vec<View> {
 		let setup = self.setup.read();
 		let library = self.library.read();
-		let team = setup.as_ref().map(|s| s.views.values().flatten().cloned().collect::<Vec<_>>()).into_iter().flatten();
+		let team = setup.as_ref().map(|s| s.views.clone()).into_iter().flatten();
 		team.chain(library.as_ref().map(|l| l.filters.values().cloned().collect::<Vec<_>>()).into_iter().flatten())
 			.collect()
+	}
+
+	/// The views the scope on screen names (every team view, without one), then the viewer's own.
+	fn listed(&self) -> Vec<View> {
+		let names = match self.scope() {
+			Some((_, Some((_, names)))) => Some(names),
+			Some((_, None)) => Some(Vec::new()),
+			None => None,
+		};
+		let own = self.library.read().as_ref().map(|l| l.filters.keys().cloned().collect::<Vec<_>>()).unwrap_or_default();
+		self.views()
+			.into_iter()
+			.filter(|v| own.contains(&v.name) || names.as_ref().is_none_or(|n| n.contains(&v.name)))
+			.collect()
+	}
+
+	/// The scope everything on screen is narrowed to: its path, and its filter and views while it is still configured.
+	fn scope(&self) -> Option<(String, Option<(String, Vec<String>)>)> {
+		let path = self.library.read().as_ref()?.scope.clone()?;
+		let at = scope_at(&self.setup.read().as_ref()?.scopes, &path);
+		Some((path, at))
 	}
 
 	fn favorite(&self, what: &Favorite) -> bool {
@@ -164,14 +185,14 @@ impl Ctx {
 
 	/// The band's tiles as the library has them, else the first view.
 	fn arrange(self, api: PackedApi) {
-		let (Some(setup), Some(library)) = (self.setup.peek().clone(), self.library.peek().clone()) else {
+		let (true, Some(library)) = (self.setup.peek().is_some(), self.library.peek().clone()) else {
 			return; // `Live` arranges once both arrived
 		};
 		let band = api.band();
 		let shown = match library.on_screen.tiles.get(&band) {
 			Some(layout) => self.show(api, layout),
 			None => {
-				if let Some(view) = setup.views.values().flatten().next().cloned().or_else(|| library.filters.values().next().cloned()) {
+				if let Some(view) = self.listed().into_iter().next() {
 					self.open(PanelId(format!("view:{}", view.name)));
 				}
 				true
@@ -282,22 +303,48 @@ fn Shell() -> Element {
 		Live {}
 		SidebarProvider {
 			Nav {}
-			SidebarInset { class: "relative min-h-svh",
-				div { class: "absolute inset-0",
-					PackedArea {
-						panels: ctx.panels,
-						on_band: Some(Callback::new(move |api: PackedApi| {
-							let (mut handle, mut arranged) = (ctx.api, ctx.arranged);
-							handle.set(Some(api));
-							arranged.set(None);
-							ctx.arrange(api);
-						})),
-						config: None,
+			SidebarInset { class: "flex h-svh flex-col",
+				TopBar {}
+				div { class: "relative flex-1",
+					div { class: "absolute inset-0",
+						PackedArea {
+							panels: ctx.panels,
+							on_band: Some(Callback::new(move |api: PackedApi| {
+								let (mut handle, mut arranged) = (ctx.api, ctx.arranged);
+								handle.set(Some(api));
+								arranged.set(None);
+								ctx.arrange(api);
+							})),
+							config: None,
+						}
 					}
 				}
 			}
 		}
 		Palette {}
+	}
+}
+
+/// The scope everything on screen is narrowed to.
+#[component]
+fn TopBar() -> Element {
+	let ctx = use_context::<Ctx>();
+	rsx! {
+		div { class: "flex h-9 shrink-0 items-center gap-2 border-b px-3 text-sm",
+			span { class: "text-ink-soft", "scope" }
+			match ctx.scope() {
+				None => rsx! { span { class: "font-medium", "the whole store" } },
+				Some((path, at)) => rsx! {
+					span { class: if at.is_some() { "font-medium" } else { "font-medium line-through" }, title: if at.is_none() { "no longer configured" }, "{path}" }
+					button {
+						class: "px-1 text-ink-soft hover:text-ink",
+						title: "Widen to the whole store",
+						onclick: move |_| { spawn(async move { _ = ctx.keep(LibraryEdit::Scope(None)).await; }); },
+						"×"
+					}
+				},
+			}
+		}
 	}
 }
 
@@ -380,8 +427,8 @@ fn NavMenu() -> Element {
 		.cloned()
 		.collect();
 	let views = ctx.views();
-	let mut own: Vec<View> = library.filters.values().cloned().collect();
-	own.sort_by_key(|v| !library.favorites.contains(&Favorite::View(v.name.clone()))); // stable: favorites first, else by name
+	let mut listed = ctx.listed();
+	listed.sort_by_key(|v| !library.favorites.contains(&Favorite::View(v.name.clone()))); // stable: favorites first, else in order
 	let mut scopes: Vec<(String, Scope)> = setup.scopes.clone().into_iter().collect();
 	scopes.sort_by_key(|(name, _)| !library.favorites.contains(&Favorite::Scope(name.clone())));
 	// a favorite whose view or scope is gone stays listed until unfavorited
@@ -390,7 +437,7 @@ fn NavMenu() -> Element {
 		.iter()
 		.filter(|f| match f {
 			Favorite::View(name) => !views.iter().any(|v| &v.name == name),
-			Favorite::Scope(path) => !setup.views.contains_key(path),
+			Favorite::Scope(path) => scope_at(&setup.scopes, path).is_none(),
 			Favorite::Workspace(_) | Favorite::Columns(_) => false, // dropped with their entry
 		})
 		.cloned()
@@ -436,7 +483,7 @@ fn NavMenu() -> Element {
 				}
 				SidebarGroupContent {
 					SidebarMenu {
-						for view in own {
+						for view in listed {
 							Item { key: "{view.name}", id: PanelId(format!("view:{}", view.name)), label: view.name.clone(), favorite: Some(Favorite::View(view.name.clone())), depth: 0 }
 						}
 					}
@@ -448,7 +495,7 @@ fn NavMenu() -> Element {
 					SidebarGroupContent {
 						SidebarMenu {
 							for (name, scope) in scopes {
-								ScopeItem { key: "{name}", path: name.clone(), name, scope, views: setup.views.clone(), depth: 0 }
+								ScopeItem { key: "{name}", path: name.clone(), name, scope, depth: 0 }
 							}
 						}
 					}
@@ -535,18 +582,18 @@ fn Item(id: PanelId, label: String, favorite: Option<Favorite>, depth: usize) ->
 	}
 }
 
-/// A scope's name, its views under it, then the scopes nested in it.
+/// A scope, picked as the one everything on screen is narrowed to, then the scopes nested in it.
 #[component]
-fn ScopeItem(path: String, name: String, scope: Scope, views: BTreeMap<String, Vec<View>>, depth: usize) -> Element {
+fn ScopeItem(path: String, name: String, scope: Scope, depth: usize) -> Element {
 	let ctx = use_context::<Ctx>();
 	let what = Favorite::Scope(path.clone());
 	let starred = ctx.favorite(&what);
-	let own = views.get(&path).cloned().expect("every configured scope has its views listed");
+	let current = ctx.scope().is_some_and(|(p, _)| p == path);
 	rsx! {
 		SidebarMenuItem {
-			div { class: "flex items-center gap-1 text-xs font-medium text-ink-soft", style: "padding-left: {depth * 12}px",
+			div { class: "flex items-center gap-1", style: "padding-left: {depth * 12}px",
 				button {
-					class: if starred { "px-1 text-accent" } else { "px-1 opacity-50 hover:opacity-100" },
+					class: if starred { "px-1 text-accent" } else { "px-1 text-ink-soft opacity-50 hover:opacity-100" },
 					title: if starred { "Unfavorite" } else { "Favorite" },
 					onclick: move |_| {
 						let what = what.clone();
@@ -554,14 +601,15 @@ fn ScopeItem(path: String, name: String, scope: Scope, views: BTreeMap<String, V
 					},
 					if starred { "★" } else { "☆" }
 				}
-				span { "{name}" }
+				SidebarMenuButton {
+					class: if current { "flex-1 font-semibold" } else { "flex-1" },
+					onclick: { let path = path.clone(); move |_| { let path = path.clone(); spawn(async move { _ = ctx.keep(LibraryEdit::Scope(Some(path))).await; }); } },
+					"{name}"
+				}
 			}
 		}
-		for view in own {
-			Item { key: "{view.name}", id: PanelId(format!("view:{}", view.name)), label: view.name.rsplit(" · ").next().expect("rsplit yields at least one part").to_string(), favorite: Some(Favorite::View(view.name.clone())), depth: depth + 1 }
-		}
 		for (child, nested) in scope.children.clone() {
-			ScopeItem { key: "{child}", path: format!("{path} / {child}"), name: child, scope: nested, views: views.clone(), depth: depth + 1 }
+			ScopeItem { key: "{child}", path: format!("{path} / {child}"), name: child, scope: nested, depth: depth + 1 }
 		}
 	}
 }
@@ -583,7 +631,7 @@ fn Palette() -> Element {
 	};
 	let mut groups = Vec::new();
 	if let Some(setup) = ctx.setup.read().as_ref() {
-		let mut views: Vec<CommandPaletteItem> = ctx.views().into_iter().map(|v| item(PanelId(format!("view:{}", v.name)), v.name)).collect();
+		let mut views: Vec<CommandPaletteItem> = ctx.listed().into_iter().map(|v| item(PanelId(format!("view:{}", v.name)), v.name)).collect();
 		views.extend(setup.sprints.iter().map(|s| item(PanelId(format!("sprint:{}", s.title)), format!("Sprint: {}", s.title))));
 		groups.push(CommandPaletteGroup {
 			id: "views".into(),

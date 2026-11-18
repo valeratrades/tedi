@@ -609,33 +609,17 @@ impl Scope {
 	}
 }
 
-/// Each scope's views by path (names ` / `-joined): the `team` views it names, narrowed to it and named `{path} · {view}`.
-pub fn scoped_views(scopes: &BTreeMap<String, Scope>, team: &[View]) -> BTreeMap<String, Vec<View>> {
-	fn walk(prefix: &str, scopes: &BTreeMap<String, Scope>, inherited: &[String], team: &[View], out: &mut BTreeMap<String, Vec<View>>) {
-		for (name, scope) in scopes {
-			let path = format!("{prefix}{name}");
-			let names = if scope.views.is_empty() { inherited } else { &scope.views };
-			let views = names
-				.iter()
-				.map(|n| {
-					let view = team
-						.iter()
-						.find(|v| &v.name == n)
-						.unwrap_or_else(|| panic!("the scope {path} shows the view {n}, which no team view is named"));
-					View {
-						name: format!("{path} · {n}"),
-						query: format!("{} {}", scope.filter(), view.query),
-						..view.clone()
-					}
-				})
-				.collect();
-			out.insert(path.clone(), views);
-			walk(&format!("{path} / "), &scope.children, names, team, out);
+/// The scope at `path` (names ` / `-joined): its `repo:` filter, and the views it names, else its nearest parent's.
+pub fn scope_at(scopes: &BTreeMap<String, Scope>, path: &str) -> Option<(String, Vec<String>)> {
+	let (mut level, mut views, mut at) = (scopes, &Vec::new(), None);
+	for name in path.split(" / ") {
+		let scope = level.get(name)?;
+		if !scope.views.is_empty() {
+			views = &scope.views;
 		}
+		(level, at) = (&scope.children, Some(scope));
 	}
-	let mut out = BTreeMap::new();
-	walk("", scopes, &[], team, &mut out);
-	out
+	Some((at?.filter(), views.clone()))
 }
 
 /// `hits` (as `Query::run` ordered them) split into groups, each keeping that order. Stages come in
