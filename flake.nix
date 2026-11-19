@@ -208,18 +208,19 @@
           packages = { default = tediBin; webBundle = webBundle null; } // containerStd.packages;
           containers = pkgs.lib.mapAttrs (_: c: c // { contract = c.contract // deploy; }) containerStd.containers;
 
-          # The team board over this machine's store, on http://127.0.0.1:8080: the client hot-reloads, the server restarts on its sources.
+          # The team board over this machine's store, on http://127.0.0.1:59752: the client hot-reloads, the server restarts on its sources.
           apps.dev = {
             type = "app";
             program = "${pkgs.writeShellScriptBin "tedi-dev" ''
               set -euo pipefail
+              export PORT=59752
               [ -f tedi_web/Dioxus.toml ] || { echo "run from the tedi checkout" >&2; exit 1; }
               exec nix develop -c bash -c '
                 trap "kill 0" EXIT
                 ${pkgs.watchexec}/bin/watchexec --restart --exts rs,toml --ignore "tedi_web/src/ui/**" -- \
                   cargo run -q -p tedi -- --config ${(pkgs.formats.toml { }).generate "tedi-dev.toml" (teamBoard // { github_token.env = "GITHUB_KEY"; })} \
                   web --addr 127.0.0.1:7341 --pull-every 10m &
-                cd tedi_web && dx serve --platform web --port 8080 --open false
+                cd tedi_web && dx serve --platform web --port "$PORT" --open false
               '
             ''}/bin/tedi-dev";
           };
@@ -231,7 +232,7 @@
 
               Commands:
                 nix develop                    dev shell (rust nightly, pre-commit, generated configs)
-                nix run .#dev                  the team board over your store at http://127.0.0.1:8080, reloading as you edit
+                nix run .#dev                  the team board over your store at http://127.0.0.1:59752, reloading as you edit
                 nix build                      build the `${pname}` binary
                 nix run . -- --help            CLI help: open, sprints, manual, clockify, perf-eval, monitors, init
                 cargo t                        tests (integration: tedi_task_operations/tests/)

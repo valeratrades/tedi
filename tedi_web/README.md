@@ -8,7 +8,7 @@ hot-reloads the client, proxying `/api/` to it (`tedi_web/Dioxus.toml`).
 
 ```sh
 tedi web --addr 127.0.0.1:7341                                      # add --mock for the mock GitHub
-(cd tedi_web && dx serve --platform web --port 8080 --open false)   # http://127.0.0.1:8080
+(cd tedi_web && dx serve --platform web --port 59752 --open false)   # http://127.0.0.1:59752
 ```
 
 Production: `dx bundle --web --release -p tedi_web` writes the bundle; `tedi web --addr … --public <bundle>/public
