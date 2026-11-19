@@ -9,8 +9,41 @@ use v_utils::macros::wrap_err;
 
 mod auth;
 
-pub type BoxedGithubClient = Arc<dyn GithubClient>;
 use color_eyre::eyre::{Result, bail, eyre};
+
+/// Everything `FetchedIssue` holds. A connection is read whole or not at all: one cut at its page
+/// would read as removals.
+const FULL_ISSUE: &str = r#"
+fragment Full on Issue {
+	databaseId number title body url state stateReason updatedAt lastEditedAt createdAt
+	author { login }
+	labels(first: 100) { totalCount nodes { name } }
+	assignees(first: 100) { totalCount nodes { login } }
+	comments(first: 100) { totalCount nodes { databaseId body author { login } createdAt updatedAt } }
+	subIssues(first: 100) { totalCount nodes { databaseId number stateReason } }
+	parent { number }
+	blockedBy(first: 100) { totalCount nodes { url } }
+	blocking(first: 100) { totalCount nodes { url } }
+	closedByPullRequestsReferences(first: 100, includeClosedPrs: true) { totalCount nodes { url isDraft state } }
+	timelineItems(last: 100, itemTypes: [RENAMED_TITLE_EVENT, LABELED_EVENT, UNLABELED_EVENT, CLOSED_EVENT, REOPENED_EVENT, BLOCKED_BY_ADDED_EVENT, BLOCKED_BY_REMOVED_EVENT, ASSIGNED_EVENT, UNASSIGNED_EVENT, CONNECTED_EVENT, DISCONNECTED_EVENT]) {
+		nodes {
+			__typename
+			... on RenamedTitleEvent { createdAt }
+			... on LabeledEvent { createdAt }
+			... on UnlabeledEvent { createdAt }
+			... on ClosedEvent { createdAt }
+			... on ReopenedEvent { createdAt }
+			... on BlockedByAddedEvent { createdAt }
+			... on BlockedByRemovedEvent { createdAt }
+			... on AssignedEvent { createdAt }
+			... on UnassignedEvent { createdAt }
+			... on ConnectedEvent { subject { ... on PullRequest { url isDraft state } } }
+			... on DisconnectedEvent { subject { ... on PullRequest { url isDraft state } } }
+		}
+	}
+}"#;
+
+pub type BoxedGithubClient = Arc<dyn GithubClient>;
 
 /// Trait defining all Github API operations.
 /// This allows for both real API calls and mock implementations for testing.
@@ -286,7 +319,7 @@ impl RealGithubClient {
 	pub fn app(id: u64, private_key: &str) -> Result<Self, GithubError> {
 		Ok(Self {
 			http_client: Client::new(),
-			auth: auth::Auth::App(auth::App::new(id, private_key)?),
+			auth: auth::Auth::App(auth::App::try_new(id, private_key)?),
 		})
 	}
 
@@ -367,6 +400,89 @@ impl RealGithubClient {
 
 		Ok(())
 	}
+}
+
+/// Decorates any `GithubClient`, absorbing momentary blips (5xx/429/network) by retrying before
+/// they surface, and capping requests in flight so concurrent loads stay under GitHub's secondary
+/// rate limit. Wrapping the client once covers every method — no per-call site edits.
+pub struct RetryingGithubClient {
+	inner: BoxedGithubClient,
+	in_flight: tokio::sync::Semaphore,
+}
+impl RetryingGithubClient {
+	pub fn new(inner: BoxedGithubClient, max_in_flight: usize) -> Self {
+		assert!(max_in_flight > 0, "a zero cap would deadlock every request");
+		Self {
+			inner,
+			in_flight: tokio::sync::Semaphore::new(max_in_flight),
+		}
+	}
+}
+
+/// Cheap reachability probe: is GitHub responding? A transient error (5xx/429/network) ⇒ `false`
+/// (defer the run to local offline mode); any HTTP response — even a 4xx — ⇒ `true`. Probes
+/// `/user` (no repo needed) through the global client, so it inherits the retry decorator.
+pub async fn reachable() -> bool {
+	match client::get() {
+		Ok(c) => match c.fetch_authenticated_user().await {
+			Ok(_) => true,
+			Err(e) => !e.is_transient(),
+		},
+		Err(_) => false,
+	}
+}
+
+/// Parse a Github issue URL and extract owner, repo, and issue number.
+/// Supports formats like:
+/// - <https://github.com/owner/repo/issues/123>
+/// - github.com/owner/repo/issues/123
+/// - git@github.com:owner/repo (returns repo info, issue number parsing will fail)
+/// - ssh://git@github.com/owner/repo.git (returns repo info, issue number parsing will fail)
+pub fn parse_github_issue_url(url: &str) -> Result<(String, String, u64)> {
+	let url = url.trim();
+
+	// Try SSH format first: git@github.com:owner/repo.git or git@github.com:owner/repo
+	// SSH URLs don't support issue numbers directly, but we parse them for consistency
+	if let Some(path) = url.strip_prefix("git@github.com:") {
+		// SSH format doesn't have issue numbers - this is an error for issue URLs
+		bail!(
+			"SSH URL format doesn't support issue numbers. Use HTTPS format: https://github.com/{}/issues/NUMBER",
+			path.strip_suffix(".git").unwrap_or(path)
+		);
+	}
+
+	// Try ssh:// format: ssh://git@github.com/owner/repo.git
+	if let Some(path) = url.strip_prefix("ssh://git@github.com/") {
+		bail!(
+			"SSH URL format doesn't support issue numbers. Use HTTPS format: https://github.com/{}/issues/NUMBER",
+			path.strip_suffix(".git").unwrap_or(path)
+		);
+	}
+
+	// Remove protocol prefix if present (https://, http://)
+	let path = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://")).unwrap_or(url);
+
+	// Remove github.com prefix
+	let path = path.strip_prefix("github.com/").ok_or_else(|| eyre!("URL must be a Github URL: {url}"))?;
+
+	// Split by /
+	let parts: Vec<&str> = path.split('/').collect();
+
+	if parts.len() < 4 || parts[2] != "issues" {
+		bail!("Invalid Github issue URL format. Expected: https://github.com/owner/repo/issues/123");
+	}
+
+	let owner = parts[0].to_string();
+	let repo = parts[1].to_string();
+	let issue_number: u64 = parts[3].parse().map_err(|_| eyre!("Invalid issue number: {}", parts[3]))?;
+
+	Ok((owner, repo, issue_number))
+}
+
+/// Check if a string looks like a Github issue URL specifically
+pub fn is_github_issue_url(s: &str) -> bool {
+	let s = s.trim();
+	s.contains("github.com/") && s.contains("/issues/")
 }
 
 /// A request whose token is picked at `send`, by the account it acts on.
@@ -815,38 +931,6 @@ impl GithubClient for RealGithubClient {
 // GraphQL issue reads
 //==============================================================================
 
-/// Everything `FetchedIssue` holds. A connection is read whole or not at all: one cut at its page
-/// would read as removals.
-const FULL_ISSUE: &str = r#"
-fragment Full on Issue {
-	databaseId number title body url state stateReason updatedAt lastEditedAt createdAt
-	author { login }
-	labels(first: 100) { totalCount nodes { name } }
-	assignees(first: 100) { totalCount nodes { login } }
-	comments(first: 100) { totalCount nodes { databaseId body author { login } createdAt updatedAt } }
-	subIssues(first: 100) { totalCount nodes { databaseId number stateReason } }
-	parent { number }
-	blockedBy(first: 100) { totalCount nodes { url } }
-	blocking(first: 100) { totalCount nodes { url } }
-	closedByPullRequestsReferences(first: 100, includeClosedPrs: true) { totalCount nodes { url isDraft state } }
-	timelineItems(last: 100, itemTypes: [RENAMED_TITLE_EVENT, LABELED_EVENT, UNLABELED_EVENT, CLOSED_EVENT, REOPENED_EVENT, BLOCKED_BY_ADDED_EVENT, BLOCKED_BY_REMOVED_EVENT, ASSIGNED_EVENT, UNASSIGNED_EVENT, CONNECTED_EVENT, DISCONNECTED_EVENT]) {
-		nodes {
-			__typename
-			... on RenamedTitleEvent { createdAt }
-			... on LabeledEvent { createdAt }
-			... on UnlabeledEvent { createdAt }
-			... on ClosedEvent { createdAt }
-			... on ReopenedEvent { createdAt }
-			... on BlockedByAddedEvent { createdAt }
-			... on BlockedByRemovedEvent { createdAt }
-			... on AssignedEvent { createdAt }
-			... on UnassignedEvent { createdAt }
-			... on ConnectedEvent { subject { ... on PullRequest { url isDraft state } } }
-			... on DisconnectedEvent { subject { ... on PullRequest { url isDraft state } } }
-		}
-	}
-}"#;
-
 /// GraphQL names a missing repo or issue `NOT_FOUND` where REST answers 404.
 fn not_found_as_404(e: GithubError, context: &str) -> GithubError {
 	match &e {
@@ -1121,23 +1205,6 @@ macro_rules! retrying {
 	}};
 }
 
-/// Decorates any `GithubClient`, absorbing momentary blips (5xx/429/network) by retrying before
-/// they surface, and capping requests in flight so concurrent loads stay under GitHub's secondary
-/// rate limit. Wrapping the client once covers every method — no per-call site edits.
-pub struct RetryingGithubClient {
-	inner: BoxedGithubClient,
-	in_flight: tokio::sync::Semaphore,
-}
-impl RetryingGithubClient {
-	pub fn new(inner: BoxedGithubClient, max_in_flight: usize) -> Self {
-		assert!(max_in_flight > 0, "a zero cap would deadlock every request");
-		Self {
-			inner,
-			in_flight: tokio::sync::Semaphore::new(max_in_flight),
-		}
-	}
-}
-
 #[async_trait]
 impl GithubClient for RetryingGithubClient {
 	async fn fetch_authenticated_user(&self) -> Result<String, GithubError> {
@@ -1253,19 +1320,6 @@ impl GithubClient for RetryingGithubClient {
 	}
 }
 
-/// Cheap reachability probe: is GitHub responding? A transient error (5xx/429/network) ⇒ `false`
-/// (defer the run to local offline mode); any HTTP response — even a 4xx — ⇒ `true`. Probes
-/// `/user` (no repo needed) through the global client, so it inherits the retry decorator.
-pub async fn reachable() -> bool {
-	match client::get() {
-		Ok(c) => match c.fetch_authenticated_user().await {
-			Ok(_) => true,
-			Err(e) => !e.is_transient(),
-		},
-		Err(_) => false,
-	}
-}
-
 //==============================================================================
 // Global client storage
 //==============================================================================
@@ -1291,59 +1345,6 @@ pub mod client {
 //==============================================================================
 // Utility functions (URL parsing, etc.) - These don't need the trait
 //==============================================================================
-
-/// Parse a Github issue URL and extract owner, repo, and issue number.
-/// Supports formats like:
-/// - <https://github.com/owner/repo/issues/123>
-/// - github.com/owner/repo/issues/123
-/// - git@github.com:owner/repo (returns repo info, issue number parsing will fail)
-/// - ssh://git@github.com/owner/repo.git (returns repo info, issue number parsing will fail)
-pub fn parse_github_issue_url(url: &str) -> Result<(String, String, u64)> {
-	let url = url.trim();
-
-	// Try SSH format first: git@github.com:owner/repo.git or git@github.com:owner/repo
-	// SSH URLs don't support issue numbers directly, but we parse them for consistency
-	if let Some(path) = url.strip_prefix("git@github.com:") {
-		// SSH format doesn't have issue numbers - this is an error for issue URLs
-		bail!(
-			"SSH URL format doesn't support issue numbers. Use HTTPS format: https://github.com/{}/issues/NUMBER",
-			path.strip_suffix(".git").unwrap_or(path)
-		);
-	}
-
-	// Try ssh:// format: ssh://git@github.com/owner/repo.git
-	if let Some(path) = url.strip_prefix("ssh://git@github.com/") {
-		bail!(
-			"SSH URL format doesn't support issue numbers. Use HTTPS format: https://github.com/{}/issues/NUMBER",
-			path.strip_suffix(".git").unwrap_or(path)
-		);
-	}
-
-	// Remove protocol prefix if present (https://, http://)
-	let path = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://")).unwrap_or(url);
-
-	// Remove github.com prefix
-	let path = path.strip_prefix("github.com/").ok_or_else(|| eyre!("URL must be a Github URL: {url}"))?;
-
-	// Split by /
-	let parts: Vec<&str> = path.split('/').collect();
-
-	if parts.len() < 4 || parts[2] != "issues" {
-		bail!("Invalid Github issue URL format. Expected: https://github.com/owner/repo/issues/123");
-	}
-
-	let owner = parts[0].to_string();
-	let repo = parts[1].to_string();
-	let issue_number: u64 = parts[3].parse().map_err(|_| eyre!("Invalid issue number: {}", parts[3]))?;
-
-	Ok((owner, repo, issue_number))
-}
-
-/// Check if a string looks like a Github issue URL specifically
-pub fn is_github_issue_url(s: &str) -> bool {
-	let s = s.trim();
-	s.contains("github.com/") && s.contains("/issues/")
-}
 
 #[cfg(test)]
 mod tests {

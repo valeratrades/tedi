@@ -1,7 +1,7 @@
 //! `tedi view`: a query over the store, opened as a task view — one `#` section per group — through
 //! the sprint flow's expand-and-fold-back. A view stores nothing: only the issues it expanded change.
 
-use color_eyre::eyre::{Result, eyre};
+use color_eyre::eyre::{Result, bail, eyre};
 use tedi_task_operations::{
 	TaskView,
 	board::{self, GroupBy, Query},
@@ -70,7 +70,7 @@ pub async fn view_command(settings: &LiveSettings, args: ViewArgs, mode: SyncMod
 	let fold_back = async {
 		let (edited, moves) = crate::sprints::take_moves(&raw, mode)?;
 		if !moves.is_empty() {
-			return Err(eyre!("`!mv` repoints the sprints that host an issue; move it from one of those, or with `tedi open`"));
+			bail!("`!mv` repoints the sprints that host an issue; move it from one of those, or with `tedi open`");
 		}
 		sync_embedded_issue_changes(&edited, mode).await?;
 		materialize_new_tasks(&mut TaskView::parse(&edited), None, mode).await?;

@@ -7,6 +7,7 @@ use std::{
 	io::Write,
 	path::{Path, PathBuf},
 	process::Command,
+	sync::{Arc, Mutex},
 };
 
 use crate::common::{ENV_MOCK_CALL_LOG, RunOutput, Seed, TestContext, drain_pipe, get_binary_path, issue_tree, parse_virtual, set_nonblocking};
@@ -16,6 +17,11 @@ const ENV_MOCK_PIPE: &str = concat!("tedi", "_MOCK_PIPE");
 const ENV_MOCK_STATE: &str = concat!("tedi", "_MOCK_STATE");
 const ENV_MOCK_FAIL_GET_MILESTONE: &str = concat!("tedi", "_MOCK_FAIL_GET_MILESTONE");
 const ENV_MOCK_REMOTE_EDIT: &str = concat!("tedi", "_MOCK_REMOTE_EDIT");
+
+const ISSUE_10: &str = "- [ ] Titre application <!-- @mock_user https://github.com/o/r/issues/10 -->\n  issue body\n\n  # Blockers\n  - first step\n";
+
+const PARENT_WITH_CHILD: &str =
+	"- [ ] Parent <!-- @mock_user https://github.com/o/r/issues/10 -->\n  parent body\n\n  - [ ] Child <!--sub @mock_user https://github.com/o/r/issues/11 -->\n\n    child body\n";
 
 pub(crate) type EditFn = Box<dyn FnOnce(&Path)>;
 
@@ -537,8 +543,9 @@ async fn test_urgent_virtual_issue_reexpands_and_syncs_blockers() {
 
 	let out = ctx.urgent_edit(|tmp_path| {
 		let content = std::fs::read_to_string(tmp_path).unwrap();
+		assert!(content.contains("<!-- virtual "), "second edit must open on the expanded virtual issue, got:\n{content}");
 		assert!(
-			content.contains("<!-- virtual ") && content.contains("virtual/1_-_some_new_task.md -->"),
+			content.contains("virtual/1_-_some_new_task.md -->"),
 			"second edit must open on the expanded virtual issue, got:\n{content}"
 		);
 		std::fs::write(tmp_path, content.trim_end().to_string() + "\n  - second step\n").unwrap();
@@ -708,11 +715,8 @@ async fn test_sprint_edit_orphan_blocker_line_is_refused_loudly() {
 		std::fs::write(tmp_path, content.replacen("  # Blockers\n", "  # Blockers\n  orphan line\n", 1)).unwrap();
 	});
 	assert!(out.status.success(), "stderr: {}", out.stderr);
-	assert!(
-		out.stderr.contains("issues/62 was not saved") && out.stderr.contains("rejected-changes.md"),
-		"stderr: {}",
-		out.stderr
-	);
+	assert!(out.stderr.contains("issues/62 was not saved"), "stderr: {}", out.stderr);
+	assert!(out.stderr.contains("rejected-changes.md"), "stderr: {}", out.stderr);
 	assert!(!local_issue(62).contains("orphan line"), "{}", local_issue(62));
 }
 
@@ -1086,8 +1090,9 @@ async fn test_milestone_edit_expands_milestone_ref_and_syncs_inner_blockers() {
 
 	let (out, result_milestone) = ctx.milestone_edit_with_changes("# Sprint\n\n- https://github.com/o/r/milestone/3\n", |tmp_path| {
 		let content = std::fs::read_to_string(tmp_path).unwrap();
+		assert!(content.contains("[big_feature]("), "expanded milestone block missing markdown-link title:\n{content}");
 		assert!(
-			content.contains("[big_feature](") && content.contains("<!-- https://github.com/o/r/milestone/3 -->"),
+			content.contains("<!-- https://github.com/o/r/milestone/3 -->"),
 			"expanded milestone block missing markdown-link title:\n{content}"
 		);
 		assert!(
@@ -1728,8 +1733,6 @@ async fn test_milestone_does_not_fold_in_assigned_duplicates() {
 
 // ─── Remote edits racing the editor session; `--sync-on-exit` ─────────────────
 
-const ISSUE_10: &str = "- [ ] Titre application <!-- @mock_user https://github.com/o/r/issues/10 -->\n  issue body\n\n  # Blockers\n  - first step\n";
-
 /// Sprint `1d` (milestone #7) holding issue #10. This machine's last view is committed as consensus:
 /// #10 as `consensus_issue`, the milestone due `local_due_on`. GitHub holds `remote_issue` for #10 and
 /// the milestone due in 2099.
@@ -1882,11 +1885,8 @@ async fn test_sync_on_exit_closing_parent_of_remotely_closed_children() {
 		}) as EditFn),
 	);
 	assert!(out.status.success(), "stderr: {}", out.stderr);
-	assert!(
-		out.stderr.contains("issues/10 was not saved") && out.stderr.contains("rejected-changes.md"),
-		"stderr: {}",
-		out.stderr
-	);
+	assert!(out.stderr.contains("issues/10 was not saved"), "stderr: {}", out.stderr);
+	assert!(out.stderr.contains("rejected-changes.md"), "stderr: {}", out.stderr);
 	assert!(local_issue(10).contains("- [ ] Parent"), "{}", local_issue(10));
 	assert!(
 		local_issue(10).contains("- [x] [Child one]"),
@@ -1897,9 +1897,6 @@ async fn test_sync_on_exit_closing_parent_of_remotely_closed_children() {
 	);
 	assert!(!ctx.github_calls().iter().any(|c| c.starts_with("update_issue_state(")), "{:?}", ctx.github_calls());
 }
-
-const PARENT_WITH_CHILD: &str =
-	"- [ ] Parent <!-- @mock_user https://github.com/o/r/issues/10 -->\n  parent body\n\n  - [ ] Child <!--sub @mock_user https://github.com/o/r/issues/11 -->\n\n    child body\n";
 
 /// Parent and child expanded as blocks of their own: each closed on its own title line, while the
 /// child's link line inside the parent block is left as rendered. Together they close the subtree.
@@ -1930,11 +1927,8 @@ async fn test_sprint_closing_parent_over_open_child_commits_the_rest() {
 		std::fs::write(tmp, c.replace("- [ ] Parent <!--", "- [x] Parent <!--").replace("child body", "child body, edited")).unwrap();
 	});
 	assert!(out.status.success(), "stderr: {}", out.stderr);
-	assert!(
-		out.stderr.contains("issues/10 was not saved") && out.stderr.contains("rejected-changes.md"),
-		"stderr: {}",
-		out.stderr
-	);
+	assert!(out.stderr.contains("issues/10 was not saved"), "stderr: {}", out.stderr);
+	assert!(out.stderr.contains("rejected-changes.md"), "stderr: {}", out.stderr);
 	assert!(local_issue(10).contains("- [ ] Parent"), "{}", local_issue(10));
 	assert!(local_issue(11).contains("child body, edited"), "{}", local_issue(11));
 }
@@ -2152,7 +2146,7 @@ async fn test_sync_on_exit_makes_no_calls_before_the_editor() {
 	seed_sprint(&ctx, ISSUE_10, ISSUE_10, -100, "2099-01-01T00:00:00Z").await;
 
 	let call_log = ctx.call_log_path();
-	let seen = std::sync::Arc::new(std::sync::Mutex::new(None));
+	let seen = Arc::new(Mutex::new(None));
 	let seen_by_editor = seen.clone();
 	let out = ctx.milestone_client_edit(
 		&["--mock", "--sync-on-exit", "sprints", "edit", "1d"],
@@ -2404,7 +2398,8 @@ async fn test_mv_cross_owner_recreates_and_closes_original() {
 	insta::assert_snapshot!(issue_tree(&ctx), @"ev/repo_c/1_-_Fix_button.md");
 	let moved = std::fs::read_to_string(ctx.xdg.data_dir().join("issues/ev/repo_c/1_-_Fix_button.md")).unwrap();
 	assert!(moved.contains("Opened by @other"), "{moved}");
-	assert!(moved.contains("their comment") && moved.contains("— @other"), "{moved}");
+	assert!(moved.contains("their comment"), "{moved}");
+	assert!(moved.contains("— @other"), "{moved}");
 	insta::assert_snapshot!(sprint_body(), @"- https://github.com/ev/repo_c/issues/1");
 }
 

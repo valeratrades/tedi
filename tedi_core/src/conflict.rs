@@ -36,6 +36,43 @@ pub enum Field {
 	Comments,
 	SubIssues,
 }
+impl Field {
+	/// The one rendering a clash shows and a field edit is made against.
+	pub fn read(self, issue: &Issue) -> String {
+		match self {
+			Field::Title => issue.contents.title.clone(),
+			Field::Labels => list(&issue.contents.labels),
+			Field::Assignees => list(&issue.contents.assignees),
+			Field::Body => issue.body().to_string(),
+			Field::State => issue.contents.state.to_checkbox_contents(),
+			Field::Comments => issue.contents.comments.iter().skip(1).map(|c| format!("{:?}: {}", c.id(), c.body)).collect::<Vec<_>>().join("\n"),
+			Field::SubIssues => {
+				let mut titles: Vec<String> = issue.children.values().map(|c| c.contents.title.clone()).collect();
+				titles.sort();
+				titles.join("\n")
+			}
+		}
+	}
+
+	/// Inverse of [`Self::read`] for the fields a single value sets.
+	pub fn write(self, issue: &mut Issue, value: &str) -> Result<(), FieldError> {
+		let names = || value.split(", ").filter(|v| !v.is_empty()).map(str::to_string).collect();
+		match self {
+			Field::Title => issue.contents.title = value.to_string(),
+			Field::Labels => issue.contents.labels = names(),
+			Field::Assignees => issue.contents.assignees = names(),
+			Field::State => issue.contents.state = CloseState::from_checkbox(value).map_err(FieldError::State)?,
+			Field::Body => {
+				let (body, blockers) = split_blockers(value);
+				issue.contents.comments.first_mut().expect("`Comments::new` asserts the body leads").body = Events::parse(&body);
+				issue.contents.blockers = blockers;
+			}
+			Field::Comments | Field::SubIssues => return Err(FieldError::NotWritable(self)),
+		}
+		Ok(())
+	}
+}
+
 /// A clash file: the whole node as each side holds it, between markers. Removing them resolves it.
 pub fn markers(local: &str, consensus: Option<&str>, remote: &str) -> String {
 	let side = |s: &str| match s.ends_with('\n') {
@@ -80,43 +117,6 @@ pub enum FieldError {
 	NotWritable(Field),
 	#[error("{0:?} is no state: ` `, `x`, `-`, a progress mark or a duplicate's number")]
 	State(String),
-}
-
-impl Field {
-	/// The one rendering a clash shows and a field edit is made against.
-	pub fn read(self, issue: &Issue) -> String {
-		match self {
-			Field::Title => issue.contents.title.clone(),
-			Field::Labels => list(&issue.contents.labels),
-			Field::Assignees => list(&issue.contents.assignees),
-			Field::Body => issue.body().to_string(),
-			Field::State => issue.contents.state.to_checkbox_contents(),
-			Field::Comments => issue.contents.comments.iter().skip(1).map(|c| format!("{:?}: {}", c.id(), c.body)).collect::<Vec<_>>().join("\n"),
-			Field::SubIssues => {
-				let mut titles: Vec<String> = issue.children.values().map(|c| c.contents.title.clone()).collect();
-				titles.sort();
-				titles.join("\n")
-			}
-		}
-	}
-
-	/// Inverse of [`Self::read`] for the fields a single value sets.
-	pub fn write(self, issue: &mut Issue, value: &str) -> Result<(), FieldError> {
-		let names = || value.split(", ").filter(|v| !v.is_empty()).map(str::to_string).collect();
-		match self {
-			Field::Title => issue.contents.title = value.to_string(),
-			Field::Labels => issue.contents.labels = names(),
-			Field::Assignees => issue.contents.assignees = names(),
-			Field::State => issue.contents.state = CloseState::from_checkbox(value).map_err(FieldError::State)?,
-			Field::Body => {
-				let (body, blockers) = split_blockers(value);
-				issue.contents.comments.first_mut().expect("`Comments::new` asserts the body leads").body = Events::parse(&body);
-				issue.contents.blockers = blockers;
-			}
-			Field::Comments | Field::SubIssues => return Err(FieldError::NotWritable(self)),
-		}
-		Ok(())
-	}
 }
 
 impl std::fmt::Display for Conflict {

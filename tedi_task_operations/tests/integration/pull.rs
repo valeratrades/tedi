@@ -3,6 +3,8 @@
 
 use crate::common::{Seed, TestContext, issue_tree, parse_virtual};
 
+const ENV_MOCK_RATE_LIMITED_AFTER_PAGES: &str = concat!("tedi", "_MOCK_RATE_LIMITED_AFTER_PAGES");
+
 #[tokio::test]
 async fn pull_materializes_every_issue_of_an_org() {
 	let ctx = TestContext::build();
@@ -52,8 +54,6 @@ async fn pull_updates_a_stored_issue_and_advances_the_cursor() {
 	assert!(calls[second].contains("Some("), "the second pull starts from the first one's cursor: {calls:?}");
 	assert!(!calls[second..].iter().any(|c| c.starts_with("fetch_issue")), "nothing changed since: {calls:?}");
 }
-
-const ENV_MOCK_RATE_LIMITED_AFTER_PAGES: &str = concat!("tedi", "_MOCK_RATE_LIMITED_AFTER_PAGES");
 
 /// GitHub's budget is per call: a pull reads a page of whole issues per call, children included.
 #[tokio::test]

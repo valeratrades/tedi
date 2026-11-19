@@ -13,19 +13,6 @@ pub(crate) struct Dylib {
 	/// Holds `hook` mapped.
 	_lib: libloading::Library,
 }
-// SAFETY: `hook` points into `_lib`'s read-only data, mapped for as long as `_lib` lives; the ABI asks a hook to be callable from any thread
-unsafe impl Send for Dylib {}
-// SAFETY: as for `Send`: nothing here is written after load
-unsafe impl Sync for Dylib {}
-
-static HOST: TediHost = TediHost {
-	abi_version: TEDI_ABI_VERSION,
-	context,
-	edit,
-	reject,
-	move_to,
-};
-
 impl Dylib {
 	pub(crate) fn load(lib: &Path, symbol: &str, role: Role) -> Result<Self, String> {
 		// SAFETY: running a library's initializers is trusting it; only the instance's operator names one
@@ -47,6 +34,19 @@ impl Dylib {
 		Ok(Self { hook, role, _lib: lib })
 	}
 }
+
+// SAFETY: `hook` points into `_lib`'s read-only data, mapped for as long as `_lib` lives; the ABI asks a hook to be callable from any thread
+unsafe impl Send for Dylib {}
+// SAFETY: as for `Send`: nothing here is written after load
+unsafe impl Sync for Dylib {}
+
+static HOST: TediHost = TediHost {
+	abi_version: TEDI_ABI_VERSION,
+	context,
+	edit,
+	reject,
+	move_to,
+};
 
 impl Hook for Dylib {
 	fn call(&self, ctx: &Ctx, out: &mut Buffer) -> Result<(), String> {

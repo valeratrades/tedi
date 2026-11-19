@@ -1,6 +1,6 @@
 //! `tedi view`: a query over the store opened as a task view; edits to the issues it expands sync.
 
-use std::{cell::RefCell, process::Command, rc::Rc};
+use std::{cell::RefCell, path::Path, process::Command, rc::Rc};
 
 use crate::{
 	common::{
@@ -31,7 +31,7 @@ async fn a_view_shows_what_matches_and_its_edits_sync() {
 	cmd.env(concat!("tedi", "_MOCK_STATE"), &ctx.mock_state_path);
 	let out = ctx.drive_editor_session(
 		cmd,
-		Some(Box::new(move |tmp: &std::path::Path| {
+		Some(Box::new(move |tmp: &Path| {
 			let buffer = std::fs::read_to_string(tmp).unwrap();
 			*seen.borrow_mut() = buffer.clone();
 			std::fs::write(tmp, buffer.replacen("  body", "  edited body", 1)).unwrap();

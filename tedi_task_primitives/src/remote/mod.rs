@@ -63,39 +63,6 @@ pub enum RemoteError {
 	#[own]
 	NoClient(crate::github::GithubError),
 }
-
-#[derive(Debug, miette::Diagnostic, thiserror::Error)]
-#[error("{repo}#{number} is gone from GitHub")]
-#[diagnostic(help(
-	"the repo or the issue was deleted, renamed, transferred or made private — or your token lost access to it.\n\
-		 Your local copy is untouched. Repoint the link (a local-only task is `<!-- virtual <path> -->`, not a github URL) \
-		 or drop it from whatever references it, then re-run."
-))]
-struct Gone {
-	repo: RepoInfo,
-	number: u64,
-}
-
-#[derive(Debug, miette::Diagnostic, thiserror::Error)]
-#[error("{repo}#{number} is closed as a duplicate on GitHub")]
-#[diagnostic(help("duplicates aren't tracked. Point whatever links it at the original issue, or drop the link, then re-run."))]
-struct Duplicate {
-	repo: RepoInfo,
-	number: u64,
-}
-
-#[derive(Debug, miette::Diagnostic, thiserror::Error)]
-#[error("{repo}#{number} has a multi-line title on GitHub: {title:?}")]
-#[diagnostic(help(
-	"usually left by GitHub's \"convert to issue\" on a task-list item that had nested content. \
-		 Edit the title on GitHub down to one line, then re-run."
-))]
-struct MultilineTitle {
-	repo: RepoInfo,
-	number: u64,
-	title: String,
-}
-
 impl RemoteError {
 	/// A failed issue fetch, with 404 split off — it is not a transport problem to retry but a
 	/// dangling link, and only the caller here knows which issue was behind it.
@@ -121,7 +88,6 @@ pub struct RemoteSource {
 	/// By number in `link`'s repo: a load reads each issue once, whichever of its parts asks first.
 	read: Arc<Mutex<HashMap<u64, Arc<FetchedIssue>>>>,
 }
-
 impl RemoteSource {
 	/// `lineage`: parent issue numbers from root to immediate parent.
 	/// `None` means lineage is unknown and will be fetched from GitHub on demand;
@@ -207,6 +173,60 @@ impl RemoteSource {
 	}
 }
 
+/// Error type for remote sink operations.
+#[wrap_err]
+#[derive(Debug, thiserror::Error)]
+pub enum RemoteSinkError {
+	/// GitHub API operation failed.
+	#[own]
+	Github(crate::github::GithubError),
+
+	/// Parent issue has unresolved title-based selector (pending issue in lineage).
+	#[own]
+	TitleInGitPath(crate::TitleInGitPathError),
+
+	/// A blocker names an issue Github won't link.
+	#[error("can't link blocker {link} on Github")]
+	Blocker {
+		link: IssueLink,
+		#[source]
+		#[backtrace]
+		source: crate::github::GithubError,
+	},
+}
+
+#[derive(Debug, miette::Diagnostic, thiserror::Error)]
+#[error("{repo}#{number} is gone from GitHub")]
+#[diagnostic(help(
+	"the repo or the issue was deleted, renamed, transferred or made private — or your token lost access to it.\n\
+		 Your local copy is untouched. Repoint the link (a local-only task is `<!-- virtual <path> -->`, not a github URL) \
+		 or drop it from whatever references it, then re-run."
+))]
+struct Gone {
+	repo: RepoInfo,
+	number: u64,
+}
+
+#[derive(Debug, miette::Diagnostic, thiserror::Error)]
+#[error("{repo}#{number} is closed as a duplicate on GitHub")]
+#[diagnostic(help("duplicates aren't tracked. Point whatever links it at the original issue, or drop the link, then re-run."))]
+struct Duplicate {
+	repo: RepoInfo,
+	number: u64,
+}
+
+#[derive(Debug, miette::Diagnostic, thiserror::Error)]
+#[error("{repo}#{number} has a multi-line title on GitHub: {title:?}")]
+#[diagnostic(help(
+	"usually left by GitHub's \"convert to issue\" on a task-list item that had nested content. \
+		 Edit the title on GitHub down to one line, then re-run."
+))]
+struct MultilineTitle {
+	repo: RepoInfo,
+	number: u64,
+	title: String,
+}
+
 /// Per comment, its last edit.
 fn comment_timestamps(comments: &[GithubComment]) -> Vec<jiff::Timestamp> {
 	comments
@@ -286,28 +306,6 @@ impl crate::LazyIssue<RemoteSource> for Issue {
 	}
 
 	// Uses default load() impl from LazyIssue trait
-}
-
-/// Error type for remote sink operations.
-#[wrap_err]
-#[derive(Debug, thiserror::Error)]
-pub enum RemoteSinkError {
-	/// GitHub API operation failed.
-	#[own]
-	Github(crate::github::GithubError),
-
-	/// Parent issue has unresolved title-based selector (pending issue in lineage).
-	#[own]
-	TitleInGitPath(crate::TitleInGitPathError),
-
-	/// A blocker names an issue Github won't link.
-	#[error("can't link blocker {link} on Github")]
-	Blocker {
-		link: IssueLink,
-		#[source]
-		#[backtrace]
-		source: crate::github::GithubError,
-	},
 }
 /// Build IssueContents from GitHub API data.
 #[instrument(skip_all, fields(issue_number = issue.number, title = %issue.title))]

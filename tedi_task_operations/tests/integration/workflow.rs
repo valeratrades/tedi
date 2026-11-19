@@ -1,6 +1,8 @@
 //! A workflow places each issue: where it sits is tedi's own, kept beside the store. A pull moves it by
 //! the workflow's rules; a move runs the hooks of the buckets it enters, landing with all their edits or none.
 
+use std::path::PathBuf;
+
 use tedi_core::{PrState, PullRequest};
 
 use crate::common::{
@@ -13,6 +15,8 @@ const KANBAN: &str = "[board]\nviews = []\nworkflows = { kanban = \"preset:kanba
 const ISSUE: &str = "- [ ] Task <!-- @mock_user https://github.com/o/r/issues/1 -->\n  body\n";
 const URL: &str = "https://github.com/o/r/issues/1";
 
+const FLOW: &str = "intake = \"todo\"\n\n[[buckets]]\nname = \"todo\"\n\n[[buckets]]\nname = \"shipped\"\n\n[[buckets]]\nname = \"archived\"\n\n[[rules]]\nbuiltin = \"on_pr\"\nstate = \"merged\"\nto = \"shipped\"\nforward_only = true\n";
+
 /// `days` after the seeds' base (2001-09-11T12:00:00Z), as the binary's clock reads it.
 fn days_after_seeds(days: i64) -> String {
 	jiff::Timestamp::from_second(1000209600 + days * 86400).unwrap().to_string()
@@ -22,7 +26,7 @@ fn configure(ctx: &TestContext, toml: &str) {
 	std::fs::write(ctx.xdg.inner.root.join("config/tedi.toml"), toml).unwrap();
 }
 
-fn states_file(ctx: &TestContext, repo: &str) -> std::path::PathBuf {
+fn states_file(ctx: &TestContext, repo: &str) -> PathBuf {
 	ctx.xdg.data_dir().join("issues").join(repo).join(".states.json")
 }
 
@@ -229,8 +233,6 @@ async fn a_move_made_against_a_state_since_left_is_a_conflict() {
 	assert_eq!(stored, ISSUE);
 	assert_eq!(states(&ctx, "o/r"), r#"{"kanban":{"1":"selected"}}"#);
 }
-
-const FLOW: &str = "intake = \"todo\"\n\n[[buckets]]\nname = \"todo\"\n\n[[buckets]]\nname = \"shipped\"\n\n[[buckets]]\nname = \"archived\"\n\n[[rules]]\nbuiltin = \"on_pr\"\nstate = \"merged\"\nto = \"shipped\"\nforward_only = true\n";
 
 /// A team's own workflow file: a merged pull request moves its issue forward, never back past where it sits.
 #[test]

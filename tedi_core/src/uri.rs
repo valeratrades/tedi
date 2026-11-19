@@ -3,7 +3,10 @@
 //! How an issue is *named* and *located* — shared by the issue model, blockers,
 //! and milestones. The index/selector machinery that walks these lives in `locate`.
 
-use std::fmt;
+use std::{
+	fmt,
+	path::{Path, PathBuf},
+};
 
 use arrayvec::ArrayString;
 use url::Url;
@@ -81,7 +84,7 @@ pub enum IssueLink {
 	Owned(Url),
 	/// Absolute path to a local virtual issue's file under the `virtual` store. The path is the
 	/// id: it doubles as the issue's location (loadable, `gf`-jumpable) and encodes its number.
-	Virtual(std::path::PathBuf),
+	Virtual(PathBuf),
 }
 
 impl IssueLink {
@@ -111,7 +114,7 @@ impl IssueLink {
 		if s.contains("://") {
 			return Self::new(Url::parse(s).ok()?);
 		}
-		let path = std::path::Path::new(s);
+		let path = Path::new(s);
 		if path.components().any(|c| c.as_os_str() == "virtual") && number_from_path(path).is_some() {
 			return Some(Self::Virtual(path.to_path_buf()));
 		}
@@ -166,46 +169,10 @@ impl IssueLink {
 	}
 }
 
-/// Extract an issue number from a stored issue path: `{n}_-_{title}.md[.bak]`, bare `{n}`, or a
-/// directory-format `{n}_-_{title}/__main__.md` (number taken from the parent dir).
-fn number_from_path(path: &std::path::Path) -> Option<u64> {
-	let name = path.file_name()?.to_str()?;
-	let source = if name.starts_with(crate::MAIN_ISSUE_FILENAME) {
-		path.parent()?.file_name()?.to_str()?
-	} else {
-		name
-	};
-	let base = source.strip_suffix(".md.bak").or_else(|| source.strip_suffix(".md")).unwrap_or(source);
-	base.split("_-_").next().unwrap_or(base).parse().ok()
-}
-
-impl fmt::Display for IssueLink {
-	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		match self {
-			Self::Owned(url) => write!(f, "{}", url.as_str()),
-			Self::Virtual(path) => write!(f, "{}", path.display()),
-		}
-	}
-}
-
-impl serde::Serialize for IssueLink {
-	fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-		serializer.collect_str(self)
-	}
-}
-
-impl<'de> serde::Deserialize<'de> for IssueLink {
-	fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-		let s = String::deserialize(deserializer)?;
-		Self::parse(&s).ok_or_else(|| serde::de::Error::custom(format!("not an issue link: {s}")))
-	}
-}
-
 /// A Github milestone identifier. Wraps a URL and derives properties on demand.
 /// Format: `https://github.com/{owner}/{repo}/milestone/{number}`
 #[derive(Clone, Debug, Eq, Hash, PartialEq, derive_more::Deref)]
 pub struct MilestoneLink(Url);
-
 impl MilestoneLink {
 	/// Create from a URL. Returns None if not a valid Github milestone URL.
 	pub fn new(mut url: Url) -> Option<Self> {
@@ -248,7 +215,6 @@ pub enum NodeLink {
 	Issue(IssueLink),
 	Milestone(MilestoneLink),
 }
-
 impl NodeLink {
 	pub fn parse(url: &str) -> Option<Self> {
 		if let Some(link) = IssueLink::parse(url) {
@@ -258,19 +224,9 @@ impl NodeLink {
 	}
 }
 
-impl fmt::Display for NodeLink {
-	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		match self {
-			Self::Issue(link) => write!(f, "{link}"),
-			Self::Milestone(link) => write!(f, "{}", link.as_str()),
-		}
-	}
-}
-
 /// A parsed milestone reference. URL-only for now (no established shorthand syntax).
 #[derive(Clone, Debug, PartialEq)]
 pub struct MilestoneRef(pub MilestoneLink);
-
 impl MilestoneRef {
 	/// Try to parse a single word as a milestone reference (a bare milestone URL).
 	pub fn parse_word(word: &str) -> Option<Self> {
@@ -279,12 +235,6 @@ impl MilestoneRef {
 
 	pub fn to_milestone_link(&self) -> MilestoneLink {
 		self.0.clone()
-	}
-}
-
-impl fmt::Display for MilestoneRef {
-	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		write!(f, "{}", self.0.as_str())
 	}
 }
 
@@ -301,7 +251,6 @@ pub enum IssueRef {
 	/// Shorthand notation with optional owner/repo.
 	Shorthand { owner: Option<String>, repo: Option<String>, number: u64 },
 }
-
 impl IssueRef {
 	/// Try to parse a single word as an issue reference.
 	///
@@ -382,6 +331,56 @@ impl IssueRef {
 		if owner.is_none() && repo.is_some() {
 			*owner = home.and_then(|h| h.owner().map(String::from)).or_else(crate::current_user::get);
 		}
+	}
+}
+
+/// Extract an issue number from a stored issue path: `{n}_-_{title}.md[.bak]`, bare `{n}`, or a
+/// directory-format `{n}_-_{title}/__main__.md` (number taken from the parent dir).
+fn number_from_path(path: &Path) -> Option<u64> {
+	let name = path.file_name()?.to_str()?;
+	let source = if name.starts_with(crate::MAIN_ISSUE_FILENAME) {
+		path.parent()?.file_name()?.to_str()?
+	} else {
+		name
+	};
+	let base = source.strip_suffix(".md.bak").or_else(|| source.strip_suffix(".md")).unwrap_or(source);
+	base.split("_-_").next().unwrap_or(base).parse().ok()
+}
+
+impl fmt::Display for IssueLink {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		match self {
+			Self::Owned(url) => write!(f, "{}", url.as_str()),
+			Self::Virtual(path) => write!(f, "{}", path.display()),
+		}
+	}
+}
+
+impl serde::Serialize for IssueLink {
+	fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+		serializer.collect_str(self)
+	}
+}
+
+impl<'de> serde::Deserialize<'de> for IssueLink {
+	fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+		let s = String::deserialize(deserializer)?;
+		Self::parse(&s).ok_or_else(|| serde::de::Error::custom(format!("not an issue link: {s}")))
+	}
+}
+
+impl fmt::Display for NodeLink {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		match self {
+			Self::Issue(link) => write!(f, "{link}"),
+			Self::Milestone(link) => write!(f, "{}", link.as_str()),
+		}
+	}
+}
+
+impl fmt::Display for MilestoneRef {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		write!(f, "{}", self.0.as_str())
 	}
 }
 

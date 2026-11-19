@@ -14,6 +14,8 @@ use crate::common::{BINARY_ENV, TestContext, get_binary_path};
 
 const SECRET: &str = "webhook secret";
 
+const BOARD: &str = "[board]\nworkflows = { kanban = \"preset:kanban\" }\nviews = [{ name = \"Triage\", query = \"is:open\", layout = \"board\", group_by = \"state:kanban\", sort = \"rank\", shown = [] }]\n\n[board.scopes.Main]\nrepos = [\"o/*\"]\n";
+
 fn deliver(port: u16, repo: &str) -> u16 {
 	let body = format!(r#"{{"repository":{{"full_name":"{repo}"}}}}"#);
 	let mut mac = hmac::Hmac::<sha2::Sha256>::new_from_slice(SECRET.as_bytes()).unwrap();
@@ -78,8 +80,6 @@ fn a_delivery_for_a_repo_outside_watch_is_not_pulled() {
 	drop(server);
 	assert!(!ctx.github_calls().iter().any(|c| c.contains("stranger")), "{:?}", ctx.github_calls());
 }
-
-const BOARD: &str = "[board]\nworkflows = { kanban = \"preset:kanban\" }\nviews = [{ name = \"Triage\", query = \"is:open\", layout = \"board\", group_by = \"state:kanban\", sort = \"rank\", shown = [] }]\n\n[board.scopes.Main]\nrepos = [\"o/*\"]\n";
 
 /// `(status, body)` of one request; `user` rides in `X-Auth-User`.
 fn call(port: u16, method: &str, path: &str, user: Option<&str>, body: Option<serde_json::Value>) -> (u16, String) {

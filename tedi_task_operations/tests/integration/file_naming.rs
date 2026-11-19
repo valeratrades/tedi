@@ -133,8 +133,9 @@ async fn test_duplicate_removes_local_file() {
 	eprintln!("stdout: {}", out.stdout);
 	eprintln!("stderr: {}", out.stderr);
 
+	assert!(out.status.success(), "Should succeed and remove issue file after marking as duplicate. stderr: {}", out.stderr);
 	assert!(
-		out.status.success() && !ctx.flat_issue_path(("o", "r").into(), 1, "Some Issue").exists(),
+		!ctx.flat_issue_path(("o", "r").into(), 1, "Some Issue").exists(),
 		"Should succeed and remove issue file after marking as duplicate. stderr: {}",
 		out.stderr
 	);
@@ -165,8 +166,9 @@ async fn test_duplicate_reference_to_existing_issue_succeeds() {
 	eprintln!("stdout: {}", out.stdout);
 	eprintln!("stderr: {}", out.stderr);
 
+	assert!(out.status.success(), "Should succeed and remove issue file after duplicate marking. stderr: {}", out.stderr);
 	assert!(
-		out.status.success() && !ctx.flat_issue_path(("o", "r").into(), 1, "Some Issue").exists(),
+		!ctx.flat_issue_path(("o", "r").into(), 1, "Some Issue").exists(),
 		"Should succeed and remove issue file after duplicate marking. stderr: {}",
 		out.stderr
 	);

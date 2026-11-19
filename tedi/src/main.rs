@@ -83,11 +83,6 @@ enum Commands {
 	},
 }
 
-/// `<workflow>/<bucket>[/<bucket>…]`
-fn placement(s: &str) -> Result<(String, tedi_core::workflow::State), String> {
-	let (workflow, path) = s.split_once('/').ok_or_else(|| format!("{s:?}: a workflow, then its bucket path (`kanban/selected`)"))?;
-	Ok((workflow.to_string(), path.parse().map_err(|e: tedi_core::workflow::WorkflowError| e.to_string())?))
-}
 fn main() {
 	// `tedi web` runs syncs on threads it doesn't spawn (dioxus' server-fn pool), and a sync's futures run deeper than std's 2MiB
 	if std::env::var_os("RUST_MIN_STACK").is_none() {
@@ -95,6 +90,11 @@ fn main() {
 		unsafe { std::env::set_var("RUST_MIN_STACK", (8 << 20).to_string()) };
 	}
 	tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("a runtime builds").block_on(run());
+}
+/// `<workflow>/<bucket>[/<bucket>…]`
+fn placement(s: &str) -> Result<(String, tedi_core::workflow::State), String> {
+	let (workflow, path) = s.split_once('/').ok_or_else(|| format!("{s:?}: a workflow, then its bucket path (`kanban/selected`)"))?;
+	Ok((workflow.to_string(), path.parse().map_err(|e: tedi_core::workflow::WorkflowError| e.to_string())?))
 }
 
 async fn run() {

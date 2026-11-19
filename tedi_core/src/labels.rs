@@ -92,6 +92,31 @@ pub enum Ext {
 	Invalid,
 }
 
+/// What the labels say in the scheme's terms. Labels outside it are not here.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Scheme {
+	pub kind: Option<Type>,
+	pub importance: Option<u8>,
+	pub hours: Option<u16>,
+	pub categories: BTreeSet<Category>,
+	pub ext: BTreeSet<Ext>,
+}
+
+/// At most one `t:`, `i:` and `h:`. Errors naming each field holding more.
+pub fn check<S: AsRef<str>>(labels: &[S]) -> Result<(), String> {
+	let mut held: Vec<(&'static str, &str)> = labels.iter().map(AsRef::as_ref).filter_map(|name| Some((Label::parse(name)?.single()?, name))).collect();
+	held.sort_unstable();
+	let clashes: Vec<String> = held
+		.chunk_by(|a, b| a.0 == b.0)
+		.filter(|group| group.len() > 1)
+		.map(|group| format!("more than one {}* label: {}", group[0].0, group.iter().map(|(_, n)| *n).collect::<Vec<_>>().join(", ")))
+		.collect();
+	match clashes.is_empty() {
+		true => Ok(()),
+		false => Err(clashes.join("\n")),
+	}
+}
+
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 enum Label {
 	Type(Type),
@@ -126,16 +151,6 @@ impl Label {
 		}
 	}
 }
-
-/// What the labels say in the scheme's terms. Labels outside it are not here.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct Scheme {
-	pub kind: Option<Type>,
-	pub importance: Option<u8>,
-	pub hours: Option<u16>,
-	pub categories: BTreeSet<Category>,
-	pub ext: BTreeSet<Ext>,
-}
 /// Lenient, as GitHub is: of two values for a single-valued field the first by name is read. An edit can't
 /// leave two (`check`).
 impl<S: AsRef<str>> From<&[S]> for Scheme {
@@ -153,21 +168,6 @@ impl<S: AsRef<str>> From<&[S]> for Scheme {
 			}
 		}
 		scheme
-	}
-}
-
-/// At most one `t:`, `i:` and `h:`. Errors naming each field holding more.
-pub fn check<S: AsRef<str>>(labels: &[S]) -> Result<(), String> {
-	let mut held: Vec<(&'static str, &str)> = labels.iter().map(AsRef::as_ref).filter_map(|name| Some((Label::parse(name)?.single()?, name))).collect();
-	held.sort_unstable();
-	let clashes: Vec<String> = held
-		.chunk_by(|a, b| a.0 == b.0)
-		.filter(|group| group.len() > 1)
-		.map(|group| format!("more than one {}* label: {}", group[0].0, group.iter().map(|(_, n)| *n).collect::<Vec<_>>().join(", ")))
-		.collect();
-	match clashes.is_empty() {
-		true => Ok(()),
-		false => Err(clashes.join("\n")),
 	}
 }
 

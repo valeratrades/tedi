@@ -283,11 +283,9 @@ async fn test_opening_a_duplicate_errors_instead_of_panicking() {
 
 	let out = ctx.open_url(("o", "r").into(), 1).run();
 	assert!(!out.status.success(), "stdout: {}", out.stdout);
-	assert!(
-		!out.stderr.contains("panicked") && out.stderr.contains("o/r#1") && out.stderr.contains("duplicate"),
-		"stderr: {}",
-		out.stderr
-	);
+	assert!(!out.stderr.contains("panicked"), "stderr: {}", out.stderr);
+	assert!(out.stderr.contains("o/r#1"), "stderr: {}", out.stderr);
+	assert!(out.stderr.contains("duplicate"), "stderr: {}", out.stderr);
 }
 
 /// Whatever a title opens with — a character markdown reads as structure, or a `(…)` shaped like
@@ -380,7 +378,8 @@ async fn test_resolved_conflict_file_only_resolves_the_issue_it_names() {
 
 	assert!(bystander_path.exists(), "o/r#2 was rewritten under o/r#1's title");
 	let content = read_issue_file(&bystander_path);
-	assert!(content.contains("body two") && !content.contains("resolved one"), "o/r#2 took o/r#1's resolution. Got: {content}");
+	assert!(content.contains("body two"), "o/r#2 took o/r#1's resolution. Got: {content}");
+	assert!(!content.contains("resolved one"), "o/r#2 took o/r#1's resolution. Got: {content}");
 	assert!(conflict.exists(), "o/r#1's resolution was consumed by another issue");
 }
 
@@ -415,11 +414,8 @@ async fn test_multiline_remote_title_is_rejected_before_write() {
 
 	let out = ctx.open_url(("o", "r").into(), 1).run();
 	assert!(!out.status.success(), "a multi-line title must not be written. stdout: {}", out.stdout);
-	assert!(
-		out.stderr.contains("o/r#1") && out.stderr.contains("title"),
-		"error must name the issue and its title. stderr: {}",
-		out.stderr
-	);
+	assert!(out.stderr.contains("o/r#1"), "error must name the issue and its title. stderr: {}", out.stderr);
+	assert!(out.stderr.contains("title"), "error must name the issue and its title. stderr: {}", out.stderr);
 }
 
 /// Two consecutive plain paragraphs in a body are the one shape where the local file's first
@@ -1287,7 +1283,8 @@ async fn test_pending_conflict_rebuilt_on_remote_change() {
 	let out = ctx.open_issue(&local).run();
 	assert!(!out.status.success(), "markers remain, so still blocked. stdout: {}", out.stdout);
 	let conflict = std::fs::read_to_string(&conflict).unwrap();
-	assert!(conflict.contains("remote moved on") && !conflict.contains("remote diverged body"), "{conflict}");
+	assert!(conflict.contains("remote moved on"), "{conflict}");
+	assert!(!conflict.contains("remote diverged body"), "{conflict}");
 }
 
 /// A run killed mid-sync leaves local ahead of consensus. Exiting the editor untouched must still

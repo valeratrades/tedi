@@ -13,7 +13,7 @@ default = ["picker"]
 picker = ["dep:skim"]
 
 [dependencies]
-nucleo-matcher = { workspace = true }
+nucleo-matcher.workspace = true
 regex.workspace = true
 skim = { workspace = true, optional = true }
 thiserror.workspace = true

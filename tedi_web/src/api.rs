@@ -14,6 +14,12 @@ use tedi_core::{
 };
 use tilers_core::Band;
 
+/// A dock's layout per band, as tilers saves it: a phone's is not a desktop's.
+pub type Arrangement = BTreeMap<Band, String>;
+
+/// Each group's column color.
+pub type Tints = BTreeMap<String, Tint>;
+
 /// What the sidebar and every view start from.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct Setup {
@@ -58,9 +64,6 @@ impl Library {
 	}
 }
 
-/// A dock's layout per band, as tilers saves it: a phone's is not a desktop's.
-pub type Arrangement = BTreeMap<Band, String>;
-
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct OnScreen {
 	pub tiles: Arrangement,
@@ -82,9 +85,6 @@ pub struct Columns {
 	#[serde(default)]
 	pub tints: Tints,
 }
-
-/// Each group's column color.
-pub type Tints = BTreeMap<String, Tint>;
 
 /// Notion's palette.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, strum::Display, strum::EnumIter)]

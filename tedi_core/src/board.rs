@@ -4,6 +4,7 @@
 
 use std::{
 	collections::{BTreeMap, HashSet},
+	path::PathBuf,
 	str::FromStr,
 };
 
@@ -42,12 +43,6 @@ pub struct Card {
 	/// `Some` on a pull request: read-only, with no blockers or children of its own.
 	pub pr: Option<Pr>,
 }
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub struct Pr {
-	pub state: PrState,
-	pub author: String,
-	pub closes: Vec<IssueLink>,
-}
 impl Card {
 	pub fn open(&self) -> bool {
 		!self.state.is_closed()
@@ -55,10 +50,17 @@ impl Card {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct Pr {
+	pub state: PrState,
+	pub author: String,
+	pub closes: Vec<IssueLink>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct Board {
 	pub cards: Vec<Card>,
 	/// Stored issues that don't parse, with why: shown beside the board, not hidden by it.
-	pub unreadable: Vec<(std::path::PathBuf, String)>,
+	pub unreadable: Vec<(PathBuf, String)>,
 	/// Per `owner/repo`, its labels' colours as last read from GitHub; a label missing here is uncoloured.
 	pub colors: BTreeMap<String, BTreeMap<String, crate::labels::Color>>,
 }
@@ -89,155 +91,6 @@ pub struct Query {
 	clauses: Vec<Clause>,
 	text: String,
 }
-#[derive(Clone, Debug, PartialEq)]
-struct Clause {
-	negated: bool,
-	/// Of one facet, never empty.
-	any: Vec<Filter>,
-}
-/// One value of one facet.
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, strum::EnumDiscriminants)]
-#[strum_discriminants(name(Facet), vis(pub), derive(Hash, strum::Display, strum::EnumIter, strum::EnumString), strum(serialize_all = "snake_case"))]
-enum Filter {
-	/// `owner/repo`, `owner/*`, or a bare repo name.
-	Repo(String),
-	Assignee(Assignee),
-	/// A bucket of a workflow, holding its sub-buckets.
-	State {
-		workflow: String,
-		under: Vec<String>,
-	},
-	#[strum_discriminants(strum(serialize = "t"))]
-	Type(Option<Type>),
-	#[strum_discriminants(strum(serialize = "i"))]
-	Importance(Option<(Cmp, u8)>),
-	#[strum_discriminants(strum(serialize = "h"))]
-	Hours(Option<(Cmp, u16)>),
-	Label(String),
-	Is(Is),
-}
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-enum Assignee {
-	Me,
-	Nobody,
-	Login(String),
-}
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, strum::Display, strum::EnumString)]
-#[strum(serialize_all = "snake_case")]
-enum Is {
-	Open,
-	Closed,
-	/// By an open issue on the board.
-	Blocked,
-	Conflicted,
-	Issue,
-	Pr,
-}
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, strum::Display)]
-enum Cmp {
-	#[strum(to_string = "<")]
-	Lt,
-	#[strum(to_string = "<=")]
-	Le,
-	#[strum(to_string = "")]
-	Eq,
-	#[strum(to_string = ">=")]
-	Ge,
-	#[strum(to_string = ">")]
-	Gt,
-}
-impl Cmp {
-	fn split(v: &str) -> (Self, &str) {
-		[(">=", Cmp::Ge), ("<=", Cmp::Le), (">", Cmp::Gt), ("<", Cmp::Lt), ("=", Cmp::Eq)]
-			.into_iter()
-			.find_map(|(op, cmp)| v.strip_prefix(op).map(|rest| (cmp, rest)))
-			.unwrap_or((Cmp::Eq, v))
-	}
-
-	fn holds<N: Ord>(self, have: N, want: N) -> bool {
-		match self {
-			Cmp::Lt => have < want,
-			Cmp::Le => have <= want,
-			Cmp::Eq => have == want,
-			Cmp::Ge => have >= want,
-			Cmp::Gt => have > want,
-		}
-	}
-}
-
-/// A value of a facet as a quick filter offers it: how many of the query's hits take it, the
-/// facet's own clauses aside, and whether those include it (`Some(true)`) or exclude it.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Tally {
-	pub value: String,
-	pub count: usize,
-	pub picked: Option<bool>,
-}
-
-impl FromStr for Query {
-	type Err = QueryError;
-
-	fn from_str(s: &str) -> Result<Self, QueryError> {
-		let mut query = Query::default();
-		let mut text = Vec::new();
-		for token in s.split_whitespace() {
-			let (negated, clause) = match token.strip_prefix('-') {
-				Some(clause) if clause.contains(':') => (true, clause),
-				_ => (false, token),
-			};
-			let Some((key, value)) = clause.split_once(':') else {
-				text.push(token);
-				continue;
-			};
-			let any = match Facet::from_str(key) {
-				Ok(facet) => {
-					let any = items(value).iter().map(|v| Filter::parse(facet, v)).collect::<Result<Vec<_>, _>>()?;
-					if any.is_empty() {
-						return Err(QueryError::Empty(facet));
-					}
-					any
-				}
-				// `c:ci`, `ext:hack` and any other label read as typed
-				Err(_) => vec![Filter::Label(clause.to_string())],
-			};
-			query.clauses.push(Clause { negated, any });
-		}
-		query.text = text.join(" ");
-		Ok(query)
-	}
-}
-
-/// Canonical: what parses back to the same query.
-impl std::fmt::Display for Query {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		let mut parts: Vec<String> = self.clauses.iter().map(ToString::to_string).collect();
-		if !self.text.is_empty() {
-			parts.push(self.text.clone());
-		}
-		f.write_str(&parts.join(" "))
-	}
-}
-impl std::fmt::Display for Clause {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		let values: Vec<String> = self.any.iter().map(|v| v.to_string().replace(',', "\\,")).collect();
-		write!(f, "{}{}:{}", if self.negated { "-" } else { "" }, self.facet(), values.join(","))
-	}
-}
-impl std::fmt::Display for Filter {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		match self {
-			Filter::Repo(s) | Filter::Label(s) | Filter::Assignee(Assignee::Login(s)) => f.write_str(s),
-			Filter::Assignee(Assignee::Me) => f.write_str("@me"),
-			Filter::Assignee(Assignee::Nobody) | Filter::Type(None) | Filter::Importance(None) | Filter::Hours(None) => f.write_str("none"),
-			Filter::State { workflow, under } => write!(f, "{workflow}/{}", under.join("/")),
-			Filter::Type(Some(k)) => f.write_str(&k.to_string()["t:".len()..]),
-			Filter::Importance(Some((cmp, n))) => write!(f, "{cmp}{n}"),
-			Filter::Hours(Some((cmp, n))) => write!(f, "{cmp}{n}"),
-			Filter::Is(is) => write!(f, "{is}"),
-		}
-	}
-}
-
 impl Query {
 	/// Indices into `cards` that match, best first: by free text when there is any, else by rank.
 	pub fn run(&self, cards: &[Card], me: Option<&str>) -> Result<Vec<usize>, QueryError> {
@@ -321,6 +174,210 @@ impl Query {
 	}
 }
 
+/// A value of a facet as a quick filter offers it: how many of the query's hits take it, the
+/// facet's own clauses aside, and whether those include it (`Some(true)`) or exclude it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Tally {
+	pub value: String,
+	pub count: usize,
+	pub picked: Option<bool>,
+}
+
+/// A named query, and how its result is shown.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct View {
+	pub name: String,
+	pub query: String,
+	pub layout: Layout,
+	pub group_by: GroupBy,
+	pub sort: Sort,
+	/// What a card shows beside its title, in this order.
+	pub shown: Vec<Shown>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, strum::Display, strum::EnumIter, strum::EnumString)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+pub enum Layout {
+	Board,
+	Table,
+	List,
+}
+/// How a view splits its cards: by `state:<workflow>`, `repo`, `assignee`, `type`, `importance` or `nothing`.
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(try_from = "String", into = "String")]
+pub enum GroupBy {
+	/// Into that workflow's leaves, every one present even when empty: the kanban, laid out as a board.
+	State(String),
+	Repo,
+	Assignee,
+	Type,
+	Importance,
+	Nothing,
+}
+/// `importance`, or `-importance` reversed. Each key's own order: importance high→low, hours low→high,
+/// a workflow's states in its order, names A→Z, most blockers first; a card lacking the key last either way.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct Sort {
+	pub by: SortKey,
+	pub reversed: bool,
+}
+impl Sort {
+	/// Reorders `hits` (as `Query::run` ordered them); ties keep that order.
+	pub fn apply(&self, cards: &[Card], hits: &mut [usize], workflows: &BTreeMap<String, Workflow>) -> Result<(), WorkflowError> {
+		use std::cmp::Reverse;
+		fn by<K: Ord>(hits: &mut [usize], reversed: bool, key: impl Fn(usize) -> Option<K>) {
+			let mut keyed: Vec<(Option<K>, usize)> = hits.iter().map(|&i| (key(i), i)).collect();
+			keyed.sort_by(|(a, _), (b, _)| match (a, b) {
+				(Some(a), Some(b)) if reversed => b.cmp(a),
+				(Some(a), Some(b)) => a.cmp(b),
+				_ => a.is_none().cmp(&b.is_none()),
+			});
+			for (slot, (_, i)) in hits.iter_mut().zip(keyed) {
+				*slot = i;
+			}
+		}
+		let r = self.reversed;
+		match &self.by {
+			SortKey::Rank if r => {
+				hits.reverse();
+				hits.sort_by_key(|&i| cards[i].rank.is_none());
+			}
+			SortKey::Rank => {}
+			SortKey::Title => by(hits, r, |i| Some(cards[i].title.to_lowercase())),
+			SortKey::Repo => by(hits, r, |i| Some(cards[i].link.project().to_string())),
+			SortKey::State(w) => {
+				let workflow = workflows.get(w).ok_or_else(|| WorkflowError::Unknown(w.clone()))?;
+				by(hits, r, |i| Some(workflow.order(&cards[i].states[w])))
+			}
+			SortKey::Assignee => by(hits, r, |i| cards[i].assignees.iter().map(|a| a.to_lowercase()).min()),
+			SortKey::Type => by(hits, r, |i| cards[i].kind.map(|k| k.to_string())),
+			SortKey::Importance => by(hits, r, |i| cards[i].importance.map(Reverse)),
+			SortKey::Hours => by(hits, r, |i| cards[i].hours),
+			SortKey::Blockers => {
+				let open = open(cards);
+				by(hits, r, |i| Some(Reverse(cards[i].blocked_by.iter().filter(|b| open.contains(b)).count())))
+			}
+		}
+		Ok(())
+	}
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SortKey {
+	/// As the query ordered them: by free-text relevance when there is any, else by rank.
+	Rank,
+	Title,
+	Repo,
+	/// `state:<workflow>`
+	State(String),
+	Assignee,
+	Type,
+	Importance,
+	Hours,
+	Blockers,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(try_from = "String", into = "String")]
+pub enum Shown {
+	Repo,
+	Assignees,
+	/// `state:<workflow>`
+	State(String),
+	Importance,
+	Hours,
+	Type,
+	Labels,
+	Blockers,
+	Prs,
+}
+/// A named slice of the team's repos, nesting narrower ones: it covers its own `repos` (`owner/repo`,
+/// `owner/*`) and those of every scope inside it.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct Scope {
+	#[serde(default)] // a scope may only group nested ones
+	pub repos: Vec<String>,
+	/// The team views it shows, by name; none: its parent's.
+	#[serde(default)]
+	pub views: Vec<String>,
+	#[serde(flatten)]
+	pub children: BTreeMap<String, Scope>,
+}
+impl Scope {
+	/// The `repo:` filter matching every repo this scope covers.
+	pub fn filter(&self) -> String {
+		fn collect<'a>(scope: &'a Scope, out: &mut Vec<&'a str>) {
+			out.extend(scope.repos.iter().map(String::as_str));
+			for child in scope.children.values() {
+				collect(child, out);
+			}
+		}
+		let mut repos = Vec::new();
+		collect(self, &mut repos);
+		assert!(!repos.is_empty(), "a configured scope names at least one repo, itself or nested");
+		format!("repo:{}", repos.join(","))
+	}
+}
+
+/// The scope at `path` (names ` / `-joined): its `repo:` filter, and the views it names, else its nearest parent's.
+pub fn scope_at(scopes: &BTreeMap<String, Scope>, path: &str) -> Option<(String, Vec<String>)> {
+	let (mut level, mut views, mut at) = (scopes, &Vec::new(), None);
+	for name in path.split(" / ") {
+		let scope = level.get(name)?;
+		if !scope.views.is_empty() {
+			views = &scope.views;
+		}
+		(level, at) = (&scope.children, Some(scope));
+	}
+	Some((at?.filter(), views.clone()))
+}
+
+/// `hits` (as `Query::run` ordered them) split into groups, each keeping that order. A workflow's states
+/// come in its order, every leaf present even when empty; other keys sort by name, the ungrouped last.
+pub fn group(cards: &[Card], hits: &[usize], by: &GroupBy, workflows: &BTreeMap<String, Workflow>) -> Result<Vec<(String, Vec<usize>)>, WorkflowError> {
+	let key = |c: &Card| -> Vec<String> {
+		match by {
+			GroupBy::State(w) => vec![c.states[w].to_string()],
+			GroupBy::Repo => vec![c.link.project().to_string()],
+			GroupBy::Assignee if c.assignees.is_empty() => vec!["unassigned".into()],
+			GroupBy::Assignee => c.assignees.iter().map(|a| format!("@{a}")).collect(),
+			GroupBy::Type => vec![c.kind.map_or_else(|| "untyped".into(), |k| k.to_string())],
+			GroupBy::Importance => vec![c.importance.map_or_else(|| "i:?".into(), |i| format!("i:{i}"))],
+			GroupBy::Nothing => vec![String::new()],
+		}
+	};
+	let mut groups: Vec<(String, Vec<usize>)> = match by {
+		GroupBy::State(w) => workflows
+			.get(w)
+			.ok_or_else(|| WorkflowError::Unknown(w.clone()))?
+			.leaves()
+			.iter()
+			.map(|s| (s.to_string(), Vec::new()))
+			.collect(),
+		_ => Vec::new(),
+	};
+	for &i in hits {
+		for k in key(&cards[i]) {
+			match groups.iter_mut().find(|(g, _)| *g == k) {
+				Some((_, members)) => members.push(i),
+				None => groups.push((k, vec![i])),
+			}
+		}
+	}
+	if !matches!(by, GroupBy::State(_)) {
+		groups.sort_by(|a, b| a.0.cmp(&b.0));
+	}
+	Ok(groups)
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct Clause {
+	negated: bool,
+	/// Of one facet, never empty.
+	any: Vec<Filter>,
+}
 impl Clause {
 	fn facet(&self) -> Facet {
 		Facet::from(&self.any[0])
@@ -331,6 +388,27 @@ impl Clause {
 	}
 }
 
+/// One value of one facet.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, strum::EnumDiscriminants)]
+#[strum_discriminants(name(Facet), vis(pub), derive(Hash, strum::Display, strum::EnumIter, strum::EnumString), strum(serialize_all = "snake_case"))]
+enum Filter {
+	/// `owner/repo`, `owner/*`, or a bare repo name.
+	Repo(String),
+	Assignee(Assignee),
+	/// A bucket of a workflow, holding its sub-buckets.
+	State {
+		workflow: String,
+		under: Vec<String>,
+	},
+	#[strum_discriminants(strum(serialize = "t"))]
+	Type(Option<Type>),
+	#[strum_discriminants(strum(serialize = "i"))]
+	Importance(Option<(Cmp, u8)>),
+	#[strum_discriminants(strum(serialize = "h"))]
+	Hours(Option<(Cmp, u16)>),
+	Label(String),
+	Is(Is),
+}
 impl Filter {
 	fn parse(facet: Facet, v: &str) -> Result<Self, QueryError> {
 		let none = v == "none";
@@ -381,6 +459,119 @@ impl Filter {
 			Filter::Hours(Some((cmp, n))) => card.hours.is_some_and(|h| cmp.holds(h, *n)),
 			Filter::State { workflow, under } => card.states.get(workflow).is_some_and(|s| s.is_under(under)),
 			exact => takes(card, exact.into(), open).contains(exact),
+		}
+	}
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum Assignee {
+	Me,
+	Nobody,
+	Login(String),
+}
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, strum::Display, strum::EnumString)]
+#[strum(serialize_all = "snake_case")]
+enum Is {
+	Open,
+	Closed,
+	/// By an open issue on the board.
+	Blocked,
+	Conflicted,
+	Issue,
+	Pr,
+}
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, strum::Display)]
+enum Cmp {
+	#[strum(to_string = "<")]
+	Lt,
+	#[strum(to_string = "<=")]
+	Le,
+	#[strum(to_string = "")]
+	Eq,
+	#[strum(to_string = ">=")]
+	Ge,
+	#[strum(to_string = ">")]
+	Gt,
+}
+impl Cmp {
+	fn split(v: &str) -> (Self, &str) {
+		[(">=", Cmp::Ge), ("<=", Cmp::Le), (">", Cmp::Gt), ("<", Cmp::Lt), ("=", Cmp::Eq)]
+			.into_iter()
+			.find_map(|(op, cmp)| v.strip_prefix(op).map(|rest| (cmp, rest)))
+			.unwrap_or((Cmp::Eq, v))
+	}
+
+	fn holds<N: Ord>(self, have: N, want: N) -> bool {
+		match self {
+			Cmp::Lt => have < want,
+			Cmp::Le => have <= want,
+			Cmp::Eq => have == want,
+			Cmp::Ge => have >= want,
+			Cmp::Gt => have > want,
+		}
+	}
+}
+
+impl FromStr for Query {
+	type Err = QueryError;
+
+	fn from_str(s: &str) -> Result<Self, QueryError> {
+		let mut query = Query::default();
+		let mut text = Vec::new();
+		for token in s.split_whitespace() {
+			let (negated, clause) = match token.strip_prefix('-') {
+				Some(clause) if clause.contains(':') => (true, clause),
+				_ => (false, token),
+			};
+			let Some((key, value)) = clause.split_once(':') else {
+				text.push(token);
+				continue;
+			};
+			let any = match Facet::from_str(key) {
+				Ok(facet) => {
+					let any = items(value).iter().map(|v| Filter::parse(facet, v)).collect::<Result<Vec<_>, _>>()?;
+					if any.is_empty() {
+						return Err(QueryError::Empty(facet));
+					}
+					any
+				}
+				// `c:ci`, `ext:hack` and any other label read as typed
+				Err(_) => vec![Filter::Label(clause.to_string())],
+			};
+			query.clauses.push(Clause { negated, any });
+		}
+		query.text = text.join(" ");
+		Ok(query)
+	}
+}
+
+/// Canonical: what parses back to the same query.
+impl std::fmt::Display for Query {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		let mut parts: Vec<String> = self.clauses.iter().map(ToString::to_string).collect();
+		if !self.text.is_empty() {
+			parts.push(self.text.clone());
+		}
+		f.write_str(&parts.join(" "))
+	}
+}
+impl std::fmt::Display for Clause {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		let values: Vec<String> = self.any.iter().map(|v| v.to_string().replace(',', "\\,")).collect();
+		write!(f, "{}{}:{}", if self.negated { "-" } else { "" }, self.facet(), values.join(","))
+	}
+}
+impl std::fmt::Display for Filter {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match self {
+			Filter::Repo(s) | Filter::Label(s) | Filter::Assignee(Assignee::Login(s)) => f.write_str(s),
+			Filter::Assignee(Assignee::Me) => f.write_str("@me"),
+			Filter::Assignee(Assignee::Nobody) | Filter::Type(None) | Filter::Importance(None) | Filter::Hours(None) => f.write_str("none"),
+			Filter::State { workflow, under } => write!(f, "{workflow}/{}", under.join("/")),
+			Filter::Type(Some(k)) => f.write_str(&k.to_string()["t:".len()..]),
+			Filter::Importance(Some((cmp, n))) => write!(f, "{cmp}{n}"),
+			Filter::Hours(Some((cmp, n))) => write!(f, "{cmp}{n}"),
+			Filter::Is(is) => write!(f, "{is}"),
 		}
 	}
 }
@@ -452,74 +643,6 @@ impl TryFrom<Shown> for Facet {
 			Shown::Blockers | Shown::Prs => return Err(shown),
 		})
 	}
-}
-
-/// A named query, and how its result is shown.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct View {
-	pub name: String,
-	pub query: String,
-	pub layout: Layout,
-	pub group_by: GroupBy,
-	pub sort: Sort,
-	/// What a card shows beside its title, in this order.
-	pub shown: Vec<Shown>,
-}
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, strum::Display, strum::EnumIter, strum::EnumString)]
-#[serde(rename_all = "snake_case")]
-#[strum(serialize_all = "snake_case")]
-pub enum Layout {
-	Board,
-	Table,
-	List,
-}
-/// How a view splits its cards: by `state:<workflow>`, `repo`, `assignee`, `type`, `importance` or `nothing`.
-#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
-#[serde(try_from = "String", into = "String")]
-pub enum GroupBy {
-	/// Into that workflow's leaves, every one present even when empty: the kanban, laid out as a board.
-	State(String),
-	Repo,
-	Assignee,
-	Type,
-	Importance,
-	Nothing,
-}
-/// `importance`, or `-importance` reversed. Each key's own order: importance high→low, hours low→high,
-/// a workflow's states in its order, names A→Z, most blockers first; a card lacking the key last either way.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(try_from = "String", into = "String")]
-pub struct Sort {
-	pub by: SortKey,
-	pub reversed: bool,
-}
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum SortKey {
-	/// As the query ordered them: by free-text relevance when there is any, else by rank.
-	Rank,
-	Title,
-	Repo,
-	/// `state:<workflow>`
-	State(String),
-	Assignee,
-	Type,
-	Importance,
-	Hours,
-	Blockers,
-}
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(try_from = "String", into = "String")]
-pub enum Shown {
-	Repo,
-	Assignees,
-	/// `state:<workflow>`
-	State(String),
-	Importance,
-	Hours,
-	Type,
-	Labels,
-	Blockers,
-	Prs,
 }
 
 /// `state:<workflow>`, or one of `plain` by its name.
@@ -640,47 +763,6 @@ impl From<Sort> for String {
 	}
 }
 
-impl Sort {
-	/// Reorders `hits` (as `Query::run` ordered them); ties keep that order.
-	pub fn apply(&self, cards: &[Card], hits: &mut [usize], workflows: &BTreeMap<String, Workflow>) -> Result<(), WorkflowError> {
-		use std::cmp::Reverse;
-		fn by<K: Ord>(hits: &mut [usize], reversed: bool, key: impl Fn(usize) -> Option<K>) {
-			let mut keyed: Vec<(Option<K>, usize)> = hits.iter().map(|&i| (key(i), i)).collect();
-			keyed.sort_by(|(a, _), (b, _)| match (a, b) {
-				(Some(a), Some(b)) if reversed => b.cmp(a),
-				(Some(a), Some(b)) => a.cmp(b),
-				_ => a.is_none().cmp(&b.is_none()),
-			});
-			for (slot, (_, i)) in hits.iter_mut().zip(keyed) {
-				*slot = i;
-			}
-		}
-		let r = self.reversed;
-		match &self.by {
-			SortKey::Rank if r => {
-				hits.reverse();
-				hits.sort_by_key(|&i| cards[i].rank.is_none());
-			}
-			SortKey::Rank => {}
-			SortKey::Title => by(hits, r, |i| Some(cards[i].title.to_lowercase())),
-			SortKey::Repo => by(hits, r, |i| Some(cards[i].link.project().to_string())),
-			SortKey::State(w) => {
-				let workflow = workflows.get(w).ok_or_else(|| WorkflowError::Unknown(w.clone()))?;
-				by(hits, r, |i| Some(workflow.order(&cards[i].states[w])))
-			}
-			SortKey::Assignee => by(hits, r, |i| cards[i].assignees.iter().map(|a| a.to_lowercase()).min()),
-			SortKey::Type => by(hits, r, |i| cards[i].kind.map(|k| k.to_string())),
-			SortKey::Importance => by(hits, r, |i| cards[i].importance.map(Reverse)),
-			SortKey::Hours => by(hits, r, |i| cards[i].hours),
-			SortKey::Blockers => {
-				let open = open(cards);
-				by(hits, r, |i| Some(Reverse(cards[i].blocked_by.iter().filter(|b| open.contains(b)).count())))
-			}
-		}
-		Ok(())
-	}
-}
-
 impl TryFrom<Shown> for SortKey {
 	type Error = Shown;
 
@@ -696,85 +778,6 @@ impl TryFrom<Shown> for SortKey {
 			Shown::Labels | Shown::Prs => return Err(shown),
 		})
 	}
-}
-
-/// A named slice of the team's repos, nesting narrower ones: it covers its own `repos` (`owner/repo`,
-/// `owner/*`) and those of every scope inside it.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct Scope {
-	#[serde(default)] // a scope may only group nested ones
-	pub repos: Vec<String>,
-	/// The team views it shows, by name; none: its parent's.
-	#[serde(default)]
-	pub views: Vec<String>,
-	#[serde(flatten)]
-	pub children: BTreeMap<String, Scope>,
-}
-impl Scope {
-	/// The `repo:` filter matching every repo this scope covers.
-	pub fn filter(&self) -> String {
-		fn collect<'a>(scope: &'a Scope, out: &mut Vec<&'a str>) {
-			out.extend(scope.repos.iter().map(String::as_str));
-			for child in scope.children.values() {
-				collect(child, out);
-			}
-		}
-		let mut repos = Vec::new();
-		collect(self, &mut repos);
-		assert!(!repos.is_empty(), "a configured scope names at least one repo, itself or nested");
-		format!("repo:{}", repos.join(","))
-	}
-}
-
-/// The scope at `path` (names ` / `-joined): its `repo:` filter, and the views it names, else its nearest parent's.
-pub fn scope_at(scopes: &BTreeMap<String, Scope>, path: &str) -> Option<(String, Vec<String>)> {
-	let (mut level, mut views, mut at) = (scopes, &Vec::new(), None);
-	for name in path.split(" / ") {
-		let scope = level.get(name)?;
-		if !scope.views.is_empty() {
-			views = &scope.views;
-		}
-		(level, at) = (&scope.children, Some(scope));
-	}
-	Some((at?.filter(), views.clone()))
-}
-
-/// `hits` (as `Query::run` ordered them) split into groups, each keeping that order. A workflow's states
-/// come in its order, every leaf present even when empty; other keys sort by name, the ungrouped last.
-pub fn group(cards: &[Card], hits: &[usize], by: &GroupBy, workflows: &BTreeMap<String, Workflow>) -> Result<Vec<(String, Vec<usize>)>, WorkflowError> {
-	let key = |c: &Card| -> Vec<String> {
-		match by {
-			GroupBy::State(w) => vec![c.states[w].to_string()],
-			GroupBy::Repo => vec![c.link.project().to_string()],
-			GroupBy::Assignee if c.assignees.is_empty() => vec!["unassigned".into()],
-			GroupBy::Assignee => c.assignees.iter().map(|a| format!("@{a}")).collect(),
-			GroupBy::Type => vec![c.kind.map_or_else(|| "untyped".into(), |k| k.to_string())],
-			GroupBy::Importance => vec![c.importance.map_or_else(|| "i:?".into(), |i| format!("i:{i}"))],
-			GroupBy::Nothing => vec![String::new()],
-		}
-	};
-	let mut groups: Vec<(String, Vec<usize>)> = match by {
-		GroupBy::State(w) => workflows
-			.get(w)
-			.ok_or_else(|| WorkflowError::Unknown(w.clone()))?
-			.leaves()
-			.iter()
-			.map(|s| (s.to_string(), Vec::new()))
-			.collect(),
-		_ => Vec::new(),
-	};
-	for &i in hits {
-		for k in key(&cards[i]) {
-			match groups.iter_mut().find(|(g, _)| *g == k) {
-				Some((_, members)) => members.push(i),
-				None => groups.push((k, vec![i])),
-			}
-		}
-	}
-	if !matches!(by, GroupBy::State(_)) {
-		groups.sort_by(|a, b| a.0.cmp(&b.0));
-	}
-	Ok(groups)
 }
 
 #[cfg(test)]

@@ -25,15 +25,8 @@ pub(super) struct App {
 	/// by lowercased login: GitHub matches logins case-insensitively
 	tokens: tokio::sync::Mutex<HashMap<String, InstallationToken>>,
 }
-
-#[derive(Deserialize)]
-struct InstallationToken {
-	token: String,
-	expires_at: jiff::Timestamp,
-}
-
 impl App {
-	pub(super) fn new(id: u64, private_key: &str) -> Result<Self, GithubError> {
+	pub(super) fn try_new(id: u64, private_key: &str) -> Result<Self, GithubError> {
 		Ok(Self {
 			id,
 			key: jsonwebtoken::EncodingKey::from_rsa_pem(private_key.as_bytes())?,
@@ -114,6 +107,12 @@ impl App {
 			.header("Accept", "application/vnd.github+json")
 			.bearer_auth(jwt))
 	}
+}
+
+#[derive(Deserialize)]
+struct InstallationToken {
+	token: String,
+	expires_at: jiff::Timestamp,
 }
 
 async fn ok(res: reqwest::Response, context: &str) -> Result<reqwest::Response, GithubError> {

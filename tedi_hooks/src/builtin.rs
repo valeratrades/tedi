@@ -60,33 +60,6 @@ pub(crate) enum Builtin {
 		from: Vec<State>,
 	},
 }
-/// A rule's: where it moves a card; never to a leaf before where it sits, when `forward_only`; only from
-/// under `from`'s buckets, when it names any. Flattened by hand: serde can't deny unknown fields beside a flatten.
-struct To<'a> {
-	to: &'a State,
-	forward_only: bool,
-	from: &'a [State],
-}
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum Reason {
-	Completed,
-	NotPlanned,
-}
-fn span<'de, D: serde::Deserializer<'de>>(d: D) -> Result<SignedDuration, D::Error> {
-	let span: jiff::Span = String::deserialize(d)?.parse().map_err(serde::de::Error::custom)?;
-	span.to_duration(jiff::SpanRelativeTo::days_are_24_hours()).map_err(serde::de::Error::custom)
-}
-
-impl Reason {
-	fn state(self) -> CloseState {
-		match self {
-			Reason::Completed => CloseState::Closed,
-			Reason::NotPlanned => CloseState::NotPlanned,
-		}
-	}
-}
-
 impl Builtin {
 	fn to(&self) -> Option<To<'_>> {
 		match self {
@@ -119,6 +92,33 @@ impl Builtin {
 		}
 		Ok(builtin)
 	}
+}
+
+/// A rule's: where it moves a card; never to a leaf before where it sits, when `forward_only`; only from
+/// under `from`'s buckets, when it names any. Flattened by hand: serde can't deny unknown fields beside a flatten.
+struct To<'a> {
+	to: &'a State,
+	forward_only: bool,
+	from: &'a [State],
+}
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum Reason {
+	Completed,
+	NotPlanned,
+}
+impl Reason {
+	fn state(self) -> CloseState {
+		match self {
+			Reason::Completed => CloseState::Closed,
+			Reason::NotPlanned => CloseState::NotPlanned,
+		}
+	}
+}
+
+fn span<'de, D: serde::Deserializer<'de>>(d: D) -> Result<SignedDuration, D::Error> {
+	let span: jiff::Span = String::deserialize(d)?.parse().map_err(serde::de::Error::custom)?;
+	span.to_duration(jiff::SpanRelativeTo::days_are_24_hours()).map_err(serde::de::Error::custom)
 }
 
 impl Hook for Builtin {

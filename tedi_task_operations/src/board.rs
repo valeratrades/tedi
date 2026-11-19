@@ -76,6 +76,20 @@ pub async fn load(workflows: &Workflows) -> Result<Board> {
 	Ok(Board { cards, unreadable, colors })
 }
 
+/// `edits` applied to `link`'s stored issue and synced, without an editor: a clash pending on its line
+/// is the error, to be resolved through [`pending_conflict`].
+pub async fn edit(link: &IssueLink, edits: Vec<FieldEdit>, mode: SyncMode) -> Result<()> {
+	let source = LocalIssueSource::<FsReader>::build(LocalPath::new(stored_index(link)?)).await?;
+	modify_and_sync_issue(Issue::load(source).await?, mode, Modifier::Field { edits }, SyncOptions::default()).await?;
+	Ok(())
+}
+
+/// The clash file waiting on `link`'s line, once every file already freed of its markers has landed.
+/// Writing a marker-free resolution there and asking again lands it.
+pub async fn pending_conflict(link: &IssueLink) -> Result<Option<PathBuf>> {
+	check_for_existing_conflict(stored_index(link)?).await
+}
+
 fn card_tree(issue: &Issue, parent: Option<&IssueLink>, conflicted: bool, states: &States, workflows: &Workflows, out: &mut Vec<Card>) -> Result<()> {
 	let link = issue.identity.as_linked().expect("stored github issues are linked").link().clone();
 	out.push(card(issue, parent.cloned(), conflicted, states, workflows)?);
@@ -160,20 +174,6 @@ fn placed(states: &States, number: u64, workflows: &Workflows) -> Result<BTreeMa
 			Ok((name.clone(), at))
 		})
 		.collect()
-}
-
-/// `edits` applied to `link`'s stored issue and synced, without an editor: a clash pending on its line
-/// is the error, to be resolved through [`pending_conflict`].
-pub async fn edit(link: &IssueLink, edits: Vec<FieldEdit>, mode: SyncMode) -> Result<()> {
-	let source = LocalIssueSource::<FsReader>::build(LocalPath::new(stored_index(link)?)).await?;
-	modify_and_sync_issue(Issue::load(source).await?, mode, Modifier::Field { edits }, SyncOptions::default()).await?;
-	Ok(())
-}
-
-/// The clash file waiting on `link`'s line, once every file already freed of its markers has landed.
-/// Writing a marker-free resolution there and asking again lands it.
-pub async fn pending_conflict(link: &IssueLink) -> Result<Option<PathBuf>> {
-	check_for_existing_conflict(stored_index(link)?).await
 }
 
 pub(crate) fn stored_index(link: &IssueLink) -> Result<IssueIndex> {

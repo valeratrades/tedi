@@ -1,6 +1,8 @@
 //! `# Blockers` ⇄ Github's own `blocked by` links: every issue a blocker names is linked there, and a
 //! link made on Github alone joins the blockers. Issues on either end of a link land locally.
 
+use std::path::PathBuf;
+
 use tedi_task_operations::{
 	IssueLink, RepoInfo,
 	local::{FsReader, Local},
@@ -28,7 +30,7 @@ fn dependency_calls(ctx: &TestContext) -> String {
 	ctx.github_calls().into_iter().filter(|c| c.contains("blocked_by(")).collect::<Vec<_>>().join("\n")
 }
 
-fn stored(owner: &str, repo: &str, number: u64) -> Option<std::path::PathBuf> {
+fn stored(owner: &str, repo: &str, number: u64) -> Option<PathBuf> {
 	Local::find_by_number(RepoInfo::new(owner, repo), number, FsReader)
 }
 

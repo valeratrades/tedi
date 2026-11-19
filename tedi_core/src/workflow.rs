@@ -60,52 +60,6 @@ pub struct Workflow {
 	#[serde(default)] // a workflow may be moved by hand only
 	pub rules: Vec<Hook>,
 }
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct Bucket {
-	pub name: String,
-	/// Run on every move entering it, its sub-buckets' included.
-	#[serde(default)] // entering may do nothing
-	pub on_enter: Vec<Hook>,
-	#[serde(default)] // a leaf has none
-	pub buckets: Vec<Bucket>,
-}
-/// A hook by name, with the parameters the workflow file gives it.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(untagged)]
-pub enum Hook {
-	Builtin {
-		builtin: String,
-		#[serde(flatten)]
-		params: serde_json::Map<String, serde_json::Value>,
-	},
-	/// A symbol of a shared library speaking the C ABI of `tedi.h`.
-	Dylib {
-		lib: PathBuf,
-		symbol: String,
-		#[serde(flatten)]
-		params: serde_json::Map<String, serde_json::Value>,
-	},
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum WorkflowError {
-	#[error("{0:?} is no bucket path: names `/`-joined, none empty")]
-	Path(String),
-	#[error("a workflow holds at least one bucket")]
-	Empty,
-	#[error("{0:?} is no bucket name: non-empty, without `/`")]
-	Name(String),
-	#[error("two buckets named {0} side by side")]
-	Twice(String),
-	#[error("no bucket {0}")]
-	Missing(State),
-	#[error("{0} holds buckets: an issue sits in a leaf")]
-	NotLeaf(State),
-	#[error("no workflow {0}")]
-	Unknown(String),
-}
-
 impl Workflow {
 	/// The tree is well-formed and the intake a leaf of it.
 	pub fn check(&self) -> Result<(), WorkflowError> {
@@ -173,6 +127,52 @@ impl Workflow {
 		}
 		Some(out)
 	}
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Bucket {
+	pub name: String,
+	/// Run on every move entering it, its sub-buckets' included.
+	#[serde(default)] // entering may do nothing
+	pub on_enter: Vec<Hook>,
+	#[serde(default)] // a leaf has none
+	pub buckets: Vec<Bucket>,
+}
+/// A hook by name, with the parameters the workflow file gives it.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum Hook {
+	Builtin {
+		builtin: String,
+		#[serde(flatten)]
+		params: serde_json::Map<String, serde_json::Value>,
+	},
+	/// A symbol of a shared library speaking the C ABI of `tedi.h`.
+	Dylib {
+		lib: PathBuf,
+		symbol: String,
+		#[serde(flatten)]
+		params: serde_json::Map<String, serde_json::Value>,
+	},
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum WorkflowError {
+	#[error("{0:?} is no bucket path: names `/`-joined, none empty")]
+	Path(String),
+	#[error("a workflow holds at least one bucket")]
+	Empty,
+	#[error("{0:?} is no bucket name: non-empty, without `/`")]
+	Name(String),
+	#[error("two buckets named {0} side by side")]
+	Twice(String),
+	#[error("no bucket {0}")]
+	Missing(State),
+	#[error("{0} holds buckets: an issue sits in a leaf")]
+	NotLeaf(State),
+	#[error("no workflow {0}")]
+	Unknown(String),
 }
 
 #[cfg(test)]

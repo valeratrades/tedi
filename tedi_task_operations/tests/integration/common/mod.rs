@@ -21,13 +21,16 @@
 //! assert!(out.status.success());
 //! ```
 
+pub const ENV_MOCK_CALL_LOG: &str = concat!("tedi", "_MOCK_CALL_LOG");
+pub const USER: &str = "mock_user";
+/// Every spawned binary runs on these, whatever the developer's shell holds.
+pub const BINARY_ENV: [(&str, &str); 3] = [("__IS_INTEGRATION_TEST", "1"), ("WAKETIME", "07:10"), ("DAY_SECTION_BORDERS", "0.2:8.5:16")];
 /// Global CLI flags that must appear before the subcommand.
 const GLOBAL_FLAGS: &[&str] = &["--offline", "--sync-on-exit", "--mock", "-v", "--verbose", "-q", "--quiet"];
 /// Environment variable names derived from package name
 const ENV_GITHUB_TOKEN: &str = concat!("tedi", "_GITHUB_TOKEN");
 const ENV_MOCK_STATE: &str = concat!("tedi", "_MOCK_STATE");
 const ENV_MOCK_PIPE: &str = concat!("tedi", "_MOCK_PIPE");
-pub const ENV_MOCK_CALL_LOG: &str = concat!("tedi", "_MOCK_CALL_LOG");
 
 /// Base timestamp: 2001-09-11 12:00:00 UTC (midday).
 const BASE_TIMESTAMP_SECS: i64 = 1000209600;
@@ -41,9 +44,6 @@ const DEFAULT_REPO: &str = "repo";
 const DEFAULT_NUMBER: u64 = 1;
 const OWNER: &str = "o";
 const REPO: &str = "r";
-pub const USER: &str = "mock_user";
-/// Every spawned binary runs on these, whatever the developer's shell holds.
-pub const BINARY_ENV: [(&str, &str); 3] = [("__IS_INTEGRATION_TEST", "1"), ("WAKETIME", "07:10"), ("DAY_SECTION_BORDERS", "0.2:8.5:16")];
 
 impl Seed {
 	pub fn new(value: i64) -> Self {
@@ -935,14 +935,6 @@ use v_fixtures::{
 	fs_standards::{git::Git, xdg::Xdg},
 };
 
-/// Set timestamps on an issue and all its children.
-pub fn set_timestamps(issue: &mut Issue, seed: Seed) {
-	let timestamps = timestamps_from_seed(seed);
-	for (_, node) in issue.iter_mut() {
-		node.identity.mut_linked_issue_meta().unwrap().timestamps = timestamps.clone();
-	}
-}
-
 /// Generate timestamps from a seed value.
 ///
 /// Seed must be in range -100..=100. Each timestamp field gets:
@@ -958,6 +950,14 @@ pub fn set_timestamps(issue: &mut Issue, seed: Seed) {
 /// - labels: 0
 /// - comments: 1 (aggregate timestamp for "most recent comment")
 const DESCRIPTION_FIELD_INDEX: i64 = -1;
+
+/// Set timestamps on an issue and all its children.
+pub fn set_timestamps(issue: &mut Issue, seed: Seed) {
+	let timestamps = timestamps_from_seed(seed);
+	for (_, node) in issue.iter_mut() {
+		node.identity.mut_linked_issue_meta().unwrap().timestamps = timestamps.clone();
+	}
+}
 
 pub fn timestamps_from_seed(seed: Seed) -> IssueTimestamps {
 	IssueTimestamps {
@@ -1032,6 +1032,18 @@ pub struct TestContext {
 /// Seed for deterministic timestamp generation. Must be in range -100..=100.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, derive_more::Deref, derive_more::DerefMut, derive_more::Display, derive_more::Into)]
 pub struct Seed(i64);
+
+/// Every stored issue file, relative to the issues dir.
+pub fn issue_tree(ctx: &TestContext) -> String {
+	let issues = ctx.xdg.data_dir().join("issues");
+	let mut tree: Vec<String> = walkdir::WalkDir::new(&issues)
+		.into_iter()
+		.map(|e| e.unwrap().path().strip_prefix(&issues).unwrap().display().to_string())
+		.filter(|p| (p.ends_with(".md") || p.ends_with(".md.bak")) && !p.starts_with("__milestones__") && !p.starts_with(".git") && !p.starts_with(".conflicts"))
+		.collect();
+	tree.sort();
+	tree.join("\n")
+}
 
 /// What target the OpenBuilder opens.
 enum BuilderTarget<'a> {
@@ -1345,16 +1357,4 @@ struct SubIssueRelation {
 	repo: String,
 	parent: u64,
 	child: u64,
-}
-
-/// Every stored issue file, relative to the issues dir.
-pub fn issue_tree(ctx: &TestContext) -> String {
-	let issues = ctx.xdg.data_dir().join("issues");
-	let mut tree: Vec<String> = walkdir::WalkDir::new(&issues)
-		.into_iter()
-		.map(|e| e.unwrap().path().strip_prefix(&issues).unwrap().display().to_string())
-		.filter(|p| (p.ends_with(".md") || p.ends_with(".md.bak")) && !p.starts_with("__milestones__") && !p.starts_with(".git") && !p.starts_with(".conflicts"))
-		.collect();
-	tree.sort();
-	tree.join("\n")
 }

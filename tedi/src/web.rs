@@ -1,6 +1,6 @@
 //! `tedi web`: this store, served as the board.
 
-use std::{net::SocketAddr, path::PathBuf};
+use std::{collections::BTreeMap, net::SocketAddr, path::PathBuf};
 
 use color_eyre::eyre::{Result, bail, eyre};
 use tedi_task_operations::{RepoInfo, open_interactions::SyncMode};
@@ -26,7 +26,7 @@ pub struct WebArgs {
 pub async fn web_command(settings: &LiveSettings, args: WebArgs, mode: SyncMode) -> Result<()> {
 	let config = settings.config()?;
 	let board = config.board.ok_or_else(|| eyre!("`tedi web` reads the config's `board` (`archive_after`, `views`, `scopes`)"))?;
-	fn check(scopes: &std::collections::BTreeMap<String, tedi_task_operations::board::Scope>, views: &[tedi_task_operations::board::View]) -> Result<()> {
+	fn check(scopes: &BTreeMap<String, tedi_task_operations::board::Scope>, views: &[tedi_task_operations::board::View]) -> Result<()> {
 		for (name, scope) in scopes {
 			if let Some(n) = scope.views.iter().find(|n| !views.iter().any(|v| &v.name == *n)) {
 				bail!("the scope {name} shows the view {n}, and no `board.views` is named so");

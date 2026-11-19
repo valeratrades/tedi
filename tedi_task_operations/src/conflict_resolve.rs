@@ -71,10 +71,6 @@ pub fn discard_conflicts(index: IssueIndex) -> Result<()> {
 	Ok(())
 }
 
-fn remote_snapshot(path: &Path) -> PathBuf {
-	path.with_extension("remote")
-}
-
 /// `Some(path)` while markers remain on `index`'s line. A file whose markers are gone is the
 /// resolution of its node: sunk to GitHub, local and consensus, and that conflict is over.
 pub async fn check_for_existing_conflict(index: IssueIndex) -> Result<Option<PathBuf>> {
@@ -86,6 +82,55 @@ pub async fn check_for_existing_conflict(index: IssueIndex) -> Result<Option<Pat
 		}
 	}
 	Ok(None)
+}
+
+/// Milestone counterpart to `check_for_existing_conflict`: if the resolution file's markers
+/// are gone, rebuild the milestone from it (identity from meta, timestamps bumped against
+/// consensus) and sink to local + remote, then clean up.
+pub async fn check_for_existing_milestone_conflict(link: &crate::MilestoneLink) -> Result<Option<PathBuf>> {
+	let conflict_fpath = milestone_conflict_path(link);
+	if !conflict_fpath.exists() {
+		return Ok(None);
+	}
+	let content = std::fs::read_to_string(&conflict_fpath)?;
+	if has_conflict_markers(&content) {
+		return Ok(Some(conflict_fpath));
+	}
+
+	let mut milestone = {
+		let body = crate::MilestoneBody::parse(&content, link.repo_info());
+		let meta = Local::load_milestone_project_meta(link.repo_info(), &FsReader)
+			.milestones
+			.remove(&link.number())
+			.unwrap_or_default();
+		let mut m = crate::Milestone {
+			identity: crate::MilestoneIdentity {
+				link: link.clone(),
+				state: meta.state,
+				due_on: meta.due_on,
+				title: meta.title,
+				timestamps: meta.timestamps,
+			},
+			body,
+		};
+		if let Some(consensus) = Local::load_milestone(link, &GitReader)? {
+			m.post_update(&consensus);
+		}
+		m
+	};
+
+	let store = crate::local::lock_store().await?;
+	<crate::Milestone as Sink<LocalFs>>::sink(&mut milestone, None).await?;
+	<crate::Milestone as Sink<Remote>>::sink(&mut milestone, None).await?;
+	<crate::Milestone as Sink<Consensus>>::sink(&mut milestone, None).await?;
+	drop(store);
+	std::fs::remove_file(remote_snapshot(&conflict_fpath))?;
+	std::fs::remove_file(&conflict_fpath)?;
+	Ok(None)
+}
+
+fn remote_snapshot(path: &Path) -> PathBuf {
+	path.with_extension("remote")
 }
 
 async fn land_resolution(issue_index: IssueIndex, conflict_fpath: &Path, content: &str) -> Result<()> {
@@ -143,49 +188,4 @@ async fn refresh(issue_index: IssueIndex, conflict_fpath: &Path) -> Result<()> {
 	let local = Issue::load(LocalIssueSource::<FsReader>::build(LocalPath::new(issue_index)).await?).await?;
 	let consensus = load_consensus_issue(issue_index).await?;
 	record_conflict(conflict_fpath, &local.to_string(), consensus.map(|c| c.to_string()).as_deref(), &remote_side)
-}
-
-/// Milestone counterpart to `check_for_existing_conflict`: if the resolution file's markers
-/// are gone, rebuild the milestone from it (identity from meta, timestamps bumped against
-/// consensus) and sink to local + remote, then clean up.
-pub async fn check_for_existing_milestone_conflict(link: &crate::MilestoneLink) -> Result<Option<PathBuf>> {
-	let conflict_fpath = milestone_conflict_path(link);
-	if !conflict_fpath.exists() {
-		return Ok(None);
-	}
-	let content = std::fs::read_to_string(&conflict_fpath)?;
-	if has_conflict_markers(&content) {
-		return Ok(Some(conflict_fpath));
-	}
-
-	let mut milestone = {
-		let body = crate::MilestoneBody::parse(&content, link.repo_info());
-		let meta = Local::load_milestone_project_meta(link.repo_info(), &FsReader)
-			.milestones
-			.remove(&link.number())
-			.unwrap_or_default();
-		let mut m = crate::Milestone {
-			identity: crate::MilestoneIdentity {
-				link: link.clone(),
-				state: meta.state,
-				due_on: meta.due_on,
-				title: meta.title,
-				timestamps: meta.timestamps,
-			},
-			body,
-		};
-		if let Some(consensus) = Local::load_milestone(link, &GitReader)? {
-			m.post_update(&consensus);
-		}
-		m
-	};
-
-	let store = crate::local::lock_store().await?;
-	<crate::Milestone as Sink<LocalFs>>::sink(&mut milestone, None).await?;
-	<crate::Milestone as Sink<Remote>>::sink(&mut milestone, None).await?;
-	<crate::Milestone as Sink<Consensus>>::sink(&mut milestone, None).await?;
-	drop(store);
-	std::fs::remove_file(remote_snapshot(&conflict_fpath))?;
-	std::fs::remove_file(&conflict_fpath)?;
-	Ok(None)
 }

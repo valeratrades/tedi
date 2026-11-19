@@ -400,6 +400,45 @@ pub fn take_moves(content: &str) -> Result<(String, Vec<(IssueLink, RepoInfo)>),
 	Ok((kept, moves))
 }
 
+/// A task typed into a view as plain text, to be turned into an issue.
+pub struct HomelessTask {
+	pub id: TaskItemId,
+	/// Serialized item, issue children cut out.
+	pub block: String,
+	/// The inlined milestone it lives under.
+	pub milestone: Option<MilestoneLink>,
+	/// The repo its checkbox names: `(owner, repo)`, owner left to context when written as `[repo]`.
+	pub repo: Option<(Option<String>, String)>,
+	/// Issues listed directly under it, which become its children.
+	pub adopts: Vec<IssueLink>,
+}
+
+/// Address of a task item within a `TaskView`: section header-path + positional path
+/// (item index, then alternating child-section/item indices for nesting).
+pub struct TaskItemId {
+	section: Vec<String>,
+	path: Vec<usize>,
+}
+
+/// A single task-space component: a list item classified as an issue ref, a milestone
+/// ref, or unlinked virtual text, plus any nested sub-content.
+#[derive(Clone)]
+pub struct TaskItem {
+	/// The checkbox contents (between `[` and `]`), or None for plain items.
+	checkbox: Option<String>,
+	content: TaskContent,
+	/// Nested content under this item (sub-lists, headings, prose).
+	children: Vec<Section>,
+}
+
+/// What a ref renders as in [`TaskView::render`].
+pub enum Expansion {
+	/// The issue's own `Display`, emitted verbatim.
+	Issue(String),
+	/// `head` is the title line; `body` renders indented under it.
+	Milestone { head: String, body: TaskView },
+}
+
 /// `line` without its `!mv`, and the target.
 fn cut_move(line: &str) -> Option<(String, &str)> {
 	if !line.trim_start().starts_with("- ") {
@@ -471,37 +510,6 @@ fn dedent(line: &str, width: usize) -> &str {
 	""
 }
 
-/// A task typed into a view as plain text, to be turned into an issue.
-pub struct HomelessTask {
-	pub id: TaskItemId,
-	/// Serialized item, issue children cut out.
-	pub block: String,
-	/// The inlined milestone it lives under.
-	pub milestone: Option<MilestoneLink>,
-	/// The repo its checkbox names: `(owner, repo)`, owner left to context when written as `[repo]`.
-	pub repo: Option<(Option<String>, String)>,
-	/// Issues listed directly under it, which become its children.
-	pub adopts: Vec<IssueLink>,
-}
-
-/// Address of a task item within a `TaskView`: section header-path + positional path
-/// (item index, then alternating child-section/item indices for nesting).
-pub struct TaskItemId {
-	section: Vec<String>,
-	path: Vec<usize>,
-}
-
-/// A single task-space component: a list item classified as an issue ref, a milestone
-/// ref, or unlinked virtual text, plus any nested sub-content.
-#[derive(Clone)]
-pub struct TaskItem {
-	/// The checkbox contents (between `[` and `]`), or None for plain items.
-	checkbox: Option<String>,
-	content: TaskContent,
-	/// Nested content under this item (sub-lists, headings, prose).
-	children: Vec<Section>,
-}
-
 /// Semantic classification of a component's inline text. Blockers are never a
 /// top-level component here — they live inside the individual issues.
 #[derive(Clone)]
@@ -515,14 +523,6 @@ enum TaskContent {
 	Issue { r#ref: IssueRef },
 	/// Unlinked text (category headers like `discretionary_engine`, or a homeless local issue).
 	Virtual(Vec<OwnedEvent>),
-}
-
-/// What a ref renders as in [`TaskView::render`].
-pub enum Expansion {
-	/// The issue's own `Display`, emitted verbatim.
-	Issue(String),
-	/// `head` is the title line; `body` renders indented under it.
-	Milestone { head: String, body: TaskView },
 }
 
 /// A child block under a component: free-form markdown or a nested list.
@@ -1073,13 +1073,6 @@ struct Render<'a> {
 	fold: Option<Fold>,
 	in_milestone: bool, // milestones contain only issues: inner milestone refs stay bare links
 }
-#[derive(Clone, Copy)]
-struct Fold {
-	/// Folded components around this one.
-	depth: u8,
-	/// Level of the innermost of them, 0 at top.
-	enclosing: u8,
-}
 impl Render<'_> {
 	fn unfolded(expansions: &HashMap<String, Expansion>) -> Render<'_> {
 		Render {
@@ -1093,6 +1086,14 @@ impl Render<'_> {
 		let expansion = self.expansions.get(&expansion_key(content)?)?;
 		(!(self.in_milestone && matches!(expansion, Expansion::Milestone { .. }))).then_some(expansion)
 	}
+}
+
+#[derive(Clone, Copy)]
+struct Fold {
+	/// Folded components around this one.
+	depth: u8,
+	/// Level of the innermost of them, 0 at top.
+	enclosing: u8,
 }
 
 fn serialize_items(items: &[TaskItem], r: Render, output: &mut String) {

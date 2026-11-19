@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use v_utils::macros as v_macros;
 
 pub const EXE_NAME: &str = env!("CARGO_PKG_NAME");
@@ -54,14 +56,14 @@ pub struct GithubApp {
 pub struct Board {
 	/// By name: `preset:<name>` (`kanban`, `pull_requests`) or a workflow file's path.
 	#[serde(default)] // a board may place issues in none
-	pub workflows: std::collections::BTreeMap<String, String>,
+	pub workflows: BTreeMap<String, String>,
 	pub views: Vec<tedi_task_operations::board::View>,
 	/// Named slices of the team's repos, nesting narrower ones (`[board.scopes.EV-Main.tooling] repos = ["EV-Main/tilers"]`).
 	#[serde(default)] // a board may have none
-	pub scopes: std::collections::BTreeMap<String, tedi_task_operations::board::Scope>,
+	pub scopes: BTreeMap<String, tedi_task_operations::board::Scope>,
 	/// Column colorings every viewer is offered (`[board.columns.notion] by = "state:kanban"`, `tints = { triage = "orange" }`).
 	#[serde(default)] // a board may have none
-	pub columns: std::collections::BTreeMap<String, tedi_web::api::Columns>,
+	pub columns: BTreeMap<String, tedi_web::api::Columns>,
 }
 impl Board {
 	/// Its workflows, loaded with their hooks; every workflow a view or a column coloring names is among them.

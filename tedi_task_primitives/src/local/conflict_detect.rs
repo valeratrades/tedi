@@ -17,6 +17,9 @@ use v_utils::macros::wrap_err;
 use super::Local;
 use crate::{IssueIndex, IssueSelector, MilestoneLink, RepoInfo};
 
+/// Relative to the issues dir; consensus commits never take it.
+pub const CONFLICTS_DIR: &str = ".conflicts";
+
 /// Error returned when an unresolved conflict blocks an operation.
 #[wrap_err]
 #[derive(Debug, Diagnostic, Error)]
@@ -27,13 +30,6 @@ use crate::{IssueIndex, IssueSelector, MilestoneLink, RepoInfo};
 )]
 pub struct ConflictBlockedError {
 	pub conflict_file: PathBuf,
-}
-
-/// Relative to the issues dir; consensus commits never take it.
-pub const CONFLICTS_DIR: &str = ".conflicts";
-
-fn repo_conflicts_dir(repo: RepoInfo) -> PathBuf {
-	Local::issues_dir().join(CONFLICTS_DIR).join(repo.owner().expect("github project")).join(repo.repo())
 }
 
 /// Named by the node's lineage, `{root}_{…}_{n}.md`: a pending conflict blocks its whole line,
@@ -104,6 +100,10 @@ pub fn has_conflict_markers(content: &str) -> bool {
 	let has_separator = content.contains("=======");
 	let has_theirs = content.contains(">>>>>>>");
 	has_ours && has_separator && has_theirs
+}
+
+fn repo_conflicts_dir(repo: RepoInfo) -> PathBuf {
+	Local::issues_dir().join(CONFLICTS_DIR).join(repo.owner().expect("github project")).join(repo.repo())
 }
 
 #[cfg(test)]

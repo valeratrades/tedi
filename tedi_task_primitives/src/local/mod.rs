@@ -1132,7 +1132,7 @@ pub struct ProjectMeta {
 	pub issues: BTreeMap<u64, IssueMeta>,
 	/// The repo's labels as of the last `list_labels`: each pull refreshes them.
 	#[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
-	pub label_colors: std::collections::BTreeMap<String, tedi_core::labels::Color>,
+	pub label_colors: BTreeMap<String, tedi_core::labels::Color>,
 	/// When the last `tedi pull` of the repo that stored everything it listed started: the next one lists from there.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub pulled_at: Option<jiff::Timestamp>,

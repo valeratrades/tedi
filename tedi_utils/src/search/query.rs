@@ -88,35 +88,118 @@ pub(super) struct Term {
 	/// Body is never fuzzy-matched: over long text a scatter hits almost everything.
 	body_atom: Atom,
 }
+impl Term {
+	/// Best hit across fields by [`TermHit::key`]: the first contiguous one in field order, else the first scatter.
+	fn hit(&self, c: &Prepared, m: &mut Matcher) -> Option<TermHit> {
+		let mut scatter = None;
+		for field in [Field::Title, Field::Context, Field::Body] {
+			match self.hit_in(c, field, m) {
+				Some(hit) if hit.quality != Quality::Fuzzy => return Some(hit),
+				Some(hit) => {
+					scatter.get_or_insert(hit);
+				}
+				None => {}
+			}
+		}
+		scatter
+	}
+
+	fn hit_in(&self, c: &Prepared, field: Field, m: &mut Matcher) -> Option<TermHit> {
+		let haystack = c.field(field);
+		let (atom, kind) = match (field, self.kind) {
+			(Field::Body, Kind::Fuzzy) => (&self.body_atom, Kind::Substring),
+			(_, kind) => (&self.atom, kind),
+		};
+		let mut indices = Vec::new();
+		let score = atom.indices(haystack, m, &mut indices)?;
+		let mut quality = classify(haystack, &indices);
+		if let Some((start, q)) = self.occurrences(haystack, kind).max_by_key(|&(start, q)| (q, std::cmp::Reverse(start)))
+			&& q > quality
+		{
+			quality = q;
+			indices = (start as u32..(start + self.needle.len()) as u32).collect();
+		}
+		if kind == Kind::Word && quality != Quality::WholeWord {
+			return None;
+		}
+		Some(TermHit { field, quality, score, indices })
+	}
+
+	/// Contiguous occurrences of the needle allowed by `kind`'s anchoring, with their quality.
+	fn occurrences<'a>(&'a self, haystack: Utf32Str<'a>, kind: Kind) -> impl Iterator<Item = (usize, Quality)> + 'a {
+		let (len, n) = (haystack.len(), self.needle.len());
+		let starts = match kind {
+			Kind::Prefix => 0..usize::from(n <= len),
+			Kind::Suffix => len.saturating_sub(n)..len.saturating_sub(n) + usize::from(n <= len),
+			Kind::Equal => 0..usize::from(n == len),
+			Kind::Fuzzy | Kind::Substring | Kind::Word => 0..(len + 1).saturating_sub(n),
+		};
+		starts
+			.filter(move |&s| n > 0 && (0..n).all(|j| fold(haystack.get((s + j) as u32), self.ignore_case) == self.needle[j]))
+			.map(move |s| {
+				let indices: Vec<u32> = (s as u32..(s + n) as u32).collect();
+				(s, classify(haystack, &indices))
+			})
+	}
+
+	/// `None` for a term with nothing left to match (`!`, `'`, `^` while typing).
+	fn parse(token: &str, exact_mode: bool) -> Option<Self> {
+		let (exclude, rest) = if let Some(rest) = token.strip_prefix("!!") {
+			(Some(Exclude::Anywhere), rest)
+		} else if let Some(rest) = token.strip_prefix('!') {
+			(Some(Exclude::OwnTitle), rest)
+		} else {
+			(None, token)
+		};
+		let (kind, needle) = if let Some(inner) = rest.strip_prefix('\'').and_then(|r| r.strip_suffix('\'')).filter(|i| !i.is_empty()) {
+			(Kind::Word, inner)
+		} else if let Some(inner) = rest.strip_prefix('\'') {
+			(if exact_mode { Kind::Fuzzy } else { Kind::Substring }, inner)
+		} else if let Some(inner) = rest.strip_prefix('^').and_then(|r| r.strip_suffix('$')) {
+			(Kind::Equal, inner)
+		} else if let Some(inner) = rest.strip_prefix('^') {
+			(Kind::Prefix, inner)
+		} else if let Some(inner) = rest.strip_suffix('$') {
+			(Kind::Suffix, inner)
+		} else if exact_mode || exclude.is_some() {
+			(Kind::Substring, rest)
+		} else {
+			(Kind::Fuzzy, rest)
+		};
+		if needle.is_empty() {
+			return None;
+		}
+		let ignore_case = !needle.chars().any(char::is_uppercase);
+		let case = match ignore_case {
+			true => CaseMatching::Ignore,
+			false => CaseMatching::Respect,
+		};
+		let atom_of = |kind: Kind| {
+			let atom_kind = match kind {
+				Kind::Fuzzy => AtomKind::Fuzzy,
+				Kind::Substring | Kind::Word => AtomKind::Substring,
+				Kind::Prefix => AtomKind::Prefix,
+				Kind::Suffix => AtomKind::Postfix,
+				Kind::Equal => AtomKind::Exact,
+			};
+			Atom::new(needle, case, Normalization::Never, atom_kind, false)
+		};
+		Some(Self {
+			kind,
+			exclude,
+			needle: needle.chars().map(|c| fold(c, ignore_case)).collect(),
+			ignore_case,
+			atom: atom_of(kind),
+			body_atom: atom_of(if kind == Kind::Fuzzy { Kind::Substring } else { kind }),
+		})
+	}
+}
 
 pub(super) enum Query {
 	/// AND of OR-groups.
 	Terms(Vec<Vec<Term>>),
 	Regex(Regex),
 }
-
-pub(super) struct Hit {
-	pub score: i32,
-	/// Every positive term sits contiguously in the displayed row.
-	pub in_row: bool,
-	/// Char indices into the displayed row.
-	#[cfg(feature = "picker")]
-	pub line_indices: Vec<usize>,
-}
-
-struct TermHit {
-	field: Field,
-	quality: Quality,
-	score: u16,
-	indices: Vec<u32>,
-}
-impl TermHit {
-	/// A scatter is a typo rather than a hit, so it loses to any contiguous hit before fields compare.
-	fn key(&self) -> (bool, Field, Quality, u16) {
-		(self.quality != Quality::Fuzzy, self.field, self.quality, self.score)
-	}
-}
-
 impl Query {
 	pub fn parse(kind: SearchKind, query: &str) -> Result<Self, regex::Error> {
 		let query = query.trim();
@@ -230,67 +313,34 @@ impl Query {
 	}
 }
 
+pub(super) struct Hit {
+	pub score: i32,
+	/// Every positive term sits contiguously in the displayed row.
+	pub in_row: bool,
+	/// Char indices into the displayed row.
+	#[cfg(feature = "picker")]
+	pub line_indices: Vec<usize>,
+}
+
+struct TermHit {
+	field: Field,
+	quality: Quality,
+	score: u16,
+	indices: Vec<u32>,
+}
+impl TermHit {
+	/// A scatter is a typo rather than a hit, so it loses to any contiguous hit before fields compare.
+	fn key(&self) -> (bool, Field, Quality, u16) {
+		(self.quality != Quality::Fuzzy, self.field, self.quality, self.score)
+	}
+}
+
 /// Item score: contiguous hit count, per-field hit counts (title first), summed quality, summed nucleo score.
 /// shortcut: components saturate (15 terms per count, 31 quality, 1023 nucleo), far past any typed query.
 fn pack(contiguous: u32, title: u32, context: u32, body: u32, quality: u32, nucleo: u32) -> i32 {
 	let sat = |v: u32, bits: u32| v.min((1 << bits) - 1);
 	let packed = sat(contiguous, 4) << 27 | sat(title, 4) << 23 | sat(context, 4) << 19 | sat(body, 4) << 15 | sat(quality, 5) << 10 | sat(nucleo, 10);
 	i32::try_from(packed).expect("31 bits fit")
-}
-
-impl Term {
-	/// Best hit across fields by [`TermHit::key`]: the first contiguous one in field order, else the first scatter.
-	fn hit(&self, c: &Prepared, m: &mut Matcher) -> Option<TermHit> {
-		let mut scatter = None;
-		for field in [Field::Title, Field::Context, Field::Body] {
-			match self.hit_in(c, field, m) {
-				Some(hit) if hit.quality != Quality::Fuzzy => return Some(hit),
-				Some(hit) => {
-					scatter.get_or_insert(hit);
-				}
-				None => {}
-			}
-		}
-		scatter
-	}
-
-	fn hit_in(&self, c: &Prepared, field: Field, m: &mut Matcher) -> Option<TermHit> {
-		let haystack = c.field(field);
-		let (atom, kind) = match (field, self.kind) {
-			(Field::Body, Kind::Fuzzy) => (&self.body_atom, Kind::Substring),
-			(_, kind) => (&self.atom, kind),
-		};
-		let mut indices = Vec::new();
-		let score = atom.indices(haystack, m, &mut indices)?;
-		let mut quality = classify(haystack, &indices);
-		if let Some((start, q)) = self.occurrences(haystack, kind).max_by_key(|&(start, q)| (q, std::cmp::Reverse(start)))
-			&& q > quality
-		{
-			quality = q;
-			indices = (start as u32..(start + self.needle.len()) as u32).collect();
-		}
-		if kind == Kind::Word && quality != Quality::WholeWord {
-			return None;
-		}
-		Some(TermHit { field, quality, score, indices })
-	}
-
-	/// Contiguous occurrences of the needle allowed by `kind`'s anchoring, with their quality.
-	fn occurrences<'a>(&'a self, haystack: Utf32Str<'a>, kind: Kind) -> impl Iterator<Item = (usize, Quality)> + 'a {
-		let (len, n) = (haystack.len(), self.needle.len());
-		let starts = match kind {
-			Kind::Prefix => 0..usize::from(n <= len),
-			Kind::Suffix => len.saturating_sub(n)..len.saturating_sub(n) + usize::from(n <= len),
-			Kind::Equal => 0..usize::from(n == len),
-			Kind::Fuzzy | Kind::Substring | Kind::Word => 0..(len + 1).saturating_sub(n),
-		};
-		starts
-			.filter(move |&s| n > 0 && (0..n).all(|j| fold(haystack.get((s + j) as u32), self.ignore_case) == self.needle[j]))
-			.map(move |s| {
-				let indices: Vec<u32> = (s as u32..(s + n) as u32).collect();
-				(s, classify(haystack, &indices))
-			})
-	}
 }
 
 /// Word boundaries are the string edges and non-alphanumeric neighbours.
@@ -350,60 +400,6 @@ fn parse_terms(query: &str, exact_mode: bool) -> Vec<Vec<Term>> {
 		join_next = false;
 	}
 	groups
-}
-
-impl Term {
-	/// `None` for a term with nothing left to match (`!`, `'`, `^` while typing).
-	fn parse(token: &str, exact_mode: bool) -> Option<Self> {
-		let (exclude, rest) = if let Some(rest) = token.strip_prefix("!!") {
-			(Some(Exclude::Anywhere), rest)
-		} else if let Some(rest) = token.strip_prefix('!') {
-			(Some(Exclude::OwnTitle), rest)
-		} else {
-			(None, token)
-		};
-		let (kind, needle) = if let Some(inner) = rest.strip_prefix('\'').and_then(|r| r.strip_suffix('\'')).filter(|i| !i.is_empty()) {
-			(Kind::Word, inner)
-		} else if let Some(inner) = rest.strip_prefix('\'') {
-			(if exact_mode { Kind::Fuzzy } else { Kind::Substring }, inner)
-		} else if let Some(inner) = rest.strip_prefix('^').and_then(|r| r.strip_suffix('$')) {
-			(Kind::Equal, inner)
-		} else if let Some(inner) = rest.strip_prefix('^') {
-			(Kind::Prefix, inner)
-		} else if let Some(inner) = rest.strip_suffix('$') {
-			(Kind::Suffix, inner)
-		} else if exact_mode || exclude.is_some() {
-			(Kind::Substring, rest)
-		} else {
-			(Kind::Fuzzy, rest)
-		};
-		if needle.is_empty() {
-			return None;
-		}
-		let ignore_case = !needle.chars().any(char::is_uppercase);
-		let case = match ignore_case {
-			true => CaseMatching::Ignore,
-			false => CaseMatching::Respect,
-		};
-		let atom_of = |kind: Kind| {
-			let atom_kind = match kind {
-				Kind::Fuzzy => AtomKind::Fuzzy,
-				Kind::Substring | Kind::Word => AtomKind::Substring,
-				Kind::Prefix => AtomKind::Prefix,
-				Kind::Suffix => AtomKind::Postfix,
-				Kind::Equal => AtomKind::Exact,
-			};
-			Atom::new(needle, case, Normalization::Never, atom_kind, false)
-		};
-		Some(Self {
-			kind,
-			exclude,
-			needle: needle.chars().map(|c| fold(c, ignore_case)).collect(),
-			ignore_case,
-			atom: atom_of(kind),
-			body_atom: atom_of(if kind == Kind::Fuzzy { Kind::Substring } else { kind }),
-		})
-	}
 }
 
 #[cfg(test)]

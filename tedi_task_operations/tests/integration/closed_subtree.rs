@@ -1,5 +1,7 @@
 //! A completed (`[x]`) issue never has an open descendant: an edit producing one is rejected whole. Other close reasons carry no such constraint.
 
+use std::path::PathBuf;
+
 use tedi_task_operations::{
 	RepoInfo,
 	local::{FsReader, Local},
@@ -9,7 +11,7 @@ use crate::common::{TestContext, parse_virtual};
 
 const TREE: &str = "- [ ] Parent task <!-- @mock_user https://github.com/o/r/issues/1 -->\n  parent body\n\n  - [ ] Open child <!--sub @mock_user https://github.com/o/r/issues/2 -->\n\n    child body\n\n    - [ ] Open grandchild <!--sub @mock_user https://github.com/o/r/issues/3 -->\n\n      grandchild body\n";
 
-fn local_path(number: u64) -> std::path::PathBuf {
+fn local_path(number: u64) -> PathBuf {
 	Local::find_by_number(RepoInfo::new("o", "r"), number, FsReader).expect("stored locally")
 }
 
@@ -27,7 +29,8 @@ async fn test_closing_parent_over_open_child_is_rejected() {
 	let out = paused.resume();
 	assert!(!out.status.success(), "stdout: {}", out.stdout);
 	assert!(out.stderr.contains("rejected-changes.md"), "stderr: {}", out.stderr);
-	assert!(out.stderr.contains("Parent task") && out.stderr.contains("Open child"), "stderr: {}", out.stderr);
+	assert!(out.stderr.contains("Parent task"), "stderr: {}", out.stderr);
+	assert!(out.stderr.contains("Open child"), "stderr: {}", out.stderr);
 	assert_eq!(std::fs::read_to_string(&vpath).unwrap(), before);
 	assert!(std::fs::read_to_string(local_path(2)).unwrap().contains("- [ ] Open child"));
 	assert!(!ctx.github_calls().iter().any(|c| c.starts_with("update_issue")), "{:?}", ctx.github_calls());

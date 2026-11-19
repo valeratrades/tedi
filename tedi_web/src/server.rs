@@ -59,17 +59,6 @@ pub enum Viewer {
 	Operator,
 }
 
-static SETTINGS: OnceLock<Settings> = OnceLock::new();
-static CHANGES: LazyLock<broadcast::Sender<()>> = LazyLock::new(|| broadcast::channel(16).0);
-/// Loaded once per change rather than once per open board.
-static BOARD: Mutex<Option<Arc<Board>>> = Mutex::const_new(None);
-/// Held across each library's read-modify-write.
-static LIBRARIES: Mutex<()> = Mutex::const_new(());
-
-fn settings() -> &'static Settings {
-	SETTINGS.get().expect("set by `serve` before the router exists")
-}
-
 pub async fn serve(config: Settings) -> Result<()> {
 	use tower_http::services::{ServeDir, ServeFile};
 
@@ -90,6 +79,112 @@ pub async fn serve(config: Settings) -> Result<()> {
 	tokio::try_join!(async { Ok(axum::serve(listener, router).await?) }, puller(announced))?;
 	drop(announce); // held until here, so the puller's channel never closes under it
 	Ok(())
+}
+
+pub fn changes() -> ServerEvents<()> {
+	use tokio_stream::StreamExt as _;
+	// a lagging board missed ticks, which still says the same thing: reload
+	ServerEvents::from_stream(tokio_stream::wrappers::BroadcastStream::new(CHANGES.subscribe()).map(|_| Ok(())))
+}
+
+pub async fn setup() -> Result<Setup> {
+	let s = settings();
+	Ok(Setup {
+		me: editor(),
+		workflows: s.workflows.iter().map(|(name, w)| (name.clone(), w.workflow.clone())).collect(),
+		views: s.views.clone(),
+		scopes: s.scopes.clone(),
+		columns: s.columns.clone(),
+		sprints: match s.milestones {
+			Some(repo) => sprints(repo).await?,
+			None => Vec::new(),
+		},
+	})
+}
+
+pub async fn board() -> Result<Arc<Board>> {
+	let mut cached = BOARD.lock().await;
+	if let Some(board) = &*cached {
+		return Ok(board.clone());
+	}
+	let board = Arc::new(tedi_task_operations::board::load(&settings().workflows).await?);
+	*cached = Some(board.clone());
+	Ok(board)
+}
+
+pub async fn edit(link: IssueLink, edits: Vec<FieldEdit>) -> Result<Edited> {
+	let edited = tedi_task_operations::board::edit(&link, edits, settings().mode).await;
+	changed().await; // a failed edit may still have pulled
+	match edited {
+		Ok(()) => Ok(Edited::Landed),
+		Err(e) => match e.downcast::<Conflict>() {
+			Ok(conflict) => Ok(Edited::Conflict(conflict)),
+			Err(e) => Err(e),
+		},
+	}
+}
+
+pub async fn move_card(link: IssueLink, workflow: String, to: State, seen: State) -> Result<Edited> {
+	let Some(me) = editor() else {
+		bail!("who moves it is unknown: this instance never learned its GitHub user");
+	};
+	let s = settings();
+	let moved = tedi_task_operations::workflow::move_card(&link, &workflow, &to, Some(&seen), &Mover::Person(me), &s.workflows, s.mode, jiff::Timestamp::now()).await;
+	changed().await; // a failed move may still have pulled
+	match moved {
+		Ok(()) => Ok(Edited::Landed),
+		Err(e) => match e.downcast::<Conflict>() {
+			Ok(conflict) => Ok(Edited::Conflict(conflict)),
+			Err(e) if e.downcast_ref::<Rejected>().is_some() || e.downcast_ref::<MovedOn>().is_some() => Ok(Edited::Rejected(e.to_string())),
+			Err(e) => Err(e),
+		},
+	}
+}
+
+pub async fn pending_conflict(link: &IssueLink) -> Result<Option<String>> {
+	match tedi_task_operations::board::pending_conflict(link).await? {
+		Some(path) => Ok(Some(std::fs::read_to_string(path)?)),
+		None => Ok(None),
+	}
+}
+
+pub async fn resolve(link: &IssueLink, resolution: String) -> Result<Option<String>> {
+	let Some(path) = tedi_task_operations::board::pending_conflict(link).await? else {
+		bail!("nothing is pending on {link}: someone resolved it first");
+	};
+	std::fs::write(&path, resolution)?;
+	let still = pending_conflict(link).await;
+	changed().await;
+	still
+}
+
+pub async fn library(headers: &HeaderMap) -> Result<Library> {
+	let key = viewer(headers)?;
+	let _held = LIBRARIES.lock().await;
+	read_library(&key)
+}
+
+pub async fn edit_library(headers: &HeaderMap, edit: LibraryEdit) -> Result<Library> {
+	let key = viewer(headers)?;
+	let _held = LIBRARIES.lock().await;
+	let mut library = read_library(&key)?;
+	apply(&mut library, edit)?;
+	let file = library_file(&key);
+	let fresh = file.with_extension("json.new");
+	std::fs::write(&fresh, serde_json::to_string_pretty(&library)?)?;
+	std::fs::rename(&fresh, &file)?; // whole or not at all: a crash mid-write keeps the last library
+	Ok(library)
+}
+
+static SETTINGS: OnceLock<Settings> = OnceLock::new();
+static CHANGES: LazyLock<broadcast::Sender<()>> = LazyLock::new(|| broadcast::channel(16).0);
+/// Loaded once per change rather than once per open board.
+static BOARD: Mutex<Option<Arc<Board>>> = Mutex::const_new(None);
+/// Held across each library's read-modify-write.
+static LIBRARIES: Mutex<()> = Mutex::const_new(());
+
+fn settings() -> &'static Settings {
+	SETTINGS.get().expect("set by `serve` before the router exists")
 }
 
 /// Runs every pull, one at a time: what a webhook announced, and the whole `watch` every `pull_every`.
@@ -161,30 +256,9 @@ async fn changed() {
 	let _ = CHANGES.send(()); // errs only while no board is open: nobody to tell
 }
 
-pub fn changes() -> ServerEvents<()> {
-	use tokio_stream::StreamExt as _;
-	// a lagging board missed ticks, which still says the same thing: reload
-	ServerEvents::from_stream(tokio_stream::wrappers::BroadcastStream::new(CHANGES.subscribe()).map(|_| Ok(())))
-}
-
 /// Who edits: the instance's GitHub user until editors sign in, then the request's.
 fn editor() -> Option<String> {
 	tedi_task_operations::current_user::get()
-}
-
-pub async fn setup() -> Result<Setup> {
-	let s = settings();
-	Ok(Setup {
-		me: editor(),
-		workflows: s.workflows.iter().map(|(name, w)| (name.clone(), w.workflow.clone())).collect(),
-		views: s.views.clone(),
-		scopes: s.scopes.clone(),
-		columns: s.columns.clone(),
-		sprints: match s.milestones {
-			Some(repo) => sprints(repo).await?,
-			None => Vec::new(),
-		},
-	})
 }
 
 async fn sprints(repo: RepoInfo) -> Result<Vec<Sprint>> {
@@ -199,62 +273,6 @@ async fn sprints(repo: RepoInfo) -> Result<Vec<Sprint>> {
 			})
 		})
 		.collect())
-}
-
-pub async fn board() -> Result<Arc<Board>> {
-	let mut cached = BOARD.lock().await;
-	if let Some(board) = &*cached {
-		return Ok(board.clone());
-	}
-	let board = Arc::new(tedi_task_operations::board::load(&settings().workflows).await?);
-	*cached = Some(board.clone());
-	Ok(board)
-}
-
-pub async fn edit(link: IssueLink, edits: Vec<FieldEdit>) -> Result<Edited> {
-	let edited = tedi_task_operations::board::edit(&link, edits, settings().mode).await;
-	changed().await; // a failed edit may still have pulled
-	match edited {
-		Ok(()) => Ok(Edited::Landed),
-		Err(e) => match e.downcast::<Conflict>() {
-			Ok(conflict) => Ok(Edited::Conflict(conflict)),
-			Err(e) => Err(e),
-		},
-	}
-}
-
-pub async fn move_card(link: IssueLink, workflow: String, to: State, seen: State) -> Result<Edited> {
-	let Some(me) = editor() else {
-		bail!("who moves it is unknown: this instance never learned its GitHub user");
-	};
-	let s = settings();
-	let moved = tedi_task_operations::workflow::move_card(&link, &workflow, &to, Some(&seen), &Mover::Person(me), &s.workflows, s.mode, jiff::Timestamp::now()).await;
-	changed().await; // a failed move may still have pulled
-	match moved {
-		Ok(()) => Ok(Edited::Landed),
-		Err(e) => match e.downcast::<Conflict>() {
-			Ok(conflict) => Ok(Edited::Conflict(conflict)),
-			Err(e) if e.downcast_ref::<Rejected>().is_some() || e.downcast_ref::<MovedOn>().is_some() => Ok(Edited::Rejected(e.to_string())),
-			Err(e) => Err(e),
-		},
-	}
-}
-
-pub async fn pending_conflict(link: &IssueLink) -> Result<Option<String>> {
-	match tedi_task_operations::board::pending_conflict(link).await? {
-		Some(path) => Ok(Some(std::fs::read_to_string(path)?)),
-		None => Ok(None),
-	}
-}
-
-pub async fn resolve(link: &IssueLink, resolution: String) -> Result<Option<String>> {
-	let Some(path) = tedi_task_operations::board::pending_conflict(link).await? else {
-		bail!("nothing is pending on {link}: someone resolved it first");
-	};
-	std::fs::write(&path, resolution)?;
-	let still = pending_conflict(link).await;
-	changed().await;
-	still
 }
 
 /// The viewer's key, as their library's file stem.
@@ -285,24 +303,6 @@ fn read_library(key: &str) -> Result<Library> {
 		Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Library::default()), // a viewer who never kept anything
 		Err(e) => Err(e.into()),
 	}
-}
-
-pub async fn library(headers: &HeaderMap) -> Result<Library> {
-	let key = viewer(headers)?;
-	let _held = LIBRARIES.lock().await;
-	read_library(&key)
-}
-
-pub async fn edit_library(headers: &HeaderMap, edit: LibraryEdit) -> Result<Library> {
-	let key = viewer(headers)?;
-	let _held = LIBRARIES.lock().await;
-	let mut library = read_library(&key)?;
-	apply(&mut library, edit)?;
-	let file = library_file(&key);
-	let fresh = file.with_extension("json.new");
-	std::fs::write(&fresh, serde_json::to_string_pretty(&library)?)?;
-	std::fs::rename(&fresh, &file)?; // whole or not at all: a crash mid-write keeps the last library
-	Ok(library)
 }
 
 fn apply(library: &mut Library, edit: LibraryEdit) -> Result<()> {

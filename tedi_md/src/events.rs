@@ -438,30 +438,6 @@ impl Events {
 	}
 }
 
-/// Preserve blank lines between block elements by inserting `Html("\n")` after `End(Paragraph)`; before a `Rule` it is what keeps the paragraph from reading as a setext heading.
-///
-/// `newlines_after_paragraph: 1` in cmark options means `End(P)` only emits 1 newline.
-/// When followed by another block element (Start(P), Start(Heading), etc.), the original blank line
-/// is lost. We restore it by inserting a raw `\n` event, so the final output has 2 newlines (blank line).
-///
-/// Skipped inside list items — list item spacing is handled by normalization and cmark itself.
-/// Skipped when next event is `End(...)` — that means we're exiting a scope, not starting a new block.
-fn preserve_paragraph_spacing(events: Vec<OwnedEvent>) -> Vec<OwnedEvent> {
-	let mut out = Vec::with_capacity(events.len());
-	let mut item_depth = 0usize;
-	for i in 0..events.len() {
-		match &events[i] {
-			OwnedEvent::Start(OwnedTag::Item) => item_depth += 1,
-			OwnedEvent::End(OwnedTagEnd::Item) => item_depth -= 1,
-			_ => {}
-		}
-		out.push(events[i].clone());
-		if item_depth == 0 && matches!(&events[i], OwnedEvent::End(OwnedTagEnd::Paragraph)) && matches!(events.get(i + 1), Some(OwnedEvent::Start(_) | OwnedEvent::Rule)) {
-			out.push(OwnedEvent::Html("\n".to_string()));
-		}
-	}
-	out
-}
 /// Append `content` to `out`, prefixing each line with `prefix`.
 /// Preserves trailing newline from content.
 pub fn indent_into(out: &mut String, content: &str, prefix: &str) {
@@ -485,6 +461,40 @@ pub fn indent_into(out: &mut String, content: &str, prefix: &str) {
 pub fn as_standalone_block(events: Vec<OwnedEvent>) -> Events {
 	let block: Events = preserve_paragraph_spacing(wrap_inline_in_paragraphs(events)).into();
 	Events::parse(&String::from(block)) // what continued the title line inside the item can open a block on its own: `<img …/>` is an `HtmlBlock` there
+}
+/// The source line each list item opens on, in document order — `Events::parse` never adds or drops
+/// a `Start(Item)`, so the n-th one here is the n-th one there.
+pub fn item_source_lines(content: &str) -> Vec<&str> {
+	pulldown_cmark::Parser::new_ext(content, parser_options())
+		.into_offset_iter()
+		.filter(|(e, _)| matches!(e, pulldown_cmark::Event::Start(pulldown_cmark::Tag::Item)))
+		.map(|(_, range)| content[range.start..].trim_start().lines().next().expect("an item spans at least its own line")) // under tab indent the range can open on the preceding newline
+		.collect()
+}
+
+/// Preserve blank lines between block elements by inserting `Html("\n")` after `End(Paragraph)`; before a `Rule` it is what keeps the paragraph from reading as a setext heading.
+///
+/// `newlines_after_paragraph: 1` in cmark options means `End(P)` only emits 1 newline.
+/// When followed by another block element (Start(P), Start(Heading), etc.), the original blank line
+/// is lost. We restore it by inserting a raw `\n` event, so the final output has 2 newlines (blank line).
+///
+/// Skipped inside list items — list item spacing is handled by normalization and cmark itself.
+/// Skipped when next event is `End(...)` — that means we're exiting a scope, not starting a new block.
+fn preserve_paragraph_spacing(events: Vec<OwnedEvent>) -> Vec<OwnedEvent> {
+	let mut out = Vec::with_capacity(events.len());
+	let mut item_depth = 0usize;
+	for i in 0..events.len() {
+		match &events[i] {
+			OwnedEvent::Start(OwnedTag::Item) => item_depth += 1,
+			OwnedEvent::End(OwnedTagEnd::Item) => item_depth -= 1,
+			_ => {}
+		}
+		out.push(events[i].clone());
+		if item_depth == 0 && matches!(&events[i], OwnedEvent::End(OwnedTagEnd::Paragraph)) && matches!(events.get(i + 1), Some(OwnedEvent::Start(_) | OwnedEvent::Rule)) {
+			out.push(OwnedEvent::Html("\n".to_string()));
+		}
+	}
+	out
 }
 
 fn wrap_inline_in_paragraphs(events: Vec<OwnedEvent>) -> Vec<OwnedEvent> {
@@ -780,16 +790,6 @@ fn item_has_checkbox(item_events: &[OwnedEvent]) -> bool {
 		i += 1;
 	}
 	matches!(item_events.get(i), Some(OwnedEvent::CheckBox(_)))
-}
-
-/// The source line each list item opens on, in document order — `Events::parse` never adds or drops
-/// a `Start(Item)`, so the n-th one here is the n-th one there.
-pub fn item_source_lines(content: &str) -> Vec<&str> {
-	pulldown_cmark::Parser::new_ext(content, parser_options())
-		.into_offset_iter()
-		.filter(|(e, _)| matches!(e, pulldown_cmark::Event::Start(pulldown_cmark::Tag::Item)))
-		.map(|(_, range)| content[range.start..].trim_start().lines().next().expect("an item spans at least its own line")) // under tab indent the range can open on the preceding newline
-		.collect()
 }
 
 fn parser_options() -> pulldown_cmark::Options {

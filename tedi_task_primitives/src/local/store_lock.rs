@@ -6,9 +6,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::Local;
 
-static IN_PROCESS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-static HELD: AtomicUsize = AtomicUsize::new(0);
-
 /// Relative to the issues dir; consensus commits never take it.
 pub const LOCK_FILE: &str = ".lock";
 
@@ -16,11 +13,6 @@ pub const LOCK_FILE: &str = ".lock";
 pub struct StoreLock {
 	_file: std::fs::File,
 	_in_process: tokio::sync::MutexGuard<'static, ()>,
-}
-impl Drop for StoreLock {
-	fn drop(&mut self) {
-		HELD.fetch_sub(1, Ordering::SeqCst);
-	}
 }
 
 /// Waits for whoever holds it. Never take it while already holding it.
@@ -35,6 +27,14 @@ pub async fn lock_store() -> std::io::Result<StoreLock> {
 		_file: file,
 		_in_process: in_process,
 	})
+}
+
+static IN_PROCESS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+static HELD: AtomicUsize = AtomicUsize::new(0);
+impl Drop for StoreLock {
+	fn drop(&mut self) {
+		HELD.fetch_sub(1, Ordering::SeqCst);
+	}
 }
 
 /// Every consensus commit asserts it.

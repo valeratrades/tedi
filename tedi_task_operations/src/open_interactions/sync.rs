@@ -37,15 +37,6 @@ use crate::{
 	sink::Sink,
 };
 
-/// Is a bailed sync error a transient GitHub outage (5xx/429/network)? Walks the error chain so it
-/// catches a `GithubError` surfaced directly (e.g. `load_remote_*`) or nested in a `RemoteSinkError`.
-/// A `true` means the online sync can safely defer to a local save, leaving the divergence for the
-/// pre-open sync to reflush on the next online edit.
-pub(crate) fn is_transient_sync_error(e: &color_eyre::Report) -> bool {
-	e.chain()
-		.any(|cause| cause.downcast_ref::<crate::github::GithubError>().map(|g| g.is_transient()).unwrap_or(false))
-}
-
 /// Reconcile linked issues with Github, leaving local, consensus and remote in agreement.
 ///
 /// Every read of an issue that a user is about to reason against goes through here first: an edit
@@ -224,6 +215,15 @@ pub async fn modify_and_sync_issue(mut issue: Issue, mode: SyncMode, modifier: M
 			Ok(new_modified)
 		}
 	}
+}
+
+/// Is a bailed sync error a transient GitHub outage (5xx/429/network)? Walks the error chain so it
+/// catches a `GithubError` surfaced directly (e.g. `load_remote_*`) or nested in a `RemoteSinkError`.
+/// A `true` means the online sync can safely defer to a local save, leaving the divergence for the
+/// pre-open sync to reflush on the next online edit.
+pub(crate) fn is_transient_sync_error(e: &color_eyre::Report) -> bool {
+	e.chain()
+		.any(|cause| cause.downcast_ref::<crate::github::GithubError>().map(|g| g.is_transient()).unwrap_or(false))
 }
 
 /// Store every link not held locally, each with the whole tree it lives in: fetched from GitHub

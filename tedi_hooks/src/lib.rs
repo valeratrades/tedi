@@ -69,41 +69,6 @@ pub struct Loaded {
 	on_enter: HashMap<Vec<String>, Vec<Loaded1>>,
 	rules: Vec<Loaded1>,
 }
-/// A hook with its parameters, and where the workflow names it, for errors.
-struct Loaded1 {
-	at: String,
-	params: serde_json::Map<String, serde_json::Value>,
-	hook: Box<dyn Hook>,
-}
-
-trait Hook: Send + Sync {
-	fn call(&self, ctx: &Ctx, out: &mut Buffer) -> Result<(), String>;
-}
-
-struct Ctx<'a> {
-	workflow: &'a Workflow,
-	card: &'a Card,
-	params: &'a serde_json::Map<String, serde_json::Value>,
-	now: Timestamp,
-	at: Moment<'a>,
-}
-enum Moment<'a> {
-	Entering { from: &'a State, to: &'a State, mover: &'a Mover },
-	Pulled { current: &'a State },
-}
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Role {
-	OnEnter,
-	Rule,
-}
-
-#[derive(Default)]
-struct Buffer {
-	edits: Vec<(Field, String)>,
-	rejected: Option<String>,
-	move_to: Option<State>,
-}
-
 impl Loaded {
 	/// `preset:<name>`, or a workflow file; a library it names is found relative to the file.
 	pub fn load(spec: &str) -> Result<Self, LoadError> {
@@ -223,18 +188,40 @@ impl Loaded {
 	}
 }
 
-/// What `Field::read` renders of the stored issue a card was made from.
-fn read(field: Field, card: &Card) -> String {
-	match field {
-		Field::Title => card.title.clone(),
-		Field::Labels => list(&card.labels),
-		Field::Assignees => list(&card.assignees),
-		Field::Body => card.body.clone(),
-		Field::State => card.state.to_checkbox_contents(),
-		Field::Comments | Field::SubIssues => unreachable!("buffered only once checked writable"),
-	}
+trait Hook: Send + Sync {
+	fn call(&self, ctx: &Ctx, out: &mut Buffer) -> Result<(), String>;
 }
 
+/// A hook with its parameters, and where the workflow names it, for errors.
+struct Loaded1 {
+	at: String,
+	params: serde_json::Map<String, serde_json::Value>,
+	hook: Box<dyn Hook>,
+}
+
+struct Ctx<'a> {
+	workflow: &'a Workflow,
+	card: &'a Card,
+	params: &'a serde_json::Map<String, serde_json::Value>,
+	now: Timestamp,
+	at: Moment<'a>,
+}
+enum Moment<'a> {
+	Entering { from: &'a State, to: &'a State, mover: &'a Mover },
+	Pulled { current: &'a State },
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Role {
+	OnEnter,
+	Rule,
+}
+
+#[derive(Default)]
+struct Buffer {
+	edits: Vec<(Field, String)>,
+	rejected: Option<String>,
+	move_to: Option<State>,
+}
 impl Buffer {
 	fn edit(&mut self, field: Field, value: String) -> Result<(), String> {
 		match field {
@@ -244,6 +231,18 @@ impl Buffer {
 			}
 			Field::Comments | Field::SubIssues => Err(format!("{field} is not edited as a field")),
 		}
+	}
+}
+
+/// What `Field::read` renders of the stored issue a card was made from.
+fn read(field: Field, card: &Card) -> String {
+	match field {
+		Field::Title => card.title.clone(),
+		Field::Labels => list(&card.labels),
+		Field::Assignees => list(&card.assignees),
+		Field::Body => card.body.clone(),
+		Field::State => card.state.to_checkbox_contents(),
+		Field::Comments | Field::SubIssues => unreachable!("buffered only once checked writable"),
 	}
 }
 

@@ -366,15 +366,6 @@ pub async fn sync_embedded_issue_changes(content: &str, mode: SyncMode) -> Resul
 	}
 	Ok(())
 }
-/// Descendants that are blocks of the same buffer take their state from there, not from disk.
-fn overlay_states(issue: &mut Issue, states: &HashMap<IssueIndex, CloseState>) {
-	for child in issue.children.values_mut() {
-		if let Some(state) = states.get(&child.full_index()) {
-			child.contents.state = state.clone();
-		}
-		overlay_states(child, states);
-	}
-}
 /// `sprints search <query>` — a task view of the open local issues matching `query`, best first.
 pub async fn search(query: &str, kind: SearchKind) -> Result<()> {
 	let (paths, candidates): (Vec<PathBuf>, Vec<Candidate>) = Local::issue_candidates()?.into_iter().filter(|(path, _)| !path.extension().is_some_and(|e| e == "bak")).unzip();
@@ -480,6 +471,65 @@ pub fn selected_list(markup: bool) -> Result<()> {
 	}
 	Ok(())
 }
+/// `sprints selected current` — compactly print the current (deepest) blocker.
+///
+/// `markup`: emit Pango markup for eww labels (GTK, not a terminal) and suffix a tracking dot.
+pub fn selected_current(markup: bool) -> Result<()> {
+	let (link, path) = selected_link_path()?;
+	let content = std::fs::read_to_string(&path)?;
+	let contents = VirtualIssue::parse(&content, path)?.contents;
+	let current = contents.blockers.current_with_context(&[]).unwrap_or(contents.title);
+	// Truncated for status-bar consumers (eww polls this).
+	const MAX_LEN: usize = 70;
+	let current = if current.chars().count() <= MAX_LEN {
+		current
+	} else {
+		format!("{}...", current.chars().take(MAX_LEN - 3).collect::<String>())
+	};
+	if markup {
+		println!("{} {}", pango_escape(&current), tracking_dot(&issue_key(&link)));
+	} else {
+		println!("{current}");
+	}
+	Ok(())
+}
+pub async fn selected_add(text: String, nest: bool, mode: SyncMode, yes: bool) -> Result<()> {
+	modify_selected(mode, Modifier::BlockerAdd { text, nest }, yes).await
+}
+pub async fn selected_pop(parents: usize, mode: SyncMode, yes: bool) -> Result<()> {
+	modify_selected(mode, Modifier::BlockerPop { parents }, yes).await
+}
+pub async fn selected_set(text: String, mode: SyncMode, yes: bool) -> Result<()> {
+	modify_selected(mode, Modifier::BlockerSet { text }, yes).await
+}
+/// `sprints selected resume` — start a Clockify timer on the selected issue.
+pub async fn selected_resume(mut resume_args: ResumeArgs, yes: bool) -> Result<()> {
+	let (link, path) = selected_link_path()?;
+	let info = track_info(&path)?;
+	if resume_args.project.is_none() {
+		resume_args.project = Some(info.project);
+	}
+	clockify_tracking::start_tracking_for_task(|_fq| info.description.clone(), &resume_args, None, yes).await?;
+	clockify_tracking::set_tracked_issue(Some(&issue_key(&link)))?;
+	println!("Tracking resumed on {}.", issue_key(&link));
+	Ok(())
+}
+/// `sprints selected halt` — stop the Clockify timer.
+pub async fn selected_halt(halt_args: HaltArgs) -> Result<()> {
+	clockify_tracking::stop_current_tracking(halt_args.workspace.as_deref()).await?;
+	clockify_tracking::set_tracked_issue(None)?;
+	println!("Tracking halted.");
+	Ok(())
+}
+/// Descendants that are blocks of the same buffer take their state from there, not from disk.
+fn overlay_states(issue: &mut Issue, states: &HashMap<IssueIndex, CloseState>) {
+	for child in issue.children.values_mut() {
+		if let Some(state) = states.get(&child.full_index()) {
+			child.contents.state = state.clone();
+		}
+		overlay_states(child, states);
+	}
+}
 
 /// One `[state] title` line per `# Must` item of the active sprint, in document order, followed
 /// by the day's completion. `None` when the active sprint has no `# Must` section — the feature
@@ -547,28 +597,6 @@ fn paint(cell: &str, weight: Option<u32>, markup: bool) -> String {
 		(false, None) => cell.to_string(),
 	}
 }
-/// `sprints selected current` — compactly print the current (deepest) blocker.
-///
-/// `markup`: emit Pango markup for eww labels (GTK, not a terminal) and suffix a tracking dot.
-pub fn selected_current(markup: bool) -> Result<()> {
-	let (link, path) = selected_link_path()?;
-	let content = std::fs::read_to_string(&path)?;
-	let contents = VirtualIssue::parse(&content, path)?.contents;
-	let current = contents.blockers.current_with_context(&[]).unwrap_or(contents.title);
-	// Truncated for status-bar consumers (eww polls this).
-	const MAX_LEN: usize = 70;
-	let current = if current.chars().count() <= MAX_LEN {
-		current
-	} else {
-		format!("{}...", current.chars().take(MAX_LEN - 3).collect::<String>())
-	};
-	if markup {
-		println!("{} {}", pango_escape(&current), tracking_dot(&issue_key(&link)));
-	} else {
-		println!("{current}");
-	}
-	Ok(())
-}
 /// Pango-colored hollow dot for the Clockify timer's state on `key`.
 ///
 /// Read off the local tracking record rather than the Clockify API: this rides a 0.5s eww poll
@@ -588,34 +616,6 @@ fn tracking_dot(key: &str) -> String {
 /// freely, and one raw bracket blanks the whole eww label.
 fn pango_escape(s: &str) -> String {
 	s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
-}
-pub async fn selected_add(text: String, nest: bool, mode: SyncMode, yes: bool) -> Result<()> {
-	modify_selected(mode, Modifier::BlockerAdd { text, nest }, yes).await
-}
-pub async fn selected_pop(parents: usize, mode: SyncMode, yes: bool) -> Result<()> {
-	modify_selected(mode, Modifier::BlockerPop { parents }, yes).await
-}
-pub async fn selected_set(text: String, mode: SyncMode, yes: bool) -> Result<()> {
-	modify_selected(mode, Modifier::BlockerSet { text }, yes).await
-}
-/// `sprints selected resume` — start a Clockify timer on the selected issue.
-pub async fn selected_resume(mut resume_args: ResumeArgs, yes: bool) -> Result<()> {
-	let (link, path) = selected_link_path()?;
-	let info = track_info(&path)?;
-	if resume_args.project.is_none() {
-		resume_args.project = Some(info.project);
-	}
-	clockify_tracking::start_tracking_for_task(|_fq| info.description.clone(), &resume_args, None, yes).await?;
-	clockify_tracking::set_tracked_issue(Some(&issue_key(&link)))?;
-	println!("Tracking resumed on {}.", issue_key(&link));
-	Ok(())
-}
-/// `sprints selected halt` — stop the Clockify timer.
-pub async fn selected_halt(halt_args: HaltArgs) -> Result<()> {
-	clockify_tracking::stop_current_tracking(halt_args.workspace.as_deref()).await?;
-	clockify_tracking::set_tracked_issue(None)?;
-	println!("Tracking halted.");
-	Ok(())
 }
 /// Mark a homeless task block with `marker` on its title line so `VirtualIssue::parse` accepts it.
 fn mark_task_block(block: &str, marker: &str) -> String {

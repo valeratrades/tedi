@@ -1,10 +1,12 @@
 //! Sweep for `tmp/ongoing_debug/body_representation_diverges_from_remote.md`: every issue file's
 //! body must parse back from its own render. `probe_body_divergence <issues_dir> <current_user>`
+use std::path::{Path, PathBuf};
+
 fn main() {
 	let args: Vec<String> = std::env::args().collect();
 	tedi_core::current_user::set(args[2].clone());
 	let (mut checked, mut diverged) = (0, 0);
-	for entry in walkdir(std::path::Path::new(&args[1])) {
+	for entry in walkdir(Path::new(&args[1])) {
 		let content = std::fs::read_to_string(&entry).unwrap();
 		let Ok(vi) = tedi_core::VirtualIssue::parse(&content, entry.clone()) else { continue }; // non-issue files (sprints, meta) share the tree
 		checked += 1;
@@ -21,7 +23,7 @@ fn main() {
 	println!("{checked} checked, {diverged} diverged");
 }
 
-fn walkdir(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+fn walkdir(dir: &Path) -> Vec<PathBuf> {
 	let mut out = Vec::new();
 	for e in std::fs::read_dir(dir).unwrap() {
 		let p = e.unwrap().path();

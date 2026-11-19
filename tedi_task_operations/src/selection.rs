@@ -24,6 +24,9 @@ use crate::local::{FsReader, Local};
 
 /// Sprint key for the local urgent sprint.
 pub const URGENT_KEY: &str = "urgent";
+/// shortcut: oldest entries are dropped past this, raise if deep back-walks turn out useful.
+const HISTORY_CAP: usize = 100;
+
 /// `$XDG_DATA_HOME/tedi/issues/urgent.md` — the local, GitHub-unsynced urgent sprint.
 pub fn urgent_path() -> PathBuf {
 	Local::issues_dir().join("urgent.md")
@@ -62,22 +65,6 @@ pub enum SprintLockError {
 	Held { key: String, holder: String },
 	#[error(transparent)]
 	Io(#[from] std::io::Error),
-}
-fn describe_process(pid: &str) -> String {
-	if pid.is_empty() {
-		return "another tedi instance (pid unrecorded)".into();
-	}
-	let proc = Path::new("/proc").join(pid);
-	let Ok(cmdline) = std::fs::read(proc.join("cmdline")) else {
-		return format!("pid {pid}, which has since exited — retry");
-	};
-	let cmd = String::from_utf8_lossy(&cmdline).split('\0').filter(|a| !a.is_empty()).collect::<Vec<_>>().join(" ");
-	let tty = std::fs::read_link(proc.join("fd/0")).map(|p| format!(" on {}", p.display())).unwrap_or_default(); // no stdin → nothing to point at
-	let stopped = std::fs::read_to_string(proc.join("status")).is_ok_and(|s| s.lines().any(|l| l.starts_with("State:") && l.contains("T (stopped)")));
-	match stopped {
-		true => format!("pid {pid} `{cmd}`{tty}, SUSPENDED — `fg` it there, or `kill -CONT {pid}` to let it finish"),
-		false => format!("pid {pid} `{cmd}`{tty}"),
-	}
 }
 /// Where a selection operation landed. A milestone landing keeps the milestone as the
 /// stored terminal while `selected *` ops act on the auto-resolved issue.
@@ -554,6 +541,29 @@ pub struct ActiveSprint {
 	pub key: String,
 	pub view: TaskView,
 }
+
+/// Issues that reached a closed state (done, not planned, duplicate). A link that doesn't resolve
+/// locally is unknown, not done.
+pub fn closed_links(view: &TaskView) -> Vec<IssueLink> {
+	view.issue_links().into_iter().filter(|l| link_local(l).is_some_and(|vi| vi.contents.state.is_closed())).collect()
+}
+
+fn describe_process(pid: &str) -> String {
+	if pid.is_empty() {
+		return "another tedi instance (pid unrecorded)".into();
+	}
+	let proc = Path::new("/proc").join(pid);
+	let Ok(cmdline) = std::fs::read(proc.join("cmdline")) else {
+		return format!("pid {pid}, which has since exited — retry");
+	};
+	let cmd = String::from_utf8_lossy(&cmdline).split('\0').filter(|a| !a.is_empty()).collect::<Vec<_>>().join(" ");
+	let tty = std::fs::read_link(proc.join("fd/0")).map(|p| format!(" on {}", p.display())).unwrap_or_default(); // no stdin → nothing to point at
+	let stopped = std::fs::read_to_string(proc.join("status")).is_ok_and(|s| s.lines().any(|l| l.starts_with("State:") && l.contains("T (stopped)")));
+	match stopped {
+		true => format!("pid {pid} `{cmd}`{tty}, SUSPENDED — `fg` it there, or `kill -CONT {pid}` to let it finish"),
+		false => format!("pid {pid} `{cmd}`{tty}"),
+	}
+}
 /// The durable local milestone at `ml`, if stored. Milestones are first-class local
 /// files now (no in-memory cache), so navigation reads them straight off disk.
 fn milestone_local(ml: &MilestoneLink) -> Option<crate::Milestone> {
@@ -578,12 +588,6 @@ fn guard_urgent(active: &ActiveSprint) -> Result<(), String> {
 		return Err("urgent sprint cannot contain milestone refs".into());
 	}
 	Ok(())
-}
-
-/// Issues that reached a closed state (done, not planned, duplicate). A link that doesn't resolve
-/// locally is unknown, not done.
-pub fn closed_links(view: &TaskView) -> Vec<IssueLink> {
-	view.issue_links().into_iter().filter(|l| link_local(l).is_some_and(|vi| vi.contents.state.is_closed())).collect()
 }
 
 /// Urgent prunes itself on every processing, unlike normal sprints which do so on rollover: closed
@@ -613,9 +617,6 @@ fn cleanup_urgent() {
 		tracing::warn!("failed to clean up urgent file: {e}");
 	}
 }
-
-/// shortcut: oldest entries are dropped past this, raise if deep back-walks turn out useful.
-const HISTORY_CAP: usize = 100;
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 struct History {
 	back: Vec<Vec<String>>,

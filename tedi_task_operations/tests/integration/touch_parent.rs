@@ -40,8 +40,9 @@ fn test_parent_default_errors_for_nonexistent_github_repo() {
 	// Touch with --parent for a repo that doesn't exist on GitHub
 	let out = ctx.open_touch("nonexistent/repo/issue").args(&["--parent"]).run();
 
+	assert!(!out.status.success(), "Expected failure with error about repo not existing, got: {}", out.stderr);
 	assert!(
-		!out.status.success() && (out.stderr.contains("doesn't exist") || out.stderr.contains("not accessible")),
+		out.stderr.contains("doesn't exist") || out.stderr.contains("not accessible"),
 		"Expected failure with error about repo not existing, got: {}",
 		out.stderr
 	);

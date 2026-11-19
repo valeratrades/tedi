@@ -25,6 +25,17 @@ use tilers_dioxus::{Band, DockPanel, Group, GroupId, MinSize, PackedApi, PackedA
 
 use crate::api::{self, Dock, Edited, Favorite, Kept, Library, LibraryEdit, Setup, Shelf};
 
+#[component]
+pub fn App() -> Element {
+	rsx! {
+		Fonts {}
+		ToasterProvider {
+			Toaster { position: ToastPosition::BottomRight }
+			Shell {}
+		}
+	}
+}
+
 /// Shared by every tile.
 #[derive(Clone, Copy)]
 struct Ctx {
@@ -43,23 +54,6 @@ struct Ctx {
 	modal: Signal<Option<Modal>>,
 	toaster: ToasterHandle,
 }
-
-#[derive(Clone, Debug, PartialEq)]
-enum Modal {
-	Scope(Editing),
-	/// The stored issues the board couldn't read, and why.
-	Unreadable,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-enum Editing {
-	New,
-	/// One of the viewer's, by name.
-	Own(String),
-	/// The team's, by path: saved, it becomes the viewer's own.
-	Team(String),
-}
-
 impl Ctx {
 	fn card(&self, link: &IssueLink) -> Option<Card> {
 		self.board.read().as_ref()?.cards.iter().find(|c| &c.link == link).cloned()
@@ -321,6 +315,22 @@ impl Ctx {
 	}
 }
 
+#[derive(Clone, Debug, PartialEq)]
+enum Modal {
+	Scope(Editing),
+	/// The stored issues the board couldn't read, and why.
+	Unreadable,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum Editing {
+	New,
+	/// One of the viewer's, by name.
+	Own(String),
+	/// The team's, by path: saved, it becomes the viewer's own.
+	Team(String),
+}
+
 /// What a tile wants when it opens.
 fn size(id: &PanelId) -> (u32, u32) {
 	match id.0.split_once(':').map(|(kind, _)| kind) {
@@ -350,17 +360,6 @@ fn use_autosave(ctx: Ctx, api: Signal<Option<PackedApi>>, arranged: Signal<Optio
 			ctx.keep(LibraryEdit::Arranged { dock, band, layout }).await;
 		})));
 	});
-}
-
-#[component]
-pub fn App() -> Element {
-	rsx! {
-		Fonts {}
-		ToasterProvider {
-			Toaster { position: ToastPosition::BottomRight }
-			Shell {}
-		}
-	}
 }
 
 #[component]

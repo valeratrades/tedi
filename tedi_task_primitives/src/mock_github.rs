@@ -745,6 +745,13 @@ impl RepoKey {
 	fn link(&self, number: u64) -> crate::IssueLink {
 		crate::IssueLink::in_project(RepoInfo::new(&self.owner, &self.repo), number)
 	}
+
+	fn new(owner: &str, repo: &str) -> Self {
+		Self {
+			owner: owner.to_string(),
+			repo: repo.to_string(),
+		}
+	}
 }
 
 /// Internal representation of a milestone in the mock
@@ -787,15 +794,6 @@ struct MockCommentData {
 struct RepoKey {
 	owner: String,
 	repo: String,
-}
-
-impl RepoKey {
-	fn new(owner: &str, repo: &str) -> Self {
-		Self {
-			owner: owner.to_string(),
-			repo: repo.to_string(),
-		}
-	}
 }
 
 impl From<RepoInfo> for RepoKey {

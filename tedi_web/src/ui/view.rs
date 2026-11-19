@@ -29,6 +29,51 @@ pub fn ViewPanel(name: String) -> Element {
 	}
 }
 
+/// title · repo · @who · i[5]± h[3]± ⛓2 — what `shown` asks for, in its order.
+#[component]
+pub fn CardView(card: Card, shown: Vec<Shown>) -> Element {
+	let ctx = use_context::<Ctx>();
+	let link = card.link.clone();
+	rsx! {
+		Tile { class: if card.conflicted { "gap-1 p-2 border-accent-error" } else { "gap-1 p-2" },
+			button { class: "text-left text-sm font-medium hover:underline", onclick: move |_| ctx.open_issue(link.clone()), "{card.title}" }
+			div { class: "flex flex-wrap items-center gap-1 text-xs text-ink-soft",
+				if let Some(pr) = &card.pr { Badge { variant: BadgeVariant::Info, "PR {pr.state}" } }
+				for s in shown {
+					Shows { card: card.clone(), shown: s }
+				}
+				if card.conflicted { Badge { variant: BadgeVariant::Error, "clash" } }
+			}
+		}
+	}
+}
+
+/// A sprint's issues, in its order.
+#[component]
+pub fn SprintPanel(sprint: Sprint) -> Element {
+	let ctx = use_context::<Ctx>();
+	let board = ctx.board.read();
+	let Some(board) = board.as_ref() else {
+		return rsx! { Spinner {} };
+	};
+	let shown: Vec<Shown> = ctx
+		.workflows()
+		.into_keys()
+		.map(Shown::State)
+		.chain([Shown::Repo, Shown::Assignees, Shown::Importance, Shown::Hours])
+		.collect();
+	rsx! {
+		div { class: "flex flex-col gap-1 overflow-auto p-2",
+			for link in sprint.links.iter() {
+				match board.cards.iter().find(|c| &c.link == link) {
+					Some(card) => rsx! { CardView { key: "{link}", card: card.clone(), shown: shown.clone() } },
+					None => rsx! { div { key: "{link}", class: "text-xs text-ink-soft", "{link} is not stored here" } },
+				}
+			}
+		}
+	}
+}
+
 #[component]
 fn ViewBody(defined: View) -> Element {
 	let ctx = use_context::<Ctx>();
@@ -559,25 +604,6 @@ fn Rows(groups: Vec<(String, Vec<usize>)>, shown: Vec<Shown>, sort: Sort, query:
 	}
 }
 
-/// title · repo · @who · i[5]± h[3]± ⛓2 — what `shown` asks for, in its order.
-#[component]
-pub fn CardView(card: Card, shown: Vec<Shown>) -> Element {
-	let ctx = use_context::<Ctx>();
-	let link = card.link.clone();
-	rsx! {
-		Tile { class: if card.conflicted { "gap-1 p-2 border-accent-error" } else { "gap-1 p-2" },
-			button { class: "text-left text-sm font-medium hover:underline", onclick: move |_| ctx.open_issue(link.clone()), "{card.title}" }
-			div { class: "flex flex-wrap items-center gap-1 text-xs text-ink-soft",
-				if let Some(pr) = &card.pr { Badge { variant: BadgeVariant::Info, "PR {pr.state}" } }
-				for s in shown {
-					Shows { card: card.clone(), shown: s }
-				}
-				if card.conflicted { Badge { variant: BadgeVariant::Error, "clash" } }
-			}
-		}
-	}
-}
-
 #[component]
 fn Shows(card: Card, shown: Shown) -> Element {
 	let ctx = use_context::<Ctx>();
@@ -701,32 +727,6 @@ fn Stepper(card: Card, axis: Axis) -> Element {
 				if editable {
 					button { class: "px-0.5 hover:opacity-70", title: "lower", onclick: { let step = step.clone(); move |_| step(false) }, "−" }
 					button { class: "px-0.5 hover:opacity-70", title: "raise", onclick: move |_| step(true), "+" }
-				}
-			}
-		}
-	}
-}
-
-/// A sprint's issues, in its order.
-#[component]
-pub fn SprintPanel(sprint: Sprint) -> Element {
-	let ctx = use_context::<Ctx>();
-	let board = ctx.board.read();
-	let Some(board) = board.as_ref() else {
-		return rsx! { Spinner {} };
-	};
-	let shown: Vec<Shown> = ctx
-		.workflows()
-		.into_keys()
-		.map(Shown::State)
-		.chain([Shown::Repo, Shown::Assignees, Shown::Importance, Shown::Hours])
-		.collect();
-	rsx! {
-		div { class: "flex flex-col gap-1 overflow-auto p-2",
-			for link in sprint.links.iter() {
-				match board.cards.iter().find(|c| &c.link == link) {
-					Some(card) => rsx! { CardView { key: "{link}", card: card.clone(), shown: shown.clone() } },
-					None => rsx! { div { key: "{link}", class: "text-xs text-ink-soft", "{link} is not stored here" } },
 				}
 			}
 		}
