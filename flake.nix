@@ -208,7 +208,7 @@
           packages = { default = tediBin; webBundle = webBundle null; } // containerStd.packages;
           containers = pkgs.lib.mapAttrs (_: c: c // { contract = c.contract // deploy; }) containerStd.containers;
 
-          # The team board over this machine's store, on http://127.0.0.1:59752: the client hot-reloads, the server restarts on its sources.
+          # The team board over this machine's store, on localhost:$PORT: the client hot-reloads, the server restarts on its sources.
           apps.dev = {
             type = "app";
             program = "${pkgs.writeShellScriptBin "tedi-dev" ''
@@ -232,7 +232,7 @@
 
               Commands:
                 nix develop                    dev shell (rust nightly, pre-commit, generated configs)
-                nix run .#dev                  the team board over your store at http://127.0.0.1:59752, reloading as you edit
+                nix run .#dev                  the team board over your store on localhost, reloading as you edit
                 nix build                      build the `${pname}` binary
                 nix run . -- --help            CLI help: open, sprints, manual, clockify, perf-eval, monitors, init
                 cargo t                        tests (integration: tedi_task_operations/tests/)
