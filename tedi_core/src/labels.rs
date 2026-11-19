@@ -42,7 +42,7 @@ impl From<Color> for String {
 	}
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Deserialize, strum::Display, strum::EnumString, serde::Serialize)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Deserialize, strum::Display, strum::EnumIter, strum::EnumString, serde::Serialize)]
 pub enum Type {
 	#[strum(serialize = "t:bug")]
 	Bug,

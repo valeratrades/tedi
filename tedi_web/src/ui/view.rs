@@ -8,7 +8,7 @@ use strum::IntoEnumIterator as _;
 use tedi_core::{
 	board::{Card, Facet, GroupBy, Layout, Query, Shown, Sort, SortKey, View, group},
 	conflict::{Field, FieldEdit, list},
-	labels::{Color, HOURS, Scheme},
+	labels::{Color, HOURS, Scheme, Type},
 	workflow::State,
 };
 use tilers_dioxus::{Band, DockPanel, Group, MinSize, PackedApi, PackedArea, PanelId};
@@ -615,10 +615,7 @@ fn Shows(card: Card, shown: Shown) -> Element {
 				Pick { facet: Facet::State, value: format!("{workflow}/{at}"), Badge { "{at}" } }
 			}
 		},
-		Shown::Type => {
-			let color = card.kind.and_then(|k| label_color(&ctx, &card, &k.to_string()));
-			rsx! { if let Some(k) = card.kind { Pick { facet: Facet::Type, value: k.to_string().trim_start_matches("t:").to_string(), Chip { color, variant: BadgeVariant::Info, "{k}" } } } }
-		}
+		Shown::Type => rsx! { Scale { card: card.clone(), axis: Axis::Type } },
 		Shown::Labels => {
 			let own_facet = |l: &String| {
 				let scheme = Scheme::from(std::slice::from_ref(l));
@@ -627,8 +624,8 @@ fn Shows(card: Card, shown: Shown) -> Element {
 			let labels: Vec<(String, Option<Color>)> = card.labels.iter().filter(|l| !own_facet(l)).map(|l| (l.clone(), label_color(&ctx, &card, l))).collect();
 			rsx! { for (l, color) in labels { Pick { facet: Facet::Label, value: l.clone(), Chip { color, "{l}" } } } }
 		}
-		Shown::Importance => rsx! { Stepper { card: card.clone(), axis: Axis::Importance } },
-		Shown::Hours => rsx! { Stepper { card: card.clone(), axis: Axis::Hours } },
+		Shown::Importance => rsx! { Scale { card: card.clone(), axis: Axis::Importance } },
+		Shown::Hours => rsx! { Scale { card: card.clone(), axis: Axis::Hours } },
 		Shown::Blockers => {
 			let board = ctx.board.read();
 			let cards = &board.as_ref().expect("cards render from the board").cards;
@@ -670,61 +667,108 @@ fn Chip(color: Option<Color>, #[props(default)] variant: BadgeVariant, children:
 
 #[derive(Clone, Copy, PartialEq)]
 enum Axis {
+	Type,
 	Importance,
 	Hours,
 }
 
-/// `i[5]±`: a step up or down is a labels edit, made against the labels the card shows.
+/// `t:bug`, `i[5]±`, `h[3]±`: the chip opens every value its axis takes; a pick or a step is a labels edit, made against the labels the card shows.
 #[component]
-fn Stepper(card: Card, axis: Axis) -> Element {
+fn Scale(card: Card, axis: Axis) -> Element {
 	let ctx = use_context::<Ctx>();
-	let (prefix, facet, value, counts_as) = match axis {
-		Axis::Importance => ("i", Facet::Importance, card.importance.map(u16::from), Some(3)), // `labels.nix`: "`i:3` is the default"
-		Axis::Hours => ("h", Facet::Hours, card.hours, None),
+	let mut open = use_signal(|| false);
+	let (facet, held, values, counts_as) = match axis {
+		Axis::Type => (Facet::Type, card.kind.map(|k| k.to_string()), Type::iter().map(|t| t.to_string()).collect::<Vec<_>>(), None),
+		Axis::Importance => (
+			Facet::Importance,
+			card.importance.map(|v| format!("i:{v}")),
+			(0..=9).map(|v| format!("i:{v}")).collect(),
+			Some("i:3".to_string()),
+		), // `labels.nix`: "`i:3` is the default"
+		Axis::Hours => (Facet::Hours, card.hours.map(|v| format!("h:{v}")), HOURS.iter().map(|v| format!("h:{v}")).collect(), None),
 	};
 	let editable = card.pr.is_none(); // a pull request is read-only here
-	let color = value.and_then(|v| label_color(&ctx, &card, &format!("{prefix}:{v}")));
-	let steps: Vec<u16> = match axis {
-		Axis::Importance => (0..=9).collect(),
-		Axis::Hours => HOURS.to_vec(),
+	let color = held.as_deref().and_then(|l| label_color(&ctx, &card, l));
+	let variant = if axis == Axis::Type { BadgeVariant::Info } else { BadgeVariant::default() };
+	let bare = held.as_deref().map(|l| l.split_once(':').expect("scheme labels carry a prefix").1.to_string());
+	let text = match axis {
+		Axis::Type => held.clone().unwrap_or_else(|| "t:?".to_string()),
+		Axis::Importance => format!("i[{}]", bare.as_deref().unwrap_or("?")),
+		Axis::Hours => format!("h[{}]", bare.as_deref().unwrap_or("?")),
 	};
-	let step = move |up: bool| {
-		let at = value.or(counts_as).map(|v| steps.iter().position(|s| *s == v).expect("the scheme's own values"));
-		let next = match (at, up) {
-			(None, true) => Some(steps[0]),
-			(None, false) => None,
-			(Some(i), true) => steps.get(i + 1).copied(),
-			(Some(i), false) => i.checked_sub(1).map(|i| steps[i]),
+	let set = {
+		let card = card.clone();
+		move |to: Option<String>| {
+			let mut labels: Vec<String> = card
+				.labels
+				.iter()
+				.filter(|l| {
+					let scheme = Scheme::from(std::slice::from_ref(*l));
+					match axis {
+						Axis::Type => scheme.kind.is_none(),
+						Axis::Importance => scheme.importance.is_none(),
+						Axis::Hours => scheme.hours.is_none(),
+					}
+				})
+				.cloned()
+				.collect();
+			labels.extend(to);
+			spawn(ctx.edit(
+				card.link.clone(),
+				vec![FieldEdit {
+					field: Field::Labels,
+					seen: list(&card.labels),
+					new: list(&labels),
+				}],
+			));
+		}
+	};
+	let step = {
+		let (set, values, held) = (set.clone(), values.clone(), held.clone());
+		move |up: bool| {
+			let at = held.as_ref().or(counts_as.as_ref()).map(|v| values.iter().position(|s| s == v).expect("the scheme's own values"));
+			let next = match (at, up) {
+				(None, true) => Some(0),
+				(None, false) => None,
+				(Some(i), true) => (i + 1 < values.len()).then_some(i + 1),
+				(Some(i), false) => i.checked_sub(1),
+			};
+			if let Some(i) = next {
+				set(Some(values[i].clone()));
+			}
+		}
+	};
+	if !editable {
+		return match (axis, bare) {
+			(Axis::Type, None) => rsx! {},
+			(_, bare) => rsx! { Chip { color, variant, Pick { facet, value: bare.unwrap_or_else(|| "none".to_string()), "{text}" } } },
 		};
-		let Some(next) = next else { return };
-		let mut labels: Vec<String> = card
-			.labels
-			.iter()
-			.filter(|l| {
-				let scheme = Scheme::from(std::slice::from_ref(*l));
-				match axis {
-					Axis::Importance => scheme.importance.is_none(),
-					Axis::Hours => scheme.hours.is_none(),
-				}
-			})
-			.cloned()
-			.collect();
-		labels.push(format!("{prefix}:{next}"));
-		spawn(ctx.edit(
-			card.link.clone(),
-			vec![FieldEdit {
-				field: Field::Labels,
-				seen: list(&card.labels),
-				new: list(&labels),
-			}],
-		));
-	};
-	let shown = value.map_or_else(|| "?".to_string(), |v| v.to_string());
+	}
 	rsx! {
-		Chip { color,
+		Chip { color, variant,
 			span { class: "inline-flex items-center gap-0.5",
-				Pick { facet, value: value.map_or_else(|| "none".to_string(), |v| v.to_string()), "{prefix}[{shown}]" }
-				if editable {
+				Popover { open: open(), on_open_change: move |v| open.set(v),
+					PopoverTrigger { class: "cursor-pointer hover:underline", aria_label: format!("set {facet}"), "{text}" }
+					PopoverContent { align: "start", class: "flex max-h-80 w-max flex-col overflow-y-auto p-1 text-sm font-normal text-ink",
+						for value in values.iter().cloned().map(Some).chain(std::iter::once(None)) {
+							button {
+								key: "{value:?}",
+								r#type: "button",
+								class: "flex items-center gap-2 rounded px-1 py-0.5 text-left hover:bg-surface-sunken",
+								onclick: {
+									let (set, value) = (set.clone(), value.clone());
+									move |_| {
+										open.set(false);
+										set(value.clone());
+									}
+								},
+								span { class: "w-3 text-center", if value == held { "✓" } }
+								span { class: "flex-1", {value.clone().unwrap_or_else(|| "none".to_string())} }
+							}
+						}
+					}
+				}
+				if axis != Axis::Type {
 					button { class: "px-0.5 hover:opacity-70", title: "lower", onclick: { let step = step.clone(); move |_| step(false) }, "−" }
 					button { class: "px-0.5 hover:opacity-70", title: "raise", onclick: move |_| step(true), "+" }
 				}
