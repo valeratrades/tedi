@@ -651,7 +651,7 @@ fn label_color(ctx: &Ctx, card: &Card, label: &str) -> Option<Color> {
 #[component]
 fn Chip(color: Option<Color>, #[props(default)] variant: BadgeVariant, children: Element) -> Element {
 	let Some(hex) = color else {
-		return rsx! { Badge { variant, {children} } };
+		return rsx! { Badge { variant, class: "overflow-visible", {children} } }; // the kit's `overflow-hidden` would clip `Scale`'s menu
 	};
 	let Color([r, g, b]) = hex;
 	let perceived = (0.2126 * f32::from(r) + 0.7152 * f32::from(g) + 0.0722 * f32::from(b)) / 255.;
