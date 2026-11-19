@@ -1,5 +1,7 @@
 # tedi_web
 
+Design upstream: [Figma — tedi board UX](https://www.figma.com/design/AKNYVRnUHnGrnoFN6geWii) (foundations from `assets/tokens.css`, components, screens, flows).
+
 The client holds every card and runs `tedi_core::board` over them; every edit is a server fn calling
 `tedi_task_operations` in-process — sync, merge, stage and rank are never re-done here.
 
