@@ -684,7 +684,6 @@ mod core {
 			}
 		}
 
-		println!("Syncing...");
 		let issue_number = current_issue.git_id().expect("fetched remote, so linked");
 		let repo_info = current_issue.repo_info();
 		let mut links = Vec::new();
