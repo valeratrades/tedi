@@ -71,7 +71,12 @@ fn Values(facet: Facet, query: Query) -> Element {
 	let in_view = use_context::<InView>();
 	let board = ctx.board.read();
 	let cards = &board.as_ref().expect("views render once the board loaded").cards;
-	let tallies = match query.tally(facet, cards, ctx.me().as_deref()) {
+	let within = match ctx.scope() {
+		Some((_, Some((filter, _)))) => filter.parse().expect("a scope's filter is a repo clause"),
+		Some((path, None)) => unreachable!("a view under the gone scope {path} shows only that"),
+		None => Query::default(),
+	};
+	let tallies = match query.tally(facet, &within, cards, ctx.me().as_deref()) {
 		Ok(t) => t,
 		Err(e) => return rsx! { span { class: "p-1 text-xs text-accent-error", "{e}" } },
 	};

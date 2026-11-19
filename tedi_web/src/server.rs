@@ -10,7 +10,7 @@ use std::{
 	time::Duration,
 };
 
-use color_eyre::eyre::{Result, bail, eyre};
+use color_eyre::eyre::{Result, WrapErr as _, bail, eyre};
 use dioxus::server::{
 	DioxusRouterExt as _, FullstackState,
 	axum::{self, Router, body::Bytes, routing::post},
@@ -279,8 +279,9 @@ fn library_file(key: &str) -> PathBuf {
 }
 
 fn read_library(key: &str) -> Result<Library> {
-	match std::fs::read_to_string(library_file(key)) {
-		Ok(json) => Ok(serde_json::from_str(&json)?),
+	let file = library_file(key);
+	match std::fs::read_to_string(&file) {
+		Ok(json) => serde_json::from_str(&json).wrap_err_with(|| format!("{} doesn't read as a library", file.display())),
 		Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Library::default()), // a viewer who never kept anything
 		Err(e) => Err(e.into()),
 	}
@@ -341,12 +342,29 @@ fn apply(library: &mut Library, edit: LibraryEdit) -> Result<()> {
 			kept.layout.insert(band, layout);
 			kept.tints = tints;
 		}
+		LibraryEdit::Keep(Kept::Scope { name, scope }) => {
+			let name = named(name)?;
+			if name.contains(" / ") {
+				bail!("` / ` joins a scope's path: name it without one");
+			}
+			if settings().scopes.contains_key(&name) {
+				bail!("{name} is a team scope's name: keep yours under another");
+			}
+			if scope.repos.is_empty() && scope.children.is_empty() {
+				bail!("the scope {name} names no repo");
+			}
+			if let Some(view) = scope.views.iter().find(|v| !team_view(v) && !library.filters.contains_key(*v)) {
+				bail!("the scope {name} lists the view {view}, and no such view is kept");
+			}
+			library.scopes.insert(name, scope);
+		}
 		LibraryEdit::Rename { shelf, from, to } => {
 			let to = named(to)?;
 			let taken = match shelf {
 				Shelf::Filters => library.filters.contains_key(&to) || team_view(&to),
 				Shelf::Workspaces => library.workspaces.contains_key(&to),
 				Shelf::Columns => library.columns.contains_key(&to) || settings().columns.contains_key(&to),
+				Shelf::Scopes => library.scopes.contains_key(&to) || settings().scopes.contains_key(&to) || to.contains(" / "),
 			};
 			if taken {
 				bail!("{to} is taken");
@@ -376,6 +394,15 @@ fn apply(library: &mut Library, edit: LibraryEdit) -> Result<()> {
 					let kept = library.columns.remove(&from).ok_or_else(missing)?;
 					library.columns.insert(to.clone(), kept);
 				}
+				Shelf::Scopes => {
+					let kept = library.scopes.remove(&from).ok_or_else(missing)?;
+					library.scopes.insert(to.clone(), kept);
+					if let Some(path) = &library.scope
+						&& let Some(rest) = within(path, &from)
+					{
+						library.scope = Some(format!("{to}{rest}"));
+					}
+				}
 			}
 			if library.favorites.remove(&favorite(shelf, from)) {
 				library.favorites.insert(favorite(shelf, to));
@@ -386,7 +413,11 @@ fn apply(library: &mut Library, edit: LibraryEdit) -> Result<()> {
 				Shelf::Filters => library.filters.remove(&name).is_some(),
 				Shelf::Workspaces => library.workspaces.remove(&name).is_some(),
 				Shelf::Columns => library.columns.remove(&name).is_some(),
+				Shelf::Scopes => library.scopes.remove(&name).is_some(),
 			};
+			if shelf == Shelf::Scopes && library.scope.as_deref().is_some_and(|p| within(p, &name).is_some()) {
+				library.scope = None;
+			}
 			if !dropped {
 				bail!("{name} is not kept");
 			}
@@ -394,7 +425,7 @@ fn apply(library: &mut Library, edit: LibraryEdit) -> Result<()> {
 		}
 		LibraryEdit::Scope(path) => {
 			if let Some(path) = &path
-				&& scope_at(&settings().scopes, path).is_none()
+				&& scope_at(&library.scopes(&settings().scopes), path).is_none()
 			{
 				bail!("no scope {path}");
 			}
@@ -407,7 +438,7 @@ fn apply(library: &mut Library, edit: LibraryEdit) -> Result<()> {
 		LibraryEdit::Favorite { what, on: true } => {
 			let known = match &what {
 				Favorite::View(name) => library.filters.contains_key(name) || team_view(name),
-				Favorite::Scope(path) => scope_at(&settings().scopes, path).is_some(),
+				Favorite::Scope(path) => scope_at(&library.scopes(&settings().scopes), path).is_some(),
 				Favorite::Workspace(name) => library.workspaces.contains_key(name),
 				Favorite::Columns(name) => library.columns.contains_key(name) || settings().columns.contains_key(name),
 			};
@@ -436,5 +467,11 @@ fn favorite(shelf: Shelf, name: String) -> Favorite {
 		Shelf::Filters => Favorite::View(name),
 		Shelf::Workspaces => Favorite::Workspace(name),
 		Shelf::Columns => Favorite::Columns(name),
+		Shelf::Scopes => Favorite::Scope(name),
 	}
+}
+
+/// What follows `top` in `path` when `path` is `top` or nested in it.
+fn within<'a>(path: &'a str, top: &str) -> Option<&'a str> {
+	path.strip_prefix(top).filter(|rest| rest.is_empty() || rest.starts_with(" / "))
 }

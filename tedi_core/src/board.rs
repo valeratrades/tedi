@@ -284,11 +284,13 @@ impl Query {
 		self.clauses.retain(|c| c.facet() != facet);
 	}
 
-	/// Every value of `facet` the query's hits take, with the facet's own clauses lifted, most taken
-	/// first; and each value those clauses pick, taken or not.
-	pub fn tally(&self, facet: Facet, cards: &[Card], me: Option<&str>) -> Result<Vec<Tally>, QueryError> {
+	/// Every value of `facet` the query's hits `within` take, with the facet's own clauses lifted (never
+	/// `within`'s), most taken first; and each value those clauses pick, taken or not.
+	pub fn tally(&self, facet: Facet, within: &Query, cards: &[Card], me: Option<&str>) -> Result<Vec<Tally>, QueryError> {
 		let mut rest = self.clone();
 		rest.clear(facet);
+		assert!(within.text.is_empty(), "a scope narrows by clauses, never by text");
+		rest.clauses.extend(within.clauses.iter().cloned());
 		let hits = rest.run(cards, me)?;
 		let open = open(cards);
 		let mut counted: Vec<(Filter, usize)> = Vec::new();
@@ -923,7 +925,7 @@ mod tests {
 		]
 		.into_iter()
 		.map(|(q, facet)| {
-			let tallies = q.parse::<Query>().unwrap().tally(facet, &cards, None).unwrap();
+			let tallies = q.parse::<Query>().unwrap().tally(facet, &Query::default(), &cards, None).unwrap();
 			let shown: Vec<String> = tallies
 				.iter()
 				.map(|t| {
@@ -952,10 +954,32 @@ mod tests {
 	}
 
 	#[test]
+	fn tally_never_lifts_the_scope() {
+		let cards = cards();
+		let within: Query = "repo:o/app".parse().unwrap();
+		let out: Vec<String> = [("", Facet::Repo), ("repo:o/lib", Facet::Repo), ("", Facet::Is)]
+			.into_iter()
+			.map(|(q, facet)| {
+				let tallies = q.parse::<Query>().unwrap().tally(facet, &within, &cards, None).unwrap();
+				let shown: Vec<String> = tallies
+					.iter()
+					.map(|t| format!("{}{} {}", if t.picked == Some(true) { "+" } else { "" }, t.value, t.count))
+					.collect();
+				format!("{q} | {facet}: {}", shown.join(", "))
+			})
+			.collect();
+		insta::assert_snapshot!(out.join("\n"), @"
+		 | repo: o/app 3
+		repo:o/lib | repo: o/app 3, +o/lib 0
+		 | is: open 3, issue 3, blocked 2
+		");
+	}
+
+	#[test]
 	fn a_tallied_value_picks_what_it_counted() {
 		let cards = cards();
 		for facet in <Facet as strum::IntoEnumIterator>::iter() {
-			for t in Query::default().tally(facet, &cards, None).unwrap() {
+			for t in Query::default().tally(facet, &Query::default(), &cards, None).unwrap() {
 				let mut q = Query::default();
 				q.toggle(facet, &t.value, false).unwrap();
 				assert_eq!(q.run(&cards, None).unwrap().len(), t.count, "{q}");

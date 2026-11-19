@@ -191,12 +191,12 @@ impl Sink<Consensus> for Milestone {
 		if !add.status.success() {
 			return Err(crate::local::ConsensusSinkError::new_git_add(String::from_utf8_lossy(&add.stderr).into_owned()));
 		}
-		let diff = Command::new("git").args(["-C", data_dir_str, "diff", "--cached", "--quiet"]).status()?;
+		let diff = Command::new("git").args(["-C", data_dir_str, "diff", "--cached", "--quiet", "--", "."]).status()?;
 		if diff.success() {
 			return Ok(false);
 		}
 		let msg = format!("sync milestone: {repo}#{}", self.number());
-		let commit = Command::new("git").args(["-C", data_dir_str, "commit", "-m", &msg]).output()?;
+		let commit = Command::new("git").args(["-C", data_dir_str, "commit", "-m", &msg, "--", "."]).output()?; // the repo may hold more than the store: anything staged outside it stays out of consensus
 		if !commit.status.success() {
 			return Err(crate::local::ConsensusSinkError::new_git_commit(String::from_utf8_lossy(&commit.stderr).into_owned()));
 		}

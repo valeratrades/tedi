@@ -17,14 +17,28 @@ use super::{
 	Ctx,
 	facets::{FacetBar, FacetMenu, InView, Pick},
 };
-use crate::api::{Dock, Kept, LibraryEdit, Shelf, Sprint, Tint, Tints};
+use crate::api::{self, Dock, LibraryEdit, Shelf, Sprint, Tint, Tints};
 
-/// `view` as last edited on screen, `defined` as it is kept: an edit is saved as it settles, and `↺` goes back.
+/// The view `name`: as last edited on screen, against how it is kept; an edit is saved as it settles, and `↺` goes back.
 #[component]
-pub fn ViewPanel(view: View, defined: View) -> Element {
+pub fn ViewPanel(name: String) -> Element {
+	let ctx = use_context::<Ctx>();
+	match ctx.views().into_iter().find(|v| v.name == name) {
+		Some(defined) => rsx! { ViewBody { defined } },
+		None => rsx! { div { class: "p-3 text-sm text-ink-soft", "The view {name} is no longer kept: close this tab, or keep a view under its name." } },
+	}
+}
+
+#[component]
+fn ViewBody(defined: View) -> Element {
 	let ctx = use_context::<Ctx>();
 	let toaster = use_toaster();
-	let mut view = use_signal(|| view);
+	let mut view = use_signal(|| {
+		let library = ctx.library.peek();
+		let on_screen = &library.as_ref().expect("views render once the library arrived").on_screen.views;
+		on_screen.get(&defined.name).cloned().unwrap_or_else(|| defined.clone()) // never edited on screen: as kept
+	});
+	let mut saving = use_signal(|| false);
 	use_context_provider(|| InView(view));
 	let mut sent = use_signal(|| view.peek().clone());
 	let mut pending = use_signal(|| None::<dioxus::core::Task>);
@@ -60,18 +74,20 @@ pub fn ViewPanel(view: View, defined: View) -> Element {
 		let groups = group(&board.cards, &hits, &v.group_by, &workflows).map_err(|e| e.to_string())?;
 		Ok((q, groups))
 	})();
-	let save = EventHandler::new(move |name: String| {
+	let mut save = move |name: String| {
+		saving.set(false);
 		let view = View {
 			name: name.clone(),
 			..view.read().clone()
 		};
 		spawn(async move {
-			if ctx.keep(LibraryEdit::Keep(Kept::Filter(view))).await {
-				toaster.positive(format!("Saved {name} to your views"));
+			if ctx.keep(LibraryEdit::Keep(api::Kept::Filter(view))).await {
+				toaster.positive(format!("Kept {name} in your views"));
+				ctx.open(PanelId(format!("view:{name}")));
 			}
 		});
-	});
-	let mine: Vec<String> = ctx.library.read().as_ref().expect("views render once the library arrived").filters.keys().cloned().collect();
+	};
+	let mine = ctx.library.read().as_ref().expect("views render once the library arrived").filters.contains_key(&defined.name);
 	let by_state = || workflows.keys().cloned();
 	let keys = [SortKey::Rank, SortKey::Title, SortKey::Repo].into_iter().chain(by_state().map(SortKey::State)).chain([
 		SortKey::Assignee,
@@ -107,7 +123,14 @@ pub fn ViewPanel(view: View, defined: View) -> Element {
 						"↺"
 					}
 				}
-				super::library::Menu { shelf: Shelf::Filters, names: mine, on_pick: move |name: String| ctx.open(PanelId(format!("view:{name}"))), on_save: Some(save) }
+				if mine && v != defined {
+					Button { variant: ButtonVariant::Outline, size: Size::Sm, r#type: "button", title: "keep {defined.name} as it shows now", onclick: { let name = defined.name.clone(); move |_| save(name.clone()) }, "Save" }
+				}
+				if saving() {
+					div { class: "w-48", super::library::NameForm { placeholder: "keep as…", on_name: save, on_cancel: move |()| saving.set(false) } }
+				} else {
+					Button { variant: ButtonVariant::Ghost, size: Size::Sm, r#type: "button", title: "keep this as a view of your own", onclick: move |_| saving.set(true), "Save as…" }
+				}
 			}
 			match hits {
 				Err(e) => rsx! { Badge { variant: BadgeVariant::Error, "{e}" } },
@@ -115,8 +138,17 @@ pub fn ViewPanel(view: View, defined: View) -> Element {
 					if v.layout != Layout::Board {
 						groups.retain(|(_, members)| !members.is_empty()); // a workflow's empty buckets are the board's columns only
 					}
+					let none = groups.iter().all(|(_, members)| members.is_empty());
 					rsx! {
 						FacetBar { query: query.clone() }
+						if none && v.layout != Layout::Board {
+							div { class: "flex flex-1 items-center justify-center text-sm text-ink-soft",
+								match ctx.scope() {
+									Some((path, _)) => rsx! { "Nothing here matches, within {path}" },
+									None => rsx! { "Nothing matches" },
+								}
+							}
+						}
 						match v.layout {
 							Layout::Board => rsx! { Columns { key: "{v.group_by}", view: v.name.clone(), groups, by: v.group_by.clone(), shown: v.shown.clone() } },
 							Layout::Table => rsx! { Rows { groups, shown: v.shown.clone(), sort: v.sort.clone(), query } },
@@ -188,7 +220,7 @@ fn Columns(view: String, groups: Vec<(String, Vec<usize>)>, by: GroupBy, shown: 
 	super::use_autosave(ctx, api, arranged, Dock::Columns { view: view.clone(), by: by.clone() });
 	// `layout`'s columns hosted, then shown; the effect below adds any group it lacks
 	let show = move |mut a: PackedApi, layout: &str| -> bool {
-		let grid = match tilers_dioxus::model::serial::load(layout) {
+		let mut grid = match tilers_dioxus::model::serial::load(layout) {
 			Ok(grid) => grid,
 			Err(e) => {
 				ctx.toaster
@@ -204,7 +236,11 @@ fn Columns(view: String, groups: Vec<(String, Vec<usize>)>, by: GroupBy, shown: 
 				panels.write().push(column(id.clone(), key.clone(), format!("{key} · {count}")));
 			}
 		}
-		a.load(layout).expect("parsed above");
+		let rows = a.rows(); // a row is a fixed height: columns kept on a taller view are cut to this one
+		for cell in grid.cells.iter_mut().filter(|c| c.y < rows && c.y + c.h > rows) {
+			cell.h = rows - cell.y;
+		}
+		a.load(&tilers_dioxus::model::serial::save(&grid)).expect("parsed above, heights cut");
 		true
 	};
 	use_effect(use_reactive!(|groups, shown, tints| {
@@ -328,12 +364,13 @@ fn Columns(view: String, groups: Vec<(String, Vec<usize>)>, by: GroupBy, shown: 
 			}
 			super::library::Menu {
 				shelf: Shelf::Columns,
+				label: "layouts",
 				names: kept,
 				on_pick: { let apply = apply.clone(); move |name: String| apply(name) },
 				on_save: Some(EventHandler::new(move |name: String| {
 					let a = (*api.peek()).expect("the column dock entered a band before its menu shows");
 					let by = lanes.by.peek().clone();
-					let edit = LibraryEdit::Keep(Kept::Columns { name, by, band: a.band(), layout: a.save(), tints: lanes.tints.peek().clone() });
+					let edit = LibraryEdit::Keep(api::Kept::Columns { name, by, band: a.band(), layout: a.save(), tints: lanes.tints.peek().clone() });
 					spawn(async move { _ = ctx.keep(edit).await });
 				})),
 			}
@@ -348,6 +385,8 @@ fn Columns(view: String, groups: Vec<(String, Vec<usize>)>, by: GroupBy, shown: 
 							let band = a.band();
 							arranged.set(None);
 							let kept = ctx.library.peek().as_ref().and_then(|l| l.on_screen.columns.get(&view)?.get(&*lanes.by.peek())?.get(&band).cloned());
+							// kept on a wider view of this band, it would reflow into a jumble: fresh columns instead
+							let kept = kept.filter(|layout| tilers_dioxus::model::serial::load(layout).is_ok_and(|g| g.cells.iter().all(|c| c.x + c.w <= a.cols())));
 							let shown = match kept {
 								Some(layout) => show(a, &layout),
 								None => true, // the effect below seeds a tile per group
@@ -370,7 +409,7 @@ fn column(id: PanelId, key: String, title: String) -> DockPanel {
 		id,
 		title,
 		content: rsx! { Column { key: "{key}", group: key.clone() } },
-		min: MinSize::Rem { w: 14.0, h: 8.0 },
+		min: MinSize::Rem { w: 12.0, h: 8.0 },
 	}
 }
 

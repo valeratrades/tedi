@@ -57,7 +57,7 @@ impl Sink<Consensus> for Issue {
 		}
 
 		// Check if there are staged changes
-		let diff_output = Command::new("git").args(["-C", data_dir_str, "diff", "--cached", "--quiet"]).status()?;
+		let diff_output = Command::new("git").args(["-C", data_dir_str, "diff", "--cached", "--quiet", "--", "."]).status()?;
 		if diff_output.success() {
 			// No staged changes
 			return Ok(false);
@@ -65,7 +65,7 @@ impl Sink<Consensus> for Issue {
 
 		// Commit
 		let commit_msg = format!("sync: {repo_info}#{git_id}");
-		let commit_output = Command::new("git").args(["-C", data_dir_str, "commit", "-m", &commit_msg]).output()?;
+		let commit_output = Command::new("git").args(["-C", data_dir_str, "commit", "-m", &commit_msg, "--", "."]).output()?; // the repo may hold more than the store: anything staged outside it stays out of consensus
 		if !commit_output.status.success() {
 			return Err(ConsensusSinkError::new_git_commit(String::from_utf8_lossy(&commit_output.stderr).into_owned()));
 		}

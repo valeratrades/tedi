@@ -1,5 +1,5 @@
-//! ☰: what the viewer keeps on one shelf — favorites first, a click takes one, and the name typed on top
-//! saves the screen as it, or renames an entry to it.
+//! Naming what the viewer keeps: a name typed in place, and a shelf's menu — favorites first, a click
+//! takes one, and the name typed on top saves the screen as it, or renames an entry to it.
 
 use dioxus::prelude::*;
 use ev_lib::uikit_dioxus::*;
@@ -8,7 +8,7 @@ use super::Ctx;
 use crate::api::{Favorite, LibraryEdit, Shelf};
 
 #[component]
-pub fn Menu(shelf: Shelf, names: Vec<String>, on_pick: EventHandler<String>, on_save: Option<EventHandler<String>>) -> Element {
+pub fn Menu(shelf: Shelf, label: String, names: Vec<String>, on_pick: EventHandler<String>, on_save: Option<EventHandler<String>>) -> Element {
 	let ctx = use_context::<Ctx>();
 	let mut open = use_signal(|| false);
 	let mut typed = use_signal(String::new);
@@ -16,6 +16,7 @@ pub fn Menu(shelf: Shelf, names: Vec<String>, on_pick: EventHandler<String>, on_
 		Shelf::Filters => Favorite::View(name.to_string()),
 		Shelf::Workspaces => Favorite::Workspace(name.to_string()),
 		Shelf::Columns => Favorite::Columns(name.to_string()),
+		Shelf::Scopes => Favorite::Scope(name.to_string()),
 	};
 	let mut names = names;
 	names.sort_by_key(|n| !ctx.favorite(&favorite(n)));
@@ -31,7 +32,7 @@ pub fn Menu(shelf: Shelf, names: Vec<String>, on_pick: EventHandler<String>, on_
 		// inside the phone's sheet a click closes it; one in here is the menu's own
 		div { onclick: |e: MouseEvent| e.stop_propagation(),
 			Popover { open: open(), on_open_change: move |v| open.set(v),
-				PopoverTrigger { class: "px-2 text-sm text-ink-soft hover:text-ink", aria_label: format!("{shelf:?}"), "☰" }
+				PopoverTrigger { class: "px-1 text-ink-soft hover:text-ink", aria_label: format!("{shelf:?}"), "{label}▾" }
 				PopoverContent { align: "start", class: "flex w-72 flex-col gap-2 p-2",
 					Input { size: Size::Sm, value: typed(), placeholder: "name", oninput: move |e: FormEvent| typed.set(e.value()) }
 					if let Some(save) = on_save {
@@ -97,6 +98,40 @@ pub fn Menu(shelf: Shelf, names: Vec<String>, on_pick: EventHandler<String>, on_
 						}
 					}
 				}
+			}
+		}
+	}
+}
+
+/// A name typed in place: Enter takes it, Escape or leaving the field drops it.
+#[component]
+pub fn NameForm(#[props(default)] initial: String, placeholder: String, on_name: EventHandler<String>, on_cancel: EventHandler<()>) -> Element {
+	let mut typed = use_signal(|| initial.clone());
+	rsx! {
+		form {
+			onsubmit: move |e: FormEvent| {
+				e.prevent_default();
+				let name = typed.read().trim().to_string();
+				if name.is_empty() {
+					on_cancel.call(());
+				} else {
+					on_name.call(name);
+				}
+			},
+			input {
+				class: "h-7 w-full min-w-0 rounded-md border border-border bg-transparent px-2 text-sm outline-none focus:border-ink-soft",
+				value: typed(),
+				placeholder,
+				onmounted: move |e| async move {
+					_ = e.set_focus(true).await; // focus is a nicety: a field gone before it lands needs none
+				},
+				oninput: move |e| typed.set(e.value()),
+				onkeydown: move |e: KeyboardEvent| {
+					if e.key() == Key::Escape {
+						on_cancel.call(());
+					}
+				},
+				onblur: move |_| on_cancel.call(()),
 			}
 		}
 	}

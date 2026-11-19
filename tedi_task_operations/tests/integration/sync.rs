@@ -109,12 +109,9 @@ async fn test_only_remote_changed_takes_remote_with_pull() {
 	// Must use --pull to fetch remote changes when local is unchanged
 	let out = ctx.open_issue(&consensus).args(&["--pull"]).run();
 
-	assert!(
-		out.status.success() && (out.stdout.contains("Syncing") || out.stdout.contains("pre-open sync")),
-		"Should succeed with sync activity. stdout: {}, stderr: {}",
-		out.stdout,
-		out.stderr
-	);
+	assert!(out.status.success(), "stdout: {}, stderr: {}", out.stdout, out.stderr);
+	let stored = read_issue_file(&ctx.resolve_issue_path(&consensus));
+	assert!(stored.contains("remote changed body"), "the remote change wasn't pulled: {stored}");
 }
 
 #[tokio::test]
@@ -1318,7 +1315,9 @@ async fn test_sync_on_exit_untouched_reflushes_interrupted_sync() {
 		out.stdout
 	);
 
+	let pushes = || ctx.github_calls().iter().filter(|c| c.starts_with("update_issue_body(o, r, 1")).count();
+	let pushed = pushes();
 	let out = ctx.open_issue(&local).args(&["--sync-on-exit"]).run();
 	assert!(out.status.success(), "stderr: {}", out.stderr);
-	assert!(!out.stdout.contains("Syncing"), "a landed sync was resumed again. stdout: {}", out.stdout);
+	assert_eq!(pushes(), pushed, "a landed sync was resumed again. stdout: {}", out.stdout);
 }

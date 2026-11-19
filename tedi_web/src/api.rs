@@ -46,7 +46,16 @@ pub struct Library {
 	pub filters: BTreeMap<String, View>,
 	pub workspaces: BTreeMap<String, Arrangement>,
 	pub columns: BTreeMap<String, Columns>,
+	/// Beside the team's, never named as one of theirs.
+	#[serde(default)]
+	pub scopes: BTreeMap<String, Scope>,
 	pub favorites: BTreeSet<Favorite>,
+}
+impl Library {
+	/// The team's scopes, then the viewer's own.
+	pub fn scopes(&self, team: &BTreeMap<String, Scope>) -> BTreeMap<String, Scope> {
+		team.iter().chain(&self.scopes).map(|(n, s)| (n.clone(), s.clone())).collect()
+	}
 }
 
 /// A dock's layout per band, as tilers saves it: a phone's is not a desktop's.
@@ -107,6 +116,7 @@ pub enum Shelf {
 	Filters,
 	Workspaces,
 	Columns,
+	Scopes,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -131,6 +141,11 @@ pub enum Kept {
 		band: Band,
 		layout: String,
 		tints: Tints,
+	},
+	/// Replaces `name` whole.
+	Scope {
+		name: String,
+		scope: Scope,
 	},
 }
 
