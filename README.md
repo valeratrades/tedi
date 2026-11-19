@@ -69,7 +69,8 @@ todo open pattern                                   # Fuzzy find local issue
 # The board
 tedi pull                                 # Store every issue of the config's `watch` orgs/repos
 tedi pull EV-Main owner/repo              # …or of these
-tedi view stage:triage,selected t:bug i:>=5 --group stage   # A query over the store, opened in $EDITOR; edits sync
+tedi view state:kanban/triage,kanban/selected t:bug i:>=5 --group state:kanban   # A query over the store, opened in $EDITOR; edits sync
+tedi move https://github.com/o/r/issues/1 kanban/selected   # Into a workflow's bucket; entering it runs the bucket's hooks
 
 # Milestones
 todo milestones                           # Show current milestones
