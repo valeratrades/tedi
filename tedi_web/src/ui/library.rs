@@ -598,7 +598,7 @@ fn Detail(owner: Owner, item: Item, construction: Construction, entry: Option<En
 			Btn { style: Style::Outline, glyph: Glyph::Link, onclick: { let (i, c) = (item.clone(), construction.clone()); move |_| share(ctx, i.clone(), &c) }, "Copy share link" }
 			if let Some(e) = &entry {
 				if !e.history.is_empty() {
-					span { class: "text-label text-ink-faint", "HISTORY" }
+					span { class: "flex items-center gap-1 text-label text-ink-faint", Icon { glyph: Glyph::History, class: "size-3" } "HISTORY" }
 					for h in e.history.iter().rev() {
 						div { key: "{h.v}", class: "flex items-center gap-2 text-body-s",
 							span { class: "text-mono-s text-primary-ink", "v{h.v}" }

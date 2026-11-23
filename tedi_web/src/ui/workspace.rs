@@ -103,6 +103,13 @@ fn keep_as(ctx: Ctx, name: String, from_team: Option<String>) {
 	});
 }
 
+/// ⌘S, ⌘⇧C, ⌘⇧1–9.
+enum Shortcut {
+	Save,
+	Share,
+	Recent(usize),
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum Naming {
 	Copy,
@@ -116,25 +123,58 @@ pub(super) fn WorkspaceMenu() -> Element {
 	let ctx = use_context::<Ctx>();
 	let mut open = use_signal(|| false);
 	let mut naming = use_signal(|| None::<Naming>);
-	use_future(move || async move {
-		let mut keys = document::eval(
-			r#"document.addEventListener('keydown', e => {
-				if (!(e.metaKey || e.ctrlKey)) return;
-				const typing = ['INPUT', 'TEXTAREA'].includes(e.target.tagName) || e.target.isContentEditable;
-				if (!e.shiftKey && e.code === 'KeyS') { e.preventDefault(); dioxus.send('save'); }
-				else if (e.shiftKey && e.code === 'KeyC' && !typing) { e.preventDefault(); dioxus.send('share'); }
-				else if (e.shiftKey && /^Digit[1-9]$/.test(e.code)) { e.preventDefault(); dioxus.send(e.code.slice(5)); }
-			});"#,
-		);
-		while let Ok(key) = keys.recv::<String>().await {
-			match key.as_str() {
-				"save" => save(ctx),
-				"share" => share_screen(ctx),
-				n => {
-					let at: usize = n.parse().expect("the listener sends a digit");
-					let recent = ctx.library.read().as_ref().map(|l| l.recent.clone()).unwrap_or_default(); // the library not yet arrived
-					if let Some(name) = recent.get(at - 1) {
-						ctx.switch(name);
+	let (sender, keys) = use_hook(|| {
+		let (sender, keys) = futures::channel::mpsc::channel::<Shortcut>(8);
+		(std::rc::Rc::new(std::cell::RefCell::new(sender)), std::rc::Rc::new(std::cell::RefCell::new(Some(keys))))
+	});
+	let listener = use_hook(move || {
+		use wasm_bindgen::{JsCast as _, closure::Closure};
+		let sender = sender.clone();
+		let listener = Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(move |e: web_sys::KeyboardEvent| {
+			if !(e.meta_key() || e.ctrl_key()) {
+				return;
+			}
+			let typing = e.target().and_then(|t| t.dyn_into::<web_sys::Element>().ok()).is_some_and(|t| matches!(t.tag_name().as_str(), "INPUT" | "TEXTAREA"));
+			let code = e.code();
+			let shortcut = match (e.shift_key(), code.as_str()) {
+				(false, "KeyS") => Shortcut::Save,
+				(true, "KeyC") if !typing => Shortcut::Share,
+				(true, digit) => match digit.strip_prefix("Digit").and_then(|d| d.parse::<usize>().ok()).filter(|d| (1..=9).contains(d)) {
+					Some(at) => Shortcut::Recent(at),
+					None => return,
+				},
+				_ => return,
+			};
+			e.prevent_default();
+			_ = sender.borrow_mut().try_send(shortcut); // full only with 8 shortcuts still unhandled: this one is dropped
+		});
+		web_sys::window()
+			.expect("a browser window")
+			.add_event_listener_with_callback("keydown", listener.as_ref().unchecked_ref())
+			.expect("a window takes listeners");
+		std::rc::Rc::new(listener)
+	});
+	use_drop(move || {
+		use wasm_bindgen::JsCast as _;
+		web_sys::window()
+			.expect("a browser window")
+			.remove_event_listener_with_callback("keydown", listener.as_ref().as_ref().unchecked_ref())
+			.expect("a window drops listeners");
+	});
+	use_future(move || {
+		let keys = keys.borrow_mut().take();
+		async move {
+			use futures::StreamExt as _;
+			let Some(mut keys) = keys else { return }; // taken by this future's first run
+			while let Some(key) = keys.next().await {
+				match key {
+					Shortcut::Save => save(ctx),
+					Shortcut::Share => share_screen(ctx),
+					Shortcut::Recent(at) => {
+						let recent = ctx.library.read().as_ref().map(|l| l.recent.clone()).unwrap_or_default(); // the library not yet arrived
+						if let Some(name) = recent.get(at - 1) {
+							ctx.switch(name);
+						}
 					}
 				}
 			}
@@ -288,10 +328,15 @@ pub(super) fn Banner() -> Element {
 		let (path, search) = (location.pathname().expect("a page has a path"), location.search().expect("a page has a query"));
 		let Some(at) = path.find("/l/") else { return };
 		let link = format!("{}{search}", &path[at..]);
-		let root = path[..at].to_string();
+		let root = if at == 0 { "/" } else { &path[..at] };
+		// the board's own address again: a reload shows the viewer's screen, the link stays in Shared with me
+		web_sys::window()
+			.expect("a browser window")
+			.history()
+			.expect("a window has a history")
+			.replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(root))
+			.expect("a same-origin path replaces the address");
 		spawn(async move {
-			// the board's own address again: a reload shows the viewer's screen, the link stays in Shared with me
-			_ = document::eval(&format!("history.replaceState(null, '', {root:?} || '/')")).await; // the address bar is cosmetic: a refusal changes nothing shown
 			let link: ShareLink = match link.parse() {
 				Ok(link) => link,
 				Err(e) => return ctx.say("share", Said::Error, e, None),

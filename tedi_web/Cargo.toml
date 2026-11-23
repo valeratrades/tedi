@@ -28,6 +28,7 @@ web = [
     "dep:ev_lib",
     "dep:tilers_dioxus",
     "dep:web-sys",
+    "dep:wasm-bindgen",
     "dep:getrandom",
     "dep:futures",
     "dep:gloo-timers",
@@ -82,7 +83,7 @@ tower-http = { workspace = true, features = ["fs"], optional = true }
 tracing = { workspace = true, optional = true }
 urlencoding.workspace = true
 wasm-bindgen = { workspace = true, optional = true }
-web-sys = { workspace = true, features = ["Location", "Storage", "Window"], optional = true }
+web-sys = { workspace = true, features = ["Element", "EventTarget", "History", "KeyboardEvent", "Location", "Storage", "Window"], optional = true }
 
 [build-dependencies]
 ev_lib_classes.workspace = true
