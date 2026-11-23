@@ -34,7 +34,6 @@ pub(super) enum Glyph {
 	Check,
 	Maximize,
 	Blocker,
-	ArrowRight,
 	Share,
 	Sync,
 	Revert,
@@ -44,10 +43,7 @@ pub(super) enum Glyph {
 	Group,
 	Sprint,
 	Save,
-	Sidebar,
 	Split,
-	Tab,
-	Float,
 	Eye,
 	Help,
 }
