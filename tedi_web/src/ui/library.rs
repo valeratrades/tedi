@@ -5,7 +5,7 @@ use dioxus::prelude::*;
 use ev_lib::uikit_dioxus::*;
 
 use super::Ctx;
-use crate::api::{Favorite, LibraryEdit, Shelf};
+use crate::api::{Item, LibraryEdit, Shelf};
 
 #[component]
 pub fn Menu(shelf: Shelf, label: String, names: Vec<String>, on_pick: EventHandler<String>, on_save: Option<EventHandler<String>>) -> Element {
@@ -13,10 +13,10 @@ pub fn Menu(shelf: Shelf, label: String, names: Vec<String>, on_pick: EventHandl
 	let mut open = use_signal(|| false);
 	let mut typed = use_signal(String::new);
 	let favorite = move |name: &str| match shelf {
-		Shelf::Filters => Favorite::View(name.to_string()),
-		Shelf::Workspaces => Favorite::Workspace(name.to_string()),
-		Shelf::Columns => Favorite::Columns(name.to_string()),
-		Shelf::Scopes => Favorite::Scope(name.to_string()),
+		Shelf::Filters => Item::View(name.to_string()),
+		Shelf::Workspaces => Item::Workspace(name.to_string()),
+		Shelf::Columns => Item::Columns(name.to_string()),
+		Shelf::Scopes => Item::Scope(name.to_string()),
 	};
 	let mut names = names;
 	names.sort_by_key(|n| !ctx.favorite(&favorite(n)));
@@ -62,7 +62,7 @@ pub fn Menu(shelf: Shelf, label: String, names: Vec<String>, on_pick: EventHandl
 								rsx! {
 									button {
 										class: if starred { "px-1 text-accent" } else { "px-1 text-ink-soft" },
-										title: if starred { "Unfavorite" } else { "Favorite" },
+										title: if starred { "Unfavorite" } else { "Item" },
 										onclick: move |_| edit(LibraryEdit::Favorite { what: what.clone(), on: !starred }),
 										if starred { "★" } else { "☆" }
 									}

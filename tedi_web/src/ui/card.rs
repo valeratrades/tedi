@@ -100,7 +100,7 @@ fn scheme_label(l: &String) -> bool {
 
 /// An issue's open/closed circle, a pull request's branch in its state's colour.
 #[component]
-fn KindIcon(card: Card) -> Element {
+pub(super) fn KindIcon(card: Card) -> Element {
 	let (glyph, ink) = match &card.pr {
 		None if card.open() => (Glyph::Issue, "text-positive-ink"),
 		None => (Glyph::Check, "text-chart-6"),

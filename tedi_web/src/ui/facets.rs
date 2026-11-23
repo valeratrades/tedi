@@ -77,7 +77,7 @@ pub(super) fn FacetChip(facet: Facet, query: Query) -> Element {
 				PopoverTrigger { class: "inline-flex items-center gap-1", aria_label: format!("filter by {facet}"),
 					span { class: if active || open() { "text-body-s font-medium text-ink" } else { "text-body-s font-medium text-ink-soft" }, "{facet}" }
 					if active {
-						span { class: "max-w-48 truncate text-mono-s text-primary-ink", {picked.join(", ")} }
+						span { class: "max-w-32 truncate text-mono-s text-primary-ink", {picked.join(", ")} }
 					}
 					Icon { glyph: Glyph::ChevronDown, class: "size-3 text-ink-soft" }
 				}
