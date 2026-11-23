@@ -250,10 +250,7 @@ fn Editable(link: IssueLink, field: EditedField, current: String, multiline: boo
 	let ctx = use_context::<Ctx>();
 	let mut draft = use_signal(|| None::<(String, String)>);
 	let Some((seen, text)) = draft() else {
-		let start = {
-			let current = current.clone();
-			move |_| draft.set(Some((current.clone(), current.clone())))
-		};
+		let start = { let current = current.clone(); move |_| draft.set(Some((current.clone(), current.clone()))) };
 		return rsx! {
 			div { class: if multiline { "group/ed flex min-w-0 flex-col gap-1" } else { "group/ed flex min-w-0 flex-1 flex-col gap-1" },
 				if multiline {
@@ -278,13 +275,13 @@ fn Editable(link: IssueLink, field: EditedField, current: String, multiline: boo
 	let onkeydown = {
 		let mut save = save.clone();
 		move |e: KeyboardEvent| match e.key() {
-			Key::Enter if !multiline || e.modifiers().ctrl() || e.modifiers().meta() => {
-				e.prevent_default();
-				save();
-			}
-			Key::Escape => draft.set(None),
-			_ => {}
+		Key::Enter if !multiline || e.modifiers().ctrl() || e.modifiers().meta() => {
+			e.prevent_default();
+			save();
 		}
+		Key::Escape => draft.set(None),
+		_ => {}
+	}
 	};
 	rsx! {
 		div { class: "flex min-w-0 flex-1 flex-col gap-1.5",

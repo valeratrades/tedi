@@ -660,9 +660,7 @@ async fn reload(ctx: Ctx) {
 #[component]
 fn TileActions(tile: Tile) -> Element {
 	let ctx = use_context::<Ctx>();
-	let Tile {
-		group, active, maximized, floating, ..
-	} = tile;
+	let Tile { group, active, maximized, floating, .. } = tile;
 	if ctx.band() == Some(Band::Sm) || floating {
 		return rsx! {}; // one tile at a time, or above them: nothing to split or maximize beside
 	}
@@ -692,6 +690,7 @@ fn TileActions(tile: Tile) -> Element {
 		kit::IconBtn { glyph: Glyph::Maximize, title: if maximized { "Restore" } else { "Maximize" }, active: maximized, onclick: move |_| api().maximize(group) }
 	}
 }
+
 
 /// Over everything the dock draws, its grips included.
 #[component]
