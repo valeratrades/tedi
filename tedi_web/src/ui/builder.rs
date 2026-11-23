@@ -237,7 +237,7 @@ fn Fields(view: Signal<View>) -> Element {
 		.collect();
 	let mut dragged = use_signal(|| None::<usize>);
 	rsx! {
-		div { class: "grid grid-cols-3 gap-x-3 gap-y-1.5",
+		div { class: "grid grid-cols-[repeat(auto-fill,minmax(120px,1fr))] gap-x-3 gap-y-1.5",
 			for (i , (s , on)) in ordered.into_iter().enumerate() {
 				label {
 					key: "{s}",
@@ -255,10 +255,11 @@ fn Fields(view: Signal<View>) -> Element {
 						}
 					},
 					Checkbox {
+						class: "shrink-0",
 						checked: on,
 						on_checked_change: { let s = s.clone(); move |now: bool| if now { view.write().shown.push(s.clone()) } else { view.write().shown.retain(|x| *x != s) } },
 					}
-					"{s}"
+					span { class: "truncate", "{s}" }
 				}
 			}
 		}
