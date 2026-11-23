@@ -369,7 +369,6 @@ fn ColumnActions(tile: Tile) -> Element {
 	let ctx = use_context::<Ctx>();
 	let lanes = use_context::<Lanes>();
 	let ColumnsOf(view) = use_context::<ColumnsOf>();
-	let mut open = use_signal(|| false);
 	let group = tile.active.0.strip_prefix("col:").expect("a column dock hosts only columns").to_string();
 	let by = lanes.by.read().clone();
 	let tint = {
@@ -401,7 +400,6 @@ fn ColumnActions(tile: Tile) -> Element {
 	let apply = {
 		let tint = tint.clone();
 		move |name: String| {
-			open.set(false);
 			let a = (*lanes.api.peek()).expect("the column dock entered a band before its menu shows");
 			let band = a.band();
 			let kept = ctx.library.peek().as_ref().expect("arrived before the menu").columns.get(&name).cloned();
@@ -420,9 +418,7 @@ fn ColumnActions(tile: Tile) -> Element {
 		}
 	};
 	rsx! {
-		Popover { open: open(), on_open_change: move |v| open.set(v),
-			PopoverTrigger { class: "inline-flex size-6 items-center justify-center rounded-[var(--control-radius)] text-ink-soft hover:bg-hover hover:text-ink", aria_label: "Column menu", Icon { glyph: Glyph::More } }
-			PopoverContent { align: "end", class: "flex w-60 flex-col gap-0.5 rounded-[var(--radius)] border border-border bg-popover p-1 text-ink",
+		super::kit::Menu { glyph: Glyph::More, title: "Column menu",
 				span { class: "px-2 pt-1.5 pb-0.5 text-overline text-ink-soft", "Tint" }
 				div { class: "flex flex-wrap gap-1 px-2 pb-1",
 					for choice in std::iter::once(None).chain(Tint::iter().map(Some)) {
@@ -449,16 +445,15 @@ fn ColumnActions(tile: Tile) -> Element {
 				div { class: "my-0.5 h-px bg-border-subtle" }
 				span { class: "px-2 pt-1.5 pb-0.5 text-overline text-ink-soft", "Column layouts" }
 				for name in team.into_iter().chain(mine) {
-					MenuItem { key: "{name}", selected: false, label: name.clone(), onclick: { let (mut apply, name) = (apply.clone(), name.clone()); move |_| apply(name.clone()) } }
+					MenuItem { key: "{name}", selected: false, label: name.clone(), onclick: { let (apply, name) = (apply.clone(), name.clone()); move |_| apply(name.clone()) } }
 				}
 				if naming() {
-					div { class: "px-1 py-1",
+					div { class: "px-1 py-1", onclick: |e: MouseEvent| e.stop_propagation(),
 						super::library::NameForm {
 							placeholder: "keep these columns as…",
 							on_name: move |name: String| {
 								naming.set(false);
-								open.set(false);
-								let a = (*lanes.api.peek()).expect("the column dock entered a band before its menu shows");
+													let a = (*lanes.api.peek()).expect("the column dock entered a band before its menu shows");
 								let edit = LibraryEdit::Keep(api::Kept::Columns { name, by: lanes.by.peek().clone(), band: a.band(), layout: a.save(), tints: lanes.tints.peek().clone() });
 								spawn(async move { _ = ctx.keep(edit).await });
 							},
@@ -468,7 +463,6 @@ fn ColumnActions(tile: Tile) -> Element {
 				} else {
 					MenuItem { selected: false, glyph: Glyph::Save, label: "Keep these columns as…", onclick: move |_| naming.set(true) }
 				}
-			}
 		}
 	}
 }
