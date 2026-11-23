@@ -98,7 +98,7 @@ impl Query {
 		let passing: Vec<usize> = (0..cards.len()).filter(|&i| self.clauses.iter().all(|c| c.holds(&cards[i], me, &open))).collect();
 		if self.text.is_empty() {
 			let mut sorted = passing;
-			sorted.sort_by_key(|&i| std::cmp::Reverse(cards[i].rank));
+			sorted.sort_by_key(|&i| (std::cmp::Reverse(cards[i].rank), cards[i].importance.is_none())); // rank counts an unset `i:` as its default
 			return Ok(sorted);
 		}
 		let candidates: Vec<tedi_utils::search::Candidate> = passing
@@ -294,14 +294,11 @@ pub enum Shown {
 	Prs,
 }
 /// A named slice of the team's repos, nesting narrower ones: it covers its own `repos` (`owner/repo`,
-/// `owner/*`) and those of every scope inside it.
+/// `owner/*`) and those of every scope inside it. It narrows; which views exist is none of its business.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Scope {
 	#[serde(default)] // a scope may only group nested ones
 	pub repos: Vec<String>,
-	/// The team views it shows, by name; none: its parent's.
-	#[serde(default)]
-	pub views: Vec<String>,
 	#[serde(flatten)]
 	pub children: BTreeMap<String, Scope>,
 }
@@ -321,17 +318,14 @@ impl Scope {
 	}
 }
 
-/// The scope at `path` (names ` / `-joined): its `repo:` filter, and the views it names, else its nearest parent's.
-pub fn scope_at(scopes: &BTreeMap<String, Scope>, path: &str) -> Option<(String, Vec<String>)> {
-	let (mut level, mut views, mut at) = (scopes, &Vec::new(), None);
+/// The `repo:` filter of the scope at `path` (names ` / `-joined).
+pub fn scope_at(scopes: &BTreeMap<String, Scope>, path: &str) -> Option<String> {
+	let (mut level, mut at) = (scopes, None);
 	for name in path.split(" / ") {
 		let scope = level.get(name)?;
-		if !scope.views.is_empty() {
-			views = &scope.views;
-		}
 		(level, at) = (&scope.children, Some(scope));
 	}
-	Some((at?.filter(), views.clone()))
+	Some(at?.filter())
 }
 
 /// `hits` (as `Query::run` ordered them) split into groups, each keeping that order. A workflow's states
@@ -988,6 +982,19 @@ mod tests {
 				assert_eq!(q.run(&cards, None).unwrap().len(), t.count, "{q}");
 			}
 		}
+	}
+
+	#[test]
+	fn rank_ties_put_a_set_importance_first() {
+		let mut cards = vec![
+			card(1, "defaulted", "app", "triage", &[], &[], &[]),
+			card(2, "set to the default", "app", "triage", &["i:3"], &[], &[]),
+		];
+		for c in &mut cards {
+			c.rank = Some(30_003); // `i:3` and an unset `i:` (ranked as 3) tie
+		}
+		let hits = Query::from_str("is:open").unwrap().run(&cards, None).unwrap();
+		assert_eq!(titles(&cards, &hits), "set to the default · defaulted");
 	}
 
 	#[test]
