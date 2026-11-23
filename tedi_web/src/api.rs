@@ -192,6 +192,22 @@ pub enum Construction {
 	Columns(Columns),
 }
 
+/// Every object these hold, a scope at each of its paths.
+pub fn constructions(views: &[View], scopes: &BTreeMap<String, Scope>, columns: &BTreeMap<String, Columns>, workspaces: &BTreeMap<String, Arrangement>) -> BTreeMap<Item, Construction> {
+	fn walk(at: &str, scopes: &BTreeMap<String, Scope>, out: &mut BTreeMap<Item, Construction>) {
+		for (name, scope) in scopes {
+			let path = if at.is_empty() { name.clone() } else { format!("{at} / {name}") };
+			out.insert(Item::Scope(path.clone()), Construction::Scope(scope.clone()));
+			walk(&path, &scope.children, out);
+		}
+	}
+	let mut out: BTreeMap<Item, Construction> = views.iter().map(|v| (Item::View(v.name.clone()), Construction::View(v.clone()))).collect();
+	walk("", scopes, &mut out);
+	out.extend(columns.iter().map(|(n, c)| (Item::Columns(n.clone()), Construction::Columns(c.clone()))));
+	out.extend(workspaces.iter().map(|(n, w)| (Item::Workspace(n.clone()), Construction::Workspace(w.clone()))));
+	out
+}
+
 /// A kept copy's origin, so it can show how far the two moved apart.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct Upstream {

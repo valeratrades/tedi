@@ -864,20 +864,8 @@ struct Team {
 	workspaces: BTreeMap<String, Arrangement>,
 }
 
-/// Every team object, a scope at each path.
 fn items(team: &Team) -> BTreeMap<Item, Construction> {
-	fn walk(at: &str, scopes: &BTreeMap<String, Scope>, out: &mut BTreeMap<Item, Construction>) {
-		for (name, scope) in scopes {
-			let path = if at.is_empty() { name.clone() } else { format!("{at} / {name}") };
-			out.insert(Item::Scope(path.clone()), Construction::Scope(scope.clone()));
-			walk(&path, &scope.children, out);
-		}
-	}
-	let mut out: BTreeMap<Item, Construction> = team.views.iter().map(|v| (Item::View(v.name.clone()), Construction::View(v.clone()))).collect();
-	walk("", &team.scopes, &mut out);
-	out.extend(team.columns.iter().map(|(n, c)| (Item::Columns(n.clone()), Construction::Columns(c.clone()))));
-	out.extend(team.workspaces.iter().map(|(n, w)| (Item::Workspace(n.clone()), Construction::Workspace(w.clone()))));
-	out
+	crate::api::constructions(&team.views, &team.scopes, &team.columns, &team.workspaces)
 }
 
 /// As this board runs them.
