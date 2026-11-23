@@ -6788,8 +6788,11 @@ dependencies = [
  "tilers_dioxus",
  "tokio",
  "tokio-stream",
+ "toml 1.2.1+spec-1.1.0",
+ "toml_edit",
  "tower-http",
  "tracing",
+ "urlencoding",
  "wasm-bindgen",
  "web-sys",
 ]
