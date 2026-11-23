@@ -1,0 +1,44 @@
+# The team's board: what the team instance and `nix run .#dev` show. Versions of each object on the board are this
+# file's commits; a viewer's proposal is a pull request editing it.
+watch = ["EV-Main", "EV-Estate", "EV-Service-Arb"]
+
+[board.workflows]
+kanban = "preset:kanban"
+pull_requests = "preset:pull_requests"
+
+[[board.views]]
+name = "Triage"
+query = "is:issue is:open state:kanban/icebox,kanban/triage,kanban/selected,kanban/in_progress,kanban/in_review"
+layout = "board"
+group_by = "state:kanban"
+sort = "importance"
+shown = ["repo", "assignees", "importance", "hours", "type", "blockers"]
+
+[[board.views]]
+name = "PRs"
+query = "is:pr is:open"
+layout = "list"
+group_by = "state:pull_requests"
+sort = "rank"
+shown = ["repo", "assignees", "prs", "labels"]
+
+[[board.views]]
+name = "Assigned"
+query = "assignee:@me is:open"
+layout = "list"
+group_by = "state:kanban"
+sort = "rank"
+shown = ["repo", "state:kanban", "importance", "hours"]
+
+[board.columns.notion]
+by = "state:kanban"
+tints = { triage = "orange", selected = "blue", in_progress = "blue", in_review = "purple", done = "green" }
+
+[board.scopes.EV.EV-Main]
+repos = ["EV-Main/*"]
+
+[board.scopes.EV.EV-Estate]
+repos = ["EV-Estate/*"]
+
+[board.scopes.EV.EV-Service-Arb]
+repos = ["EV-Service-Arb/*"]

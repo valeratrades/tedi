@@ -51,6 +51,8 @@ pub async fn web_command(settings: &LiveSettings, args: WebArgs, mode: SyncMode)
 		views: board.views,
 		scopes: board.scopes,
 		columns: board.columns,
+		workspaces: board.workspaces,
+		source: board.source,
 		milestones,
 		watch,
 		pull_every,
