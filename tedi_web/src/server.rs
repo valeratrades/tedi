@@ -353,9 +353,6 @@ fn apply(library: &mut Library, edit: LibraryEdit) -> Result<()> {
 			if scope.repos.is_empty() && scope.children.is_empty() {
 				bail!("the scope {name} names no repo");
 			}
-			if let Some(view) = scope.views.iter().find(|v| !team_view(v) && !library.filters.contains_key(*v)) {
-				bail!("the scope {name} lists the view {view}, and no such view is kept");
-			}
 			library.scopes.insert(name, scope);
 		}
 		LibraryEdit::Rename { shelf, from, to } => {

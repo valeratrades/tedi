@@ -72,7 +72,7 @@ fn Values(facet: Facet, query: Query) -> Element {
 	let board = ctx.board.read();
 	let cards = &board.as_ref().expect("views render once the board loaded").cards;
 	let within = match ctx.scope() {
-		Some((_, Some((filter, _)))) => filter.parse().expect("a scope's filter is a repo clause"),
+		Some((_, Some(filter))) => filter.parse().expect("a scope's filter is a repo clause"),
 		Some((path, None)) => unreachable!("a view under the gone scope {path} shows only that"),
 		None => Query::default(),
 	};

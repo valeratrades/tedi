@@ -77,22 +77,8 @@ impl Ctx {
 			.collect()
 	}
 
-	/// The views the scope on screen names (every team view, when it names none), then the viewer's own.
-	fn listed(&self) -> Vec<View> {
-		let names = match self.scope() {
-			Some((_, Some((_, names)))) if !names.is_empty() => Some(names),
-			Some((_, Some(_))) | None => None,
-			Some((_, None)) => Some(Vec::new()),
-		};
-		let own = self.library.read().as_ref().map(|l| l.filters.keys().cloned().collect::<Vec<_>>()).unwrap_or_default();
-		self.views()
-			.into_iter()
-			.filter(|v| own.contains(&v.name) || names.as_ref().is_none_or(|n| n.contains(&v.name)))
-			.collect()
-	}
-
-	/// The scope everything on screen is narrowed to: its path, and its filter and views while it is still configured.
-	fn scope(&self) -> Option<(String, Option<(String, Vec<String>)>)> {
+	/// The scope everything on screen is narrowed to: its path, and its filter while it is still configured.
+	fn scope(&self) -> Option<(String, Option<String>)> {
 		let path = self.library.read().as_ref()?.scope.clone()?;
 		let at = scope_at(&self.scopes(), &path);
 		Some((path, at))
@@ -260,7 +246,7 @@ impl Ctx {
 		let shown = match library.on_screen.tiles.get(&band) {
 			Some(layout) => self.show(api, layout),
 			None => {
-				if let Some(view) = self.listed().into_iter().next() {
+				if let Some(view) = self.views().into_iter().next() {
 					self.open(PanelId(format!("view:{}", view.name)));
 				}
 				true
@@ -459,7 +445,7 @@ fn TopBar() -> Element {
 				Some((path, None)) => rsx! {
 					Badge { variant: BadgeVariant::Error, "{path} is no longer configured" }
 				},
-				Some((path, Some((filter, _)))) => {
+				Some((path, Some(filter))) => {
 					let top = path.split(" / ").next().expect("a path names at least its top scope").to_string();
 					let editing = if own.contains_key(&top) && !path.contains(" / ") { Editing::Own(path.clone()) } else { Editing::Team(path.clone()) };
 					let also = editing.clone();
@@ -576,7 +562,7 @@ fn NavMenu() -> Element {
 	workspaces.sort_by_key(|e| !e.favorite.as_ref().is_some_and(starred)); // stable: favorites first, else in order
 
 	let mut listed: Vec<Entry> = ctx
-		.listed()
+		.views()
 		.into_iter()
 		.map(|v| Entry {
 			open: Open::Panel(PanelId(format!("view:{}", v.name))),
@@ -999,7 +985,7 @@ fn plain(text: &str) -> String {
 	out
 }
 
-/// A scope's name, the repos it covers, and the team views it lists; a team scope saves as the viewer's own.
+/// A scope's name and the repos it covers; a team scope saves as the viewer's own.
 #[component]
 fn ScopeForm(editing: Editing) -> Element {
 	let ctx = use_context::<Ctx>();
@@ -1011,7 +997,6 @@ fn ScopeForm(editing: Editing) -> Element {
 				String::new(),
 				Scope {
 					repos: Vec::new(),
-					views: Vec::new(),
 					children: BTreeMap::new(),
 				},
 			),
@@ -1020,23 +1005,15 @@ fn ScopeForm(editing: Editing) -> Element {
 				let setup = ctx.setup.read();
 				let team = &setup.as_ref().expect("arrives with the library").scopes;
 				// the copy covers, flat, what the team scope and every one nested in it cover
-				let (filter, views) = scope_at(team, path).expect("offered from the team's");
+				let filter = scope_at(team, path).expect("offered from the team's");
 				let repos = filter.strip_prefix("repo:").expect("a scope's filter is a repo clause").split(',').map(str::to_string).collect();
 				let name = path.rsplit(" / ").next().expect("a path names at least one scope");
-				(
-					format!("my {name}"),
-					Scope {
-						repos,
-						views,
-						children: BTreeMap::new(),
-					},
-				)
+				(format!("my {name}"), Scope { repos, children: BTreeMap::new() })
 			}
 		}
 	};
 	let mut name = use_signal(|| initial_name.clone());
 	let mut repos = use_signal(|| initial.repos.clone());
-	let mut views = use_signal(|| initial.views.clone());
 	let mut typed = use_signal(String::new);
 	let close = move || {
 		let mut m = ctx.modal;
@@ -1058,7 +1035,6 @@ fn ScopeForm(editing: Editing) -> Element {
 			.and_then(|q| q.run(cards, ctx.me().as_deref()).map_err(|e| e.to_string()))
 			.map(|hits| hits.len()),
 	};
-	let all_views: Vec<String> = ctx.views().into_iter().map(|v| v.name).collect();
 	let team = matches!(editing, Editing::Team(_));
 	let save = {
 		let editing = editing.clone();
@@ -1067,7 +1043,6 @@ fn ScopeForm(editing: Editing) -> Element {
 				name.read().trim().to_string(),
 				Scope {
 					repos: repos.read().clone(),
-					views: views.read().clone(),
 					children: BTreeMap::new(),
 				},
 			);
@@ -1156,20 +1131,6 @@ fn ScopeForm(editing: Editing) -> Element {
 						}
 					}
 				}
-				div { class: "flex flex-col gap-1 text-sm",
-					span { class: "text-ink-soft", "Views it lists (none: every team view)" }
-					div { class: "flex flex-wrap gap-x-4 gap-y-1",
-						for v in all_views {
-							label { key: "{v}", class: "inline-flex items-center gap-1.5",
-								Checkbox {
-									checked: views.read().contains(&v),
-									on_checked_change: { let v = v.clone(); move |on: bool| if on { views.write().push(v.clone()) } else { views.write().retain(|x| *x != v) } },
-								}
-								"{v}"
-							}
-						}
-					}
-				}
 				DialogFooter { class: "flex items-center gap-2",
 					if let Editing::Own(n) = &editing {
 						Button {
@@ -1213,7 +1174,7 @@ fn Palette() -> Element {
 	};
 	let mut groups = Vec::new();
 	if let Some(setup) = ctx.setup.read().as_ref() {
-		let mut views: Vec<CommandPaletteItem> = ctx.listed().into_iter().map(|v| item(PanelId(format!("view:{}", v.name)), v.name)).collect();
+		let mut views: Vec<CommandPaletteItem> = ctx.views().into_iter().map(|v| item(PanelId(format!("view:{}", v.name)), v.name)).collect();
 		views.extend(setup.sprints.iter().map(|s| item(PanelId(format!("sprint:{}", s.title)), format!("Sprint: {}", s.title))));
 		groups.push(CommandPaletteGroup {
 			id: "views".into(),

@@ -122,7 +122,7 @@
                   query = "is:issue is:open state:kanban/icebox,kanban/triage,kanban/selected,kanban/in_progress,kanban/in_review";
                   layout = "board";
                   group_by = "state:kanban";
-                  sort = "rank";
+                  sort = "importance";
                   shown = [ "repo" "assignees" "importance" "hours" "type" "blockers" ];
                 }
                 {
@@ -153,7 +153,6 @@
                 };
               };
               scopes.EV = {
-                views = [ "Triage" "PRs" "Assigned" ];
                 EV-Main.repos = [ "EV-Main/*" ];
                 EV-Estate.repos = [ "EV-Estate/*" ];
                 EV-Service-Arb.repos = [ "EV-Service-Arb/*" ];

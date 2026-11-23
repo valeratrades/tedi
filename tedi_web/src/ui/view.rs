@@ -109,7 +109,7 @@ fn ViewBody(defined: View) -> Element {
 	let scoped = match ctx.scope() {
 		None => v.query.clone(),
 		Some((path, None)) => return rsx! { Badge { variant: BadgeVariant::Error, "the scope {path} is no longer configured" } },
-		Some((_, Some((filter, _)))) => format!("{filter} {}", v.query),
+		Some((_, Some(filter))) => format!("{filter} {}", v.query),
 	};
 	let workflows = ctx.workflows();
 	let hits = (|| -> Result<_, String> {
