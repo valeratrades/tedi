@@ -109,7 +109,7 @@ fn Shelves() -> Element {
 				label: name.clone(),
 				depth,
 				favorite: Some(Item::Scope(path.clone())),
-				own: (depth == 0 && own.contains_key(name)).then_some(Shelf::Scopes),
+				own: own.contains_key(&path).then_some(Shelf::Scopes),
 				current: current == Some(&path),
 				meta: count(ctx, &format!("{} is:open", scope.filter())).map(|n| n.to_string()).unwrap_or_default(),
 				go: Go::Scope(path.clone()),
@@ -460,8 +460,7 @@ pub(super) fn TopBar() -> Element {
 					None => rsx! {},
 					Some((path, None)) => rsx! { span { class: "text-caption text-accent-error", "{path} is no longer configured" } },
 					Some((path, Some(filter))) => {
-						let top = path.split(" / ").next().expect("a path names at least its top scope").to_string();
-						let editing = if library.scopes.contains_key(&top) && !path.contains(" / ") { Editing::Own(path.clone()) } else { Editing::Team(path.clone()) };
+						let editing = if library.scopes.contains_key(path) { Editing::Own(path.clone()) } else { Editing::Team(path.clone()) };
 						rsx! {
 							span { class: "hidden h-5 max-w-56 items-center truncate rounded-[var(--control-radius)] bg-secondary px-1.5 text-mono-s text-ink-soft lg:inline-flex", title: "What every view, facet and count here is narrowed by", "{filter}" }
 							button {
@@ -512,7 +511,7 @@ fn ScopePicker() -> Element {
 	fn walk(prefix: &str, level: &BTreeMap<String, Scope>, depth: usize, own: &BTreeMap<String, Scope>, out: &mut Vec<(String, String, usize, bool)>) {
 		for (name, scope) in level {
 			let path = if prefix.is_empty() { name.clone() } else { format!("{prefix} / {name}") };
-			out.push((path.clone(), name.clone(), depth, depth == 0 && own.contains_key(name)));
+			out.push((path.clone(), name.clone(), depth, own.contains_key(&path)));
 			walk(&path, &scope.children, depth + 1, own, out);
 		}
 	}

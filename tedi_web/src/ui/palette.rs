@@ -14,6 +14,8 @@ use super::{
 };
 use crate::api::LibraryEdit;
 
+const KINDS: [(&str, &str); 5] = [("v:", "views"), ("s:", "scopes"), ("w:", "workspaces"), ("c:", "column layouts"), ("#", "issues")];
+
 #[derive(Clone, PartialEq)]
 enum Go {
 	Panel(PanelId),
@@ -32,8 +34,6 @@ struct Hit {
 	/// Its library page, for ⌘⏎.
 	page: Option<PanelId>,
 }
-
-const KINDS: [(&str, &str); 5] = [("v:", "views"), ("s:", "scopes"), ("w:", "workspaces"), ("c:", "column layouts"), ("#", "issues")];
 
 #[component]
 pub(super) fn Palette() -> Element {
