@@ -8,6 +8,7 @@ mod facets;
 mod icons;
 mod issue;
 mod kit;
+mod palette;
 mod library;
 mod scope;
 mod shell;
@@ -200,6 +201,22 @@ impl Ctx {
 				if widest.w > w {
 					api.resize(i, widest.w - w, widest.h);
 				}
+				api.place(group, w, widest.h);
+			}
+		}
+	}
+
+	/// Shows `id` in a tile of its own beside the widest, which gives up the room.
+	pub(super) fn open_beside(&self, id: PanelId) {
+		let mut api = (*self.api.peek()).expect("a band is entered before anything can be opened");
+		self.host(&id);
+		let grid = serial::load(&api.save()).expect("a layout loads back from its own save");
+		let group = Group::new(api.mint_group_id(), id.clone());
+		match grid.cells.iter().enumerate().max_by_key(|(_, c)| c.w) {
+			None => api.place(group, api.cols(), api.rows()),
+			Some((i, widest)) => {
+				let w = widest.w / 2;
+				api.resize(i, widest.w - w, widest.h);
 				api.place(group, w, widest.h);
 			}
 		}
@@ -570,7 +587,7 @@ fn Shell() -> Element {
 			}
 		}
 		Modals {}
-		Palette {}
+		palette::Palette {}
 		toast::Toasts {}
 	}
 }
@@ -726,51 +743,3 @@ fn plain(text: &str) -> String {
 	out
 }
 
-/// ⌘K: every view, scope, sprint and open issue by name.
-#[component]
-fn Palette() -> Element {
-	let ctx = use_context::<Ctx>();
-	let mut open = ctx.palette;
-	use_command_palette_shortcut(move || open.toggle(), true);
-	let item = |id: PanelId, label: String| CommandPaletteItem {
-		id: id.0.clone(),
-		label,
-		icon: None,
-		shortcut: None,
-		keywords: Vec::new(),
-		disabled: false,
-		on_select: EventHandler::new(move |_| {
-			let mut into = ctx.into;
-			if let Some(group) = into.take() {
-				ctx.host(&id);
-				(*ctx.api.peek()).expect("the palette opens over an entered dock").add_tab(group, id.clone());
-			}
-			ctx.open(id.clone());
-		}),
-	};
-	let mut groups = Vec::new();
-	if let Some(setup) = ctx.setup.read().as_ref() {
-		let mut views: Vec<CommandPaletteItem> = ctx.views().into_iter().map(|v| item(PanelId(format!("view:{}", v.name)), v.name)).collect();
-		views.extend(setup.sprints.iter().map(|s| item(PanelId(format!("sprint:{}", s.title)), format!("Sprint: {}", s.title))));
-		groups.push(CommandPaletteGroup {
-			id: "views".into(),
-			heading: Some("Views".into()),
-			items: views,
-		});
-	}
-	if let Some(board) = ctx.board.read().as_ref() {
-		groups.push(CommandPaletteGroup {
-			id: "issues".into(),
-			heading: Some("Open issues".into()),
-			items: board
-				.cards
-				.iter()
-				.filter(|c| c.open())
-				.map(|c| item(PanelId(format!("issue:{}", c.link)), format!("{} #{} {}", c.link.project(), c.link.number(), c.title)))
-				.collect(),
-		});
-	}
-	rsx! {
-		CommandPalette { open: open(), on_open_change: move |v| open.set(v), groups }
-	}
-}
