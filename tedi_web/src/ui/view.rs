@@ -303,14 +303,7 @@ fn Columns(view: String, groups: Vec<(String, Vec<usize>)>, by: GroupBy, shown: 
 			}
 		}
 	});
-	let washes: String = lanes
-		.tints
-		.read()
-		.iter()
-		.map(|(key, t)| format!(r#".cols .tl-tile[data-panel="col:{key}"] .tl-header {{ background: color-mix(in srgb, var(--tint-{t}) 14%, var(--card)); }}"#))
-		.collect();
 	rsx! {
-		style { "{washes}" }
 		div { class: "cols relative min-h-0 flex-1",
 			div { class: "absolute inset-0",
 				PackedArea {
@@ -350,6 +343,7 @@ fn column(id: PanelId, key: String) -> DockPanel {
 		label: Some(rsx! { ColumnHead { key: "{key}", group: key.clone() } }),
 		content: rsx! { Column { key: "{key}", group: key } },
 		min: MinSize::Px { w: 248.0, h: 120.0 },
+		locked: true, // a group is the view's, not the viewer's to close or tear out
 	}
 }
 
@@ -452,7 +446,6 @@ fn ColumnActions(tile: Tile) -> Element {
 						}
 					}
 				}
-				MenuItem { selected: false, glyph: Glyph::Columns, label: if tile.collapsed { "Open" } else { "Collapse to a spine" }, onclick: move |_| { open.set(false); let mut api = tile.api; api.collapse(tile.group); } }
 				div { class: "my-0.5 h-px bg-border-subtle" }
 				span { class: "px-2 pt-1.5 pb-0.5 text-overline text-ink-soft", "Column layouts" }
 				for name in team.into_iter().chain(mine) {
