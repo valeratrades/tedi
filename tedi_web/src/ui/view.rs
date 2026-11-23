@@ -748,7 +748,7 @@ fn Rows(view: String, by: GroupBy, groups: Vec<(String, Vec<usize>)>, shown: Vec
 			div { class: "sticky top-0 z-10 flex h-7 min-w-max items-center gap-3 border-b border-border-subtle bg-card px-3",
 				span { class: "w-4 shrink-0" }
 				button { r#type: "button", class: "w-11 shrink-0 text-left text-overline text-ink-soft hover:text-ink", onclick: move |_| cycle(SortKey::Number), "#{arrow(&SortKey::Number)}" }
-				button { r#type: "button", class: "min-w-60 flex-1 text-left text-overline text-ink-soft hover:text-ink", onclick: move |_| cycle(SortKey::Title), "title{arrow(&SortKey::Title)}" }
+				span { class: "min-w-60 flex-1 text-left text-overline text-ink-soft", "title" }
 				for (n , s) in shown.iter().cloned().enumerate().filter(|(_, s)| *s != Shown::Number) {
 					div {
 						key: "{s}",
