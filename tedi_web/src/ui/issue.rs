@@ -112,10 +112,10 @@ pub fn IssuePanel(link: IssueLink) -> Element {
 			}
 			if editable {
 				Editable { link: link.clone(), field: EditedField::Body, current: card.body.clone(), multiline: true,
-					div { class: "text-body whitespace-pre-wrap text-ink-mid", if body.is_empty() { span { class: "text-ink-faint", "No body" } } else { "{body}" } }
+					if body.is_empty() { span { class: "text-body text-ink-faint", "No body" } } else { Markdown { text: body.clone() } }
 				}
 			} else {
-				div { class: "text-body whitespace-pre-wrap text-ink-mid", "{body}" }
+				Markdown { text: body.clone() }
 			}
 			if let Some(at) = card.updated {
 				span { class: "flex items-center gap-1.5 text-caption text-ink-faint", Icon { glyph: Glyph::Sync, class: "size-3" } "changed {ago(at)}" }
@@ -158,9 +158,9 @@ fn Title(link: IssueLink, current: String) -> Element {
 	match draft() {
 		None => rsx! {
 			h2 {
-				class: "cursor-text rounded-[var(--control-radius)] text-h2 text-ink hover:bg-hover",
-				title: "Click to edit",
-				onclick: { let current = current.clone(); move |_| draft.set(Some((current.clone(), current.clone()))) },
+				class: "cursor-text rounded-[var(--control-radius)] text-h2 text-ink",
+				title: "Double-click to edit",
+				ondoubleclick: { let current = current.clone(); move |_| draft.set(Some((current.clone(), current.clone()))) },
 				"{current}"
 			}
 		},
@@ -170,6 +170,7 @@ fn Title(link: IssueLink, current: String) -> Element {
 				value: text,
 				autofocus: true,
 				oninput: { let seen = seen.clone(); move |e: FormEvent| draft.set(Some((seen.clone(), e.value()))) },
+				onblur: move |_| draft.set(None),
 				onkeydown: move |e: KeyboardEvent| match e.key() {
 					Key::Enter => {
 						let (seen, new) = draft.take().expect("editing");
@@ -243,48 +244,76 @@ fn StatePicker(card: Card) -> Element {
 	}
 }
 
-/// A field shown as \`children\`; editing it remembers what it showed then, which the edit is made against.
+/// line: Enter) keeps the edit, Esc drops it.
 #[component]
 fn Editable(link: IssueLink, field: EditedField, current: String, multiline: bool, children: Element) -> Element {
 	let ctx = use_context::<Ctx>();
 	let mut draft = use_signal(|| None::<(String, String)>);
 	let Some((seen, text)) = draft() else {
+		let start = {
+			let current = current.clone();
+			move |_| draft.set(Some((current.clone(), current.clone())))
+		};
 		return rsx! {
 			div { class: if multiline { "group/ed flex min-w-0 flex-col gap-1" } else { "group/ed flex min-w-0 flex-1 flex-col gap-1" },
 				if multiline {
 					div { class: "flex h-6 items-center",
 						span { class: "flex-1 text-overline text-ink-soft", "{field}" }
-						Btn { style: Style::Ghost, glyph: Glyph::Pencil, onclick: move |_| draft.set(Some((current.clone(), current.clone()))), "Edit" }
+						Btn { style: Style::Ghost, glyph: Glyph::Pencil, title: "or double-click it", onclick: start.clone(), "Edit" }
 					}
-					{children}
+					div { class: "cursor-text", title: "Double-click to edit", ondoubleclick: start, {children} }
 				} else {
-					div { class: "flex items-center gap-1",
-						{children}
-						span { class: "opacity-0 group-hover/ed:opacity-100", IconBtn { glyph: Glyph::Pencil, title: "Edit {field}", onclick: move |_| draft.set(Some((current.clone(), current.clone()))) } }
-					}
+					div { class: "flex cursor-text items-center gap-1", title: "Double-click to edit", ondoubleclick: start, {children} }
 				}
 			}
 		};
 	};
-	let save = move |_| {
+	let mut save = move || {
 		let (seen, new) = draft.take().expect("saved from the draft");
-		spawn(ctx.edit(link.clone(), vec![FieldEdit { field, seen, new }]));
+		if seen != new {
+			spawn(ctx.edit(link.clone(), vec![FieldEdit { field, seen, new }]));
+		}
 	};
 	let oninput = move |e: FormEvent| draft.set(Some((seen.clone(), e.value())));
+	let onkeydown = {
+		let mut save = save.clone();
+		move |e: KeyboardEvent| match e.key() {
+			Key::Enter if !multiline || e.modifiers().ctrl() || e.modifiers().meta() => {
+				e.prevent_default();
+				save();
+			}
+			Key::Escape => draft.set(None),
+			_ => {}
+		}
+	};
 	rsx! {
 		div { class: "flex min-w-0 flex-1 flex-col gap-1.5",
 			if multiline {
 				span { class: "text-overline text-ink-soft", "{field}" }
-				textarea { class: "min-h-48 rounded-[var(--control-radius)] border border-ring bg-transparent p-2 text-body text-ink outline-none", value: text, oninput }
+				textarea { class: "min-h-48 rounded-[var(--control-radius)] border border-ring bg-transparent p-2 text-mono text-ink outline-none", value: text, autofocus: true, oninput, onkeydown }
 			} else {
-				input { class: "h-7 rounded-[var(--control-radius)] border border-ring bg-transparent px-2 text-body text-ink outline-none", value: text, oninput }
+				input { class: "h-7 rounded-[var(--control-radius)] border border-ring bg-transparent px-2 text-body text-ink outline-none", value: text, autofocus: true, oninput, onkeydown }
 			}
-			div { class: "flex gap-1",
-				Btn { style: Style::Primary, onclick: save, "Save" }
+			div { class: "flex items-center gap-1",
+				Btn { style: Style::Primary, onclick: move |_| save(), "Save" }
 				Btn { style: Style::Ghost, onclick: move |_| draft.set(None), "Cancel" }
+				span { class: "px-1 text-caption text-ink-faint", if multiline { "Ctrl+Enter keeps · Esc drops" } else { "Enter keeps · Esc drops" } }
 			}
 		}
 	}
+}
+
+/// GitHub markdown, read. Raw HTML in it shows as text: a body is anyone's writing, never markup to run.
+#[component]
+fn Markdown(text: String) -> Element {
+	use pulldown_cmark::{Event, Options, Parser, html};
+	let events = Parser::new_ext(&text, Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS).map(|e| match e {
+		Event::Html(raw) | Event::InlineHtml(raw) => Event::Text(raw),
+		e => e,
+	});
+	let mut out = String::new();
+	html::push_html(&mut out, events);
+	rsx! { div { class: "md text-body text-ink-mid", dangerous_inner_html: out } }
 }
 
 /// An edit that came back clashing: each field as it is now ("theirs"), as you set it ("yours"), and

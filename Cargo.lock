@@ -6778,6 +6778,7 @@ dependencies = [
  "hex",
  "hmac",
  "jiff",
+ "pulldown-cmark",
  "serde",
  "serde_json",
  "sha2",
