@@ -30,22 +30,15 @@ impl InView {
 
 /// A chip per facet, the ones the query narrows on first.
 #[component]
-pub(super) fn FacetBar(query: Query) -> Element {
-	let mut facets: Vec<Facet> = Facet::iter().collect();
-	facets.sort_by_key(|f| !narrows(&query, *f));
+pub(super) fn FacetBar(query: Query, wrap: bool) -> Element {
+	let facets: Vec<Facet> = Facet::iter().collect();
 	rsx! {
-		div { class: "flex min-w-0 flex-1 flex-wrap items-center gap-1",
+		div { class: if wrap { "flex min-w-0 flex-1 flex-wrap items-center gap-1" } else { "flex min-w-0 shrink-0 items-center gap-1 overflow-x-auto [scrollbar-width:none]" },
 			for facet in facets {
 				FacetChip { key: "{facet}", facet, query: query.clone() }
 			}
 		}
 	}
-}
-
-fn narrows(query: &Query, facet: Facet) -> bool {
-	let mut lifted = query.clone();
-	lifted.clear(facet);
-	lifted != *query
 }
 
 /// \`state triage, selected ▾ ×\`: active, its values print inline and × drops the clause.

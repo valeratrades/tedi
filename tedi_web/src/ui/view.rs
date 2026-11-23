@@ -17,7 +17,7 @@ use super::{
 	card::Field,
 	facets::{FacetMenu, InView},
 	icons::{Glyph, Icon},
-	kit::{Btn, Item, Style},
+	kit::{Btn, MenuItem, Style},
 	toolbar::ViewToolbar,
 };
 use crate::api::{self, Dock, LibraryEdit, Sprint, Tint, Tints};
@@ -88,42 +88,57 @@ fn ViewBody(defined: View) -> Element {
 			ctx.keep(LibraryEdit::Viewed(now)).await;
 		})));
 	});
-	let board = ctx.board.read();
-	let Some(board) = board.as_ref() else {
+	if ctx.board.read().is_none() {
 		return rsx! { Spinner {} };
-	};
+	}
 	let v = view.read().clone();
 	let error = v.query.parse::<Query>().err().map(|e| e.to_string());
 	let ran = if error.is_none() { v.clone() } else { good.read().clone() };
-	let within = match ctx.scope() {
+	let Outcome { query, count, groups, loosen } = match outcome(&ctx, &ran) {
+		Ok(o) => o,
+		Err(why) => return rsx! { Empty { glyph: Glyph::Alert, error: true, title: "The view doesn't run", body: why } },
+	};
+	rsx! {
+		div { class: "flex h-full flex-col",
+			ViewToolbar { view, defined, query, error, count }
+			Results { ran, count, groups, loosen }
+		}
+	}
+}
+
+/// What a view shows: its query narrowed by the scope, ordered and grouped.
+pub(super) struct Outcome {
+	pub(super) query: Query,
+	pub(super) count: usize,
+	pub(super) groups: Vec<(String, Vec<usize>)>,
+	/// When nothing matches: the facet whose clause, dropped, lets the most cards back, and how many.
+	pub(super) loosen: Option<(Facet, usize)>,
+}
+
+pub(super) fn outcome(ctx: &Ctx, ran: &View) -> Result<Outcome, String> {
+	let board = ctx.board.read();
+	let board = board.as_ref().expect("views run once the board loaded");
+	let within: Query = match ctx.scope() {
 		None => Query::default(),
-		Some((path, None)) =>
-			return rsx! { Empty { glyph: Glyph::Alert, error: true, title: "Scope gone", body: "The scope {path} is no longer configured: pick another in the scope bar." } },
+		Some((path, None)) => return Err(format!("the scope {path} is no longer configured: pick another in the scope bar")),
 		Some((_, Some(filter))) => filter.parse().expect("a scope's filter is a repo clause"),
 	};
 	let workflows = ctx.workflows();
-	let query: Query = ran.query.parse().expect("the view that ran parsed");
+	let query: Query = ran.query.parse().map_err(|e: tedi_core::board::QueryError| e.to_string())?;
 	let me = ctx.me();
 	let run = |q: &Query| -> Result<Vec<usize>, String> {
 		let mut scoped = q.clone();
 		scoped.narrow(&within);
 		scoped.run(&board.cards, me.as_deref()).map_err(|e| e.to_string())
 	};
-	let shown = (|| -> Result<_, String> {
-		let mut hits = run(&query)?;
-		ran.sort.apply(&board.cards, &mut hits, &workflows).map_err(|e| e.to_string())?;
-		let groups = group(&board.cards, &hits, &ran.group_by, &workflows).map_err(|e| e.to_string())?;
-		Ok((hits.len(), groups))
-	})();
-	let (count, mut groups) = match shown {
-		Ok(shown) => shown,
-		Err(e) => return rsx! { Empty { glyph: Glyph::Alert, error: true, title: "The view doesn't run", body: e } },
-	};
+	let mut hits = run(&query)?;
+	ran.sort.apply(&board.cards, &mut hits, &workflows).map_err(|e| e.to_string())?;
+	let mut groups = group(&board.cards, &hits, &ran.group_by, &workflows).map_err(|e| e.to_string())?;
 	if ran.layout != Layout::Board {
 		groups.retain(|(_, members)| !members.is_empty()); // a workflow's empty buckets are the board's columns only
 	}
-	// what, dropped, would let the most cards back in
-	let loosen = (count == 0)
+	let loosen = hits
+		.is_empty()
 		.then(|| {
 			Facet::iter()
 				.filter_map(|f| {
@@ -135,27 +150,39 @@ fn ViewBody(defined: View) -> Element {
 				.max_by_key(|(_, n)| *n)
 		})
 		.flatten();
-	let scope_name = ctx.scope().map(|(path, _)| path);
+	Ok(Outcome {
+		query,
+		count: hits.len(),
+		groups,
+		loosen,
+	})
+}
+
+/// The view's cards as its layout lays them out, or why there are none.
+#[component]
+pub(super) fn Results(ran: View, count: usize, groups: Vec<(String, Vec<usize>)>, loosen: Option<(Facet, usize)>) -> Element {
+	let ctx = use_context::<Ctx>();
+	let in_view = use_context::<InView>();
+	if count == 0 && ran.layout != Layout::Board {
+		let scope_name = ctx.scope().map(|(path, _)| path);
+		return rsx! {
+			Empty {
+				glyph: Glyph::Search,
+				title: "No cards match",
+				body: match &scope_name { Some(s) => format!("{} in {s}", ran.query), None => ran.query.clone() },
+				if let Some((facet, n)) = loosen {
+					Btn { style: Style::Outline, title: "{n} cards come back", onclick: move |_| in_view.narrow(|q| q.clear(facet)), "Drop {facet}:" }
+				}
+			}
+		};
+	}
 	rsx! {
-		div { class: "flex h-full flex-col",
-			ViewToolbar { view, defined, query: query.clone(), error, count }
-			if count == 0 && ran.layout != Layout::Board {
-				Empty {
-					glyph: Glyph::Search,
-					title: "No cards match",
-					body: match &scope_name { Some(s) => format!("{} in {s}", ran.query), None => ran.query.clone() },
-					if let Some((facet, n)) = loosen {
-						Btn { style: Style::Outline, title: "{n} cards come back", onclick: move |_| InView(view).narrow(|q| q.clear(facet)), "Drop {facet}:" }
-					}
-				}
-			} else {
-				div { class: "flex min-h-0 flex-1 flex-col p-2",
-					match ran.layout {
-						Layout::Board => rsx! { Columns { key: "{ran.group_by}", view: ran.name.clone(), groups, by: ran.group_by.clone(), shown: ran.shown.clone(), order: ran.sort.clone() } },
-						Layout::Table => rsx! { Rows { view: ran.name.clone(), by: ran.group_by.clone(), groups, shown: ran.shown.clone(), sort: ran.sort.clone() } },
-						Layout::List => rsx! { List { view: ran.name.clone(), by: ran.group_by.clone(), groups, shown: ran.shown.clone() } },
-					}
-				}
+		div { class: "flex min-h-0 flex-1 flex-col p-2",
+			match ran.layout {
+				Layout::Board if ctx.band() == Some(Band::Sm) => rsx! { Stacked { view: ran.name.clone(), by: ran.group_by.clone(), groups, shown: ran.shown.clone() } },
+				Layout::Board => rsx! { Columns { key: "{ran.group_by}", view: ran.name.clone(), groups, by: ran.group_by.clone(), shown: ran.shown.clone(), order: ran.sort.clone() } },
+				Layout::Table => rsx! { Rows { view: ran.name.clone(), by: ran.group_by.clone(), groups, shown: ran.shown.clone(), sort: ran.sort.clone() } },
+				Layout::List => rsx! { List { view: ran.name.clone(), by: ran.group_by.clone(), groups, shown: ran.shown.clone() } },
 			}
 		}
 	}
@@ -425,11 +452,11 @@ fn ColumnActions(tile: Tile) -> Element {
 						}
 					}
 				}
-				Item { selected: false, glyph: Glyph::Columns, label: if tile.collapsed { "Open" } else { "Collapse to a spine" }, onclick: move |_| { open.set(false); let mut api = tile.api; api.collapse(tile.group); } }
+				MenuItem { selected: false, glyph: Glyph::Columns, label: if tile.collapsed { "Open" } else { "Collapse to a spine" }, onclick: move |_| { open.set(false); let mut api = tile.api; api.collapse(tile.group); } }
 				div { class: "my-0.5 h-px bg-border-subtle" }
 				span { class: "px-2 pt-1.5 pb-0.5 text-overline text-ink-soft", "Column layouts" }
 				for name in team.into_iter().chain(mine) {
-					Item { key: "{name}", selected: false, label: name.clone(), onclick: { let (mut apply, name) = (apply.clone(), name.clone()); move |_| apply(name.clone()) } }
+					MenuItem { key: "{name}", selected: false, label: name.clone(), onclick: { let (mut apply, name) = (apply.clone(), name.clone()); move |_| apply(name.clone()) } }
 				}
 				if naming() {
 					div { class: "px-1 py-1",
@@ -446,7 +473,7 @@ fn ColumnActions(tile: Tile) -> Element {
 						}
 					}
 				} else {
-					Item { selected: false, glyph: Glyph::Save, label: "Keep these columns as…", onclick: move |_| naming.set(true) }
+					MenuItem { selected: false, glyph: Glyph::Save, label: "Keep these columns as…", onclick: move |_| naming.set(true) }
 				}
 			}
 		}
@@ -538,6 +565,62 @@ fn Column(group: String) -> Element {
 			}
 			if landing == Some(members.len()) {
 				{slot.clone()}
+			}
+		}
+	}
+}
+
+/// A board on a phone (Figma: 06a): its groups stacked, headers sticky; a long press on a card moves it.
+#[component]
+fn Stacked(view: String, by: GroupBy, groups: Vec<(String, Vec<usize>)>, shown: Vec<Shown>) -> Element {
+	let ctx = use_context::<Ctx>();
+	let mut moving = use_signal(|| None::<tedi_core::board::Card>);
+	let board = ctx.board.read();
+	let cards = &board.as_ref().expect("views render once the board loaded").cards;
+	let workflow = match &by {
+		GroupBy::State(w) => Some(w.clone()),
+		_ => None,
+	};
+	rsx! {
+		div { class: "flex h-full flex-col gap-1.5 overflow-auto",
+			for (key , members) in groups.into_iter().filter(|(_, m)| !m.is_empty()) {
+				div { key: "head-{key}", class: "sticky top-0 z-[5] bg-background pb-0.5", GroupHead { view: view.clone(), by: by.clone(), group: key.clone(), count: members.len() } }
+				for i in members {
+					div {
+						key: "{key}-{cards[i].link}",
+						oncontextmenu: {
+							let card = cards[i].clone();
+							move |e: MouseEvent| {
+								e.prevent_default();
+								moving.set(Some(card.clone()));
+							}
+						},
+						CardView { card: cards[i].clone(), shown: shown.clone() }
+					}
+				}
+			}
+		}
+		if let (Some(card), Some(workflow)) = (moving(), workflow) {
+			div { class: "fixed inset-0 z-[100] flex items-end bg-scrim", onclick: move |_| moving.set(None),
+				div { class: "flex w-full flex-col gap-0.5 rounded-t-[10px] border-t border-border bg-popover p-2 pb-6", onclick: |e: MouseEvent| e.stop_propagation(),
+					span { class: "px-2 pt-1 pb-1.5 text-overline text-ink-soft", "Move #{card.link.number()} to…" }
+					for leaf in ctx.workflows()[&workflow].leaves() {
+						MenuItem {
+							key: "{leaf}",
+							selected: card.states[&workflow] == leaf,
+							label: leaf.to_string(),
+							onclick: {
+								let (card, workflow, leaf) = (card.clone(), workflow.clone(), leaf.clone());
+								move |_| {
+									moving.set(None);
+									if card.states[&workflow] != leaf {
+										spawn(ctx.move_card(card.clone(), workflow.clone(), leaf.clone()));
+									}
+								}
+							},
+						}
+					}
+				}
 			}
 		}
 	}

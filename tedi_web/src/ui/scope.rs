@@ -9,7 +9,7 @@ use tedi_core::board::{Query, Scope, scope_at};
 use super::{
 	Ctx, Editing,
 	icons::{Glyph, Icon},
-	kit::{Btn, IconBtn, Item, Picker, Style},
+	kit::{Btn, IconBtn, MenuItem, Picker, Style},
 };
 use crate::api::{Kept, LibraryEdit, Shelf};
 
@@ -161,9 +161,9 @@ pub(super) fn ScopeEditor(editing: Editing) -> Element {
 					div { class: "flex flex-col gap-1.5",
 						span { class: "text-body-s font-medium text-ink-mid", "Inside" }
 						Picker { glyph: Glyph::Scope, label: parent().unwrap_or_else(|| "nothing".into()),
-							Item { selected: parent().is_none(), label: "nothing", onclick: move |_| parent.set(None) }
+							MenuItem { selected: parent().is_none(), label: "nothing", onclick: move |_| parent.set(None) }
 							for p in parents {
-								Item { key: "{p}", selected: parent().as_ref() == Some(&p), label: p.clone(), onclick: { let p = p.clone(); move |_| parent.set(Some(p.clone())) } }
+								MenuItem { key: "{p}", selected: parent().as_ref() == Some(&p), label: p.clone(), onclick: { let p = p.clone(); move |_| parent.set(Some(p.clone())) } }
 							}
 						}
 					}

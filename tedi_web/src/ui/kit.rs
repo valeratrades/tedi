@@ -98,7 +98,7 @@ pub(super) fn Picker(glyph: Glyph, label: String, children: Element) -> Element 
 
 /// A menu row: label, and a count or shortcut on the right.
 #[component]
-pub(super) fn Item(selected: bool, label: String, #[props(default)] meta: String, glyph: Option<Glyph>, onclick: EventHandler<MouseEvent>) -> Element {
+pub(super) fn MenuItem(selected: bool, label: String, #[props(default)] meta: String, glyph: Option<Glyph>, onclick: EventHandler<MouseEvent>) -> Element {
 	rsx! {
 		button {
 			r#type: "button",

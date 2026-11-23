@@ -12,8 +12,9 @@ use super::{
 	Ctx, Editing, Modal,
 	card::Avatar,
 	icons::{Glyph, Icon},
-	kit::{IconBtn, Kbd},
+	kit::{IconBtn, Kbd, MenuItem, Picker},
 	library::NameForm,
+	workspace,
 };
 use crate::api::{Item, Kept, LibraryEdit, Shelf};
 
@@ -157,7 +158,7 @@ fn Shelves() -> Element {
 			Brand {}
 			div { class: "flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto overflow-x-hidden",
 				Section { title: "Workspaces", kind: "workspaces", rows: workspaces, empty: "Arrange the screen, then + to keep it", add: Add::Named("save this screen as…") }
-				Section { title: "Views", kind: "views", rows: views, empty: "No views", add: Add::Named("new view's name…") }
+				Section { title: "Views", kind: "views", rows: views, empty: "No views", add: Add::Builder }
 				Section { title: "Scopes", kind: "scopes", rows: scoped, empty: "No scopes", add: Add::Dialog }
 				Section { title: "Column layouts", kind: "columns", rows: columns, empty: "Tint a board's columns, then keep them", add: Add::None }
 				if !sprints.is_empty() {
@@ -232,6 +233,8 @@ enum Add {
 	/// A name typed in place.
 	Named(&'static str),
 	Dialog,
+	/// The view builder, on a blank draft.
+	Builder,
 }
 
 /// \`VIEWS 🔍 +\`: collapse, browse this kind in the library, + new from the screen.
@@ -251,31 +254,7 @@ fn Section(title: &'static str, kind: &'static str, rows: Vec<Row>, empty: &'sta
 				});
 				spawn(async move { _ = ctx.keep(edit).await });
 			}
-			"views" => {
-				let view = View {
-					name: name.clone(),
-					query: "is:open".into(),
-					layout: tedi_core::board::Layout::List,
-					group_by: tedi_core::board::GroupBy::Nothing,
-					sort: vec![tedi_core::board::Sort {
-						by: tedi_core::board::SortKey::Rank,
-						reversed: false,
-					}]
-					.into(),
-					shown: vec![
-						tedi_core::board::Shown::Repo,
-						tedi_core::board::Shown::Assignees,
-						tedi_core::board::Shown::Importance,
-						tedi_core::board::Shown::Hours,
-					],
-				};
-				spawn(async move {
-					if ctx.keep(LibraryEdit::Keep(Kept::Filter(view))).await {
-						ctx.open(PanelId(format!("view:{name}")));
-					}
-				});
-			}
-			_ => unreachable!("only workspaces and views are named in place"),
+			_ => unreachable!("only workspaces are named in place"),
 		}
 	};
 	rsx! {
@@ -292,6 +271,7 @@ fn Section(title: &'static str, kind: &'static str, rows: Vec<Row>, empty: &'sta
 					Add::None => rsx! {},
 					Add::Named(_) => rsx! { IconBtn { glyph: Glyph::Plus, title: "New, from this screen", onclick: move |_| adding.set(true) } },
 					Add::Dialog => rsx! { IconBtn { glyph: Glyph::Plus, title: "New", onclick: move |_| { let mut m = ctx.modal; m.set(Some(Modal::Scope(Editing::New))); } } },
+					Add::Builder => rsx! { IconBtn { glyph: Glyph::Plus, title: "Build a view", onclick: move |_| ctx.open(PanelId("builder:".into())) } },
 				}
 			}
 			if open() {
@@ -379,18 +359,7 @@ fn ShelfRow(row: Row) -> Element {
 				let mut m = ctx.modal;
 				m.set(Some(Modal::Scope(if own.is_some() { Editing::Own(path.clone()) } else { Editing::Team(path.clone()) })));
 			}
-			Go::Panel(id) if id.0.starts_with("view:") => {
-				let view = View {
-					name: format!("{label} (mine)"),
-					..ctx.views().into_iter().find(|v| v.name == label).expect("listed from the views")
-				};
-				let name = view.name.clone();
-				spawn(async move {
-					if ctx.keep(LibraryEdit::Keep(Kept::Filter(view))).await {
-						ctx.open(PanelId(format!("view:{name}")));
-					}
-				});
-			}
+			Go::Panel(id) if id.0.starts_with("view:") => ctx.open(PanelId(format!("builder:{label}"))),
 			_ => ctx.open(PanelId(format!("library:{}", key_of(&go)))),
 		}
 	};
@@ -432,6 +401,9 @@ fn ShelfRow(row: Row) -> Element {
 					}
 					match own {
 						Some(shelf) => rsx! {
+							if shelf == Shelf::Filters {
+								IconBtn { glyph: Glyph::Fields, title: "Edit in the builder", onclick: { let label = label.clone(); move |_| ctx.open(PanelId(format!("builder:{label}"))) } }
+							}
 							IconBtn { glyph: Glyph::Pencil, title: "Rename", onclick: move |_| renaming.set(true) }
 							if deleting() {
 								button {
@@ -463,10 +435,22 @@ pub(super) fn TopBar() -> Element {
 		return rsx! { div { class: "h-(--size-topbar) shrink-0 border-b border-border-subtle bg-muted" } };
 	};
 	let current = ctx.scope();
-	let workspaces: Vec<String> = library.workspaces.keys().cloned().collect();
+	let mut workspaces: Vec<String> = library.workspaces.keys().cloned().collect();
+	workspaces.sort_by_key(|w| !library.favorites.contains(&Item::Workspace(w.clone()))); // stable: as the shelf lists them
 	let at = library.workspace.clone();
-	let band = (*ctx.api.read()).map(|a| a.band());
+	let band = ctx.band();
 	let mut sheet = ctx.sheet;
+	if band == Some(tilers_dioxus::Band::Sm) {
+		return rsx! {
+			div { class: "flex h-12 shrink-0 items-center gap-2 border-b border-border-subtle bg-muted px-2",
+				IconBtn { glyph: Glyph::Menu, title: "Shelves", onclick: move |_| sheet.set(true) }
+				ScopePicker {}
+				div { class: "flex-1" }
+				IconBtn { glyph: Glyph::Search, title: "Jump to…", onclick: move |_| { let mut p = ctx.palette; p.set(true); } }
+				if let Some(me) = ctx.me() { Avatar { login: me } }
+			}
+		};
+	}
 	rsx! {
 		div { class: "flex h-(--size-topbar) shrink-0 items-center gap-2 border-b border-border-subtle bg-muted pr-2",
 			button { r#type: "button", class: "ml-2 flex size-7 items-center justify-center text-ink-soft md:hidden", aria_label: "Shelves", onclick: move |_| sheet.set(true), Icon { glyph: Glyph::Menu } }
@@ -504,11 +488,13 @@ pub(super) fn TopBar() -> Element {
 					}
 				}
 				IconBtn { glyph: Glyph::Plus, title: "New workspace from this screen", onclick: move |_| ctx.open(PanelId("library:workspaces".into())) }
+				workspace::WorkspaceMenu {}
 			}
 			div { class: "flex-1" }
 			if let Some(band) = band {
 				span { class: "hidden h-5 items-center rounded-[var(--control-radius)] border border-border-subtle px-1.5 text-mono-s text-ink-soft md:inline-flex", title: "the arrangement live for this window's width", "{band}" }
 			}
+			IconBtn { glyph: Glyph::Share, title: "Copy a link to this screen", onclick: move |_| workspace::share_screen(ctx) }
 			IconBtn { glyph: Glyph::Help, title: "Keys and help", onclick: move |_| { let mut m = ctx.modal; m.set(Some(Modal::Help)); } }
 		}
 	}
@@ -585,6 +571,30 @@ fn ScopePicker() -> Element {
 					Kbd { "⌘⇧P" }
 				}
 			}
+		}
+	}
+}
+
+/// On a phone, the thumb zone: which workspace this is, and the band it is arranged for.
+#[component]
+pub(super) fn ThumbBar() -> Element {
+	let ctx = use_context::<Ctx>();
+	if ctx.band() != Some(tilers_dioxus::Band::Sm) {
+		return rsx! {};
+	}
+	let library = ctx.library.read();
+	let Some(library) = library.as_ref() else { return rsx! {} };
+	let names: Vec<String> = library.workspaces.keys().cloned().collect();
+	let current = library.workspace.clone();
+	rsx! {
+		div { class: "flex h-14 shrink-0 items-center gap-2 border-t border-border-subtle bg-muted px-3",
+			Picker { glyph: Glyph::Workspace, label: current.clone().unwrap_or_else(|| "no workspace".into()),
+				for name in names {
+					MenuItem { key: "{name}", selected: current.as_ref() == Some(&name), label: name.clone(), onclick: { let name = name.clone(); move |_| ctx.switch(&name) } }
+				}
+			}
+			div { class: "flex-1" }
+			span { class: "inline-flex h-5 items-center rounded-[var(--control-radius)] border border-border-subtle px-1.5 text-mono-s text-ink-soft", "sm" }
 		}
 	}
 }

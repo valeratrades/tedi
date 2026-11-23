@@ -13,7 +13,7 @@ use super::{
 	Ctx,
 	card::{Avatar, CardView, Field, ago},
 	icons::{Glyph, Icon},
-	kit::{Btn, IconBtn, Item, Picker, Style},
+	kit::{Btn, IconBtn, MenuItem, Picker, Style},
 };
 use crate::api;
 
@@ -224,7 +224,7 @@ fn StatePicker(card: Card) -> Element {
 		for (name , workflow) in ctx.workflows() {
 			Picker { key: "{name}", glyph: if name == "pull_requests" { Glyph::Pr } else { Glyph::Board }, label: format!("{name} / {}", card.states[&name]),
 				for leaf in workflow.leaves() {
-					Item {
+					MenuItem {
 						key: "{leaf}",
 						selected: card.states[&name] == leaf,
 						label: leaf.to_string(),
@@ -250,7 +250,7 @@ fn Editable(link: IssueLink, field: EditedField, current: String, multiline: boo
 	let mut draft = use_signal(|| None::<(String, String)>);
 	let Some((seen, text)) = draft() else {
 		return rsx! {
-			div { class: "group/ed flex min-w-0 flex-1 flex-col gap-1",
+			div { class: if multiline { "group/ed flex min-w-0 flex-col gap-1" } else { "group/ed flex min-w-0 flex-1 flex-col gap-1" },
 				if multiline {
 					div { class: "flex h-6 items-center",
 						span { class: "flex-1 text-overline text-ink-soft", "{field}" }

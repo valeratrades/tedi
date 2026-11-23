@@ -30,7 +30,7 @@ pub(super) fn CardView(card: Card, shown: Vec<Shown>) -> Element {
 	let has = |s: &Shown| shown.contains(s);
 	let meta: Vec<Shown> = shown
 		.iter()
-		.filter(|s| !matches!(s, Shown::Repo | Shown::Number | Shown::Assignees | Shown::Blockers | Shown::Prs))
+		.filter(|s| !matches!(s, Shown::Repo | Shown::Number | Shown::Assignees | Shown::Blockers | Shown::Prs) && shows(&card, s))
 		.cloned()
 		.collect();
 	rsx! {
@@ -56,7 +56,7 @@ pub(super) fn CardView(card: Card, shown: Vec<Shown>) -> Element {
 				onclick: { let link = link.clone(); move |_| ctx.open_issue(link.clone()) },
 				"{card.title}"
 			}
-			if meta.iter().any(|s| shows(&card, s)) {
+			if !meta.is_empty() {
 				div { class: "flex flex-wrap items-center gap-1",
 					for s in meta {
 						Field { key: "{s}", card: card.clone(), shown: s }
@@ -83,7 +83,7 @@ pub(super) fn CardView(card: Card, shown: Vec<Shown>) -> Element {
 /// Whether \`card\` has anything to show for \`shown\`, so an empty meta row takes no room.
 fn shows(card: &Card, shown: &Shown) -> bool {
 	match shown {
-		Shown::Type => card.kind.is_some() || card.pr.is_none(),
+		Shown::Type => card.kind.is_some(), // unset, it's set from the issue panel: a card stays quiet about it
 		Shown::Labels => card.labels.iter().any(|l| !scheme_label(l)),
 		Shown::Updated => card.updated.is_some(),
 		Shown::State(w) => card.states.contains_key(w),

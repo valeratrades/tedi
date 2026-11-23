@@ -2,7 +2,7 @@
 //! a card shows. Row two narrows it by facets, counts what it shows, and keeps it.
 
 use dioxus::prelude::*;
-use ev_lib::uikit_dioxus::Checkbox;
+use ev_lib::uikit_dioxus::{Checkbox, Popover, PopoverContent, PopoverTrigger};
 use strum::IntoEnumIterator as _;
 use tedi_core::board::{GroupBy, Layout, Order, Query, Shown, Sort, SortKey, View};
 
@@ -10,7 +10,7 @@ use super::{
 	Ctx,
 	facets::FacetBar,
 	icons::{Glyph, Icon},
-	kit::{Btn, Item, Picker, Style},
+	kit::{Btn, MenuItem, Picker, Style},
 	library::NameForm,
 };
 
@@ -37,12 +37,51 @@ pub(super) fn ViewToolbar(props: Toolbar) -> Element {
 	} = props;
 	let v = view.read().clone();
 	let workflows: Vec<String> = ctx.workflows().into_keys().collect();
+	let compact = ctx.band() == Some(tilers_dioxus::Band::Sm);
 	let groupings: Vec<GroupBy> = workflows
 		.iter()
 		.cloned()
 		.map(GroupBy::State)
 		.chain([GroupBy::Repo, GroupBy::Assignee, GroupBy::Type, GroupBy::Importance, GroupBy::Nothing])
 		.collect();
+	if compact {
+		let mut settings = use_signal(|| false);
+		return rsx! {
+			div { class: "flex shrink-0 flex-col gap-2 border-b border-border-subtle bg-card px-2 py-2",
+				div { class: "flex items-center gap-1.5",
+					label { class: if error.is_some() { "flex h-7 min-w-64 flex-1 items-center gap-2 rounded-[var(--control-radius)] border border-accent-error px-2" } else { "flex h-7 min-w-64 flex-1 items-center gap-2 rounded-[var(--control-radius)] border border-input px-2 focus-within:border-ring" },
+						title: error.clone().unwrap_or_default(),
+						Icon { glyph: Glyph::Search, class: "size-4 text-ink-soft" }
+						input {
+							class: "min-w-0 flex-1 bg-transparent text-mono text-ink outline-none placeholder:text-ink-faint",
+							value: v.query.clone(),
+							placeholder: "repo:, state:, assignee:, t:, i:>=5, label: or words in titles and bodies",
+							spellcheck: "false",
+							oninput: move |e: FormEvent| view.write().query = e.value(),
+						}
+					}
+						Popover { open: settings(), on_open_change: move |v| settings.set(v),
+						PopoverTrigger { class: if settings() { "inline-flex size-7 items-center justify-center rounded-[var(--control-radius)] bg-active text-ink" } else { "inline-flex size-7 items-center justify-center rounded-[var(--control-radius)] text-ink-soft" }, aria_label: "Layout, grouping, order and fields", Icon { glyph: Glyph::Fields } }
+						PopoverContent { align: "end", class: "flex w-72 flex-col gap-2 rounded-[var(--radius)] border border-border bg-popover p-2 text-ink",
+							Segmented { layout: v.layout, on_change: move |l| view.write().layout = l }
+							Picker { glyph: Glyph::Group, label: v.group_by.to_string(),
+								for g in groupings {
+									MenuItem { key: "{g}", selected: g == v.group_by, label: g.to_string(), onclick: { let g = g.clone(); move |_| view.write().group_by = g.clone() } }
+								}
+							}
+							Picker { glyph: Glyph::Sort, label: v.sort.to_string(), OrderMenu { view, workflows: workflows.clone() } }
+							Picker { glyph: Glyph::Fields, label: format!("{} fields", v.shown.len()), FieldsMenu { view, workflows } }
+							div { class: "flex items-center gap-1",
+								span { class: "flex-1 text-mono-s text-ink-soft", "{count} cards" }
+								Keep { view, defined: defined.clone() }
+							}
+						}
+					}
+				}
+				FacetBar { query: query.clone(), wrap: false }
+			}
+		};
+	}
 	rsx! {
 		div { class: "flex shrink-0 flex-col gap-2 border-b border-border-subtle bg-card px-3 py-2",
 			div { class: "flex flex-wrap items-center gap-2",
@@ -60,14 +99,14 @@ pub(super) fn ViewToolbar(props: Toolbar) -> Element {
 				Segmented { layout: v.layout, on_change: move |l| view.write().layout = l }
 				Picker { glyph: Glyph::Group, label: v.group_by.to_string(),
 					for g in groupings {
-						Item { key: "{g}", selected: g == v.group_by, label: g.to_string(), onclick: { let g = g.clone(); move |_| view.write().group_by = g.clone() } }
+						MenuItem { key: "{g}", selected: g == v.group_by, label: g.to_string(), onclick: { let g = g.clone(); move |_| view.write().group_by = g.clone() } }
 					}
 				}
 				Picker { glyph: Glyph::Sort, label: v.sort.to_string(), OrderMenu { view, workflows: workflows.clone() } }
 				Picker { glyph: Glyph::Fields, label: format!("{} fields", v.shown.len()), FieldsMenu { view, workflows } }
 			}
 			div { class: "flex items-center gap-1",
-				FacetBar { query }
+				FacetBar { query, wrap: true }
 				span { class: "shrink-0 px-1 text-mono-s text-ink-soft", "{count} cards" }
 				Keep { view, defined }
 			}
@@ -77,7 +116,7 @@ pub(super) fn ViewToolbar(props: Toolbar) -> Element {
 
 /// Board · Table · List.
 #[component]
-fn Segmented(layout: Layout, on_change: EventHandler<Layout>) -> Element {
+pub(super) fn Segmented(layout: Layout, on_change: EventHandler<Layout>) -> Element {
 	rsx! {
 		div { class: "flex items-center gap-0.5 rounded-[var(--control-radius)] border border-border-subtle p-0.5",
 			for l in Layout::iter() {
@@ -104,7 +143,7 @@ fn keys(workflows: &[String]) -> Vec<SortKey> {
 
 /// The first key orders, each \`then\` key orders what those before it tie on; a key picked again flips.
 #[component]
-fn OrderMenu(view: Signal<View>, workflows: Vec<String>) -> Element {
+pub(super) fn OrderMenu(view: Signal<View>, workflows: Vec<String>) -> Element {
 	let order = view.read().sort.keys().to_vec();
 	let mut set = move |at: usize, by: Option<SortKey>| {
 		let mut keys = view.peek().sort.keys().to_vec();
@@ -129,7 +168,7 @@ fn OrderMenu(view: Signal<View>, workflows: Vec<String>) -> Element {
 		for at in 0..slots.min(3) {
 			span { key: "head-{at}", class: "px-2 pt-1.5 pb-0.5 text-overline text-ink-soft", if at == 0 { "Sort by" } else { "then" } }
 			if at > 0 {
-				Item { key: "none-{at}", selected: order.len() == at, label: "nothing", onclick: move |_| set(at, None) }
+				MenuItem { key: "none-{at}", selected: order.len() == at, label: "nothing", onclick: move |_| set(at, None) }
 			}
 			for by in keys(&workflows) {
 				{
@@ -140,7 +179,7 @@ fn OrderMenu(view: Signal<View>, workflows: Vec<String>) -> Element {
 						None => "",
 					};
 					rsx! {
-						Item { key: "{at}-{by}", selected: held.is_some(), label: by.to_string(), meta, onclick: { let by = by.clone(); move |_| set(at, Some(by.clone())) } }
+						MenuItem { key: "{at}-{by}", selected: held.is_some(), label: by.to_string(), meta, onclick: { let by = by.clone(); move |_| set(at, Some(by.clone())) } }
 					}
 				}
 			}

@@ -2,6 +2,7 @@
 //! an issue. Cards arrive whole and are queried here; edits leave as server fns. What is on screen, and what
 //! the viewer keeps, is their library on the server.
 
+mod builder;
 mod card;
 mod facets;
 mod icons;
@@ -13,6 +14,7 @@ mod shell;
 mod toast;
 mod toolbar;
 mod view;
+mod workspace;
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -71,8 +73,15 @@ struct Ctx {
 	sheet: Signal<bool>,
 	/// The outcomes on screen, oldest first.
 	notes: Signal<Vec<toast::Note>>,
+	/// A shared workspace on the dock in place of the viewer's, read-only.
+	viewing: Signal<Option<api::Shared>>,
 }
 impl Ctx {
+	/// The band the dock is laid out for: `Sm` is a phone, one tile at a time.
+	pub(super) fn band(&self) -> Option<Band> {
+		(*self.api.read()).map(|a| a.band())
+	}
+
 	/// An outcome, replacing any on screen under `key`.
 	pub(super) fn say(&self, key: impl Into<String>, tone: toast::Tone, text: impl Into<String>, action: Option<(&'static str, Callback<()>)>) {
 		let mut notes = self.notes;
@@ -112,8 +121,20 @@ impl Ctx {
 		let setup = self.setup.read();
 		let library = self.library.read();
 		let team = setup.as_ref().map(|s| s.views.clone()).into_iter().flatten();
-		team.chain(library.as_ref().map(|l| l.filters.values().cloned().collect::<Vec<_>>()).into_iter().flatten())
-			.collect()
+		let mut views: Vec<View> = team
+			.chain(library.as_ref().map(|l| l.filters.values().cloned().collect::<Vec<_>>()).into_iter().flatten())
+			.collect();
+		if let Some(shared) = &*self.viewing.read() {
+			views.extend(
+				shared
+					.carried
+					.values()
+					.filter(|(_, v)| !views.iter().any(|w| w.name == v.name))
+					.map(|(_, v)| v.clone())
+					.collect::<Vec<_>>(),
+			);
+		}
+		views
 	}
 
 	/// The scope everything on screen is narrowed to: its path, and its filter while it is still configured.
@@ -145,6 +166,18 @@ impl Ctx {
 	/// views and sprints the other), else beside the widest tile, which gives up the room.
 	fn open(&self, id: PanelId) {
 		let mut api = (*self.api.peek()).expect("a band is entered before anything can be opened");
+		let library = |p: &PanelId| p.0.starts_with("library:");
+		if library(&id)
+			&& let Some(held) = serial::load(&api.save())
+				.expect("a layout loads back from its own save")
+				.cells
+				.iter()
+				.flat_map(|c| c.group.tabs.iter())
+				.find(|t| library(t) && **t != id)
+				.cloned()
+		{
+			self.retitle(&held, id.clone()); // one Library, refocused
+		}
 		self.host(&id);
 		let mut grid = serial::load(&api.save()).expect("a layout loads back from its own save");
 		if let Some(cell) = grid.cells.iter_mut().find(|c| c.group.tabs.contains(&id)) {
@@ -208,6 +241,12 @@ impl Ctx {
 				self.views().iter().find(|v| v.name == name).map_or(Glyph::View, shell::glyph_of),
 				name.to_string(),
 				rsx! { view::ViewPanel { name: name.to_string() } },
+			),
+			Some(("library", at)) => (Glyph::Search, "Library".to_string(), rsx! { library::LibraryPanel { at: at.to_string() } }),
+			Some(("builder", from)) => (
+				Glyph::View,
+				if from.is_empty() { "New view (draft)".to_string() } else { format!("{from} (draft)") },
+				rsx! { builder::Builder { from: (!from.is_empty()).then(|| from.to_string()) } },
 			),
 			Some(("sprint", title)) => match setup.sprints.iter().find(|s| s.title == title) {
 				Some(sprint) => (Glyph::Sprint, title.to_string(), rsx! { view::SprintPanel { sprint: sprint.clone() } }),
@@ -345,6 +384,9 @@ impl Ctx {
 			return; // `Live` arranges once both arrived
 		};
 		let band = api.band();
+		if let Some(shared) = self.viewing.peek().clone() {
+			return workspace::view_shared(self, shared); // a band change keeps the link on the dock
+		}
 		let shown = match library.on_screen.tiles.get(&band) {
 			Some(layout) => self.show(api, layout),
 			None => {
@@ -392,15 +434,24 @@ impl Ctx {
 		let api = (*self.api.peek()).expect("a band is entered before a workspace can be switched to");
 		let band = api.band();
 		let library = self.library.peek();
-		let workspace = library.as_ref().and_then(|l| l.workspaces.get(name)).expect("offered from the library");
+		let setup = self.setup.peek();
+		let workspace = library
+			.as_ref()
+			.and_then(|l| l.workspaces.get(name))
+			.or_else(|| setup.as_ref().and_then(|s| s.workspaces.get(name)))
+			.expect("offered from the library or the team's");
 		match workspace.get(&band) {
 			Some(layout) => {
 				let layout = layout.clone();
-				drop(library);
+				drop((library, setup));
+				let mut viewing = self.viewing;
+				viewing.set(None);
 				if self.show(api, &layout) {
 					let mut arranged = self.arranged;
 					arranged.set(Some(band));
 				}
+				let name = name.to_string();
+				spawn(async move { _ = self.keep(LibraryEdit::Workspace(Some(name))).await });
 			}
 			None => self.say(
 				"workspace",
@@ -419,6 +470,13 @@ enum Modal {
 	Unreadable,
 	/// The keys, the dock's and the board's.
 	Help,
+	/// The viewer's object as a pull request on the team's config.
+	Propose(Item),
+	/// A column layout onto one of the views grouping as it does.
+	ApplyColumns {
+		name: String,
+		owner: api::Owner,
+	},
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -477,6 +535,7 @@ fn Shell() -> Element {
 		into: Signal::new(None),
 		sheet: Signal::new(false),
 		notes: Signal::new(Vec::new()),
+		viewing: Signal::new(None),
 	});
 	use_autosave(ctx, ctx.api, ctx.arranged, Dock::Tiles);
 	rsx! {
@@ -485,6 +544,7 @@ fn Shell() -> Element {
 			shell::Nav {}
 			div { class: "flex min-w-0 flex-1 flex-col",
 				shell::TopBar {}
+				workspace::Banner {}
 				div { class: "relative min-h-0 flex-1",
 					if let Some(why) = ctx.failure.read().clone() {
 						div { class: "absolute inset-0 z-10 flex items-start justify-center bg-background p-8",
@@ -505,6 +565,7 @@ fn Shell() -> Element {
 						}
 					}
 				}
+				shell::ThumbBar {}
 			}
 		}
 		Modals {}
@@ -565,6 +626,9 @@ async fn reload(ctx: Ctx) {
 fn TileActions(tile: Tile) -> Element {
 	let ctx = use_context::<Ctx>();
 	let Tile { group, active, maximized, .. } = tile;
+	if ctx.band() == Some(Band::Sm) {
+		return rsx! {}; // one tile at a time: nothing to split, maximize or close beside
+	}
 	let tabs = {
 		let api = (*ctx.api.read()).expect("a tile shows on an entered dock");
 		let grid = serial::load(&api.save()).expect("a layout loads back from its own save");
@@ -610,6 +674,8 @@ fn Modals() -> Element {
 			match modal {
 				None => rsx! {},
 				Some(Modal::Scope(editing)) => rsx! { scope::ScopeEditor { key: "{editing:?}", editing } },
+				Some(Modal::Propose(item)) => rsx! { library::Propose { key: "{item:?}", item } },
+				Some(Modal::ApplyColumns { name, owner }) => rsx! { library::ApplyColumns { name, owner } },
 				Some(Modal::Help) => rsx! {
 					Dialog { open: true, on_open_change: close,
 						DialogContent { class: "flex flex-col gap-3 sm:max-w-md",
