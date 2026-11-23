@@ -1,5 +1,6 @@
-[build]
-rustc-wrapper = "kache"
+[[include]]
+optional = true
+path = "local.toml"
 
 [profile.rust]
 codegen-backend = "cranelift"

@@ -35,13 +35,14 @@
               };
             };
           };
+          oldestSupportedVersion = "nightly-${v_flakes.rs.nightly_version}";
           github =
             let
               jobDeps = { packages = alwaysPkgNames ++ [ "fd" "pkg-config" ]; debug = true; };
             in
             v_flakes.github {
               inherit pkgs pname rs;
-              lastSupportedVersion = "nightly-${v_flakes.rs.nightly_version}";
+              inherit oldestSupportedVersion;
               enable = true;
               publishCachix = "valeratrades";
               containerRelease = { registry = "ghcr.io/valeratrades"; };
@@ -59,7 +60,7 @@
           readme = v_flakes.readme-fw {
             inherit pkgs pname;
             defaults = true;
-            lastSupportedVersion = "nightly-1.90";
+            inherit oldestSupportedVersion;
             rootDir = ./.;
             badges = [ "msrv" "crates_io" "docs_rs" "loc" "ci" ];
           };
