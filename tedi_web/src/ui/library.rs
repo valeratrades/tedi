@@ -641,7 +641,7 @@ fn Detail(owner: Owner, item: Item, construction: Construction, entry: Option<En
 			Btn { style: Style::Outline, glyph: Glyph::Link, onclick: { let (i, c) = (item.clone(), construction.clone()); move |_| share(ctx, i.clone(), &c) }, "Copy share link" }
 			if let Some(e) = &entry {
 				if !e.history.is_empty() {
-					span { class: "flex items-center gap-1 text-label text-ink-faint", Icon { glyph: Glyph::History, class: "size-3" } "HISTORY" }
+					span { class: "flex items-center gap-1 text-body-s font-medium text-ink-faint", Icon { glyph: Glyph::History, class: "size-3" } "HISTORY" }
 					for h in e.history.iter().rev() {
 						div { key: "{h.v}", class: "flex items-center gap-2 text-body-s",
 							span { class: "text-mono-s text-primary-ink", "v{h.v}" }
@@ -656,7 +656,7 @@ fn Detail(owner: Owner, item: Item, construction: Construction, entry: Option<En
 					}
 				}
 				if !e.forks.is_empty() {
-					span { class: "text-label text-ink-faint", "FORKS" }
+					span { class: "text-body-s font-medium text-ink-faint", "FORKS" }
 					for f in e.forks.iter() {
 						div { key: "{f.viewer}-{f.name}", class: "flex items-center gap-2 text-body-s",
 							Icon { glyph: Glyph::Fork, class: "size-3.5 text-ink-soft" }
@@ -698,7 +698,7 @@ fn Detail(owner: Owner, item: Item, construction: Construction, entry: Option<En
 			}
 			if let Some(up) = upstream.filter(|u| u.owner == Owner::Team) {
 				if let Some(theirs) = theirs(&up.name) {
-					span { class: "text-label text-ink-faint", "AGAINST THE TEAM'S {up.name}" }
+					span { class: "text-body-s font-medium text-ink-faint", "AGAINST THE TEAM'S {up.name}" }
 					Changes { from: theirs, to: construction.clone() }
 				}
 			}

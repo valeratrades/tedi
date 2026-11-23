@@ -277,7 +277,7 @@ pub(super) fn WorkspaceMenu() -> Element {
 							}
 						}
 						if !library.recent.is_empty() {
-							span { class: "px-2 pt-2 pb-1 text-label text-ink-faint", "RECENT" }
+							span { class: "px-2 pt-2 pb-1 text-overline text-ink-soft", "Recent" }
 							for (i , name) in library.recent.iter().enumerate() {
 								Row {
 									key: "{name}",
