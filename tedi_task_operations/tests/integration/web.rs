@@ -365,7 +365,11 @@ fn a_viewers_scope_nests_in_any_scope_by_its_path() {
 	let (status, body) = edit(port, me, serde_json::json!({ "Rename": { "shelf": "Scopes", "from": "Main / core", "to": "core" } }));
 	assert_eq!(status, 200, "{body}");
 	let held = self::library(port, me);
-	assert_eq!(held["scopes"].as_object().unwrap().keys().collect::<Vec<_>>(), ["core", "core / deep"], "what it held moves with it");
+	assert_eq!(
+		held["scopes"].as_object().unwrap().keys().collect::<Vec<_>>(),
+		["core", "core / deep"],
+		"what it held moves with it"
+	);
 	assert_eq!(held["scope"], "core / deep");
 
 	assert_eq!(edit(port, me, serde_json::json!({ "Drop": { "shelf": "Scopes", "name": "core" } })).0, 200);
@@ -373,4 +377,3 @@ fn a_viewers_scope_nests_in_any_scope_by_its_path() {
 	assert_eq!(library["scopes"], serde_json::json!({}));
 	assert_eq!(library["scope"], serde_json::Value::Null);
 }
-

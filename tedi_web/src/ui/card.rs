@@ -436,6 +436,9 @@ fn Stepper(card: Card, axis: Axis) -> Element {
 /// \`at\` as how long before now: \`2m ago\`, \`3d ago\`.
 pub(super) fn ago(at: jiff::Timestamp) -> String {
 	let secs = jiff::Timestamp::now().duration_since(at).as_secs().max(0);
-	let (unit, per) = [("mo", 2_592_000), ("d", 86_400), ("h", 3_600), ("m", 60)].into_iter().find(|(_, per)| secs >= *per).unwrap_or(("s", 1)); // under a minute counts in seconds
+	let (unit, per) = [("mo", 2_592_000), ("d", 86_400), ("h", 3_600), ("m", 60)]
+		.into_iter()
+		.find(|(_, per)| secs >= *per)
+		.unwrap_or(("s", 1)); // under a minute counts in seconds
 	format!("{}{unit} ago", secs.div_euclid(per))
 }

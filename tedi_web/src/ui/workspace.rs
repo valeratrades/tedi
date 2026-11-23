@@ -134,7 +134,10 @@ pub(super) fn WorkspaceMenu() -> Element {
 			if !(e.meta_key() || e.ctrl_key()) {
 				return;
 			}
-			let typing = e.target().and_then(|t| t.dyn_into::<web_sys::Element>().ok()).is_some_and(|t| matches!(t.tag_name().as_str(), "INPUT" | "TEXTAREA"));
+			let typing = e
+				.target()
+				.and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+				.is_some_and(|t| matches!(t.tag_name().as_str(), "INPUT" | "TEXTAREA"));
 			let code = e.code();
 			let shortcut = match (e.shift_key(), code.as_str()) {
 				(false, "KeyS") => Shortcut::Save,

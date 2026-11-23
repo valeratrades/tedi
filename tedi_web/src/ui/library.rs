@@ -147,10 +147,19 @@ fn Thumb(construction: Construction, #[props(default)] large: bool) -> Element {
 	let body = match &construction {
 		Construction::View(view) => {
 			let columns: Vec<String> = match &view.group_by {
-				tedi_core::board::GroupBy::State(w) => ctx.workflows().get(w).map(|w| w.leaves().iter().map(|s| s.names().last().cloned().expect("a state names its leaf")).collect()).unwrap_or_default(), // a workflow this board lacks: drawn uncoloured
+				tedi_core::board::GroupBy::State(w) => ctx
+					.workflows()
+					.get(w)
+					.map(|w| w.leaves().iter().map(|s| s.names().last().cloned().expect("a state names its leaf")).collect())
+					.unwrap_or_default(), // a workflow this board lacks: drawn uncoloured
 				_ => Vec::new(),
 			};
-			let tints = ctx.library.read().as_ref().and_then(|l| l.on_screen.tints.get(&view.name).and_then(|t| t.get(&view.group_by)).cloned()).unwrap_or_default(); // never tinted
+			let tints = ctx
+				.library
+				.read()
+				.as_ref()
+				.and_then(|l| l.on_screen.tints.get(&view.name).and_then(|t| t.get(&view.group_by)).cloned())
+				.unwrap_or_default(); // never tinted
 			let hues: Vec<String> = (0..5)
 				.map(|i| match columns.get(i).and_then(|c| tints.get(c)) {
 					Some(t) => format!("var(--tint-{t})"),
@@ -197,7 +206,10 @@ fn Thumb(construction: Construction, #[props(default)] large: bool) -> Element {
 		Construction::Workspace(tiles) => {
 			let layout = tiles.get(&tilers_dioxus::Band::Xl).or_else(|| tiles.values().next());
 			let cells = layout.and_then(|l| serial::load(l).ok()).map(|g| g.cells).unwrap_or_default(); // an unreadable layout draws empty: Open says why
-			let (cols, rows) = (cells.iter().map(|c| c.x + c.w).max().unwrap_or(1).max(1), cells.iter().map(|c| c.y + c.h).max().unwrap_or(1).max(1));
+			let (cols, rows) = (
+				cells.iter().map(|c| c.x + c.w).max().unwrap_or(1).max(1),
+				cells.iter().map(|c| c.y + c.h).max().unwrap_or(1).max(1),
+			);
 			rsx! {
 				div { class: "relative h-full w-full",
 					for (i , c) in cells.into_iter().enumerate() {
@@ -233,9 +245,13 @@ fn objects(ctx: &Ctx) -> Vec<(Owner, Item, Construction)> {
 	let (Some(setup), Some(library)) = (setup.as_ref(), library.as_ref()) else {
 		return Vec::new();
 	};
-	let team = constructions(&setup.views, &setup.scopes, &setup.columns, &setup.workspaces).into_iter().map(|(i, c)| (Owner::Team, i, c));
+	let team = constructions(&setup.views, &setup.scopes, &setup.columns, &setup.workspaces)
+		.into_iter()
+		.map(|(i, c)| (Owner::Team, i, c));
 	let filters: Vec<View> = library.filters.values().cloned().collect();
-	let mine = constructions(&filters, &library.scopes, &library.columns, &library.workspaces).into_iter().map(|(i, c)| (Owner::Viewer(String::new()), i, c));
+	let mine = constructions(&filters, &library.scopes, &library.columns, &library.workspaces)
+		.into_iter()
+		.map(|(i, c)| (Owner::Viewer(String::new()), i, c));
 	team.chain(mine).collect()
 }
 
@@ -307,7 +323,11 @@ pub(super) fn LibraryPanel(at: String) -> Element {
 		true => shown.sort_by(|a, b| a.1.name().cmp(b.1.name())),
 		false => shown.sort_by_key(|(o, i, _)| std::cmp::Reverse(viewers(o, i))),
 	}
-	let links: Vec<ShareLink> = received.iter().filter(|l| kind().is_none_or(|k| l.item.shelf() == k) && l.item.name().to_lowercase().contains(&needle)).cloned().collect();
+	let links: Vec<ShareLink> = received
+		.iter()
+		.filter(|l| kind().is_none_or(|k| l.item.shelf() == k) && l.item.name().to_lowercase().contains(&needle))
+		.cloned()
+		.collect();
 	let kinds_in_tab = |k: Shelf| all.iter().filter(|(o, i, _)| in_tab(tab(), o, i) && i.shelf() == k).count();
 	rsx! {
 		div { class: "flex h-full min-h-0",
@@ -470,7 +490,10 @@ fn open(ctx: Ctx, owner: &Owner, item: &Item, construction: &Construction) {
 				[] => ctx.say("library", Said::Info, format!("no view groups by {}: {name} colours none", columns.by), None),
 				_ => {
 					let mut m = ctx.modal;
-					m.set(Some(Modal::ApplyColumns { name: name.clone(), owner: owner.clone() }));
+					m.set(Some(Modal::ApplyColumns {
+						name: name.clone(),
+						owner: owner.clone(),
+					}));
 				}
 			}
 		}
@@ -482,11 +505,25 @@ fn open(ctx: Ctx, owner: &Owner, item: &Item, construction: &Construction) {
 pub(super) fn apply_columns(ctx: Ctx, view: String, columns: api::Columns) {
 	spawn(async move {
 		let by = columns.by.clone();
-		if !ctx.keep(LibraryEdit::Tinted { view: view.clone(), by: by.clone(), tints: columns.tints.clone() }).await {
+		if !ctx
+			.keep(LibraryEdit::Tinted {
+				view: view.clone(),
+				by: by.clone(),
+				tints: columns.tints.clone(),
+			})
+			.await
+		{
 			return;
 		}
 		for (band, layout) in columns.layout {
-			if !ctx.keep(LibraryEdit::Arranged { dock: Dock::Columns { view: view.clone(), by: by.clone() }, band, layout }).await {
+			if !ctx
+				.keep(LibraryEdit::Arranged {
+					dock: Dock::Columns { view: view.clone(), by: by.clone() },
+					band,
+					layout,
+				})
+				.await
+			{
 				return;
 			}
 		}
@@ -524,9 +561,15 @@ fn Detail(owner: Owner, item: Item, construction: Construction, entry: Option<En
 	let ctx = use_context::<Ctx>();
 	let mut comparing = use_signal(|| None::<String>);
 	let library = ctx.library.read().clone().expect("panels render once the library arrived");
-	let upstream = (owner != Owner::Team).then(|| library.forks.iter().find(|f| f.item == item).map(|f| f.upstream.clone())).flatten();
+	let upstream = (owner != Owner::Team)
+		.then(|| library.forks.iter().find(|f| f.item == item).map(|f| f.upstream.clone()))
+		.flatten();
 	let team = objects(&ctx);
-	let theirs = |name: &str| team.iter().find(|(o, i, _)| *o == Owner::Team && i.shelf() == item.shelf() && i.name() == name).map(|(_, _, c)| c.clone());
+	let theirs = |name: &str| {
+		team.iter()
+			.find(|(o, i, _)| *o == Owner::Team && i.shelf() == item.shelf() && i.name() == name)
+			.map(|(_, _, c)| c.clone())
+	};
 	let meta = match (&owner, &entry, &upstream) {
 		(Owner::Team, Some(e), _) if !e.history.is_empty() => match e.version {
 			Some(v) => {
@@ -761,9 +804,20 @@ pub(super) fn Propose(item: Item) -> Element {
 		m.set(None);
 	};
 	let all = objects(&ctx);
-	let mine = all.iter().find(|(o, i, _)| *o != Owner::Team && *i == item).map(|(_, _, c)| c.clone()).expect("proposed from the library's own");
-	let target = if update() { upstream.clone().expect("update is offered only with an upstream") } else { name() };
-	let theirs = all.iter().find(|(o, i, _)| *o == Owner::Team && i.shelf() == item.shelf() && i.name() == target).map(|(_, _, c)| c.clone());
+	let mine = all
+		.iter()
+		.find(|(o, i, _)| *o != Owner::Team && *i == item)
+		.map(|(_, _, c)| c.clone())
+		.expect("proposed from the library's own");
+	let target = if update() {
+		upstream.clone().expect("update is offered only with an upstream")
+	} else {
+		name()
+	};
+	let theirs = all
+		.iter()
+		.find(|(o, i, _)| *o == Owner::Team && i.shelf() == item.shelf() && i.name() == target)
+		.map(|(_, _, c)| c.clone());
 	let taken = !update() && theirs.is_some();
 	rsx! {
 		Dialog { open: true, on_open_change: move |v: bool| if !v { close() },
@@ -839,7 +893,10 @@ pub(super) fn Propose(item: Item) -> Element {
 pub(super) fn ApplyColumns(name: String, owner: Owner) -> Element {
 	let ctx = use_context::<Ctx>();
 	let item = Item::Columns(name.clone());
-	let columns = objects(&ctx).into_iter().find(|(o, i, _)| (*o == Owner::Team) == (owner == Owner::Team) && *i == item).map(|(_, _, c)| c);
+	let columns = objects(&ctx)
+		.into_iter()
+		.find(|(o, i, _)| (*o == Owner::Team) == (owner == Owner::Team) && *i == item)
+		.map(|(_, _, c)| c);
 	let Some(Construction::Columns(columns)) = columns else {
 		return rsx! {};
 	};
@@ -865,7 +922,6 @@ pub(super) fn ApplyColumns(name: String, owner: Owner) -> Element {
 		}
 	}
 }
-
 
 /// `part` of `whole` grid steps, in percent.
 fn pct(part: u32, whole: u32) -> f64 {

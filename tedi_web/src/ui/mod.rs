@@ -8,8 +8,8 @@ mod facets;
 mod icons;
 mod issue;
 mod kit;
-mod palette;
 mod library;
+mod palette;
 mod scope;
 mod shell;
 mod toast;
@@ -742,4 +742,3 @@ fn plain(text: &str) -> String {
 	}
 	out
 }
-

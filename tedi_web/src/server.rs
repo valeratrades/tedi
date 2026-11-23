@@ -2,9 +2,8 @@
 //! One process serves one store; every write goes through `tedi_task_operations`, which takes the store
 //! lock itself.
 
-use std::collections::BTreeSet;
 use std::{
-	collections::BTreeMap,
+	collections::{BTreeMap, BTreeSet},
 	net::SocketAddr,
 	path::PathBuf,
 	sync::{Arc, LazyLock, OnceLock},
@@ -181,7 +180,9 @@ pub async fn library(headers: &HeaderMap) -> Result<Library> {
 	let key = viewer(headers)?;
 	let _held = LIBRARIES.lock().await;
 	let library = read_library(&key)?;
-	library.scopes(&settings().scopes).map_err(|e| eyre!("{e}: rename or drop it in {}", library_file(&key).display()))?;
+	library
+		.scopes(&settings().scopes)
+		.map_err(|e| eyre!("{e}: rename or drop it in {}", library_file(&key).display()))?;
 	Ok(library)
 }
 
