@@ -1,0 +1,58 @@
+{
+ "kanban": {
+  "service-arb/review_archive": {
+   "38": "triage",
+   "44": "triage",
+   "46": "triage"
+  },
+  "service-arb/playbook": {
+   "52": "triage",
+   "57": "selected"
+  },
+  "service-arb/site_conductor": {
+   "19": "triage",
+   "23": "selected",
+   "28": "in_progress",
+   "31": "in_progress"
+  },
+  "service-arb/emulate_phone_cam": {
+   "12": "selected"
+  },
+  "service-arb/remote_reviews_automations": {
+   "9": "in_review"
+  },
+  "ev-main/devops": {
+   "38": "triage"
+  }
+ },
+ "pull_requests": {
+  "service-arb/site_conductor": {
+   "64": "review"
+  },
+  "service-arb/review_archive": {
+   "212": "review"
+  },
+  "service-arb/playbook": {
+   "61": "draft"
+  },
+  "service-arb/remote_reviews_automations": {
+   "11": "review"
+  },
+  "ev-main/devops": {
+   "70": "draft"
+  }
+ },
+ "label_colors": {
+  "t:feature": "a2eeef",
+  "t:question": "d876e3",
+  "area:metrics": "0e8a16",
+  "release": "fbca04",
+  "i:4": "c5def5",
+  "i:5": "bfdadc",
+  "i:6": "f9d0c4",
+  "h:2": "ededed",
+  "h:3": "ededed",
+  "h:5": "ededed",
+  "h:8": "ededed"
+ }
+}
