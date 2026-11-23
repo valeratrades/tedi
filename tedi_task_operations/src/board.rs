@@ -112,6 +112,14 @@ pub(crate) fn card(issue: &Issue, parent: Option<IssueLink>, conflicted: bool, s
 		assignees: issue.contents.assignees.clone(),
 		state: issue.contents.state.clone(),
 		closed_at: meta.timestamps.state.filter(|_| issue.contents.state.is_closed()),
+		updated: {
+			let t = &meta.timestamps;
+			[t.title, t.description, t.labels, t.state, t.assignees]
+				.into_iter()
+				.flatten()
+				.chain(t.comments.iter().copied())
+				.max()
+		},
 		rank: None,
 		importance: scheme.importance,
 		hours: scheme.hours,
@@ -137,6 +145,7 @@ pub(crate) fn pr_card(repo: crate::RepoInfo, pr: PullRequest, states: &States, w
 			PrState::Closed => CloseState::NotPlanned,
 		},
 		closed_at: pr.closed_at,
+		updated: Some(pr.updated_at),
 		labels: pr.labels,
 		assignees: pr.assignees,
 		rank: None,

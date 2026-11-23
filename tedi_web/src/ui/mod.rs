@@ -645,7 +645,7 @@ fn NavMenu() -> Element {
 							query: "is:open".into(),
 							layout: Layout::List,
 							group_by: GroupBy::Nothing,
-							sort: Sort { by: SortKey::Rank, reversed: false },
+							sort: vec![Sort { by: SortKey::Rank, reversed: false }].into(),
 							shown: vec![Shown::Repo, Shown::Assignees, Shown::Importance, Shown::Hours],
 						};
 						spawn(async move {

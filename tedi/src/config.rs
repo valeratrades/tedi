@@ -84,7 +84,7 @@ impl Board {
 		for view in &self.views {
 			let mut named: Vec<&String> = view.shown.iter().filter_map(|s| if let Shown::State(w) = s { Some(w) } else { None }).collect();
 			named.extend(if let GroupBy::State(w) = &view.group_by { Some(w) } else { None });
-			named.extend(if let SortKey::State(w) = &view.sort.by { Some(w) } else { None });
+			named.extend(view.sort.keys().iter().filter_map(|s| if let SortKey::State(w) = &s.by { Some(w) } else { None }));
 			if let Some(w) = named.into_iter().find(|w| !loaded.contains_key(*w)) {
 				bail!("the view {} names the workflow {w}, and `board.workflows` doesn't", view.name);
 			}

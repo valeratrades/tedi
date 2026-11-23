@@ -31,6 +31,8 @@ web = [
     "dep:getrandom",
     "dep:futures",
     "dep:gloo-timers",
+    "dep:jiff",
+    "jiff/js",
 ]
 # `#[server]` emits its handler half under this crate's own `server` feature.
 server = [

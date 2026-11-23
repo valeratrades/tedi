@@ -6,7 +6,7 @@ use dioxus::prelude::*;
 use ev_lib::uikit_dioxus::{Card as Tile, *};
 use strum::IntoEnumIterator as _;
 use tedi_core::{
-	board::{Card, Facet, GroupBy, Layout, Query, Shown, Sort, SortKey, View, group},
+	board::{Card, Facet, GroupBy, Layout, Order, Query, Shown, Sort, SortKey, View, group},
 	conflict::{Field, FieldEdit, list},
 	labels::{Color, HOURS, Scheme, Type},
 	workflow::State,
@@ -141,7 +141,7 @@ fn ViewBody(defined: View) -> Element {
 		SortKey::Hours,
 		SortKey::Blockers,
 	]);
-	let sorts: Vec<Sort> = keys.flat_map(|by| [false, true].map(|reversed| Sort { by: by.clone(), reversed })).collect();
+	let sorts: Vec<Order> = keys.flat_map(|by| [false, true].map(|reversed| vec![Sort { by: by.clone(), reversed }].into())).collect();
 	let groupings: Vec<GroupBy> = by_state()
 		.map(GroupBy::State)
 		.chain([GroupBy::Repo, GroupBy::Assignee, GroupBy::Type, GroupBy::Importance, GroupBy::Nothing])
@@ -534,20 +534,26 @@ fn hue(tint: Tint) -> &'static str {
 }
 
 #[component]
-fn Rows(groups: Vec<(String, Vec<usize>)>, shown: Vec<Shown>, sort: Sort, query: Query) -> Element {
+fn Rows(groups: Vec<(String, Vec<usize>)>, shown: Vec<Shown>, sort: Order, query: Query) -> Element {
 	let ctx = use_context::<Ctx>();
 	let mut in_view = use_context::<InView>();
-	// natural, then reversed, then back to rank
+	// a header leads the order, then leads it reversed, then leaves it; the other keys follow as they were
 	let mut cycle = move |by: SortKey| {
-		let now = in_view.0.peek().sort.clone();
-		in_view.0.write().sort = match now {
-			Sort { by: at, reversed: false } if at == by => Sort { by, reversed: true },
-			Sort { by: at, reversed: true } if at == by => Sort { by: SortKey::Rank, reversed: false },
-			_ => Sort { by, reversed: false },
+		let now = in_view.0.peek().sort.keys().to_vec();
+		let lead = match now.first() {
+			Some(Sort { by: at, reversed: false }) if *at == by => Some(true),
+			Some(Sort { by: at, reversed: true }) if *at == by => None,
+			_ => Some(false),
+		};
+		let mut keys: Vec<Sort> = lead.map(|reversed| Sort { by: by.clone(), reversed }).into_iter().collect();
+		keys.extend(now.into_iter().filter(|s| s.by != by));
+		if keys.is_empty() {
+			keys.push(Sort { by: SortKey::Rank, reversed: false });
 		}
+		in_view.0.write().sort = keys.into();
 	};
-	let arrow = |by: &SortKey| match &sort {
-		Sort { by: at, reversed } if at == by =>
+	let arrow = |by: &SortKey| match sort.keys().first() {
+		Some(Sort { by: at, reversed }) if at == by =>
 			if *reversed {
 				" ↑"
 			} else {
@@ -609,6 +615,20 @@ fn Shows(card: Card, shown: Shown) -> Element {
 	let ctx = use_context::<Ctx>();
 	match shown {
 		Shown::Repo => rsx! { Pick { facet: Facet::Repo, value: card.link.project().to_string(), "{card.link.project().repo()}" } },
+		Shown::Number => rsx! { span { class: "font-mono", "#{card.link.number()}" } },
+		Shown::Sprint => {
+			let setup = ctx.setup.read();
+			let sprints: Vec<String> = setup
+				.as_ref()
+				.expect("cards render once setup arrived")
+				.sprints
+				.iter()
+				.filter(|s| s.links.contains(&card.link))
+				.map(|s| s.title.clone())
+				.collect();
+			rsx! { for s in sprints { span { key: "{s}", "{s}" } } }
+		}
+		Shown::Updated => rsx! { if let Some(at) = card.updated { span { title: "{at}", "{ago(at)}" } } },
 		Shown::Assignees => rsx! { for a in card.assignees.iter() { Pick { facet: Facet::Assignee, value: a.clone(), "@{a}" } } },
 		Shown::State(workflow) => rsx! {
 			if let Some(at) = card.states.get(&workflow) { // a view kept naming a workflow since dropped
@@ -774,5 +794,17 @@ fn Scale(card: Card, axis: Axis) -> Element {
 				}
 			}
 		}
+	}
+}
+
+/// `at` as how long before now: `2m ago`, `3d ago`.
+fn ago(at: jiff::Timestamp) -> String {
+	let secs = jiff::Timestamp::now().duration_since(at).as_secs().max(0);
+	match secs {
+		..60 => "just now".to_string(),
+		..3_600 => format!("{}m ago", secs / 60),
+		..86_400 => format!("{}h ago", secs / 3_600),
+		..2_592_000 => format!("{}d ago", secs / 86_400),
+		_ => format!("{}mo ago", secs / 2_592_000),
 	}
 }

@@ -26,6 +26,8 @@ pub struct Card {
 	pub state: CloseState,
 	/// When it closed; `None` while open, or when GitHub kept no such event.
 	pub closed_at: Option<jiff::Timestamp>,
+	/// Its last change GitHub dated; `None` when it dated none.
+	pub updated: Option<jiff::Timestamp>,
 	/// Where it sits in each workflow the board was loaded with.
 	pub states: BTreeMap<String, State>,
 	/// `None` once closed: rank orders open work only.
@@ -190,7 +192,7 @@ pub struct View {
 	pub query: String,
 	pub layout: Layout,
 	pub group_by: GroupBy,
-	pub sort: Sort,
+	pub sort: Order,
 	/// What a card shows beside its title, in this order.
 	pub shown: Vec<Shown>,
 }
@@ -216,16 +218,71 @@ pub enum GroupBy {
 	Nothing,
 }
 /// `importance`, or `-importance` reversed. Each key's own order: importance high→low, hours low→high,
-/// a workflow's states in its order, names A→Z, most blockers first; a card lacking the key last either way.
+/// a workflow's states in its order, names A→Z, numbers low→high, most blockers first, the latest updated
+/// first; a card lacking the key last either way.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct Sort {
 	pub by: SortKey,
 	pub reversed: bool,
 }
-impl Sort {
+/// Sorts applied in turn, each ordering only what those before it tie on: `importance,hours`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct Order(Vec<Sort>);
+impl Order {
+	pub fn keys(&self) -> &[Sort] {
+		&self.0
+	}
+
 	/// Reorders `hits` (as `Query::run` ordered them); ties keep that order.
 	pub fn apply(&self, cards: &[Card], hits: &mut [usize], workflows: &BTreeMap<String, Workflow>) -> Result<(), WorkflowError> {
+		let mut place = vec![usize::MAX; cards.len()];
+		for (at, &i) in hits.iter().enumerate() {
+			place[i] = at;
+		}
+		for sort in self.0.iter().rev() {
+			sort.apply(cards, hits, workflows, &place)?;
+		}
+		Ok(())
+	}
+}
+impl From<Vec<Sort>> for Order {
+	fn from(keys: Vec<Sort>) -> Self {
+		assert!(!keys.is_empty(), "an order sorts by at least one key");
+		Order(keys)
+	}
+}
+impl std::fmt::Display for Order {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.write_str(&self.0.iter().map(ToString::to_string).collect::<Vec<_>>().join(","))
+	}
+}
+impl FromStr for Order {
+	type Err = strum::ParseError;
+
+	fn from_str(s: &str) -> Result<Self, strum::ParseError> {
+		let keys = s.split(',').map(str::parse).collect::<Result<Vec<Sort>, _>>()?;
+		assert!(!keys.is_empty(), "`split` yields at least one item");
+		Ok(Order(keys))
+	}
+}
+impl TryFrom<String> for Order {
+	type Error = strum::ParseError;
+
+	fn try_from(s: String) -> Result<Self, strum::ParseError> {
+		s.parse()
+	}
+}
+impl From<Order> for String {
+	fn from(order: Order) -> String {
+		order.to_string()
+	}
+}
+
+impl Sort {
+	/// A stable sort of `hits` by this key alone; `place` is each card's place in the query's order.
+	fn apply(&self, cards: &[Card], hits: &mut [usize], workflows: &BTreeMap<String, Workflow>, place: &[usize]) -> Result<(), WorkflowError> {
 		use std::cmp::Reverse;
 		fn by<K: Ord>(hits: &mut [usize], reversed: bool, key: impl Fn(usize) -> Option<K>) {
 			let mut keyed: Vec<(Option<K>, usize)> = hits.iter().map(|&i| (key(i), i)).collect();
@@ -240,12 +297,10 @@ impl Sort {
 		}
 		let r = self.reversed;
 		match &self.by {
-			SortKey::Rank if r => {
-				hits.reverse();
-				hits.sort_by_key(|&i| cards[i].rank.is_none());
-			}
-			SortKey::Rank => {}
+			SortKey::Rank if r => by(hits, r, |i| Some((cards[i].rank.is_some(), place[i]))), // the unranked stay last
+			SortKey::Rank => by(hits, r, |i| Some(place[i])),
 			SortKey::Title => by(hits, r, |i| Some(cards[i].title.to_lowercase())),
+			SortKey::Number => by(hits, r, |i| Some(cards[i].link.number())),
 			SortKey::Repo => by(hits, r, |i| Some(cards[i].link.project().to_string())),
 			SortKey::State(w) => {
 				let workflow = workflows.get(w).ok_or_else(|| WorkflowError::Unknown(w.clone()))?;
@@ -259,6 +314,7 @@ impl Sort {
 				let open = open(cards);
 				by(hits, r, |i| Some(Reverse(cards[i].blocked_by.iter().filter(|b| open.contains(b)).count())))
 			}
+			SortKey::Updated => by(hits, r, |i| cards[i].updated.map(Reverse)),
 		}
 		Ok(())
 	}
@@ -269,6 +325,7 @@ pub enum SortKey {
 	/// As the query ordered them: by free-text relevance when there is any, else by rank.
 	Rank,
 	Title,
+	Number,
 	Repo,
 	/// `state:<workflow>`
 	State(String),
@@ -277,11 +334,13 @@ pub enum SortKey {
 	Importance,
 	Hours,
 	Blockers,
+	Updated,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(try_from = "String", into = "String")]
 pub enum Shown {
+	Number,
 	Repo,
 	Assignees,
 	/// `state:<workflow>`
@@ -292,6 +351,9 @@ pub enum Shown {
 	Labels,
 	Blockers,
 	Prs,
+	/// The open sprints holding it.
+	Sprint,
+	Updated,
 }
 /// A named slice of the team's repos, nesting narrower ones: it covers its own `repos` (`owner/repo`,
 /// `owner/*`) and those of every scope inside it. It narrows; which views exist is none of its business.
@@ -634,7 +696,7 @@ impl TryFrom<Shown> for Facet {
 			Shown::Hours => Facet::Hours,
 			Shown::Type => Facet::Type,
 			Shown::Labels => Facet::Label,
-			Shown::Blockers | Shown::Prs => return Err(shown),
+			Shown::Blockers | Shown::Prs | Shown::Number | Shown::Sprint | Shown::Updated => return Err(shown),
 		})
 	}
 }
@@ -694,40 +756,22 @@ keyed!(Shown {
 	Labels = "labels",
 	Blockers = "blockers",
 	Prs = "prs",
+	Number = "number",
+	Sprint = "sprint",
+	Updated = "updated",
 });
-impl std::fmt::Display for SortKey {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		f.write_str(match self {
-			SortKey::State(workflow) => return write!(f, "state:{workflow}"),
-			SortKey::Rank => "rank",
-			SortKey::Title => "title",
-			SortKey::Repo => "repo",
-			SortKey::Assignee => "assignee",
-			SortKey::Type => "type",
-			SortKey::Importance => "importance",
-			SortKey::Hours => "hours",
-			SortKey::Blockers => "blockers",
-		})
-	}
-}
-impl FromStr for SortKey {
-	type Err = strum::ParseError;
-
-	fn from_str(s: &str) -> Result<Self, strum::ParseError> {
-		let plain = [
-			("rank", SortKey::Rank),
-			("title", SortKey::Title),
-			("repo", SortKey::Repo),
-			("assignee", SortKey::Assignee),
-			("type", SortKey::Type),
-			("importance", SortKey::Importance),
-			("hours", SortKey::Hours),
-			("blockers", SortKey::Blockers),
-		];
-		parse_keyed(s, &plain, SortKey::State)
-	}
-}
-
+keyed!(SortKey {
+	Rank = "rank",
+	Title = "title",
+	Number = "number",
+	Repo = "repo",
+	Assignee = "assignee",
+	Type = "type",
+	Importance = "importance",
+	Hours = "hours",
+	Blockers = "blockers",
+	Updated = "updated",
+});
 impl std::fmt::Display for Sort {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		write!(f, "{}{}", if self.reversed { "-" } else { "" }, self.by)
@@ -769,7 +813,9 @@ impl TryFrom<Shown> for SortKey {
 			Shown::Hours => SortKey::Hours,
 			Shown::Type => SortKey::Type,
 			Shown::Blockers => SortKey::Blockers,
-			Shown::Labels | Shown::Prs => return Err(shown),
+			Shown::Number => SortKey::Number,
+			Shown::Updated => SortKey::Updated,
+			Shown::Labels | Shown::Prs | Shown::Sprint => return Err(shown),
 		})
 	}
 }
@@ -806,6 +852,7 @@ mod tests {
 			assignees: assignees.iter().map(|a| a.to_string()).collect(),
 			state: if open { CloseState::Open } else { CloseState::Closed },
 			closed_at: None,
+			updated: None,
 			states: BTreeMap::from([("kanban".to_string(), state.parse().unwrap())]),
 			rank: None,
 			importance: scheme.importance,
@@ -1002,14 +1049,15 @@ mod tests {
 		let cards = cards();
 		let hits: Vec<usize> = (0..cards.len()).collect();
 		let out: Vec<String> = [
-			"rank", "-rank", "title", "importance", "-importance", "hours", "-hours", "state:kanban", "assignee", "-assignee", "type", "blockers", "-repo",
+			"rank", "-rank", "title", "importance", "-importance", "hours", "-hours", "state:kanban", "assignee", "-assignee", "type", "blockers", "-repo", "-number", "type,-importance",
+			"repo,hours", "hours,rank", "-hours,-rank", "state:kanban,title",
 		]
 		.into_iter()
 		.map(|s| {
-			let sort = Sort::try_from(s.to_string()).expect("a sort as views store it");
-			assert_eq!(sort.to_string(), s);
+			let order = Order::try_from(s.to_string()).expect("an order as views store it");
+			assert_eq!(order.to_string(), s);
 			let mut sorted = hits.clone();
-			sort.apply(&cards, &mut sorted, &kanban()).unwrap();
+			order.apply(&cards, &mut sorted, &kanban()).unwrap();
 			format!("{s}: {}", titles(&cards, &sorted))
 		})
 		.collect();
@@ -1027,6 +1075,12 @@ mod tests {
 		type: Crash on save · Typo in README · bump deps · Dark mode · Untyped idea
 		blockers: Untyped idea · Dark mode · Crash on save · bump deps · Typo in README
 		-repo: bump deps · Typo in README · Crash on save · Dark mode · Untyped idea
+		-number: Untyped idea · Typo in README · bump deps · Dark mode · Crash on save
+		type,-importance: Typo in README · Crash on save · bump deps · Dark mode · Untyped idea
+		repo,hours: Crash on save · Dark mode · Untyped idea · bump deps · Typo in README
+		hours,rank: bump deps · Typo in README · Crash on save · Dark mode · Untyped idea
+		-hours,-rank: Crash on save · Typo in README · bump deps · Untyped idea · Dark mode
+		state:kanban,title: Untyped idea · bump deps · Crash on save · Dark mode · Typo in README
 		");
 	}
 }
