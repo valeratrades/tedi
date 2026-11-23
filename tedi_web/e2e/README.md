@@ -21,8 +21,8 @@ Screens and frames: 01-board 9:1026, 02-view 10:1607, 03-library 11:3139, 04-wor
   states (`.states.json`) and label colours (`.meta.json`).
 - `config.toml`: five views, scopes EV ⊃ {EV-Estate, EV-Main, EV-Service-Arb}, column layouts, sprints' milestone repo.
 - `libraries/<screen>.json`: the viewer's library (copied to `$XDG_DATA_HOME/tedi/web/mock_user.json` before each shot):
-  tiles per band, current scope, workspaces, kept views. Tile sizes are grid steps (xl: 48 columns across the main area);
-  the columns dock takes its band from its own width, so `on_screen.columns` is set for every band.
+  tiles per band, current scope, workspaces, kept views. Layouts are tilers schema v3 (xl: 64 steps; 01: board tile 42, issue tile 22);
+  `on_screen.columns` is empty, the app seeds a column per group. `workspace` names the active workspace tab.
 - Store, state and cache live in `$E2E_HOME` (default `/tmp/tedi-e2e`); the server is on `E2E_PORT` (7351), clock `2026-11-23T12:00Z`.
   To use `dx serve` instead of the bundle, run the server on 7341 (`E2E_PORT=7341`) and point chromium at the dx port.
 

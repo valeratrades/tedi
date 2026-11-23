@@ -2,18 +2,9 @@
  "scope": "EV / EV-Service-Arb",
  "on_screen": {
   "tiles": {
-   "Xl": "{\"version\":2,\"grid\":{\"cells\":[{\"group\":{\"id\":0,\"tabs\":[\"view:PRs\",\"view:Release checklist\"],\"active\":0},\"x\":0,\"y\":0,\"w\":32,\"h\":24,\"desired_w\":null,\"desired_x\":null,\"desired_h\":null,\"rank\":0},{\"group\":{\"id\":1,\"tabs\":[\"sprint:1w · 2026/11/17\"],\"active\":0},\"x\":32,\"y\":0,\"w\":16,\"h\":24,\"desired_w\":null,\"desired_x\":null,\"desired_h\":null,\"rank\":1}],\"state\":\"Settled\",\"next_group_id\":2}}"
+   "Xl": "{\"version\":3,\"grid\":{\"cells\":[{\"group\":{\"id\":0,\"tabs\":[\"view:PRs\",\"view:Release checklist\"],\"active\":0},\"x\":0,\"y\":0,\"w\":42,\"h\":40,\"desired_w\":null,\"desired_x\":null,\"desired_h\":null,\"rank\":0,\"collapsed\":null},{\"group\":{\"id\":1,\"tabs\":[\"sprint:1w · 2026/11/17\"],\"active\":0},\"x\":42,\"y\":0,\"w\":22,\"h\":40,\"desired_w\":null,\"desired_x\":null,\"desired_h\":null,\"rank\":1,\"collapsed\":null}],\"state\":\"Settled\",\"next_group_id\":2}}"
   },
   "views": {},
-  "columns": {
-   "Triage": {
-    "state:kanban": {
-     "Xl": "{\"version\":2,\"grid\":{\"cells\":[{\"group\":{\"id\":0,\"tabs\":[\"col:icebox\"],\"active\":0},\"x\":0,\"y\":0,\"w\":10,\"h\":18,\"desired_w\":null,\"desired_x\":null,\"desired_h\":null,\"rank\":0},{\"group\":{\"id\":1,\"tabs\":[\"col:triage\"],\"active\":0},\"x\":10,\"y\":0,\"w\":10,\"h\":18,\"desired_w\":null,\"desired_x\":null,\"desired_h\":null,\"rank\":1},{\"group\":{\"id\":2,\"tabs\":[\"col:selected\"],\"active\":0},\"x\":20,\"y\":0,\"w\":10,\"h\":18,\"desired_w\":null,\"desired_x\":null,\"desired_h\":null,\"rank\":2},{\"group\":{\"id\":3,\"tabs\":[\"col:in_progress\"],\"active\":0},\"x\":30,\"y\":0,\"w\":10,\"h\":18,\"desired_w\":null,\"desired_x\":null,\"desired_h\":null,\"rank\":3},{\"group\":{\"id\":4,\"tabs\":[\"col:in_review\"],\"active\":0},\"x\":40,\"y\":0,\"w\":10,\"h\":18,\"desired_w\":null,\"desired_x\":null,\"desired_h\":null,\"rank\":4}],\"state\":\"Settled\",\"next_group_id\":5}}",
-     "Md": "{\"version\":2,\"grid\":{\"cells\":[{\"group\":{\"id\":0,\"tabs\":[\"col:icebox\"],\"active\":0},\"x\":0,\"y\":0,\"w\":10,\"h\":18,\"desired_w\":null,\"desired_x\":null,\"desired_h\":null,\"rank\":0},{\"group\":{\"id\":1,\"tabs\":[\"col:triage\"],\"active\":0},\"x\":10,\"y\":0,\"w\":10,\"h\":18,\"desired_w\":null,\"desired_x\":null,\"desired_h\":null,\"rank\":1},{\"group\":{\"id\":2,\"tabs\":[\"col:selected\"],\"active\":0},\"x\":20,\"y\":0,\"w\":10,\"h\":18,\"desired_w\":null,\"desired_x\":null,\"desired_h\":null,\"rank\":2},{\"group\":{\"id\":3,\"tabs\":[\"col:in_progress\"],\"active\":0},\"x\":30,\"y\":0,\"w\":10,\"h\":18,\"desired_w\":null,\"desired_x\":null,\"desired_h\":null,\"rank\":3},{\"group\":{\"id\":4,\"tabs\":[\"col:in_review\"],\"active\":0},\"x\":40,\"y\":0,\"w\":10,\"h\":18,\"desired_w\":null,\"desired_x\":null,\"desired_h\":null,\"rank\":4}],\"state\":\"Settled\",\"next_group_id\":5}}",
-     "Sm": "{\"version\":2,\"grid\":{\"cells\":[{\"group\":{\"id\":0,\"tabs\":[\"col:icebox\"],\"active\":0},\"x\":0,\"y\":0,\"w\":10,\"h\":18,\"desired_w\":null,\"desired_x\":null,\"desired_h\":null,\"rank\":0},{\"group\":{\"id\":1,\"tabs\":[\"col:triage\"],\"active\":0},\"x\":10,\"y\":0,\"w\":10,\"h\":18,\"desired_w\":null,\"desired_x\":null,\"desired_h\":null,\"rank\":1},{\"group\":{\"id\":2,\"tabs\":[\"col:selected\"],\"active\":0},\"x\":20,\"y\":0,\"w\":10,\"h\":18,\"desired_w\":null,\"desired_x\":null,\"desired_h\":null,\"rank\":2},{\"group\":{\"id\":3,\"tabs\":[\"col:in_progress\"],\"active\":0},\"x\":30,\"y\":0,\"w\":10,\"h\":18,\"desired_w\":null,\"desired_x\":null,\"desired_h\":null,\"rank\":3},{\"group\":{\"id\":4,\"tabs\":[\"col:in_review\"],\"active\":0},\"x\":40,\"y\":0,\"w\":10,\"h\":18,\"desired_w\":null,\"desired_x\":null,\"desired_h\":null,\"rank\":4}],\"state\":\"Settled\",\"next_group_id\":5}}"
-    }
-   }
-  },
   "tints": {
    "Triage": {
     "state:kanban": {
@@ -24,7 +15,8 @@
      "done": "green"
     }
    }
-  }
+  },
+  "columns": {}
  },
  "filters": {
   "Release checklist": {
@@ -44,16 +36,16 @@
  },
  "workspaces": {
   "Triage desk": {
-   "Xl": "{\"version\":2,\"grid\":{\"cells\":[{\"group\":{\"id\":0,\"tabs\":[\"view:Triage\",\"view:PRs\",\"view:Assigned\"],\"active\":0},\"x\":0,\"y\":0,\"w\":32,\"h\":24,\"desired_w\":null,\"desired_x\":null,\"desired_h\":null,\"rank\":0},{\"group\":{\"id\":1,\"tabs\":[\"issue:https://github.com/service-arb/review_archive/issues/46\"],\"active\":0},\"x\":32,\"y\":0,\"w\":16,\"h\":24,\"desired_w\":null,\"desired_x\":null,\"desired_h\":null,\"rank\":1}],\"state\":\"Settled\",\"next_group_id\":2}}"
+   "Xl": "{\"version\":3,\"grid\":{\"cells\":[{\"group\":{\"id\":0,\"tabs\":[\"view:Triage\",\"view:PRs\",\"view:Assigned\"],\"active\":0},\"x\":0,\"y\":0,\"w\":42,\"h\":40,\"desired_w\":null,\"desired_x\":null,\"desired_h\":null,\"rank\":0,\"collapsed\":null},{\"group\":{\"id\":1,\"tabs\":[\"issue:https://github.com/service-arb/review_archive/issues/46\"],\"active\":0},\"x\":42,\"y\":0,\"w\":22,\"h\":40,\"desired_w\":null,\"desired_x\":null,\"desired_h\":null,\"rank\":1,\"collapsed\":null}],\"state\":\"Settled\",\"next_group_id\":2}}"
   },
   "Release week": {
-   "Xl": "{\"version\":2,\"grid\":{\"cells\":[{\"group\":{\"id\":0,\"tabs\":[\"view:PRs\",\"view:Release checklist\"],\"active\":0},\"x\":0,\"y\":0,\"w\":32,\"h\":24,\"desired_w\":null,\"desired_x\":null,\"desired_h\":null,\"rank\":0},{\"group\":{\"id\":1,\"tabs\":[\"sprint:1w · 2026/11/17\"],\"active\":0},\"x\":32,\"y\":0,\"w\":16,\"h\":24,\"desired_w\":null,\"desired_x\":null,\"desired_h\":null,\"rank\":1}],\"state\":\"Settled\",\"next_group_id\":2}}"
+   "Xl": "{\"version\":3,\"grid\":{\"cells\":[{\"group\":{\"id\":0,\"tabs\":[\"view:PRs\",\"view:Release checklist\"],\"active\":0},\"x\":0,\"y\":0,\"w\":42,\"h\":40,\"desired_w\":null,\"desired_x\":null,\"desired_h\":null,\"rank\":0,\"collapsed\":null},{\"group\":{\"id\":1,\"tabs\":[\"sprint:1w · 2026/11/17\"],\"active\":0},\"x\":42,\"y\":0,\"w\":22,\"h\":40,\"desired_w\":null,\"desired_x\":null,\"desired_h\":null,\"rank\":1,\"collapsed\":null}],\"state\":\"Settled\",\"next_group_id\":2}}"
   },
   "Sprint planning": {
-   "Xl": "{\"version\":2,\"grid\":{\"cells\":[{\"group\":{\"id\":0,\"tabs\":[\"sprint:1w · 2026/11/17\"],\"active\":0},\"x\":0,\"y\":0,\"w\":32,\"h\":24,\"desired_w\":null,\"desired_x\":null,\"desired_h\":null,\"rank\":0},{\"group\":{\"id\":1,\"tabs\":[\"view:Triage\"],\"active\":0},\"x\":32,\"y\":0,\"w\":16,\"h\":24,\"desired_w\":null,\"desired_x\":null,\"desired_h\":null,\"rank\":1}],\"state\":\"Settled\",\"next_group_id\":2}}"
+   "Xl": "{\"version\":3,\"grid\":{\"cells\":[{\"group\":{\"id\":0,\"tabs\":[\"sprint:1w · 2026/11/17\"],\"active\":0},\"x\":0,\"y\":0,\"w\":42,\"h\":40,\"desired_w\":null,\"desired_x\":null,\"desired_h\":null,\"rank\":0,\"collapsed\":null},{\"group\":{\"id\":1,\"tabs\":[\"view:Triage\"],\"active\":0},\"x\":42,\"y\":0,\"w\":22,\"h\":40,\"desired_w\":null,\"desired_x\":null,\"desired_h\":null,\"rank\":1,\"collapsed\":null}],\"state\":\"Settled\",\"next_group_id\":2}}"
   },
   "Phone: inbox": {
-   "Sm": "{\"version\":2,\"grid\":{\"cells\":[{\"group\":{\"id\":0,\"tabs\":[\"view:Triage\",\"view:PRs\",\"issue:https://github.com/service-arb/review_archive/issues/46\"],\"active\":0},\"x\":0,\"y\":0,\"w\":16,\"h\":24,\"desired_w\":null,\"desired_x\":null,\"desired_h\":null,\"rank\":0}],\"state\":\"Settled\",\"next_group_id\":1}}"
+   "Sm": "{\"version\":3,\"grid\":{\"cells\":[{\"group\":{\"id\":0,\"tabs\":[\"view:Triage\",\"view:PRs\",\"issue:https://github.com/service-arb/review_archive/issues/46\"],\"active\":0},\"x\":0,\"y\":0,\"w\":64,\"h\":40,\"desired_w\":null,\"desired_x\":null,\"desired_h\":null,\"rank\":0,\"collapsed\":null}],\"state\":\"Settled\",\"next_group_id\":1}}"
   }
  },
  "columns": {},
@@ -75,5 +67,11 @@
   {
    "Workspace": "Triage desk"
   }
+ ],
+ "workspace": "Release week",
+ "recent": [
+  "Release week",
+  "Triage desk",
+  "Sprint planning"
  ]
 }
