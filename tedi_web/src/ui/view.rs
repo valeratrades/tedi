@@ -218,8 +218,12 @@ fn Columns(view: String, groups: Vec<(String, Vec<usize>)>, by: GroupBy, shown: 
 		let mut grid = match tilers_dioxus::model::serial::load(layout) {
 			Ok(grid) => grid,
 			Err(e) => {
-				ctx.toaster
-					.error(format!("the kept columns don't load ({e:?}); nothing kept is overwritten until others are shown"));
+				ctx.say(
+					"columns",
+					super::toast::Tone::Error,
+					format!("the kept columns don't load ({e:?}); nothing kept is overwritten until others are shown"),
+					None,
+				);
 				return false;
 			}
 		};
@@ -258,7 +262,7 @@ fn Columns(view: String, groups: Vec<(String, Vec<usize>)>, by: GroupBy, shown: 
 		let Some(mut api) = *api.read() else { return };
 		let hosted = api.tab_ids();
 		let h = api.rows();
-		for (key, _) in groups.iter() {
+		for (key, members) in groups.iter() {
 			let id = PanelId(format!("col:{key}"));
 			if !panels.peek().iter().any(|p| p.id == id) {
 				panels.write().push(column(id.clone(), key.clone()));
@@ -266,6 +270,9 @@ fn Columns(view: String, groups: Vec<(String, Vec<usize>)>, by: GroupBy, shown: 
 			if !hosted.contains(&id) {
 				let group = api.mint_group_id();
 				api.place(Group::new(group, id), 1, h); // at its least width: the row scrolls sideways past the view
+				if members.is_empty() {
+					api.collapse(group); // an empty bucket is a spine, still a drop target
+				}
 			}
 		}
 	});
@@ -383,7 +390,7 @@ fn ColumnActions(tile: Tile) -> Element {
 			if let Some(layout) = kept.layout.get(&band) {
 				let mut a = a;
 				if let Err(e) = a.load(layout) {
-					ctx.toaster.error(format!("{name}'s {band} columns don't load ({e:?})"));
+					ctx.say("columns", super::toast::Tone::Error, format!("{name}'s {band} columns don't load ({e:?})"), None);
 				}
 			}
 			if *lanes.tints.peek() != kept.tints {
@@ -449,7 +456,6 @@ fn ColumnActions(tile: Tile) -> Element {
 /// A drop of the card being dragged onto \`group\`: a move, when the columns are a workflow's.
 fn use_drop(group: String) -> impl FnMut(DragEvent) + 'static {
 	let ctx = use_context::<Ctx>();
-	let toaster = use_toaster();
 	let lanes = use_context::<Lanes>();
 	let mut dragged = lanes.dragged;
 	let by = lanes.by;
@@ -457,7 +463,12 @@ fn use_drop(group: String) -> impl FnMut(DragEvent) + 'static {
 		e.prevent_default();
 		let Some(link) = dragged.take() else { return };
 		let GroupBy::State(workflow) = by.peek().clone() else {
-			toaster.info(format!("Only a workflow's columns take a drop; this view groups by {}", by.peek()));
+			ctx.say(
+				"drop",
+				super::toast::Tone::Warn,
+				format!("Only a workflow's columns take a drop; this view groups by {}", by.peek()),
+				None,
+			);
 			return;
 		};
 		let to = State::from_str(&group).expect("a workflow's columns are keyed by its leaves");

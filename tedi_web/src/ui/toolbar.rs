@@ -217,7 +217,7 @@ fn Keep(view: Signal<View>, defined: View) -> Element {
 		};
 		spawn(async move {
 			if ctx.keep(crate::api::LibraryEdit::Keep(crate::api::Kept::Filter(kept))).await {
-				ctx.toaster.positive(format!("Saved \"{name}\" in your views"));
+				ctx.say("saved", super::toast::Tone::Success, format!("Saved \"{name}\" in your views"), None);
 				ctx.open(tilers_dioxus::PanelId(format!("view:{name}")));
 			}
 		});

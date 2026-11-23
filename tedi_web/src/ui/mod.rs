@@ -10,13 +10,11 @@ mod kit;
 mod library;
 mod scope;
 mod shell;
+mod toast;
 mod toolbar;
 mod view;
 
-use std::{
-	collections::{BTreeMap, HashMap},
-	str::FromStr as _,
-};
+use std::collections::{BTreeMap, HashMap};
 
 use dioxus::prelude::*;
 use ev_lib::uikit_dioxus::*;
@@ -24,13 +22,13 @@ use futures::StreamExt as _;
 use icons::{Glyph, Icon};
 use tedi_core::{
 	IssueLink,
-	board::{Board, Card, Query, Scope, View, scope_at},
+	board::{Board, Card, Scope, View, scope_at},
 	conflict::{Conflict, FieldEdit},
 	workflow::{State, Workflow},
 };
 use tilers_dioxus::{Band, DockPanel, Group, GroupId, MinSize, PackedApi, PackedArea, PanelId, Tile, model::serial};
 
-use crate::api::{self, Dock, Edited, Item, Kept, Library, LibraryEdit, Setup, Shelf};
+use crate::api::{self, Dock, Edited, Item, Library, LibraryEdit, Setup};
 
 const HELP: [(&str, &str); 6] = [
 	("⌘K", "jump to a view, scope, sprint or issue"),
@@ -45,10 +43,7 @@ const HELP: [(&str, &str); 6] = [
 pub fn App() -> Element {
 	rsx! {
 		Fonts {}
-		ToasterProvider {
-			Toaster { position: ToastPosition::BottomRight }
-			Shell {}
-		}
+		Shell {}
 	}
 }
 
@@ -74,9 +69,31 @@ struct Ctx {
 	into: Signal<Option<GroupId>>,
 	/// On a phone, the shelves' sheet, open.
 	sheet: Signal<bool>,
-	toaster: ToasterHandle,
+	/// The outcomes on screen, oldest first.
+	notes: Signal<Vec<toast::Note>>,
 }
 impl Ctx {
+	/// An outcome, replacing any on screen under `key`.
+	pub(super) fn say(&self, key: impl Into<String>, tone: toast::Tone, text: impl Into<String>, action: Option<(&'static str, Callback<()>)>) {
+		let mut notes = self.notes;
+		let key = key.into();
+		let id = notes.peek().iter().map(|n| n.id).max().map_or(0, |m| m + 1);
+		let mut notes = notes.write();
+		notes.retain(|n| n.key != key);
+		notes.push(toast::Note {
+			id,
+			key,
+			tone,
+			text: text.into(),
+			action,
+		});
+	}
+
+	pub(super) fn unsay(&self, id: u64) {
+		let mut notes = self.notes;
+		notes.write().retain(|n| n.id != id);
+	}
+
 	fn card(&self, link: &IssueLink) -> Option<Card> {
 		self.board.read().as_ref()?.cards.iter().find(|c| &c.link == link).cloned()
 	}
@@ -232,39 +249,79 @@ impl Ctx {
 		}
 	}
 
-	/// `edits` to `link`, as seen on its card: a clash lands on the issue's tab, inline.
+	/// \`edits\` to \`link\`, as seen on its card: a landed one can be undone from its note, a clash lands on the
+	/// issue's tab, inline.
 	async fn edit(self, link: IssueLink, edits: Vec<FieldEdit>) {
+		let fields = edits.iter().map(|e| e.field.to_string()).collect::<Vec<_>>().join(", ");
+		let back: Vec<FieldEdit> = edits
+			.iter()
+			.map(|e| FieldEdit {
+				field: e.field,
+				seen: e.new.clone(),
+				new: e.seen.clone(),
+			})
+			.collect();
+		let key = format!("edit:{link}");
 		match api::edit(link.clone(), edits).await {
 			Ok(Edited::Landed) => {
 				let mut conflicts = self.conflicts;
 				conflicts.write().remove(&link);
+				let undo = Callback::new({
+					let link = link.clone();
+					move |()| {
+						spawn(self.edit(link.clone(), back.clone()));
+					}
+				});
+				self.say(key, toast::Tone::Info, format!("Edited {fields} on #{}", link.number()), Some(("Undo", undo)));
 			}
-			Ok(Edited::Conflict(conflict)) => {
-				let mut conflicts = self.conflicts;
-				conflicts.write().insert(link.clone(), conflict);
-				self.open_issue(link);
-			}
-			Ok(Edited::Rejected(why)) => _ = self.toaster.info(why),
-			Err(e) => _ = self.toaster.error(e.to_string()),
+			Ok(Edited::Conflict(conflict)) => self.clashed(link, conflict),
+			Ok(Edited::Rejected(why)) => self.refused(key, link, format!("Edit refused: {why}")),
+			Err(e) => self.say(key, toast::Tone::Error, e.to_string(), None),
 		}
 	}
 
-	/// `card` to `to` of `workflow`, from where it shows sitting: a hook's refusal is toasted, a clash lands on the issue's tab.
+	/// \`card\` to \`to\` of \`workflow\`, from where it shows sitting: a landed move can be undone, a hook's
+	/// refusal says why, a clash lands on the issue's tab.
 	async fn move_card(self, card: Card, workflow: String, to: State) {
 		let seen = card.states[&workflow].clone();
-		match api::move_card(card.link.clone(), workflow, to, seen).await {
+		let key = format!("move:{}", card.link);
+		match api::move_card(card.link.clone(), workflow.clone(), to.clone(), seen.clone()).await {
 			Ok(Edited::Landed) => {
 				let mut conflicts = self.conflicts;
 				conflicts.write().remove(&card.link);
+				let mut moved = card.clone();
+				moved.states.insert(workflow.clone(), to.clone());
+				let undo = Callback::new(move |()| {
+					spawn(self.move_card(moved.clone(), workflow.clone(), seen.clone()));
+				});
+				self.say(key, toast::Tone::Info, format!("Moved #{} → {to}", card.link.number()), Some(("Undo", undo)));
 			}
-			Ok(Edited::Conflict(conflict)) => {
-				let mut conflicts = self.conflicts;
-				conflicts.write().insert(card.link.clone(), conflict);
-				self.open_issue(card.link);
-			}
-			Ok(Edited::Rejected(why)) => _ = self.toaster.info(why),
-			Err(e) => _ = self.toaster.error(e.to_string()),
+			Ok(Edited::Conflict(conflict)) => self.clashed(card.link, conflict),
+			Ok(Edited::Rejected(why)) => self.refused(key, card.link, format!("Move refused: {why}")),
+			Err(e) => self.say(key, toast::Tone::Error, e.to_string(), None),
 		}
+	}
+
+	fn clashed(self, link: IssueLink, conflict: Conflict) {
+		let fields = conflict.clashes.iter().map(|c| c.field.to_string()).collect::<Vec<_>>().join(", ");
+		let mut conflicts = self.conflicts;
+		conflicts.write().insert(link.clone(), conflict);
+		let resolve = Callback::new({
+			let link = link.clone();
+			move |()| self.open_issue(link.clone())
+		});
+		self.say(
+			format!("clash:{link}"),
+			toast::Tone::Warn,
+			format!("{fields} on #{} changed on GitHub", link.number()),
+			Some(("Resolve", resolve)),
+		);
+		self.open_issue(link);
+	}
+
+	fn refused(self, key: String, link: IssueLink, why: String) {
+		let open = Callback::new(move |()| self.open_issue(link.clone()));
+		self.say(key, toast::Tone::Error, why, Some(("Open", open)));
 	}
 
 	/// Whether it landed; why not is toasted.
@@ -276,7 +333,7 @@ impl Ctx {
 				true
 			}
 			Err(e) => {
-				self.toaster.error(e.to_string());
+				self.say("library", toast::Tone::Error, e.to_string(), None);
 				false
 			}
 		}
@@ -319,8 +376,12 @@ impl Ctx {
 				true
 			}
 			Err(e) => {
-				self.toaster
-					.error(format!("the kept layout doesn't load ({e:?}); nothing kept is overwritten until another is shown"));
+				self.say(
+					"layout",
+					toast::Tone::Error,
+					format!("the kept layout doesn't load ({e:?}); nothing kept is overwritten until another is shown"),
+					None,
+				);
 				false
 			}
 		}
@@ -341,7 +402,12 @@ impl Ctx {
 					arranged.set(Some(band));
 				}
 			}
-			None => _ = self.toaster.info(format!("{name} keeps no {band} arrangement: arrange this screen, then save it as {name}")),
+			None => self.say(
+				"workspace",
+				toast::Tone::Warn,
+				format!("{name} keeps no {band} arrangement: arrange this screen, then save it as {name}"),
+				None,
+			),
 		}
 	}
 }
@@ -397,7 +463,6 @@ fn use_autosave(ctx: Ctx, api: Signal<Option<PackedApi>>, arranged: Signal<Optio
 
 #[component]
 fn Shell() -> Element {
-	let toaster = use_toaster();
 	let ctx = use_context_provider(|| Ctx {
 		setup: Signal::new(None),
 		library: Signal::new(None),
@@ -411,7 +476,7 @@ fn Shell() -> Element {
 		palette: Signal::new(false),
 		into: Signal::new(None),
 		sheet: Signal::new(false),
-		toaster,
+		notes: Signal::new(Vec::new()),
 	});
 	use_autosave(ctx, ctx.api, ctx.arranged, Dock::Tiles);
 	rsx! {
@@ -444,6 +509,7 @@ fn Shell() -> Element {
 		}
 		Modals {}
 		Palette {}
+		toast::Toasts {}
 	}
 }
 
@@ -451,7 +517,6 @@ fn Shell() -> Element {
 #[component]
 fn Live() -> Element {
 	let ctx = use_context::<Ctx>();
-	let toaster = ctx.toaster;
 	use_future(move || async move {
 		let mut failure = ctx.failure;
 		match futures::join!(api::setup(), api::library()) {
@@ -473,11 +538,11 @@ fn Live() -> Element {
 					while let Some(tick) = ticks.next().await {
 						match tick {
 							Ok(()) => reload(ctx).await,
-							Err(e) => _ = toaster.error(format!("live updates: {e}")),
+							Err(e) => ctx.say("live", toast::Tone::Error, format!("live updates: {e}"), None),
 						}
 					}
 				}
-				Err(e) => _ = toaster.error(format!("live updates: {e}")),
+				Err(e) => ctx.say("live", toast::Tone::Error, format!("live updates: {e}"), None),
 			}
 			gloo_timers::future::sleep(std::time::Duration::from_secs(3)).await; // the server restarted or the network dropped: reconnect
 		}
@@ -491,7 +556,7 @@ async fn reload(ctx: Ctx) {
 			let mut b = ctx.board;
 			b.set(Some(board));
 		}
-		Err(e) => _ = ctx.toaster.error(format!("board: {e}")),
+		Err(e) => ctx.say("board", toast::Tone::Error, format!("board: {e}"), None),
 	}
 }
 

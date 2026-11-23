@@ -87,11 +87,13 @@ pub fn IssuePanel(link: IssueLink) -> Element {
 							button {
 								key: "{b}",
 								r#type: "button",
-								class: "flex items-center gap-1 text-body text-accent-error hover:underline",
+								class: "flex min-w-0 max-w-full items-center gap-1 text-body text-accent-error hover:underline",
 								onclick: { let b = b.clone(); move |_| ctx.open_issue(b.clone()) },
-								Icon { glyph: Glyph::Blocker, class: "size-3" }
-								"{b.shorthand(link.project())}"
-								if let Some(c) = ctx.card(&b) { span { class: "truncate", " {c.title}" } }
+								Icon { glyph: Glyph::Blocker, class: "size-3 shrink-0" }
+								span { class: "truncate whitespace-nowrap",
+									"{b.shorthand(link.project())}"
+									if let Some(c) = ctx.card(&b) { " {c.title}" }
+								}
 							}
 						}
 					}
@@ -132,8 +134,8 @@ pub fn IssuePanel(link: IssueLink) -> Element {
 
 fn copy(ctx: Ctx, text: String) {
 	ev_lib::uikit_dioxus::write_clipboard(&text.clone(), move |copied| match copied {
-		true => _ = ctx.toaster.positive(format!("Copied {text}")),
-		false => _ = ctx.toaster.error("the browser refused the clipboard"),
+		true => ctx.say("copy", super::toast::Tone::Success, format!("Copied {text}"), None),
+		false => ctx.say("copy", super::toast::Tone::Error, "the browser refused the clipboard", None),
 	});
 }
 
@@ -368,7 +370,6 @@ fn Clashes(link: IssueLink, conflict: Conflict) -> Element {
 #[component]
 fn Recorded(link: IssueLink) -> Element {
 	let ctx = use_context::<Ctx>();
-	let toaster = ctx.toaster;
 	let mut file = use_resource({
 		let link = link.clone();
 		move || api::pending_conflict(link.clone())
@@ -384,10 +385,10 @@ fn Recorded(link: IssueLink) -> Element {
 						editing.set(None);
 						let mut conflicts = ctx.conflicts;
 						conflicts.write().remove(&link);
-						toaster.positive("Resolved");
+						ctx.say(format!("clash:{link}"), super::toast::Tone::Success, "Resolved", None);
 					}
-					Ok(Some(_)) => _ = toaster.warn("Markers remain: it is still pending"),
-					Err(e) => _ = toaster.error(e.to_string()),
+					Ok(Some(_)) => ctx.say(format!("clash:{link}"), super::toast::Tone::Warn, "Markers remain: it is still pending", None),
+					Err(e) => ctx.say(format!("clash:{link}"), super::toast::Tone::Error, e.to_string(), None),
 				}
 				file.restart();
 			});
