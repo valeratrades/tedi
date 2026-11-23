@@ -204,7 +204,7 @@ fn Thumb(construction: Construction, #[props(default)] large: bool) -> Element {
 						div {
 							key: "{i}",
 							class: "absolute rounded-sm border border-border bg-secondary",
-							style: "left: {c.x * 100 / cols}%; top: {c.y * 100 / rows}%; width: calc({c.w * 100 / cols}% - 3px); height: calc({c.h * 100 / rows}% - 3px)",
+							style: "left: {pct(c.x, cols)}%; top: {pct(c.y, rows)}%; width: calc({pct(c.w, cols)}% - 3px); height: calc({pct(c.h, rows)}% - 3px)",
 						}
 					}
 				}
@@ -866,3 +866,8 @@ pub(super) fn ApplyColumns(name: String, owner: Owner) -> Element {
 	}
 }
 
+
+/// `part` of `whole` grid steps, in percent.
+fn pct(part: u32, whole: u32) -> f64 {
+	f64::from(part) * 100. / f64::from(whole)
+}

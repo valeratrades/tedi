@@ -197,7 +197,7 @@ impl Ctx {
 		match grid.cells.iter().enumerate().max_by_key(|(_, c)| c.w) {
 			None => api.place(group, cols, rows),
 			Some((i, widest)) => {
-				let w = if issue(&id) { cols * 3 / 8 } else { widest.w / 2 };
+				let w = if issue(&id) { (cols * 3).div_euclid(8) } else { widest.w.div_euclid(2) };
 				if widest.w > w {
 					api.resize(i, widest.w - w, widest.h);
 				}
@@ -215,7 +215,7 @@ impl Ctx {
 		match grid.cells.iter().enumerate().max_by_key(|(_, c)| c.w) {
 			None => api.place(group, api.cols(), api.rows()),
 			Some((i, widest)) => {
-				let w = widest.w / 2;
+				let w = widest.w.div_euclid(2);
 				api.resize(i, widest.w - w, widest.h);
 				api.place(group, w, widest.h);
 			}
