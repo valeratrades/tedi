@@ -18,7 +18,8 @@ use tracing::instrument;
 
 use crate::{
 	github::{
-		CreatedIssue, FetchedIssue, GithubClient, GithubComment, GithubError, GithubIssue, GithubLabel, GithubMilestone, GithubUser, GraphqlTimeline, IssuePage, PrPage, RepoInfo, SubIssue,
+		CreatedIssue, FetchedIssue, FileCommit, FileProposal, GithubClient, GithubComment, GithubError, GithubIssue, GithubLabel, GithubMilestone, GithubUser, GraphqlTimeline, IssuePage,
+		PrPage, RepoInfo, SubIssue,
 	},
 	local::Local,
 };
@@ -76,6 +77,12 @@ pub struct MockGithubClient {
 	/// Where a transferred issue went: GitHub redirects its old address there
 	transferred: Mutex<HashMap<(RepoKey, u64), (RepoKey, u64)>>,
 
+	/// A file's commits on the default branch, oldest first.
+	files: Mutex<HashMap<(RepoKey, String), Vec<FileCommit>>>,
+
+	/// Pull requests opened by `propose_file`, with their numbers.
+	proposals: Mutex<Vec<(RepoKey, u64, FileProposal)>>,
+
 	/// When set, `get_milestone`/`update_milestone` fail with this status (fault injection).
 	fail_status: Option<reqwest::StatusCode>,
 
@@ -104,6 +111,8 @@ impl MockGithubClient {
 			prs: Mutex::new(HashMap::new()),
 			pull_requests: Mutex::new(HashMap::new()),
 			transferred: Mutex::new(HashMap::new()),
+			files: Mutex::new(HashMap::new()),
+			proposals: Mutex::new(Vec::new()),
 			fail_status: std::env::var(ENV_MOCK_FAIL_GET_MILESTONE)
 				.ok()
 				.and_then(|v| v.parse::<u16>().ok())
@@ -300,6 +309,39 @@ impl MockGithubClient {
 			}
 		}
 
+		if let Some(arr) = state.get("files").and_then(|v| v.as_array()) {
+			let mut files = self.files.lock().unwrap();
+			for f in arr {
+				let owner = f.get("owner").and_then(|v| v.as_str()).ok_or("missing owner")?;
+				let repo = f.get("repo").and_then(|v| v.as_str()).ok_or("missing repo")?;
+				let path = f.get("path").and_then(|v| v.as_str()).ok_or("missing path")?;
+				let commits = f.get("commits").and_then(|v| v.as_array()).ok_or("missing commits")?;
+				let commits = commits
+					.iter()
+					.enumerate()
+					.map(|(i, c)| {
+						Ok(FileCommit {
+							sha: format!("{path}@{i}"),
+							author: c.get("author").and_then(|v| v.as_str()).ok_or("missing author")?.to_string(),
+							at: c.get("at").and_then(|v| v.as_str()).ok_or("missing at")?.parse().map_err(|e| format!("commit time: {e}"))?,
+							content: c.get("content").and_then(|v| v.as_str()).map(str::to_owned),
+						})
+					})
+					.collect::<Result<_, String>>()?;
+				files.insert((RepoKey::new(owner, repo), path.to_string()), commits);
+			}
+		}
+		if let Some(arr) = state.get("proposals").and_then(|v| v.as_array()) {
+			let mut proposals = self.proposals.lock().unwrap();
+			for p in arr {
+				let owner = p.get("owner").and_then(|v| v.as_str()).ok_or("missing owner")?;
+				let repo = p.get("repo").and_then(|v| v.as_str()).ok_or("missing repo")?;
+				let number = p.get("number").and_then(|v| v.as_u64()).ok_or("missing number")?;
+				let proposal = serde_json::from_value(p.get("proposal").ok_or("missing proposal")?.clone()).map_err(|e| format!("proposal: {e}"))?;
+				proposals.push((RepoKey::new(owner, repo), number, proposal));
+			}
+		}
+
 		// Load milestones
 		if let Some(ms_arr) = state.get("milestones").and_then(|v| v.as_array()) {
 			let mut milestones = self.milestones.lock().unwrap();
@@ -473,9 +515,28 @@ impl MockGithubClient {
 			}
 		}
 
+		let files: Vec<Value> = self
+			.files
+			.lock()
+			.unwrap()
+			.iter()
+			.map(|((key, path), commits)| {
+				let commits: Vec<Value> = commits.iter().map(|c| json!({ "author": c.author, "at": c.at.to_string(), "content": c.content })).collect();
+				json!({ "owner": key.owner, "repo": key.repo, "path": path, "commits": commits })
+			})
+			.collect();
+		let proposals: Vec<Value> = self
+			.proposals
+			.lock()
+			.unwrap()
+			.iter()
+			.map(|(key, number, proposal)| json!({ "owner": key.owner, "repo": key.repo, "number": number, "proposal": proposal }))
+			.collect();
+
 		let state = json!({
 			"issues": issues, "sub_issues": sub_issues, "comments": comments, "dependencies": dependencies, "unlinked": unlinked,
 			"prs": prs, "pull_requests": pull_requests, "transferred": transferred, "labels": labels, "milestones": milestones,
+			"files": files, "proposals": proposals,
 		});
 		// renamed into place, so another process never reads it half-written
 		let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
@@ -1224,6 +1285,23 @@ impl GithubClient for MockGithubClient {
 		}
 		self.persist();
 		Ok(number)
+	}
+
+	async fn file_history(&self, repo: RepoInfo, path: &str, branch: &str) -> Result<Vec<FileCommit>, GithubError> {
+		self.log_call(&format!("file_history({repo}, {path}, {branch})"));
+		Ok(self.files.lock().unwrap().get(&(RepoKey::from(repo), path.to_string())).cloned().unwrap_or_default()) // a file never committed has no history
+	}
+
+	async fn propose_file(&self, repo: RepoInfo, proposal: &FileProposal) -> Result<String, GithubError> {
+		self.log_call(&format!("propose_file({repo}, {})", proposal.head));
+		let number = {
+			let mut proposals = self.proposals.lock().unwrap();
+			let number = proposals.len() as u64 + 1;
+			proposals.push((RepoKey::from(repo), number, proposal.clone()));
+			number
+		};
+		self.persist();
+		Ok(format!("https://github.com/{repo}/pull/{number}"))
 	}
 
 	/// Seeded labels are names only: each wears GitHub's default grey.
