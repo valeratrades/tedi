@@ -180,7 +180,9 @@ pub async fn resolve(link: &IssueLink, resolution: String) -> Result<Option<Stri
 pub async fn library(headers: &HeaderMap) -> Result<Library> {
 	let key = viewer(headers)?;
 	let _held = LIBRARIES.lock().await;
-	read_library(&key)
+	let library = read_library(&key)?;
+	library.scopes(&settings().scopes).map_err(|e| eyre!("{e}: rename or drop it in {}", library_file(&key).display()))?;
+	Ok(library)
 }
 
 pub async fn edit_library(headers: &HeaderMap, edit: LibraryEdit) -> Result<Library> {
@@ -630,19 +632,21 @@ fn apply(library: &mut Library, edit: LibraryEdit, fetched: Option<Fetched>) -> 
 		}
 		LibraryEdit::Keep(Kept::Scope { name, scope }) => {
 			let name = named(name)?;
-			if name.contains(" / ") {
-				bail!("` / ` joins a scope's path: name it without one");
-			}
-			refuse_team(&team, &Item::Scope(name.clone()))?;
 			if scope.repos.is_empty() && scope.children.is_empty() {
 				bail!("the scope {name} names no repo");
+			}
+			if !library.scopes.contains_key(&name) {
+				placeable(library, &name)?;
 			}
 			save(library, Item::Scope(name), Construction::Scope(scope));
 		}
 		LibraryEdit::Rename { shelf, from, to } => {
 			let to = named(to)?;
 			let (old, new) = (Item::new(shelf, from.clone()), Item::new(shelf, to.clone()));
-			if kept(library, &new).is_some() || team.contains_key(&new) || (shelf == Shelf::Scopes && to.contains(" / ")) {
+			if shelf == Shelf::Scopes {
+				return rename_scope(library, &from, &to);
+			}
+			if kept(library, &new).is_some() || team.contains_key(&new) {
 				bail!("{to} is taken");
 			}
 			let construction = kept(library, &old).ok_or_else(|| eyre!("{from} is not kept"))?;
@@ -670,12 +674,7 @@ fn apply(library: &mut Library, edit: LibraryEdit, fetched: Option<Fetched>) -> 
 					}
 				}
 				Shelf::Columns => {}
-				Shelf::Scopes =>
-					if let Some(path) = &library.scope
-						&& let Some(rest) = within(path, &from)
-					{
-						library.scope = Some(format!("{to}{rest}"));
-					},
+				Shelf::Scopes => unreachable!("renamed above"),
 			}
 			if library.favorites.remove(&old) {
 				library.favorites.insert(new.clone());
@@ -688,6 +687,14 @@ fn apply(library: &mut Library, edit: LibraryEdit, fetched: Option<Fetched>) -> 
 			let item = Item::new(shelf, name.clone());
 			if !drop_kept(library, &item) {
 				bail!("{name} is not kept");
+			}
+			if shelf == Shelf::Scopes {
+				let held: Vec<String> = library.scopes.keys().filter(|p| within(p, &name).is_some()).cloned().collect();
+				for path in held {
+					library.scopes.remove(&path); // what it holds goes with it
+					library.favorites.remove(&Item::Scope(path.clone()));
+					library.forks.retain(|f| f.item != Item::Scope(path.clone()));
+				}
 			}
 			match shelf {
 				Shelf::Scopes if library.scope.as_deref().is_some_and(|p| within(p, &name).is_some()) => library.scope = None,
@@ -704,7 +711,7 @@ fn apply(library: &mut Library, edit: LibraryEdit, fetched: Option<Fetched>) -> 
 		}
 		LibraryEdit::Scope(path) => {
 			if let Some(path) = &path
-				&& scope_at(&library.scopes(&settings().scopes), path).is_none()
+				&& scope_at(&library.scopes(&settings().scopes).map_err(|e| eyre!(e))?, path).is_none()
 			{
 				bail!("no scope {path}");
 			}
@@ -728,7 +735,7 @@ fn apply(library: &mut Library, edit: LibraryEdit, fetched: Option<Fetched>) -> 
 			},
 		LibraryEdit::Favorite { what, on: true } => {
 			let known = match &what {
-				Item::Scope(path) => scope_at(&library.scopes(&settings().scopes), path).is_some(),
+				Item::Scope(path) => scope_at(&library.scopes(&settings().scopes).map_err(|e| eyre!(e))?, path).is_some(),
 				item => kept(library, item).is_some() || team.contains_key(item),
 			};
 			if !known {
@@ -743,7 +750,9 @@ fn apply(library: &mut Library, edit: LibraryEdit, fetched: Option<Fetched>) -> 
 				Origin::Link(link) => link.item.shelf(),
 			};
 			let item = Item::new(shelf, named(name.clone())?);
-			if kept(library, &item).is_some() || team.contains_key(&item) || (shelf == Shelf::Scopes && name.contains(" / ")) {
+			if shelf == Shelf::Scopes {
+				placeable(library, &name)?;
+			} else if kept(library, &item).is_some() || team.contains_key(&item) {
 				bail!("{name} is taken");
 			}
 			for (view, (version, held)) in carried {
@@ -788,6 +797,51 @@ fn apply(library: &mut Library, edit: LibraryEdit, fetched: Option<Fetched>) -> 
 			};
 			put(library, &item, construction);
 		}
+	}
+	Ok(())
+}
+
+/// A new scope can sit at `path`: nothing holds that path yet, and its parent, team's or own, exists.
+fn placeable(library: &Library, path: &str) -> Result<()> {
+	let tree = library.scopes(&settings().scopes).map_err(|e| eyre!(e))?;
+	if scope_at(&tree, path).is_some() {
+		bail!("{path} is taken");
+	}
+	if let Some((parent, _)) = path.rsplit_once(" / ")
+		&& scope_at(&tree, parent).is_none()
+	{
+		bail!("no scope {parent} to keep {path} in");
+	}
+	Ok(())
+}
+
+/// The viewer's scope at `from` and every one of theirs inside it moved to `to`, with what refers to them.
+fn rename_scope(library: &mut Library, from: &str, to: &str) -> Result<()> {
+	if !library.scopes.contains_key(from) {
+		bail!("{from} is not kept");
+	}
+	placeable(library, to)?;
+	if within(to, from).is_some() {
+		bail!("{from} can't move inside itself");
+	}
+	let moved = |path: &str| within(path, from).map(|rest| format!("{to}{rest}"));
+	library.scopes = std::mem::take(&mut library.scopes).into_iter().map(|(p, s)| (moved(&p).unwrap_or(p), s)).collect(); // only those under `from` move
+	library.favorites = std::mem::take(&mut library.favorites)
+		.into_iter()
+		.map(|f| match &f {
+			Item::Scope(p) => moved(p).map_or(f, Item::Scope),
+			_ => f,
+		})
+		.collect();
+	for f in &mut library.forks {
+		if let Item::Scope(p) = &f.item
+			&& let Some(to) = moved(p)
+		{
+			f.item = Item::Scope(to);
+		}
+	}
+	if let Some(at) = library.scope.as_deref().and_then(moved) {
+		library.scope = Some(at);
 	}
 	Ok(())
 }

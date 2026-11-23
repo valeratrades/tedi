@@ -205,7 +205,7 @@ fn hits(ctx: &Ctx) -> Vec<Hit> {
 		go: Go::Scope(None),
 		page: None,
 	});
-	walk("", &library.scopes(&setup.scopes), &mut out);
+	walk("", &library.scopes(&setup.scopes).expect("the server serves no library whose scope lost its parent"), &mut out);
 	out.push(Hit {
 		kind: "scopes",
 		glyph: Glyph::Plus,

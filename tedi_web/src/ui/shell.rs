@@ -99,7 +99,7 @@ fn Shelves() -> Element {
 		.collect();
 	views.sort_by_key(|r| !r.favorite.as_ref().is_some_and(starred));
 
-	let scopes = library.scopes(&setup.scopes);
+	let scopes = library.scopes(&setup.scopes).expect("the server serves no library whose scope lost its parent");
 	let mut scoped = Vec::new();
 	fn walk(ctx: &Ctx, prefix: &str, level: &BTreeMap<String, Scope>, depth: usize, own: &BTreeMap<String, Scope>, current: Option<&String>, out: &mut Vec<Row>) {
 		for (name, scope) in level {

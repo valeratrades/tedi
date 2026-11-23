@@ -349,3 +349,28 @@ fn a_proposal_is_a_pull_request_replacing_only_that_object() {
 	);
 	assert!(proposal.body.starts_with("narrow it\n\n```diff\n+ repo:o/r\n```"), "{}", proposal.body);
 }
+
+#[test]
+fn a_viewers_scope_nests_in_any_scope_by_its_path() {
+	let ctx = TestContext::build();
+	let (_server, port) = serve(&ctx, BOARD, &["--viewer-header", "X-Auth-User"]);
+	let me = Some("alice");
+	let keep = |name: &str| edit(port, me, serde_json::json!({ "Keep": { "Scope": { "name": name, "scope": { "repos": ["o/core"] } } } })).0;
+	assert_eq!(keep("Main / core"), 200, "inside the team's Main");
+	assert_ne!(keep("Nowhere / core"), 200, "inside nothing");
+	assert_ne!(keep("Main"), 200, "the team's own path");
+	assert_eq!(keep("Main / core / deep"), 200, "inside the viewer's own");
+	assert_eq!(edit(port, me, serde_json::json!({ "Scope": "Main / core / deep" })).0, 200);
+
+	let (status, body) = edit(port, me, serde_json::json!({ "Rename": { "shelf": "Scopes", "from": "Main / core", "to": "core" } }));
+	assert_eq!(status, 200, "{body}");
+	let held = self::library(port, me);
+	assert_eq!(held["scopes"].as_object().unwrap().keys().collect::<Vec<_>>(), ["core", "core / deep"], "what it held moves with it");
+	assert_eq!(held["scope"], "core / deep");
+
+	assert_eq!(edit(port, me, serde_json::json!({ "Drop": { "shelf": "Scopes", "name": "core" } })).0, 200);
+	let library = self::library(port, me);
+	assert_eq!(library["scopes"], serde_json::json!({}));
+	assert_eq!(library["scope"], serde_json::Value::Null);
+}
+

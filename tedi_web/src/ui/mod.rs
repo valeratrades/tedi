@@ -152,6 +152,7 @@ impl Ctx {
 			.as_ref()
 			.expect("read once the library arrived")
 			.scopes(&setup.as_ref().expect("arrives with the library").scopes)
+			.expect("the server serves no library whose scope lost its parent")
 	}
 
 	fn favorite(&self, what: &Item) -> bool {

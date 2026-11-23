@@ -75,9 +75,24 @@ pub struct Library {
 	pub received: Vec<ShareLink>,
 }
 impl Library {
-	/// The team's scopes, then the viewer's own.
-	pub fn scopes(&self, team: &BTreeMap<String, Scope>) -> BTreeMap<String, Scope> {
-		team.iter().chain(&self.scopes).map(|(n, s)| (n.clone(), s.clone())).collect()
+	/// The team's scopes with the viewer's own in them, each at its path (`EV / core`); a parent gone from the
+	/// team's config leaves its own scope nowhere to sit, which is the error.
+	pub fn scopes(&self, team: &BTreeMap<String, Scope>) -> Result<BTreeMap<String, Scope>, String> {
+		let mut tree = team.clone();
+		let mut own: Vec<(&String, &Scope)> = self.scopes.iter().collect();
+		own.sort_by_key(|(path, _)| path.matches(" / ").count()); // parents before what they hold
+		for (path, scope) in own {
+			let mut names: Vec<&str> = path.split(" / ").collect();
+			let leaf = names.pop().expect("split yields one");
+			let mut level = &mut tree;
+			for name in names {
+				level = &mut level.get_mut(name).ok_or_else(|| format!("your scope {path} sits in {name}, which is no longer there"))?.children;
+			}
+			if level.insert(leaf.to_string(), scope.clone()).is_some() {
+				return Err(format!("your scope {path} has the path of one the team's config now holds"));
+			}
+		}
+		Ok(tree)
 	}
 }
 
