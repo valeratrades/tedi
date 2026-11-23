@@ -2,9 +2,13 @@
 //! an issue. Cards arrive whole and are queried here; edits leave as server fns. What is on screen, and what
 //! the viewer keeps, is their library on the server.
 
+mod card;
 mod facets;
+mod icons;
 mod issue;
+mod kit;
 mod library;
+mod toolbar;
 mod view;
 
 use std::{

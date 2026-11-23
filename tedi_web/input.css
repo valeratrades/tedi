@@ -6,6 +6,50 @@
 /* literals ev_lib 0.32's dioxus components carry outside its class inventory */
 @source inline("duration-300 group-data-[state=open]:rotate-180 isolate md:block md:hidden sm:block rotate-45 rounded-tl-sm size-3 top-[1px] top-[60%] right-2 z-10 z-40 mb-1");
 
+/* the design's column tints (Notion's dark palette) and fixed dimensions, beside the kit's tokens */
+:root {
+	--tint-gray: #979a9b;
+	--tint-brown: #937264;
+	--tint-orange: #ffa344;
+	--tint-yellow: #ffdc49;
+	--tint-green: #4dab9a;
+	--tint-blue: #529cca;
+	--tint-purple: #9a6dd7;
+	--tint-pink: #e255a1;
+	--tint-red: #ff7369;
+	--size-rail: 248px;
+	--size-tab: 32px;
+	--size-topbar: 40px;
+}
+@theme inline {
+	--color-tint-gray: var(--tint-gray);
+	--color-tint-brown: var(--tint-brown);
+	--color-tint-orange: var(--tint-orange);
+	--color-tint-yellow: var(--tint-yellow);
+	--color-tint-green: var(--tint-green);
+	--color-tint-blue: var(--tint-blue);
+	--color-tint-purple: var(--tint-purple);
+	--color-tint-pink: var(--tint-pink);
+	--color-tint-red: var(--tint-red);
+}
+@utility text-mono-s {
+	font-family: var(--font-mono);
+	font-size: 0.6875rem;
+	line-height: 1rem;
+}
+@utility text-mono {
+	font-family: var(--font-mono);
+	font-size: 0.75rem;
+	line-height: 1rem;
+}
+@utility text-overline {
+	font-size: 0.6875rem;
+	line-height: 0.875rem;
+	font-weight: 500;
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+}
+
 /* tilers' tiles in the kit's colours */
 :root {
 	--tl-accent: var(--primary);

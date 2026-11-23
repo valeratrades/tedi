@@ -135,6 +135,21 @@ impl Query {
 		Ok(())
 	}
 
+	/// Narrowed further by `within`'s clauses (a scope's).
+	pub fn narrow(&mut self, within: &Query) {
+		assert!(within.text.is_empty(), "a scope narrows by clauses, never by text");
+		self.clauses.extend(within.clauses.iter().cloned());
+	}
+
+	/// The values its `facet` clauses name, as they parse back, those ruled out `-`-prefixed.
+	pub fn picked(&self, facet: Facet) -> Vec<String> {
+		self.clauses
+			.iter()
+			.filter(|c| c.facet() == facet)
+			.flat_map(|c| c.any.iter().map(move |v| format!("{}{v}", if c.negated { "-" } else { "" })))
+			.collect()
+	}
+
 	pub fn clear(&mut self, facet: Facet) {
 		self.clauses.retain(|c| c.facet() != facet);
 	}
@@ -226,6 +241,46 @@ pub struct Sort {
 	pub by: SortKey,
 	pub reversed: bool,
 }
+impl Sort {
+	/// A stable sort of `hits` by this key alone; `place` is each card's place in the query's order.
+	fn apply(&self, cards: &[Card], hits: &mut [usize], workflows: &BTreeMap<String, Workflow>, place: &[usize]) -> Result<(), WorkflowError> {
+		use std::cmp::Reverse;
+		fn by<K: Ord>(hits: &mut [usize], reversed: bool, key: impl Fn(usize) -> Option<K>) {
+			let mut keyed: Vec<(Option<K>, usize)> = hits.iter().map(|&i| (key(i), i)).collect();
+			keyed.sort_by(|(a, _), (b, _)| match (a, b) {
+				(Some(a), Some(b)) if reversed => b.cmp(a),
+				(Some(a), Some(b)) => a.cmp(b),
+				_ => a.is_none().cmp(&b.is_none()),
+			});
+			for (slot, (_, i)) in hits.iter_mut().zip(keyed) {
+				*slot = i;
+			}
+		}
+		let r = self.reversed;
+		match &self.by {
+			SortKey::Rank if r => by(hits, r, |i| Some((cards[i].rank.is_some(), place[i]))), // the unranked stay last
+			SortKey::Rank => by(hits, r, |i| Some(place[i])),
+			SortKey::Title => by(hits, r, |i| Some(cards[i].title.to_lowercase())),
+			SortKey::Number => by(hits, r, |i| Some(cards[i].link.number())),
+			SortKey::Repo => by(hits, r, |i| Some(cards[i].link.project().to_string())),
+			SortKey::State(w) => {
+				let workflow = workflows.get(w).ok_or_else(|| WorkflowError::Unknown(w.clone()))?;
+				by(hits, r, |i| Some(workflow.order(&cards[i].states[w])))
+			}
+			SortKey::Assignee => by(hits, r, |i| cards[i].assignees.iter().map(|a| a.to_lowercase()).min()),
+			SortKey::Type => by(hits, r, |i| cards[i].kind.map(|k| k.to_string())),
+			SortKey::Importance => by(hits, r, |i| cards[i].importance.map(Reverse)),
+			SortKey::Hours => by(hits, r, |i| cards[i].hours),
+			SortKey::Blockers => {
+				let open = open(cards);
+				by(hits, r, |i| Some(Reverse(cards[i].blocked_by.iter().filter(|b| open.contains(b)).count())))
+			}
+			SortKey::Updated => by(hits, r, |i| cards[i].updated.map(Reverse)),
+		}
+		Ok(())
+	}
+}
+
 /// Sorts applied in turn, each ordering only what those before it tie on: `importance,hours`.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(try_from = "String", into = "String")]
@@ -277,46 +332,6 @@ impl TryFrom<String> for Order {
 impl From<Order> for String {
 	fn from(order: Order) -> String {
 		order.to_string()
-	}
-}
-
-impl Sort {
-	/// A stable sort of `hits` by this key alone; `place` is each card's place in the query's order.
-	fn apply(&self, cards: &[Card], hits: &mut [usize], workflows: &BTreeMap<String, Workflow>, place: &[usize]) -> Result<(), WorkflowError> {
-		use std::cmp::Reverse;
-		fn by<K: Ord>(hits: &mut [usize], reversed: bool, key: impl Fn(usize) -> Option<K>) {
-			let mut keyed: Vec<(Option<K>, usize)> = hits.iter().map(|&i| (key(i), i)).collect();
-			keyed.sort_by(|(a, _), (b, _)| match (a, b) {
-				(Some(a), Some(b)) if reversed => b.cmp(a),
-				(Some(a), Some(b)) => a.cmp(b),
-				_ => a.is_none().cmp(&b.is_none()),
-			});
-			for (slot, (_, i)) in hits.iter_mut().zip(keyed) {
-				*slot = i;
-			}
-		}
-		let r = self.reversed;
-		match &self.by {
-			SortKey::Rank if r => by(hits, r, |i| Some((cards[i].rank.is_some(), place[i]))), // the unranked stay last
-			SortKey::Rank => by(hits, r, |i| Some(place[i])),
-			SortKey::Title => by(hits, r, |i| Some(cards[i].title.to_lowercase())),
-			SortKey::Number => by(hits, r, |i| Some(cards[i].link.number())),
-			SortKey::Repo => by(hits, r, |i| Some(cards[i].link.project().to_string())),
-			SortKey::State(w) => {
-				let workflow = workflows.get(w).ok_or_else(|| WorkflowError::Unknown(w.clone()))?;
-				by(hits, r, |i| Some(workflow.order(&cards[i].states[w])))
-			}
-			SortKey::Assignee => by(hits, r, |i| cards[i].assignees.iter().map(|a| a.to_lowercase()).min()),
-			SortKey::Type => by(hits, r, |i| cards[i].kind.map(|k| k.to_string())),
-			SortKey::Importance => by(hits, r, |i| cards[i].importance.map(Reverse)),
-			SortKey::Hours => by(hits, r, |i| cards[i].hours),
-			SortKey::Blockers => {
-				let open = open(cards);
-				by(hits, r, |i| Some(Reverse(cards[i].blocked_by.iter().filter(|b| open.contains(b)).count())))
-			}
-			SortKey::Updated => by(hits, r, |i| cards[i].updated.map(Reverse)),
-		}
-		Ok(())
 	}
 }
 

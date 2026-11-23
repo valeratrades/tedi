@@ -3,19 +3,22 @@
 use std::str::FromStr as _;
 
 use dioxus::prelude::*;
-use ev_lib::uikit_dioxus::{Card as Tile, *};
+use ev_lib::uikit_dioxus::*;
 use strum::IntoEnumIterator as _;
 use tedi_core::{
-	board::{Card, Facet, GroupBy, Layout, Order, Query, Shown, Sort, SortKey, View, group},
-	conflict::{Field, FieldEdit, list},
-	labels::{Color, HOURS, Scheme, Type},
+	board::{Facet, GroupBy, Layout, Order, Query, Shown, Sort, SortKey, View, group},
 	workflow::State,
 };
 use tilers_dioxus::{Band, DockPanel, Group, MinSize, PackedApi, PackedArea, PanelId};
 
+pub(super) use super::card::CardView;
 use super::{
 	Ctx,
-	facets::{FacetBar, FacetMenu, InView, Pick},
+	card::Field,
+	facets::{FacetMenu, InView},
+	icons::{Glyph, Icon},
+	kit::{Btn, Style},
+	toolbar::ViewToolbar,
 };
 use crate::api::{self, Dock, LibraryEdit, Shelf, Sprint, Tint, Tints};
 
@@ -26,25 +29,6 @@ pub fn ViewPanel(name: String) -> Element {
 	match ctx.views().into_iter().find(|v| v.name == name) {
 		Some(defined) => rsx! { ViewBody { defined } },
 		None => rsx! { div { class: "p-3 text-sm text-ink-soft", "The view {name} is no longer kept: close this tab, or keep a view under its name." } },
-	}
-}
-
-/// title · repo · @who · i[5]± h[3]± ⛓2 — what `shown` asks for, in its order.
-#[component]
-pub fn CardView(card: Card, shown: Vec<Shown>) -> Element {
-	let ctx = use_context::<Ctx>();
-	let link = card.link.clone();
-	rsx! {
-		Tile { class: if card.conflicted { "gap-1 p-2 border-accent-error" } else { "gap-1 p-2" },
-			button { class: "text-left text-sm font-medium hover:underline", onclick: move |_| ctx.open_issue(link.clone()), "{card.title}" }
-			div { class: "flex flex-wrap items-center gap-1 text-xs text-ink-soft",
-				if let Some(pr) = &card.pr { Badge { variant: BadgeVariant::Info, "PR {pr.state}" } }
-				for s in shown {
-					Shows { card: card.clone(), shown: s }
-				}
-				if card.conflicted { Badge { variant: BadgeVariant::Error, "clash" } }
-			}
-		}
 	}
 }
 
@@ -77,18 +61,21 @@ pub fn SprintPanel(sprint: Sprint) -> Element {
 #[component]
 fn ViewBody(defined: View) -> Element {
 	let ctx = use_context::<Ctx>();
-	let toaster = use_toaster();
-	let mut view = use_signal(|| {
+	let view = use_signal(|| {
 		let library = ctx.library.peek();
 		let on_screen = &library.as_ref().expect("views render once the library arrived").on_screen.views;
 		on_screen.get(&defined.name).cloned().unwrap_or_else(|| defined.clone()) // never edited on screen: as kept
 	});
-	let mut saving = use_signal(|| false);
 	use_context_provider(|| InView(view));
+	// a query mid-edit that doesn't parse leaves the board on the last one that did
+	let mut good = use_signal(|| view.peek().clone());
 	let mut sent = use_signal(|| view.peek().clone());
 	let mut pending = use_signal(|| None::<dioxus::core::Task>);
 	use_effect(move || {
 		let now = view.read().clone();
+		if now.query.parse::<Query>().is_ok() && *good.peek() != now {
+			good.set(now.clone());
+		}
 		if *sent.peek() == now {
 			return;
 		}
@@ -106,108 +93,76 @@ fn ViewBody(defined: View) -> Element {
 		return rsx! { Spinner {} };
 	};
 	let v = view.read().clone();
-	let scoped = match ctx.scope() {
-		None => v.query.clone(),
-		Some((path, None)) => return rsx! { Badge { variant: BadgeVariant::Error, "the scope {path} is no longer configured" } },
-		Some((_, Some(filter))) => format!("{filter} {}", v.query),
+	let error = v.query.parse::<Query>().err().map(|e| e.to_string());
+	let ran = if error.is_none() { v.clone() } else { good.read().clone() };
+	let within = match ctx.scope() {
+		None => Query::default(),
+		Some((path, None)) =>
+			return rsx! { Empty { glyph: Glyph::Alert, error: true, title: "Scope gone", body: "The scope {path} is no longer configured: pick another in the scope bar." } },
+		Some((_, Some(filter))) => filter.parse().expect("a scope's filter is a repo clause"),
 	};
 	let workflows = ctx.workflows();
-	let hits = (|| -> Result<_, String> {
-		let q = Query::from_str(&v.query).map_err(|e| e.to_string())?;
-		let mut hits = Query::from_str(&scoped).and_then(|s| s.run(&board.cards, ctx.me().as_deref())).map_err(|e| e.to_string())?;
-		v.sort.apply(&board.cards, &mut hits, &workflows).map_err(|e| e.to_string())?;
-		let groups = group(&board.cards, &hits, &v.group_by, &workflows).map_err(|e| e.to_string())?;
-		Ok((q, groups))
-	})();
-	let mut save = move |name: String| {
-		saving.set(false);
-		let view = View {
-			name: name.clone(),
-			..view.read().clone()
-		};
-		spawn(async move {
-			if ctx.keep(LibraryEdit::Keep(api::Kept::Filter(view))).await {
-				toaster.positive(format!("Kept {name} in your views"));
-				ctx.open(PanelId(format!("view:{name}")));
-			}
-		});
+	let query: Query = ran.query.parse().expect("the view that ran parsed");
+	let me = ctx.me();
+	let run = |q: &Query| -> Result<Vec<usize>, String> {
+		let mut scoped = q.clone();
+		scoped.narrow(&within);
+		scoped.run(&board.cards, me.as_deref()).map_err(|e| e.to_string())
 	};
-	let mine = ctx.library.read().as_ref().expect("views render once the library arrived").filters.contains_key(&defined.name);
-	let by_state = || workflows.keys().cloned();
-	let keys = [SortKey::Rank, SortKey::Title, SortKey::Repo].into_iter().chain(by_state().map(SortKey::State)).chain([
-		SortKey::Assignee,
-		SortKey::Type,
-		SortKey::Importance,
-		SortKey::Hours,
-		SortKey::Blockers,
-	]);
-	let sorts: Vec<Order> = keys.flat_map(|by| [false, true].map(|reversed| vec![Sort { by: by.clone(), reversed }].into())).collect();
-	let groupings: Vec<GroupBy> = by_state()
-		.map(GroupBy::State)
-		.chain([GroupBy::Repo, GroupBy::Assignee, GroupBy::Type, GroupBy::Importance, GroupBy::Nothing])
-		.collect();
+	let shown = (|| -> Result<_, String> {
+		let mut hits = run(&query)?;
+		ran.sort.apply(&board.cards, &mut hits, &workflows).map_err(|e| e.to_string())?;
+		let groups = group(&board.cards, &hits, &ran.group_by, &workflows).map_err(|e| e.to_string())?;
+		Ok((hits.len(), groups))
+	})();
+	let (count, mut groups) = match shown {
+		Ok(shown) => shown,
+		Err(e) => return rsx! { Empty { glyph: Glyph::Alert, error: true, title: "The view doesn't run", body: e } },
+	};
+	if ran.layout != Layout::Board {
+		groups.retain(|(_, members)| !members.is_empty()); // a workflow's empty buckets are the board's columns only
+	}
+	// what, dropped, would let the most cards back in
+	let loosen = (count == 0)
+		.then(|| {
+			Facet::iter()
+				.filter_map(|f| {
+					let mut lifted = query.clone();
+					lifted.clear(f);
+					(lifted != query).then(|| run(&lifted).map(|h| (f, h.len())).ok()).flatten()
+				})
+				.filter(|(_, n)| *n > 0)
+				.max_by_key(|(_, n)| *n)
+		})
+		.flatten();
+	let scope_name = ctx.scope().map(|(path, _)| path);
 	rsx! {
-		div { class: "flex h-full flex-col gap-2 p-2",
-			div { class: "flex flex-wrap items-center gap-2",
-				Input {
-					class: "min-w-64 flex-1 font-mono",
-					value: v.query.clone(),
-					placeholder: "state:kanban/triage,kanban/selected repo:EV-Service-Arb/* -t:chore i:>=5,none text",
-					oninput: move |e: FormEvent| view.write().query = e.value(),
-				}
-				Choice { value: v.layout, options: Layout::iter().collect(), on_change: move |l| view.write().layout = l }
-				Choice { value: v.group_by.clone(), options: groupings, on_change: move |g| view.write().group_by = g }
-				Choice { value: v.sort.clone(), options: sorts, on_change: move |s| view.write().sort = s }
-				if v != defined {
-					Button {
-						variant: ButtonVariant::Ghost,
-						size: Size::Sm,
-						r#type: "button",
-						title: "back to {defined.name} as kept",
-						onclick: { let defined = defined.clone(); move |_| view.set(defined.clone()) },
-						"↺"
+		div { class: "flex h-full flex-col",
+			ViewToolbar { view, defined, query: query.clone(), error, count }
+			if count == 0 && ran.layout != Layout::Board {
+				Empty {
+					glyph: Glyph::Search,
+					title: "No cards match",
+					body: match &scope_name { Some(s) => format!("{} in {s}", ran.query), None => ran.query.clone() },
+					if let Some((facet, n)) = loosen {
+						Btn { style: Style::Outline, title: "{n} cards come back", onclick: move |_| InView(view).narrow(|q| q.clear(facet)), "Drop {facet}:" }
 					}
 				}
-				if mine && v != defined {
-					Button { variant: ButtonVariant::Outline, size: Size::Sm, r#type: "button", title: "keep {defined.name} as it shows now", onclick: { let name = defined.name.clone(); move |_| save(name.clone()) }, "Save" }
-				}
-				if saving() {
-					div { class: "w-48", super::library::NameForm { placeholder: "keep as…", on_name: save, on_cancel: move |()| saving.set(false) } }
-				} else {
-					Button { variant: ButtonVariant::Ghost, size: Size::Sm, r#type: "button", title: "keep this as a view of your own", onclick: move |_| saving.set(true), "Save as…" }
-				}
-			}
-			match hits {
-				Err(e) => rsx! { Badge { variant: BadgeVariant::Error, "{e}" } },
-				Ok((query, mut groups)) => {
-					if v.layout != Layout::Board {
-						groups.retain(|(_, members)| !members.is_empty()); // a workflow's empty buckets are the board's columns only
-					}
-					let none = groups.iter().all(|(_, members)| members.is_empty());
-					rsx! {
-						FacetBar { query: query.clone() }
-						if none && v.layout != Layout::Board {
-							div { class: "flex flex-1 items-center justify-center text-sm text-ink-soft",
-								match ctx.scope() {
-									Some((path, _)) => rsx! { "Nothing here matches, within {path}" },
-									None => rsx! { "Nothing matches" },
-								}
-							}
-						}
-						match v.layout {
-							Layout::Board => rsx! { Columns { key: "{v.group_by}", view: v.name.clone(), groups, by: v.group_by.clone(), shown: v.shown.clone() } },
-							Layout::Table => rsx! { Rows { groups, shown: v.shown.clone(), sort: v.sort.clone(), query } },
-							Layout::List => rsx! {
-								div { class: "flex flex-col gap-1 overflow-auto",
-									for (key , members) in groups {
-										if !key.is_empty() { h3 { class: "text-sm font-semibold mt-2", "{key}" } }
-										for i in members {
-											CardView { key: "{board.cards[i].link}", card: board.cards[i].clone(), shown: v.shown.clone() }
-										}
+			} else {
+				div { class: "min-h-0 flex-1 p-2",
+					match ran.layout {
+						Layout::Board => rsx! { Columns { key: "{ran.group_by}", view: ran.name.clone(), groups, by: ran.group_by.clone(), shown: ran.shown.clone() } },
+						Layout::Table => rsx! { Rows { groups, shown: ran.shown.clone(), sort: ran.sort.clone(), query } },
+						Layout::List => rsx! {
+							div { class: "flex h-full flex-col gap-1.5 overflow-auto",
+								for (key , members) in groups {
+									if !key.is_empty() { h3 { class: "mt-2 text-h3 text-ink", "{key}" } }
+									for i in members {
+										CardView { key: "{board.cards[i].link}", card: board.cards[i].clone(), shown: ran.shown.clone() }
 									}
 								}
-							},
-						}
+							}
+						},
 					}
 				}
 			}
@@ -215,18 +170,16 @@ fn ViewBody(defined: View) -> Element {
 	}
 }
 
-/// One of a closed set (layout, grouping, order), shown by its name.
+/// Says why it's empty and what fills it (Figma: EmptyState).
 #[component]
-fn Choice<T: std::fmt::Display + std::str::FromStr + Clone + PartialEq + 'static>(value: T, options: Vec<T>, on_change: EventHandler<T>) -> Element {
+pub(super) fn Empty(glyph: Glyph, #[props(default)] error: bool, title: String, body: String, children: Element) -> Element {
 	rsx! {
-		Select {
-			value: value.to_string(),
-			on_value_change: move |s: String| on_change.call(T::from_str(&s).ok().expect("offered from the same set")),
-			SelectTrigger { size: Size::Sm, SelectValue {} }
-			SelectContent {
-				for option in options {
-					SelectItem { value: option.to_string(), text_value: option.to_string(), "{option}" }
-				}
+		div { class: "flex flex-1 items-center justify-center p-6",
+			div { class: "flex w-80 flex-col items-center gap-2 rounded-[var(--radius)] border border-border-subtle p-6 text-center",
+				Icon { glyph, class: if error { "size-6 text-accent-error" } else { "size-6 text-ink-soft" } }
+				span { class: if error { "text-h3 text-accent-error" } else { "text-h3 text-ink" }, "{title}" }
+				span { class: "text-body-s text-ink-soft", "{body}" }
+				{children}
 			}
 		}
 	}
@@ -389,7 +342,7 @@ fn Columns(view: String, groups: Vec<(String, Vec<usize>)>, by: GroupBy, shown: 
 									r#type: "button",
 									title: choice.map_or_else(|| "none".to_string(), |t| t.to_string()),
 									class: if lanes.tints.read().get(key).copied() == choice { "size-4 rounded-full border border-ink" } else { "size-4 rounded-full border border-border" },
-									style: choice.map_or_else(String::new, |t| format!("background-color: {}", hue(t))),
+									style: choice.map_or_else(String::new, |t| format!("background-color: var(--tint-{t})")),
 									onclick: {
 										let (key, tint) = (key.clone(), tint.clone());
 										move |_| {
@@ -472,21 +425,9 @@ fn Column(group: String) -> Element {
 	let members = groups.iter().find(|(k, _)| *k == group).map_or(&[][..], |(_, m)| m.as_slice());
 	let shown = lanes.shown.read();
 	let tint = lanes.tints.read().get(&group).copied();
-	// `--card` can't be mixed from itself on one element: the column mixes it, each card takes the mix
-	let (style, card_style) = match tint {
-		Some(t) => (
-			format!(
-				"background-color: color-mix(in srgb, {0} 4%, transparent); --tinted-card: color-mix(in srgb, {0} 14%, var(--card))",
-				hue(t)
-			),
-			"--card: var(--tinted-card)",
-		),
-		None => (String::new(), ""),
-	};
 	rsx! {
 		div {
-			class: "flex h-full flex-col gap-2 overflow-y-auto p-1",
-			style,
+			class: "flex h-full flex-col gap-1.5 overflow-y-auto bg-muted p-1",
 			ondragover: move |e| e.prevent_default(),
 			ondrop: {
 				let key = group.clone();
@@ -509,27 +450,11 @@ fn Column(group: String) -> Element {
 				div {
 					key: "{cards[i].link}",
 					draggable: if draggable { "true" } else { "false" },
-					style: card_style,
 					ondragstart: { let link = cards[i].link.clone(); move |_| dragged.set(Some(link.clone())) },
 					CardView { card: cards[i].clone(), shown: shown.clone() }
 				}
 			}
 		}
-	}
-}
-
-/// Notion's palette, as its dark theme writes text: a column takes a little of it, its cards more.
-fn hue(tint: Tint) -> &'static str {
-	match tint {
-		Tint::Gray => "#9b9b9b",
-		Tint::Brown => "#ba856f",
-		Tint::Orange => "#c77d48",
-		Tint::Yellow => "#ca9849",
-		Tint::Green => "#529e72",
-		Tint::Blue => "#379ad3",
-		Tint::Purple => "#9d68d3",
-		Tint::Pink => "#d15796",
-		Tint::Red => "#df5452",
 	}
 }
 
@@ -599,7 +524,7 @@ fn Rows(groups: Vec<(String, Vec<usize>)>, shown: Vec<Shown>, sort: Order, query
 									}
 								}
 								for s in shown.iter() {
-									TableCell { Shows { card: cards[i].clone(), shown: s.clone() } }
+									TableCell { Field { card: cards[i].clone(), shown: s.clone() } }
 								}
 							}
 						}
@@ -607,204 +532,5 @@ fn Rows(groups: Vec<(String, Vec<usize>)>, shown: Vec<Shown>, sort: Order, query
 				}
 			}
 		}
-	}
-}
-
-#[component]
-fn Shows(card: Card, shown: Shown) -> Element {
-	let ctx = use_context::<Ctx>();
-	match shown {
-		Shown::Repo => rsx! { Pick { facet: Facet::Repo, value: card.link.project().to_string(), "{card.link.project().repo()}" } },
-		Shown::Number => rsx! { span { class: "font-mono", "#{card.link.number()}" } },
-		Shown::Sprint => {
-			let setup = ctx.setup.read();
-			let sprints: Vec<String> = setup
-				.as_ref()
-				.expect("cards render once setup arrived")
-				.sprints
-				.iter()
-				.filter(|s| s.links.contains(&card.link))
-				.map(|s| s.title.clone())
-				.collect();
-			rsx! { for s in sprints { span { key: "{s}", "{s}" } } }
-		}
-		Shown::Updated => rsx! { if let Some(at) = card.updated { span { title: "{at}", "{ago(at)}" } } },
-		Shown::Assignees => rsx! { for a in card.assignees.iter() { Pick { facet: Facet::Assignee, value: a.clone(), "@{a}" } } },
-		Shown::State(workflow) => rsx! {
-			if let Some(at) = card.states.get(&workflow) { // a view kept naming a workflow since dropped
-				Pick { facet: Facet::State, value: format!("{workflow}/{at}"), Badge { "{at}" } }
-			}
-		},
-		Shown::Type => rsx! { Scale { card: card.clone(), axis: Axis::Type } },
-		Shown::Labels => {
-			let own_facet = |l: &String| {
-				let scheme = Scheme::from(std::slice::from_ref(l));
-				scheme.kind.is_some() || scheme.importance.is_some() || scheme.hours.is_some()
-			};
-			let labels: Vec<(String, Option<Color>)> = card.labels.iter().filter(|l| !own_facet(l)).map(|l| (l.clone(), label_color(&ctx, &card, l))).collect();
-			rsx! { for (l, color) in labels { Pick { facet: Facet::Label, value: l.clone(), Chip { color, "{l}" } } } }
-		}
-		Shown::Importance => rsx! { Scale { card: card.clone(), axis: Axis::Importance } },
-		Shown::Hours => rsx! { Scale { card: card.clone(), axis: Axis::Hours } },
-		Shown::Blockers => {
-			let board = ctx.board.read();
-			let cards = &board.as_ref().expect("cards render from the board").cards;
-			let blocking = card.blocked_by.iter().filter(|b| cards.iter().any(|c| &c.link == *b && c.open())).count();
-			rsx! { if blocking > 0 { span { title: "blocked by {blocking} open", "⛓{blocking}" } } }
-		}
-		Shown::Prs => match &card.pr {
-			Some(pr) =>
-				rsx! { for issue in pr.closes.iter() { button { class: "hover:underline", onclick: { let issue = issue.clone(); move |_| ctx.open_issue(issue.clone()) }, "closes {issue.shorthand(card.link.project())}" } } },
-			None => rsx! { for pr in card.prs.iter() { a { href: "{pr.url}", target: "_blank", Badge { "PR {pr.state}" } } } },
-		},
-	}
-}
-
-fn label_color(ctx: &Ctx, card: &Card, label: &str) -> Option<Color> {
-	let board = ctx.board.read();
-	let colors = &board.as_ref().expect("cards render from the board").colors;
-	colors.get(&card.link.project().to_string())?.get(label).copied()
-}
-
-/// A label in its GitHub colour, as GitHub's dark theme wears one: a faint fill and edge, the text lifted
-/// toward white as far as the colour is dark.
-#[component]
-fn Chip(color: Option<Color>, #[props(default)] variant: BadgeVariant, children: Element) -> Element {
-	let Some(hex) = color else {
-		return rsx! { Badge { variant, class: "overflow-visible", {children} } }; // the kit's `overflow-hidden` would clip `Scale`'s menu
-	};
-	let Color([r, g, b]) = hex;
-	let perceived = (0.2126 * f32::from(r) + 0.7152 * f32::from(g) + 0.0722 * f32::from(b)) / 255.;
-	let lift = ((0.6 - perceived) * 100.).max(0.);
-	rsx! {
-		span {
-			class: "inline-flex h-5 items-center rounded-[var(--chip-radius)] border px-1.5 text-caption font-medium whitespace-nowrap",
-			style: "background-color: #{hex}2e; border-color: hsl(from #{hex} h s calc(l + {lift}) / 0.3); color: hsl(from #{hex} h s calc(l + {lift}))",
-			{children}
-		}
-	}
-}
-
-#[derive(Clone, Copy, PartialEq)]
-enum Axis {
-	Type,
-	Importance,
-	Hours,
-}
-
-/// `t:bug`, `i[5]±`, `h[3]±`: the chip opens every value its axis takes; a pick or a step is a labels edit, made against the labels the card shows.
-#[component]
-fn Scale(card: Card, axis: Axis) -> Element {
-	let ctx = use_context::<Ctx>();
-	let mut open = use_signal(|| false);
-	let (facet, held, values, counts_as) = match axis {
-		Axis::Type => (Facet::Type, card.kind.map(|k| k.to_string()), Type::iter().map(|t| t.to_string()).collect::<Vec<_>>(), None),
-		Axis::Importance => (
-			Facet::Importance,
-			card.importance.map(|v| format!("i:{v}")),
-			(0..=9).map(|v| format!("i:{v}")).collect(),
-			Some("i:3".to_string()),
-		), // `labels.nix`: "`i:3` is the default"
-		Axis::Hours => (Facet::Hours, card.hours.map(|v| format!("h:{v}")), HOURS.iter().map(|v| format!("h:{v}")).collect(), None),
-	};
-	let editable = card.pr.is_none(); // a pull request is read-only here
-	let color = held.as_deref().and_then(|l| label_color(&ctx, &card, l));
-	let variant = if axis == Axis::Type { BadgeVariant::Info } else { BadgeVariant::default() };
-	let bare = held.as_deref().map(|l| l.split_once(':').expect("scheme labels carry a prefix").1.to_string());
-	let text = match axis {
-		Axis::Type => held.clone().unwrap_or_else(|| "t:?".to_string()),
-		Axis::Importance => format!("i[{}]", bare.as_deref().unwrap_or("?")),
-		Axis::Hours => format!("h[{}]", bare.as_deref().unwrap_or("?")),
-	};
-	let set = {
-		let card = card.clone();
-		move |to: Option<String>| {
-			let mut labels: Vec<String> = card
-				.labels
-				.iter()
-				.filter(|l| {
-					let scheme = Scheme::from(std::slice::from_ref(*l));
-					match axis {
-						Axis::Type => scheme.kind.is_none(),
-						Axis::Importance => scheme.importance.is_none(),
-						Axis::Hours => scheme.hours.is_none(),
-					}
-				})
-				.cloned()
-				.collect();
-			labels.extend(to);
-			spawn(ctx.edit(
-				card.link.clone(),
-				vec![FieldEdit {
-					field: Field::Labels,
-					seen: list(&card.labels),
-					new: list(&labels),
-				}],
-			));
-		}
-	};
-	let step = {
-		let (set, values, held) = (set.clone(), values.clone(), held.clone());
-		move |up: bool| {
-			let at = held.as_ref().or(counts_as.as_ref()).map(|v| values.iter().position(|s| s == v).expect("the scheme's own values"));
-			let next = match (at, up) {
-				(None, true) => Some(0),
-				(None, false) => None,
-				(Some(i), true) => (i + 1 < values.len()).then_some(i + 1),
-				(Some(i), false) => i.checked_sub(1),
-			};
-			if let Some(i) = next {
-				set(Some(values[i].clone()));
-			}
-		}
-	};
-	if !editable {
-		return match (axis, bare) {
-			(Axis::Type, None) => rsx! {},
-			(_, bare) => rsx! { Chip { color, variant, Pick { facet, value: bare.unwrap_or_else(|| "none".to_string()), "{text}" } } },
-		};
-	}
-	rsx! {
-		Chip { color, variant,
-			span { class: "inline-flex items-center gap-0.5",
-				Popover { open: open(), on_open_change: move |v| open.set(v),
-					PopoverTrigger { class: "cursor-pointer hover:underline", aria_label: format!("set {facet}"), "{text}" }
-					PopoverContent { align: "start", class: "flex max-h-80 w-max flex-col overflow-y-auto p-1 text-sm font-normal text-ink",
-						for value in values.iter().cloned().map(Some).chain(std::iter::once(None)) {
-							button {
-								key: "{value:?}",
-								r#type: "button",
-								class: "flex items-center gap-2 rounded px-1 py-0.5 text-left hover:bg-surface-sunken",
-								onclick: {
-									let (set, value) = (set.clone(), value.clone());
-									move |_| {
-										open.set(false);
-										set(value.clone());
-									}
-								},
-								span { class: "w-3 text-center", if value == held { "✓" } }
-								span { class: "flex-1", {value.clone().unwrap_or_else(|| "none".to_string())} }
-							}
-						}
-					}
-				}
-				if axis != Axis::Type {
-					button { class: "px-0.5 hover:opacity-70", title: "lower", onclick: { let step = step.clone(); move |_| step(false) }, "−" }
-					button { class: "px-0.5 hover:opacity-70", title: "raise", onclick: move |_| step(true), "+" }
-				}
-			}
-		}
-	}
-}
-
-/// `at` as how long before now: `2m ago`, `3d ago`.
-fn ago(at: jiff::Timestamp) -> String {
-	let secs = jiff::Timestamp::now().duration_since(at).as_secs().max(0);
-	match secs {
-		..60 => "just now".to_string(),
-		..3_600 => format!("{}m ago", secs / 60),
-		..86_400 => format!("{}h ago", secs / 3_600),
-		..2_592_000 => format!("{}d ago", secs / 86_400),
-		_ => format!("{}mo ago", secs / 2_592_000),
 	}
 }

@@ -1,18 +1,23 @@
-//! Quick filters: a value's click includes it in its view's query, alt-click rules it out, again drops it.
-//! They only ever rewrite the query string, so it stays the whole of what a view shows.
+//! Quick filters: a facet's chip opens its values with live counts; a pick rewrites the query, ⇧ rules a
+//! value out, a chip's × drops its clause. They only ever rewrite the query string, so it stays the whole of
+//! what a view shows. Importance and hours pick a bound (\`i:>=5\`, \`h:<=3\`), ⌥ the exact value.
 
 use dioxus::prelude::*;
 use ev_lib::uikit_dioxus::*;
 use strum::IntoEnumIterator as _;
-use tedi_core::board::{Facet, Query, View};
+use tedi_core::board::{Facet, Query, Tally, View};
 
-use super::Ctx;
+use super::{
+	Ctx,
+	icons::{Glyph, Icon},
+	kit::{Btn, Style},
+};
 
 /// The view a card sits in, when it does.
 #[derive(Clone, Copy)]
 pub(super) struct InView(pub(super) Signal<View>);
 impl InView {
-	fn narrow(mut self, edit: impl FnOnce(&mut Query)) {
+	pub(super) fn narrow(mut self, edit: impl FnOnce(&mut Query)) {
 		let mut query: Query = self.0.peek().query.parse().expect("values are offered only while their view's query parses");
 		edit(&mut query);
 		self.0.write().query = query.to_string();
@@ -23,52 +28,82 @@ impl InView {
 	}
 }
 
-/// One menu per facet, under the query.
+/// A chip per facet, the ones the query narrows on first.
 #[component]
 pub(super) fn FacetBar(query: Query) -> Element {
+	let mut facets: Vec<Facet> = Facet::iter().collect();
+	facets.sort_by_key(|f| !narrows(&query, *f));
 	rsx! {
-		div { class: "flex flex-wrap items-center gap-1 text-xs",
-			for facet in Facet::iter() {
-				FacetMenu { key: "{facet}", facet, query: query.clone(), label: facet.to_string() }
+		div { class: "flex min-w-0 flex-1 flex-wrap items-center gap-1",
+			for facet in facets {
+				FacetChip { key: "{facet}", facet, query: query.clone() }
 			}
 		}
 	}
 }
 
-/// `state▾`: the values the view's other clauses leave, each with its count; `×` when the query narrows on it.
+fn narrows(query: &Query, facet: Facet) -> bool {
+	let mut lifted = query.clone();
+	lifted.clear(facet);
+	lifted != *query
+}
+
+/// \`state triage, selected ▾ ×\`: active, its values print inline and × drops the clause.
 #[component]
-pub(super) fn FacetMenu(facet: Facet, query: Query, #[props(default)] label: String) -> Element {
+pub(super) fn FacetChip(facet: Facet, query: Query) -> Element {
 	let in_view = use_context::<InView>();
 	let mut open = use_signal(|| false);
-	let active = {
-		let mut lifted = query.clone();
-		lifted.clear(facet);
-		lifted != query
+	let picked: Vec<String> = query
+		.picked(facet)
+		.into_iter()
+		.map(|v| match (facet, v.strip_prefix('-')) {
+			(Facet::State, out) => {
+				let (sign, at) = out.map_or(("", v.as_str()), |at| ("-", at));
+				format!("{sign}{}", at.split_once('/').map_or(at, |(_, bucket)| bucket)) // a bucket reads without its workflow
+			}
+			_ => v,
+		})
+		.collect();
+	let active = !picked.is_empty();
+	let pad = if active { "pr-1" } else { "pr-1.5" };
+	let frame = match (active, open()) {
+		(_, true) => "border-ring",
+		(true, false) => "border-primary-border bg-selected",
+		(false, false) => "border-border-subtle hover:bg-hover",
 	};
 	rsx! {
-		span { class: "inline-flex items-center",
-			Popover { open: open(), on_open_change: move |v| open.set(v),
-				PopoverTrigger {
-					class: if active { "rounded px-1 font-semibold text-ink bg-surface-sunken" } else { "rounded px-1 text-ink-soft hover:text-ink" },
-					aria_label: format!("filter by {facet}"),
-					"{label}▾"
+		Popover { open: open(), on_open_change: move |v| open.set(v),
+			span { class: "inline-flex h-[22px] items-center gap-1 rounded-[var(--control-radius)] border pl-2 {pad} {frame}",
+				PopoverTrigger { class: "inline-flex items-center gap-1", aria_label: format!("filter by {facet}"),
+					span { class: if active || open() { "text-body-s font-medium text-ink" } else { "text-body-s font-medium text-ink-soft" }, "{facet}" }
+					if active {
+						span { class: "max-w-48 truncate text-mono-s text-primary-ink", {picked.join(", ")} }
+					}
+					Icon { glyph: Glyph::ChevronDown, class: "size-3 text-ink-soft" }
 				}
-				PopoverContent { align: "start", class: "flex max-h-80 w-60 flex-col overflow-y-auto p-1 text-sm font-normal",
-					Values { facet, query: query.clone() }
+				if active {
+					button {
+						r#type: "button",
+						class: "text-ink-soft hover:text-ink",
+						title: "drop the {facet} filter",
+						onclick: move |_| in_view.narrow(|q| q.clear(facet)),
+						Icon { glyph: Glyph::X, class: "size-3" }
+					}
 				}
 			}
-			if active {
-				button { r#type: "button", class: "px-0.5 text-ink-soft hover:text-ink", title: "drop the {facet} filter", onclick: move |_| in_view.narrow(|q| q.clear(facet)), "×" }
+			PopoverContent { align: "start", class: "w-[260px] rounded-[var(--radius)] border border-border bg-popover p-1 text-ink",
+				FacetMenu { facet, query }
 			}
 		}
 	}
 }
 
-/// Computed only while its menu is open.
+/// Every value the rest of the query leaves, with its count. Computed only while open.
 #[component]
-fn Values(facet: Facet, query: Query) -> Element {
+pub(super) fn FacetMenu(facet: Facet, query: Query) -> Element {
 	let ctx = use_context::<Ctx>();
 	let in_view = use_context::<InView>();
+	let mut needle = use_signal(String::new);
 	let board = ctx.board.read();
 	let cards = &board.as_ref().expect("views render once the board loaded").cards;
 	let within = match ctx.scope() {
@@ -78,25 +113,112 @@ fn Values(facet: Facet, query: Query) -> Element {
 	};
 	let tallies = match query.tally(facet, &within, cards, ctx.me().as_deref()) {
 		Ok(t) => t,
-		Err(e) => return rsx! { span { class: "p-1 text-xs text-accent-error", "{e}" } },
+		Err(e) => return rsx! { span { class: "p-2 text-caption text-accent-error", "{e}" } },
+	};
+	let bound = match facet {
+		Facet::Importance => Some(">="),
+		Facet::Hours => Some("<="),
+		_ => None,
 	};
 	rsx! {
-		if tallies.is_empty() {
-			span { class: "p-1 text-xs text-ink-soft", "No values" }
-		}
-		for t in tallies {
-			button {
-				key: "{t.value}",
-				r#type: "button",
-				class: "flex items-center gap-2 rounded px-1 py-0.5 text-left hover:bg-surface-sunken",
-				title: "click: only these · alt-click: rule out",
-				onclick: { let value = t.value.clone(); move |e: MouseEvent| in_view.toggle(facet, &value, e.modifiers().alt()) },
-				span { class: "w-3 text-center",
-					match t.picked { Some(true) => "✓", Some(false) => "⊘", None => "" }
+		div { class: "flex flex-col gap-0.5",
+			div { class: "flex h-7 items-center gap-1.5 rounded-[var(--control-radius)] border border-border-subtle px-2",
+				Icon { glyph: Glyph::Search, class: "size-3.5 text-ink-faint" }
+				input {
+					class: "min-w-0 flex-1 bg-transparent text-body text-ink outline-none placeholder:text-ink-faint",
+					placeholder: "filter {facet}…",
+					value: needle(),
+					oninput: move |e| needle.set(e.value()),
 				}
-				span { class: if t.picked == Some(false) { "flex-1 truncate line-through" } else { "flex-1 truncate" }, "{t.value}" }
-				span { class: "text-xs tabular-nums text-ink-soft", "{t.count}" }
 			}
+			div { class: "flex max-h-72 flex-col gap-0.5 overflow-y-auto",
+				match bound {
+					Some(bound) => rsx! { Bounds { facet, bound, tallies, needle: needle() } },
+					None => rsx! {
+						if tallies.is_empty() {
+							span { class: "px-2 py-1 text-caption text-ink-soft", "No values" }
+						}
+						for t in tallies.into_iter().filter(|t| t.value.to_lowercase().contains(&needle.read().to_lowercase())) {
+							Value { key: "{t.value}", facet, value: t.value.clone(), label: t.value.clone(), count: t.count, picked: t.picked, bar: None }
+						}
+					},
+				}
+			}
+			div { class: "my-0.5 h-px bg-border-subtle" }
+			div { class: "flex items-center gap-2 px-2 py-1",
+				span { class: "flex-1 text-caption text-ink-soft",
+					match bound {
+						Some(_) => "⌥ exact  ·  ⇧ excludes",
+						None => "⇧-click excludes  ·  -{facet}:",
+					}
+				}
+				Btn { style: Style::Ghost, onclick: move |_| in_view.narrow(|q| q.clear(facet)), "Clear" }
+			}
+		}
+	}
+}
+
+/// \`≥ 5\` with how many reach it, over a bar of how many sit exactly there: the distribution behind the bound.
+#[component]
+fn Bounds(facet: Facet, bound: &'static str, tallies: Vec<Tally>, needle: String) -> Element {
+	let mut exact: Vec<(u16, usize, Option<bool>)> = tallies.iter().filter_map(|t| Some((t.value.parse().ok()?, t.count, t.picked))).collect();
+	exact.sort_by_key(|(v, ..)| *v);
+	if bound == ">=" {
+		exact.reverse(); // the most important first, each bound counting what reaches it
+	}
+	let most = exact.iter().map(|(_, n, _)| *n).max().unwrap_or(1).max(1); // no value tallied: no bar to scale
+	let mut reached = 0;
+	let rows: Vec<(String, String, usize, f32, Option<bool>)> = exact
+		.into_iter()
+		.map(|(v, n, exact_pick)| {
+			reached += n;
+			let value = format!("{bound}{v}");
+			let picked = tallies.iter().find(|t| t.value == value).and_then(|t| t.picked).or(exact_pick);
+			(value, format!("{} {v}", if bound == ">=" { "≥" } else { "≤" }), reached, n as f32 / most as f32, picked)
+		})
+		.collect();
+	let unset = tallies.iter().find(|t| t.value == "none").cloned();
+	rsx! {
+		for (value , label , count , bar , picked) in rows.into_iter().filter(|r| r.1.contains(&needle)) {
+			Value { key: "{value}", facet, value, label, count, picked, bar: Some(bar) }
+		}
+		if let Some(t) = unset {
+			Value { facet, value: "none", label: "unset", count: t.count, picked: t.picked, bar: None }
+		}
+	}
+}
+
+#[component]
+fn Value(facet: Facet, value: String, label: String, count: usize, picked: Option<bool>, bar: Option<f32>) -> Element {
+	let in_view = use_context::<InView>();
+	let exact = value.trim_start_matches(['>', '<', '=']).to_string();
+	rsx! {
+		button {
+			r#type: "button",
+			class: if picked.is_some() { "relative flex h-7 items-center gap-2 rounded-[var(--control-radius)] bg-selected px-2 text-left" } else { "relative flex h-7 items-center gap-2 rounded-[var(--control-radius)] px-2 text-left hover:bg-hover" },
+			onclick: move |e: MouseEvent| {
+				let m = e.modifiers();
+				match (bar.is_some(), m.alt()) {
+					(true, false) if picked != Some(true) => in_view.narrow(|q| {
+						q.clear(facet);
+						q.toggle(facet, &value, false).expect("a bound the facet reads");
+					}),
+					(true, true) => in_view.toggle(facet, &exact, m.shift()),
+					_ => in_view.toggle(facet, &value, m.shift()),
+				}
+			},
+			if let Some(bar) = bar {
+				span { class: "absolute inset-y-1 left-0 rounded-r-sm bg-hover", style: "width: {bar * 100.}%" }
+			}
+			span { class: "relative flex w-3.5 justify-center",
+				match picked {
+					Some(true) => rsx! { Icon { glyph: Glyph::Check, class: "size-3.5 text-primary-ink" } },
+					Some(false) => rsx! { Icon { glyph: Glyph::Blocker, class: "size-3.5 text-accent-error" } },
+					None => rsx! { Icon { glyph: Glyph::Check, class: "size-3.5 text-ink-faint opacity-0" } },
+				}
+			}
+			span { class: if picked == Some(false) { "relative flex-1 truncate text-body text-ink line-through" } else { "relative flex-1 truncate text-body text-ink" }, "{label}" }
+			span { class: "relative text-mono-s text-ink-soft tabular-nums", "{count}" }
 		}
 	}
 }
@@ -109,11 +231,11 @@ pub(super) fn Pick(facet: Facet, value: String, children: Element) -> Element {
 		Some(in_view) => rsx! {
 			button {
 				r#type: "button",
-				class: "cursor-pointer hover:underline",
-				title: "{facet}:{value} · alt-click: rule out",
+				class: "cursor-pointer",
+				title: "{facet}:{value} · ⇧: rule out",
 				onclick: move |e: MouseEvent| {
 					e.stop_propagation();
-					in_view.toggle(facet, &value, e.modifiers().alt());
+					in_view.toggle(facet, &value, e.modifiers().shift());
 				},
 				{children}
 			}
