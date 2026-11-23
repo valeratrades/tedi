@@ -1,0 +1,549 @@
+{
+ "issues": [
+  {
+   "owner": "service-arb",
+   "repo": "review_archive",
+   "number": 46,
+   "title": "stick rate stats",
+   "body": "That's THE metric everybody wants. If we're collecting one thing only, it would be that. So it's crazy we're still not showing that. We should have whole suite around it.\n\nBtw, another point towards grafana, would be cleaner with it.",
+   "state": "open",
+   "owner_login": "valeratrades",
+   "labels": [
+    "t:feature",
+    "area:metrics",
+    "i:6"
+   ],
+   "assignees": [
+    "valeratrades"
+   ],
+   "title_timestamp": "2026-11-20T10:00:00Z",
+   "description_timestamp": "2026-11-20T10:00:00Z",
+   "labels_timestamp": "2026-11-20T10:00:00Z",
+   "state_timestamp": "2026-11-20T10:00:00Z",
+   "assignees_timestamp": "2026-11-20T10:00:00Z"
+  },
+  {
+   "owner": "service-arb",
+   "repo": "review_archive",
+   "number": 44,
+   "title": "how can we track position in rankings too",
+   "body": "",
+   "state": "open",
+   "owner_login": "valeratrades",
+   "labels": [
+    "t:feature",
+    "i:5"
+   ],
+   "assignees": [],
+   "title_timestamp": "2026-11-20T10:00:00Z",
+   "description_timestamp": "2026-11-20T10:00:00Z",
+   "labels_timestamp": "2026-11-20T10:00:00Z",
+   "state_timestamp": "2026-11-20T10:00:00Z",
+   "assignees_timestamp": "2026-11-20T10:00:00Z"
+  },
+  {
+   "owner": "service-arb",
+   "repo": "review_archive",
+   "number": 38,
+   "title": "integrate us with LocalFalcon",
+   "body": "",
+   "state": "open",
+   "owner_login": "valeratrades",
+   "labels": [
+    "t:feature",
+    "i:4"
+   ],
+   "assignees": [],
+   "title_timestamp": "2026-11-20T10:00:00Z",
+   "description_timestamp": "2026-11-20T10:00:00Z",
+   "labels_timestamp": "2026-11-20T10:00:00Z",
+   "state_timestamp": "2026-11-20T10:00:00Z",
+   "assignees_timestamp": "2026-11-20T10:00:00Z"
+  },
+  {
+   "owner": "service-arb",
+   "repo": "playbook",
+   "number": 52,
+   "title": "Test the plugin architecture: does it fix #41's drift?",
+   "body": "",
+   "state": "open",
+   "owner_login": "valeratrades",
+   "labels": [
+    "t:question",
+    "i:5"
+   ],
+   "assignees": [
+    "valeratrades"
+   ],
+   "title_timestamp": "2026-11-20T10:00:00Z",
+   "description_timestamp": "2026-11-20T10:00:00Z",
+   "labels_timestamp": "2026-11-20T10:00:00Z",
+   "state_timestamp": "2026-11-20T10:00:00Z",
+   "assignees_timestamp": "2026-11-20T10:00:00Z"
+  },
+  {
+   "owner": "service-arb",
+   "repo": "playbook",
+   "number": 57,
+   "title": "playbook mcp integration",
+   "body": "",
+   "state": "open",
+   "owner_login": "valeratrades",
+   "labels": [
+    "i:4"
+   ],
+   "assignees": [],
+   "title_timestamp": "2026-11-20T10:00:00Z",
+   "description_timestamp": "2026-11-20T10:00:00Z",
+   "labels_timestamp": "2026-11-20T10:00:00Z",
+   "state_timestamp": "2026-11-20T10:00:00Z",
+   "assignees_timestamp": "2026-11-20T10:00:00Z"
+  },
+  {
+   "owner": "service-arb",
+   "repo": "site_conductor",
+   "number": 19,
+   "title": "isolate alerting mechanics",
+   "body": "",
+   "state": "open",
+   "owner_login": "valeratrades",
+   "labels": [
+    "i:5"
+   ],
+   "assignees": [],
+   "title_timestamp": "2026-11-20T10:00:00Z",
+   "description_timestamp": "2026-11-20T10:00:00Z",
+   "labels_timestamp": "2026-11-20T10:00:00Z",
+   "state_timestamp": "2026-11-20T10:00:00Z",
+   "assignees_timestamp": "2026-11-20T10:00:00Z"
+  },
+  {
+   "owner": "service-arb",
+   "repo": "site_conductor",
+   "number": 23,
+   "title": "rebrand to explicit conductor role",
+   "body": "",
+   "state": "open",
+   "owner_login": "valeratrades",
+   "labels": [
+    "i:5",
+    "h:3"
+   ],
+   "assignees": [
+    "valeratrades"
+   ],
+   "title_timestamp": "2026-11-20T10:00:00Z",
+   "description_timestamp": "2026-11-20T10:00:00Z",
+   "labels_timestamp": "2026-11-20T10:00:00Z",
+   "state_timestamp": "2026-11-20T10:00:00Z",
+   "assignees_timestamp": "2026-11-20T10:00:00Z"
+  },
+  {
+   "owner": "service-arb",
+   "repo": "site_conductor",
+   "number": 31,
+   "title": "feat(frontend): enable in-page wallet actions in the SA panel",
+   "body": "",
+   "state": "open",
+   "owner_login": "valeratrades",
+   "labels": [
+    "t:feature",
+    "i:5",
+    "h:5"
+   ],
+   "assignees": [
+    "f33na"
+   ],
+   "title_timestamp": "2026-11-20T10:00:00Z",
+   "description_timestamp": "2026-11-20T10:00:00Z",
+   "labels_timestamp": "2026-11-20T10:00:00Z",
+   "state_timestamp": "2026-11-20T10:00:00Z",
+   "assignees_timestamp": "2026-11-20T10:00:00Z"
+  },
+  {
+   "owner": "service-arb",
+   "repo": "site_conductor",
+   "number": 28,
+   "title": "check interactions around clicking on map",
+   "body": "",
+   "state": "open",
+   "owner_login": "valeratrades",
+   "labels": [
+    "i:5",
+    "h:2"
+   ],
+   "assignees": [
+    "valeratrades"
+   ],
+   "title_timestamp": "2026-11-20T10:00:00Z",
+   "description_timestamp": "2026-11-20T10:00:00Z",
+   "labels_timestamp": "2026-11-20T10:00:00Z",
+   "state_timestamp": "2026-11-20T10:00:00Z",
+   "assignees_timestamp": "2026-11-20T10:00:00Z"
+  },
+  {
+   "owner": "service-arb",
+   "repo": "emulate_phone_cam",
+   "number": 12,
+   "title": "Epic: a video verification Google accepts, submitted from the PC",
+   "body": "",
+   "state": "open",
+   "owner_login": "valeratrades",
+   "labels": [
+    "i:5",
+    "h:8"
+   ],
+   "assignees": [
+    "valeratrades"
+   ],
+   "title_timestamp": "2026-11-20T10:00:00Z",
+   "description_timestamp": "2026-11-20T10:00:00Z",
+   "labels_timestamp": "2026-11-20T10:00:00Z",
+   "state_timestamp": "2026-11-20T10:00:00Z",
+   "assignees_timestamp": "2026-11-20T10:00:00Z"
+  },
+  {
+   "owner": "service-arb",
+   "repo": "remote_reviews_automations",
+   "number": 9,
+   "title": "test: the reviews ranking graph (derivs)",
+   "body": "",
+   "state": "open",
+   "owner_login": "valeratrades",
+   "labels": [
+    "i:5"
+   ],
+   "assignees": [
+    "valeratrades"
+   ],
+   "title_timestamp": "2026-11-20T10:00:00Z",
+   "description_timestamp": "2026-11-20T10:00:00Z",
+   "labels_timestamp": "2026-11-20T10:00:00Z",
+   "state_timestamp": "2026-11-20T10:00:00Z",
+   "assignees_timestamp": "2026-11-20T10:00:00Z"
+  },
+  {
+   "owner": "ev-main",
+   "repo": "devops",
+   "number": 38,
+   "title": "rotate staging certs",
+   "body": "",
+   "state": "open",
+   "owner_login": "valeratrades",
+   "labels": [
+    "t:feature",
+    "i:6"
+   ],
+   "assignees": [
+    "valeratrades"
+   ],
+   "title_timestamp": "2026-11-20T10:00:00Z",
+   "description_timestamp": "2026-11-20T10:00:00Z",
+   "labels_timestamp": "2026-11-20T10:00:00Z",
+   "state_timestamp": "2026-11-20T10:00:00Z",
+   "assignees_timestamp": "2026-11-20T10:00:00Z"
+  }
+ ],
+ "pull_requests": [
+  {
+   "owner": "service-arb",
+   "repo": "site_conductor",
+   "pr": {
+    "number": 64,
+    "title": "feat(frontend): enable in-page wallet actions in the SA panel",
+    "body": "",
+    "state": "open",
+    "author": "f33na",
+    "assignees": [
+     "f33na"
+    ],
+    "labels": [
+     "release"
+    ],
+    "closes": [],
+    "updated_at": "2026-11-20T10:00:00Z",
+    "closed_at": null
+   }
+  },
+  {
+   "owner": "service-arb",
+   "repo": "review_archive",
+   "pr": {
+    "number": 212,
+    "title": "metrics endpoint for stick rate",
+    "body": "",
+    "state": "open",
+    "author": "valeratrades",
+    "assignees": [
+     "valeratrades"
+    ],
+    "labels": [
+     "release"
+    ],
+    "closes": [],
+    "updated_at": "2026-11-20T10:00:00Z",
+    "closed_at": null
+   }
+  },
+  {
+   "owner": "service-arb",
+   "repo": "playbook",
+   "pr": {
+    "number": 61,
+    "title": "playbook mcp integration",
+    "body": "",
+    "state": "open",
+    "author": "valeratrades",
+    "assignees": [
+     "valeratrades"
+    ],
+    "labels": [
+     "release"
+    ],
+    "closes": [],
+    "updated_at": "2026-11-20T10:00:00Z",
+    "closed_at": null
+   }
+  },
+  {
+   "owner": "service-arb",
+   "repo": "remote_reviews_automations",
+   "pr": {
+    "number": 11,
+    "title": "test: the reviews ranking graph (derivs)",
+    "body": "",
+    "state": "open",
+    "author": "valeratrades",
+    "assignees": [
+     "valeratrades"
+    ],
+    "labels": [
+     "release"
+    ],
+    "closes": [],
+    "updated_at": "2026-11-20T10:00:00Z",
+    "closed_at": null
+   }
+  },
+  {
+   "owner": "ev-main",
+   "repo": "devops",
+   "pr": {
+    "number": 70,
+    "title": "devops: rotate staging certs before release",
+    "body": "",
+    "state": "draft",
+    "author": "valeratrades",
+    "assignees": [
+     "valeratrades"
+    ],
+    "labels": [
+     "release"
+    ],
+    "closes": [],
+    "updated_at": "2026-11-20T10:00:00Z",
+    "closed_at": null
+   }
+  }
+ ],
+ "prs": [
+  {
+   "issue": {
+    "owner": "service-arb",
+    "repo": "review_archive",
+    "number": 46
+   },
+   "url": "https://github.com/service-arb/review_archive/pull/212",
+   "state": "open"
+  },
+  {
+   "issue": {
+    "owner": "service-arb",
+    "repo": "playbook",
+    "number": 57
+   },
+   "url": "https://github.com/service-arb/playbook/pull/61",
+   "state": "draft"
+  },
+  {
+   "issue": {
+    "owner": "service-arb",
+    "repo": "site_conductor",
+    "number": 31
+   },
+   "url": "https://github.com/service-arb/site_conductor/pull/64",
+   "state": "open"
+  },
+  {
+   "issue": {
+    "owner": "service-arb",
+    "repo": "remote_reviews_automations",
+    "number": 9
+   },
+   "url": "https://github.com/service-arb/remote_reviews_automations/pull/11",
+   "state": "open"
+  }
+ ],
+ "dependencies": [
+  {
+   "blocked": {
+    "owner": "service-arb",
+    "repo": "emulate_phone_cam",
+    "number": 12
+   },
+   "blocker": {
+    "owner": "ev-main",
+    "repo": "devops",
+    "number": 38
+   }
+  },
+  {
+   "blocked": {
+    "owner": "service-arb",
+    "repo": "review_archive",
+    "number": 46
+   },
+   "blocker": {
+    "owner": "ev-main",
+    "repo": "devops",
+    "number": 38
+   }
+  }
+ ],
+ "labels": [
+  {
+   "owner": "service-arb",
+   "repo": "review_archive",
+   "names": [
+    "t:feature",
+    "t:question",
+    "area:metrics",
+    "release",
+    "i:4",
+    "i:5",
+    "i:6",
+    "h:2",
+    "h:3",
+    "h:5",
+    "h:8"
+   ]
+  },
+  {
+   "owner": "service-arb",
+   "repo": "playbook",
+   "names": [
+    "t:feature",
+    "t:question",
+    "area:metrics",
+    "release",
+    "i:4",
+    "i:5",
+    "i:6",
+    "h:2",
+    "h:3",
+    "h:5",
+    "h:8"
+   ]
+  },
+  {
+   "owner": "service-arb",
+   "repo": "site_conductor",
+   "names": [
+    "t:feature",
+    "t:question",
+    "area:metrics",
+    "release",
+    "i:4",
+    "i:5",
+    "i:6",
+    "h:2",
+    "h:3",
+    "h:5",
+    "h:8"
+   ]
+  },
+  {
+   "owner": "service-arb",
+   "repo": "emulate_phone_cam",
+   "names": [
+    "t:feature",
+    "t:question",
+    "area:metrics",
+    "release",
+    "i:4",
+    "i:5",
+    "i:6",
+    "h:2",
+    "h:3",
+    "h:5",
+    "h:8"
+   ]
+  },
+  {
+   "owner": "service-arb",
+   "repo": "remote_reviews_automations",
+   "names": [
+    "t:feature",
+    "t:question",
+    "area:metrics",
+    "release",
+    "i:4",
+    "i:5",
+    "i:6",
+    "h:2",
+    "h:3",
+    "h:5",
+    "h:8"
+   ]
+  },
+  {
+   "owner": "ev-main",
+   "repo": "devops",
+   "names": [
+    "t:feature",
+    "t:question",
+    "area:metrics",
+    "release",
+    "i:4",
+    "i:5",
+    "i:6",
+    "h:2",
+    "h:3",
+    "h:5",
+    "h:8"
+   ]
+  }
+ ],
+ "milestones": [
+  {
+   "owner": "ev-main",
+   "repo": "devops",
+   "number": 1,
+   "title": "urgent",
+   "state": "open",
+   "due_on": "2026-11-24T00:00:00Z",
+   "updated_at": "2026-11-20T10:00:00Z",
+   "description": "- https://github.com/ev-main/devops/issues/38\n- https://github.com/service-arb/site_conductor/issues/31"
+  },
+  {
+   "owner": "ev-main",
+   "repo": "devops",
+   "number": 2,
+   "title": "1d · today",
+   "state": "open",
+   "due_on": "2026-11-24T00:00:00Z",
+   "updated_at": "2026-11-20T10:00:00Z",
+   "description": "- https://github.com/service-arb/site_conductor/issues/31\n- https://github.com/service-arb/site_conductor/issues/28\n- https://github.com/service-arb/review_archive/issues/46\n- https://github.com/ev-main/devops/issues/38\n- https://github.com/service-arb/site_conductor/issues/23"
+  },
+  {
+   "owner": "ev-main",
+   "repo": "devops",
+   "number": 3,
+   "title": "1w · 2026/11/17",
+   "state": "open",
+   "due_on": "2026-11-24T00:00:00Z",
+   "updated_at": "2026-11-20T10:00:00Z",
+   "description": "- https://github.com/ev-main/devops/issues/38\n- https://github.com/service-arb/review_archive/issues/46\n- https://github.com/service-arb/site_conductor/issues/23\n- https://github.com/service-arb/playbook/issues/57\n- https://github.com/service-arb/site_conductor/issues/19"
+  }
+ ]
+}

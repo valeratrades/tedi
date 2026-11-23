@@ -900,7 +900,7 @@ version = "3.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "faf9468729b8cbcea668e36183cb69d317348c2e08e994829fb56ebfdfbaac34"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2115,7 +2115,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2320,7 +2320,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e35d6e78f4cebb90e51d543db8fe41528851d6deeef6ef21ebd4bfdc1e784776"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2343,6 +2343,17 @@ dependencies = [
  "ev_lib_classes",
  "strum",
  "tailwind_fuse",
+ "uuid",
+ "web-sys",
+]
+
+[[package]]
+name = "ev_lib"
+version = "0.33.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "562d5db20f34579aac60e6b217460a3493278fa12ae3a0923d68285f38006f87"
+dependencies = [
+ "dioxus",
  "uuid",
  "web-sys",
 ]
@@ -3537,10 +3548,12 @@ dependencies = [
  "jiff-core",
  "jiff-static",
  "jiff-tzdb-platform",
+ "js-sys",
  "log",
  "portable-atomic",
  "portable-atomic-util",
  "serde_core",
+ "wasm-bindgen",
  "windows-link",
 ]
 
@@ -4366,7 +4379,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -5091,7 +5104,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -5699,7 +5712,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -5757,7 +5770,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -6590,6 +6603,7 @@ name = "tedi_adapters"
 version = "0.17.16"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "clap",
  "color-eyre",
  "jiff",
@@ -6756,7 +6770,7 @@ dependencies = [
  "dioxus",
  "dioxus-fullstack",
  "dioxus-server",
- "ev_lib",
+ "ev_lib 0.32.0",
  "ev_lib_classes",
  "futures",
  "getrandom 0.3.4",
@@ -6774,8 +6788,11 @@ dependencies = [
  "tilers_dioxus",
  "tokio",
  "tokio-stream",
+ "toml 1.2.1+spec-1.1.0",
+ "toml_edit",
  "tower-http",
  "tracing",
+ "urlencoding",
  "wasm-bindgen",
  "web-sys",
 ]
@@ -6790,7 +6807,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.6",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -6813,7 +6830,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "230a1b821ccbd75b185820a1f1ff7b14d21da1e442e22c0863ea5f08771a8874"
 dependencies = [
  "rustix 1.1.6",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -6960,10 +6977,11 @@ dependencies = [
 
 [[package]]
 name = "tilers_core"
-version = "0.3.5"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cca87739bac6d67a078be21478bde03d8b1dd8eee2176f655b81b39ea04052f1"
+checksum = "be2ff1aaa7114876427329679f1c90c8248331f468548e78aabeaff2ba9c0bb2"
 dependencies = [
+ "ev_lib 0.33.0",
  "serde",
  "serde_json",
  "wasm-bindgen",
@@ -6972,9 +6990,9 @@ dependencies = [
 
 [[package]]
 name = "tilers_dioxus"
-version = "0.3.5"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5abf213ba7570bcce3df446199f302e2cd8b98cf9a00d8400eb3ff1c69aa2b47"
+checksum = "cd25c0520f4bc23fadbb9baf327877e74e0f25b83da16593ef59114d50e4ea1f"
 dependencies = [
  "dioxus",
  "tilers_core",
@@ -7186,6 +7204,7 @@ dependencies = [
  "indexmap",
  "toml_datetime 1.1.3+spec-1.1.0",
  "toml_parser",
+ "toml_writer",
  "winnow 1.0.5",
 ]
 
@@ -8075,7 +8094,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

@@ -3,7 +3,7 @@
 //! lock itself.
 
 use std::{
-	collections::BTreeMap,
+	collections::{BTreeMap, BTreeSet},
 	net::SocketAddr,
 	path::PathBuf,
 	sync::{Arc, LazyLock, OnceLock},
@@ -29,7 +29,13 @@ use tedi_task_operations::{
 };
 use tokio::sync::{Mutex, broadcast, mpsc};
 
-use crate::api::{Dock, Edited, Favorite, Kept, Library, LibraryEdit, Setup, Shelf, Sprint};
+use crate::api::{
+	Arrangement, Catalog, Change, Construction, Dock, Edited, Entry, Fork, Forked, Item, Kept, Library, LibraryEdit, Onto, Origin, Owner, Setup, ShareLink, Shared, Shelf, Sprint, Upstream,
+	Usage, Version, diff,
+};
+
+/// Each team object's versions, oldest first, with what each holds: a version per commit that changed it.
+type Versions = BTreeMap<Item, Vec<(Version, Construction)>>;
 
 pub struct Settings {
 	pub addr: SocketAddr,
@@ -40,6 +46,8 @@ pub struct Settings {
 	pub views: Vec<View>,
 	pub scopes: BTreeMap<String, Scope>,
 	pub columns: BTreeMap<String, crate::api::Columns>,
+	pub workspaces: BTreeMap<String, Arrangement>,
+	pub source: Option<Source>,
 	/// Where the sprint milestones live.
 	pub milestones: Option<RepoInfo>,
 	/// Owners and `owner/repo`s: what the periodic pull pulls, and the only repos a webhook delivery is pulled for.
@@ -49,6 +57,15 @@ pub struct Settings {
 	/// Mounts `/webhook`, checking each delivery's `X-Hub-Signature-256` against it.
 	pub webhook_secret: Option<String>,
 	pub viewer: Viewer,
+}
+
+/// Where the team's config lives in git.
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+pub struct Source {
+	/// `owner/repo`
+	pub repo: String,
+	pub path: String,
+	pub branch: String,
 }
 
 /// Whose library a request reads and edits.
@@ -95,6 +112,7 @@ pub async fn setup() -> Result<Setup> {
 		views: s.views.clone(),
 		scopes: s.scopes.clone(),
 		columns: s.columns.clone(),
+		workspaces: s.workspaces.clone(),
 		sprints: match s.milestones {
 			Some(repo) => sprints(repo).await?,
 			None => Vec::new(),
@@ -161,19 +179,272 @@ pub async fn resolve(link: &IssueLink, resolution: String) -> Result<Option<Stri
 pub async fn library(headers: &HeaderMap) -> Result<Library> {
 	let key = viewer(headers)?;
 	let _held = LIBRARIES.lock().await;
-	read_library(&key)
+	let library = read_library(&key)?;
+	library
+		.scopes(&settings().scopes)
+		.map_err(|e| eyre!("{e}: rename or drop it in {}", library_file(&key).display()))?;
+	Ok(library)
 }
 
 pub async fn edit_library(headers: &HeaderMap, edit: LibraryEdit) -> Result<Library> {
 	let key = viewer(headers)?;
 	let _held = LIBRARIES.lock().await;
 	let mut library = read_library(&key)?;
-	apply(&mut library, edit)?;
-	let file = library_file(&key);
-	let fresh = file.with_extension("json.new");
-	std::fs::write(&fresh, serde_json::to_string_pretty(&library)?)?;
-	std::fs::rename(&fresh, &file)?; // whole or not at all: a crash mid-write keeps the last library
+	let fetched = match &edit {
+		LibraryEdit::Fork { from, .. } => Some(origin(from).await?),
+		LibraryEdit::Pull(item) => {
+			let forked = library.forks.iter().find(|f| &f.item == item).ok_or_else(|| eyre!("{item:?} is no fork"))?;
+			Some(latest(item.shelf(), &forked.upstream).await?)
+		}
+		_ => None,
+	};
+	apply(&mut library, edit, fetched)?;
+	write_library(&key, &library)?;
 	Ok(library)
+}
+
+pub async fn catalog(headers: &HeaderMap) -> Result<Catalog> {
+	let me = viewer(headers)?;
+	let versions = versions().await?;
+	let libraries = {
+		let _held = LIBRARIES.lock().await;
+		libraries()?
+	};
+	let team = team_items(settings());
+	let owner_of = |viewer: &str, item: &Item| if team.contains_key(item) { Owner::Team } else { Owner::Viewer(viewer.to_string()) };
+	let shares = |owner: &str| read_shares(owner);
+
+	let mut usage: BTreeMap<(Owner, Item), Usage> = BTreeMap::new();
+	for (viewer, library) in &libraries {
+		let mut refers: BTreeSet<(Owner, Item)> = BTreeSet::new();
+		for item in kept_items(library) {
+			refers.insert((Owner::Viewer(viewer.clone()), item));
+		}
+		for item in &library.favorites {
+			let owner = owner_of(viewer, item);
+			usage.entry((owner.clone(), item.clone())).or_default().favorites += 1;
+			refers.insert((owner, item.clone()));
+		}
+		for f in &library.forks {
+			let upstream = (f.upstream.owner.clone(), Item::new(f.item.shelf(), f.upstream.name.clone()));
+			usage.entry(upstream.clone()).or_default().forks += 1;
+			refers.insert(upstream);
+		}
+		let layouts = library.on_screen.tiles.values().chain(library.workspaces.values().flat_map(|w| w.values()));
+		for layout in layouts {
+			for view in viewed(layout)? {
+				let item = Item::View(view);
+				refers.insert((owner_of(viewer, &item), item));
+			}
+		}
+		if let Some(path) = &library.scope {
+			let mut at = String::new();
+			for name in path.split(" / ") {
+				at = if at.is_empty() { name.to_string() } else { format!("{at} / {name}") };
+				let item = Item::Scope(at.clone());
+				refers.insert((owner_of(viewer, &item), item));
+			}
+		}
+		if let Some(name) = &library.workspace {
+			let item = Item::Workspace(name.clone());
+			refers.insert((owner_of(viewer, &item), item));
+		}
+		for key in refers {
+			usage.entry(key).or_default().viewers += 1;
+		}
+	}
+
+	let behind = |shelf: Shelf, upstream: &Upstream| -> Result<Option<u32>> {
+		let latest = match &upstream.owner {
+			Owner::Team => versions.as_ref().and_then(|v| v.get(&Item::new(shelf, upstream.name.clone()))).map(|v| v.len() as u32),
+			Owner::Viewer(owner) => shares(owner)?.latest(&Item::new(shelf, upstream.name.clone())),
+		};
+		Ok(match (latest, upstream.version) {
+			(Some(latest), Some(at)) => Some(latest - at),
+			_ => None,
+		})
+	};
+	let forks_of = |owner: &Owner, item: &Item| -> Result<Vec<Fork>> {
+		let mut out = Vec::new();
+		for (viewer, library) in &libraries {
+			for f in library
+				.forks
+				.iter()
+				.filter(|f| &f.upstream.owner == owner && f.item.shelf() == item.shelf() && f.upstream.name == item.name())
+			{
+				out.push(Fork {
+					viewer: viewer.clone(),
+					name: f.item.name().to_string(),
+					ahead: f.upstream.ahead,
+					behind: behind(f.item.shelf(), &f.upstream)?,
+				});
+			}
+		}
+		Ok(out)
+	};
+
+	let mut entries = Vec::new();
+	for (item, running) in &team {
+		let history: Vec<(Version, Construction)> = versions.as_ref().and_then(|v| v.get(item)).cloned().unwrap_or_default(); // an object absent from every commit has no history
+		entries.push(Entry {
+			owner: Owner::Team,
+			usage: usage.get(&(Owner::Team, item.clone())).cloned().unwrap_or_default(), // nobody refers to it
+			version: history.iter().rev().find(|(_, c)| c == running).map(|(v, _)| v.v),
+			history: history.into_iter().map(|(v, _)| v).collect(),
+			forks: forks_of(&Owner::Team, item)?,
+			behind: None,
+			item: item.clone(),
+		});
+	}
+	let mine = libraries.iter().find(|(v, _)| *v == me).map(|(_, l)| l.clone()).unwrap_or_default(); // a viewer who never kept anything
+	let owner = Owner::Viewer(me.clone());
+	for item in kept_items(&mine) {
+		entries.push(Entry {
+			usage: usage.get(&(owner.clone(), item.clone())).cloned().unwrap_or_default(), // nobody refers to it
+			history: Vec::new(),
+			version: None,
+			forks: forks_of(&owner, &item)?,
+			behind: match mine.forks.iter().find(|f| f.item == item) {
+				Some(f) => behind(item.shelf(), &f.upstream)?,
+				None => None,
+			},
+			owner: owner.clone(),
+			item,
+		});
+	}
+	Ok(Catalog { entries })
+}
+
+pub async fn share(headers: &HeaderMap, item: Item, bands: Vec<tilers_core::Band>, scope: Option<String>) -> Result<ShareLink> {
+	let me = viewer(headers)?;
+	let workspace = matches!(item, Item::Workspace(_));
+	if workspace == bands.is_empty() {
+		bail!("a workspace is shared for the bands it carries, and nothing else is");
+	}
+	let team = team_items(settings());
+	if let Some(running) = team.get(&item) {
+		let versions = versions()
+			.await?
+			.ok_or_else(|| eyre!("the team's config names no `source`: its objects have no versions to pin"))?;
+		let version = versions
+			.get(&item)
+			.and_then(|h| h.iter().rev().find(|(_, c)| c == running))
+			.map(|(v, _)| v.v)
+			.ok_or_else(|| eyre!("the team's {} is unpublished: no commit of the config holds it as the board runs it", item.name()))?;
+		if let Construction::Workspace(tiles) = running
+			&& let Some(band) = bands.iter().find(|b| !tiles.contains_key(b))
+		{
+			bail!("the team's workspace {} has no {} arrangement", item.name(), crate::api::band_name(*band));
+		}
+		return Ok(ShareLink {
+			item,
+			owner: Owner::Team,
+			version,
+			bands,
+			scope,
+		});
+	}
+	let _held = LIBRARIES.lock().await;
+	let library = read_library(&me)?;
+	let mut construction = kept(&library, &item).ok_or_else(|| eyre!("{} is not kept", item.name()))?;
+	let mut shares = read_shares(&me)?;
+	let mut carried = BTreeMap::new();
+	if let Construction::Workspace(tiles) = &mut construction {
+		if let Some(band) = bands.iter().find(|b| !tiles.contains_key(b)) {
+			bail!("{} has no {} arrangement", item.name(), crate::api::band_name(*band));
+		}
+		tiles.retain(|band, _| bands.contains(band));
+		for layout in tiles.values() {
+			for name in viewed(layout)? {
+				if let Some(view) = library.filters.get(&name) {
+					let v = shares.pin(Item::View(name.clone()), Construction::View(view.clone()), BTreeMap::new());
+					carried.insert(name, v);
+				}
+			}
+		}
+	}
+	let version = shares.pin(item.clone(), construction, carried);
+	write_shares(&me, &shares)?;
+	Ok(ShareLink {
+		item,
+		owner: Owner::Viewer(me),
+		version,
+		bands,
+		scope,
+	})
+}
+
+pub async fn shared(headers: &HeaderMap, link: ShareLink) -> Result<Shared> {
+	let me = viewer(headers)?;
+	let shared = pinned(&link).await?;
+	let _held = LIBRARIES.lock().await;
+	let mut library = read_library(&me)?;
+	library.received.retain(|l| *l != link);
+	library.received.insert(0, link);
+	write_library(&me, &library)?;
+	Ok(shared)
+}
+
+pub async fn propose(headers: &HeaderMap, item: Item, onto: Onto, message: String) -> Result<String> {
+	let me = viewer(headers)?;
+	let s = settings();
+	let source = s
+		.source
+		.as_ref()
+		.ok_or_else(|| eyre!("this board names no `source` for its team config: there is nothing to propose to"))?;
+	let construction = {
+		let _held = LIBRARIES.lock().await;
+		kept(&read_library(&me)?, &item).ok_or_else(|| eyre!("{} is not kept", item.name()))?
+	};
+	let team = team_items(s);
+	let (target, update) = match &onto {
+		Onto::Update(name) => (name.clone(), true),
+		Onto::New(name) => (name.clone(), false),
+	};
+	let target_item = Item::new(item.shelf(), target.clone());
+	match (update, team.get(&target_item)) {
+		(true, None) => bail!("the team has no {target} to update"),
+		(false, Some(_)) => bail!("the team already has a {target}: update it, or name the new one otherwise"),
+		_ => {}
+	}
+	let client = tedi_task_operations::github::client::get()?;
+	let repo = source_repo(source)?;
+	let history = client.file_history(repo, &source.path, &source.branch).await?;
+	let head = history
+		.last()
+		.and_then(|c| c.content.clone())
+		.ok_or_else(|| eyre!("{} holds no {} on {}", source.repo, source.path, source.branch))?;
+	let content = proposed(&head, &target, update, &construction)?;
+	let lines: Vec<Change> = match team.get(&target_item) {
+		Some(theirs) => diff(theirs, &construction),
+		None => Vec::new(),
+	};
+	let kind = match item.shelf() {
+		Shelf::Filters => "view",
+		Shelf::Scopes => "scope",
+		Shelf::Workspaces => "workspace",
+		Shelf::Columns => "column layout",
+	};
+	let title = format!("board: {} the {kind} {target}", if update { "update" } else { "add" });
+	let mut body = message.trim().to_string();
+	if !lines.is_empty() {
+		body.push_str("\n\n```diff\n");
+		for c in &lines {
+			body.push_str(&format!("{} {}\n", c.sign, c.text));
+		}
+		body.push_str("```");
+	}
+	body.push_str(&format!("\n\nProposed from the board by {me}."));
+	let slug: String = target.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' }).collect();
+	let proposal = tedi_task_operations::github::FileProposal {
+		base: source.branch.clone(),
+		head: format!("board/{me}/{slug}-{}", jiff::Timestamp::now().as_second()),
+		path: source.path.clone(),
+		content,
+		title,
+		body,
+	};
+	Ok(client.propose_file(repo, &proposal).await?)
 }
 
 static SETTINGS: OnceLock<Settings> = OnceLock::new();
@@ -285,7 +556,7 @@ fn viewer(headers: &HeaderMap) -> Result<String> {
 			.to_string(),
 		Viewer::Operator => editor().ok_or_else(|| eyre!("a library belongs to a viewer, and this ungated instance doesn't know its GitHub user"))?,
 	};
-	let plain = !key.is_empty() && !key.starts_with('.') && key.chars().all(|c| c.is_ascii_alphanumeric() || "._@[]-".contains(c));
+	let plain = key != "team" && !key.is_empty() && !key.starts_with('.') && key.chars().all(|c| c.is_ascii_alphanumeric() || "._@[]-".contains(c));
 	if !plain {
 		bail!("{key:?} is not a viewer this board keeps a library for");
 	}
@@ -305,9 +576,22 @@ fn read_library(key: &str) -> Result<Library> {
 	}
 }
 
-fn apply(library: &mut Library, edit: LibraryEdit) -> Result<()> {
+/// `fetched`: a fork's or pull's upstream, read before the edit.
+fn apply(library: &mut Library, edit: LibraryEdit, fetched: Option<Fetched>) -> Result<()> {
+	let team = team_items(settings());
 	match edit {
-		LibraryEdit::Arranged { dock: Dock::Tiles, band, layout } => _ = library.on_screen.tiles.insert(band, layout),
+		LibraryEdit::Arranged { dock: Dock::Tiles, band, layout } => {
+			if let Some(current) = library.workspace.clone()
+				&& let Some(workspace) = library.workspaces.get(&current)
+				&& workspace.get(&band) != Some(&layout)
+			{
+				let mut tiles = workspace.clone();
+				tiles.insert(band, layout.clone());
+				save(library, Item::Workspace(current), Construction::Workspace(tiles));
+				library.autosaved = Some(jiff::Timestamp::now());
+			}
+			library.on_screen.tiles.insert(band, layout);
+		}
 		LibraryEdit::Arranged {
 			dock: Dock::Columns { view, by },
 			band,
@@ -318,20 +602,24 @@ fn apply(library: &mut Library, edit: LibraryEdit) -> Result<()> {
 		LibraryEdit::Viewed(view) => _ = library.on_screen.views.insert(view.name.clone(), view),
 		LibraryEdit::Tinted { view, by, tints } => _ = library.on_screen.tints.entry(view).or_default().insert(by, tints),
 		LibraryEdit::Keep(Kept::Filter(view)) => {
-			if view.name.trim().is_empty() {
-				bail!("a filter is kept under a name");
-			}
-			if team_view(&view.name) {
-				bail!("{} is a team view's name: keep yours under another", view.name);
-			}
-			library.filters.insert(view.name.clone(), view);
+			let name = named(view.name.clone())?;
+			refuse_team(&team, &Item::View(name.clone()))?;
+			save(library, Item::View(name), Construction::View(view));
 		}
-		LibraryEdit::Keep(Kept::Workspace { name, band, layout }) => _ = library.workspaces.entry(named(name)?).or_default().insert(band, layout),
-		LibraryEdit::Keep(Kept::Columns { name, by, band, layout, tints }) => {
-			if settings().columns.contains_key(&name) {
-				bail!("{name} are the team's columns: keep yours under another name");
+		LibraryEdit::Keep(Kept::Workspace { name, tiles }) => {
+			let item = Item::Workspace(named(name.clone())?);
+			refuse_team(&team, &item)?;
+			if tiles.is_empty() {
+				bail!("the workspace {name} keeps no arrangement");
 			}
-			let kept = library.columns.entry(named(name.clone())?).or_insert_with(|| crate::api::Columns {
+			let mut kept = library.workspaces.get(&name).cloned().unwrap_or_default(); // a new workspace
+			kept.extend(tiles);
+			save(library, item, Construction::Workspace(kept));
+		}
+		LibraryEdit::Keep(Kept::Columns { name, by, band, layout, tints }) => {
+			let item = Item::Columns(named(name.clone())?);
+			refuse_team(&team, &item)?;
+			let mut kept = library.columns.get(&name).cloned().unwrap_or_else(|| crate::api::Columns {
 				by: by.clone(),
 				layout: BTreeMap::new(),
 				tints: BTreeMap::new(),
@@ -341,40 +629,32 @@ fn apply(library: &mut Library, edit: LibraryEdit) -> Result<()> {
 			}
 			kept.layout.insert(band, layout);
 			kept.tints = tints;
+			save(library, item, Construction::Columns(kept));
 		}
 		LibraryEdit::Keep(Kept::Scope { name, scope }) => {
 			let name = named(name)?;
-			if name.contains(" / ") {
-				bail!("` / ` joins a scope's path: name it without one");
-			}
-			if settings().scopes.contains_key(&name) {
-				bail!("{name} is a team scope's name: keep yours under another");
-			}
 			if scope.repos.is_empty() && scope.children.is_empty() {
 				bail!("the scope {name} names no repo");
 			}
-			if let Some(view) = scope.views.iter().find(|v| !team_view(v) && !library.filters.contains_key(*v)) {
-				bail!("the scope {name} lists the view {view}, and no such view is kept");
+			if !library.scopes.contains_key(&name) {
+				placeable(library, &name)?;
 			}
-			library.scopes.insert(name, scope);
+			save(library, Item::Scope(name), Construction::Scope(scope));
 		}
 		LibraryEdit::Rename { shelf, from, to } => {
 			let to = named(to)?;
-			let taken = match shelf {
-				Shelf::Filters => library.filters.contains_key(&to) || team_view(&to),
-				Shelf::Workspaces => library.workspaces.contains_key(&to),
-				Shelf::Columns => library.columns.contains_key(&to) || settings().columns.contains_key(&to),
-				Shelf::Scopes => library.scopes.contains_key(&to) || settings().scopes.contains_key(&to) || to.contains(" / "),
-			};
-			if taken {
+			let (old, new) = (Item::new(shelf, from.clone()), Item::new(shelf, to.clone()));
+			if shelf == Shelf::Scopes {
+				return rename_scope(library, &from, &to);
+			}
+			if kept(library, &new).is_some() || team.contains_key(&new) {
 				bail!("{to} is taken");
 			}
-			let missing = || eyre!("{from} is not kept");
+			let construction = kept(library, &old).ok_or_else(|| eyre!("{from} is not kept"))?;
+			drop_kept(library, &old);
+			put(library, &new, construction);
 			match shelf {
 				Shelf::Filters => {
-					let mut view = library.filters.remove(&from).ok_or_else(missing)?;
-					view.name = to.clone();
-					library.filters.insert(to.clone(), view);
 					if let Some(columns) = library.on_screen.columns.remove(&from) {
 						library.on_screen.columns.insert(to.clone(), columns);
 					}
@@ -387,49 +667,68 @@ fn apply(library: &mut Library, edit: LibraryEdit) -> Result<()> {
 					}
 				}
 				Shelf::Workspaces => {
-					let kept = library.workspaces.remove(&from).ok_or_else(missing)?;
-					library.workspaces.insert(to.clone(), kept);
-				}
-				Shelf::Columns => {
-					let kept = library.columns.remove(&from).ok_or_else(missing)?;
-					library.columns.insert(to.clone(), kept);
-				}
-				Shelf::Scopes => {
-					let kept = library.scopes.remove(&from).ok_or_else(missing)?;
-					library.scopes.insert(to.clone(), kept);
-					if let Some(path) = &library.scope
-						&& let Some(rest) = within(path, &from)
-					{
-						library.scope = Some(format!("{to}{rest}"));
+					if library.workspace.as_deref() == Some(&from) {
+						library.workspace = Some(to.clone());
+					}
+					for name in library.recent.iter_mut().filter(|n| **n == from) {
+						*name = to.clone();
 					}
 				}
+				Shelf::Columns => {}
+				Shelf::Scopes => unreachable!("renamed above"),
 			}
-			if library.favorites.remove(&favorite(shelf, from)) {
-				library.favorites.insert(favorite(shelf, to));
+			if library.favorites.remove(&old) {
+				library.favorites.insert(new.clone());
+			}
+			for f in library.forks.iter_mut().filter(|f| f.item == old) {
+				f.item = new.clone();
 			}
 		}
 		LibraryEdit::Drop { shelf, name } => {
-			let dropped = match shelf {
-				Shelf::Filters => library.filters.remove(&name).is_some(),
-				Shelf::Workspaces => library.workspaces.remove(&name).is_some(),
-				Shelf::Columns => library.columns.remove(&name).is_some(),
-				Shelf::Scopes => library.scopes.remove(&name).is_some(),
-			};
-			if shelf == Shelf::Scopes && library.scope.as_deref().is_some_and(|p| within(p, &name).is_some()) {
-				library.scope = None;
-			}
-			if !dropped {
+			let item = Item::new(shelf, name.clone());
+			if !drop_kept(library, &item) {
 				bail!("{name} is not kept");
 			}
-			library.favorites.remove(&favorite(shelf, name));
+			if shelf == Shelf::Scopes {
+				let held: Vec<String> = library.scopes.keys().filter(|p| within(p, &name).is_some()).cloned().collect();
+				for path in held {
+					library.scopes.remove(&path); // what it holds goes with it
+					library.favorites.remove(&Item::Scope(path.clone()));
+					library.forks.retain(|f| f.item != Item::Scope(path.clone()));
+				}
+			}
+			match shelf {
+				Shelf::Scopes if library.scope.as_deref().is_some_and(|p| within(p, &name).is_some()) => library.scope = None,
+				Shelf::Workspaces => {
+					if library.workspace.as_deref() == Some(&name) {
+						library.workspace = None;
+					}
+					library.recent.retain(|n| *n != name);
+				}
+				_ => {}
+			}
+			library.favorites.remove(&item);
+			library.forks.retain(|f| f.item != item);
 		}
 		LibraryEdit::Scope(path) => {
 			if let Some(path) = &path
-				&& scope_at(&library.scopes(&settings().scopes), path).is_none()
+				&& scope_at(&library.scopes(&settings().scopes).map_err(|e| eyre!(e))?, path).is_none()
 			{
 				bail!("no scope {path}");
 			}
 			library.scope = path;
+		}
+		LibraryEdit::Workspace(name) => {
+			if let Some(name) = &name {
+				let item = Item::Workspace(name.clone());
+				if kept(library, &item).is_none() && !team.contains_key(&item) {
+					bail!("no workspace {name}");
+				}
+				library.recent.retain(|n| n != name);
+				library.recent.insert(0, name.clone());
+				library.recent.truncate(9);
+			}
+			library.workspace = name;
 		}
 		LibraryEdit::Favorite { what, on: false } =>
 			if !library.favorites.remove(&what) {
@@ -437,37 +736,543 @@ fn apply(library: &mut Library, edit: LibraryEdit) -> Result<()> {
 			},
 		LibraryEdit::Favorite { what, on: true } => {
 			let known = match &what {
-				Favorite::View(name) => library.filters.contains_key(name) || team_view(name),
-				Favorite::Scope(path) => scope_at(&library.scopes(&settings().scopes), path).is_some(),
-				Favorite::Workspace(name) => library.workspaces.contains_key(name),
-				Favorite::Columns(name) => library.columns.contains_key(name) || settings().columns.contains_key(name),
+				Item::Scope(path) => scope_at(&library.scopes(&settings().scopes).map_err(|e| eyre!(e))?, path).is_some(),
+				item => kept(library, item).is_some() || team.contains_key(item),
 			};
 			if !known {
 				bail!("no {what:?} to favorite");
 			}
 			library.favorites.insert(what);
 		}
+		LibraryEdit::Fork { from, name } => {
+			let Fetched { construction, upstream, carried } = fetched.expect("fetched for a fork");
+			let shelf = match &from {
+				Origin::Team(item) => item.shelf(),
+				Origin::Link(link) => link.item.shelf(),
+			};
+			let item = Item::new(shelf, named(name.clone())?);
+			if shelf == Shelf::Scopes {
+				placeable(library, &name)?;
+			} else if kept(library, &item).is_some() || team.contains_key(&item) {
+				bail!("{name} is taken");
+			}
+			for (view, (version, held)) in carried {
+				let carried = Item::View(view.clone());
+				if kept(library, &carried).is_some() || team.contains_key(&carried) {
+					continue; // the receiver's own view of that name stands
+				}
+				put(library, &carried, Construction::View(held));
+				library.forks.push(Forked {
+					item: carried,
+					upstream: Upstream {
+						owner: upstream.owner.clone(),
+						name: view,
+						version: Some(version),
+						ahead: 0,
+					},
+				});
+			}
+			let construction = match construction {
+				Construction::View(mut view) => {
+					view.name = name;
+					Construction::View(view)
+				}
+				other => other,
+			};
+			put(library, &item, construction);
+			library.forks.push(Forked { item, upstream });
+		}
+		LibraryEdit::Pull(item) => {
+			let Fetched { construction, upstream, .. } = fetched.expect("fetched for a pull");
+			let forked = library.forks.iter_mut().find(|f| f.item == item).expect("found before fetching");
+			if forked.upstream.ahead > 0 {
+				bail!("{} is {} ahead of its upstream: pulling would drop that", item.name(), forked.upstream.ahead);
+			}
+			forked.upstream = upstream;
+			let construction = match construction {
+				Construction::View(mut view) => {
+					view.name = item.name().to_string();
+					Construction::View(view)
+				}
+				other => other,
+			};
+			put(library, &item, construction);
+		}
 	}
 	Ok(())
 }
 
-fn team_view(name: &str) -> bool {
-	settings().views.iter().any(|v| v.name == name)
+/// A new scope can sit at `path`: nothing holds that path yet, and its parent, team's or own, exists.
+fn placeable(library: &Library, path: &str) -> Result<()> {
+	let tree = library.scopes(&settings().scopes).map_err(|e| eyre!(e))?;
+	if scope_at(&tree, path).is_some() {
+		bail!("{path} is taken");
+	}
+	if let Some((parent, _)) = path.rsplit_once(" / ")
+		&& scope_at(&tree, parent).is_none()
+	{
+		bail!("no scope {parent} to keep {path} in");
+	}
+	Ok(())
+}
+
+/// The viewer's scope at `from` and every one of theirs inside it moved to `to`, with what refers to them.
+fn rename_scope(library: &mut Library, from: &str, to: &str) -> Result<()> {
+	if !library.scopes.contains_key(from) {
+		bail!("{from} is not kept");
+	}
+	placeable(library, to)?;
+	if within(to, from).is_some() {
+		bail!("{from} can't move inside itself");
+	}
+	let moved = |path: &str| within(path, from).map(|rest| format!("{to}{rest}"));
+	library.scopes = std::mem::take(&mut library.scopes).into_iter().map(|(p, s)| (moved(&p).unwrap_or(p), s)).collect(); // only those under `from` move
+	library.favorites = std::mem::take(&mut library.favorites)
+		.into_iter()
+		.map(|f| match &f {
+			Item::Scope(p) => moved(p).map_or(f, Item::Scope),
+			_ => f,
+		})
+		.collect();
+	for f in &mut library.forks {
+		if let Item::Scope(p) = &f.item
+			&& let Some(to) = moved(p)
+		{
+			f.item = Item::Scope(to);
+		}
+	}
+	if let Some(at) = library.scope.as_deref().and_then(moved) {
+		library.scope = Some(at);
+	}
+	Ok(())
+}
+
+/// `construction` kept as `item`; a fork's `ahead` counts it when it changed anything.
+fn save(library: &mut Library, item: Item, construction: Construction) {
+	if kept(library, &item).as_ref() != Some(&construction)
+		&& let Some(f) = library.forks.iter_mut().find(|f| f.item == item)
+	{
+		f.upstream.ahead += 1;
+	}
+	put(library, &item, construction);
+}
+
+fn refuse_team(team: &BTreeMap<Item, Construction>, item: &Item) -> Result<()> {
+	match team.contains_key(item) {
+		true => bail!("{} is the team's: keep yours under another name", item.name()),
+		false => Ok(()),
+	}
+}
+
+fn kept(library: &Library, item: &Item) -> Option<Construction> {
+	match item {
+		Item::View(n) => library.filters.get(n).cloned().map(Construction::View),
+		Item::Scope(n) => library.scopes.get(n).cloned().map(Construction::Scope),
+		Item::Workspace(n) => library.workspaces.get(n).cloned().map(Construction::Workspace),
+		Item::Columns(n) => library.columns.get(n).cloned().map(Construction::Columns),
+	}
+}
+
+fn put(library: &mut Library, item: &Item, construction: Construction) {
+	let name = item.name().to_string();
+	match (item, construction) {
+		(Item::View(_), Construction::View(v)) => _ = library.filters.insert(name, v),
+		(Item::Scope(_), Construction::Scope(s)) => _ = library.scopes.insert(name, s),
+		(Item::Workspace(_), Construction::Workspace(w)) => _ = library.workspaces.insert(name, w),
+		(Item::Columns(_), Construction::Columns(c)) => _ = library.columns.insert(name, c),
+		(item, construction) => panic!("{item:?} holds no {construction:?}"),
+	}
+}
+
+/// Whether it was kept.
+fn drop_kept(library: &mut Library, item: &Item) -> bool {
+	let name = item.name();
+	match item {
+		Item::View(_) => library.filters.remove(name).is_some(),
+		Item::Scope(_) => library.scopes.remove(name).is_some(),
+		Item::Workspace(_) => library.workspaces.remove(name).is_some(),
+		Item::Columns(_) => library.columns.remove(name).is_some(),
+	}
+}
+
+fn kept_items(library: &Library) -> Vec<Item> {
+	let names = |shelf: Shelf, names: Vec<&String>| names.into_iter().map(|n| Item::new(shelf, n.clone())).collect::<Vec<_>>();
+	[
+		names(Shelf::Filters, library.filters.keys().collect()),
+		names(Shelf::Scopes, library.scopes.keys().collect()),
+		names(Shelf::Workspaces, library.workspaces.keys().collect()),
+		names(Shelf::Columns, library.columns.keys().collect()),
+	]
+	.concat()
+}
+
+/// The team's objects as `board.toml` lays them out: `[[board.views]]`, `[board.scopes…]`, `[board.columns.…]`, `[board.workspaces.…]`.
+#[derive(serde::Deserialize)]
+struct Team {
+	#[serde(default)] // a commit may hold none
+	views: Vec<View>,
+	#[serde(default)] // a commit may hold none
+	scopes: BTreeMap<String, Scope>,
+	#[serde(default)] // a commit may hold none
+	columns: BTreeMap<String, crate::api::Columns>,
+	#[serde(default)] // a commit may hold none
+	workspaces: BTreeMap<String, Arrangement>,
+}
+
+fn items(team: &Team) -> BTreeMap<Item, Construction> {
+	crate::api::constructions(&team.views, &team.scopes, &team.columns, &team.workspaces)
+}
+
+/// As this board runs them.
+fn team_items(s: &Settings) -> BTreeMap<Item, Construction> {
+	items(&Team {
+		views: s.views.clone(),
+		scopes: s.scopes.clone(),
+		columns: s.columns.clone(),
+		workspaces: s.workspaces.clone(),
+	})
+}
+
+/// None: the board names no `source`.
+async fn versions() -> Result<Option<Versions>> {
+	let Some(source) = &settings().source else {
+		return Ok(None);
+	};
+	let commits = tedi_task_operations::github::client::get()?
+		.file_history(source_repo(source)?, &source.path, &source.branch)
+		.await?;
+	let mut versions: Versions = BTreeMap::new();
+	for commit in commits {
+		let held = match &commit.content {
+			Some(text) => {
+				#[derive(serde::Deserialize)]
+				struct File {
+					board: Team,
+				}
+				items(&toml::from_str::<File>(text).wrap_err_with(|| format!("{} as of {}", source.path, commit.sha))?.board)
+			}
+			None => BTreeMap::new(),
+		};
+		for (item, construction) in held {
+			let history = versions.entry(item).or_default();
+			let changed = match history.last() {
+				Some((_, last)) if *last == construction => continue,
+				Some((_, last)) => diff(last, &construction),
+				None => Vec::new(),
+			};
+			let v = history.len() as u32 + 1;
+			history.push((
+				Version {
+					v,
+					author: commit.author.clone(),
+					at: commit.at,
+					changes: changed,
+				},
+				construction,
+			));
+		}
+	}
+	Ok(Some(versions))
+}
+
+fn source_repo(source: &Source) -> Result<RepoInfo> {
+	let (owner, repo) = source.repo.split_once('/').ok_or_else(|| eyre!("`source.repo` is `owner/repo`, not {}", source.repo))?;
+	Ok(RepoInfo::new(owner, repo))
+}
+
+/// The views a dock layout holds.
+fn viewed(layout: &str) -> Result<Vec<String>> {
+	let grid = tilers_core::model::serial::load(layout).map_err(|e| eyre!("a kept layout doesn't load: {e:?}"))?;
+	Ok(grid
+		.cells
+		.iter()
+		.flat_map(|c| c.group.tabs.iter())
+		.filter_map(|t| t.0.strip_prefix("view:"))
+		.map(str::to_owned)
+		.collect())
+}
+
+/// Every viewer's, by key.
+fn libraries() -> Result<Vec<(String, Library)>> {
+	let dir = tedi_task_operations::paths::data_dir("web");
+	let entries = match std::fs::read_dir(&dir) {
+		Ok(entries) => entries,
+		Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()), // nobody kept anything yet
+		Err(e) => return Err(e.into()),
+	};
+	let mut out = Vec::new();
+	for entry in entries {
+		let path = entry?.path();
+		if path.extension().is_some_and(|e| e == "json")
+			&& let Some(key) = path.file_stem().and_then(|s| s.to_str())
+		{
+			out.push((key.to_string(), read_library(key)?));
+		}
+	}
+	Ok(out)
+}
+
+fn write_library(key: &str, library: &Library) -> Result<()> {
+	let file = library_file(key);
+	let fresh = file.with_extension("json.new");
+	std::fs::write(&fresh, serde_json::to_string_pretty(library)?)?;
+	std::fs::rename(&fresh, &file)?; // whole or not at all: a crash mid-write keeps the last library
+	Ok(())
+}
+
+/// A fork's or pull's source, as read before the edit.
+struct Fetched {
+	construction: Construction,
+	upstream: Upstream,
+	carried: BTreeMap<String, (u32, View)>,
+}
+
+async fn origin(from: &Origin) -> Result<Fetched> {
+	match from {
+		Origin::Team(item) => {
+			let running = team_items(settings()).remove(item).ok_or_else(|| eyre!("the team has no {}", item.name()))?;
+			let version = versions()
+				.await?
+				.and_then(|v| v.get(item).and_then(|h| h.iter().rev().find(|(_, c)| *c == running)).map(|(v, _)| v.v));
+			Ok(Fetched {
+				upstream: Upstream {
+					owner: Owner::Team,
+					name: item.name().to_string(),
+					version,
+					ahead: 0,
+				},
+				construction: running,
+				carried: BTreeMap::new(),
+			})
+		}
+		Origin::Link(link) => {
+			let shared = pinned(link).await?;
+			Ok(Fetched {
+				upstream: Upstream {
+					owner: link.owner.clone(),
+					name: link.item.name().to_string(),
+					version: Some(link.version),
+					ahead: 0,
+				},
+				construction: shared.construction,
+				carried: shared.carried,
+			})
+		}
+	}
+}
+
+/// `upstream`'s latest version.
+async fn latest(shelf: Shelf, upstream: &Upstream) -> Result<Fetched> {
+	let item = Item::new(shelf, upstream.name.clone());
+	let (version, construction) = match &upstream.owner {
+		Owner::Team => {
+			let versions = versions().await?.ok_or_else(|| eyre!("the team's config names no `source`: it has no versions to pull"))?;
+			let (v, c) = versions
+				.get(&item)
+				.and_then(|h| h.last())
+				.ok_or_else(|| eyre!("no commit of the team's config holds {}", item.name()))?;
+			(v.v, c.clone())
+		}
+		Owner::Viewer(owner) => {
+			let shares = read_shares(owner)?;
+			let v = shares.latest(&item).ok_or_else(|| eyre!("{owner} never shared {}", item.name()))?;
+			(v, shares.at(&item, v).expect("its latest").construction.clone())
+		}
+	};
+	Ok(Fetched {
+		construction,
+		upstream: Upstream {
+			owner: upstream.owner.clone(),
+			name: upstream.name.clone(),
+			version: Some(version),
+			ahead: 0,
+		},
+		carried: BTreeMap::new(),
+	})
+}
+
+async fn pinned(link: &ShareLink) -> Result<Shared> {
+	let missing = || eyre!("{link} pins nothing: no such version");
+	let (mut construction, carried) = match &link.owner {
+		Owner::Team => {
+			let versions = versions().await?.ok_or_else(|| eyre!("the team's config names no `source`: its versions are unknown"))?;
+			let (_, c) = versions.get(&link.item).and_then(|h| h.get((link.version as usize).checked_sub(1)?)).ok_or_else(missing)?;
+			(c.clone(), BTreeMap::new())
+		}
+		Owner::Viewer(owner) => {
+			let shares = read_shares(owner)?;
+			let snapshot = shares.at(&link.item, link.version).ok_or_else(missing)?;
+			let mut carried = BTreeMap::new();
+			for (name, v) in &snapshot.carried {
+				let Some(Snapshot {
+					construction: Construction::View(view),
+					..
+				}) = shares.at(&Item::View(name.clone()), *v)
+				else {
+					bail!("{owner}'s shares lost the view {name}@{v} that {link} carries");
+				};
+				carried.insert(name.clone(), (*v, view.clone()));
+			}
+			(snapshot.construction.clone(), carried)
+		}
+	};
+	if let Construction::Workspace(tiles) = &mut construction {
+		tiles.retain(|band, _| link.bands.contains(band));
+		if tiles.is_empty() {
+			bail!("{link} carries no band its workspace has");
+		}
+	}
+	Ok(Shared {
+		link: link.clone(),
+		construction,
+		carried,
+	})
+}
+
+/// What a viewer shared, by object: each version as it was when its link was copied.
+#[derive(Default, serde::Deserialize, serde::Serialize)]
+struct Shares(Vec<Pinned>);
+impl Shares {
+	fn latest(&self, item: &Item) -> Option<u32> {
+		self.0.iter().find(|p| p.item == *item).map(|p| p.versions.len() as u32)
+	}
+
+	fn at(&self, item: &Item, version: u32) -> Option<&Snapshot> {
+		self.0.iter().find(|p| p.item == *item)?.versions.get((version as usize).checked_sub(1)?)
+	}
+
+	/// Its version: the last one again when nothing changed since.
+	fn pin(&mut self, item: Item, construction: Construction, carried: BTreeMap<String, u32>) -> u32 {
+		let snapshot = Snapshot { construction, carried };
+		let at = match self.0.iter().position(|p| p.item == item) {
+			Some(at) => at,
+			None => {
+				self.0.push(Pinned { item, versions: Vec::new() });
+				self.0.len() - 1
+			}
+		};
+		let versions = &mut self.0[at].versions;
+		if versions.last() != Some(&snapshot) {
+			versions.push(snapshot);
+		}
+		versions.len() as u32
+	}
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+struct Pinned {
+	item: Item,
+	versions: Vec<Snapshot>,
+}
+#[derive(Clone, PartialEq, serde::Deserialize, serde::Serialize)]
+struct Snapshot {
+	construction: Construction,
+	/// The sharer's own views a workspace's tiles name, at the versions they were pinned at.
+	carried: BTreeMap<String, u32>,
+}
+
+fn shares_file(owner: &str) -> PathBuf {
+	tedi_task_operations::paths::data_dir("web").join("shared").join(format!("{owner}.json"))
+}
+
+fn read_shares(owner: &str) -> Result<Shares> {
+	let file = shares_file(owner);
+	match std::fs::read_to_string(&file) {
+		Ok(json) => serde_json::from_str(&json).wrap_err_with(|| format!("{} doesn't read as shares", file.display())),
+		Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Shares::default()), // never shared anything
+		Err(e) => Err(e.into()),
+	}
+}
+
+fn write_shares(owner: &str, shares: &Shares) -> Result<()> {
+	let file = shares_file(owner);
+	std::fs::create_dir_all(file.parent().expect("under the data dir"))?;
+	let fresh = file.with_extension("json.new");
+	std::fs::write(&fresh, serde_json::to_string_pretty(shares)?)?;
+	std::fs::rename(&fresh, &file)?;
+	Ok(())
+}
+
+/// `head` with `construction` written as the team's `target`, everything else as it was.
+fn proposed(head: &str, target: &str, update: bool, construction: &Construction) -> Result<String> {
+	use toml_edit::{DocumentMut, Item as Toml, Table};
+	fn table(value: &impl serde::Serialize) -> Result<Table> {
+		Ok(toml::to_string(value)?.parse::<DocumentMut>()?.as_table().clone())
+	}
+	/// `held` made `new`, keeping where each key that stays sits and how it is written around.
+	fn merge(held: &mut Table, new: Table) {
+		let keys: Vec<String> = new.iter().map(|(k, _)| k.to_string()).collect();
+		held.retain(|k, _| keys.iter().any(|n| n == k));
+		for (key, item) in new {
+			match (held.get_mut(&key).and_then(Toml::as_table_mut), item) {
+				(Some(held), Toml::Table(new)) => merge(held, new),
+				(_, item) => _ = held.insert(&key, item),
+			}
+		}
+	}
+	fn named<'a>(board: &'a mut Table, key: &str) -> Result<&'a mut Table> {
+		board.entry(key).or_insert(toml_edit::table()).as_table_mut().ok_or_else(|| eyre!("`board.{key}` is not a table"))
+	}
+	fn put_table(at: &mut Table, key: &str, new: Table) {
+		match at.get_mut(key).and_then(Toml::as_table_mut) {
+			Some(held) => merge(held, new),
+			None => _ = at.insert(key, Toml::Table(new)),
+		}
+	}
+	let held = |holds: bool| -> Result<()> {
+		match (update, holds) {
+			(true, false) => bail!("the config's head holds no {target}: it moved on since this board was deployed"),
+			(false, true) => bail!("the config's head already holds a {target}"),
+			_ => Ok(()),
+		}
+	};
+	let mut doc: DocumentMut = head.parse()?;
+	let board = doc.entry("board").or_insert(toml_edit::table()).as_table_mut().ok_or_else(|| eyre!("`board` is not a table"))?;
+	match construction {
+		Construction::View(view) => {
+			let mut view = view.clone();
+			view.name = target.to_string();
+			let written = table(&view)?;
+			let views = board
+				.entry("views")
+				.or_insert(Toml::ArrayOfTables(Default::default()))
+				.as_array_of_tables_mut()
+				.ok_or_else(|| eyre!("`board.views` is not an array of tables"))?;
+			let at = views.iter().position(|v| v.get("name").and_then(|n| n.as_str()) == Some(target));
+			held(at.is_some())?;
+			match at {
+				Some(at) => merge(views.get_mut(at).expect("found above"), written),
+				None => views.push(written),
+			}
+		}
+		Construction::Scope(scope) => {
+			let mut at = named(board, "scopes")?;
+			let path: Vec<&str> = target.split(" / ").collect();
+			let (last, parents) = path.split_last().expect("split yields one");
+			for name in parents {
+				at = at.get_mut(name).and_then(Toml::as_table_mut).ok_or_else(|| eyre!("the config's head holds no scope {name}"))?;
+			}
+			held(at.contains_key(last))?;
+			put_table(at, last, table(scope)?);
+		}
+		Construction::Columns(columns) => {
+			let at = named(board, "columns")?;
+			held(at.contains_key(target))?;
+			put_table(at, target, table(columns)?);
+		}
+		Construction::Workspace(tiles) => {
+			let at = named(board, "workspaces")?;
+			held(at.contains_key(target))?;
+			put_table(at, target, table(tiles)?);
+		}
+	}
+	Ok(doc.to_string())
 }
 
 fn named(name: String) -> Result<String> {
 	match name.trim().is_empty() {
 		true => bail!("kept under a name, and this one is blank"),
 		false => Ok(name),
-	}
-}
-
-fn favorite(shelf: Shelf, name: String) -> Favorite {
-	match shelf {
-		Shelf::Filters => Favorite::View(name),
-		Shelf::Workspaces => Favorite::Workspace(name),
-		Shelf::Columns => Favorite::Columns(name),
-		Shelf::Scopes => Favorite::Scope(name),
 	}
 }
 

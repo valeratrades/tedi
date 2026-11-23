@@ -134,6 +134,12 @@ pub trait GithubClient: Send + Sync {
 
 	/// The page from `after` of every pull request, most recently updated first.
 	async fn list_repo_prs(&self, repo: RepoInfo, after: Option<&str>) -> Result<PrPage, GithubError>;
+
+	/// Every commit on `branch` touching `path`, oldest first, each with the file as it left it.
+	async fn file_history(&self, repo: RepoInfo, path: &str, branch: &str) -> Result<Vec<FileCommit>, GithubError>;
+
+	/// `proposal` opened as a pull request; its url.
+	async fn propose_file(&self, repo: RepoInfo, proposal: &FileProposal) -> Result<String, GithubError>;
 }
 
 #[derive(Clone, Debug)]
@@ -165,6 +171,27 @@ pub struct IssuePage {
 	pub issues: Vec<FetchedIssue>,
 	/// `None` on the last page
 	pub next: Option<String>,
+}
+
+/// A pull request onto `base` from a new branch `head` whose one change sets `path` to `content`.
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
+pub struct FileProposal {
+	pub base: String,
+	pub head: String,
+	pub path: String,
+	pub content: String,
+	pub title: String,
+	pub body: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct FileCommit {
+	pub sha: String,
+	/// The GitHub login, else the name the commit carries.
+	pub author: String,
+	pub at: jiff::Timestamp,
+	/// None: the commit removed the file.
+	pub content: Option<String>,
 }
 
 /// A milestone as returned by the GitHub REST API.
@@ -873,6 +900,140 @@ impl GithubClient for RealGithubClient {
 		})
 	}
 
+	async fn file_history(&self, repo: RepoInfo, path: &str, branch: &str) -> Result<Vec<FileCommit>, GithubError> {
+		let query = "query($owner: String!, $repo: String!, $ref: String!, $path: String!, $after: String) { repository(owner: $owner, name: $repo) { object(expression: $ref) { ... on Commit { history(path: $path, first: 100, after: $after) { pageInfo { hasNextPage endCursor } nodes {
+			oid committedDate
+			author { name user { login } }
+			file(path: $path) { object { ... on Blob { text } } }
+		} } } } } }";
+		#[derive(Deserialize)]
+		#[serde(rename_all = "camelCase")]
+		struct PageInfo {
+			has_next_page: bool,
+			end_cursor: Option<String>,
+		}
+		#[derive(Deserialize)]
+		#[serde(rename_all = "camelCase")]
+		struct Page {
+			page_info: PageInfo,
+			nodes: Vec<Node>,
+		}
+		#[derive(Deserialize)]
+		#[serde(rename_all = "camelCase")]
+		struct Node {
+			oid: String,
+			committed_date: jiff::Timestamp,
+			author: Author,
+			file: Option<File>,
+		}
+		#[derive(Deserialize)]
+		struct Author {
+			name: String,
+			user: Option<User>,
+		}
+		#[derive(Deserialize)]
+		struct User {
+			login: String,
+		}
+		#[derive(Deserialize)]
+		struct File {
+			object: Blob,
+		}
+		#[derive(Deserialize)]
+		struct Blob {
+			text: String,
+		}
+		let context = format!("history of {path} on {repo}@{branch}");
+		let mut commits = Vec::new();
+		let mut after: Option<String> = None;
+		loop {
+			let variables = serde_json::json!({ "owner": repo.owner().expect("github repo"), "repo": repo.repo(), "ref": branch, "path": path, "after": after });
+			let mut response = self.graphql(repo, query, variables, &context).await.map_err(|e| not_found_as_404(e, &context))?;
+			let page = response
+				.pointer_mut("/data/repository/object/history")
+				.map(serde_json::Value::take)
+				.ok_or_else(|| GithubError::new_graphql(format!("{context}: no branch {branch} in {response}")))?;
+			let page: Page = serde_json::from_value(page).map_err(|e| GithubError::new_graphql(format!("{context}: {e}")))?;
+			commits.extend(page.nodes.into_iter().map(|n| FileCommit {
+				sha: n.oid,
+				author: n.author.user.map_or(n.author.name, |u| u.login),
+				at: n.committed_date,
+				content: n.file.map(|f| f.object.text),
+			}));
+			match page.page_info.has_next_page {
+				true =>
+					after = Some(
+						page.page_info
+							.end_cursor
+							.ok_or_else(|| GithubError::new_graphql(format!("{context}: a next page without a cursor")))?,
+					),
+				false => break,
+			}
+		}
+		commits.reverse(); // GitHub lists newest first
+		Ok(commits)
+	}
+
+	async fn propose_file(&self, repo: RepoInfo, proposal: &FileProposal) -> Result<String, GithubError> {
+		use base64::Engine as _;
+		let FileProposal {
+			base,
+			head,
+			path,
+			content,
+			title,
+			body,
+		} = proposal;
+		let api = format!("https://api.github.com/repos/{}/{}", repo.owner().expect("github repo"), repo.repo());
+		async fn read<T: serde::de::DeserializeOwned>(res: reqwest::Response, context: &str) -> Result<T, GithubError> {
+			if !res.status().is_success() {
+				let status = res.status();
+				let body = res.text().await.unwrap_or_default();
+				return Err(GithubError::new_api(status, body, context.to_string()));
+			}
+			Ok(res.json().await?)
+		}
+		#[derive(Deserialize)]
+		struct Ref {
+			object: Sha,
+		}
+		#[derive(Deserialize)]
+		struct Sha {
+			sha: String,
+		}
+		#[derive(Deserialize)]
+		struct Pull {
+			html_url: String,
+		}
+		let at: Ref = read(self.get(&format!("{api}/git/ref/heads/{base}")).send().await?, &format!("read {base} of {repo}")).await?;
+		let _: serde_json::Value = read(
+			self.post(&format!("{api}/git/refs"))
+				.json(&serde_json::json!({ "ref": format!("refs/heads/{head}"), "sha": at.object.sha }))
+				.send()
+				.await?,
+			&format!("branch {head} off {base} of {repo}"),
+		)
+		.await?;
+		let blob: Sha = read(self.get(&format!("{api}/contents/{path}?ref={base}")).send().await?, &format!("read {path} of {repo}")).await?;
+		let _: serde_json::Value = read(
+			self.request(reqwest::Method::PUT, &format!("{api}/contents/{path}"))
+				.json(&serde_json::json!({ "message": title, "content": base64::engine::general_purpose::STANDARD.encode(content), "sha": blob.sha, "branch": head }))
+				.send()
+				.await?,
+			&format!("write {path} on {head} of {repo}"),
+		)
+		.await?;
+		let pull: Pull = read(
+			self.post(&format!("{api}/pulls"))
+				.json(&serde_json::json!({ "title": title, "head": head, "base": base, "body": body }))
+				.send()
+				.await?,
+			&format!("open a pull request onto {base} of {repo}"),
+		)
+		.await?;
+		Ok(pull.html_url)
+	}
+
 	async fn list_labels(&self, repo: RepoInfo) -> Result<BTreeMap<String, Color>, GithubError> {
 		#[derive(Deserialize)]
 		struct Label {
@@ -1317,6 +1478,14 @@ impl GithubClient for RetryingGithubClient {
 
 	async fn list_repo_prs(&self, repo: RepoInfo, after: Option<&str>) -> Result<PrPage, GithubError> {
 		retrying!(self.inner.list_repo_prs(repo, after))
+	}
+
+	async fn file_history(&self, repo: RepoInfo, path: &str, branch: &str) -> Result<Vec<FileCommit>, GithubError> {
+		retrying!(self.inner.file_history(repo, path, branch))
+	}
+
+	async fn propose_file(&self, repo: RepoInfo, proposal: &FileProposal) -> Result<String, GithubError> {
+		retrying!(self.inner.propose_file(repo, proposal))
 	}
 }
 

@@ -6,16 +6,103 @@
 /* literals ev_lib 0.32's dioxus components carry outside its class inventory */
 @source inline("duration-300 group-data-[state=open]:rotate-180 isolate md:block md:hidden sm:block rotate-45 rounded-tl-sm size-3 top-[1px] top-[60%] right-2 z-10 z-40 mb-1");
 
-/* tilers' tiles in the kit's colours */
+/* the design's column tints (Notion's dark palette) and fixed dimensions, beside the kit's tokens */
+:root {
+	--tint-gray: #979a9b;
+	--tint-brown: #937264;
+	--tint-orange: #ffa344;
+	--tint-yellow: #ffdc49;
+	--tint-green: #4dab9a;
+	--tint-blue: #529cca;
+	--tint-purple: #9a6dd7;
+	--tint-pink: #e255a1;
+	--tint-red: #ff7369;
+	--size-rail: 248px;
+	--size-tab: 32px;
+	--size-topbar: 40px;
+}
+@theme inline {
+	--color-tint-gray: var(--tint-gray);
+	--color-tint-brown: var(--tint-brown);
+	--color-tint-orange: var(--tint-orange);
+	--color-tint-yellow: var(--tint-yellow);
+	--color-tint-green: var(--tint-green);
+	--color-tint-blue: var(--tint-blue);
+	--color-tint-purple: var(--tint-purple);
+	--color-tint-pink: var(--tint-pink);
+	--color-tint-red: var(--tint-red);
+}
+@utility text-mono-s {
+	font-family: var(--font-mono);
+	font-size: 0.6875rem;
+	line-height: 1rem;
+}
+@utility text-mono {
+	font-family: var(--font-mono);
+	font-size: 0.75rem;
+	line-height: 1rem;
+}
+@utility text-overline {
+	font-size: 0.6875rem;
+	line-height: 0.875rem;
+	font-weight: 500;
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+}
+
+/* tilers' tiles as the design draws them (Figma: TileBar, Tab, BoardColumn); tilers' own rules yield to these */
 :root {
 	--tl-accent: var(--primary);
 	--tl-fg: var(--ink);
 	--tl-group-bg: var(--card);
-	--tl-tab-bg: var(--muted);
+	--tl-tab-bg: transparent;
 	--tl-tab-active-bg: var(--card);
 	--tl-tab-active-fg: var(--ink);
-	--tl-tab-border: var(--border);
-	--tl-tabstrip-bg: var(--background);
+	--tl-tab-border: var(--border-subtle);
+	--tl-tabstrip-bg: var(--muted);
+	--tl-gap: 4px;
+	--tl-radius: var(--radius);
+	--tl-grip: radial-gradient(circle, var(--ink-faint) 1px, transparent 1.2px) center / 4px 4px;
+}
+.tl-header {
+	background: var(--muted);
+	border-bottom: 1px solid var(--border-subtle);
+	padding-top: 0;
+}
+.tl-tab {
+	padding: 0 8px 0 12px;
+	color: var(--ink-mid);
+}
+.tl-tab:hover {
+	filter: none;
+	color: var(--ink);
+}
+.tl-tab.tl-active {
+	box-shadow: inset 0 2px 0 var(--primary);
+}
+/* a board's columns: each tile a column on the muted plane, its header the group's */
+.cols {
+	--tl-gap: 8px;
+	--tl-group-bg: var(--muted);
+	--tl-tab-border: var(--border-subtle);
+}
+.cols .tl-tile {
+	padding: 4px;
+}
+.cols .tl-header {
+	background: var(--card);
+	border: 0;
+	border-radius: var(--radius);
+}
+.cols .tl-tab,
+.cols .tl-tab.tl-active {
+	padding: 0 4px 0 8px;
+	border: 0;
+	background: transparent;
+	box-shadow: none;
+}
+.cols .tl-content-slot {
+	padding-top: 6px;
 }
 body {
 	background: var(--background);

@@ -1,50 +1,28 @@
-//! An issue tab: its fields, each edited against the value it showed, and any clash on it, inline. A
-//! pull request's tab only shows it.
-
-use std::str::FromStr as _;
+//! An issue tab (Figma: IssuePanel): every row edits in place, against the value it showed; a clash shows
+//! both values with three ways out. A pull request's tab only shows it.
 
 use dioxus::prelude::*;
-use ev_lib::uikit_dioxus::*;
+use ev_lib::uikit_dioxus::{Spinner, Textarea};
 use tedi_core::{
 	IssueLink,
 	board::{Card, Shown},
-	conflict::{Conflict, Field, FieldEdit, list, sides},
-	workflow::State,
+	conflict::{Conflict, Field as EditedField, FieldEdit, list, sides},
 };
 
-use super::{Ctx, view::CardView};
+use super::{
+	Ctx,
+	card::{Avatar, CardView, Field, ago},
+	icons::{Glyph, Icon},
+	kit::{Btn, IconBtn, MenuItem, Picker, Style},
+};
 use crate::api;
 
 #[component]
 pub fn IssuePanel(link: IssueLink) -> Element {
 	let ctx = use_context::<Ctx>();
 	let Some(card) = ctx.card(&link) else {
-		return rsx! { div { class: "p-3 text-sm", "{link} is not on the board: not stored here, or not loaded yet" } };
+		return rsx! { div { class: "p-4 text-body text-ink-soft", "{link} is not on the board: not stored here, or not loaded yet" } };
 	};
-	if let Some(pr) = &card.pr {
-		return rsx! {
-			div { class: "flex h-full flex-col gap-3 overflow-auto p-3 text-sm",
-				div { class: "flex flex-wrap items-center gap-2",
-					a { class: "text-ink-soft hover:underline", href: "{link}", target: "_blank", "{link.project()}#{link.number()}" }
-					Badge { variant: BadgeVariant::Info, "PR {pr.state}" }
-					for (workflow , at) in card.states.iter() { Badge { key: "{workflow}", "{at}" } }
-					span { class: "text-ink-soft", "by @{pr.author}" }
-				}
-				div { class: "font-medium", "{card.title}" }
-				if !card.assignees.is_empty() { div { class: "text-ink-soft", for a in card.assignees.iter() { "@{a} " } } }
-				if !card.labels.is_empty() { div { class: "flex flex-wrap gap-1", for l in card.labels.iter() { Badge { "{l}" } } } }
-				if !pr.closes.is_empty() {
-					div { class: "flex flex-wrap items-center gap-1",
-						span { class: "text-ink-soft", "closes" }
-						for issue in pr.closes.clone() {
-							button { class: "hover:underline", onclick: { let issue = issue.clone(); move |_| ctx.open_issue(issue.clone()) }, "{issue.shorthand(link.project())}" }
-						}
-					}
-				}
-				div { class: "whitespace-pre-wrap", "{card.body}" }
-			}
-		};
-	}
 	let conflict = ctx.conflicts.read().get(&link).cloned();
 	let children: Vec<Card> = ctx
 		.board
@@ -56,34 +34,95 @@ pub fn IssuePanel(link: IssueLink) -> Element {
 		.filter(|c| c.parent.as_ref() == Some(&link))
 		.cloned()
 		.collect();
+	let body = card.body.split("\n# Blockers").next().expect("split yields at least one piece").trim_end().to_string(); // the blockers show as their own field
+	let editable = card.pr.is_none();
 	rsx! {
-		div { class: "flex h-full flex-col gap-3 overflow-auto p-3 text-sm",
+		div { class: "flex h-full flex-col gap-3 overflow-auto bg-card px-4 py-3",
+			div { class: "flex h-6 shrink-0 items-center gap-1.5",
+				Icon { glyph: if card.pr.is_some() { Glyph::Pr } else { Glyph::Issue }, class: "size-3.5 text-positive-ink" }
+				a { class: "truncate text-mono-s text-ink-soft hover:underline", href: "{link}", target: "_blank", "{link.project()}#{link.number()}" }
+				div { class: "flex-1" }
+				IconBtn { glyph: Glyph::Link, title: "Copy its link", onclick: { let link = link.clone(); move |_| copy(ctx, link.to_string()) } }
+			}
+			if editable {
+				Title { link: link.clone(), current: card.title.clone() }
+			} else {
+				h2 { class: "text-h2 text-ink", "{card.title}" }
+			}
 			if let Some(conflict) = conflict { Clashes { link: link.clone(), conflict } }
 			if card.conflicted { Recorded { link: link.clone() } }
-			div { class: "flex items-center gap-2",
-				a { class: "text-ink-soft hover:underline", href: "{link}", target: "_blank", "{link.project()}#{link.number()}" }
-				StatePicker { card: card.clone() }
-			}
-			Editable { link: link.clone(), field: Field::Title, current: card.title.clone(), multiline: false }
-			Editable { link: link.clone(), field: Field::Labels, current: list(&card.labels), multiline: false }
-			Editable { link: link.clone(), field: Field::Assignees, current: list(&card.assignees), multiline: false }
-			if !card.blocked_by.is_empty() {
-				div { class: "flex flex-wrap items-center gap-1",
-					span { class: "text-ink-soft", "blocked by" }
-					for b in card.blocked_by.clone() {
-						button { class: "hover:underline", onclick: { let b = b.clone(); move |_| ctx.open_issue(b.clone()) }, "{b.shorthand(link.project())}" }
+			div { class: "flex flex-wrap items-center gap-2", StatePicker { card: card.clone() } }
+			div { class: "flex flex-col",
+				if let Some(pr) = &card.pr {
+					Row { label: "author", span { class: "flex items-center gap-1.5 text-body text-ink", Avatar { login: pr.author.clone() } "{pr.author}" } }
+					Row { label: "closes",
+						for issue in pr.closes.clone() {
+							button { key: "{issue}", r#type: "button", class: "text-body text-accent-info-ink hover:underline", onclick: { let issue = issue.clone(); move |_| ctx.open_issue(issue.clone()) }, "{issue.shorthand(link.project())}" }
+						}
+					}
+				} else {
+					Row { label: "importance", Field { card: card.clone(), shown: Shown::Importance } }
+					Row { label: "hours", Field { card: card.clone(), shown: Shown::Hours } }
+				}
+				Row { label: "labels",
+					Field { card: card.clone(), shown: Shown::Type }
+					Field { card: card.clone(), shown: Shown::Labels }
+					if editable { AddLabel { card: card.clone() } }
+				}
+				Row { label: "assignees",
+					if editable {
+						Editable { link: link.clone(), field: EditedField::Assignees, current: list(&card.assignees), multiline: false,
+							span { class: "flex flex-wrap items-center gap-2",
+								if card.assignees.is_empty() { span { class: "text-body text-ink-faint", "nobody" } }
+								for a in card.assignees.iter() { span { key: "{a}", class: "flex items-center gap-1.5 text-body text-ink", Avatar { login: a.clone() } "{a}" } }
+							}
+						}
+					} else {
+						for a in card.assignees.iter() { span { key: "{a}", class: "flex items-center gap-1.5 text-body text-ink", Avatar { login: a.clone() } "{a}" } }
+					}
+				}
+				if !card.blocked_by.is_empty() {
+					Row { label: "blockers",
+						for b in card.blocked_by.clone() {
+							button {
+								key: "{b}",
+								r#type: "button",
+								class: "flex min-w-0 max-w-full items-center gap-1 text-body text-accent-error hover:underline",
+								onclick: { let b = b.clone(); move |_| ctx.open_issue(b.clone()) },
+								Icon { glyph: Glyph::Blocker, class: "size-3 shrink-0" }
+								span { class: "truncate whitespace-nowrap",
+									"{b.shorthand(link.project())}"
+									if let Some(c) = ctx.card(&b) { " {c.title}" }
+								}
+							}
+						}
+					}
+				}
+				Row { label: "sprint", Field { card: card.clone(), shown: Shown::Sprint } }
+				if !card.prs.is_empty() {
+					Row { label: "linked PR",
+						for pr in card.prs.iter() {
+							a { key: "{pr.url}", class: "flex items-center gap-1 text-body text-accent-info-ink hover:underline", href: "{pr.url}", target: "_blank",
+								Icon { glyph: Glyph::Pr, class: "size-3" }
+								"#{pr.url.rsplit('/').next().expect(\"a url has a last segment\")} · {pr.state}"
+							}
+						}
 					}
 				}
 			}
-			if !card.prs.is_empty() {
-				div { class: "flex flex-wrap gap-1",
-					for pr in card.prs.iter() { a { href: "{pr.url}", target: "_blank", Badge { "PR {pr.state}" } } }
+			if editable {
+				Editable { link: link.clone(), field: EditedField::Body, current: card.body.clone(), multiline: true,
+					div { class: "text-body whitespace-pre-wrap text-ink-mid", if body.is_empty() { span { class: "text-ink-faint", "No body" } } else { "{body}" } }
 				}
+			} else {
+				div { class: "text-body whitespace-pre-wrap text-ink-mid", "{body}" }
 			}
-			Editable { link: link.clone(), field: Field::Body, current: card.body.clone(), multiline: true }
+			if let Some(at) = card.updated {
+				span { class: "flex items-center gap-1.5 text-caption text-ink-faint", Icon { glyph: Glyph::Sync, class: "size-3" } "changed {ago(at)}" }
+			}
 			if !children.is_empty() {
-				div { class: "flex flex-col gap-1",
-					span { class: "text-ink-soft", "sub-issues" }
+				div { class: "flex flex-col gap-1.5",
+					span { class: "text-overline text-ink-soft", "Sub-issues" }
 					for child in children {
 						CardView { key: "{child.link}", card: child.clone(), shown: ctx.workflows().into_keys().map(Shown::State).chain([Shown::Assignees]).collect::<Vec<_>>() }
 					}
@@ -93,28 +132,110 @@ pub fn IssuePanel(link: IssueLink) -> Element {
 	}
 }
 
-/// A drop on another column of each workflow, for when there is no board to drag on (a phone).
+fn copy(ctx: Ctx, text: String) {
+	ev_lib::uikit_dioxus::write_clipboard(&text.clone(), move |copied| match copied {
+		true => ctx.say("copy", super::toast::Tone::Success, format!("Copied {text}"), None),
+		false => ctx.say("copy", super::toast::Tone::Error, "the browser refused the clipboard", None),
+	});
+}
+
+/// \`label · value\`, one property per row.
+#[component]
+fn Row(label: &'static str, children: Element) -> Element {
+	rsx! {
+		div { class: "flex min-h-[30px] items-center gap-2 border-b border-border-subtle py-1",
+			span { class: "w-[88px] shrink-0 text-body-s text-ink-soft", "{label}" }
+			div { class: "flex min-w-0 flex-1 flex-wrap items-center gap-1", {children} }
+		}
+	}
+}
+
+/// The title, edited in place against what it showed.
+#[component]
+fn Title(link: IssueLink, current: String) -> Element {
+	let ctx = use_context::<Ctx>();
+	let mut draft = use_signal(|| None::<(String, String)>);
+	match draft() {
+		None => rsx! {
+			h2 {
+				class: "cursor-text rounded-[var(--control-radius)] text-h2 text-ink hover:bg-hover",
+				title: "Click to edit",
+				onclick: { let current = current.clone(); move |_| draft.set(Some((current.clone(), current.clone()))) },
+				"{current}"
+			}
+		},
+		Some((seen, text)) => rsx! {
+			input {
+				class: "rounded-[var(--control-radius)] border border-ring bg-transparent px-1 text-h2 text-ink outline-none",
+				value: text,
+				autofocus: true,
+				oninput: { let seen = seen.clone(); move |e: FormEvent| draft.set(Some((seen.clone(), e.value()))) },
+				onkeydown: move |e: KeyboardEvent| match e.key() {
+					Key::Enter => {
+						let (seen, new) = draft.take().expect("editing");
+						if seen != new {
+							spawn(ctx.edit(link.clone(), vec![FieldEdit { field: EditedField::Title, seen, new }]));
+						}
+					}
+					Key::Escape => draft.set(None),
+					_ => {}
+				},
+			}
+		},
+	}
+}
+
+/// \`+\`: a label typed in, added to what the card shows.
+#[component]
+fn AddLabel(card: Card) -> Element {
+	let ctx = use_context::<Ctx>();
+	let mut typing = use_signal(|| None::<String>);
+	match typing() {
+		None => rsx! { IconBtn { glyph: Glyph::Plus, title: "Add a label", onclick: move |_| typing.set(Some(String::new())) } },
+		Some(text) => rsx! {
+			input {
+				class: "h-[18px] w-28 rounded-[var(--chip-radius)] border border-ring bg-transparent px-1.5 text-mono-s text-ink outline-none",
+				value: text,
+				autofocus: true,
+				placeholder: "label",
+				oninput: move |e: FormEvent| typing.set(Some(e.value())),
+				onkeydown: move |e: KeyboardEvent| match e.key() {
+					Key::Enter => {
+						let label = typing.take().expect("typing").trim().to_string();
+						if !label.is_empty() && !card.labels.contains(&label) {
+							let mut labels = card.labels.clone();
+							labels.push(label);
+							spawn(ctx.edit(card.link.clone(), vec![FieldEdit { field: EditedField::Labels, seen: list(&card.labels), new: list(&labels) }]));
+						}
+					}
+					Key::Escape => typing.set(None),
+					_ => {}
+				},
+			}
+		},
+	}
+}
+
+/// One select per workflow the card sits in: \`kanban / triage ▾\`.
 #[component]
 fn StatePicker(card: Card) -> Element {
 	let ctx = use_context::<Ctx>();
 	rsx! {
 		for (name , workflow) in ctx.workflows() {
-			Select {
-				key: "{name}",
-				value: card.states[&name].to_string(),
-				on_value_change: {
-					let (card, name) = (card.clone(), name.clone());
-					move |s: String| {
-						let to = State::from_str(&s).expect("offered from the workflow's leaves");
-						if card.states[&name] != to {
-							spawn(ctx.move_card(card.clone(), name.clone(), to));
-						}
-					}
-				},
-				SelectTrigger { size: Size::Sm, SelectValue {} }
-				SelectContent {
-					for leaf in workflow.leaves() {
-						SelectItem { value: leaf.to_string(), text_value: leaf.to_string(), "{leaf}" }
+			Picker { key: "{name}", glyph: if name == "pull_requests" { Glyph::Pr } else { Glyph::Board }, label: format!("{name} / {}", card.states[&name]),
+				for leaf in workflow.leaves() {
+					MenuItem {
+						key: "{leaf}",
+						selected: card.states[&name] == leaf,
+						label: leaf.to_string(),
+						onclick: {
+							let (card, name, leaf) = (card.clone(), name.clone(), leaf.clone());
+							move |_| {
+								if card.states[&name] != leaf {
+									spawn(ctx.move_card(card.clone(), name.clone(), leaf.clone()));
+								}
+							}
+						},
 					}
 				}
 			}
@@ -122,18 +243,26 @@ fn StatePicker(card: Card) -> Element {
 	}
 }
 
-/// A field shown as it is; editing it remembers what it showed then, which the edit is made against.
+/// A field shown as \`children\`; editing it remembers what it showed then, which the edit is made against.
 #[component]
-fn Editable(link: IssueLink, field: Field, current: String, multiline: bool) -> Element {
+fn Editable(link: IssueLink, field: EditedField, current: String, multiline: bool, children: Element) -> Element {
 	let ctx = use_context::<Ctx>();
 	let mut draft = use_signal(|| None::<(String, String)>);
 	let Some((seen, text)) = draft() else {
-		let shown = current.clone();
 		return rsx! {
-			div { class: "group flex items-start gap-2",
-				span { class: "w-20 shrink-0 text-ink-soft", "{field}" }
-				div { class: if multiline { "flex-1 whitespace-pre-wrap" } else { "flex-1" }, "{shown}" }
-				Button { variant: ButtonVariant::Ghost, size: Size::Xs, r#type: "button", onclick: move |_| draft.set(Some((current.clone(), current.clone()))), "edit" }
+			div { class: if multiline { "group/ed flex min-w-0 flex-col gap-1" } else { "group/ed flex min-w-0 flex-1 flex-col gap-1" },
+				if multiline {
+					div { class: "flex h-6 items-center",
+						span { class: "flex-1 text-overline text-ink-soft", "{field}" }
+						Btn { style: Style::Ghost, glyph: Glyph::Pencil, onclick: move |_| draft.set(Some((current.clone(), current.clone()))), "Edit" }
+					}
+					{children}
+				} else {
+					div { class: "flex items-center gap-1",
+						{children}
+						span { class: "opacity-0 group-hover/ed:opacity-100", IconBtn { glyph: Glyph::Pencil, title: "Edit {field}", onclick: move |_| draft.set(Some((current.clone(), current.clone()))) } }
+					}
+				}
 			}
 		};
 	};
@@ -143,16 +272,16 @@ fn Editable(link: IssueLink, field: Field, current: String, multiline: bool) -> 
 	};
 	let oninput = move |e: FormEvent| draft.set(Some((seen.clone(), e.value())));
 	rsx! {
-		div { class: "flex flex-col gap-1",
-			span { class: "text-ink-soft", "{field}" }
+		div { class: "flex min-w-0 flex-1 flex-col gap-1.5",
 			if multiline {
-				Textarea { value: text, rows: 12, oninput }
+				span { class: "text-overline text-ink-soft", "{field}" }
+				textarea { class: "min-h-48 rounded-[var(--control-radius)] border border-ring bg-transparent p-2 text-body text-ink outline-none", value: text, oninput }
 			} else {
-				Input { value: text, oninput }
+				input { class: "h-7 rounded-[var(--control-radius)] border border-ring bg-transparent px-2 text-body text-ink outline-none", value: text, oninput }
 			}
 			div { class: "flex gap-1",
-				Button { size: Size::Sm, r#type: "button", onclick: save, "Save" }
-				Button { variant: ButtonVariant::Ghost, size: Size::Sm, r#type: "button", onclick: move |_| draft.set(None), "Cancel" }
+				Btn { style: Style::Primary, onclick: save, "Save" }
+				Btn { style: Style::Ghost, onclick: move |_| draft.set(None), "Cancel" }
 			}
 		}
 	}
@@ -191,37 +320,44 @@ fn Clashes(link: IssueLink, conflict: Conflict) -> Element {
 	};
 	let yours: Vec<String> = conflict.clashes.iter().map(|c| c.local.clone()).collect();
 	rsx! {
-		div { class: "flex flex-col gap-2 rounded-md border border-accent-error p-2",
-			span { class: "font-semibold", "Changed since you saw it" }
+		div { class: "flex flex-col gap-2 rounded-[var(--radius)] border border-chip-warn-border bg-accent-warn/14 px-3 py-2",
 			for (i , c) in conflict.clashes.iter().enumerate() {
-				div { key: "{c.field}", class: "grid grid-cols-[5rem_1fr] gap-1",
-					span { class: "text-ink-soft", "{c.field}" }
-					span {}
-					span { class: "text-ink-soft", "theirs" }
-					div { class: "whitespace-pre-wrap", "{c.remote}" }
-					span { class: "text-ink-soft", "yours" }
-					match merging() {
-						Some(values) => rsx! {
-							Textarea { value: values[i].clone(), rows: 4, oninput: move |e: FormEvent| merging.with_mut(|m| m.as_mut().expect("while merging")[i] = e.value()) }
-						},
-						None => rsx! { div { class: "whitespace-pre-wrap", "{c.local}" } },
+				div { key: "{c.field}", class: "flex flex-col gap-1.5",
+					span { class: "flex items-center gap-1.5 text-body-s font-medium text-accent-warn",
+						Icon { glyph: Glyph::Alert, class: "size-3.5" }
+						"{c.field} changed on GitHub while you edited"
+					}
+					div { class: "flex items-start gap-2",
+						span { class: "w-[120px] shrink-0 text-caption text-ink-soft", "yours" }
+						match merging() {
+							Some(values) => rsx! {
+								textarea { class: "min-h-16 flex-1 rounded-[var(--control-radius)] border border-ring bg-transparent p-1.5 text-body text-ink outline-none", value: values[i].clone(), oninput: move |e: FormEvent| merging.with_mut(|m| m.as_mut().expect("while merging")[i] = e.value()) }
+							},
+							None => rsx! { span { class: "text-body whitespace-pre-wrap text-ink", "{c.local}" } },
+						}
+					}
+					div { class: "flex items-start gap-2",
+						span { class: "w-[120px] shrink-0 text-caption text-ink-soft", "GitHub" }
+						span { class: "text-body whitespace-pre-wrap text-ink", "{c.remote}" }
 					}
 					if let Some(was) = &c.consensus {
-						span { class: "text-ink-soft", "you saw" }
-						div { class: "whitespace-pre-wrap text-ink-soft", "{was}" }
+						div { class: "flex items-start gap-2",
+							span { class: "w-[120px] shrink-0 text-caption text-ink-soft", "you saw" }
+							span { class: "text-body whitespace-pre-wrap text-ink-soft", "{was}" }
+						}
 					}
 				}
 			}
-			div { class: "flex flex-wrap gap-1",
+			div { class: "flex flex-wrap items-center gap-1.5",
 				match merging() {
 					Some(values) => rsx! {
-						Button { size: Size::Sm, r#type: "button", onclick: { let resend = resend.clone(); move |_| resend(values.clone()) }, "Save merged" }
-						Button { variant: ButtonVariant::Ghost, size: Size::Sm, r#type: "button", onclick: move |_| merging.set(None), "Back" }
+						Btn { style: Style::Primary, onclick: { let resend = resend.clone(); move |_| resend(values.clone()) }, "Save merged" }
+						Btn { style: Style::Ghost, onclick: move |_| merging.set(None), "Back" }
 					},
 					None => rsx! {
-						Button { variant: ButtonVariant::Outline, size: Size::Sm, r#type: "button", onclick: forget, "Keep theirs" }
-						Button { variant: ButtonVariant::Outline, size: Size::Sm, r#type: "button", onclick: { let resend = resend.clone(); let yours = yours.clone(); move |_| resend(yours.clone()) }, "Overwrite" }
-						Button { size: Size::Sm, r#type: "button", onclick: { let yours = yours.clone(); move |_| merging.set(Some(yours.clone())) }, "Edit merged" }
+						Btn { style: Style::Primary, onclick: { let resend = resend.clone(); let yours = yours.clone(); move |_| resend(yours.clone()) }, "Keep mine" }
+						Btn { style: Style::Outline, onclick: forget, "Take GitHub" }
+						Btn { style: Style::Ghost, onclick: { let yours = yours.clone(); move |_| merging.set(Some(yours.clone())) }, "Merge…" }
 					},
 				}
 			}
@@ -234,7 +370,6 @@ fn Clashes(link: IssueLink, conflict: Conflict) -> Element {
 #[component]
 fn Recorded(link: IssueLink) -> Element {
 	let ctx = use_context::<Ctx>();
-	let toaster = ctx.toaster;
 	let mut file = use_resource({
 		let link = link.clone();
 		move || api::pending_conflict(link.clone())
@@ -250,10 +385,10 @@ fn Recorded(link: IssueLink) -> Element {
 						editing.set(None);
 						let mut conflicts = ctx.conflicts;
 						conflicts.write().remove(&link);
-						toaster.positive("Resolved");
+						ctx.say(format!("clash:{link}"), super::toast::Tone::Success, "Resolved", None);
 					}
-					Ok(Some(_)) => _ = toaster.warn("Markers remain: it is still pending"),
-					Err(e) => _ = toaster.error(e.to_string()),
+					Ok(Some(_)) => ctx.say(format!("clash:{link}"), super::toast::Tone::Warn, "Markers remain: it is still pending", None),
+					Err(e) => ctx.say(format!("clash:{link}"), super::toast::Tone::Error, e.to_string(), None),
 				}
 				file.restart();
 			});
@@ -265,28 +400,28 @@ fn Recorded(link: IssueLink) -> Element {
 	let content = match loaded {
 		Ok(Some(content)) => content,
 		Ok(None) => return rsx! {},
-		Err(e) => return rsx! { Badge { variant: BadgeVariant::Error, "{e}" } },
+		Err(e) => return rsx! { span { class: "text-caption text-accent-error", "{e}" } },
 	};
 	let sides = sides(&content);
 	rsx! {
-		div { class: "flex flex-col gap-2 rounded-md border border-accent-error p-2",
-			span { class: "font-semibold", "Changed here and on GitHub since they last agreed" }
+		div { class: "flex flex-col gap-2 rounded-[var(--radius)] border border-chip-warn-border bg-accent-warn/14 px-3 py-2",
+			span { class: "flex items-center gap-1.5 text-body-s font-medium text-accent-warn", Icon { glyph: Glyph::Alert, class: "size-3.5" } "changed here and on GitHub since they last agreed" }
 			match editing() {
 				Some(text) => rsx! {
 					Textarea { class: "font-mono", value: text.clone(), rows: 16, oninput: move |e: FormEvent| editing.set(Some(e.value())) }
-					div { class: "flex gap-1",
-						Button { size: Size::Sm, r#type: "button", onclick: { let resolve = resolve.clone(); move |_| resolve(text.clone()) }, "Save merged" }
-						Button { variant: ButtonVariant::Ghost, size: Size::Sm, r#type: "button", onclick: move |_| editing.set(None), "Back" }
+					div { class: "flex gap-1.5",
+						Btn { style: Style::Primary, onclick: { let resolve = resolve.clone(); move |_| resolve(text.clone()) }, "Save merged" }
+						Btn { style: Style::Ghost, onclick: move |_| editing.set(None), "Back" }
 					}
 				},
 				None => rsx! {
-					pre { class: "max-h-64 overflow-auto whitespace-pre-wrap font-mono text-xs", "{content}" }
-					div { class: "flex flex-wrap gap-1",
+					pre { class: "max-h-64 overflow-auto text-mono-s whitespace-pre-wrap text-ink-mid", "{content}" }
+					div { class: "flex flex-wrap gap-1.5",
 						if let Some((local, remote)) = sides {
-							Button { variant: ButtonVariant::Outline, size: Size::Sm, r#type: "button", onclick: { let resolve = resolve.clone(); move |_| resolve(remote.clone()) }, "Keep theirs" }
-							Button { variant: ButtonVariant::Outline, size: Size::Sm, r#type: "button", onclick: { let resolve = resolve.clone(); move |_| resolve(local.clone()) }, "Overwrite" }
+							Btn { style: Style::Primary, onclick: { let resolve = resolve.clone(); move |_| resolve(local.clone()) }, "Keep mine" }
+							Btn { style: Style::Outline, onclick: { let resolve = resolve.clone(); move |_| resolve(remote.clone()) }, "Take GitHub" }
 						}
-						Button { size: Size::Sm, r#type: "button", onclick: move |_| editing.set(Some(content.clone())), "Edit merged" }
+						Btn { style: Style::Ghost, onclick: move |_| editing.set(Some(content.clone())), "Merge…" }
 					}
 				},
 			}

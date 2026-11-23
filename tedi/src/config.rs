@@ -64,6 +64,11 @@ pub struct Board {
 	/// Column colorings every viewer is offered (`[board.columns.notion] by = "state:kanban"`, `tints = { triage = "orange" }`).
 	#[serde(default)] // a board may have none
 	pub columns: BTreeMap<String, tedi_web::api::Columns>,
+	/// Dock arrangements every viewer is offered, per band (`Xl = "<tilers layout>"`).
+	#[serde(default)] // a board may have none
+	pub workspaces: BTreeMap<String, tedi_web::api::Arrangement>,
+	/// Where this board's team config lives in git: its history numbers each object's versions, and a proposal is a pull request on it.
+	pub source: Option<tedi_web::Source>,
 }
 impl Board {
 	/// Its workflows, loaded with their hooks; every workflow a view or a column coloring names is among them.
@@ -84,7 +89,7 @@ impl Board {
 		for view in &self.views {
 			let mut named: Vec<&String> = view.shown.iter().filter_map(|s| if let Shown::State(w) = s { Some(w) } else { None }).collect();
 			named.extend(if let GroupBy::State(w) = &view.group_by { Some(w) } else { None });
-			named.extend(if let SortKey::State(w) = &view.sort.by { Some(w) } else { None });
+			named.extend(view.sort.keys().iter().filter_map(|s| if let SortKey::State(w) = &s.by { Some(w) } else { None }));
 			if let Some(w) = named.into_iter().find(|w| !loaded.contains_key(*w)) {
 				bail!("the view {} names the workflow {w}, and `board.workflows` doesn't", view.name);
 			}

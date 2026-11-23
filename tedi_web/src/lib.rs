@@ -7,4 +7,4 @@ mod server;
 pub mod ui;
 
 #[cfg(feature = "server")]
-pub use server::{Settings, Viewer, serve};
+pub use server::{Settings, Source, Viewer, serve};

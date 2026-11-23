@@ -108,57 +108,9 @@
             '';
             doCheck = false;
           };
-          # What the team instance and `nix run .#dev` show.
-          teamBoard = {
-            watch = [ "EV-Main" "EV-Estate" "EV-Service-Arb" ];
-            board = {
-              workflows = {
-                kanban = "preset:kanban";
-                pull_requests = "preset:pull_requests";
-              };
-              views = [
-                {
-                  name = "Triage";
-                  query = "is:issue is:open state:kanban/icebox,kanban/triage,kanban/selected,kanban/in_progress,kanban/in_review";
-                  layout = "board";
-                  group_by = "state:kanban";
-                  sort = "rank";
-                  shown = [ "repo" "assignees" "importance" "hours" "type" "blockers" ];
-                }
-                {
-                  name = "PRs";
-                  query = "is:pr is:open";
-                  layout = "list";
-                  group_by = "state:pull_requests";
-                  sort = "rank";
-                  shown = [ "repo" "assignees" "prs" "labels" ];
-                }
-                {
-                  name = "Assigned";
-                  query = "assignee:@me is:open";
-                  layout = "list";
-                  group_by = "state:kanban";
-                  sort = "rank";
-                  shown = [ "repo" "state:kanban" "importance" "hours" ];
-                }
-              ];
-              columns.notion = {
-                by = "state:kanban";
-                tints = {
-                  triage = "orange";
-                  selected = "blue";
-                  in_progress = "blue";
-                  in_review = "purple";
-                  done = "green";
-                };
-              };
-              scopes.EV = {
-                views = [ "Triage" "PRs" "Assigned" ];
-                EV-Main.repos = [ "EV-Main/*" ];
-                EV-Estate.repos = [ "EV-Estate/*" ];
-                EV-Service-Arb.repos = [ "EV-Service-Arb/*" ];
-              };
-            };
+          # What the team instance and `nix run .#dev` show; `source` is where that file lives, for its history and proposals.
+          teamBoard = pkgs.lib.recursiveUpdate (builtins.fromTOML (builtins.readFile ./board.toml)) {
+            board.source = { repo = "valeratrades/tedi"; path = "board.toml"; branch = "main"; };
           };
           # The team instance, at evinvest.ltd/team/tasks: its own store on the volume, git-initialized on first boot.
           board = pkgs.writeShellApplication {

@@ -314,6 +314,30 @@ impl TestContext {
 		self.rebuild_mock_state();
 	}
 
+	/// Github's `owner/repo` gains a commit by `author` setting `path` to `content`, an hour after the one before.
+	pub fn remote_file_commit(&self, repo: &str, path: &str, author: &str, content: &str) {
+		with_state(self, |s| {
+			let at = jiff::Timestamp::from_second(BASE_TIMESTAMP_SECS + 3600 * s.remote_file_commits.len() as i64).unwrap();
+			s.remote_file_commits.push((repo.to_string(), path.to_string(), author.to_string(), at, content.to_string()));
+		});
+		self.rebuild_mock_state();
+	}
+
+	/// The pull requests `propose_file` opened, oldest first.
+	pub fn remote_proposals(&self) -> Vec<tedi_task_operations::github::FileProposal> {
+		#[derive(serde::Deserialize)]
+		struct State {
+			#[serde(default)] // a mock that never proposed writes none
+			proposals: Vec<Proposal>,
+		}
+		#[derive(serde::Deserialize)]
+		struct Proposal {
+			proposal: tedi_task_operations::github::FileProposal,
+		}
+		let state: State = serde_json::from_str(&std::fs::read_to_string(&self.mock_state_path).unwrap()).unwrap();
+		state.proposals.into_iter().map(|p| p.proposal).collect()
+	}
+
 	/// Commits in the store's git history: one per consensus advance.
 	pub fn git_commit_count(&self) -> usize {
 		let out = Command::new("git")
@@ -575,6 +599,18 @@ impl TestContext {
 			}
 			if !comments.is_empty() {
 				mock_state["comments"] = serde_json::Value::Array(comments);
+			}
+			let mut files: Vec<serde_json::Value> = Vec::new();
+			for (repo, path, author, at, content) in &state.remote_file_commits {
+				let (owner, name) = repo.split_once('/').expect("owner/repo");
+				let commit = serde_json::json!({ "author": author, "at": at.to_string(), "content": content });
+				match files.iter_mut().find(|f| f["owner"] == owner && f["repo"] == name && f["path"] == path.as_str()) {
+					Some(file) => file["commits"].as_array_mut().unwrap().push(commit),
+					None => files.push(serde_json::json!({ "owner": owner, "repo": name, "path": path, "commits": [commit] })),
+				}
+			}
+			if !files.is_empty() {
+				mock_state["files"] = serde_json::Value::Array(files);
 			}
 
 			self.setup_mock_state(&mock_state);
@@ -1318,6 +1354,8 @@ struct GitState {
 	remote_pull_requests: Vec<(String, String, tedi_core::PullRequest)>,
 	/// (blocked, blocker, unlinked at)
 	remote_unlinked: Vec<(tedi_task_operations::IssueLink, tedi_task_operations::IssueLink, jiff::Timestamp)>,
+	/// (owner/repo, path, author, at, content)
+	remote_file_commits: Vec<(String, String, String, jiff::Timestamp, String)>,
 	/// Track which (owner, repo, number) have been added to remote
 	remote_issue_ids: HashSet<(String, String, u64)>,
 }
