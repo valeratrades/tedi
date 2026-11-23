@@ -1042,8 +1042,19 @@ mod tests {
 		let cards = cards();
 		let hits: Vec<usize> = (0..cards.len()).collect();
 		let out: Vec<String> = [
-			"rank", "-rank", "importance", "-importance", "hours", "-hours", "state:kanban", "-number", "updated",
-			"state:kanban,-importance", "hours,rank", "-hours,-rank", "state:kanban,hours",
+			"rank",
+			"-rank",
+			"importance",
+			"-importance",
+			"hours",
+			"-hours",
+			"state:kanban",
+			"-number",
+			"updated",
+			"state:kanban,-importance",
+			"hours,rank",
+			"-hours,-rank",
+			"state:kanban,hours",
 		]
 		.into_iter()
 		.map(|s| {
