@@ -17,6 +17,7 @@ pub mod clockify_tracking;
 pub mod conflict_resolve;
 pub mod mv;
 pub mod open_interactions;
+pub mod picked;
 pub mod pull;
 pub mod reach;
 pub mod search;

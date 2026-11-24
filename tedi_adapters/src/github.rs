@@ -1669,7 +1669,7 @@ pub mod client {
 	}
 	impl Actor {
 		/// `login`'s, by `keys`: a token per owner.
-		pub fn new(login: Option<String>, keys: &BTreeMap<String, String>) -> Result<Self, GithubError> {
+		pub fn try_new(login: Option<String>, keys: &BTreeMap<String, String>) -> Result<Self, GithubError> {
 			Ok(Self {
 				client: default()?.keyed(keys),
 				owners: keys.keys().cloned().collect(),

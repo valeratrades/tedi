@@ -21,9 +21,10 @@ reqwest.workspace = true
 rustls.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 tedi_core.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["sync", "time", "rt"] }
+tokio = { workspace = true, features = ["io-util", "net", "rt", "sync", "time"] }
 tracing.workspace = true
 tracing-error.workspace = true # `#[wrap_err]` expands to it
 urlencoding.workspace = true

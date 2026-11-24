@@ -19,94 +19,6 @@ use tokio::sync::Mutex;
 use super::{Viewer, settings, viewer};
 use crate::api::{self, AccountEdit, Key, Outcome, Stored};
 
-/// A request's viewer.
-pub(super) struct Caller {
-	pub(super) reach: Reach,
-	/// `None`: the instance itself, ungated.
-	actor: Option<Actor>,
-}
-impl Caller {
-	pub(super) fn of(headers: &HeaderMap) -> Result<Self> {
-		let key = viewer(headers)?;
-		match settings().viewer {
-			Viewer::Operator => Ok(Self { reach: Reach::All, actor: None }),
-			Viewer::Header(_) => {
-				let account = read(&key)?;
-				Ok(Self {
-					reach: account.reach(),
-					actor: Some(account.actor()?),
-				})
-			}
-		}
-	}
-
-	/// `f`, done as them.
-	pub(super) async fn act<F: Future>(&self, f: F) -> F::Output {
-		match &self.actor {
-			Some(actor) => github::client::acting(actor.clone(), f).await,
-			None => f.await,
-		}
-	}
-}
-
-/// A viewer's, as kept: readable by this process' user alone.
-#[derive(Default, Deserialize, Serialize)]
-pub(super) struct Account {
-	login: Option<String>,
-	/// By lowercased owner.
-	keys: BTreeMap<String, String>,
-	/// By `owner` or `owner/repo`, lowercased.
-	scopes: BTreeMap<String, Scoped>,
-}
-#[derive(Default, Deserialize, Serialize)]
-struct Scoped {
-	/// What the account's own key listed of it on its last pull.
-	listed: BTreeSet<String>,
-	outcome: Option<Outcome>,
-}
-impl Account {
-	fn reach(&self) -> Reach {
-		let listed = self.scopes.values().flat_map(|s| s.listed.iter().cloned());
-		Reach::Of(settings().watch.iter().map(|w| w.to_lowercase()).chain(listed).collect())
-	}
-
-	fn actor(&self) -> Result<Actor> {
-		Ok(Actor::new(self.login.clone(), &self.keys)?)
-	}
-
-	/// The scopes naming `repo`.
-	fn naming(&self, repo: &str) -> Vec<String> {
-		self.scopes.keys().filter(|s| names(s, repo)).cloned().collect()
-	}
-
-	fn shown(&self) -> api::Account {
-		let outcome_on = |owner: &str| {
-			let outcomes = self.scopes.iter().filter(|(scope, _)| owner_of(scope) == owner).filter_map(|(_, s)| s.outcome.clone());
-			outcomes.max_by_key(|o| (o.error.is_some(), o.at))
-		};
-		api::Account {
-			login: self.login.clone(),
-			keys: self
-				.keys
-				.keys()
-				.map(|owner| Key {
-					owner: owner.clone(),
-					outcome: outcome_on(owner),
-				})
-				.collect(),
-			scopes: self
-				.scopes
-				.iter()
-				.map(|(scope, s)| Stored {
-					scope: scope.clone(),
-					repos: s.listed.len(),
-					outcome: s.outcome.clone(),
-				})
-				.collect(),
-		}
-	}
-}
-
 pub async fn account(headers: &HeaderMap) -> Result<api::Account> {
 	Ok(read(&gated(headers)?)?.shown())
 }
@@ -159,6 +71,95 @@ pub async fn edit_account(headers: &HeaderMap, edit: AccountEdit) -> Result<api:
 	write(&key, &account)?;
 	super::announce(super::Pull::Account(key));
 	Ok(account.shown())
+}
+
+/// A request's viewer.
+pub(super) struct Caller {
+	pub(super) reach: Reach,
+	/// `None`: the instance itself, ungated.
+	actor: Option<Actor>,
+}
+impl Caller {
+	pub(super) fn of(headers: &HeaderMap) -> Result<Self> {
+		let key = viewer(headers)?;
+		match settings().viewer {
+			Viewer::Operator => Ok(Self { reach: Reach::All, actor: None }),
+			Viewer::Header(_) => {
+				let account = read(&key)?;
+				Ok(Self {
+					reach: account.reach(),
+					actor: Some(account.actor()?),
+				})
+			}
+		}
+	}
+
+	/// `f`, done as them.
+	pub(super) async fn act<F: Future>(&self, f: F) -> F::Output {
+		match &self.actor {
+			Some(actor) => github::client::acting(actor.clone(), f).await,
+			None => f.await,
+		}
+	}
+}
+
+/// A viewer's, as kept: readable by this process' user alone.
+#[derive(Default, Deserialize, Serialize)]
+pub(super) struct Account {
+	login: Option<String>,
+	/// By lowercased owner.
+	keys: BTreeMap<String, String>,
+	/// By `owner` or `owner/repo`, lowercased.
+	scopes: BTreeMap<String, Scoped>,
+}
+impl Account {
+	fn reach(&self) -> Reach {
+		let listed = self.scopes.values().flat_map(|s| s.listed.iter().cloned());
+		Reach::Of(settings().watch.iter().map(|w| w.to_lowercase()).chain(listed).collect())
+	}
+
+	fn actor(&self) -> Result<Actor> {
+		Ok(Actor::try_new(self.login.clone(), &self.keys)?)
+	}
+
+	/// The scopes naming `repo`.
+	fn naming(&self, repo: &str) -> Vec<String> {
+		self.scopes.keys().filter(|s| names(s, repo)).cloned().collect()
+	}
+
+	fn shown(&self) -> api::Account {
+		let outcome_on = |owner: &str| {
+			let outcomes = self.scopes.iter().filter(|(scope, _)| owner_of(scope) == owner).filter_map(|(_, s)| s.outcome.clone());
+			outcomes.max_by_key(|o| (o.error.is_some(), o.at))
+		};
+		api::Account {
+			login: self.login.clone(),
+			keys: self
+				.keys
+				.keys()
+				.map(|owner| Key {
+					owner: owner.clone(),
+					outcome: outcome_on(owner),
+				})
+				.collect(),
+			scopes: self
+				.scopes
+				.iter()
+				.map(|(scope, s)| Stored {
+					scope: scope.clone(),
+					repos: s.listed.len(),
+					outcome: s.outcome.clone(),
+				})
+				.collect(),
+		}
+	}
+}
+
+#[derive(Default, Deserialize, Serialize)]
+struct Scoped {
+	/// What the account's own key listed of it on its last pull.
+	listed: BTreeSet<String>,
+	outcome: Option<Outcome>,
 }
 
 /// Every account's scopes, pulled as their viewer; of one, its own naming `only` when that is given.

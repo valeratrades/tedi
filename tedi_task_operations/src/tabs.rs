@@ -14,13 +14,14 @@ use crate::{
 	local::{FsReader, Local},
 	mv::{Editing, move_issues},
 	open_interactions::{BodyWrite, MergeMode, MilestoneModifier, SyncMode, SyncOptions, modify_and_sync_milestone, pull_milestone},
+	picked::{PickedTab, Picking},
 	selection::{URGENT_KEY, closed_links, lock_sprint, urgent_path},
 	sprints::{Expanded, expand_and_refresh, materialize_new_tasks, refresh_milestones, sync_embedded_issue_changes, sync_milestone_changes},
 };
 
-/// Edit `repo`'s `sprint`; a planning one with the repo's Bottlenecks beside it, rolled over once
-/// `grace` past its due date.
-pub async fn edit_sprint(repo: RepoInfo, sprint: Sprint, mode: SyncMode, grace: SignedDuration) -> Result<MilestoneLink> {
+/// Edit `repo`'s `sprint`; a planning one with what is picked up and the repo's Bottlenecks beside it, rolled
+/// over once `grace` past its due date.
+pub async fn edit_sprint(repo: RepoInfo, sprint: Sprint, picking: Option<&Picking>, mode: SyncMode, grace: SignedDuration) -> Result<MilestoneLink> {
 	// GitHub unreachable → degrade the whole run to offline: every edit persists to LocalFs as a
 	// divergence from Consensus, reconciled by the next online sync of it.
 	let mode = match mode == SyncMode::Full && !crate::github::reachable().await {
@@ -46,16 +47,25 @@ pub async fn edit_sprint(repo: RepoInfo, sprint: Sprint, mode: SyncMode, grace: 
 		None => eyre!("Cannot edit '{sprint}' offline — it was never fetched while online."),
 	})?;
 
-	let mut tabs = vec![MilestoneTab::render(&link, sprint, mode).await?];
-	if matches!(sprint, Sprint::Planning(_))
-		&& let Some(bottlenecks) = find(Sprint::Bottlenecks)
-	{
-		match MilestoneTab::render(&bottlenecks, Sprint::Bottlenecks, mode).await {
-			Ok(tab) => tabs.push(tab),
-			Err(e) => eprintln!("warning: {} stays closed: {e:#}", Sprint::Bottlenecks),
+	let own = MilestoneTab::render(&link, sprint, mode).await?;
+	let opened = own.opened.0.serialize();
+	let mut tabs = vec![Tab::Milestone(own)];
+	if let Sprint::Planning(_) = sprint {
+		let beside = |what: &str, e: Report| eprintln!("warning: {what} stays closed: {e:#}");
+		if let Some(picking) = picking {
+			match PickedTab::render(picking, &link, mode).await {
+				Ok(tab) => tabs.push(Tab::Picked(tab, picking)),
+				Err(e) => beside("selected.md", e),
+			}
+		}
+		if let Some(bottlenecks) = find(Sprint::Bottlenecks) {
+			match MilestoneTab::render(&bottlenecks, Sprint::Bottlenecks, mode).await {
+				Ok(tab) => tabs.push(Tab::Milestone(tab)),
+				Err(e) => beside("Bottlenecks", e),
+			}
 		}
 	}
-	let buffers: Vec<(String, &str)> = tabs.iter().map(|t| (t.sprint.to_string(), t.expanded.text.as_str())).collect();
+	let buffers: Vec<(String, &str)> = tabs.iter().map(|t| (t.name(), t.text())).collect();
 	let raws = open(&buffers).await?;
 	let _syncing = v_utils::io::Spinner::start(); // until the edit is synced
 
@@ -63,8 +73,7 @@ pub async fn edit_sprint(repo: RepoInfo, sprint: Sprint, mode: SyncMode, grace: 
 		true => SyncMode::Offline,
 		false => mode,
 	};
-	let editing: Vec<Editing> = tabs.iter().map(|t| Editing::Milestone(t.link.clone())).collect();
-	let opened = tabs[0].opened.0.serialize();
+	let editing: Vec<Editing> = tabs.iter().map(Tab::editing).collect();
 	let landed = async {
 		// Untouched too: an issue a killed run left unsynced has nothing else to carry it.
 		let Folded { docs, moved } = fold_back(&raws, &editing, mode).await?;
@@ -221,6 +230,39 @@ async fn fold_back(raws: &[String], editing: &[Editing], mode: SyncMode) -> Resu
 		doc.relink(&moved);
 	}
 	Ok(Folded { docs, moved })
+}
+
+enum Tab<'a> {
+	Milestone(MilestoneTab),
+	Picked(PickedTab, &'a Picking),
+}
+impl Tab<'_> {
+	fn name(&self) -> String {
+		match self {
+			Tab::Milestone(tab) => tab.sprint.to_string(),
+			Tab::Picked(..) => "selected".to_string(),
+		}
+	}
+
+	fn text(&self) -> &str {
+		match self {
+			Tab::Milestone(MilestoneTab { expanded, .. }) | Tab::Picked(PickedTab { expanded, .. }, _) => &expanded.text,
+		}
+	}
+
+	fn editing(&self) -> Editing {
+		match self {
+			Tab::Milestone(tab) => Editing::Milestone(tab.link.clone()),
+			Tab::Picked(tab, _) => Editing::Picked(tab.repo()),
+		}
+	}
+
+	async fn land(self, raw: &str, doc: TaskView, moved: &HashMap<IssueLink, IssueLink>, mode: SyncMode) -> Result<()> {
+		match self {
+			Tab::Milestone(tab) => tab.land(raw, doc, moved, mode).await,
+			Tab::Picked(tab, picking) => tab.land(picking, raw, doc, moved, mode).await,
+		}
+	}
 }
 
 /// A sprint open in the editor.

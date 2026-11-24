@@ -7,12 +7,13 @@ use tedi_task_operations::{
 	TaskView,
 	clockify_tracking::{HaltArgs, ResumeArgs},
 	open_interactions::SyncMode,
+	picked::Picking,
 	search::SearchArgs,
 };
 use tedi_utils::search::SearchKind;
 use v_utils::{Timeframe, TimeframeDesignator};
 
-use crate::config::LiveSettings;
+use crate::config::{LiveSettings, States};
 
 #[derive(clap::Subcommand)]
 pub enum SprintsCommands {
@@ -157,7 +158,7 @@ pub async fn sprints_command(settings: &LiveSettings, args: SprintsArgs, mode: S
 		SprintsCommands::Edit {
 			sprint: SprintRef::Milestone(sprint),
 		} => {
-			let link = tabs::edit_sprint(milestone_repo(settings)?, sprint, mode, tedi_eval::same_day_buffer()).await?;
+			let link = tabs::edit_sprint(milestone_repo(settings)?, sprint, picking(settings)?.as_ref(), mode, tedi_eval::same_day_buffer()).await?;
 			if sprint == blocker_sprint(settings)? {
 				Selected::focus(link)?;
 			}
@@ -232,6 +233,18 @@ async fn ensure_selection(settings: &LiveSettings, mode: SyncMode) -> Result<()>
 		Selected::focus(ops::fetch_sprint(milestone_repo(settings)?, blocker_sprint(settings)?, mode).await?.link().clone())?;
 	}
 	Ok(())
+}
+
+fn picking(settings: &LiveSettings) -> Result<Option<Picking>> {
+	let config = settings.config()?;
+	let Some(selected) = config.milestones.as_ref().and_then(|m| m.selected.as_deref()) else {
+		return Ok(None);
+	};
+	let States::Home(home) = config.states()? else {
+		bail!("`milestones.selected` is the `home`'s bucket, and no `home` is set");
+	};
+	let (workflow, bucket) = crate::placement(selected).map_err(|e| eyre!("`milestones.selected`: {e}"))?;
+	Ok(Some(Picking { home, workflow, bucket }))
 }
 
 /// The sprint blockers are sourced from.

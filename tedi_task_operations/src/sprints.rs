@@ -522,6 +522,17 @@ pub async fn selected_halt(halt_args: HaltArgs) -> Result<()> {
 	println!("Tracking halted.");
 	Ok(())
 }
+/// Those of `links` stored here reconciled with GitHub, where a move made elsewhere may have edited them.
+pub async fn pull_stored(links: &[IssueLink]) -> Result<()> {
+	let mut issues = Vec::new();
+	for link in links {
+		if Local::find_by_number(link.project(), link.number(), FsReader).is_some() {
+			issues.push(load_local_issue(link).await?);
+		}
+	}
+	pull_issues(&mut issues, MergeMode::Normal).await
+}
+
 /// Descendants that are blocks of the same buffer take their state from there, not from disk.
 fn overlay_states(issue: &mut Issue, states: &HashMap<IssueIndex, CloseState>) {
 	for child in issue.children.values_mut() {
@@ -725,17 +736,6 @@ async fn adopt(parent: &IssueLink, children: &[IssueLink]) -> Result<()> {
 	drop(store);
 	println!("Grouped {} issue(s) under {parent}", children.len());
 	Ok(())
-}
-
-/// Those of `links` stored here reconciled with GitHub, where a move made elsewhere may have edited them.
-pub async fn pull_stored(links: &[IssueLink]) -> Result<()> {
-	let mut issues = Vec::new();
-	for link in links {
-		if Local::find_by_number(link.project(), link.number(), FsReader).is_some() {
-			issues.push(load_local_issue(link).await?);
-		}
-	}
-	pull_issues(&mut issues, MergeMode::Normal).await
 }
 
 /// Load a local issue by its IssueLink. A virtual link's path is the file directly; a remote

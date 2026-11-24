@@ -48,74 +48,6 @@ pub struct MockGithubClient {
 	keys: BTreeMap<String, String>,
 	state: Arc<MockState>,
 }
-impl std::ops::Deref for MockGithubClient {
-	type Target = MockState;
-
-	fn deref(&self) -> &MockState {
-		&self.state
-	}
-}
-
-/// What GitHub holds, whoever looks.
-#[derive(Default)]
-pub struct MockState {
-	/// Counter for generating unique issue IDs
-	next_issue_id: AtomicU64,
-
-	/// Counter for generating unique comment IDs
-	next_comment_id: AtomicU64,
-
-	/// All issues, keyed by (owner, repo) -> issue_number -> issue
-	issues: Mutex<HashMap<RepoKey, HashMap<u64, MockIssueData>>>,
-
-	/// All comments, keyed by (owner, repo) -> comment_id -> comment
-	comments: Mutex<HashMap<RepoKey, BTreeMap<u64, MockCommentData>>>,
-
-	/// Sub-issue relationships: parent_issue_number -> vec of child issue numbers
-	sub_issues: Mutex<HashMap<RepoKey, HashMap<u64, Vec<u64>>>>,
-
-	/// All milestones, keyed by (owner, repo) -> number -> milestone
-	milestones: Mutex<HashMap<RepoKey, BTreeMap<u64, MockMilestoneData>>>,
-
-	/// Labels defined per repo; a repo listed here exists even without issues
-	labels: Mutex<HashMap<RepoKey, Vec<String>>>,
-
-	/// `blocked by` links, across repos
-	dependencies: Mutex<Vec<MockDependency>>,
-
-	/// `blocked by` links removed on Github: their removal event stamps the blocked issue
-	unlinked: Mutex<Vec<MockDependency>>,
-
-	/// Pull requests referencing an issue
-	prs: Mutex<HashMap<(RepoKey, u64), Vec<crate::LinkedPr>>>,
-
-	pull_requests: Mutex<HashMap<RepoKey, BTreeMap<u64, tedi_core::PullRequest>>>,
-
-	/// Where a transferred issue went: GitHub redirects its old address there
-	transferred: Mutex<HashMap<(RepoKey, u64), (RepoKey, u64)>>,
-
-	/// A file's commits on the default branch, oldest first.
-	files: Mutex<HashMap<(RepoKey, String), Vec<FileCommit>>>,
-
-	/// Pull requests opened by `propose_file`, with their numbers.
-	proposals: Mutex<Vec<(RepoKey, u64, FileProposal)>>,
-
-	/// Whose each token is, and the repos it sees.
-	tokens: Mutex<BTreeMap<String, MockToken>>,
-
-	/// When set, `get_milestone`/`update_milestone` fail with this status (fault injection).
-	fail_status: Option<reqwest::StatusCode>,
-
-	rate_limited_after_pages: Option<u64>,
-	pages_listed: AtomicU64,
-
-	/// Call log for debugging
-	call_log: Mutex<Vec<String>>,
-
-	state_file: Option<PathBuf>,
-	/// The state file's last write this has seen, its own included.
-	read_at: Mutex<Option<std::time::SystemTime>>,
-}
 impl MockGithubClient {
 	/// Create a new mock client with the given authenticated user login
 	pub fn new(user_login: &str) -> Self {
@@ -786,6 +718,75 @@ impl MockGithubClient {
 		let max_from_meta = Local::load_project_meta(repo).issues.keys().max().copied().unwrap_or(0);
 		scan_max_issue_number(repo).max(max_from_meta).max(max_from_memory) + 1
 	}
+}
+
+impl std::ops::Deref for MockGithubClient {
+	type Target = MockState;
+
+	fn deref(&self) -> &MockState {
+		&self.state
+	}
+}
+
+/// What GitHub holds, whoever looks.
+#[derive(Default)]
+pub struct MockState {
+	/// Counter for generating unique issue IDs
+	next_issue_id: AtomicU64,
+
+	/// Counter for generating unique comment IDs
+	next_comment_id: AtomicU64,
+
+	/// All issues, keyed by (owner, repo) -> issue_number -> issue
+	issues: Mutex<HashMap<RepoKey, HashMap<u64, MockIssueData>>>,
+
+	/// All comments, keyed by (owner, repo) -> comment_id -> comment
+	comments: Mutex<HashMap<RepoKey, BTreeMap<u64, MockCommentData>>>,
+
+	/// Sub-issue relationships: parent_issue_number -> vec of child issue numbers
+	sub_issues: Mutex<HashMap<RepoKey, HashMap<u64, Vec<u64>>>>,
+
+	/// All milestones, keyed by (owner, repo) -> number -> milestone
+	milestones: Mutex<HashMap<RepoKey, BTreeMap<u64, MockMilestoneData>>>,
+
+	/// Labels defined per repo; a repo listed here exists even without issues
+	labels: Mutex<HashMap<RepoKey, Vec<String>>>,
+
+	/// `blocked by` links, across repos
+	dependencies: Mutex<Vec<MockDependency>>,
+
+	/// `blocked by` links removed on Github: their removal event stamps the blocked issue
+	unlinked: Mutex<Vec<MockDependency>>,
+
+	/// Pull requests referencing an issue
+	prs: Mutex<HashMap<(RepoKey, u64), Vec<crate::LinkedPr>>>,
+
+	pull_requests: Mutex<HashMap<RepoKey, BTreeMap<u64, tedi_core::PullRequest>>>,
+
+	/// Where a transferred issue went: GitHub redirects its old address there
+	transferred: Mutex<HashMap<(RepoKey, u64), (RepoKey, u64)>>,
+
+	/// A file's commits on the default branch, oldest first.
+	files: Mutex<HashMap<(RepoKey, String), Vec<FileCommit>>>,
+
+	/// Pull requests opened by `propose_file`, with their numbers.
+	proposals: Mutex<Vec<(RepoKey, u64, FileProposal)>>,
+
+	/// Whose each token is, and the repos it sees.
+	tokens: Mutex<BTreeMap<String, MockToken>>,
+
+	/// When set, `get_milestone`/`update_milestone` fail with this status (fault injection).
+	fail_status: Option<reqwest::StatusCode>,
+
+	rate_limited_after_pages: Option<u64>,
+	pages_listed: AtomicU64,
+
+	/// Call log for debugging
+	call_log: Mutex<Vec<String>>,
+
+	state_file: Option<PathBuf>,
+	/// The state file's last write this has seen, its own included.
+	read_at: Mutex<Option<std::time::SystemTime>>,
 }
 
 /// Scan the project directory for the maximum issue number in filenames.

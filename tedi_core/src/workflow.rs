@@ -6,6 +6,9 @@ use std::{collections::BTreeMap, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+/// The workflows cards sit in, by name.
+pub type Trees = BTreeMap<String, Workflow>;
+
 /// Where an issue sits: bucket names from a root down to a leaf, written `/`-joined.
 #[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(try_from = "String", into = "String")]
@@ -48,9 +51,6 @@ impl From<State> for String {
 		state.to_string()
 	}
 }
-
-/// The workflows cards sit in, by name.
-pub type Trees = BTreeMap<String, Workflow>;
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]

@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, path::PathBuf};
 
 use tedi_adapters::home::Home;
 use tedi_task_operations::workflow::Workflows;
@@ -72,7 +72,7 @@ impl States {
 }
 
 /// Where `tedi login` keeps the session with the home.
-pub fn session_file() -> std::path::PathBuf {
+pub fn session_file() -> PathBuf {
 	tedi_task_operations::paths::state_file("session.json")
 }
 
@@ -139,6 +139,8 @@ pub struct Milestones {
 	pub url: String,
 	/// Which milestone timeframe to source blockers from (default: "1d")
 	pub blocker_timeframe: Option<String>,
+	/// The bucket of the `home`'s that reads as picked up (`kanban/selected`): opening a planning sprint opens it beside
+	pub selected: Option<String>,
 }
 impl Milestones {
 	pub fn blocker_tf(&self) -> &str {

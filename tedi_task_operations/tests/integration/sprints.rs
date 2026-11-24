@@ -45,7 +45,7 @@ impl TestContext {
 	}
 
 	/// A stored milestone's body.
-	fn stored_milestone(&self, repo: &str, number: u64) -> String {
+	pub(crate) fn stored_milestone(&self, repo: &str, number: u64) -> String {
 		use tedi_task_operations::local::{FsReader, Local};
 		self.set_issues_dir_override();
 		let (owner, repo) = repo.split_once('/').unwrap();

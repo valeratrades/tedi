@@ -57,6 +57,8 @@ enum Commands {
 	View(view::ViewArgs),
 	/// Store every issue of orgs (`owner`) and repos (`owner/repo`); the config's `watch` when none are named
 	Pull { targets: Vec<String> },
+	/// Sign in to the config's `home`, through the gate before it, in the browser
+	Login,
 	/// Serve this store as the board: the web client, its API, a GitHub App webhook
 	Web(web::WebArgs),
 	/// Set a field of a stored issue, made against the value you saw it hold: if it moved on since, nothing is written
@@ -187,12 +189,30 @@ async fn run() {
 			tedi_task_operations::board::edit(&link, vec![tedi_task_operations::conflict_resolve::FieldEdit { field, seen, new }], mode).await
 		}
 		Commands::Move { link, to: (workflow, to), seen } => move_command(exit_on_error(states()), link, (workflow, to), seen, mode, now).await,
+		Commands::Login => match exit_on_error(states()) {
+			config::States::Home(home) => match home.login(browse).await {
+				Ok(()) => {
+					println!("Signed in");
+					Ok(())
+				}
+				Err(e) => Err(e.into()),
+			},
+			_ => Err(color_eyre::eyre::eyre!("`tedi login` signs in to the config's `home`, and none is set")),
+		},
 		Commands::Pull { targets } => match (targets.is_empty(), exit_on_error(settings.config()).watch) {
 			(false, _) => tedi_task_operations::pull::pull_repos(&targets, &exit_on_error(workflows()), now).await,
 			(true, Some(watch)) => tedi_task_operations::pull::pull_repos(&watch, &exit_on_error(workflows()), now).await,
 			(true, None) => Err(color_eyre::eyre::eyre!("name what to pull, or list it under `watch` in the config")),
 		},
 	});
+}
+
+fn browse(url: &str) {
+	println!("Opening {url}");
+	let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+	if let Err(e) = std::process::Command::new(opener).arg(url).spawn() {
+		eprintln!("warning: {opener}: {e}. Open it yourself");
+	}
 }
 
 async fn move_command(

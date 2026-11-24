@@ -154,6 +154,20 @@ impl TaskView {
 		}
 	}
 
+	/// `other`'s sections laid after this one's of the same headers.
+	pub fn append(&mut self, other: Self) {
+		for key in other.order {
+			let (items, prose) = (other.sections.get(&key).cloned().unwrap_or_default(), other.prose.get(&key).cloned().unwrap_or_default()); // a header may hold either alone
+			if items.is_empty() && prose.is_empty() {
+				continue;
+			}
+			self.touch(&key);
+			self.sections.entry(key.clone()).or_default().extend(items);
+			self.prose.entry(key).or_default().extend(prose);
+		}
+		self.normalize();
+	}
+
 	/// Append bare, unchecked issue items for any link not already present, so a
 	/// GitHub-assigned issue survives merge/remote-load even when it never appeared in the prose.
 	pub fn push_issue_links(&mut self, links: &[IssueLink]) {
@@ -729,8 +743,8 @@ fn normalize_items(items: &mut [TaskItem]) {
 	for item in items.iter_mut() {
 		if is_checkbox && item.checkbox.is_none() {
 			item.checkbox = Some(" ".into());
-		} else if !is_checkbox && item.checkbox.is_some() {
-			item.checkbox = None;
+		} else if !is_checkbox && !matches!(item.content, TaskContent::Virtual(_)) {
+			item.checkbox = None; // a text's stays: it says the text is a task, and where
 		}
 	}
 }

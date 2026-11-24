@@ -17,6 +17,14 @@ const TEAM: &str = "https://github.com/o/r/issues/1";
 const PRIVATE: &str = "https://github.com/alice/priv/issues/1";
 const GATED: [&str; 2] = ["--viewer-header", "X-Auth-User"];
 
+/// Those that name an issue, a repo or a milestone: refused outright, not answered emptily.
+const REFUSED: [&str; 8] = [
+	"/api/edit", "/api/move", "/api/milestone", "/api/thread", "/api/comment", "/api/review", "/api/conflict", "/api/resolve",
+];
+
+/// Sends ticks that say nothing, for as long as it is listened to.
+const UNTRIED: &str = "/api/changes";
+
 fn config() -> String {
 	format!("watch = [\"o\"]\ngithub_webhook_secret = \"{SECRET}\"\n\n{BOARD}")
 }
@@ -113,14 +121,6 @@ fn attempts() -> Vec<(&'static str, &'static str, Option<Value>)> {
 		("POST", "/api/propose", Some(json!({ "item": item, "onto": { "New": "x" }, "message": "" }))),
 	]
 }
-
-/// Those that name an issue, a repo or a milestone: refused outright, not answered emptily.
-const REFUSED: [&str; 8] = [
-	"/api/edit", "/api/move", "/api/milestone", "/api/thread", "/api/comment", "/api/review", "/api/conflict", "/api/resolve",
-];
-
-/// Sends ticks that say nothing, for as long as it is listened to.
-const UNTRIED: &str = "/api/changes";
 
 #[test]
 fn what_one_account_brings_is_out_of_anothers_reach() {

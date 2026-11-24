@@ -35,6 +35,7 @@ v_utils = { workspace = true, features = ["lite", "io", "async-io", "macros", "x
 xdg.workspace = true
 
 [dev-dependencies]
+base64.workspace = true
 ctor.workspace = true
 derive_builder.workspace = true
 hex.workspace = true

@@ -257,13 +257,6 @@ pub async fn resolve(headers: &HeaderMap, link: IssueLink, resolution: String) -
 	still
 }
 
-async fn pending(link: &Reached<IssueLink>) -> Result<Option<String>> {
-	match tedi_task_operations::board::pending_conflict(link).await? {
-		Some(path) => Ok(Some(std::fs::read_to_string(path)?)),
-		None => Ok(None),
-	}
-}
-
 pub async fn library(headers: &HeaderMap) -> Result<Library> {
 	let key = viewer(headers)?;
 	let _held = LIBRARIES.lock().await;
@@ -533,6 +526,13 @@ pub async fn propose(headers: &HeaderMap, item: Item, onto: Onto, message: Strin
 		body,
 	};
 	Ok(client.propose_file(repo, &proposal).await?)
+}
+
+async fn pending(link: &Reached<IssueLink>) -> Result<Option<String>> {
+	match tedi_task_operations::board::pending_conflict(link).await? {
+		Some(path) => Ok(Some(std::fs::read_to_string(path)?)),
+		None => Ok(None),
+	}
 }
 
 /// The board within `reach`, as whoever reaches as much reads it.
