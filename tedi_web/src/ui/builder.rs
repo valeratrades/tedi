@@ -5,7 +5,7 @@
 use dioxus::prelude::*;
 use ev_lib::uikit_dioxus::Checkbox;
 use strum::IntoEnumIterator as _;
-use tedi_core::board::{Facet, GroupBy, Layout, Query, Shown, Sort, SortKey, View};
+use tedi_core::board::{Facet, GroupBy, Query, Shown, Sort, SortKey, View};
 use tilers_dioxus::PanelId;
 
 use super::{
@@ -14,7 +14,7 @@ use super::{
 	facets::{FacetBar, InView},
 	icons::{Glyph, Icon},
 	kit::{Btn, Picker, Style},
-	toolbar::{OrderMenu, Segmented},
+	toolbar::OrderMenu,
 	view::{Empty, Outcome, Results, outcome},
 };
 use crate::api::{self, Construction, Item, Kept, LibraryEdit, Sign};
@@ -38,7 +38,6 @@ pub(super) fn Builder(from: Option<String>) -> Element {
 		None => View {
 			name: String::new(),
 			query: "is:open".into(),
-			layout: Layout::Board,
 			group_by: ctx.workflows().into_keys().next().map_or(GroupBy::Nothing, GroupBy::State),
 			sort: vec![Sort { by: SortKey::Rank, reversed: false }].into(),
 			shown: vec![Shown::Repo, Shown::Assignees, Shown::Importance, Shown::Hours, Shown::Labels],
@@ -101,7 +100,6 @@ pub(super) fn Builder(from: Option<String>) -> Element {
 							FacetBar { query: o.query.clone(), wrap: true }
 						}
 					}
-					Section { title: "Layout", Segmented { layout: d.layout, on_change: { let mut draft = draft; move |l| draft.write().layout = l } } }
 					Section { title: "Group by", hint: "a board grouped by state is the kanban",
 						div { class: "flex flex-wrap gap-1",
 							for g in ctx.workflows().into_keys().map(GroupBy::State).chain([GroupBy::Repo, GroupBy::Assignee, GroupBy::Type, GroupBy::Importance, GroupBy::Nothing]) {
@@ -159,7 +157,7 @@ pub(super) fn Builder(from: Option<String>) -> Element {
 					}
 				}
 				match outcome {
-					Ok(Outcome { count, groups, loosen, .. }) => rsx! { Results { ran, count, groups, loosen } },
+					Ok(Outcome { groups, .. }) => rsx! { Results { ran, groups } },
 					Err(why) => rsx! { Empty { glyph: Glyph::Alert, error: true, title: "The draft doesn't run", body: why } },
 				}
 			}

@@ -426,9 +426,6 @@ pub fn diff(from: &Construction, to: &Construction) -> Vec<Change> {
 			let (added, removed) = sets(a.query.split_whitespace(), b.query.split_whitespace());
 			added.into_iter().for_each(|c| push(Sign::Added, c.to_string()));
 			removed.into_iter().for_each(|c| push(Sign::Removed, c.to_string()));
-			if a.layout != b.layout {
-				push(Sign::Changed, format!("layout {} → {}", a.layout, b.layout));
-			}
 			if a.group_by != b.group_by {
 				push(Sign::Changed, format!("group_by {} → {}", a.group_by, b.group_by));
 			}
@@ -588,7 +585,14 @@ pub async fn board() -> Result<Board, ServerFnError> {
 	Ok((*crate::server::board().await.map_err(failed)?).clone())
 }
 
-/// Fires whenever the store may have changed: an edit, a webhook's pull, the periodic pull.
+/// Pulls every watched repo from GitHub; the board reloads on the tick its end fires.
+#[server]
+pub async fn refresh() -> Result<(), ServerFnError> {
+	crate::server::refresh();
+	Ok(())
+}
+
+/// Fires whenever the store may have changed: an edit, a webhook's pull, the periodic pull, a refresh.
 #[server]
 pub async fn changes() -> Result<ServerEvents<()>, ServerFnError> {
 	Ok(crate::server::changes())

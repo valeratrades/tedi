@@ -30,13 +30,14 @@ impl InView {
 
 /// A chip per facet, the ones the query narrows on first.
 #[component]
-pub(super) fn FacetBar(query: Query, wrap: bool) -> Element {
+pub(super) fn FacetBar(query: Query, wrap: bool, #[props(default)] children: Element) -> Element {
 	let facets: Vec<Facet> = Facet::iter().collect();
 	rsx! {
 		div { class: if wrap { "flex min-w-0 flex-1 flex-wrap items-center gap-1" } else { "flex min-w-0 shrink-0 items-center gap-1 overflow-x-auto [scrollbar-width:none]" },
 			for facet in facets {
 				FacetChip { key: "{facet}", facet, query: query.clone() }
 			}
+			{children}
 		}
 	}
 }

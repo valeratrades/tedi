@@ -1,4 +1,4 @@
-# What Figma shows: team board, scopes by owner, five views.
+# What Figma shows: team board, scopes by owner, two views.
 github_token = "mock"
 watch = ["service-arb", "ev-main", "ev-estate"]
 
@@ -12,7 +12,6 @@ pull_requests = "preset:pull_requests"
 [[board.views]]
 name = "Triage"
 query = "is:issue is:open state:kanban/icebox,kanban/triage,kanban/selected,kanban/in_progress,kanban/in_review"
-layout = "board"
 group_by = "state:kanban"
 sort = "importance"
 shown = ["repo", "number", "assignees", "importance", "hours", "type", "blockers", "prs"]
@@ -20,34 +19,9 @@ shown = ["repo", "number", "assignees", "importance", "hours", "type", "blockers
 [[board.views]]
 name = "Triage (mine)"
 query = "is:issue is:open assignee:@me state:kanban/icebox,kanban/triage,kanban/selected,kanban/in_progress,kanban/in_review"
-layout = "board"
 group_by = "state:kanban"
 sort = "importance"
 shown = ["repo", "number", "assignees", "importance", "hours", "type", "blockers", "prs"]
-
-[[board.views]]
-name = "PRs"
-query = "is:pr is:open"
-layout = "list"
-group_by = "state:pull_requests"
-sort = "rank"
-shown = ["repo", "assignees", "prs", "labels"]
-
-[[board.views]]
-name = "Assigned"
-query = "assignee:@me is:open"
-layout = "list"
-group_by = "state:kanban"
-sort = "rank"
-shown = ["repo", "state:kanban", "importance", "hours"]
-
-[[board.views]]
-name = "Blocked"
-query = "is:blocked is:open"
-layout = "list"
-group_by = "state:kanban"
-sort = "rank"
-shown = ["repo", "number", "blockers", "importance"]
 
 [board.columns."kanban · notion tints"]
 by = "state:kanban"

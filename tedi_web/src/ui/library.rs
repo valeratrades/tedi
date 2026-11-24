@@ -166,13 +166,12 @@ fn Thumb(construction: Construction, #[props(default)] large: bool) -> Element {
 					None => HUES[i].to_string(),
 				})
 				.collect();
-			let board = view.layout == tedi_core::board::Layout::Board;
 			rsx! {
 				div { class: "grid h-full grid-cols-5 gap-1",
 					for (i , hue) in hues.into_iter().enumerate() {
 						div { key: "{i}", class: "flex flex-col gap-1",
 							div { class: "h-1 rounded-full", style: "background: {hue}" }
-							for row in 0..(if board { 4 - i % 3 } else { 5 }) {
+							for row in 0..(4 - i % 3) {
 								div { key: "{row}", class: "h-2.5 rounded-sm bg-secondary" }
 							}
 						}
@@ -589,7 +588,6 @@ fn Detail(owner: Owner, item: Item, construction: Construction, entry: Option<En
 	let definition: Vec<(&str, String)> = match &construction {
 		Construction::View(v) => vec![
 			("query", v.query.clone()),
-			("layout", v.layout.to_string()),
 			("group_by", v.group_by.to_string()),
 			("sort", v.sort.to_string()),
 			("fields", v.shown.iter().cloned().map(String::from).collect::<Vec<_>>().join(" ")),

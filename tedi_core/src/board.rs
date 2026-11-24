@@ -1,5 +1,5 @@
 //! The board: every stored issue as a card, a query over them, and views — named queries with a
-//! layout, a grouping and an order. Pure over cards; reading them from the store and editing them
+//! grouping and an order. Pure over cards; reading them from the store and editing them
 //! through the sync are the operations' business.
 
 use std::{
@@ -200,26 +200,17 @@ pub struct Tally {
 	pub picked: Option<bool>,
 }
 
-/// A named query, and how its result is shown.
+/// A named query, and how its result is grouped and ordered.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct View {
 	pub name: String,
 	pub query: String,
-	pub layout: Layout,
 	pub group_by: GroupBy,
 	pub sort: Order,
 	/// What a card shows beside its title, in this order.
 	pub shown: Vec<Shown>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, strum::Display, strum::EnumIter, strum::EnumString)]
-#[serde(rename_all = "snake_case")]
-#[strum(serialize_all = "snake_case")]
-pub enum Layout {
-	Board,
-	Table,
-	List,
-}
 /// How a view splits its cards: by `state:<workflow>`, `repo`, `assignee`, `type`, `importance` or `nothing`.
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(try_from = "String", into = "String")]

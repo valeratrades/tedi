@@ -9,26 +9,9 @@ pull_requests = "preset:pull_requests"
 [[board.views]]
 name = "Triage"
 query = "is:issue is:open state:kanban/icebox,kanban/triage,kanban/selected,kanban/in_progress,kanban/in_review"
-layout = "board"
 group_by = "state:kanban"
 sort = "importance"
 shown = ["repo", "assignees", "importance", "hours", "type", "blockers"]
-
-[[board.views]]
-name = "PRs"
-query = "is:pr is:open"
-layout = "list"
-group_by = "state:pull_requests"
-sort = "rank"
-shown = ["repo", "assignees", "prs", "labels"]
-
-[[board.views]]
-name = "Assigned"
-query = "assignee:@me is:open"
-layout = "list"
-group_by = "state:kanban"
-sort = "rank"
-shown = ["repo", "state:kanban", "importance", "hours"]
 
 [board.columns.notion]
 by = "state:kanban"

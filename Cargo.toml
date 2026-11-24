@@ -77,8 +77,8 @@ xdg = "3.0.0"
 dioxus = "0.7"
 dioxus-fullstack = "0.7"
 dioxus-server = "0.7" # `#[server]` names it in what it expands to
-ev_lib = { version = "0.32", default-features = false }
-ev_lib_classes = "0.19"
+ev_lib = { version = "0.34", default-features = false }
+ev_lib_classes = "0.20"
 getrandom = "0.3"
 gloo-timers = "0.3"
 hex = "0.4"
@@ -125,3 +125,5 @@ non_kebab_case_bins = "allow"
 [patch.crates-io]
 tilers_core = { path = "/home/v/s/ev/tilers/tilers_core" }
 tilers_dioxus = { path = "/home/v/s/ev/tilers/tilers_dioxus" }
+ev_lib = { path = "/home/v/s/ev/web_std/rust" }
+ev_lib_classes = { path = "/home/v/s/ev/web_std/rust/classes" }

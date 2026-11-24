@@ -13,8 +13,6 @@ pub(super) enum Glyph {
 	Grip,
 	Search,
 	Board,
-	Table,
-	List,
 	Pr,
 	Issue,
 	Alert,
@@ -38,6 +36,7 @@ pub(super) enum Glyph {
 	Sync,
 	Revert,
 	Lock,
+	Unlock,
 	Fields,
 	Sort,
 	Group,
@@ -66,10 +65,6 @@ impl Glyph {
 				r#"<path d="M12.6667 7.33333C12.6667 10.2789 10.2789 12.6667 7.33333 12.6667C4.38781 12.6667 2 10.2789 2 7.33333C2 4.38781 4.38781 2 7.33333 2C10.2789 2 12.6667 4.38781 12.6667 7.33333Z" stroke-width="1.33333" stroke-linecap="round" stroke-linejoin="round" stroke="currentColor"/><path d="M14 14L11.1333 11.1333" stroke-width="1.33333" stroke-linecap="round" stroke-linejoin="round" stroke="currentColor"/>"#,
 			Glyph::Board =>
 				r#"<path d="M4 3.33334V10.6667" stroke-width="1.33333" stroke-linecap="round" stroke-linejoin="round" stroke="currentColor"/><path d="M8 3.33334V7.33334" stroke-width="1.33333" stroke-linecap="round" stroke-linejoin="round" stroke="currentColor"/><path d="M12 3.33334V12.6667" stroke-width="1.33333" stroke-linecap="round" stroke-linejoin="round" stroke="currentColor"/>"#,
-			Glyph::Table =>
-				r#"<path d="M3.33333 2H12.6667C13.403 2 14 2.59695 14 3.33333V12.6667C14 13.403 13.403 14 12.6667 14H3.33333C2.59695 14 2 13.403 2 12.6667V3.33333C2 2.59695 2.59695 2 3.33333 2Z" stroke-width="1.33333" stroke-linecap="round" stroke-linejoin="round" stroke="currentColor"/><path d="M2 6H14" stroke-width="1.33333" stroke-linecap="round" stroke-linejoin="round" stroke="currentColor"/><path d="M2 10H14" stroke-width="1.33333" stroke-linecap="round" stroke-linejoin="round" stroke="currentColor"/><path d="M6 2V14" stroke-width="1.33333" stroke-linecap="round" stroke-linejoin="round" stroke="currentColor"/>"#,
-			Glyph::List =>
-				r#"<path d="M5.33334 4H14" stroke-width="1.33333" stroke-linecap="round" stroke-linejoin="round" stroke="currentColor"/><path d="M5.33334 8H14" stroke-width="1.33333" stroke-linecap="round" stroke-linejoin="round" stroke="currentColor"/><path d="M5.33334 12H14" stroke-width="1.33333" stroke-linecap="round" stroke-linejoin="round" stroke="currentColor"/><path d="M2 4H2.00667" stroke-width="1.33333" stroke-linecap="round" stroke-linejoin="round" stroke="currentColor"/><path d="M2 8H2.00667" stroke-width="1.33333" stroke-linecap="round" stroke-linejoin="round" stroke="currentColor"/><path d="M2 12H2.00667" stroke-width="1.33333" stroke-linecap="round" stroke-linejoin="round" stroke="currentColor"/>"#,
 			Glyph::Pr =>
 				r#"<path d="M14 12C14 13.1046 13.1046 14 12 14C10.8954 14 10 13.1046 10 12C10 10.8954 10.8954 10 12 10C13.1046 10 14 10.8954 14 12Z" stroke-width="1.33333" stroke-linecap="round" stroke-linejoin="round" stroke="currentColor"/><path d="M6 4C6 5.10457 5.10457 6 4 6C2.89543 6 2 5.10457 2 4C2 2.89543 2.89543 2 4 2C5.10457 2 6 2.89543 6 4Z" stroke-width="1.33333" stroke-linecap="round" stroke-linejoin="round" stroke="currentColor"/><path d="M8.66666 4H10.6667C11.0203 4 11.3594 4.14048 11.6095 4.39052C11.8595 4.64057 12 4.97971 12 5.33333V10" stroke-width="1.33333" stroke-linecap="round" stroke-linejoin="round" stroke="currentColor"/><path d="M4 6V14" stroke-width="1.33333" stroke-linecap="round" stroke-linejoin="round" stroke="currentColor"/>"#,
 			Glyph::Issue =>
@@ -113,6 +108,8 @@ impl Glyph {
 				r#"<path d="M2 8C2 6.4087 2.63214 4.88258 3.75736 3.75736C4.88258 2.63214 6.4087 2 8 2C9.67737 2.00631 11.2874 2.66082 12.4933 3.82667L14 5.33333" stroke-width="1.33333" stroke-linecap="round" stroke-linejoin="round" stroke="currentColor"/><path d="M14 2V5.33333H10.6667" stroke-width="1.33333" stroke-linecap="round" stroke-linejoin="round" stroke="currentColor"/><path d="M14 8C14 9.5913 13.3679 11.1174 12.2426 12.2426C11.1174 13.3679 9.5913 14 8 14C6.32263 13.9937 4.71265 13.3392 3.50667 12.1733L2 10.6667" stroke-width="1.33333" stroke-linecap="round" stroke-linejoin="round" stroke="currentColor"/><path d="M5.33333 10.6667H2V14" stroke-width="1.33333" stroke-linecap="round" stroke-linejoin="round" stroke="currentColor"/>"#,
 			Glyph::Revert =>
 				r#"<path d="M2 8C2 9.18669 2.35189 10.3467 3.01118 11.3334C3.67047 12.3201 4.60754 13.0892 5.7039 13.5433C6.80026 13.9974 8.00666 14.1162 9.17054 13.8847C10.3344 13.6532 11.4035 13.0818 12.2426 12.2426C13.0818 11.4035 13.6532 10.3344 13.8847 9.17054C14.1162 8.00666 13.9974 6.80026 13.5433 5.7039C13.0892 4.60754 12.3201 3.67047 11.3334 3.01118C10.3467 2.35189 9.18669 2 8 2C6.32263 2.00631 4.71265 2.66082 3.50667 3.82667L2 5.33333" stroke-width="1.33333" stroke-linecap="round" stroke-linejoin="round" stroke="currentColor"/><path d="M2 2V5.33333H5.33333" stroke-width="1.33333" stroke-linecap="round" stroke-linejoin="round" stroke="currentColor"/>"#,
+			Glyph::Unlock =>
+				r#"<path d="M3.33333 7.33334H12.6667C13.403 7.33334 14 7.9303 14 8.66668V13.3333C14 14.0697 13.403 14.6667 12.6667 14.6667H3.33333C2.59695 14.6667 2 14.0697 2 13.3333V8.66668C2 7.9303 2.59695 7.33334 3.33333 7.33334Z" stroke-width="1.33333" stroke-linecap="round" stroke-linejoin="round" stroke="currentColor"/><path d="M4.66666 7.33334V4.66668C4.66666 3.78262 5.01785 2.93478 5.64297 2.30965C6.2681 1.68453 7.11594 1.33334 8 1.33334C9.61 1.33334 10.96 2.47 11.27 4" stroke-width="1.33333" stroke-linecap="round" stroke-linejoin="round" stroke="currentColor"/>"#,
 			Glyph::Lock =>
 				r#"<path d="M3.33333 7.33334H12.6667C13.403 7.33334 14 7.9303 14 8.66668V13.3333C14 14.0697 13.403 14.6667 12.6667 14.6667H3.33333C2.59695 14.6667 2 14.0697 2 13.3333V8.66668C2 7.9303 2.59695 7.33334 3.33333 7.33334Z" stroke-width="1.33333" stroke-linecap="round" stroke-linejoin="round" stroke="currentColor"/><path d="M4.66666 7.33334V4.66668C4.66666 3.78262 5.01785 2.93478 5.64297 2.30965C6.2681 1.68453 7.11594 1.33334 8 1.33334C8.88405 1.33334 9.7319 1.68453 10.357 2.30965C10.9821 2.93478 11.3333 3.78262 11.3333 4.66668V7.33334" stroke-width="1.33333" stroke-linecap="round" stroke-linejoin="round" stroke="currentColor"/>"#,
 			Glyph::Fields =>

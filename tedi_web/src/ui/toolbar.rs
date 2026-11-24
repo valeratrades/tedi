@@ -1,16 +1,15 @@
-//! A view's toolbar (Figma: ViewToolbar). Row one builds the view: query, layout, grouping, order, the fields
+//! A view's toolbar (Figma: ViewToolbar). Row one builds the view: query, grouping, order, the fields
 //! a card shows. Row two narrows it by facets, counts what it shows, and keeps it.
 
 use dioxus::prelude::*;
 use ev_lib::uikit_dioxus::{Checkbox, Popover, PopoverContent, PopoverTrigger};
-use strum::IntoEnumIterator as _;
-use tedi_core::board::{GroupBy, Layout, Order, Query, Shown, Sort, SortKey, View};
+use tedi_core::board::{GroupBy, Order, Query, Shown, Sort, SortKey, View};
 
 use super::{
 	Ctx,
 	facets::FacetBar,
 	icons::{Glyph, Icon},
-	kit::{Btn, MenuItem, Picker, Style},
+	kit::{Btn, IconBtn, MenuItem, Picker, Style},
 	library::NameForm,
 };
 
@@ -61,9 +60,8 @@ pub(super) fn ViewToolbar(props: Toolbar) -> Element {
 						}
 					}
 						Popover { open: settings(), on_open_change: move |v| settings.set(v),
-						PopoverTrigger { class: if settings() { "inline-flex size-7 items-center justify-center rounded-[var(--control-radius)] bg-active text-ink" } else { "inline-flex size-7 items-center justify-center rounded-[var(--control-radius)] text-ink-soft" }, aria_label: "Layout, grouping, order and fields", Icon { glyph: Glyph::Fields } }
+						PopoverTrigger { class: if settings() { "inline-flex size-7 items-center justify-center rounded-[var(--control-radius)] bg-active text-ink" } else { "inline-flex size-7 items-center justify-center rounded-[var(--control-radius)] text-ink-soft" }, aria_label: "Grouping, order and fields", Icon { glyph: Glyph::Fields } }
 						PopoverContent { align: "end", class: "flex w-72 flex-col gap-2 rounded-[var(--radius)] border border-border bg-popover p-2 text-ink",
-							Segmented { layout: v.layout, on_change: move |l| view.write().layout = l }
 							Picker { glyph: Glyph::Group, label: v.group_by.to_string(),
 								for g in groupings {
 									MenuItem { key: "{g}", selected: g == v.group_by, label: g.to_string(), onclick: { let g = g.clone(); move |_| view.write().group_by = g.clone() } }
@@ -78,7 +76,7 @@ pub(super) fn ViewToolbar(props: Toolbar) -> Element {
 						}
 					}
 				}
-				FacetBar { query: query.clone(), wrap: false }
+				FacetBar { query: query.clone(), wrap: false, Refresh {} }
 			}
 		};
 	}
@@ -96,7 +94,6 @@ pub(super) fn ViewToolbar(props: Toolbar) -> Element {
 						oninput: move |e: FormEvent| view.write().query = e.value(),
 					}
 				}
-				Segmented { layout: v.layout, on_change: move |l| view.write().layout = l }
 				Picker { glyph: Glyph::Group, label: v.group_by.to_string(),
 					for g in groupings {
 						MenuItem { key: "{g}", selected: g == v.group_by, label: g.to_string(), onclick: { let g = g.clone(); move |_| view.write().group_by = g.clone() } }
@@ -106,28 +103,9 @@ pub(super) fn ViewToolbar(props: Toolbar) -> Element {
 				Picker { glyph: Glyph::Fields, label: format!("{} fields", v.shown.len()), FieldsMenu { view, workflows } }
 			}
 			div { class: "flex items-center gap-1",
-				FacetBar { query, wrap: true }
+				FacetBar { query, wrap: true, Refresh {} }
 				span { class: "shrink-0 px-1 text-mono-s text-ink-soft", "{count} cards" }
 				Keep { view, defined }
-			}
-		}
-	}
-}
-
-/// Board · Table · List.
-#[component]
-pub(super) fn Segmented(layout: Layout, on_change: EventHandler<Layout>) -> Element {
-	rsx! {
-		div { class: "flex items-center gap-0.5 rounded-[var(--control-radius)] border border-border-subtle p-0.5",
-			for l in Layout::iter() {
-				button {
-					key: "{l}",
-					r#type: "button",
-					class: if l == layout { "flex h-6 items-center gap-1 rounded-[var(--control-radius)] bg-active px-2 text-body-s font-medium text-ink" } else { "flex h-6 items-center gap-1 rounded-[var(--control-radius)] px-2 text-body-s font-medium text-ink-soft hover:text-ink" },
-					onclick: move |_| on_change.call(l),
-					Icon { glyph: match l { Layout::Board => Glyph::Board, Layout::Table => Glyph::Table, Layout::List => Glyph::List }, class: "size-3.5" }
-					match l { Layout::Board => "Board", Layout::Table => "Table", Layout::List => "List" }
-				}
 			}
 		}
 	}
@@ -240,6 +218,33 @@ fn FieldsMenu(view: Signal<View>, workflows: Vec<String>) -> Element {
 	}
 }
 
+/// `⟳`: every watched repo pulled from GitHub now; lit until the board reloads.
+#[component]
+fn Refresh() -> Element {
+	let ctx = use_context::<Ctx>();
+	let mut pulling = use_signal(|| false);
+	use_effect(move || {
+		ctx.board.read();
+		pulling.set(false);
+	});
+	rsx! {
+		IconBtn {
+			glyph: Glyph::Sync,
+			active: pulling(),
+			title: if pulling() { "Pulling from GitHub…" } else { "Pull every watched repo from GitHub now" },
+			onclick: move |_| {
+				pulling.set(true);
+				spawn(async move {
+					if let Err(e) = crate::api::refresh().await {
+						pulling.set(false);
+						ctx.say("refresh", super::toast::Tone::Error, format!("refresh: {e}"), None);
+					}
+				});
+			},
+		}
+	}
+}
+
 /// Clean: "Save as…". Changed and the viewer's: modified, Revert, Save. Changed and the team's: the team copy
 /// is read-only, so it is kept as the viewer's own.
 #[component]
@@ -270,6 +275,7 @@ fn Keep(view: Signal<View>, defined: View) -> Element {
 		div { class: "flex shrink-0 items-center gap-1",
 			if dirty {
 				span { class: "flex items-center gap-1 px-1 text-caption text-ink-soft",
+					title: if mine { "Changed since you last saved it" } else { "The team's view changes only through a proposal: keep yours to save" },
 					if mine {
 						span { class: "size-1.5 rounded-full bg-accent-warn" }
 						"modified"
@@ -278,13 +284,13 @@ fn Keep(view: Signal<View>, defined: View) -> Element {
 						"team · read-only"
 					}
 				}
-				Btn { style: Style::Ghost, glyph: Glyph::Revert, onclick: { let defined = defined.clone(); move |_| view.set(defined.clone()) }, "Revert" }
-				Btn { style: Style::Outline, onclick: move |_| naming.set(true), if mine { "Save as…" } else { "Save as mine" } }
+				Btn { style: Style::Ghost, glyph: Glyph::Revert, title: "Back to the view as kept", onclick: { let defined = defined.clone(); move |_| view.set(defined.clone()) }, "Revert" }
+				Btn { style: Style::Outline, title: if mine { "Keep these settings as a new view of yours" } else { "Keep these settings as a view of yours; the team's stays as it is" }, onclick: move |_| naming.set(true), if mine { "Save as…" } else { "Save as mine" } }
 				if mine {
-					Btn { style: Style::Primary, onclick: { let name = defined.name.clone(); move |_| save(name.clone()) }, "Save" }
+					Btn { style: Style::Primary, title: "Overwrite your view with these settings", onclick: { let name = defined.name.clone(); move |_| save(name.clone()) }, "Save" }
 				}
 			} else {
-				Btn { style: Style::Ghost, glyph: Glyph::Save, onclick: move |_| naming.set(true), "Save as…" }
+				Btn { style: Style::Ghost, glyph: Glyph::Save, title: "Keep a copy of this view under a new name", onclick: move |_| naming.set(true), "Save as…" }
 			}
 		}
 	}

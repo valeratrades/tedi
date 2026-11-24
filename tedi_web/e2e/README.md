@@ -19,7 +19,7 @@ Screens and frames: 01-board 9:1026, 02-view 10:1607, 03-library 11:3139, 04-wor
 - `seed/state.json`: the GitHub mock's state (issues, labels, assignees, `blocked by`, linked and listed PRs, sprint milestones).
 - `seed/positions.json`: what the mock cannot hold, written into the store after `tedi --mock pull`: kanban / pull_requests
   states (`.states.json`) and label colours (`.meta.json`).
-- `config.toml`: five views, scopes EV ⊃ {EV-Estate, EV-Main, EV-Service-Arb}, column layouts, sprints' milestone repo.
+- `config.toml`: two views, scopes EV ⊃ {EV-Estate, EV-Main, EV-Service-Arb}, column layouts, sprints' milestone repo.
 - `libraries/<screen>.json`: the viewer's library (copied to `$XDG_DATA_HOME/tedi/web/mock_user.json` before each shot):
   tiles per band, current scope, workspaces, kept views. Layouts are tilers schema v3 (xl: 64 steps; 01: board tile 42, issue tile 22);
   `on_screen.columns` is empty, the app seeds a column per group. `workspace` names the active workspace tab.

@@ -1,4 +1,4 @@
-//! A view tile: a query, laid out as columns, a table or a list, grouped and sorted as the view says.
+//! A view tile: a query, laid out as columns, grouped and sorted as the view says.
 
 use std::str::FromStr as _;
 
@@ -6,7 +6,7 @@ use dioxus::prelude::*;
 use ev_lib::uikit_dioxus::*;
 use strum::IntoEnumIterator as _;
 use tedi_core::{
-	board::{Facet, GroupBy, Layout, Order, Query, Shown, Sort, SortKey, View, group},
+	board::{GroupBy, Order, Query, Shown, View, group},
 	workflow::State,
 };
 use tilers_dioxus::{Band, Config, DockPanel, Group, MinSize, PackedApi, PackedArea, PanelId, Tile};
@@ -14,10 +14,9 @@ use tilers_dioxus::{Band, Config, DockPanel, Group, MinSize, PackedApi, PackedAr
 pub(super) use super::card::CardView;
 use super::{
 	Ctx,
-	card::Field,
-	facets::{FacetMenu, InView},
+	facets::InView,
 	icons::{Glyph, Icon},
-	kit::{Btn, MenuItem, Style},
+	kit::MenuItem,
 	toolbar::ViewToolbar,
 };
 use crate::api::{self, Dock, LibraryEdit, Sprint, Tint, Tints};
@@ -94,14 +93,14 @@ fn ViewBody(defined: View) -> Element {
 	let v = view.read().clone();
 	let error = v.query.parse::<Query>().err().map(|e| e.to_string());
 	let ran = if error.is_none() { v.clone() } else { good.read().clone() };
-	let Outcome { query, count, groups, loosen } = match outcome(&ctx, &ran) {
+	let Outcome { query, count, groups } = match outcome(&ctx, &ran) {
 		Ok(o) => o,
 		Err(why) => return rsx! { Empty { glyph: Glyph::Alert, error: true, title: "The view doesn't run", body: why } },
 	};
 	rsx! {
 		div { class: "flex h-full flex-col",
 			ViewToolbar { view, defined, query, error, count }
-			Results { ran, count, groups, loosen }
+			Results { ran, groups }
 		}
 	}
 }
@@ -111,8 +110,6 @@ pub(super) struct Outcome {
 	pub(super) query: Query,
 	pub(super) count: usize,
 	pub(super) groups: Vec<(String, Vec<usize>)>,
-	/// When nothing matches: the facet whose clause, dropped, lets the most cards back, and how many.
-	pub(super) loosen: Option<(Facet, usize)>,
 }
 
 pub(super) fn outcome(ctx: &Ctx, ran: &View) -> Result<Outcome, String> {
@@ -133,56 +130,20 @@ pub(super) fn outcome(ctx: &Ctx, ran: &View) -> Result<Outcome, String> {
 	};
 	let mut hits = run(&query)?;
 	ran.sort.apply(&board.cards, &mut hits, &workflows).map_err(|e| e.to_string())?;
-	let mut groups = group(&board.cards, &hits, &ran.group_by, &workflows).map_err(|e| e.to_string())?;
-	if ran.layout != Layout::Board {
-		groups.retain(|(_, members)| !members.is_empty()); // a workflow's empty buckets are the board's columns only
-	}
-	let loosen = hits
-		.is_empty()
-		.then(|| {
-			Facet::iter()
-				.filter_map(|f| {
-					let mut lifted = query.clone();
-					lifted.clear(f);
-					(lifted != query).then(|| run(&lifted).map(|h| (f, h.len())).ok()).flatten()
-				})
-				.filter(|(_, n)| *n > 0)
-				.max_by_key(|(_, n)| *n)
-		})
-		.flatten();
-	Ok(Outcome {
-		query,
-		count: hits.len(),
-		groups,
-		loosen,
-	})
+	let groups = group(&board.cards, &hits, &ran.group_by, &workflows).map_err(|e| e.to_string())?;
+	Ok(Outcome { query, count: hits.len(), groups })
 }
 
-/// The view's cards as its layout lays them out, or why there are none.
+/// The view's cards, a column per group.
 #[component]
-pub(super) fn Results(ran: View, count: usize, groups: Vec<(String, Vec<usize>)>, loosen: Option<(Facet, usize)>) -> Element {
+pub(super) fn Results(ran: View, groups: Vec<(String, Vec<usize>)>) -> Element {
 	let ctx = use_context::<Ctx>();
-	let in_view = use_context::<InView>();
-	if count == 0 && ran.layout != Layout::Board {
-		let scope_name = ctx.scope().map(|(path, _)| path);
-		return rsx! {
-			Empty {
-				glyph: Glyph::Search,
-				title: "No cards match",
-				body: match &scope_name { Some(s) => format!("{} in {s}", ran.query), None => ran.query.clone() },
-				if let Some((facet, n)) = loosen {
-					Btn { style: Style::Outline, title: "{n} cards come back", onclick: move |_| in_view.narrow(|q| q.clear(facet)), "Drop {facet}:" }
-				}
-			}
-		};
-	}
 	rsx! {
 		div { class: "flex min-h-0 flex-1 flex-col p-2",
-			match ran.layout {
-				Layout::Board if ctx.band() == Some(Band::Sm) => rsx! { Stacked { view: ran.name.clone(), by: ran.group_by.clone(), groups, shown: ran.shown.clone() } },
-				Layout::Board => rsx! { Columns { key: "{ran.group_by}", view: ran.name.clone(), groups, by: ran.group_by.clone(), shown: ran.shown.clone(), order: ran.sort.clone() } },
-				Layout::Table => rsx! { Rows { view: ran.name.clone(), by: ran.group_by.clone(), groups, shown: ran.shown.clone(), sort: ran.sort.clone() } },
-				Layout::List => rsx! { List { view: ran.name.clone(), by: ran.group_by.clone(), groups, shown: ran.shown.clone() } },
+			if ctx.band() == Some(Band::Sm) {
+				Stacked { view: ran.name.clone(), by: ran.group_by.clone(), groups, shown: ran.shown.clone() }
+			} else {
+				Columns { key: "{ran.group_by}", view: ran.name.clone(), groups, by: ran.group_by.clone(), shown: ran.shown.clone(), order: ran.sort.clone() }
 			}
 		}
 	}
@@ -213,6 +174,7 @@ struct Lanes {
 	dragged: Signal<Option<tedi_core::IssueLink>>,
 	tints: Signal<Tints>,
 	api: Signal<Option<PackedApi>>,
+	panels: Signal<Vec<DockPanel>>,
 }
 
 /// Columns, one per group, each a tile of a dock nested in the view's: resized, reordered, tabbed together,
@@ -236,6 +198,7 @@ fn Columns(view: String, groups: Vec<(String, Vec<usize>)>, by: GroupBy, shown: 
 		dragged: Signal::new(None),
 		tints: Signal::new(tints.clone()),
 		api,
+		panels,
 	});
 	use_context_provider(|| ColumnsOf(view.clone()));
 	let mut arranged = use_signal(|| None::<Band>);
@@ -343,7 +306,7 @@ fn column(id: PanelId, key: String) -> DockPanel {
 		label: Some(rsx! { ColumnHead { key: "{key}", group: key.clone() } }),
 		content: rsx! { Column { key: "{key}", group: key } },
 		min: MinSize::Px { w: 248.0, h: 120.0 },
-		locked: true, // a group is the view's, not the viewer's to close or tear out
+		locked: false,
 	}
 }
 
@@ -363,7 +326,7 @@ fn ColumnHead(group: String) -> Element {
 	}
 }
 
-/// \`⋯\`: the column's tint, collapse, and the column layouts kept for this grouping.
+/// The lock, then \`⋯\`: the column's tint and the column layouts kept for this grouping.
 #[component]
 fn ColumnActions(tile: Tile) -> Element {
 	let ctx = use_context::<Ctx>();
@@ -397,6 +360,16 @@ fn ColumnActions(tile: Tile) -> Element {
 			.collect()
 	};
 	let mut naming = use_signal(|| false);
+	let locked = lanes.panels.read().iter().find(|p| p.id == tile.active).expect("a tile shows a hosted column").locked;
+	let lock = {
+		let active = tile.active.clone();
+		move |_| {
+			let mut panels = lanes.panels;
+			for p in panels.write().iter_mut().filter(|p| p.id == active) {
+				p.locked = !p.locked;
+			}
+		}
+	};
 	let apply = {
 		let tint = tint.clone();
 		move |name: String| {
@@ -418,6 +391,12 @@ fn ColumnActions(tile: Tile) -> Element {
 		}
 	};
 	rsx! {
+		super::kit::IconBtn {
+			glyph: if locked { Glyph::Lock } else { Glyph::Unlock },
+			active: locked,
+			title: if locked { "Locked: can't be closed, moved or floated. Unlock" } else { "Lock: keep this column from being closed, moved or floated" },
+			onclick: lock,
+		}
 		super::kit::Menu { glyph: Glyph::More, title: "Column menu",
 				span { class: "px-2 pt-1.5 pb-0.5 text-overline text-ink-soft", "Tint" }
 				div { class: "flex flex-wrap gap-1 px-2 pb-1",
@@ -632,167 +611,6 @@ fn GroupHead(view: String, by: GroupBy, group: String, count: usize) -> Element 
 			span { class: "size-2 shrink-0 rounded-full", style: match tint { Some(t) => format!("background: var(--tint-{t})"), None => "background: var(--ink-faint)".into() } }
 			span { class: "text-body font-medium text-ink", "{group}" }
 			span { class: "text-mono-s text-ink-soft", "{count}" }
-		}
-	}
-}
-
-/// List layout (Figma: ListRow): two-line rows, the state at the end.
-#[component]
-fn List(view: String, by: GroupBy, groups: Vec<(String, Vec<usize>)>, shown: Vec<Shown>) -> Element {
-	let ctx = use_context::<Ctx>();
-	let board = ctx.board.read();
-	let cards = &board.as_ref().expect("views render once the board loaded").cards;
-	let states: Vec<Shown> = shown.iter().filter(|s| matches!(s, Shown::State(_))).cloned().collect();
-	let meta: Vec<Shown> = shown
-		.iter()
-		.filter(|s| !matches!(s, Shown::State(_) | Shown::Assignees | Shown::Repo | Shown::Number))
-		.cloned()
-		.collect();
-	rsx! {
-		div { class: "flex h-full flex-col gap-1 overflow-auto",
-			for (key , members) in groups {
-				if !key.is_empty() {
-					div { key: "head-{key}", class: "mt-1 first:mt-0", GroupHead { view: view.clone(), by: by.clone(), group: key.clone(), count: members.len() } }
-				}
-				for i in members {
-					div {
-						key: "{key}-{cards[i].link}",
-						class: "flex shrink-0 items-center gap-3 rounded-[var(--control-radius)] border border-border-subtle bg-card px-3 py-1.5 hover:bg-hover",
-						super::card::KindIcon { card: cards[i].clone() }
-						div { class: "flex min-w-0 flex-1 flex-col gap-0.5",
-							button { r#type: "button", class: "truncate text-left text-body font-medium text-ink hover:underline", onclick: { let link = cards[i].link.clone(); move |_| ctx.open_issue(link.clone()) }, "{cards[i].title}" }
-							div { class: "flex flex-wrap items-center gap-1.5",
-								span { class: "text-mono-s text-ink-soft", "{cards[i].link.project().repo()} #{cards[i].link.number()}" }
-								for s in meta.iter() {
-									Field { key: "{s}", card: cards[i].clone(), shown: s.clone() }
-								}
-							}
-						}
-						for s in states.iter() {
-							Field { key: "{s}", card: cards[i].clone(), shown: s.clone() }
-						}
-						if shown.contains(&Shown::Assignees) {
-							Field { card: cards[i].clone(), shown: Shown::Assignees }
-						}
-					}
-				}
-			}
-		}
-	}
-}
-
-/// Table layout (Figma: TableRow): a row per card, a column per shown field; a header's click orders by it,
-/// a drag moves it; cells edit in place.
-#[component]
-fn Rows(view: String, by: GroupBy, groups: Vec<(String, Vec<usize>)>, shown: Vec<Shown>, sort: Order) -> Element {
-	let ctx = use_context::<Ctx>();
-	let mut in_view = use_context::<InView>();
-	let mut dragged = use_signal(|| None::<usize>);
-	// a header leads the order, then leads it reversed, then leaves it; the other keys follow as they were
-	let mut cycle = move |by: SortKey| {
-		let now = in_view.0.peek().sort.keys().to_vec();
-		let lead = match now.first() {
-			Some(Sort { by: at, reversed: false }) if *at == by => Some(true),
-			Some(Sort { by: at, reversed: true }) if *at == by => None,
-			_ => Some(false),
-		};
-		let mut keys: Vec<Sort> = lead.map(|reversed| Sort { by: by.clone(), reversed }).into_iter().collect();
-		keys.extend(now.into_iter().filter(|s| s.by != by));
-		if keys.is_empty() {
-			keys.push(Sort { by: SortKey::Rank, reversed: false });
-		}
-		in_view.0.write().sort = keys.into();
-	};
-	let arrow = |by: &SortKey| match sort.keys().first() {
-		Some(Sort { by: at, reversed }) if at == by =>
-			if *reversed {
-				" ↑"
-			} else {
-				" ↓"
-			},
-		_ => "",
-	};
-	let board = ctx.board.read();
-	let cards = &board.as_ref().expect("views render once the board loaded").cards;
-	let width = |s: &Shown| match s {
-		Shown::Repo => "w-[150px]",
-		Shown::State(_) => "w-[110px]",
-		Shown::Importance | Shown::Hours => "w-[64px]",
-		Shown::Labels => "w-[160px]",
-		Shown::Assignees => "w-[52px]",
-		Shown::Updated | Shown::Number => "w-[64px]",
-		_ => "w-[120px]",
-	};
-	let head = |s: &Shown| match s {
-		Shown::Importance => "i".to_string(),
-		Shown::Hours => "h".to_string(),
-		Shown::Assignees => String::new(),
-		Shown::State(_) => "state".to_string(),
-		other => other.to_string(),
-	};
-	rsx! {
-		div { class: "h-full overflow-auto rounded-[var(--radius)] border border-border-subtle",
-			div { class: "sticky top-0 z-10 flex h-7 min-w-max items-center gap-3 border-b border-border-subtle bg-card px-3",
-				span { class: "w-4 shrink-0" }
-				button { r#type: "button", class: "w-11 shrink-0 text-left text-overline text-ink-soft hover:text-ink", onclick: move |_| cycle(SortKey::Number), "#{arrow(&SortKey::Number)}" }
-				span { class: "min-w-60 flex-1 text-left text-overline text-ink-soft", "title" }
-				for (n , s) in shown.iter().cloned().enumerate().filter(|(_, s)| *s != Shown::Number) {
-					div {
-						key: "{s}",
-						class: "flex shrink-0 cursor-grab items-center gap-1 {width(&s)}",
-						draggable: "true",
-						ondragstart: move |_| dragged.set(Some(n)),
-						ondragover: move |e| e.prevent_default(),
-						ondrop: move |e: DragEvent| {
-							e.prevent_default();
-							let Some(from) = dragged.take() else { return };
-							let mut v = in_view.0.write();
-							let moved = v.shown.remove(from);
-							v.shown.insert(n, moved);
-						},
-						match SortKey::try_from(s.clone()) {
-							Ok(key) => rsx! { button { r#type: "button", class: "text-overline text-ink-soft hover:text-ink", onclick: { let key = key.clone(); move |_| cycle(key.clone()) }, "{head(&s)}{arrow(&key)}" } },
-							Err(_) => rsx! { span { class: "text-overline text-ink-soft", "{head(&s)}" } },
-						}
-						if let Ok(facet) = Facet::try_from(s.clone()) {
-							FacetMenuButton { facet }
-						}
-					}
-				}
-			}
-			for (key , members) in groups {
-				if !key.is_empty() {
-					div { key: "head-{key}", class: "sticky top-7 z-[5] min-w-max bg-background px-1 pt-1", GroupHead { view: view.clone(), by: by.clone(), group: key.clone(), count: members.len() } }
-				}
-				for i in members {
-					div { key: "{key}-{cards[i].link}", class: "flex h-[34px] min-w-max items-center gap-3 border-b border-border-subtle px-3 hover:bg-hover",
-						span { class: "flex w-4 shrink-0", super::card::KindIcon { card: cards[i].clone() } }
-						span { class: "w-11 shrink-0 text-mono-s text-ink-soft", "#{cards[i].link.number()}" }
-						button { r#type: "button", class: "min-w-60 flex-1 truncate text-left text-body text-ink hover:underline", onclick: { let link = cards[i].link.clone(); move |_| ctx.open_issue(link.clone()) }, "{cards[i].title}" }
-						for s in shown.iter().filter(|s| **s != Shown::Number) {
-							div { key: "{s}", class: "flex shrink-0 items-center gap-1 overflow-hidden {width(s)}", Field { card: cards[i].clone(), shown: s.clone() } }
-						}
-					}
-				}
-			}
-		}
-	}
-}
-
-/// A table header's \`▾\`: the facet's values, as its chip in the toolbar offers them.
-#[component]
-fn FacetMenuButton(facet: Facet) -> Element {
-	let in_view = use_context::<InView>();
-	let mut open = use_signal(|| false);
-	let Ok(query) = in_view.0.read().query.parse::<Query>() else {
-		return rsx! {}; // mid-edit and unparsed: the query input says why
-	};
-	rsx! {
-		Popover { open: open(), on_open_change: move |v| open.set(v),
-			PopoverTrigger { class: "text-ink-faint hover:text-ink", aria_label: format!("filter by {facet}"), Icon { glyph: Glyph::ChevronDown, class: "size-3" } }
-			PopoverContent { align: "start", class: "w-[260px] rounded-[var(--radius)] border border-border bg-popover p-1 text-ink",
-				if open() { FacetMenu { facet, query } }
-			}
 		}
 	}
 }

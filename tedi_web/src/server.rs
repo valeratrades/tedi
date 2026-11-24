@@ -82,11 +82,11 @@ pub async fn serve(config: Settings) -> Result<()> {
 	let addr = config.addr;
 	SETTINGS.set(config).map_err(|_| eyre!("one server per process"))?;
 	let (announce, announced) = mpsc::unbounded_channel::<String>();
+	ANNOUNCE.set(announce).map_err(|_| eyre!("one server per process"))?;
 
 	let mut router = Router::new().register_server_functions().with_state(FullstackState::headless());
 	if settings().webhook_secret.is_some() {
-		let announce = announce.clone();
-		router = router.route("/webhook", post(move |headers: HeaderMap, body: Bytes| webhook(headers, body, announce.clone())));
+		router = router.route("/webhook", post(webhook));
 	}
 	if let Some(public) = &settings().public {
 		router = router.fallback_service(ServeDir::new(public).fallback(ServeFile::new(public.join("index.html"))));
@@ -94,8 +94,14 @@ pub async fn serve(config: Settings) -> Result<()> {
 	let listener = tokio::net::TcpListener::bind(addr).await?;
 	tracing::info!("serving the board on {addr}");
 	tokio::try_join!(async { Ok(axum::serve(listener, router).await?) }, puller(announced))?;
-	drop(announce); // held until here, so the puller's channel never closes under it
 	Ok(())
+}
+
+/// Every watched repo pulled now, after any pull already running.
+pub fn refresh() {
+	for w in &settings().watch {
+		announce(w.clone());
+	}
 }
 
 pub fn changes() -> ServerEvents<()> {
@@ -448,6 +454,8 @@ pub async fn propose(headers: &HeaderMap, item: Item, onto: Onto, message: Strin
 }
 
 static SETTINGS: OnceLock<Settings> = OnceLock::new();
+/// What the puller pulls next; never dropped, so its channel never closes.
+static ANNOUNCE: OnceLock<mpsc::UnboundedSender<String>> = OnceLock::new();
 static CHANGES: LazyLock<broadcast::Sender<()>> = LazyLock::new(|| broadcast::channel(16).0);
 /// Loaded once per change rather than once per open board.
 static BOARD: Mutex<Option<Arc<Board>>> = Mutex::const_new(None);
@@ -465,7 +473,7 @@ async fn puller(mut announced: mpsc::UnboundedReceiver<String>) -> Result<()> {
 	loop {
 		let targets = tokio::select! {
 			repo = announced.recv() => {
-				let mut repos = vec![repo.expect("`serve` holds a sender until it returns")];
+				let mut repos = vec![repo.expect("`ANNOUNCE` holds a sender for good")];
 				while let Ok(more) = announced.try_recv() {
 					repos.push(more);
 				}
@@ -482,7 +490,15 @@ async fn puller(mut announced: mpsc::UnboundedReceiver<String>) -> Result<()> {
 	}
 }
 
-async fn webhook(headers: HeaderMap, body: Bytes, announce: mpsc::UnboundedSender<String>) -> StatusCode {
+fn announce(target: String) {
+	ANNOUNCE
+		.get()
+		.expect("set by `serve` before the router exists")
+		.send(target)
+		.expect("the puller lives as long as the server");
+}
+
+async fn webhook(headers: HeaderMap, body: Bytes) -> StatusCode {
 	use hmac::Mac as _;
 
 	let secret = settings().webhook_secret.as_ref().expect("mounted only with a secret");
@@ -514,7 +530,7 @@ async fn webhook(headers: HeaderMap, body: Bytes, announce: mpsc::UnboundedSende
 			if !settings().watch.iter().any(|w| w.eq_ignore_ascii_case(owner) || w.eq_ignore_ascii_case(&repo.full_name)) {
 				return StatusCode::NO_CONTENT; // the App is public: anyone's install delivers here
 			}
-			announce.send(repo.full_name).expect("the puller lives as long as the server");
+			announce(repo.full_name);
 			StatusCode::ACCEPTED
 		}
 		Ok(Delivery { repository: None }) => StatusCode::NO_CONTENT, // an org- or app-level event: no repo's issues moved
