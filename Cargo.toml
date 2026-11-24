@@ -122,9 +122,3 @@ unused_features = "allow"
 
 [workspace.lints.cargo]
 non_kebab_case_bins = "allow"
-
-[patch.crates-io]
-tilers_core = { path = "/home/v/s/ev/tilers/tilers_core" }
-tilers_dioxus = { path = "/home/v/s/ev/tilers/tilers_dioxus" }
-ev_lib = { path = "/home/v/s/ev/web_std/rust" }
-ev_lib_classes = { path = "/home/v/s/ev/web_std/rust/classes" }
