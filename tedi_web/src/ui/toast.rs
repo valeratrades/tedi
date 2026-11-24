@@ -35,7 +35,7 @@ pub(super) fn Toasts() -> Element {
 	let ctx = use_context::<Ctx>();
 	let notes = ctx.notes.read().clone();
 	rsx! {
-		div { class: "pointer-events-none fixed right-4 bottom-4 z-[115] flex w-[420px] max-w-[calc(100vw-2rem)] flex-col gap-2",
+		div { class: "pointer-events-none fixed right-4 bottom-4 z-[90] flex w-[420px] max-w-[calc(100vw-2rem)] flex-col gap-2",
 			for note in notes {
 				Toast { key: "{note.id}", note }
 			}

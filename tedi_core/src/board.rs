@@ -167,11 +167,14 @@ impl Extend<Part> for Board {
 	fn extend<T: IntoIterator<Item = Part>>(&mut self, parts: T) {
 		for part in parts {
 			match part {
+				Part::Sizes { .. } => {}
 				Part::Read { cards, unreadable, .. } => {
 					self.cards.extend(cards);
 					self.unreadable.extend(unreadable);
 				}
-				Part::Rest { ranks, targets, colors, assignable } => {
+				Part::Rest {
+					ranks, targets, colors, assignable, ..
+				} => {
 					for card in &mut self.cards {
 						card.rank = ranks.get(&card.link.to_string()).copied();
 					}
@@ -182,13 +185,16 @@ impl Extend<Part> for Board {
 	}
 }
 
-/// A board as it is read; it is whole with its `Rest`, the last.
+/// A board as it is read: `Sizes`, the issues, a `Rest` with which they are whole, the pull requests, the `Rest` with which all is.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum Part {
-	/// What `bytes` of the store hold.
+	/// The bytes of the store it is read from.
+	Sizes { issues: u64, prs: u64 },
+	/// What `bytes` of them hold.
 	Read { bytes: u64, cards: Vec<Card>, unreadable: Vec<(PathBuf, String)> },
-	/// What the cards decide together, and what no card holds.
+	/// What the cards so far decide together, and what no card holds.
 	Rest {
+		whole: bool,
 		ranks: BTreeMap<String, Rank>,
 		targets: Vec<Target>,
 		colors: BTreeMap<String, BTreeMap<String, crate::labels::Color>>,
@@ -262,6 +268,14 @@ impl Query {
 			}
 		}
 		Ok(())
+	}
+
+	/// Whether its `is:` clauses leave pull requests in.
+	pub fn covers_prs(&self) -> bool {
+		!self.clauses.iter().any(|c| match c.negated {
+			false => c.any.iter().all(|v| *v == Filter::Is(Is::Issue)),
+			true => c.any.contains(&Filter::Is(Is::Pr)),
+		})
 	}
 
 	/// Whether its `repo:` clauses leave `repo` in.

@@ -3,7 +3,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use color_eyre::eyre::{Result, WrapErr as _, bail, eyre};
+use color_eyre::eyre::{Result, WrapErr as _, bail};
 use tedi_adapters::home::{Home, HomeError};
 use tedi_core::{NodeLink, board::Answer, conflict::Edited, workflow::State};
 

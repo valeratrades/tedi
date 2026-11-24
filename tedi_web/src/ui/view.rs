@@ -3,6 +3,7 @@
 use std::str::FromStr as _;
 
 use dioxus::{core::spawn_forever, prelude::*};
+use ev_lib::uikit_dioxus::Logo;
 use strum::IntoEnumIterator as _;
 use tedi_core::{
 	MilestoneLink, NodeLink,
@@ -40,11 +41,15 @@ pub fn SprintPanel(link: MilestoneLink) -> Element {
 	let ctx = use_context::<Ctx>();
 	let board = ctx.board.read();
 	let Some(board) = board.as_ref() else {
-		return rsx! {};
+		return rsx! { Loader { prs: false } };
 	};
 	let Some(sprint) = board.targets.iter().find(|t| t.link == link) else {
 		return rsx! { div { class: "p-3 text-sm text-ink-soft", "{link.as_str()} is no open sprint here" } };
 	};
+	let prs = sprint.nodes.iter().any(|n| matches!(n, NodeLink::Issue(l) if ctx.card(l).is_none())); // what is no issue may be a pull request
+	if ctx.awaits(prs) {
+		return rsx! { Loader { prs } };
+	}
 	let shown: Vec<Shown> = ctx
 		.workflows()
 		.into_keys()
@@ -99,6 +104,26 @@ fn Must(link: MilestoneLink) -> Element {
 	}
 }
 
+/// How much of what a view shows is here, or why it isn't.
+#[component]
+pub(super) fn Loader(prs: bool) -> Element {
+	let ctx = use_context::<Ctx>();
+	let loading = ctx.loading.read();
+	if let Some(why) = &loading.failed {
+		return rsx! { Empty { glyph: Glyph::Alert, error: true, title: "The board didn't load", body: "{why}" } };
+	}
+	let percent = loading.percent(prs);
+	rsx! {
+		div { class: "flex h-full flex-1 flex-col items-center justify-center gap-8",
+			div { class: "hidden text-primary-ink [[data-mark]_&]:block", Logo { class: "block h-11" } }
+			div { role: "progressbar", aria_label: "Loading", aria_valuenow: "{percent}", class: "flex w-48 max-w-[60%] flex-col items-center gap-6",
+				div { class: "h-px w-full overflow-hidden bg-border", div { class: "h-full bg-primary-ink", style: "width: {percent}%" } }
+				span { class: "pl-[0.2em] text-mono-s tracking-[0.2em] text-ink-soft", "{percent}%" }
+			}
+		}
+	}
+}
+
 #[component]
 fn ViewBody(defined: View) -> Element {
 	let ctx = use_context::<Ctx>();
@@ -145,21 +170,26 @@ fn ViewBody(defined: View) -> Element {
 			}
 		}
 	});
-	if ctx.board.read().is_none() {
-		return rsx! {};
-	}
 	let v = view.read().clone();
 	let error = v.query.parse::<Query>().err().map(|e| e.to_string());
 	let ran = if error.is_none() { v.clone() } else { good.read().clone() };
-	let Outcome { query, count, groups } = match outcome(&ctx, &ran) {
-		Ok(o) => o,
-		Err(why) => return rsx! { Empty { glyph: Glyph::Alert, error: true, title: "The view doesn't run", body: why } },
+	let query: Query = ran.query.parse().expect("the view's own, or the last that parsed");
+	let prs = query.covers_prs();
+	let outcome = match ctx.awaits(prs) {
+		true => None,
+		false => match outcome(&ctx, &ran) {
+			Ok(o) => Some(o),
+			Err(why) => return rsx! { Empty { glyph: Glyph::Alert, error: true, title: "The view doesn't run", body: why } },
+		},
 	};
 	rsx! {
 		LockScope { locked,
 			div { class: "flex h-full flex-col",
-				ViewToolbar { view, defined, query, error, count }
-				Results { ran, groups }
+				ViewToolbar { view, defined, query, error, count: outcome.as_ref().map(|o| o.count) }
+				match outcome {
+					Some(o) => rsx! { Results { ran, groups: o.groups } },
+					None => rsx! { Loader { prs } },
+				}
 			}
 		}
 	}

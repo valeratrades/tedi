@@ -24,6 +24,9 @@ fn count(ctx: &Ctx, query: &str) -> Option<usize> {
 	let board = ctx.board.read();
 	let board = board.as_ref()?;
 	let mut q: Query = query.parse().ok()?;
+	if ctx.awaits(q.covers_prs()) {
+		return None;
+	}
 	if let Some((_, Some(filter))) = ctx.scope() {
 		q.narrow(&filter.parse().expect("a scope's filter is a repo clause"));
 	}

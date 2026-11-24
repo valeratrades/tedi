@@ -1,26 +1,21 @@
-import { expect, type Page, test } from "@playwright/test";
+import { expect, type Locator, type Page, test } from "@playwright/test";
 
-const bar = (page: Page) => page.getByRole("progressbar", { name: "Loading" });
-const card = (page: Page) => page.locator('a[href*="issue=service-arb/"]').first();
-const shown = async (page: Page) => {
-  await expect(card(page)).toBeVisible();
-  await expect(bar(page)).toHaveCount(0);
+const bars = (within: Page | Locator) => within.getByRole("progressbar", { name: "Loading" });
+const shelf = (page: Page, name: string) => page.locator("aside").getByRole("link", { name, exact: true });
+const tile = (page: Page) => page.locator('.tl-render-overlay[data-tile="0"]').filter({ visible: true }).first();
+const cards = (within: Page | Locator) => within.locator('a[href*="issue=service-arb/"]');
+const reads = async (bar: Locator, percent: number) => {
+  await expect(bar).toHaveText(`${percent}%`);
+  await expect(bar).toHaveAttribute("aria-valuenow", String(percent));
 };
-/** What the bar reads, in each of the ways it says it. */
-const reads = async (page: Page, percent: number) => {
-  await expect(bar(page)).toHaveText(`${percent}%`);
-  await expect(bar(page)).toHaveAttribute("aria-valuenow", String(percent));
-  const [track, fill] = await Promise.all(["track", "fill"].map(async (n) => (await bar(page).getByTestId(n).boundingBox())!.width));
-  expect(Math.abs((100 * fill) / track - percent)).toBeLessThanOrEqual(1);
-};
+const share = (loaded: number, of: number) => Math.min(99, Math.floor((100 * loaded) / of));
+const sum = (all: number[]) => all.reduce((a, b) => a + b, 0);
 
 type Held = { release(what: "client" | "board", pieces: number): void };
 
-const STORE_WEIGHS = 10_000; // the seeded store is nothing beside a debug client
-
-/** The client (in 8 pieces) and the board (a line each, of so many times its bytes) reach the page only as `window.held` releases them. */
+/** The client (in 8 pieces) and the board (a line each) reach the page only as `release` lets them. */
 const hold = (page: Page) =>
-  page.addInitScript((weighs) => {
+  page.addInitScript(() => {
     const fetched = window.fetch;
     const released = { client: 0, board: 0 };
     const waiting: (() => void)[] = [];
@@ -34,11 +29,7 @@ const hold = (page: Page) =>
     });
     const pieces = (what: "client" | "board", body: Uint8Array) => {
       if (what === "client") return Array.from({ length: 8 }, (_, i) => body.slice(Math.floor((i * body.length) / 8), Math.floor(((i + 1) * body.length) / 8)));
-      return new TextDecoder().decode(body).trim().split("\n").map((line) => {
-        const part = JSON.parse(line);
-        if (part.Read) part.Read.bytes *= weighs;
-        return new TextEncoder().encode(JSON.stringify(part) + "\n");
-      });
+      return new TextDecoder().decode(body).trim().split("\n").map((line) => new TextEncoder().encode(line + "\n"));
     };
     window.fetch = async (input, init) => {
       const url = input instanceof Request ? input.url : String(input);
@@ -54,65 +45,102 @@ const hold = (page: Page) =>
           to.enqueue(all[sent++]);
         },
       });
-      const headers = new Headers(response.headers);
-      if (what === "board") headers.set("x-bytes", String(weighs * Number(headers.get("x-bytes"))));
-      return Object.defineProperty(new Response(body, { headers }), "url", { value: response.url });
+      return Object.defineProperty(new Response(body, { headers: response.headers }), "url", { value: response.url });
     };
-  }, STORE_WEIGHS);
+  });
 const release = (page: Page, what: "client" | "board", pieces: number) => page.evaluate(([w, n]) => (window as never as { held: Held }).held.release(w as "client", n as number), [what, pieces] as const);
 
-/** The sizes the page is told, and the bytes of the store each line of the board holds. */
-const sizes = async (page: Page) => {
-  const wasm = await page.request.get("/wasm/tedi_web_bg.wasm");
-  const board = await page.request.get("/api/board");
-  const parts = (await board.text()).trim().split("\n").map((l) => STORE_WEIGHS * ((JSON.parse(l).Read?.bytes ?? 0) as number));
-  return { client: Number(wasm.headers()["x-bytes"]), store: STORE_WEIGHS * Number(board.headers()["x-bytes"]), parts };
+/** The board's lines: the issues' bytes and the pull requests', and the line the issues are whole with. */
+const lines = async (page: Page) => {
+  const all = (await (await page.request.get("/api/board")).text()).trim().split("\n").map((l) => JSON.parse(l));
+  const bytes = all.map((l) => (l.Read?.bytes ?? 0) as number);
+  const whole = all.findIndex((l) => l.Rest);
+  const { issues, prs } = all[0].Sizes as { issues: number; prs: number };
+  expect(sum(bytes.slice(0, whole))).toBe(issues);
+  expect(sum(bytes.slice(whole))).toBe(prs);
+  return { bytes, whole, issues, prs, all: all.length };
 };
+const signIn = (page: Page) => page.request.get("/");
 
-test("the percentage is what is loaded of what there is to, on a first load, to the percent", async ({ page }) => {
-  await page.request.get("/"); // a viewer
-  const { client, store, parts } = await sizes(page);
-  expect(client).toBeGreaterThan(0);
-  expect(parts.reduce((a, b) => a + b)).toBe(store);
-  expect((100 * store) / (client + store), "the board shows in the percentage").toBeGreaterThan(20);
-  const percent = (loaded: number) => Math.min(99, Math.floor((100 * loaded) / (client + store)));
-
+test("before the client: the page's frame, and how much of the client is here", async ({ page, viewport }) => {
+  await signIn(page);
+  const client = Number((await page.request.get("/wasm/tedi_web_bg.wasm")).headers()["x-bytes"]);
   await hold(page);
   await page.goto("/");
-  await reads(page, 0);
+  await reads(bars(page), 0);
+  if (viewport!.width >= 768) await expect(page.getByTestId("frame").getByText("tedi")).toBeVisible();
   for (const pieces of [1, 4, 7]) {
     await release(page, "client", pieces);
-    await reads(page, percent(Math.floor((pieces * client) / 8)));
+    await reads(bars(page), share(Math.floor((pieces * client) / 8), client));
   }
   await release(page, "client", 8);
-  await reads(page, percent(client));
-  for (const at of [0.25, 0.5, 0.75].map((f) => Math.floor(f * parts.length))) {
-    await release(page, "board", at);
-    await reads(page, percent(client + parts.slice(0, at).reduce((a, b) => a + b, 0)));
-  }
-  await release(page, "board", parts.length - 1);
-  await reads(page, 99);
-  await release(page, "board", parts.length);
-  await shown(page);
+  await expect(page.getByTestId("frame")).toHaveCount(0);
 });
 
-test("it is in the middle of the screen, over the dock, its grips included", async ({ page }) => {
-  await hold(page);
-  await page.goto("/");
-  const { x, y, width, height } = (await page.getByTestId("loading").boundingBox())!;
-  const { width: w, height: h } = page.viewportSize()!;
-  expect(Math.abs(x + width / 2 - w / 2)).toBeLessThan(1);
-  expect(Math.abs(y + height / 2 - h / 2)).toBeLessThan(1);
-  await release(page, "client", 8);
-  const grips = page.locator("[class*=tl-resize]");
-  await expect.poll(() => grips.count()).toBeGreaterThan(0);
-  const over = (e: Element) => {
-    const { x, y, width, height } = e.getBoundingClientRect();
-    return e.contains(document.elementFromPoint(x + width / 2, y + height / 2));
-  };
-  expect(await grips.evaluateAll((all, over) => all.filter(eval(over)).length, over.toString())).toBe(0);
-  await release(page, "board", Infinity);
-  await shown(page);
+test.describe("what waits for the board is the views on screen, each for what it shows", () => {
+  test.skip(({ viewport }) => viewport!.width < 768, "the shelves are behind a sheet");
+
+  test("the shelves, the dock and a view's own toolbar are there with none of it, and work", async ({ page }) => {
+    await hold(page);
+    await page.goto("/");
+    await release(page, "client", 8);
+    await expect(shelf(page, "Triage")).toBeVisible();
+    await expect(tile(page).getByRole("textbox")).toHaveValue(/is:pr/);
+    await reads(bars(tile(page)), 0);
+    const [t, b] = [(await tile(page).boundingBox())!, (await bars(tile(page)).boundingBox())!];
+    expect(b.x).toBeGreaterThan(t.x);
+    expect(b.x + b.width).toBeLessThan(t.x + t.width);
+    expect(Math.abs(b.x + b.width / 2 - (t.x + t.width / 2))).toBeLessThan(2);
+    await shelf(page, "Triage").click();
+    await expect(tile(page).getByRole("textbox")).toHaveValue(/is:issue/);
+    await reads(bars(tile(page)), 0);
+    await tile(page).getByRole("button", { name: "filter by repo" }).click();
+    await expect(page.getByText("Counted once the board is here")).toBeVisible();
+  });
+
+  test("a view of issues shows once they are here, one of pull requests reads both to the percent", async ({ page }) => {
+    await signIn(page);
+    const { bytes, whole, issues, prs, all } = await lines(page);
+    await hold(page);
+    await page.goto("/");
+    await release(page, "client", 8);
+    await shelf(page, "Triage").click();
+    await expect(tile(page).getByRole("textbox")).toHaveValue(/is:issue/);
+    const triage = tile(page);
+    for (const at of [0.3, 0.7].map((f) => Math.ceil(f * whole))) {
+      await release(page, "board", at);
+      await reads(bars(triage), share(sum(bytes.slice(0, at)), issues));
+    }
+    await release(page, "board", whole);
+    await reads(bars(triage), 99);
+    await release(page, "board", whole + 1);
+    await expect(cards(triage).first()).toBeVisible();
+    await expect(bars(triage)).toHaveCount(0);
+
+    await shelf(page, "Release checklist").click();
+    await expect(tile(page).getByRole("textbox")).toHaveValue(/is:pr/);
+    const checklist = tile(page);
+    await reads(bars(checklist), share(issues, issues + prs));
+    await release(page, "board", all - 1);
+    await reads(bars(checklist), 99);
+    await release(page, "board", all);
+    await expect(cards(checklist).first()).toBeVisible();
+    await expect(bars(page)).toHaveCount(0);
+  });
+
+  test("GitHub's sprints hold nothing else", async ({ page }) => {
+    let go!: () => void;
+    const slow = new Promise<void>((on) => (go = on));
+    await page.route(/\/api\/sprints$/, async (route) => {
+      await slow;
+      await route.continue();
+    });
+    await page.goto("/");
+    await expect(cards(tile(page)).first()).toBeVisible();
+    await expect(page.getByText("Asking GitHub…")).toBeVisible();
+    go();
+    await expect(page.getByText("Asking GitHub…")).toHaveCount(0);
+  });
 });
 
 test("the theme's mark is over the bar", async ({ page }) => {
@@ -123,18 +151,21 @@ test("the theme's mark is over the bar", async ({ page }) => {
   });
   await hold(page);
   await page.goto("/");
-  const mark = page.getByTestId("loading").locator('[data-slot="logo"]');
-  await expect(mark).toBeVisible();
-  const [m, b] = [(await mark.boundingBox())!, (await bar(page).boundingBox())!];
-  expect(m.y + m.height).toBeLessThan(b.y);
-  expect(m.width).toBeCloseTo(2 * m.height);
+  for (const within of [page.getByTestId("frame"), tile(page)]) {
+    const mark = within.locator('[data-slot="logo"]').first();
+    await expect(mark).toBeVisible();
+    const [m, b] = [(await mark.boundingBox())!, (await bars(within).first().boundingBox())!];
+    expect(m.y + m.height).toBeLessThan(b.y);
+    expect(m.width).toBeCloseTo(2 * m.height);
+    await release(page, "client", 8);
+  }
 });
 
-test("a load that fails says why", async ({ page }) => {
+test("a load that fails says why, where it would have been", async ({ page }) => {
   await page.route(/\/api\/board$/, (route) => route.fulfill({ status: 500, json: { ServerError: { message: "the store is gone", code: 500 } } }));
   await page.goto("/");
-  await expect(page.getByText("The board didn't load")).toBeVisible();
-  await expect(bar(page)).toHaveCount(0);
+  await expect(tile(page).getByText("The board didn't load")).toBeVisible();
+  await expect(bars(page)).toHaveCount(0);
 });
 
 test("a board cut short is no board", async ({ page }) => {
@@ -144,7 +175,7 @@ test("a board cut short is no board", async ({ page }) => {
     await route.fulfill({ response: whole, body });
   });
   await page.goto("/");
-  await expect(page.getByText("The board didn't load")).toBeVisible();
+  await expect(page.getByText("The board didn't load").first()).toBeVisible();
 });
 
 test("a client that doesn't start says so", async ({ page }) => {

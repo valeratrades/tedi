@@ -26,7 +26,10 @@ use crate::api;
 pub fn IssuePanel(link: IssueLink) -> Element {
 	let ctx = use_context::<Ctx>();
 	let Some(card) = ctx.card(&link) else {
-		return rsx! { div { class: "p-4 text-body text-ink-soft", "{link} is not on the board: not stored here, or not loaded yet" } };
+		return match ctx.awaits(true) {
+			true => rsx! { super::view::Loader { prs: true } },
+			false => rsx! { div { class: "p-4 text-body text-ink-soft", "{link} is not on the board: not stored here" } },
+		};
 	};
 	let conflict = ctx.conflicts.read().get(&link).cloned();
 	rsx! {

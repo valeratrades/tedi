@@ -28,7 +28,7 @@ const PRS_FILE: &str = ".prs.json";
 
 impl<R: LocalReader> LocalIssueSource<R> {
 	fn new(local_path: LocalPath, reader: R) -> Self {
-		Self { local_path, reader }
+		Self { local_path, reader, meta: None }
 	}
 
 	/// Create a child source with the same reader.
@@ -36,6 +36,7 @@ impl<R: LocalReader> LocalIssueSource<R> {
 		Self {
 			local_path: LocalPath::new(child_index),
 			reader: self.reader,
+			meta: self.meta.clone(),
 		}
 	}
 
@@ -54,8 +55,8 @@ impl LocalIssueSource<FsReader> {
 	/// - `fd` executable is available (for file searches)
 	/// - No unresolved merge conflicts exist
 	pub async fn build(local_path: LocalPath) -> Result<Self, LocalError> {
-		// Check for fd
-		if std::process::Command::new("fd").arg("--version").output().is_err() {
+		static FD: LazyLock<bool> = LazyLock::new(|| std::process::Command::new("fd").arg("--version").output().is_ok());
+		if !*FD {
 			return Err(LocalError::new_missing_executable("fd", "local filesystem operations"));
 		}
 
@@ -1100,6 +1101,7 @@ mod states;
 use std::{
 	collections::HashMap,
 	path::{Path, PathBuf},
+	sync::{Arc, LazyLock},
 };
 
 use color_eyre::eyre::{Report, Result, bail, eyre};
@@ -1172,6 +1174,8 @@ pub enum Local {}
 pub struct LocalIssueSource<R: LocalReader> {
 	pub local_path: LocalPath,
 	pub reader: R,
+	/// Its repo's, when many are read together; else read for each.
+	pub meta: Option<Arc<ProjectMeta>>,
 }
 
 /// Error type for consensus sink operations.
@@ -1301,7 +1305,10 @@ impl<R: LocalReader> crate::LazyIssue<LocalIssueSource<R>> for Issue {
 			let remote = match parsed.selector {
 				IssueSelector::GitId(n) => {
 					let repo_info = index.repo_info();
-					let meta = Local::load_project_meta(repo_info).issues.remove(&n);
+					let meta = match &source.meta {
+						Some(meta) => meta.issues.get(&n).cloned(),
+						None => Local::load_project_meta(repo_info).issues.remove(&n),
+					};
 					// a virtual issue's link is its own file path (which we've just resolved)
 					let link = if repo_info.is_virtual() {
 						IssueLink::Virtual(file_path.clone())

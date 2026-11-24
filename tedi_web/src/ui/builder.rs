@@ -52,12 +52,13 @@ pub(super) fn Builder(from: Option<String>) -> Element {
 			good.set(now);
 		}
 	});
-	if ctx.board.read().is_none() {
-		return rsx! {};
-	}
 	let d = draft.read().clone();
 	let error = d.query.parse::<Query>().err().map(|e| e.to_string());
 	let ran = if error.is_none() { d.clone() } else { good.read().clone() };
+	let prs = ran.query.parse::<Query>().expect("the draft's own, or the last that parsed").covers_prs();
+	if ctx.awaits(prs) {
+		return rsx! { super::view::Loader { prs } };
+	}
 	let outcome = outcome(&ctx, &ran);
 	let changes = upstream
 		.as_ref()

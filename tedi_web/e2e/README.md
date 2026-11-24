@@ -18,7 +18,7 @@ Screens and frames: 01-board 48:5386, 02-view 10:1607, 03-library 11:3139, 04-wo
 ## Specs and renders
 
 ```sh
-nix run .#e2e                  # specs/: the address against the screen (url), a view's order as labels (sort), the wait for the board (loading), the account panel (account)
+nix run .#e2e                  # specs/: the address against the screen (url), a view's order as labels (sort), what is on screen while it loads (loading), the account panel (account)
 nix run .#figma                # every page the address can name, at 1440 and 390, onto a new page of `figmaFile` (flake.nix), "tedi — renders"
 ```
 

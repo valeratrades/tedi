@@ -48,13 +48,8 @@ const HELP: [(&str, &str); 7] = [
 
 #[wasm_bindgen::prelude::wasm_bindgen(js_namespace = loading)]
 extern "C" {
-	/// The client runs: what doesn't load from here on is its to say.
+	/// The client runs: the frame, and what doesn't load from here on, are its to show.
 	fn started();
-	/// So many bytes of the store are on the board.
-	fn loaded(bytes: f64);
-	fn shown();
-	/// It ends without the board.
-	fn quit();
 }
 
 const PANEL_MIN: MinSize = MinSize::Rem { w: 16.0, h: 8.0 };
@@ -87,7 +82,9 @@ struct Ctx {
 	api: Signal<Option<PackedApi>>,
 	/// The band the dock was last arranged for from the library: until then, what it shows isn't the viewer's to keep.
 	arranged: Signal<Option<Band>>,
-	/// Why setup, the library or the first board didn't arrive: nothing renders without all three.
+	/// What of the first board is here.
+	loading: Signal<Loading>,
+	/// Why setup or the library didn't arrive: nothing renders without both.
 	failure: Signal<Option<String>>,
 	/// The dialog over the screen.
 	modal: Signal<Option<Modal>>,
@@ -146,6 +143,11 @@ impl Ctx {
 	/// What cards sit in, by name.
 	fn workflows(&self) -> BTreeMap<String, Workflow> {
 		self.setup.read().as_ref().expect("tiles render once setup arrived").workflows.clone()
+	}
+
+	/// Whether the first board still lacks what a view of issues, or of pull requests too, shows.
+	fn awaits(&self, prs: bool) -> bool {
+		self.board.read().is_none() || prs && !self.loading.read().whole
 	}
 
 	fn me(&self) -> Option<String> {
@@ -635,6 +637,7 @@ fn Shell() -> Element {
 			panels: Signal::new(Vec::new()),
 			api: Signal::new(None),
 			arranged: Signal::new(None),
+			loading: Signal::new(Loading::default()),
 			failure: Signal::new(None),
 			modal: Signal::new(None),
 			palette: Signal::new(false),
@@ -667,13 +670,6 @@ fn Shell() -> Element {
 	});
 	use_autosave(ctx, ctx.api, ctx.arranged, Dock::Tiles);
 	use_hook(started);
-	let failed = use_memo(move || ctx.failure.read().is_some());
-	let whole = use_memo(move || ctx.board.read().is_some() && ctx.library.read().is_some());
-	use_effect(move || match (failed(), whole()) {
-		(true, _) => quit(),
-		(false, true) => shown(),
-		(false, false) => {}
-	});
 	rsx! {
 		Live {}
 		div { class: "flex h-svh overflow-hidden bg-background text-ink",
@@ -764,7 +760,7 @@ enum Reading {
 }
 
 async fn reload(ctx: Ctx) {
-	let (mut stored, mut pending, mut reading, mut failure) = (ctx.stored, ctx.pending, ctx.reading, ctx.failure);
+	let (mut stored, mut pending, mut reading, mut loading) = (ctx.stored, ctx.pending, ctx.reading, ctx.loading);
 	if *reading.peek() != Reading::Idle {
 		return reading.set(Reading::Again);
 	}
@@ -772,16 +768,16 @@ async fn reload(ctx: Ctx) {
 	loop {
 		reading.set(Reading::Once);
 		let held = sync::landed(&pending.peek());
-		let first = stored.peek().is_none();
-		match read(first).await {
+		let first = !loading.peek().whole;
+		match read(ctx, first).await {
 			Ok(board) => {
 				stored.set(Some(board));
-				if ctx.setup.peek().is_some() && failure.peek().is_some() {
-					failure.set(None);
+				if first {
+					loading.write().whole = true;
 				}
 				pending.write().retain(|p| !held.contains(&p.id));
 			}
-			Err(e) if stored.peek().is_none() => failure.set(Some(format!("board: {e}"))),
+			Err(e) if first => loading.write().failed = Some(e),
 			Err(e) => ctx.say("board", toast::Tone::Error, format!("board: {e}"), None),
 		}
 		if *reading.peek() == Reading::Once {
@@ -790,13 +786,39 @@ async fn reload(ctx: Ctx) {
 	}
 }
 
-/// The server's board. The `first` read tells the screen over it how far it is, and lets it draw.
-async fn read(first: bool) -> Result<Board, String> {
+/// What of the first board is here, in bytes of the store it is read from.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Loading {
+	issues: Share,
+	prs: Share,
+	whole: bool,
+	failed: Option<String>,
+}
+impl Loading {
+	/// Of what a view of issues, or of pull requests too, shows.
+	fn percent(&self, prs: bool) -> u64 {
+		let (loaded, of) = match prs {
+			true => (self.issues.loaded + self.prs.loaded, self.issues.of + self.prs.of),
+			false => (self.issues.loaded, self.issues.of),
+		};
+		(100 * loaded).checked_div(of).unwrap_or(0).min(99) // nothing sized yet; 100 is the view
+	}
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct Share {
+	loaded: u64,
+	of: u64,
+}
+
+/// The server's board. The `first` read shows the issues once they are whole, and lets the page draw as it goes.
+async fn read(ctx: Ctx, first: bool) -> Result<Board, String> {
+	let (mut stored, mut loading) = (ctx.stored, ctx.loading);
 	let window = web_sys::window().expect("runs in a browser");
 	let performance = window.performance().expect("a browser's window has one");
 	let document = window.document().expect("a page has one");
 	let mut chunks = api::board().await.map_err(|e| e.to_string())?;
-	let (mut board, mut bytes, mut whole) = (Board::default(), 0, false);
+	let (mut board, mut now, mut issues) = (Board::default(), Loading::default(), true);
 	let mut pending = Vec::new(); // a line not all here yet
 	let mut drawn = performance.now();
 	while let Some(chunk) = chunks.next().await {
@@ -805,12 +827,19 @@ async fn read(first: bool) -> Result<Board, String> {
 		for line in pending.drain(..end).collect::<Vec<u8>>().split_inclusive(|b| *b == b'\n') {
 			let part: Part = serde_json::from_slice(line).map_err(|e| e.to_string())?;
 			match &part {
-				Part::Read { bytes: held, .. } => bytes += held,
-				Part::Rest { .. } => whole = true,
+				Part::Sizes { issues, prs } => (now.issues.of, now.prs.of) = (*issues, *prs),
+				Part::Read { bytes, .. } if issues => now.issues.loaded += bytes,
+				Part::Read { bytes, .. } => now.prs.loaded += bytes,
+				Part::Rest { whole: true, .. } => now.whole = true,
+				Part::Rest { whole: false, .. } => issues = false,
 			}
+			let shows = matches!(part, Part::Rest { whole: false, .. });
 			board.extend([part]);
 			if first {
-				loaded(bytes as f64);
+				if shows {
+					stored.set(Some(board.clone()));
+				}
+				loading.set(Loading { whole: false, ..now.clone() });
 				if performance.now() - drawn > 16.0 && !document.hidden() {
 					gloo_timers::future::sleep(std::time::Duration::ZERO).await; // a hidden page's timers are slowed, and nothing is drawn
 					drawn = performance.now();
@@ -818,7 +847,7 @@ async fn read(first: bool) -> Result<Board, String> {
 			}
 		}
 	}
-	whole.then_some(board).ok_or_else(|| "it was cut short".to_string())
+	now.whole.then_some(board).ok_or_else(|| "it was cut short".to_string())
 }
 
 /// Buttons a tile's header adds beside tilers' own (Figma: TileBar): split the shown panel off, maximize.
