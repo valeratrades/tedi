@@ -100,8 +100,6 @@ libc = "0.2"
 rstest = "0.26"
 v_fixtures = { version = "^0.3.4" }
 walkdir = "2"
-
-#[patch.crates-io]
 #v_utils = { path = "../v_utils/v_utils" }
 #v_fixtures = { path = "../v_fixtures" }
 
@@ -123,3 +121,7 @@ unused_features = "allow"
 
 [workspace.lints.cargo]
 non_kebab_case_bins = "allow"
+
+[patch.crates-io]
+tilers_core = { path = "/home/v/s/ev/tilers/.claude/worktrees/float/tilers_core" }
+tilers_dioxus = { path = "/home/v/s/ev/tilers/.claude/worktrees/float/tilers_dioxus" }
