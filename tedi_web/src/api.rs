@@ -505,25 +505,14 @@ pub enum Dock {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub enum Kept {
-	Filter(View),
+	/// Replaces the view whole, with the columns and tints on screen as `arranged_as`'s.
+	Filter { view: View, arranged_as: String },
 	/// Replaces `name`'s bands `tiles` holds, keeping its others.
-	Workspace {
-		name: String,
-		tiles: Arrangement,
-	},
+	Workspace { name: String, tiles: Arrangement },
 	/// Replaces `name`'s `band` and its tints.
-	Columns {
-		name: String,
-		by: GroupBy,
-		band: Band,
-		layout: String,
-		tints: Tints,
-	},
+	Columns { name: String, by: GroupBy, band: Band, layout: String, tints: Tints },
 	/// Replaces `name` whole.
-	Scope {
-		name: String,
-		scope: Scope,
-	},
+	Scope { name: String, scope: Scope },
 }
 
 /// One change to a library, each touching only what it names, so two tabs of one viewer don't undo each other.

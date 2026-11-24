@@ -178,6 +178,46 @@ fn a_library_keeps_each_band_and_its_names_straight() {
 }
 
 #[test]
+fn a_view_kept_under_a_new_name_keeps_its_columns() {
+	let ctx = TestContext::build();
+	let (_server, port) = serve(&ctx, BOARD, &["--viewer-header", "X-Auth-User"]);
+	let me = Some("alice");
+	let arranged = |band: &str, layout: &str| serde_json::json!({ "Arranged": { "dock": { "Columns": { "view": "Triage", "by": "state:kanban" } }, "band": band, "layout": layout } });
+	assert_eq!(edit(port, me, arranged("Xl", "tabbed")).0, 200);
+	assert_eq!(edit(port, me, arranged("Sm", "narrow")).0, 200);
+	let tints = serde_json::json!({ "triage": "red" });
+	assert_eq!(edit(port, me, serde_json::json!({ "Tinted": { "view": "Triage", "by": "state:kanban", "tints": tints } })).0, 200);
+
+	assert_eq!(edit(port, me, serde_json::json!({ "Locked": { "view": "Triage", "locked": true } })).0, 200);
+
+	let (status, body) = edit(
+		port,
+		me,
+		serde_json::json!({ "Keep": { "Filter": { "view": view("main", "is:open"), "arranged_as": "Triage" } } }),
+	);
+	assert_eq!(status, 200, "{body}");
+	let on_screen = &library(port, me)["on_screen"];
+	assert_eq!(on_screen["columns"]["main"]["state:kanban"], serde_json::json!({ "Sm": "narrow", "Xl": "tabbed" }));
+	assert_eq!(on_screen["tints"]["main"]["state:kanban"], tints);
+	assert_eq!(on_screen["locked"], serde_json::json!(["Triage", "main"]));
+
+	assert_eq!(
+		edit(
+			port,
+			me,
+			serde_json::json!({ "Arranged": { "dock": { "Columns": { "view": "main", "by": "state:kanban" } }, "band": "Xl", "layout": "split" } })
+		)
+		.0,
+		200
+	);
+	assert_eq!(
+		library(port, me)["on_screen"]["columns"]["Triage"]["state:kanban"]["Xl"],
+		"tabbed",
+		"each is its own from then on"
+	);
+}
+
+#[test]
 fn the_board_carries_its_repos_label_colors_as_of_the_last_pull() {
 	let ctx = TestContext::build();
 	ctx.remote(
@@ -252,8 +292,15 @@ fn a_fork_counts_what_each_side_changed_since() {
 	assert_eq!(team["forks"], serde_json::json!([{ "viewer": "alice", "name": "Triage (mine)", "ahead": 0, "behind": 0 }]));
 
 	let narrowed = view("Triage (mine)", "is:open repo:o/r");
-	assert_eq!(edit(port, me, serde_json::json!({ "Keep": { "Filter": narrowed } })).0, 200);
-	assert_eq!(edit(port, me, serde_json::json!({ "Keep": { "Filter": narrowed } })).0, 200, "saved unchanged");
+	assert_eq!(
+		edit(port, me, serde_json::json!({ "Keep": { "Filter": { "view": narrowed, "arranged_as": "Triage (mine)" } } })).0,
+		200
+	);
+	assert_eq!(
+		edit(port, me, serde_json::json!({ "Keep": { "Filter": { "view": narrowed, "arranged_as": "Triage (mine)" } } })).0,
+		200,
+		"saved unchanged"
+	);
 	assert_eq!(library(port, me)["forks"][0]["upstream"]["ahead"], 1, "only a save that changed it counts");
 
 	drop(server);
@@ -271,7 +318,15 @@ fn a_share_link_pins_what_was_shared() {
 	let (_server, port) = serve(&ctx, BOARD, &["--viewer-header", "X-Auth-User"]);
 	let (alice, bob) = (Some("alice"), Some("bob"));
 	let desk = r#"{"version":2,"grid":{"cells":[{"group":{"id":0,"tabs":["view:Mine"],"active":0},"x":0,"y":0,"w":48,"h":24,"desired_w":null,"desired_x":null,"desired_h":null,"rank":0}],"state":"Settled","next_group_id":1}}"#;
-	assert_eq!(edit(port, alice, serde_json::json!({ "Keep": { "Filter": view("Mine", "is:open") } })).0, 200);
+	assert_eq!(
+		edit(
+			port,
+			alice,
+			serde_json::json!({ "Keep": { "Filter": { "view": view("Mine", "is:open"), "arranged_as": "Mine" } } })
+		)
+		.0,
+		200
+	);
 	assert_eq!(edit(port, alice, keep_workspace("desk", "Xl", desk)).0, 200);
 
 	let share = |user| {
@@ -287,7 +342,15 @@ fn a_share_link_pins_what_was_shared() {
 	};
 	let link = share(alice);
 	assert_eq!(link, "/l/ws/alice/desk@1?bands=xl&scope=Main");
-	assert_eq!(edit(port, alice, serde_json::json!({ "Keep": { "Filter": view("Mine", "is:closed") } })).0, 200);
+	assert_eq!(
+		edit(
+			port,
+			alice,
+			serde_json::json!({ "Keep": { "Filter": { "view": view("Mine", "is:closed"), "arranged_as": "Mine" } } })
+		)
+		.0,
+		200
+	);
 
 	let (status, body) = call(port, "POST", "/api/shared", bob, Some(serde_json::json!({ "link": link })));
 	assert_eq!(status, 200, "{body}");
@@ -330,7 +393,15 @@ fn a_proposal_is_a_pull_request_replacing_only_that_object() {
 		edit(port, me, serde_json::json!({ "Fork": { "from": { "Team": { "View": "Triage" } }, "name": "Triage (mine)" } })).0,
 		200
 	);
-	assert_eq!(edit(port, me, serde_json::json!({ "Keep": { "Filter": view("Triage (mine)", "is:open repo:o/r") } })).0, 200);
+	assert_eq!(
+		edit(
+			port,
+			me,
+			serde_json::json!({ "Keep": { "Filter": { "view": view("Triage (mine)", "is:open repo:o/r"), "arranged_as": "Triage (mine)" } } })
+		)
+		.0,
+		200
+	);
 
 	let (status, body) = call(
 		port,

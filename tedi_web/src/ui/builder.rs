@@ -43,6 +43,7 @@ pub(super) fn Builder(from: Option<String>) -> Element {
 			shown: vec![Shown::Repo, Shown::Assignees, Shown::Importance, Shown::Hours, Shown::Labels],
 		},
 	});
+	let arranged_as = use_hook(|| draft.peek().name.clone()); // the name being typed is no view's yet: the preview's columns stay under one
 	use_context_provider(|| InView(draft));
 	let mut good = use_signal(|| draft.peek().clone());
 	use_effect(move || {
@@ -124,9 +125,9 @@ pub(super) fn Builder(from: Option<String>) -> Element {
 					Btn { style: Style::Ghost, md: true, onclick: move |_| close(ctx), "Discard" }
 					div { class: "flex-1" }
 					if upstream.is_some() && !mine {
-						Btn { style: Style::Outline, md: true, glyph: Glyph::Publish, disabled: d.name.trim().is_empty(), onclick: { let d = d.clone(); move |_| keep(ctx, d.clone(), true) }, "Propose to team" }
+						Btn { style: Style::Outline, md: true, glyph: Glyph::Publish, disabled: d.name.trim().is_empty(), onclick: { let (d, arranged_as) = (d.clone(), arranged_as.clone()); move |_| keep(ctx, d.clone(), arranged_as.clone(), true) }, "Propose to team" }
 					}
-					Btn { style: Style::Primary, md: true, glyph: Glyph::Save, disabled: d.name.trim().is_empty() || error.is_some(), onclick: { let d = d.clone(); move |_| keep(ctx, d.clone(), false) }, "Save to mine" }
+					Btn { style: Style::Primary, md: true, glyph: Glyph::Save, disabled: d.name.trim().is_empty() || error.is_some(), onclick: { let (d, arranged_as) = (d.clone(), arranged_as.clone()); move |_| keep(ctx, d.clone(), arranged_as.clone(), false) }, "Save to mine" }
 				}
 			}
 			div { class: "flex min-w-0 flex-1 flex-col",
@@ -157,7 +158,7 @@ pub(super) fn Builder(from: Option<String>) -> Element {
 					}
 				}
 				match outcome {
-					Ok(Outcome { groups, .. }) => rsx! { Results { ran, groups } },
+					Ok(Outcome { groups, .. }) => rsx! { Results { ran: View { name: arranged_as, ..ran }, groups } },
 					Err(why) => rsx! { Empty { glyph: Glyph::Alert, error: true, title: "The draft doesn't run", body: why } },
 				}
 			}
@@ -278,11 +279,11 @@ fn close(ctx: Ctx) {
 }
 
 /// Saves the draft into the viewer's views, and opens it; \`propose\` then offers it to the team.
-fn keep(ctx: Ctx, draft: View, propose: bool) {
+fn keep(ctx: Ctx, draft: View, arranged_as: String, propose: bool) {
 	let name = draft.name.trim().to_string();
 	let view = View { name: name.clone(), ..draft };
 	spawn(async move {
-		if !ctx.keep(LibraryEdit::Keep(Kept::Filter(view))).await {
+		if !ctx.keep(LibraryEdit::Keep(Kept::Filter { view, arranged_as })).await {
 			return;
 		}
 		close(ctx);

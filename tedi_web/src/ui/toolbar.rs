@@ -256,12 +256,13 @@ fn Keep(view: Signal<View>, defined: View) -> Element {
 	let dirty = *view.read() != defined;
 	let mut save = move |name: String| {
 		naming.set(false);
-		let kept = View {
-			name: name.clone(),
-			..view.peek().clone()
+		let shown = view.peek().clone();
+		let kept = crate::api::Kept::Filter {
+			arranged_as: shown.name.clone(),
+			view: View { name: name.clone(), ..shown },
 		};
 		spawn(async move {
-			if ctx.keep(crate::api::LibraryEdit::Keep(crate::api::Kept::Filter(kept))).await {
+			if ctx.keep(crate::api::LibraryEdit::Keep(kept)).await {
 				ctx.say("saved", super::toast::Tone::Success, format!("Saved \"{name}\" in your views"), None);
 				ctx.open(tilers_dioxus::PanelId(format!("view:{name}")));
 			}

@@ -619,9 +619,18 @@ fn apply(library: &mut Library, edit: LibraryEdit, fetched: Option<Fetched>) -> 
 		LibraryEdit::Tinted { view, by, tints } => _ = library.on_screen.tints.entry(view).or_default().insert(by, tints),
 		LibraryEdit::Locked { view, locked: true } => _ = library.on_screen.locked.insert(view),
 		LibraryEdit::Locked { view, locked: false } => _ = library.on_screen.locked.remove(&view),
-		LibraryEdit::Keep(Kept::Filter(view)) => {
+		LibraryEdit::Keep(Kept::Filter { view, arranged_as }) => {
 			let name = named(view.name.clone())?;
 			refuse_team(&team, &Item::View(name.clone()))?;
+			if let Some(columns) = library.on_screen.columns.get(&arranged_as).cloned() {
+				library.on_screen.columns.insert(name.clone(), columns);
+			}
+			if let Some(tints) = library.on_screen.tints.get(&arranged_as).cloned() {
+				library.on_screen.tints.insert(name.clone(), tints);
+			}
+			if library.on_screen.locked.contains(&arranged_as) {
+				library.on_screen.locked.insert(name.clone());
+			}
 			save(library, Item::View(name), Construction::View(view));
 		}
 		LibraryEdit::Keep(Kept::Workspace { name, tiles }) => {
