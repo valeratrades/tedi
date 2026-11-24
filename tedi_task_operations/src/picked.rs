@@ -219,7 +219,7 @@ fn moves(picked: &Picked) -> Result<Vec<Move>> {
 		for node in nodes {
 			let NodeLink::Issue(link) = node else { bail!("selected.md lists issues, not {node}") };
 			if !listed.insert(link.clone()) {
-				return Err(eyre!("{link} is listed twice in selected.md"));
+				bail!("{link} is listed twice in selected.md");
 			}
 			let seen = picked.answer.at(&link).cloned();
 			if seen.as_ref() != Some(&to) {

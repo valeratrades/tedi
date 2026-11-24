@@ -83,7 +83,8 @@ fn a_browser_brings_the_session_the_home_then_takes() {
 	let move_it = || ctx.run(&["--mock", "move", "https://github.com/o/r/issues/1", "kanban/selected"]);
 
 	let out = move_it();
-	assert!(!out.status.success() && out.stderr.contains("tedi login"), "{}", out.stderr);
+	assert!(!out.status.success(), "{}", out.stderr);
+	assert!(out.stderr.contains("tedi login"), "{}", out.stderr);
 
 	// the browser: what `xdg-open` is called with, fetched
 	let opened = ctx.xdg.inner.root.join("opened");

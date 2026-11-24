@@ -1,7 +1,10 @@
 //! `selected.md`: the kanban's started work as a text beside a planning sprint. Its sections are the home's buckets; a save
 //! is sent there as moves, and what is stored here is the home's answer and what differs from it.
 
-use std::path::Path;
+use std::{
+	path::Path,
+	sync::{Arc, Mutex},
+};
 
 use serde_json::{Value, json};
 
@@ -18,46 +21,6 @@ struct World {
 	server: Option<Server>,
 	port: u16,
 }
-
-fn link(n: u64) -> String {
-	format!("https://github.com/mock_user/app/issues/{n}")
-}
-
-/// `mock_user/app`'s #1 selected, #2 in progress, #3 in triage, all assigned; #4 is nobody's. `1d` holds #1, and Bottlenecks #3.
-fn world() -> World {
-	let mut home = TestContext::build();
-	let me = TestContext::build();
-	for (n, assigned) in [(1, "(@mock_user) "), (2, "(@mock_user) "), (3, "(@mock_user) "), (4, "")] {
-		let issue = parse_virtual(&format!("- [ ] {assigned}Task {n} <!-- @mock_user {} -->\n  body {n}\n", link(n)));
-		me.remote_in(("mock_user", "app").into(), &issue, Some(Seed::new(0)));
-	}
-	me.remote_labels("mock_user", "other", &[]);
-	me.remote_labels("mock_user", "todos", &[]);
-	me.remote_milestone("mock_user/todos", 1, "1d", &format!("- {}", link(1)), &[]);
-	me.remote_milestone("mock_user/todos", 2, "Bottlenecks", &format!("- {}", link(3)), &[]);
-	let mut state: Value = serde_json::from_str(&std::fs::read_to_string(&me.mock_state_path).unwrap()).unwrap();
-	state["milestones"][0]["due_on"] = "2099-01-01T00:00:00Z".into();
-	std::fs::write(&me.mock_state_path, state.to_string()).unwrap();
-
-	home.mock_state_path = me.mock_state_path.clone();
-	let config = format!("watch = [\"mock_user\"]\n\n{BOARD}");
-	std::fs::write(home.xdg.inner.root.join("config/tedi.toml"), &config).unwrap();
-	let pulled = home.run(&["--mock", "pull", "mock_user"]);
-	assert!(pulled.status.success(), "{}", pulled.stderr);
-	let held = json!({ "kanban": { "1": "selected", "2": "in_progress" } });
-	std::fs::write(home.xdg.data_dir().join("issues/mock_user/app/.states.json"), held.to_string()).unwrap();
-	let (server, port) = serve(&home, &config, &[]);
-
-	let world = World {
-		home,
-		me,
-		server: Some(server),
-		port,
-	};
-	world.configure(&format!("http://127.0.0.1:{port}"));
-	world
-}
-
 impl World {
 	fn configure(&self, home: &str) {
 		self.me.xdg.write_config(
@@ -112,6 +75,45 @@ impl World {
 	}
 }
 
+fn link(n: u64) -> String {
+	format!("https://github.com/mock_user/app/issues/{n}")
+}
+
+/// `mock_user/app`'s #1 selected, #2 in progress, #3 in triage, all assigned; #4 is nobody's. `1d` holds #1, and Bottlenecks #3.
+fn world() -> World {
+	let mut home = TestContext::build();
+	let me = TestContext::build();
+	for (n, assigned) in [(1, "(@mock_user) "), (2, "(@mock_user) "), (3, "(@mock_user) "), (4, "")] {
+		let issue = parse_virtual(&format!("- [ ] {assigned}Task {n} <!-- @mock_user {} -->\n  body {n}\n", link(n)));
+		me.remote_in(("mock_user", "app").into(), &issue, Some(Seed::new(0)));
+	}
+	me.remote_labels("mock_user", "other", &[]);
+	me.remote_labels("mock_user", "todos", &[]);
+	me.remote_milestone("mock_user/todos", 1, "1d", &format!("- {}", link(1)), &[]);
+	me.remote_milestone("mock_user/todos", 2, "Bottlenecks", &format!("- {}", link(3)), &[]);
+	let mut state: Value = serde_json::from_str(&std::fs::read_to_string(&me.mock_state_path).unwrap()).unwrap();
+	state["milestones"][0]["due_on"] = "2099-01-01T00:00:00Z".into();
+	std::fs::write(&me.mock_state_path, state.to_string()).unwrap();
+
+	home.mock_state_path = me.mock_state_path.clone();
+	let config = format!("watch = [\"mock_user\"]\n\n{BOARD}");
+	std::fs::write(home.xdg.inner.root.join("config/tedi.toml"), &config).unwrap();
+	let pulled = home.run(&["--mock", "pull", "mock_user"]);
+	assert!(pulled.status.success(), "{}", pulled.stderr);
+	let held = json!({ "kanban": { "1": "selected", "2": "in_progress" } });
+	std::fs::write(home.xdg.data_dir().join("issues/mock_user/app/.states.json"), held.to_string()).unwrap();
+	let (server, port) = serve(&home, &config, &[]);
+
+	let world = World {
+		home,
+		me,
+		server: Some(server),
+		port,
+	};
+	world.configure(&format!("http://127.0.0.1:{port}"));
+	world
+}
+
 fn lines(text: &str) -> String {
 	text.replace("https://github.com/mock_user/", "")
 }
@@ -128,7 +130,7 @@ fn bare(sections: &[(&str, &[u64])]) -> String {
 #[test]
 fn it_opens_beside_a_planning_sprint_and_its_bottlenecks() {
 	let w = world();
-	let seen = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+	let seen = Arc::new(Mutex::new(String::new()));
 	let told = seen.clone();
 	let out = w.edit(&[], move |dir| {
 		let mut names: Vec<String> = std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
@@ -185,7 +187,8 @@ fn a_line_gone_goes_to_the_intake_and_one_there_already_stays() {
 	let out = w.rewrite(&[], |_| bare(&[("in_progress", &[2])]));
 	assert!(out.status.success(), "{}", out.stderr);
 	assert_eq!(w.held(), ["app#1 triage", "app#2 in_progress", "app#3 triage", "app#4 triage"]);
-	assert!(out.stdout.contains("changes nothing") && out.stdout.contains(&link(3)), "{}", out.stdout);
+	assert!(out.stdout.contains("changes nothing"), "{}", out.stdout);
+	assert!(out.stdout.contains(&link(3)), "{}", out.stdout);
 	assert!(w.stored().contains(&link(3)), "it is where the home has it: {}", w.stored());
 }
 
@@ -444,8 +447,8 @@ fn a_move_and_a_view_are_the_homes() {
 	let out = w.me.drive_editor_session(cmd, Some(Box::new(move |tmp: &Path| _ = std::fs::copy(tmp, copy).unwrap())));
 	assert!(out.status.success(), "{}", out.stderr);
 	let view = std::fs::read_to_string(viewed).unwrap();
-	assert!(
-		view.starts_with("# selected\n") && view.contains("Task 1") && view.contains("Task 4") && !view.contains("Task 2"),
-		"{view}"
-	);
+	assert!(view.starts_with("# selected\n"), "{view}");
+	assert!(view.contains("Task 1"), "{view}");
+	assert!(view.contains("Task 4"), "{view}");
+	assert!(!view.contains("Task 2"), "{view}");
 }

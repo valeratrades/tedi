@@ -2,9 +2,6 @@
 github_token = "mock"
 watch = ["service-arb", "ev-main", "ev-estate"]
 
-[milestones]
-url = "ev-main/devops"
-
 [board.workflows]
 kanban = "preset:kanban"
 pull_requests = "preset:pull_requests"

@@ -185,7 +185,19 @@ fn Shelves() -> Element {
 					}
 				}
 				div { class: "flex-1" }
-				if let Some(me) = me {
+				if setup.accounts {
+					button {
+						r#type: "button",
+						class: "inline-flex h-6 items-center gap-1 rounded-[var(--control-radius)] px-1 text-body-s text-ink-mid hover:bg-hover hover:text-ink",
+						title: "Account",
+						aria_label: "Account",
+						onclick: move |e: MouseEvent| { e.stop_propagation(); let mut m = ctx.modal; m.set(Some(Modal::Account)); },
+						match me {
+							Some(me) => rsx! { Avatar { login: me } },
+							None => rsx! { Icon { glyph: Glyph::User, class: "size-4" } "Bring your keys" },
+						}
+					}
+				} else if let Some(me) = me {
 					Avatar { login: me }
 				}
 			}

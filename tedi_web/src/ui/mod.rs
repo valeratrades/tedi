@@ -2,6 +2,7 @@
 //! an issue. Cards arrive whole and are queried here; edits leave as server fns. What is on screen, and what
 //! the viewer keeps, is their library on the server.
 
+mod account;
 mod builder;
 mod card;
 mod facets;
@@ -529,6 +530,7 @@ impl Ctx {
 
 #[derive(Clone, Debug, PartialEq)]
 enum Modal {
+	Account,
 	Scope(Editing),
 	/// The stored issues the board couldn't read, and why.
 	Unreadable,
@@ -871,6 +873,7 @@ fn Modals() -> Element {
 		div { class: "relative z-[100]",
 			match modal {
 				None => rsx! {},
+				Some(Modal::Account) => rsx! { account::AccountPanel {} },
 				Some(Modal::Scope(editing)) => rsx! { scope::ScopeEditor { key: "{editing:?}", editing } },
 				Some(Modal::Propose(item)) => rsx! { library::Propose { key: "{item:?}", item } },
 				Some(Modal::ApplyColumns { name, owner }) => rsx! { library::ApplyColumns { name, owner } },
