@@ -5,7 +5,7 @@
 use dioxus::prelude::*;
 use ev_lib::uikit_dioxus::*;
 use strum::IntoEnumIterator as _;
-use tedi_core::board::{Facet, Query, Tally, View};
+use tedi_core::board::{Board, Facet, Query, Tally, View};
 
 use super::{
 	Ctx,
@@ -100,7 +100,9 @@ pub(super) fn FacetMenu(facet: Facet, query: Query) -> Element {
 	let in_view = use_context::<InView>();
 	let mut needle = use_signal(String::new);
 	let board = ctx.board.read();
-	let cards = &board.as_ref().expect("views render once the board loaded").cards;
+	let Some(Board { cards, .. }) = board.as_ref() else {
+		return rsx! { span { class: "p-2 text-caption text-ink-soft", "Counted once the board is here" } };
+	};
 	let within = match ctx.scope() {
 		Some((_, Some(filter))) => filter.parse().expect("a scope's filter is a repo clause"),
 		Some((path, None)) => unreachable!("a view under the gone scope {path} shows only that"),

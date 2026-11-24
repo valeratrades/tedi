@@ -79,11 +79,11 @@ pub enum Viewer {
 }
 
 pub async fn serve(config: Settings) -> Result<()> {
-	use dioxus::server::http::{HeaderName, Response, header::CONTENT_LENGTH};
-	use tower_http::{
-		services::{ServeDir, ServeFile},
-		set_header::SetResponseHeader,
+	use dioxus::server::axum::{
+		extract::Request,
+		middleware::{Next, from_fn},
 	};
+	use tower_http::services::{ServeDir, ServeFile};
 
 	let addr = config.addr;
 	SETTINGS.set(config).map_err(|_| eyre!("one server per process"))?;
@@ -96,9 +96,21 @@ pub async fn serve(config: Settings) -> Result<()> {
 		router = router.route("/webhook", post(webhook));
 	}
 	if let Some(public) = &settings().public {
-		let files = ServeDir::new(public).fallback(ServeFile::new(public.join("index.html")));
-		let length = |r: &Response<_>| r.headers().get(CONTENT_LENGTH).cloned();
-		router = router.fallback_service(SetResponseHeader::overriding(files, HeaderName::from_static("x-bytes"), length)); // a proxy compressing drops the length
+		let files = ServeDir::new(public).precompressed_br().fallback(ServeFile::new(public.join("index.html")));
+		let served = Router::new().fallback_service(files).layer(from_fn(async |request: Request, next: Next| {
+			let file = public.join(request.uri().path().trim_start_matches('/'));
+			let mut response = next.run(request).await;
+			// the client's length uncompressed, which its Content-Length isn't
+			if response.status().is_success()
+				&& file.extension().is_some_and(|e| e == "wasm")
+				&& let Ok(m) = std::fs::metadata(&file)
+			// the page itself, served in place of a file there isn't
+			{
+				response.headers_mut().insert("x-bytes", m.len().into());
+			}
+			response
+		}));
+		router = router.fallback_service(served);
 	}
 	let listener = tokio::net::TcpListener::bind(addr).await?;
 	tracing::info!("serving the board on {addr}");
@@ -118,9 +130,9 @@ pub fn changes() -> ServerEvents<()> {
 	ServerEvents::from_stream(tokio_stream::wrappers::BroadcastStream::new(CHANGES.subscribe()).map(|_| Ok(())))
 }
 
-pub async fn setup() -> Result<Setup> {
+pub fn setup() -> Setup {
 	let s = settings();
-	Ok(Setup {
+	Setup {
 		me: editor(),
 		workflows: s.workflows.iter().map(|(name, w)| (name.clone(), w.workflow.clone())).collect(),
 		views: s.views.clone(),
@@ -128,33 +140,41 @@ pub async fn setup() -> Result<Setup> {
 		columns: s.columns.clone(),
 		workspaces: s.workspaces.clone(),
 		ids: addressed(team_items(s).into_keys()).map(|item| (id("team", &item), item)).collect(),
-		sprints: match s.milestones {
-			Some(repo) => sprints(repo).await?,
-			None => Vec::new(),
-		},
-	})
+	}
 }
 
-/// The bytes of the store it is read from, and its parts, a line each, as they are read.
-pub async fn board() -> Result<(u64, impl Stream<Item = Result<Bytes>>)> {
+pub async fn sprints() -> Result<Vec<Sprint>> {
+	let Some(repo) = settings().milestones else {
+		return Ok(Vec::new());
+	};
+	let milestones = tedi_task_operations::github::client::get()?.list_milestones(repo).await?;
+	Ok(milestones
+		.into_iter()
+		.filter_map(|m| {
+			let view = TaskView::parse(m.description.as_deref()?);
+			Some(Sprint {
+				title: m.title,
+				links: view.issue_links(),
+			})
+		})
+		.collect())
+}
+
+/// Its parts, a line each, as they are read.
+pub async fn board() -> Result<impl Stream<Item = Result<Bytes>>> {
 	let mut held = BOARD.lock().await;
 	let reading = match &*held {
 		Some(reading) => reading.clone(),
 		None => {
 			let reading = tedi_task_operations::board::load(&settings().workflows)?;
-			let shared = Arc::new(SharedReading {
-				bytes: reading.bytes,
-				read: Mutex::new((Vec::new(), reading)),
-			});
+			let shared = Arc::new(SharedReading(Mutex::new((Vec::new(), reading))));
 			*held = Some(shared.clone());
 			shared
 		}
 	};
-	let lines = futures::stream::try_unfold(
-		(reading.clone(), 0),
-		|(reading, n)| async move { Ok(reading.line(n).await?.map(|line| (line, (reading, n + 1)))) },
-	);
-	Ok((reading.bytes, lines))
+	Ok(futures::stream::try_unfold((reading, 0), |(reading, n)| async move {
+		Ok(reading.line(n).await?.map(|line| (line, (reading, n + 1))))
+	}))
 }
 
 pub async fn edit(link: IssueLink, edits: Vec<FieldEdit>) -> Result<Edited> {
@@ -485,13 +505,10 @@ pub async fn propose(headers: &HeaderMap, item: Item, onto: Onto, message: Strin
 }
 
 /// A reading of the board, shared by whoever asks for it: each reads on from where the furthest got.
-struct SharedReading {
-	bytes: u64,
-	read: Mutex<(Vec<Bytes>, Reading<'static>)>,
-}
+struct SharedReading(Mutex<(Vec<Bytes>, Reading<'static>)>);
 impl SharedReading {
 	async fn line(self: &Arc<Self>, n: usize) -> Result<Option<Bytes>> {
-		let mut read = self.read.lock().await;
+		let mut read = self.0.lock().await;
 		let (lines, reading) = &mut *read;
 		if let Some(line) = lines.get(n) {
 			return Ok(Some(line.clone()));
@@ -625,20 +642,6 @@ fn refused(edited: Result<()>) -> Result<Edited> {
 /// Who edits: the instance's GitHub user until editors sign in, then the request's.
 fn editor() -> Option<String> {
 	tedi_task_operations::current_user::get()
-}
-
-async fn sprints(repo: RepoInfo) -> Result<Vec<Sprint>> {
-	let milestones = tedi_task_operations::github::client::get()?.list_milestones(repo).await?;
-	Ok(milestones
-		.into_iter()
-		.filter_map(|m| {
-			let view = TaskView::parse(m.description.as_deref()?);
-			Some(Sprint {
-				title: m.title,
-				links: view.issue_links(),
-			})
-		})
-		.collect())
 }
 
 /// The viewer's key, as their library's file stem.

@@ -21,7 +21,8 @@ pub(super) struct Toolbar {
 	/// The query that ran: the view's own, or the last one that parsed while it doesn't.
 	pub(super) query: Query,
 	pub(super) error: Option<String>,
-	pub(super) count: usize,
+	/// None: what it shows isn't here yet.
+	pub(super) count: Option<usize>,
 }
 
 #[component]
@@ -70,7 +71,7 @@ pub(super) fn ViewToolbar(props: Toolbar) -> Element {
 							SortLabels { view }
 							Picker { glyph: Glyph::Fields, label: format!("{} fields", v.shown.len()), FieldsMenu { view, workflows } }
 							div { class: "flex items-center gap-1",
-								span { class: "flex-1 text-mono-s text-ink-soft", "{count} cards" }
+								span { class: "flex-1 text-mono-s text-ink-soft", if let Some(count) = count { "{count} cards" } }
 								Keep { view, defined: defined.clone() }
 							}
 						}
@@ -104,7 +105,7 @@ pub(super) fn ViewToolbar(props: Toolbar) -> Element {
 			}
 			div { class: "flex items-center gap-1",
 				FacetBar { query, wrap: true, Refresh {} }
-				span { class: "shrink-0 px-1 text-mono-s text-ink-soft", "{count} cards" }
+				span { class: "shrink-0 px-1 text-mono-s text-ink-soft", if let Some(count) = count { "{count} cards" } }
 				tilers_dioxus::LockToggle {}
 				Keep { view, defined }
 			}

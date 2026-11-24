@@ -2,6 +2,9 @@
 name = "tedi_web"
 default_platform = "web"
 
+[web]
+pre_compress = true
+
 [web.app]
 title = "tedi"
 

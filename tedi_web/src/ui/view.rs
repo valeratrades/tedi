@@ -3,6 +3,7 @@
 use std::str::FromStr as _;
 
 use dioxus::{core::spawn_forever, prelude::*};
+use ev_lib::uikit_dioxus::Logo;
 use strum::IntoEnumIterator as _;
 use tedi_core::{
 	board::{GroupBy, Order, Placed, Query, Shown, View, group},
@@ -18,7 +19,7 @@ use super::{
 	kit::MenuItem,
 	toolbar::ViewToolbar,
 };
-use crate::api::{self, Dock, LibraryEdit, Sprint, Tint, Tints};
+use crate::api::{self, Dock, LibraryEdit, Tint, Tints};
 
 /// The view `name`: as last edited on screen, against how it is kept; an edit is saved as it settles, and `↺` goes back.
 #[component]
@@ -32,12 +33,19 @@ pub fn ViewPanel(name: String) -> Element {
 
 /// A sprint's issues, in its order.
 #[component]
-pub fn SprintPanel(sprint: Sprint) -> Element {
+pub fn SprintPanel(title: String) -> Element {
 	let ctx = use_context::<Ctx>();
-	let board = ctx.board.read();
-	let Some(board) = board.as_ref() else {
-		return rsx! {};
+	let sprints = ctx.sprints.read();
+	let Some(sprints) = sprints.as_ref() else {
+		return rsx! { div { class: "p-3 text-body-s text-ink-soft", "Asking GitHub…" } };
 	};
+	let Some(sprint) = sprints.iter().find(|s| s.title == title) else {
+		return rsx! { "The sprint {title} is closed" };
+	};
+	let prs = !ctx.awaits(false) && sprint.links.iter().any(|l| ctx.card(l).is_none()); // what is no issue may be a pull request
+	if ctx.awaits(prs) {
+		return rsx! { Loader { prs } };
+	}
 	let shown: Vec<Shown> = ctx
 		.workflows()
 		.into_keys()
@@ -47,10 +55,30 @@ pub fn SprintPanel(sprint: Sprint) -> Element {
 	rsx! {
 		div { class: "flex flex-col gap-1 overflow-auto p-2",
 			for link in sprint.links.iter() {
-				match board.cards.iter().find(|c| &c.link == link) {
-					Some(card) => rsx! { CardView { key: "{link}", card: card.clone(), shown: shown.clone() } },
+				match ctx.card(link) {
+					Some(card) => rsx! { CardView { key: "{link}", card, shown: shown.clone() } },
 					None => rsx! { div { key: "{link}", class: "text-xs text-ink-soft", "{link} is not stored here" } },
 				}
+			}
+		}
+	}
+}
+
+/// How much of what a view shows is here, or why it isn't.
+#[component]
+pub(super) fn Loader(prs: bool) -> Element {
+	let ctx = use_context::<Ctx>();
+	let loading = ctx.loading.read();
+	if let Some(why) = &loading.failed {
+		return rsx! { Empty { glyph: Glyph::Alert, error: true, title: "The board didn't load", body: "{why}" } };
+	}
+	let percent = loading.percent(prs);
+	rsx! {
+		div { class: "flex h-full flex-1 flex-col items-center justify-center gap-8",
+			div { class: "hidden text-primary-ink [[data-mark]_&]:block", Logo { class: "block h-11" } }
+			div { role: "progressbar", aria_label: "Loading", aria_valuenow: "{percent}", class: "flex w-48 max-w-[60%] flex-col items-center gap-6",
+				div { class: "h-px w-full overflow-hidden bg-border", div { class: "h-full bg-primary-ink", style: "width: {percent}%" } }
+				span { class: "pl-[0.2em] text-mono-s tracking-[0.2em] text-ink-soft", "{percent}%" }
 			}
 		}
 	}
@@ -102,21 +130,26 @@ fn ViewBody(defined: View) -> Element {
 			}
 		}
 	});
-	if ctx.board.read().is_none() {
-		return rsx! {};
-	}
 	let v = view.read().clone();
 	let error = v.query.parse::<Query>().err().map(|e| e.to_string());
 	let ran = if error.is_none() { v.clone() } else { good.read().clone() };
-	let Outcome { query, count, groups } = match outcome(&ctx, &ran) {
-		Ok(o) => o,
-		Err(why) => return rsx! { Empty { glyph: Glyph::Alert, error: true, title: "The view doesn't run", body: why } },
+	let query: Query = ran.query.parse().expect("the view's own, or the last that parsed");
+	let prs = query.covers_prs();
+	let outcome = match ctx.awaits(prs) {
+		true => None,
+		false => match outcome(&ctx, &ran) {
+			Ok(o) => Some(o),
+			Err(why) => return rsx! { Empty { glyph: Glyph::Alert, error: true, title: "The view doesn't run", body: why } },
+		},
 	};
 	rsx! {
 		LockScope { locked,
 			div { class: "flex h-full flex-col",
-				ViewToolbar { view, defined, query, error, count }
-				Results { ran, groups }
+				ViewToolbar { view, defined, query, error, count: outcome.as_ref().map(|o| o.count) }
+				match outcome {
+					Some(o) => rsx! { Results { ran, groups: o.groups } },
+					None => rsx! { Loader { prs } },
+				}
 			}
 		}
 	}

@@ -4,10 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use dioxus_fullstack::{ByteStream, ServerEvents, ServerFnError, get, post, server};
 #[cfg(feature = "server")]
-use dioxus_fullstack::{
-	HeaderMap, HeaderValue,
-	http::header::{CONTENT_TYPE, HeaderName},
-};
+use dioxus_fullstack::{HeaderMap, HeaderValue, http::header::CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
 use tedi_core::{
 	IssueLink, MilestoneLink,
@@ -32,7 +29,6 @@ pub struct Setup {
 	pub workflows: BTreeMap<String, Workflow>,
 	pub scopes: BTreeMap<String, Scope>,
 	pub views: Vec<View>,
-	pub sprints: Vec<Sprint>,
 	/// The team's columns, offered beside each viewer's own.
 	pub columns: BTreeMap<String, Columns>,
 	/// The team's workspaces, offered beside each viewer's own.
@@ -589,15 +585,20 @@ pub enum Edited {
 
 #[get("/api/setup")]
 pub async fn setup() -> Result<Setup, ServerFnError> {
-	crate::server::setup().await.map_err(failed)
+	Ok(crate::server::setup())
 }
 
-/// The board's parts, a JSON line each, as they are read; `x-bytes`: those of the store they are read from.
+/// Read from GitHub on each call.
+#[get("/api/sprints")]
+pub async fn sprints() -> Result<Vec<Sprint>, ServerFnError> {
+	crate::server::sprints().await.map_err(failed)
+}
+
+/// The board's parts, a JSON line each, as they are read.
 #[get("/api/board")]
 pub async fn board() -> Result<ByteStream, ServerFnError> {
-	let (bytes, lines) = crate::server::board().await.map_err(failed)?;
+	let lines = crate::server::board().await.map_err(failed)?;
 	let context = FullstackContext::current().expect("in a server fn");
-	context.add_response_header(HeaderName::from_static("x-bytes"), bytes);
 	context.add_response_header(CONTENT_TYPE, HeaderValue::from_static("text/plain; charset=utf-8"));
 	Ok(lines.into())
 }

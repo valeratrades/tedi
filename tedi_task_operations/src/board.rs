@@ -3,6 +3,7 @@
 use std::{
 	collections::{BTreeMap, HashMap, HashSet, VecDeque, hash_map::Entry},
 	path::PathBuf,
+	sync::Arc,
 };
 
 use color_eyre::eyre::{Result, bail, eyre};
@@ -13,7 +14,7 @@ use crate::{
 	CloseState, Issue, IssueIndex, IssueLink, IssueSelector, LazyIssue, Milestone, MilestoneLink, RepoInfo,
 	conflict_resolve::{FieldEdit, check_for_existing_conflict},
 	labels::Scheme,
-	local::{FsReader, GitReader, Local, LocalError, LocalIssueSource, LocalPath, States, lock_store},
+	local::{FsReader, GitReader, Local, LocalError, LocalIssueSource, LocalPath, ProjectMeta, States, lock_store},
 	open_interactions::{MergeMode, MilestoneModifier, Modifier, SyncMode, SyncOptions, modify_and_sync_issue, modify_and_sync_milestone, pull_milestone},
 	pull::{is_sprint, pull_milestones},
 	rank::{Task, rank},
@@ -49,23 +50,27 @@ pub fn load(workflows: &Workflows) -> Result<Reading<'_>> {
 			path,
 		})
 		.collect();
+	steps.push(Step::Rest { whole: false });
 	steps.extend(Local::pr_repos()?.into_iter().map(|(repo, bytes)| Step::Prs { repo, bytes }));
+	steps.push(Step::Rest { whole: true });
+	let (mut issues, mut prs) = (0, 0);
+	for step in &steps {
+		match step {
+			Step::Issue { bytes, .. } => issues += bytes,
+			Step::Prs { bytes, .. } => prs += bytes,
+			Step::Rest { .. } => {}
+		}
+	}
 	Ok(Reading {
-		bytes: steps
-			.iter()
-			.map(|s| match s {
-				Step::Issue { bytes, .. } | Step::Prs { bytes, .. } => bytes,
-			})
-			.sum(),
 		workflows,
 		steps,
 		at: 0,
-		ready: VecDeque::new(),
+		ready: [Part::Sizes { issues, prs }].into(),
 		held: HashMap::new(),
+		metas: HashMap::new(),
 		tasks: BTreeMap::new(),
 		blocks: Vec::new(),
 		repos: HashSet::new(),
-		rested: false,
 	})
 }
 
@@ -179,33 +184,36 @@ pub async fn pending_conflict(link: &IssueLink) -> Result<Option<PathBuf>> {
 
 /// A board being read.
 pub struct Reading<'a> {
-	/// Those of the store it is read from.
-	pub bytes: u64,
 	workflows: &'a Workflows,
 	steps: Vec<Step>,
 	at: usize,
 	ready: VecDeque<Part>,
 	held: HashMap<RepoInfo, States>,
+	metas: HashMap<RepoInfo, Arc<ProjectMeta>>,
 	tasks: BTreeMap<String, Task>,
 	blocks: Vec<(String, String)>,
 	repos: HashSet<RepoInfo>,
-	rested: bool,
 }
 impl Reading<'_> {
 	/// Reads on; `None` once whole. Dropped midway, the next call reads the same again.
 	pub async fn next(&mut self) -> Result<Option<Part>> {
-		while self.ready.is_empty() && !self.rested {
+		while self.ready.is_empty() && self.at < self.steps.len() {
 			self.step().await?;
 		}
 		Ok(self.ready.pop_front())
 	}
 
 	async fn step(&mut self) -> Result<()> {
-		match self.steps.get(self.at).cloned() {
-			Some(Step::Issue { path, bytes }) => {
+		match self.steps[self.at].clone() {
+			Step::Issue { path, bytes } => {
 				let index = Local::extract_index_from_path(&path)?;
+				let meta = self
+					.metas
+					.entry(index.repo_info())
+					.or_insert_with(|| Arc::new(Local::load_project_meta(index.repo_info())))
+					.clone();
 				let loaded = match LocalIssueSource::<FsReader>::build(LocalPath::new(index)).await {
-					Ok(source) => Issue::load(source).await.map(|i| (i, false)),
+					Ok(source) => Issue::load(LocalIssueSource { meta: Some(meta), ..source }).await.map(|i| (i, false)),
 					Err(LocalError::ConflictBlocked(_)) => Issue::load(LocalIssueSource::<GitReader>::build(LocalPath::new(index))?).await.map(|i| (i, true)),
 					Err(e) => Err(e),
 				};
@@ -219,7 +227,7 @@ impl Reading<'_> {
 				}
 				self.read(bytes, cards, unreadable);
 			}
-			Some(Step::Prs { repo, bytes }) => {
+			Step::Prs { repo, bytes } => {
 				let workflows = self.workflows;
 				let states = self.states(repo)?;
 				let mut cards = Local::stored_prs(repo)?
@@ -237,10 +245,7 @@ impl Reading<'_> {
 					self.read(bytes, Vec::new(), Vec::new());
 				}
 			}
-			None => {
-				self.ready.push_back(self.rest()?);
-				self.rested = true;
-			}
+			Step::Rest { whole } => self.ready.push_back(self.rest(whole)?),
 		}
 		self.at += 1;
 		Ok(())
@@ -266,7 +271,7 @@ impl Reading<'_> {
 		self.ready.push_back(Part::Read { bytes, cards, unreadable });
 	}
 
-	fn rest(&self) -> Result<Part> {
+	fn rest(&self, whole: bool) -> Result<Part> {
 		let (mut colors, mut assignable) = (BTreeMap::new(), BTreeMap::new());
 		for &repo in &self.repos {
 			let meta = Local::load_project_meta(repo);
@@ -284,6 +289,7 @@ impl Reading<'_> {
 			})
 			.collect();
 		Ok(Part::Rest {
+			whole,
 			ranks: rank(&self.tasks, &self.blocks).ranks,
 			targets,
 			colors,
@@ -296,6 +302,7 @@ impl Reading<'_> {
 enum Step {
 	Issue { path: PathBuf, bytes: u64 },
 	Prs { repo: RepoInfo, bytes: u64 },
+	Rest { whole: bool },
 }
 
 /// A milestone the board shows: open, and no sprint's.

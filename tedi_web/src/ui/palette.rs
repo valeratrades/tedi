@@ -234,7 +234,7 @@ fn hits(ctx: &Ctx) -> Vec<Hit> {
 			page: None,
 		});
 	}
-	for s in setup.sprints.iter() {
+	for s in ctx.sprints.read().iter().flatten() {
 		out.push(Hit {
 			kind: "sprints",
 			glyph: Glyph::Sprint,

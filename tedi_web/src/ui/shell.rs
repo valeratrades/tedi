@@ -24,6 +24,9 @@ fn count(ctx: &Ctx, query: &str) -> Option<usize> {
 	let board = ctx.board.read();
 	let board = board.as_ref()?;
 	let mut q: Query = query.parse().ok()?;
+	if ctx.awaits(q.covers_prs()) {
+		return None;
+	}
 	if let Some((_, Some(filter))) = ctx.scope() {
 		q.narrow(&filter.parse().expect("a scope's filter is a repo clause"));
 	}
@@ -142,9 +145,11 @@ fn Shelves() -> Element {
 		})
 		.collect();
 
-	let sprints: Vec<Row> = setup
+	let sprints: Vec<Row> = ctx
 		.sprints
+		.read()
 		.iter()
+		.flatten()
 		.map(|s| Row {
 			glyph: if s.title == "urgent" { Glyph::Alert } else { Glyph::Sprint },
 			label: s.title.clone(),
