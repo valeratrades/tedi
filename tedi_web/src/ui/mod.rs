@@ -304,7 +304,6 @@ impl Ctx {
 			title,
 			content,
 			min: MinSize::Rem { w: 16.0, h: 8.0 },
-			locked: false,
 		}
 	}
 
@@ -318,7 +317,7 @@ impl Ctx {
 		}
 	}
 
-	/// \`edits\` to \`link\`, as seen on its card: a landed one can be undone from its note, a clash lands on the
+	/// `edits` to `link`, as seen on its card: a landed one can be undone from its note, a clash lands on the
 	/// issue's tab, inline.
 	async fn edit(self, link: IssueLink, edits: Vec<FieldEdit>) {
 		let fields = edits.iter().map(|e| e.field.to_string()).collect::<Vec<_>>().join(", ");
@@ -349,7 +348,7 @@ impl Ctx {
 		}
 	}
 
-	/// \`card\` to \`to\` of \`workflow\`, from where it shows sitting: a landed move can be undone, a hook's
+	/// `card` to `to` of `workflow`, from where it shows sitting: a landed move can be undone, a hook's
 	/// refusal says why, a clash lands on the issue's tab.
 	async fn move_card(self, card: Card, workflow: String, to: State) {
 		let seen = card.states[&workflow].clone();

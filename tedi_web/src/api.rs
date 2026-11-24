@@ -106,6 +106,9 @@ pub struct OnScreen {
 	pub columns: BTreeMap<String, BTreeMap<GroupBy, Arrangement>>,
 	#[serde(default)]
 	pub tints: BTreeMap<String, BTreeMap<GroupBy, Tints>>,
+	/// The views whose columns are locked.
+	#[serde(default)]
+	pub locked: BTreeSet<String>,
 }
 
 /// A view's columns, kept for the grouping whose keys they are.
@@ -538,6 +541,10 @@ pub enum LibraryEdit {
 		view: String,
 		by: GroupBy,
 		tints: Tints,
+	},
+	Locked {
+		view: String,
+		locked: bool,
 	},
 	Keep(Kept),
 	Rename {

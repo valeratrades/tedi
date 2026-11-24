@@ -9,7 +9,7 @@ use tedi_core::{
 	board::{GroupBy, Order, Query, Shown, View, group},
 	workflow::State,
 };
-use tilers_dioxus::{Band, Config, DockPanel, Group, MinSize, PackedApi, PackedArea, PanelId, Tile};
+use tilers_dioxus::{Band, Config, DockPanel, Group, LockScope, MinSize, PackedApi, PackedArea, PanelId, Tile};
 
 pub(super) use super::card::CardView;
 use super::{
@@ -87,6 +87,22 @@ fn ViewBody(defined: View) -> Element {
 			ctx.keep(LibraryEdit::Viewed(now)).await;
 		})));
 	});
+	let locked = use_signal(|| {
+		let library = ctx.library.peek();
+		library.as_ref().expect("views render once the library arrived").on_screen.locked.contains(&defined.name)
+	});
+	let mut lock_sent = use_signal(|| *locked.peek());
+	use_effect({
+		let name = defined.name.clone();
+		move || {
+			let now = locked();
+			if *lock_sent.peek() != now {
+				lock_sent.set(now);
+				let edit = LibraryEdit::Locked { view: name.clone(), locked: now };
+				spawn(async move { _ = ctx.keep(edit).await });
+			}
+		}
+	});
 	if ctx.board.read().is_none() {
 		return rsx! { Spinner {} };
 	}
@@ -98,9 +114,11 @@ fn ViewBody(defined: View) -> Element {
 		Err(why) => return rsx! { Empty { glyph: Glyph::Alert, error: true, title: "The view doesn't run", body: why } },
 	};
 	rsx! {
-		div { class: "flex h-full flex-col",
-			ViewToolbar { view, defined, query, error, count }
-			Results { ran, groups }
+		LockScope { locked,
+			div { class: "flex h-full flex-col",
+				ViewToolbar { view, defined, query, error, count }
+				Results { ran, groups }
+			}
 		}
 	}
 }
@@ -174,7 +192,6 @@ struct Lanes {
 	dragged: Signal<Option<tedi_core::IssueLink>>,
 	tints: Signal<Tints>,
 	api: Signal<Option<PackedApi>>,
-	panels: Signal<Vec<DockPanel>>,
 }
 
 /// Columns, one per group, each a tile of a dock nested in the view's: resized, reordered, tabbed together,
@@ -198,12 +215,11 @@ fn Columns(view: String, groups: Vec<(String, Vec<usize>)>, by: GroupBy, shown: 
 		dragged: Signal::new(None),
 		tints: Signal::new(tints.clone()),
 		api,
-		panels,
 	});
 	use_context_provider(|| ColumnsOf(view.clone()));
 	let mut arranged = use_signal(|| None::<Band>);
 	super::use_autosave(ctx, api, arranged, Dock::Columns { view: view.clone(), by: by.clone() });
-	// \`layout\`'s columns hosted, then shown; the effect below adds any group it lacks
+	// `layout`'s columns hosted, then shown; the effect below adds any group it lacks
 	let show = move |mut a: PackedApi, layout: &str| -> bool {
 		let mut grid = match tilers_dioxus::model::serial::load(layout) {
 			Ok(grid) => grid,
@@ -306,11 +322,10 @@ fn column(id: PanelId, key: String) -> DockPanel {
 		label: Some(rsx! { ColumnHead { key: "{key}", group: key.clone() } }),
 		content: rsx! { Column { key: "{key}", group: key } },
 		min: MinSize::Px { w: 248.0, h: 120.0 },
-		locked: false,
 	}
 }
 
-/// \`● triage 86\`: the tint's dot, the group, its count. A card dropped on a collapsed column lands here.
+/// `● triage 86`: the tint's dot, the group, its count. A card dropped on a collapsed column lands here.
 #[component]
 fn ColumnHead(group: String) -> Element {
 	let lanes = use_context::<Lanes>();
@@ -326,7 +341,7 @@ fn ColumnHead(group: String) -> Element {
 	}
 }
 
-/// The lock, then \`⋯\`: the column's tint and the column layouts kept for this grouping.
+/// `⋯`: the column's tint and the column layouts kept for this grouping.
 #[component]
 fn ColumnActions(tile: Tile) -> Element {
 	let ctx = use_context::<Ctx>();
@@ -360,16 +375,6 @@ fn ColumnActions(tile: Tile) -> Element {
 			.collect()
 	};
 	let mut naming = use_signal(|| false);
-	let locked = lanes.panels.read().iter().find(|p| p.id == tile.active).expect("a tile shows a hosted column").locked;
-	let lock = {
-		let active = tile.active.clone();
-		move |_| {
-			let mut panels = lanes.panels;
-			for p in panels.write().iter_mut().filter(|p| p.id == active) {
-				p.locked = !p.locked;
-			}
-		}
-	};
 	let apply = {
 		let tint = tint.clone();
 		move |name: String| {
@@ -391,12 +396,6 @@ fn ColumnActions(tile: Tile) -> Element {
 		}
 	};
 	rsx! {
-		super::kit::IconBtn {
-			glyph: if locked { Glyph::Lock } else { Glyph::Unlock },
-			active: locked,
-			title: if locked { "Locked: can't be closed, moved or floated. Unlock" } else { "Lock: keep this column from being closed, moved or floated" },
-			onclick: lock,
-		}
 		super::kit::Menu { glyph: Glyph::More, title: "Column menu",
 				span { class: "px-2 pt-1.5 pb-0.5 text-overline text-ink-soft", "Tint" }
 				div { class: "flex flex-wrap gap-1 px-2 pb-1",
@@ -446,7 +445,7 @@ fn ColumnActions(tile: Tile) -> Element {
 	}
 }
 
-/// A drop of the card being dragged onto \`group\`: a move, when the columns are a workflow's.
+/// A drop of the card being dragged onto `group`: a move, when the columns are a workflow's.
 fn use_drop(group: String) -> impl FnMut(DragEvent) + 'static {
 	let ctx = use_context::<Ctx>();
 	let lanes = use_context::<Lanes>();

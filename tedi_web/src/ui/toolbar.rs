@@ -105,6 +105,7 @@ pub(super) fn ViewToolbar(props: Toolbar) -> Element {
 			div { class: "flex items-center gap-1",
 				FacetBar { query, wrap: true, Refresh {} }
 				span { class: "shrink-0 px-1 text-mono-s text-ink-soft", "{count} cards" }
+				tilers_dioxus::LockToggle {}
 				Keep { view, defined }
 			}
 		}

@@ -617,6 +617,8 @@ fn apply(library: &mut Library, edit: LibraryEdit, fetched: Option<Fetched>) -> 
 		}
 		LibraryEdit::Viewed(view) => _ = library.on_screen.views.insert(view.name.clone(), view),
 		LibraryEdit::Tinted { view, by, tints } => _ = library.on_screen.tints.entry(view).or_default().insert(by, tints),
+		LibraryEdit::Locked { view, locked: true } => _ = library.on_screen.locked.insert(view),
+		LibraryEdit::Locked { view, locked: false } => _ = library.on_screen.locked.remove(&view),
 		LibraryEdit::Keep(Kept::Filter(view)) => {
 			let name = named(view.name.clone())?;
 			refuse_team(&team, &Item::View(name.clone()))?;
@@ -676,6 +678,9 @@ fn apply(library: &mut Library, edit: LibraryEdit, fetched: Option<Fetched>) -> 
 					}
 					if let Some(tints) = library.on_screen.tints.remove(&from) {
 						library.on_screen.tints.insert(to.clone(), tints);
+					}
+					if library.on_screen.locked.remove(&from) {
+						library.on_screen.locked.insert(to.clone());
 					}
 					if let Some(mut shown) = library.on_screen.views.remove(&from) {
 						shown.name = to.clone();
