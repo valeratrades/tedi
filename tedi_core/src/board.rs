@@ -116,7 +116,7 @@ pub struct Target {
 	pub hosted: Vec<IssueLink>,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct Board {
 	pub cards: Vec<Card>,
 	pub targets: Vec<Target>,
@@ -126,6 +126,38 @@ pub struct Board {
 	pub colors: BTreeMap<String, BTreeMap<String, crate::labels::Color>>,
 	/// Per `owner/repo`, the logins its issues can be assigned to, as last read from GitHub.
 	pub assignable: BTreeMap<String, Vec<String>>,
+}
+impl Extend<Part> for Board {
+	fn extend<T: IntoIterator<Item = Part>>(&mut self, parts: T) {
+		for part in parts {
+			match part {
+				Part::Read { cards, unreadable, .. } => {
+					self.cards.extend(cards);
+					self.unreadable.extend(unreadable);
+				}
+				Part::Rest { ranks, targets, colors, assignable } => {
+					for card in &mut self.cards {
+						card.rank = ranks.get(&card.link.to_string()).copied();
+					}
+					(self.targets, self.colors, self.assignable) = (targets, colors, assignable);
+				}
+			}
+		}
+	}
+}
+
+/// A board as it is read; it is whole with its `Rest`, the last.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub enum Part {
+	/// What `bytes` of the store hold.
+	Read { bytes: u64, cards: Vec<Card>, unreadable: Vec<(PathBuf, String)> },
+	/// What the cards decide together, and what no card holds.
+	Rest {
+		ranks: BTreeMap<String, Rank>,
+		targets: Vec<Target>,
+		colors: BTreeMap<String, BTreeMap<String, crate::labels::Color>>,
+		assignable: BTreeMap<String, Vec<String>>,
+	},
 }
 
 #[derive(Debug, thiserror::Error)]

@@ -2,13 +2,16 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use dioxus_fullstack::{ByteStream, ServerEvents, ServerFnError, get, post, server};
 #[cfg(feature = "server")]
-use dioxus_fullstack::HeaderMap;
-use dioxus_fullstack::{ServerEvents, ServerFnError, get, post, server};
+use dioxus_fullstack::{
+	HeaderMap, HeaderValue,
+	http::header::{CONTENT_TYPE, HeaderName},
+};
 use serde::{Deserialize, Serialize};
 use tedi_core::{
 	IssueLink, MilestoneLink,
-	board::{Board, GroupBy, Scope, Thread, View},
+	board::{GroupBy, Scope, Thread, View},
 	conflict::{CommentEdit, Conflict, FieldEdit},
 	workflow::{State, Workflow},
 };
@@ -584,14 +587,19 @@ pub enum Edited {
 	Rejected(String),
 }
 
-#[server]
+#[get("/api/setup")]
 pub async fn setup() -> Result<Setup, ServerFnError> {
 	crate::server::setup().await.map_err(failed)
 }
 
+/// The board's parts, a JSON line each, as they are read; `x-bytes`: those of the store they are read from.
 #[get("/api/board")]
-pub async fn board() -> Result<Board, ServerFnError> {
-	Ok((*crate::server::board().await.map_err(failed)?).clone())
+pub async fn board() -> Result<ByteStream, ServerFnError> {
+	let (bytes, lines) = crate::server::board().await.map_err(failed)?;
+	let context = FullstackContext::current().expect("in a server fn");
+	context.add_response_header(HeaderName::from_static("x-bytes"), bytes);
+	context.add_response_header(CONTENT_TYPE, HeaderValue::from_static("text/plain; charset=utf-8"));
+	Ok(lines.into())
 }
 
 /// Pulls every watched repo from GitHub; the board reloads on the tick its end fires.
@@ -602,7 +610,7 @@ pub async fn refresh() -> Result<(), ServerFnError> {
 }
 
 /// Fires whenever the store may have changed: an edit, a webhook's pull, the periodic pull, a refresh.
-#[server]
+#[get("/api/changes")]
 pub async fn changes() -> Result<ServerEvents<()>, ServerFnError> {
 	Ok(crate::server::changes())
 }

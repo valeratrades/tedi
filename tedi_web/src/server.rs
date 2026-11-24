@@ -17,13 +17,15 @@ use dioxus::server::{
 	http::{HeaderMap, StatusCode},
 };
 use dioxus_fullstack::ServerEvents;
+use futures::{Stream, StreamExt as _};
 use tedi_core::{
 	IssueLink, MilestoneLink, RepoInfo, TaskView,
-	board::{Board, Scope, Thread, View, scope_at},
+	board::{Part, Scope, Thread, View, scope_at},
 	conflict::{CommentEdit, Conflict, FieldEdit},
 	workflow::State,
 };
 use tedi_task_operations::{
+	board::Reading,
 	open_interactions::SyncMode,
 	workflow::{MovedOn, Mover, Rejected, Workflows},
 };
@@ -77,7 +79,11 @@ pub enum Viewer {
 }
 
 pub async fn serve(config: Settings) -> Result<()> {
-	use tower_http::services::{ServeDir, ServeFile};
+	use dioxus::server::http::{HeaderName, Response, header::CONTENT_LENGTH};
+	use tower_http::{
+		services::{ServeDir, ServeFile},
+		set_header::SetResponseHeader,
+	};
 
 	let addr = config.addr;
 	SETTINGS.set(config).map_err(|_| eyre!("one server per process"))?;
@@ -90,7 +96,9 @@ pub async fn serve(config: Settings) -> Result<()> {
 		router = router.route("/webhook", post(webhook));
 	}
 	if let Some(public) = &settings().public {
-		router = router.fallback_service(ServeDir::new(public).fallback(ServeFile::new(public.join("index.html"))));
+		let files = ServeDir::new(public).fallback(ServeFile::new(public.join("index.html")));
+		let length = |r: &Response<_>| r.headers().get(CONTENT_LENGTH).cloned();
+		router = router.fallback_service(SetResponseHeader::overriding(files, HeaderName::from_static("x-bytes"), length)); // a proxy compressing drops the length
 	}
 	let listener = tokio::net::TcpListener::bind(addr).await?;
 	tracing::info!("serving the board on {addr}");
@@ -106,7 +114,6 @@ pub fn refresh() {
 }
 
 pub fn changes() -> ServerEvents<()> {
-	use tokio_stream::StreamExt as _;
 	// a lagging board missed ticks, which still says the same thing: reload
 	ServerEvents::from_stream(tokio_stream::wrappers::BroadcastStream::new(CHANGES.subscribe()).map(|_| Ok(())))
 }
@@ -128,16 +135,26 @@ pub async fn setup() -> Result<Setup> {
 	})
 }
 
-pub async fn board() -> Result<Arc<Board>> {
-	let mut cached = BOARD.lock().await;
-	if let Some(board) = &*cached {
-		return Ok(board.clone());
-	}
-	let mut board = tedi_task_operations::board::load(&settings().workflows).await?;
-	board.targets.retain(|t| Some(t.link.repo_info()) != settings().milestones); // shown as sprints
-	let board = Arc::new(board);
-	*cached = Some(board.clone());
-	Ok(board)
+/// The bytes of the store it is read from, and its parts, a line each, as they are read.
+pub async fn board() -> Result<(u64, impl Stream<Item = Result<Bytes>>)> {
+	let mut held = BOARD.lock().await;
+	let reading = match &*held {
+		Some(reading) => reading.clone(),
+		None => {
+			let reading = tedi_task_operations::board::load(&settings().workflows)?;
+			let shared = Arc::new(SharedReading {
+				bytes: reading.bytes,
+				read: Mutex::new((Vec::new(), reading)),
+			});
+			*held = Some(shared.clone());
+			shared
+		}
+	};
+	let lines = futures::stream::try_unfold(
+		(reading.clone(), 0),
+		|(reading, n)| async move { Ok(reading.line(n).await?.map(|line| (line, (reading, n + 1)))) },
+	);
+	Ok((reading.bytes, lines))
 }
 
 pub async fn edit(link: IssueLink, edits: Vec<FieldEdit>) -> Result<Edited> {
@@ -467,12 +484,47 @@ pub async fn propose(headers: &HeaderMap, item: Item, onto: Onto, message: Strin
 	Ok(client.propose_file(repo, &proposal).await?)
 }
 
+/// A reading of the board, shared by whoever asks for it: each reads on from where the furthest got.
+struct SharedReading {
+	bytes: u64,
+	read: Mutex<(Vec<Bytes>, Reading<'static>)>,
+}
+impl SharedReading {
+	async fn line(self: &Arc<Self>, n: usize) -> Result<Option<Bytes>> {
+		let mut read = self.read.lock().await;
+		let (lines, reading) = &mut *read;
+		if let Some(line) = lines.get(n) {
+			return Ok(Some(line.clone()));
+		}
+		let mut part = match reading.next().await {
+			Ok(Some(part)) => part,
+			Ok(None) => return Ok(None),
+			Err(e) => {
+				let mut held = BOARD.lock().await;
+				if held.as_ref().is_some_and(|h| Arc::ptr_eq(h, self)) {
+					*held = None; // the next to ask reads anew
+				}
+				return Err(e);
+			}
+		};
+		if let Part::Rest { targets, .. } = &mut part {
+			targets.retain(|t| Some(t.link.repo_info()) != settings().milestones); // shown as sprints
+		}
+		let mut line = serde_json::to_vec(&part)?;
+		line.push(b'\n');
+		let line = Bytes::from(line);
+		lines.push(line.clone());
+		tokio::task::yield_now().await; // reading never waits: what is read leaves before the next is
+		Ok(Some(line))
+	}
+}
+
 static SETTINGS: OnceLock<Settings> = OnceLock::new();
 /// What the puller pulls next; never dropped, so its channel never closes.
 static ANNOUNCE: OnceLock<mpsc::UnboundedSender<String>> = OnceLock::new();
 static CHANGES: LazyLock<broadcast::Sender<()>> = LazyLock::new(|| broadcast::channel(16).0);
-/// Loaded once per change rather than once per open board.
-static BOARD: Mutex<Option<Arc<Board>>> = Mutex::const_new(None);
+/// Read once per change rather than once per open board.
+static BOARD: Mutex<Option<Arc<SharedReading>>> = Mutex::const_new(None);
 /// Held across each library's read-modify-write.
 static LIBRARIES: Mutex<()> = Mutex::const_new(());
 

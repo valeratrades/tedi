@@ -6,7 +6,7 @@ use tedi_core::PrState;
 
 use crate::{
 	common::{Seed, TestContext, parse_virtual},
-	web::{BOARD, call, serve},
+	web::{BOARD, board, call, serve},
 };
 
 const ISSUE: &str = "https://github.com/o/r/issues/1";
@@ -30,10 +30,7 @@ fn pull(ctx: &TestContext) {
 
 /// `repo#number title` of each milestone the board shows `o/r#1` in.
 fn milestones(port: u16) -> Vec<String> {
-	let (status, body) = call(port, "GET", "/api/board", None, None);
-	assert_eq!(status, 200, "{body}");
-	let board: serde_json::Value = serde_json::from_str(&body).unwrap();
-	let mut held: Vec<String> = board["targets"]
+	let mut held: Vec<String> = board(port)["targets"]
 		.as_array()
 		.unwrap()
 		.iter()
@@ -238,10 +235,7 @@ fn a_review_is_requested_and_withdrawn() {
 		)
 	});
 	let (_server, port) = serve(&ctx, BOARD, &[]);
-	let requested = || -> serde_json::Value {
-		let board: serde_json::Value = serde_json::from_str(&call(port, "GET", "/api/board", None, None).1).unwrap();
-		board["cards"].as_array().unwrap().iter().find(|c| c["link"].as_str().unwrap().ends_with("/5")).unwrap()["pr"]["requested"].clone()
-	};
+	let requested = || -> serde_json::Value { board(port)["cards"].as_array().unwrap().iter().find(|c| c["link"].as_str().unwrap().ends_with("/5")).unwrap()["pr"]["requested"].clone() };
 	let ask = |on: bool| {
 		call(
 			port,
@@ -268,6 +262,5 @@ fn the_board_carries_who_a_repos_issues_go_to() {
 	let ctx = TestContext::build();
 	pulled(&ctx, |_| {});
 	let (_server, port) = serve(&ctx, BOARD, &[]);
-	let board: serde_json::Value = serde_json::from_str(&call(port, "GET", "/api/board", None, None).1).unwrap();
-	assert_eq!(board["assignable"]["o/r"], json!(["mock_user"]));
+	assert_eq!(board(port)["assignable"]["o/r"], json!(["mock_user"]));
 }

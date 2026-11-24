@@ -1,13 +1,16 @@
 //! The board as the store holds it: every stored issue and mirrored pull request carded (the model is `tedi_core::board`).
 
-use std::{collections::BTreeMap, path::PathBuf};
+use std::{
+	collections::{BTreeMap, HashMap, HashSet, VecDeque, hash_map::Entry},
+	path::PathBuf,
+};
 
 use color_eyre::eyre::{Result, bail, eyre};
 pub use tedi_core::board::*;
 use tedi_core::{PrState, PullRequest, conflict::CommentEdit, workflow::State};
 
 use crate::{
-	CloseState, Issue, IssueIndex, IssueLink, LazyIssue, Milestone, MilestoneLink, RepoInfo,
+	CloseState, Issue, IssueIndex, IssueLink, IssueSelector, LazyIssue, Milestone, MilestoneLink, RepoInfo,
 	conflict_resolve::{FieldEdit, check_for_existing_conflict},
 	labels::Scheme,
 	local::{FsReader, GitReader, Local, LocalError, LocalIssueSource, LocalPath, States, lock_store},
@@ -20,81 +23,49 @@ use crate::{
 /// What an issue without `i:` counts as (`labels.nix`: "`i:3` is the default").
 const DEFAULT_IMPORTANCE: u8 = 3;
 
+/// Pull requests are read a repo at a time, and shown so many.
+const PRS_A_PART: usize = 25;
+
 /// Every issue in the store, one card per node, and every pull request, ranked over their `blocked by` links;
 /// each placed in every one of `workflows`.
-pub async fn load(workflows: &Workflows) -> Result<Board> {
-	let mut held: std::collections::HashMap<crate::RepoInfo, States> = std::collections::HashMap::new();
-	let mut cards = Vec::new();
-	let mut unreadable = Vec::new();
+pub fn load(workflows: &Workflows) -> Result<Reading<'_>> {
+	let mut roots = Vec::new();
+	let mut trees: HashMap<(RepoInfo, IssueSelector), u64> = HashMap::new();
 	for rel in Local::issue_file_relpaths()? {
 		let path = Local::issues_dir().join(&rel);
 		let index = Local::extract_index_from_path(&path)?;
-		if index.index().len() != 1 || index.repo_info().is_virtual() {
-			continue; // a child is carded with its root's tree; virtual issues have no board
-		}
-		let loaded = match LocalIssueSource::<FsReader>::build(LocalPath::new(index)).await {
-			Ok(source) => Issue::load(source).await.map(|i| (i, false)),
-			Err(LocalError::ConflictBlocked(_)) => Issue::load(LocalIssueSource::<GitReader>::build(LocalPath::new(index))?).await.map(|i| (i, true)),
-			Err(e) => Err(e),
+		let Some(&root) = index.index().first().filter(|_| !index.repo_info().is_virtual()) else {
+			continue; // virtual issues have no board
 		};
-		match loaded {
-			Ok((issue, conflicted)) => {
-				let repo = index.repo_info();
-				if let std::collections::hash_map::Entry::Vacant(e) = held.entry(repo) {
-					e.insert(Local::load_states(repo)?);
-				}
-				let states = &held[&repo];
-				card_tree(&issue, None, conflicted, states, workflows, &mut cards)?
-			}
-			Err(e) => unreadable.push((path, e.to_string())),
+		*trees.entry((index.repo_info(), root)).or_default() += std::fs::metadata(&path)?.len();
+		if index.index().len() == 1 {
+			roots.push((path, index.repo_info(), root)); // a child is carded with its root's tree
 		}
 	}
-	for (repo, pr) in Local::stored_prs()? {
-		if let std::collections::hash_map::Entry::Vacant(e) = held.entry(repo) {
-			e.insert(Local::load_states(repo)?);
-		}
-		let states = &held[&repo];
-		cards.push(pr_card(repo, pr, states, workflows)?);
-	}
-
-	let tasks: BTreeMap<String, Task> = cards
-		.iter()
-		.map(|c| {
-			let task = Task {
-				importance: c.importance.unwrap_or(DEFAULT_IMPORTANCE),
-				open: c.open(),
-			};
-			(c.link.to_string(), task)
-		})
-		.collect();
-	let blocks: Vec<(String, String)> = cards.iter().flat_map(|c| c.blocked_by.iter().map(|b| (b.to_string(), c.link.to_string()))).collect();
-	let ranking = rank(&tasks, &blocks);
-	for card in &mut cards {
-		card.rank = ranking.ranks.get(&card.link.to_string()).copied();
-	}
-	let repos: std::collections::HashSet<_> = cards.iter().map(|c| c.link.project()).collect();
-	let (mut colors, mut assignable) = (BTreeMap::new(), BTreeMap::new());
-	for repo in repos {
-		let meta = Local::load_project_meta(repo);
-		colors.insert(repo.to_string(), meta.label_colors);
-		assignable.insert(repo.to_string(), meta.assignable);
-	}
-	let targets = Local::stored_milestones()?
+	let mut steps: Vec<Step> = roots
 		.into_iter()
-		.filter(offered)
-		.map(|m| Target {
-			hosted: m.body.hosted(),
-			link: m.identity.link,
-			title: m.identity.title,
-			due_on: m.identity.due_on,
+		.map(|(path, repo, root)| Step::Issue {
+			bytes: trees.remove(&(repo, root)).unwrap_or(0), // the same root's second file (`.md`, `.md.bak`): counted with the first
+			path,
 		})
 		.collect();
-	Ok(Board {
-		cards,
-		targets,
-		unreadable,
-		colors,
-		assignable,
+	steps.extend(Local::pr_repos()?.into_iter().map(|(repo, bytes)| Step::Prs { repo, bytes }));
+	Ok(Reading {
+		bytes: steps
+			.iter()
+			.map(|s| match s {
+				Step::Issue { bytes, .. } | Step::Prs { bytes, .. } => bytes,
+			})
+			.sum(),
+		workflows,
+		steps,
+		at: 0,
+		ready: VecDeque::new(),
+		held: HashMap::new(),
+		tasks: BTreeMap::new(),
+		blocks: Vec::new(),
+		repos: HashSet::new(),
+		rested: false,
 	})
 }
 
@@ -177,7 +148,7 @@ pub async fn comment(link: &IssueLink, edit: CommentEdit, mode: SyncMode) -> Res
 /// `reviewer`'s review of the mirrored pull request `link` asked for, or the ask withdrawn, straight on GitHub.
 pub async fn request_review(link: &IssueLink, reviewer: &str, on: bool) -> Result<()> {
 	let repo = link.project();
-	if !Local::stored_prs()?.iter().any(|(r, pr)| *r == repo && pr.number == link.number()) {
+	if !Local::stored_prs(repo)?.contains_key(&link.number()) {
 		bail!("{link} is no pull request mirrored here");
 	}
 	crate::github::client::get()?.request_review(repo, link.number(), reviewer, on).await?;
@@ -204,6 +175,127 @@ pub async fn edit(link: &IssueLink, edits: Vec<FieldEdit>, mode: SyncMode) -> Re
 /// Writing a marker-free resolution there and asking again lands it.
 pub async fn pending_conflict(link: &IssueLink) -> Result<Option<PathBuf>> {
 	check_for_existing_conflict(stored_index(link)?).await
+}
+
+/// A board being read.
+pub struct Reading<'a> {
+	/// Those of the store it is read from.
+	pub bytes: u64,
+	workflows: &'a Workflows,
+	steps: Vec<Step>,
+	at: usize,
+	ready: VecDeque<Part>,
+	held: HashMap<RepoInfo, States>,
+	tasks: BTreeMap<String, Task>,
+	blocks: Vec<(String, String)>,
+	repos: HashSet<RepoInfo>,
+	rested: bool,
+}
+impl Reading<'_> {
+	/// Reads on; `None` once whole. Dropped midway, the next call reads the same again.
+	pub async fn next(&mut self) -> Result<Option<Part>> {
+		while self.ready.is_empty() && !self.rested {
+			self.step().await?;
+		}
+		Ok(self.ready.pop_front())
+	}
+
+	async fn step(&mut self) -> Result<()> {
+		match self.steps.get(self.at).cloned() {
+			Some(Step::Issue { path, bytes }) => {
+				let index = Local::extract_index_from_path(&path)?;
+				let loaded = match LocalIssueSource::<FsReader>::build(LocalPath::new(index)).await {
+					Ok(source) => Issue::load(source).await.map(|i| (i, false)),
+					Err(LocalError::ConflictBlocked(_)) => Issue::load(LocalIssueSource::<GitReader>::build(LocalPath::new(index))?).await.map(|i| (i, true)),
+					Err(e) => Err(e),
+				};
+				let (mut cards, mut unreadable) = (Vec::new(), Vec::new());
+				match loaded {
+					Ok((issue, conflicted)) => {
+						let workflows = self.workflows;
+						card_tree(&issue, None, conflicted, self.states(index.repo_info())?, workflows, &mut cards)?
+					}
+					Err(e) => unreadable.push((path, e.to_string())),
+				}
+				self.read(bytes, cards, unreadable);
+			}
+			Some(Step::Prs { repo, bytes }) => {
+				let workflows = self.workflows;
+				let states = self.states(repo)?;
+				let mut cards = Local::stored_prs(repo)?
+					.into_values()
+					.map(|pr| pr_card(repo, pr, states, workflows))
+					.collect::<Result<Vec<_>>>()?;
+				let (n, mut left) = (cards.len() as u64, bytes);
+				while !cards.is_empty() {
+					let rest = cards.split_off(PRS_A_PART.min(cards.len()));
+					let share = if rest.is_empty() { left } else { (bytes * cards.len() as u64).div_euclid(n) };
+					left -= share;
+					self.read(share, std::mem::replace(&mut cards, rest), Vec::new());
+				}
+				if n == 0 {
+					self.read(bytes, Vec::new(), Vec::new());
+				}
+			}
+			None => {
+				self.ready.push_back(self.rest()?);
+				self.rested = true;
+			}
+		}
+		self.at += 1;
+		Ok(())
+	}
+
+	fn states(&mut self, repo: RepoInfo) -> Result<&States> {
+		Ok(match self.held.entry(repo) {
+			Entry::Occupied(e) => e.into_mut(),
+			Entry::Vacant(e) => e.insert(Local::load_states(repo)?),
+		})
+	}
+
+	fn read(&mut self, bytes: u64, cards: Vec<Card>, unreadable: Vec<(PathBuf, String)>) {
+		for c in &cards {
+			let task = Task {
+				importance: c.importance.unwrap_or(DEFAULT_IMPORTANCE),
+				open: c.open(),
+			};
+			self.tasks.insert(c.link.to_string(), task);
+			self.blocks.extend(c.blocked_by.iter().map(|b| (b.to_string(), c.link.to_string())));
+			self.repos.insert(c.link.project());
+		}
+		self.ready.push_back(Part::Read { bytes, cards, unreadable });
+	}
+
+	fn rest(&self) -> Result<Part> {
+		let (mut colors, mut assignable) = (BTreeMap::new(), BTreeMap::new());
+		for &repo in &self.repos {
+			let meta = Local::load_project_meta(repo);
+			colors.insert(repo.to_string(), meta.label_colors);
+			assignable.insert(repo.to_string(), meta.assignable);
+		}
+		let targets = Local::stored_milestones()?
+			.into_iter()
+			.filter(offered)
+			.map(|m| Target {
+				hosted: m.body.hosted(),
+				link: m.identity.link,
+				title: m.identity.title,
+				due_on: m.identity.due_on,
+			})
+			.collect();
+		Ok(Part::Rest {
+			ranks: rank(&self.tasks, &self.blocks).ranks,
+			targets,
+			colors,
+			assignable,
+		})
+	}
+}
+
+#[derive(Clone)]
+enum Step {
+	Issue { path: PathBuf, bytes: u64 },
+	Prs { repo: RepoInfo, bytes: u64 },
 }
 
 /// A milestone the board shows: open, and no sprint's.

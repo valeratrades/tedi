@@ -4,7 +4,7 @@
 use color_eyre::eyre::{Result, bail, eyre};
 use tedi_task_operations::{
 	TaskView,
-	board::{self, GroupBy, Query},
+	board::{self, Board, GroupBy, Query},
 	open_interactions::SyncMode,
 	sprints::{expand_and_refresh, materialize_new_tasks, sync_embedded_issue_changes},
 };
@@ -30,7 +30,11 @@ pub async fn view_command(settings: &LiveSettings, args: ViewArgs, mode: SyncMod
 		None => (named, args.group.unwrap_or(GroupBy::Nothing)),
 	};
 
-	let board = board::load(&workflows).await?;
+	let mut reading = board::load(&workflows)?;
+	let mut board = Board::default();
+	while let Some(part) = reading.next().await? {
+		board.extend([part]);
+	}
 	for (path, e) in &board.unreadable {
 		eprintln!("unreadable, left out: {}: {}", path.display(), e.lines().next().unwrap_or_default());
 	}

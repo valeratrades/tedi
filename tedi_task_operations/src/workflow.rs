@@ -121,8 +121,8 @@ async fn stored_card(link: &IssueLink, workflows: &Workflows) -> Result<Card> {
 		let parent = issue.identity.git_lineage()?.last().map(|&n| IssueLink::in_project(repo, n));
 		return crate::board::card(&issue, parent, false, &states, workflows);
 	}
-	match Local::stored_prs()?.into_iter().find(|(r, pr)| *r == repo && pr.number == link.number()) {
-		Some((repo, pr)) => crate::board::pr_card(repo, pr, &states, workflows),
+	match Local::stored_prs(repo)?.remove(&link.number()) {
+		Some(pr) => crate::board::pr_card(repo, pr, &states, workflows),
 		None => bail!("{link} is not stored here: pull it first"),
 	}
 }

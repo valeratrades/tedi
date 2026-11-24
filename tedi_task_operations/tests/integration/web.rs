@@ -9,6 +9,7 @@ use std::{
 };
 
 use hmac::Mac as _;
+use tedi_core::board::{Board, Part};
 
 use crate::common::{BINARY_ENV, TestContext, get_binary_path};
 
@@ -91,7 +92,7 @@ pub(crate) fn call(port: u16, method: &str, path: &str, user: Option<&str>, body
 	let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
 	write!(
 		stream,
-		"{method} {path} HTTP/1.1\r\nHost: board\r\n{user}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+		"{method} {path} HTTP/1.0\r\nHost: board\r\n{user}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
 		body.len()
 	)
 	.unwrap();
@@ -100,6 +101,17 @@ pub(crate) fn call(port: u16, method: &str, path: &str, user: Option<&str>, body
 	let status = response.split(' ').nth(1).expect("an HTTP status line").parse().unwrap();
 	let body = response.split_once("\r\n\r\n").expect("headers end").1.to_string();
 	(status, body)
+}
+
+/// The board, put together of its parts.
+pub(crate) fn board(port: u16) -> serde_json::Value {
+	let (status, body) = call(port, "GET", "/api/board", None, None);
+	assert_eq!(status, 200, "{body}");
+	let parts: Vec<Part> = body.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+	assert!(matches!(parts.last(), Some(Part::Rest { .. })), "{body}");
+	let mut board = Board::default();
+	board.extend(parts);
+	serde_json::to_value(board).unwrap()
 }
 
 fn library(port: u16, user: Option<&str>) -> serde_json::Value {
@@ -308,10 +320,7 @@ fn the_board_carries_its_repos_label_colors_as_of_the_last_pull() {
 	assert!(ctx.run(&["--mock", "pull", "o/r"]).status.success());
 
 	let (_server, port) = serve(&ctx, BOARD, &[]);
-	let (status, body) = call(port, "GET", "/api/board", None, None);
-	assert_eq!(status, 200, "{body}");
-	let board: serde_json::Value = serde_json::from_str(&body).unwrap();
-	assert_eq!(board["colors"], serde_json::json!({ "o/r": { "t:bug": "ededed", "won't fix": "ededed" } }));
+	assert_eq!(board(port)["colors"], serde_json::json!({ "o/r": { "t:bug": "ededed", "won't fix": "ededed" } }));
 }
 
 fn team_file(triage_sort: &str) -> String {

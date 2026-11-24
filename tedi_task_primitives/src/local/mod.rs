@@ -491,39 +491,41 @@ impl Local {
 		Self::save_project_meta(repo_info, &project_meta)
 	}
 
-	/// Every repo's pull requests, as the last pull mirrored them.
-	pub fn stored_prs() -> std::io::Result<Vec<(RepoInfo, tedi_core::PullRequest)>> {
+	/// Each repo with pull requests mirrored, and the bytes they take.
+	pub fn pr_repos() -> std::io::Result<Vec<(RepoInfo, u64)>> {
 		let mut out = Vec::new();
-		let root = Self::issues_dir();
-		for owner in std::fs::read_dir(&root)? {
+		for owner in std::fs::read_dir(Self::issues_dir())? {
 			let owner = owner?;
 			if !owner.file_type()?.is_dir() || owner.file_name().to_string_lossy().starts_with('.') {
 				continue; // `.git`, `.conflicts`
 			}
 			for repo in std::fs::read_dir(owner.path())? {
 				let repo = repo?;
-				let path = repo.path().join(PRS_FILE);
-				let content = match std::fs::read_to_string(&path) {
-					Ok(c) => c,
+				let held = match std::fs::metadata(repo.path().join(PRS_FILE)) {
+					Ok(m) => m.len(),
 					Err(e) if matches!(e.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory) => continue, // a repo never pulled, or not a repo dir
 					Err(e) => return Err(e),
 				};
-				let prs: BTreeMap<u64, tedi_core::PullRequest> = serde_json::from_str(&content).unwrap_or_else(|e| panic!("corrupted pull requests at {}: {e}", path.display()));
-				let info = RepoInfo::new(&owner.file_name().to_string_lossy(), &repo.file_name().to_string_lossy());
-				out.extend(prs.into_values().map(|pr| (info, pr)));
+				out.push((RepoInfo::new(&owner.file_name().to_string_lossy(), &repo.file_name().to_string_lossy()), held));
 			}
 		}
 		Ok(out)
 	}
 
+	/// `repo`'s pull requests by number, as the last pull mirrored them.
+	pub fn stored_prs(repo: RepoInfo) -> std::io::Result<BTreeMap<u64, tedi_core::PullRequest>> {
+		let path = Self::project_dir(repo).join(PRS_FILE);
+		match std::fs::read_to_string(&path) {
+			Ok(c) => Ok(serde_json::from_str(&c).unwrap_or_else(|e| panic!("corrupted pull requests at {}: {e}", path.display()))),
+			Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(BTreeMap::new()),
+			Err(e) => Err(e),
+		}
+	}
+
 	/// Read-modify-write of `repo`'s mirrored pull requests, by number; whole or not at all.
 	pub fn update_prs(repo: RepoInfo, update: impl FnOnce(&mut BTreeMap<u64, tedi_core::PullRequest>)) -> std::io::Result<()> {
 		let path = Self::project_dir(repo).join(PRS_FILE);
-		let mut prs: BTreeMap<u64, tedi_core::PullRequest> = match std::fs::read_to_string(&path) {
-			Ok(c) => serde_json::from_str(&c).unwrap_or_else(|e| panic!("corrupted pull requests at {}: {e}", path.display())),
-			Err(e) if e.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
-			Err(e) => return Err(e),
-		};
+		let mut prs = Self::stored_prs(repo)?;
 		update(&mut prs);
 		std::fs::create_dir_all(Self::project_dir(repo))?;
 		let tmp = path.with_extension("json.tmp");

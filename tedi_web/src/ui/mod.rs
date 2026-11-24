@@ -27,7 +27,7 @@ use futures::StreamExt as _;
 use icons::{Glyph, Icon};
 use tedi_core::{
 	IssueLink,
-	board::{Board, Card, Scope, View, scope_at},
+	board::{Board, Card, Part, Scope, View, scope_at},
 	conflict::{CommentEdit, Conflict},
 	workflow::Workflow,
 };
@@ -47,9 +47,12 @@ const HELP: [(&str, &str); 7] = [
 
 #[wasm_bindgen::prelude::wasm_bindgen(js_namespace = loading)]
 extern "C" {
-	/// So many parts of the wait for the board are over.
-	fn reached(parts: usize);
-	/// The wait ended without the board.
+	/// The client runs: what doesn't load from here on is its to say.
+	fn started();
+	/// So many bytes of the store are on the board.
+	fn loaded(bytes: f64);
+	fn shown();
+	/// It ends without the board.
 	fn quit();
 }
 
@@ -622,15 +625,13 @@ fn Shell() -> Element {
 		});
 	});
 	use_autosave(ctx, ctx.api, ctx.arranged, Dock::Tiles);
-	let over = use_memo(move || match () {
-		_ if ctx.failure.read().is_some() => None,
-		_ if ctx.board.read().is_some() => Some(3),
-		_ if ctx.library.read().is_some() => Some(2),
-		_ => Some(1),
-	});
-	use_effect(move || match over() {
-		Some(parts) => reached(parts),
-		None => quit(),
+	use_hook(started);
+	let failed = use_memo(move || ctx.failure.read().is_some());
+	let whole = use_memo(move || ctx.board.read().is_some() && ctx.library.read().is_some());
+	use_effect(move || match (failed(), whole()) {
+		(true, _) => quit(),
+		(false, true) => shown(),
+		(false, false) => {}
 	});
 	rsx! {
 		Live {}
@@ -688,9 +689,11 @@ fn Live() -> Element {
 					ctx.arrange(api);
 				}
 			}
-			(Err(e), _) => return failure.set(Some(format!("setup: {e}"))),
-			(_, Err(e)) => return failure.set(Some(format!("your library: {e}"))),
+			(Err(e), _) => failure.set(Some(format!("setup: {e}"))),
+			(_, Err(e)) => failure.set(Some(format!("your library: {e}"))),
 		}
+	});
+	use_future(move || async move {
 		loop {
 			match api::changes().await {
 				Ok(mut ticks) => {
@@ -728,10 +731,11 @@ async fn reload(ctx: Ctx) {
 	loop {
 		reading.set(Reading::Once);
 		let held = sync::landed(&pending.peek());
-		match api::board().await {
+		let first = stored.peek().is_none();
+		match read(first).await {
 			Ok(board) => {
 				stored.set(Some(board));
-				if failure.peek().is_some() {
+				if ctx.setup.peek().is_some() && failure.peek().is_some() {
 					failure.set(None);
 				}
 				pending.write().retain(|p| !held.contains(&p.id));
@@ -743,6 +747,37 @@ async fn reload(ctx: Ctx) {
 			return reading.set(Reading::Idle);
 		}
 	}
+}
+
+/// The server's board. The `first` read tells the screen over it how far it is, and lets it draw.
+async fn read(first: bool) -> Result<Board, String> {
+	let window = web_sys::window().expect("runs in a browser");
+	let performance = window.performance().expect("a browser's window has one");
+	let document = window.document().expect("a page has one");
+	let mut chunks = api::board().await.map_err(|e| e.to_string())?;
+	let (mut board, mut bytes, mut whole) = (Board::default(), 0, false);
+	let mut pending = Vec::new(); // a line not all here yet
+	let mut drawn = performance.now();
+	while let Some(chunk) = chunks.next().await {
+		pending.extend_from_slice(&chunk.map_err(|e| e.to_string())?);
+		let end = pending.iter().rposition(|b| *b == b'\n').map_or(0, |at| at + 1); // no line ended in it
+		for line in pending.drain(..end).collect::<Vec<u8>>().split_inclusive(|b| *b == b'\n') {
+			let part: Part = serde_json::from_slice(line).map_err(|e| e.to_string())?;
+			match &part {
+				Part::Read { bytes: held, .. } => bytes += held,
+				Part::Rest { .. } => whole = true,
+			}
+			board.extend([part]);
+			if first {
+				loaded(bytes as f64);
+				if performance.now() - drawn > 16.0 && !document.hidden() {
+					gloo_timers::future::sleep(std::time::Duration::ZERO).await; // a hidden page's timers are slowed, and nothing is drawn
+					drawn = performance.now();
+				}
+			}
+		}
+	}
+	whole.then_some(board).ok_or_else(|| "it was cut short".to_string())
 }
 
 /// Buttons a tile's header adds beside tilers' own (Figma: TileBar): split the shown panel off, maximize.

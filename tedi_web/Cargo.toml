@@ -33,6 +33,7 @@ web = [
     "dep:futures",
     "dep:gloo-timers",
     "dep:pulldown-cmark",
+    "dep:serde_json",
     "jiff/js",
 ]
 # `#[server]` emits its handler half under this crate's own `server` feature.
@@ -40,6 +41,7 @@ server = [
     "dioxus/server",
     "dioxus/fullstack",
     "dep:dioxus-server",
+    "dep:futures",
     "dep:tedi_task_operations",
     "dep:tokio",
     "dep:tokio-stream",
@@ -81,11 +83,11 @@ tokio = { workspace = true, features = ["sync", "net", "time", "macros"], option
 tokio-stream = { workspace = true, features = ["sync"], optional = true }
 toml = { workspace = true, optional = true }
 toml_edit = { workspace = true, optional = true }
-tower-http = { workspace = true, features = ["fs"], optional = true }
+tower-http = { workspace = true, features = ["fs", "set-header"], optional = true }
 tracing = { workspace = true, optional = true }
 urlencoding.workspace = true
 wasm-bindgen = { workspace = true, optional = true }
-web-sys = { workspace = true, features = ["Element", "EventTarget", "History", "KeyboardEvent", "Location", "Storage", "Window"], optional = true }
+web-sys = { workspace = true, features = ["Document", "Element", "EventTarget", "History", "KeyboardEvent", "Location", "Performance", "Storage", "Window"], optional = true }
 
 [build-dependencies]
 ev_lib_classes.workspace = true
