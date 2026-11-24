@@ -12,7 +12,7 @@ E2E_RESEED=1  tedi_web/e2e/shoot.sh 01-board   # rebuild the store from seed/
 tedi_web/e2e/figma.sh [screen]            # reference/*.png from Figma (needs FIGMA_TOKEN; reference/ is committed)
 ```
 
-Screens and frames: 01-board 9:1026, 02-view 10:1607, 03-library 11:3139, 04-workspace 12:3114, 05-scope 13:4261,
+Screens and frames: 01-board 48:5386, 02-view 10:1607, 03-library 11:3139, 04-workspace 12:3114, 05-scope 48:6437,
 06a-mobile 13:5217, 06b-mobile 13:5488. Compare `out/<s>.png` with `reference/<s>.png`.
 
 ## Specs and renders
