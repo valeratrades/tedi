@@ -1,10 +1,11 @@
 # tedi_web
 
 Design upstream: [Figma — tedi board UX](https://www.figma.com/design/AKNYVRnUHnGrnoFN6geWii) (foundations from `assets/tokens.css`, components, screens, flows).
+What code renders now: [Figma — tedi — renders](https://www.figma.com/design/LKVOrmtWpG3N87rVQyOZoj), a page per `nix run .#figma`.
 
 The client holds every card and runs `tedi_core::board` over them; every edit is a server fn calling
 `tedi_task_operations` in-process — sync, merge, stage and rank are never re-done here.
-Edits on their way there: `src/ui/sync.rs`.
+Edits on their way there: `src/ui/sync.rs`. The address bar: `src/ui/route.rs`.
 
 Two processes on one store: `tedi web` serves the API (and, in production, the client bundle); `dx` builds and
 hot-reloads the client, proxying `/api/` to it (`tedi_web/Dioxus.toml`).

@@ -15,8 +15,18 @@ tedi_web/e2e/figma.sh [screen]            # reference/*.png from Figma (needs FI
 Screens and frames: 01-board 9:1026, 02-view 10:1607, 03-library 11:3139, 04-workspace 12:3114, 05-scope 13:4261,
 06a-mobile 13:5217, 06b-mobile 13:5488. Compare `out/<s>.png` with `reference/<s>.png`.
 
+## Specs and renders
+
+```sh
+nix run .#e2e                  # specs/url.spec.ts: the address against the screen
+nix run .#figma                # every page the address can name, at 1440 and 390, onto a new page of `figmaFile` (flake.nix), "tedi — renders"
+```
+
+Both rebuild, reseed and serve on ports of their own (`specs/stack.ts`), behind a proxy that signs each browser context in as a viewer
+with `libraries/04-workspace.json`. The renders are code's, never read back; the loop is the `figma-render` skill.
 ## Layout
 
+- `serve.sh`: builds, seeds and serves; `shoot.sh` and the specs run it.
 - `seed/state.json`: the GitHub mock's state (issues, labels, assignees, `blocked by`, linked and listed PRs, sprint milestones).
 - `seed/positions.json`: what the mock cannot hold, written into the store after `tedi --mock pull`: kanban / pull_requests
   states (`.states.json`) and label colours (`.meta.json`).

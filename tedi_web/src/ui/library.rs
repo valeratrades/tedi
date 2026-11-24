@@ -15,7 +15,7 @@ use super::{
 	toast::Tone as Said,
 	workspace,
 };
-use crate::api::{self, Catalog, Construction, Dock, Entry, Item, LibraryEdit, Onto, Origin, Owner, ShareLink, Shelf, band_name, constructions, diff};
+use crate::api::{self, Catalog, Construction, Entry, Item, LibraryEdit, Onto, Origin, Owner, ShareLink, Shelf, band_name, constructions, diff};
 
 /// A name typed in place: Enter takes it, Escape or leaving the field drops it.
 #[component]
@@ -478,7 +478,7 @@ fn LinkCard(link: ShareLink, picked: bool, on_pick: EventHandler<ShareLink>) -> 
 fn open(ctx: Ctx, owner: &Owner, item: &Item, construction: &Construction) {
 	match (item, construction) {
 		(Item::View(name), _) => ctx.open(PanelId(format!("view:{name}"))),
-		(Item::Workspace(name), _) => ctx.switch(name),
+		(Item::Workspace(name), _) => ctx.go(ctx.at_workspace(name)),
 		(Item::Scope(path), _) => {
 			let path = path.clone();
 			spawn(async move { _ = ctx.keep(LibraryEdit::Scope(Some(path))).await });
@@ -498,36 +498,6 @@ fn open(ctx: Ctx, owner: &Owner, item: &Item, construction: &Construction) {
 		}
 		(item, construction) => panic!("{item:?} holds no {construction:?}"),
 	}
-}
-
-/// `columns` onto `view`'s columns: its tints, and its arrangement for every band it keeps one for.
-pub(super) fn apply_columns(ctx: Ctx, view: String, columns: api::Columns) {
-	spawn(async move {
-		let by = columns.by.clone();
-		if !ctx
-			.keep(LibraryEdit::Tinted {
-				view: view.clone(),
-				by: by.clone(),
-				tints: columns.tints.clone(),
-			})
-			.await
-		{
-			return;
-		}
-		for (band, layout) in columns.layout {
-			if !ctx
-				.keep(LibraryEdit::Arranged {
-					dock: Dock::Columns { view: view.clone(), by: by.clone() },
-					band,
-					layout,
-				})
-				.await
-			{
-				return;
-			}
-		}
-		ctx.open(PanelId(format!("view:{view}")));
-	});
 }
 
 fn fork(ctx: Ctx, from: Origin, name: &str) {
@@ -913,7 +883,7 @@ pub(super) fn ApplyColumns(name: String, owner: Owner) -> Element {
 						selected: false,
 						label: view.clone(),
 						glyph: Glyph::View,
-						onclick: { let (view, columns) = (view.clone(), columns.clone()); move |_| { apply_columns(ctx, view.clone(), columns.clone()); close(); } },
+						onclick: { let (view, name) = (view.clone(), name.clone()); move |_| { ctx.go(ctx.at_columns(&view, &name)); close(); } },
 					}
 				}
 			}

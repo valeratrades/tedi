@@ -11,16 +11,15 @@ use super::{
 	icons::{Glyph, Icon},
 	kit::{Btn, MenuItem as Row, Style},
 	library::NameForm,
+	route,
 	toast::Tone as Said,
 };
 use crate::api::{self, Arrangement, Construction, Item, Kept, LibraryEdit, Origin, Owner, ShareLink, Shared, Shelf, band_name};
 
 /// Where `link` opens this board: its origin and the path it is served under.
 pub(super) fn share_url(link: &ShareLink) -> String {
-	let location = web_sys::window().expect("a browser window").location();
-	let (origin, path) = (location.origin().expect("a page has an origin"), location.pathname().expect("a page has a path"));
-	let root = path.find("/l/").map_or(path.trim_end_matches('/'), |at| &path[..at]);
-	format!("{origin}{root}{link}")
+	let origin = web_sys::window().expect("a browser window").location().origin().expect("a page has an origin");
+	format!("{origin}{}{link}", route::base())
 }
 
 pub(super) fn copy_link(ctx: Ctx, link: &ShareLink) {
@@ -47,7 +46,7 @@ fn current(ctx: &Ctx) -> Option<(String, Owner, Arrangement)> {
 fn screen(ctx: &Ctx) -> Arrangement {
 	let mut tiles = ctx.library.read().as_ref().expect("the menu opens from a loaded screen").on_screen.tiles.clone();
 	if let Some(api) = *ctx.api.peek() {
-		tiles.insert(api.band(), api.save());
+		tiles.insert(api.band(), super::kept(api));
 	}
 	tiles
 }
@@ -57,7 +56,7 @@ fn save(ctx: Ctx) {
 	let Some(api) = *ctx.api.peek() else { return };
 	match current(&ctx) {
 		Some((name, Owner::Viewer(_), _)) => {
-			let tiles = Arrangement::from([(api.band(), api.save())]);
+			let tiles = Arrangement::from([(api.band(), super::kept(api))]);
 			spawn(async move {
 				if ctx.keep(LibraryEdit::Keep(Kept::Workspace { name: name.clone(), tiles })).await {
 					ctx.say("workspace", Said::Success, format!("Saved {name}"), None);
@@ -176,7 +175,7 @@ pub(super) fn WorkspaceMenu() -> Element {
 					Shortcut::Recent(at) => {
 						let recent = ctx.library.read().as_ref().map(|l| l.recent.clone()).unwrap_or_default(); // the library not yet arrived
 						if let Some(name) = recent.get(at - 1) {
-							ctx.switch(name);
+							ctx.go(ctx.at_workspace(name));
 						}
 					}
 				}
@@ -285,7 +284,7 @@ pub(super) fn WorkspaceMenu() -> Element {
 									glyph: Glyph::Workspace,
 									label: if team.contains_key(name) { format!("{name} · team") } else { name.clone() },
 									meta: format!("⌘⇧{}", i + 1),
-									onclick: { let name = name.clone(); move |_| { close(); ctx.switch(&name); } },
+									onclick: { let name = name.clone(); move |_| { close(); ctx.go(ctx.at_workspace(&name)); } },
 								}
 							}
 						}
@@ -327,18 +326,12 @@ pub(super) fn Banner() -> Element {
 			return;
 		}
 		landed.set(true);
-		let location = web_sys::window().expect("a browser window").location();
-		let (path, search) = (location.pathname().expect("a page has a path"), location.search().expect("a page has a query"));
-		let Some(at) = path.find("/l/") else { return };
-		let link = format!("{}{search}", &path[at..]);
-		let root = if at == 0 { "/" } else { &path[..at] };
+		let link = route::bar();
+		if !link.starts_with("/l/") {
+			return;
+		}
 		// the board's own address again: a reload shows the viewer's screen, the link stays in Shared with me
-		web_sys::window()
-			.expect("a browser window")
-			.history()
-			.expect("a window has a history")
-			.replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(root))
-			.expect("a same-origin path replaces the address");
+		route::history(route::Step::Replace, &route::Address::default());
 		spawn(async move {
 			let link: ShareLink = match link.parse() {
 				Ok(link) => link,
@@ -379,7 +372,7 @@ pub(super) fn Banner() -> Element {
 							if ctx.keep(LibraryEdit::Fork { from, name: name.clone() }).await && ctx.keep(LibraryEdit::Workspace(Some(name.clone()))).await {
 								let mut viewing = ctx.viewing;
 								viewing.set(None);
-								ctx.switch(&name);
+								ctx.go(ctx.at_workspace(&name));
 							}
 						});
 					}

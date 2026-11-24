@@ -1,2 +1,5 @@
 .bundle/
 out/
+node_modules/
+# a symlink to the flake-pinned @playwright/test, so no trailing slash
+specs/node_modules

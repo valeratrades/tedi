@@ -65,6 +65,16 @@
             badges = [ "msrv" "crates_io" "docs_rs" "loc" "ci" ];
           };
           combined = v_flakes.utils.combine { inherit rust; modules = [ rs github readme ]; };
+          js = v_flakes.js { inherit pkgs; packages = [ ]; };
+          # The board's specs (tedi_web/e2e/specs) over the seeded mock store, built by the dev shell.
+          e2e = name: run: (js.playwright {
+            inherit name;
+            run = "js-local >&2\n" + run;
+            package = "tedi_web/e2e";
+            config = "specs";
+            runtimeInputs = with pkgs; [ bash curl jq ] ++ js.enabledPackages; # `nix` is the caller's
+          }).program;
+          figmaFile = "LKVOrmtWpG3N87rVQyOZoj"; # "tedi — renders", in the Pro team "EV Invest"
           #,}}}1
 
           build_rust = v_flakes.rs.build_nightly system;
@@ -177,6 +187,15 @@
               '
             ''}/bin/tedi-dev";
           };
+          # What the address bar can name, into Figma: the loop is the `figma-render` skill.
+          apps.figma = {
+            type = "app";
+            program = pkgs.lib.getExe (e2e "figma" ''exec node_modules/.bin/evinvest-figma-render -c specs/figma.config.ts --file ${figmaFile} "$@"'');
+          };
+          apps.e2e = {
+            type = "app";
+            program = pkgs.lib.getExe (e2e "e2e" ''exec playwright test -c specs "$@"'');
+          };
           apps.help = {
             type = "app";
             program = "${pkgs.writeShellScriptBin "help" ''
@@ -186,6 +205,8 @@
               Commands:
                 nix develop                    dev shell (rust nightly, pre-commit, generated configs)
                 nix run .#dev                  the team board over your store on localhost, reloading as you edit
+                nix run .#e2e                  the board's specs, in a headless browser over a seeded store
+                nix run .#figma                every page of the board into Figma, at each breakpoint
                 nix build                      build the `${pname}` binary
                 nix run . -- --help            CLI help: open, sprints, manual, clockify, perf-eval, monitors, init
                 cargo t                        tests (integration: tedi_task_operations/tests/)

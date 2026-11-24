@@ -14,6 +14,7 @@ use super::{
 	icons::{Glyph, Icon},
 	kit::{IconBtn, Kbd, MenuItem, Picker},
 	library::NameForm,
+	route::Go as Link,
 	workspace,
 };
 use crate::api::{Item, Kept, LibraryEdit, Shelf};
@@ -90,7 +91,7 @@ fn Shelves() -> Element {
 			glyph: glyph_of(&v),
 			favorite: Some(Item::View(v.name.clone())),
 			own: library.filters.contains_key(&v.name).then_some(Shelf::Filters),
-			current: false,
+			current: ctx.shows(&PanelId(format!("view:{}", v.name))),
 			depth: 0,
 			meta: count(&ctx, &v.query).map(|n| n.to_string()).unwrap_or_default(),
 			go: Go::Panel(PanelId(format!("view:{}", v.name))),
@@ -119,6 +120,8 @@ fn Shelves() -> Element {
 	}
 	walk(&ctx, "", &scopes, 0, &library.scopes, library.scope.as_ref(), &mut scoped);
 
+	let view = ctx.current_view();
+	let (laid, by) = (view.as_ref().and_then(|v| ctx.laid(v)), view.as_ref().and_then(|v| ctx.grouping(v)));
 	let columns: Vec<Row> = setup
 		.columns
 		.iter()
@@ -128,10 +131,13 @@ fn Shelves() -> Element {
 			glyph: Glyph::Columns,
 			label: name.clone(),
 			depth: 0,
-			go: Go::Columns(name.clone()),
+			go: Go::Columns {
+				name: name.clone(),
+				onto: view.clone().filter(|_| by.as_ref() == Some(&c.by)),
+			},
 			favorite: Some(Item::Columns(name.clone())),
 			own,
-			current: false,
+			current: laid.as_ref() == Some(name),
 			meta: c.tints.len().to_string(),
 		})
 		.collect();
@@ -146,7 +152,7 @@ fn Shelves() -> Element {
 			go: Go::Panel(PanelId(format!("sprint:{}", s.title))),
 			favorite: None,
 			own: None,
-			current: false,
+			current: ctx.shows(&PanelId(format!("sprint:{}", s.title))),
 			meta: s.links.len().to_string(),
 		})
 		.collect();
@@ -224,7 +230,11 @@ enum Go {
 	Panel(PanelId),
 	Workspace(String),
 	Scope(String),
-	Columns(String),
+	Columns {
+		name: String,
+		/// The view on screen, when it groups as they do; else they open in the library.
+		onto: Option<String>,
+	},
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -250,7 +260,7 @@ fn Section(title: &'static str, kind: &'static str, rows: Vec<Row>, empty: &'sta
 				let api = (*ctx.api.peek()).expect("a band is entered before the screen can be saved");
 				let edit = LibraryEdit::Keep(Kept::Workspace {
 					name,
-					tiles: BTreeMap::from([(api.band(), api.save())]),
+					tiles: BTreeMap::from([(api.band(), super::kept(api))]),
 				});
 				spawn(async move { _ = ctx.keep(edit).await });
 			}
@@ -296,7 +306,7 @@ fn key_of(go: &Go) -> String {
 		Go::Panel(id) => id.0.clone(),
 		Go::Workspace(n) => format!("workspace:{n}"),
 		Go::Scope(p) => format!("scope:{p}"),
-		Go::Columns(n) => format!("columns:{n}"),
+		Go::Columns { name, .. } => format!("columns:{name}"),
 	}
 }
 
@@ -318,16 +328,12 @@ fn ShelfRow(row: Row) -> Element {
 		meta,
 	} = row;
 	let starred = favorite.as_ref().is_some_and(|f| ctx.favorite(f));
-	let activate = {
-		let go = go.clone();
-		move |_| match go.clone() {
-			Go::Panel(id) => ctx.open(id),
-			Go::Workspace(name) => ctx.switch(&name),
-			Go::Scope(path) => {
-				spawn(async move { _ = ctx.keep(LibraryEdit::Scope(Some(path))).await });
-			}
-			Go::Columns(name) => ctx.open(PanelId(format!("library:columns:{name}"))),
-		}
+	let to = match &go {
+		Go::Panel(id) => ctx.at_panel(id),
+		Go::Workspace(name) => ctx.at_workspace(name),
+		Go::Scope(path) => ctx.at.read().with_scope(Some(path.clone())),
+		Go::Columns { name, onto: Some(view) } => ctx.at_columns(view, name),
+		Go::Columns { name, onto: None } => ctx.at_panel(&PanelId(format!("library:columns:{name}"))),
 	};
 	let rename = {
 		let from = label.clone();
@@ -378,24 +384,23 @@ fn ShelfRow(row: Row) -> Element {
 					ctx.carry(id.clone());
 				}
 			},
-			onclick: activate,
 			Icon { glyph, class: if current { "size-3.5 text-primary-ink" } else { "size-3.5 text-ink-soft" } }
 			if renaming() {
 				div { class: "min-w-0 flex-1", onclick: |e: MouseEvent| e.stop_propagation(),
 					NameForm { initial: label.clone(), placeholder: "name", on_name: rename, on_cancel: move |()| renaming.set(false) }
 				}
 			} else {
-				span { class: "min-w-0 flex-1 truncate text-body", "{label}" }
+				Link { to, class: "min-w-0 flex-1 truncate text-body after:absolute after:inset-0", "{label}" }
 				if starred {
 					Icon { glyph: Glyph::Star, class: "size-3 fill-accent-warn text-accent-warn group-hover/row:hidden" }
 				}
 				if own.is_none() && !matches!(go, Go::Panel(ref id) if id.0.starts_with("sprint:")) {
-					span { class: "group-hover/row:hidden", title: "the team's, read-only: fork to edit", Icon { glyph: Glyph::Lock, class: "size-3 text-ink-faint" } }
+					span { class: "relative group-hover/row:hidden", title: "the team's, read-only: fork to edit", Icon { glyph: Glyph::Lock, class: "size-3 text-ink-faint" } }
 				}
 				if !meta.is_empty() {
 					span { class: "text-mono-s text-ink-faint group-hover/row:hidden", "{meta}" }
 				}
-				div { class: "hidden items-center group-hover/row:flex",
+				div { class: "relative hidden items-center group-hover/row:flex",
 					if let Some(what) = favorite.clone() {
 						IconBtn { glyph: Glyph::Star, title: if starred { "Unfavorite" } else { "Favorite" }, active: starred, onclick: move |_| { let what = what.clone(); spawn(async move { _ = ctx.keep(LibraryEdit::Favorite { what, on: !starred }).await; }); } }
 					}
@@ -477,11 +482,10 @@ pub(super) fn TopBar() -> Element {
 			div { class: "hidden h-5 w-px bg-border md:block" }
 			div { class: "hidden h-full min-w-0 items-center md:flex",
 				for name in workspaces {
-					button {
+					Link {
 						key: "{name}",
-						r#type: "button",
+						to: ctx.at_workspace(&name),
 						class: if at.as_ref() == Some(&name) { "flex h-full shrink-0 items-center gap-1.5 border-t-2 border-primary bg-card pr-2 pl-3 text-body text-ink" } else { "flex h-full shrink-0 items-center gap-1.5 border-r border-border-subtle pr-2 pl-3 text-body text-ink-mid hover:text-ink" },
-						onclick: { let name = name.clone(); move |_| ctx.switch(&name) },
 						Icon { glyph: Glyph::Workspace, class: "size-3.5 text-ink-soft" }
 						"{name}"
 					}
@@ -522,10 +526,7 @@ fn ScopePicker() -> Element {
 		Some((parent, leaf)) => (parent.to_string(), leaf.to_string()),
 		None => (String::new(), "All repos".to_string()),
 	};
-	let mut pick = move |path: Option<String>| {
-		open.set(false);
-		spawn(async move { _ = ctx.keep(LibraryEdit::Scope(path)).await });
-	};
+	let here = ctx.at.read().clone();
 	rsx! {
 		Popover { open: open(), on_open_change: move |v| open.set(v),
 			PopoverTrigger { class: if open() { "flex h-7 items-center gap-1.5 rounded-[var(--control-radius)] border border-ring px-2" } else { "flex h-7 items-center gap-1.5 rounded-[var(--control-radius)] border border-border px-2 hover:bg-hover" },
@@ -539,7 +540,8 @@ fn ScopePicker() -> Element {
 			}
 			PopoverContent { align: "start", class: "flex w-[260px] flex-col gap-0.5 rounded-[var(--radius)] border border-border bg-popover p-1 text-ink",
 				span { class: "px-2 pt-1.5 pb-0.5 text-overline text-ink-soft", "scope…" }
-				button { r#type: "button", class: if current.is_none() { "flex h-7 items-center gap-2 rounded-[var(--control-radius)] bg-selected px-2" } else { "flex h-7 items-center gap-2 rounded-[var(--control-radius)] px-2 hover:bg-hover" }, onclick: move |_| pick(None),
+				div { class: "contents", onclick: move |_| open.set(false),
+				Link { to: here.with_scope(None), class: if current.is_none() { "flex h-7 items-center gap-2 rounded-[var(--control-radius)] bg-selected px-2" } else { "flex h-7 items-center gap-2 rounded-[var(--control-radius)] px-2 hover:bg-hover" },
 					span { class: "flex-1 text-left text-body text-ink", "All repos" }
 					span { class: "text-mono-s text-ink-soft", {count(&ctx, "is:open").map(|n| n.to_string()).unwrap_or_default()} }
 				}
@@ -550,18 +552,17 @@ fn ScopePicker() -> Element {
 						let starred = library.favorites.contains(&Item::Scope(path.clone()));
 						let pad = 8 + depth * 12;
 						rsx! {
-							button {
+							Link {
 								key: "{path}",
-								r#type: "button",
+								to: here.with_scope(Some(path.clone())),
 								class: if current.as_ref() == Some(&path) { "flex h-7 items-center gap-2 rounded-[var(--control-radius)] bg-selected pr-2" } else { "flex h-7 items-center gap-2 rounded-[var(--control-radius)] pr-2 hover:bg-hover" },
-								style: "padding-left: {pad}px",
-								onclick: { let path = path.clone(); move |_| pick(Some(path.clone())) },
-								span { class: "flex-1 truncate text-left text-body text-ink", "{name}" if own { span { class: "text-ink-soft", " · mine" } } }
+								span { class: "flex-1 truncate text-left text-body text-ink", style: "padding-left: {pad}px", "{name}" if own { span { class: "text-ink-soft", " · mine" } } }
 								if starred { Icon { glyph: Glyph::Star, class: "size-3 fill-accent-warn text-accent-warn" } }
 								span { class: "text-mono-s text-ink-soft", "{n}" }
 							}
 						}
 					}
+				}
 				}
 				div { class: "my-0.5 h-px bg-border-subtle" }
 				button { r#type: "button", class: "flex h-7 items-center gap-2 rounded-[var(--control-radius)] px-2 hover:bg-hover",
@@ -589,7 +590,7 @@ pub(super) fn ThumbBar() -> Element {
 		div { class: "flex h-14 shrink-0 items-center gap-2 border-t border-border-subtle bg-muted px-3",
 			Picker { glyph: Glyph::Workspace, label: current.clone().unwrap_or_else(|| "no workspace".into()),
 				for name in names {
-					MenuItem { key: "{name}", selected: current.as_ref() == Some(&name), label: name.clone(), onclick: { let name = name.clone(); move |_| ctx.switch(&name) } }
+					MenuItem { key: "{name}", selected: current.as_ref() == Some(&name), label: name.clone(), onclick: { let name = name.clone(); move |_| ctx.go(ctx.at_workspace(&name)) } }
 				}
 			}
 			div { class: "flex-1" }

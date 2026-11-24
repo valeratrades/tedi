@@ -18,6 +18,7 @@ use super::{
 	card::{Avatar, CardView, Field, KindIcon, ago},
 	icons::{Glyph, Icon},
 	kit::{Btn, IconBtn, MenuItem, Picker, Style},
+	route::Go,
 };
 use crate::api;
 
@@ -60,6 +61,14 @@ pub fn IssuePanel(link: IssueLink) -> Element {
 	}
 }
 
+/// An address can open an issue before the board arrives: its title joins it then.
+#[component]
+pub(super) fn IssueTab(link: IssueLink) -> Element {
+	let ctx = use_context::<Ctx>();
+	let title = ctx.card(&link).map_or_else(|| format!("#{}", link.number()), |c| format!("#{} {}", link.number(), c.title));
+	ctx.tab_label(Glyph::Issue, &title)
+}
+
 /// Open or closed, closing it, and whose sub-issue it is.
 #[component]
 fn Standing(card: Card) -> Element {
@@ -92,10 +101,9 @@ fn Standing(card: Card) -> Element {
 			}
 		}
 		if let Some(parent) = parent {
-			button {
-				r#type: "button",
+			Go {
+				to: ctx.at.read().with_issue(&parent.link),
 				class: "flex min-w-0 items-center gap-1.5 text-left text-body-s text-ink-soft hover:underline",
-				onclick: { let parent = parent.link.clone(); move |_| ctx.open_issue(parent.clone()) },
 				Icon { glyph: Glyph::Group, class: "size-3.5 shrink-0" }
 				span { class: "truncate", "sub-issue of {parent.link.shorthand(link.project())} {parent.title}" }
 			}
@@ -269,18 +277,17 @@ fn Sidebar(card: Card) -> Element {
 		if let Some(pr) = card.pr.as_ref().filter(|pr| !pr.closes.is_empty()) {
 			Section { label: "closes",
 				for issue in pr.closes.clone() {
-					button { key: "{issue}", r#type: "button", class: "text-body text-accent-info-ink hover:underline", onclick: { let issue = issue.clone(); move |_| ctx.open_issue(issue.clone()) }, "{issue.shorthand(home)}" }
+					Go { key: "{issue}", to: ctx.at.read().with_issue(&issue), class: "text-body text-accent-info-ink hover:underline", "{issue.shorthand(home)}" }
 				}
 			}
 		}
 		if !card.blocked_by.is_empty() {
 			Section { label: "blocked by",
 				for b in card.blocked_by.clone() {
-					button {
+					Go {
 						key: "{b}",
-						r#type: "button",
+						to: ctx.at.read().with_issue(&b),
 						class: "flex min-w-0 max-w-full items-center gap-1 text-body text-accent-error hover:underline",
-						onclick: { let b = b.clone(); move |_| ctx.open_issue(b.clone()) },
 						Icon { glyph: Glyph::Blocker, class: "size-3 shrink-0" }
 						span { class: "truncate whitespace-nowrap",
 							"{b.shorthand(home)}"

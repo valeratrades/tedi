@@ -1,0 +1,10 @@
+{
+  "name": "tedi-web-e2e",
+  "private": true,
+  "type": "module",
+  "license": "BlueOak-1.0.0",
+  "devDependencies": {
+    "@evinvest/figma-render": "^0.4.0",
+    "@types/node": "^22.20.4"
+  }
+}

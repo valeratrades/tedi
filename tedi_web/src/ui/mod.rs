@@ -10,6 +10,7 @@ mod issue;
 mod kit;
 mod library;
 mod palette;
+mod route;
 mod scope;
 mod shell;
 mod sync;
@@ -20,7 +21,7 @@ mod workspace;
 
 use std::collections::{BTreeMap, HashMap};
 
-use dioxus::prelude::*;
+use dioxus::{core::spawn_forever, prelude::*};
 use ev_lib::uikit_dioxus::*;
 use futures::StreamExt as _;
 use icons::{Glyph, Icon};
@@ -30,7 +31,7 @@ use tedi_core::{
 	conflict::{CommentEdit, Conflict},
 	workflow::Workflow,
 };
-use tilers_dioxus::{Band, DockPanel, Group, GroupId, MinSize, PackedApi, PackedArea, PanelId, Tile, model::serial};
+use tilers_dioxus::{Band, DockPanel, Group, GroupId, MinSize, PackedApi, PackedArea, PackedGrid, PanelId, Tile, model::serial};
 
 use crate::api::{self, Dock, Edited, Item, Library, LibraryEdit, Setup};
 
@@ -42,6 +43,8 @@ const HELP: [(&str, &str); 6] = [
 	("drag", "a sidebar row onto the dock: open it there"),
 	("drag", "a card onto a column: move it there"),
 ];
+
+const PANEL_MIN: MinSize = MinSize::Rem { w: 16.0, h: 8.0 };
 
 #[component]
 pub fn App() -> Element {
@@ -85,6 +88,16 @@ struct Ctx {
 	notes: Signal<Vec<toast::Note>>,
 	/// A shared workspace on the dock in place of the viewer's, read-only.
 	viewing: Signal<Option<api::Shared>>,
+	/// What the address bar names.
+	at: Signal<route::Address>,
+	/// The panel last brought up, and what was up then.
+	main: Signal<Option<PanelId>>,
+	up: Signal<Vec<PanelId>>,
+	/// Moves to an address under way; after the last, the bar corrects rather than steps.
+	moving: Signal<usize>,
+	settling: Signal<bool>,
+	/// How often each view was laid out anew: its columns remount on it.
+	relaid: Signal<HashMap<String, usize>>,
 }
 impl Ctx {
 	/// The band the dock is laid out for: `Sm` is a phone, one tile at a time.
@@ -190,6 +203,10 @@ impl Ctx {
 			self.retitle(&held, id.clone()); // one Library, refocused
 		}
 		self.host(&id);
+		if !id.0.starts_with("issue:") {
+			let mut main = self.main;
+			main.set(Some(id.clone()));
+		}
 		let mut grid = serial::load(&api.save()).expect("a layout loads back from its own save");
 		if let Some(cell) = grid.cells.iter_mut().find(|c| c.group.tabs.contains(&id)) {
 			cell.group.active = cell.group.tabs.iter().position(|t| *t == id).expect("found in it");
@@ -300,8 +317,13 @@ impl Ctx {
 			},
 			Some(("issue", link)) => match IssueLink::parse(link) {
 				Some(link) => {
-					let title = self.card(&link).map_or_else(|| format!("#{}", link.number()), |c| format!("#{} {}", link.number(), c.title));
-					(Glyph::Issue, title, rsx! { issue::IssuePanel { link } })
+					return DockPanel {
+						label: Some(rsx! { issue::IssueTab { link: link.clone() } }),
+						id,
+						title: format!("#{}", link.number()),
+						content: rsx! { issue::IssuePanel { link } },
+						min: PANEL_MIN,
+					};
 				}
 				None => (Glyph::Alert, id.0.clone(), rsx! { "Not an issue: {link}" }),
 			},
@@ -312,7 +334,7 @@ impl Ctx {
 			id,
 			title,
 			content,
-			min: MinSize::Rem { w: 16.0, h: 8.0 },
+			min: PANEL_MIN,
 		}
 	}
 
@@ -396,6 +418,10 @@ impl Ctx {
 		if shown {
 			let mut arranged = self.arranged;
 			arranged.set(Some(band));
+			let to = self.at.peek().clone();
+			if to != route::Address::default() {
+				spawn_forever(self.reach(to)); // a bare address is the screen as left
+			}
 		}
 	}
 
@@ -404,6 +430,7 @@ impl Ctx {
 	fn show(self, mut api: PackedApi, layout: &str) -> bool {
 		match serial::load(layout) {
 			Ok(mut grid) => {
+				without_floating_issues(&mut grid);
 				for id in grid.cells.iter().flat_map(|c| c.group.tabs.iter()) {
 					self.host(id);
 				}
@@ -427,7 +454,7 @@ impl Ctx {
 	}
 
 	/// Workspace `name` onto the dock, if it has this band's.
-	fn switch(self, name: &str) {
+	async fn switch(self, name: &str) {
 		let api = (*self.api.peek()).expect("a band is entered before a workspace can be switched to");
 		let band = api.band();
 		let library = self.library.peek();
@@ -447,8 +474,7 @@ impl Ctx {
 					let mut arranged = self.arranged;
 					arranged.set(Some(band));
 				}
-				let name = name.to_string();
-				spawn(async move { _ = self.keep(LibraryEdit::Workspace(Some(name))).await });
+				self.keep(LibraryEdit::Workspace(Some(name.to_string()))).await;
 			}
 			None => self.say(
 				"workspace",
@@ -494,13 +520,36 @@ fn size(id: &PanelId) -> (u32, u32) {
 	}
 }
 
+/// The issues the address holds: those floating above the dock.
+fn floating_issues(grid: &PackedGrid) -> Vec<PanelId> {
+	let tabs = grid.floats.iter().flat_map(|f| f.group.tabs.iter());
+	tabs.filter(|p| p.0.starts_with("issue:")).cloned().collect()
+}
+
+fn without_floating_issues(grid: &mut PackedGrid) {
+	for id in floating_issues(grid) {
+		grid.close(&id);
+	}
+}
+
+/// The dock as a library keeps it.
+fn kept(api: PackedApi) -> String {
+	let mut grid = serial::load(&api.save()).expect("a layout loads back from its own save");
+	without_floating_issues(&mut grid);
+	serial::save(&grid)
+}
+
 /// Sends what `api`'s dock shows as `dock`'s, once it settles, from the moment it was arranged for its band.
 fn use_autosave(ctx: Ctx, api: Signal<Option<PackedApi>>, arranged: Signal<Option<Band>>, dock: Dock) {
 	let mut pending = use_signal(|| None::<dioxus::core::Task>);
 	let mut sent = use_signal(|| None::<(Band, String)>);
 	use_effect(move || {
 		let Some(api) = *api.read() else { return };
-		let (band, layout) = (api.band(), api.save());
+		let layout = match dock {
+			Dock::Tiles => kept(api),
+			Dock::Columns { .. } => api.save(),
+		};
+		let band = api.band();
 		if *arranged.read() != Some(band) || sent.peek().as_ref() == Some(&(band, layout.clone())) {
 			return;
 		}
@@ -539,8 +588,22 @@ fn Shell() -> Element {
 			sheet: Signal::new(false),
 			notes: Signal::new(Vec::new()),
 			viewing: Signal::new(None),
+			at: Signal::new(route::Address::default()),
+			main: Signal::new(None),
+			up: Signal::new(Vec::new()),
+			moving: Signal::new(0),
+			settling: Signal::new(true),
+			relaid: Signal::new(HashMap::new()),
 		}
 	});
+	use_hook(|| match route::landed() {
+		Ok(to) => {
+			let mut at = ctx.at;
+			at.set(to);
+		}
+		Err(e) => ctx.say("address", toast::Tone::Error, e, None),
+	});
+	route::use_address(ctx);
 	let unsent = use_memo(move || sync::unsent(&ctx.pending.read()));
 	use_effect(move || {
 		document::eval(match unsent() {
