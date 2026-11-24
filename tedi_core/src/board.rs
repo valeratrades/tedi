@@ -11,8 +11,9 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-	CloseState, IssueLink, LinkedPr, MilestoneLink, PrState, RepoInfo, Review,
-	labels::Type,
+	CloseState, Events, IssueLink, LinkedPr, MilestoneLink, PrState, RepoInfo, Review, blockers,
+	conflict::{Field, FieldError, unlist},
+	labels::{Scheme, Type},
 	rank::Rank,
 	workflow::{State, Workflow, WorkflowError},
 };
@@ -48,6 +49,32 @@ pub struct Card {
 impl Card {
 	pub fn open(&self) -> bool {
 		!self.state.is_closed()
+	}
+
+	/// What [`Field::write`] leaves on the issue, on its card. What the whole board decides (rank, who it blocks) stays.
+	pub fn write(&mut self, field: Field, value: &str) -> Result<(), FieldError> {
+		match field {
+			Field::Title => self.title = value.to_string(),
+			Field::Labels => {
+				self.labels = unlist(value);
+				let scheme = Scheme::from(self.labels.as_slice());
+				(self.importance, self.hours, self.kind) = (scheme.importance, scheme.hours, scheme.kind);
+			}
+			Field::Assignees => self.assignees = unlist(value),
+			Field::State => {
+				self.state = CloseState::from_checkbox(value).map_err(FieldError::State)?;
+				match self.open() {
+					true => self.closed_at = None,
+					false => self.rank = None,
+				}
+			}
+			Field::Body => {
+				let (body, blockers) = blockers::split_blockers(value);
+				self.body = blockers::with_blockers(&Events::parse(&body), &blockers).to_string();
+			}
+			Field::Comments | Field::SubIssues => return Err(FieldError::NotWritable(field)),
+		}
+		Ok(())
 	}
 }
 

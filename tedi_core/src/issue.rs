@@ -10,7 +10,7 @@ use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use tedi_md::{as_standalone_block, indent_into};
 
-use crate::{Blockers, IssueChildren, IssueIndex, IssueLink, IssueMarker, IssueSelector, Marker, ParseContext, ParseError, RepoInfo, TitleInGitPathError};
+use crate::{Blockers, IssueChildren, IssueIndex, IssueLink, IssueMarker, IssueSelector, Marker, ParseContext, ParseError, RepoInfo, TitleInGitPathError, blockers::with_blockers};
 
 /// Filename stem for the main issue file when the issue lives in its own directory (has children).
 pub const MAIN_ISSUE_FILENAME: &str = "__main__";
@@ -799,19 +799,8 @@ impl Issue /*{{{1*/ {
 	/// This is what should be synced to Github as the issue body.
 	pub fn body(&self) -> crate::Events {
 		//NB: DO NOT CHANGE Output Type
-		let mut events: Vec<crate::OwnedEvent> = self.contents.comments.first().map(|c| c.body.to_vec()).unwrap_or_default();
-		if !self.contents.blockers.is_empty() {
-			events.push(crate::OwnedEvent::Start(crate::OwnedTag::Heading {
-				level: pulldown_cmark::HeadingLevel::H1,
-				id: None,
-				classes: Vec::new(),
-				attrs: Vec::new(),
-			}));
-			events.push(crate::OwnedEvent::Text("Blockers".to_string()));
-			events.push(crate::OwnedEvent::End(crate::OwnedTagEnd::Heading(pulldown_cmark::HeadingLevel::H1)));
-			events.extend(self.contents.blockers.to_events());
-		}
-		events.into()
+		let body = self.contents.comments.first().map(|c| c.body.to_vec()).unwrap_or_default();
+		with_blockers(&body, &self.contents.blockers)
 	}
 
 	/// Combine a HollowIssue (identity/metadata) with a VirtualIssue (parsed content) into a full Issue.

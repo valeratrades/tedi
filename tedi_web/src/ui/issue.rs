@@ -128,8 +128,7 @@ fn Closing(card: Card, said: Option<Signal<String>>) -> Element {
 						seen,
 						new: new.to_string(),
 					}],
-				)
-				.await;
+				);
 			});
 		}
 	};
@@ -187,14 +186,14 @@ fn Sidebar(card: Card) -> Element {
 	let assign = {
 		let link = link.clone();
 		move |seen: Vec<String>, new: Vec<String>| {
-			spawn(ctx.edit(
+			ctx.edit(
 				link.clone(),
 				vec![FieldEdit {
 					field: EditedField::Assignees,
 					seen: list(&seen),
 					new: list(&new),
 				}],
-			));
+			);
 		}
 	};
 	rsx! {
@@ -211,7 +210,7 @@ fn Sidebar(card: Card) -> Element {
 						onpick: {
 							let link = link.clone();
 							move |(seen, new): (Vec<String>, Vec<String>)| {
-								spawn(ctx.request_reviews(link.clone(), seen, new));
+								ctx.request_reviews(link.clone(), seen, new);
 							}
 						},
 					}
@@ -484,7 +483,7 @@ fn Labels(card: Card) -> Element {
 			onpick: {
 				let link = card.link.clone();
 				move |(seen, new): (Vec<String>, Vec<String>)| {
-					spawn(ctx.edit(link.clone(), vec![FieldEdit { field: EditedField::Labels, seen: list(&seen), new: list(&new) }]));
+					ctx.edit(link.clone(), vec![FieldEdit { field: EditedField::Labels, seen: list(&seen), new: list(&new) }]);
 				}
 			},
 		}
@@ -520,7 +519,7 @@ fn Milestones(card: Card) -> Element {
 	let set = {
 		let link = card.link.clone();
 		move |seen: Vec<String>, new: Vec<String>| {
-			spawn(ctx.set_milestones(link.clone(), seen, new));
+			ctx.set_milestones(link.clone(), seen, new);
 		}
 	};
 	let picked: Vec<String> = hosting.iter().map(|t| t.link.as_str().to_string()).collect();
@@ -596,14 +595,14 @@ fn Conversation(card: Card) -> Element {
 			let mut new = held.clone();
 			let box_ = &held[at..at + 3];
 			new.replace_range(at..at + 3, if box_ == "[ ]" { "[x]" } else { "[ ]" });
-			spawn(ctx.edit(
+			ctx.edit(
 				link.clone(),
 				vec![FieldEdit {
 					field: EditedField::Body,
 					seen: held.clone(),
 					new,
 				}],
-			));
+			);
 		}
 	};
 	let read = thread.read();
@@ -780,7 +779,7 @@ fn Title(link: IssueLink, current: String) -> Element {
 					Key::Enter => {
 						let (seen, new) = draft.take().expect("editing");
 						if seen != new {
-							spawn(ctx.edit(link.clone(), vec![FieldEdit { field: EditedField::Title, seen, new }]));
+							ctx.edit(link.clone(), vec![FieldEdit { field: EditedField::Title, seen, new }]);
 						}
 					}
 					Key::Escape => draft.set(None),
@@ -807,7 +806,7 @@ fn StatePicker(card: Card) -> Element {
 							let (card, name, leaf) = (card.clone(), name.clone(), leaf.clone());
 							move |_| {
 								if card.states[&name] != leaf {
-									spawn(ctx.move_card(card.clone(), name.clone(), leaf.clone()));
+									ctx.move_card(card.clone(), name.clone(), leaf.clone());
 								}
 							}
 						},
@@ -827,14 +826,14 @@ fn Editable(link: IssueLink, author: Option<String>, current: String, children: 
 	let save = move || {
 		let (seen, new) = draft.take().expect("saved from the draft");
 		if seen != new {
-			spawn(ctx.edit(
+			ctx.edit(
 				link.clone(),
 				vec![FieldEdit {
 					field: EditedField::Body,
 					seen,
 					new,
 				}],
-			));
+			);
 		}
 	};
 	rsx! {
@@ -922,7 +921,7 @@ fn Clashes(link: IssueLink, conflict: Conflict) -> Element {
 					new,
 				})
 				.collect();
-			spawn(ctx.edit(link.clone(), edits));
+			ctx.edit(link.clone(), edits);
 		}
 	};
 	let yours: Vec<String> = conflict.clashes.iter().map(|c| c.local.clone()).collect();

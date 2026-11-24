@@ -104,6 +104,8 @@ A buffer is folded back against the state it was rendered from, never against a 
 
 A field edit (`Modifier::Field`: what the web board and `tedi set` send) carries the value it was made against. If, after the pull, the field moved off it to anything but the same new value, the edit comes back as a `Conflict` naming that field, and nothing is written or recorded: the store holds no divergence, so nobody else's line is blocked. Answering it is another edit, made against the value it clashed with.
 
+The web board shows an edit before it is sent, laid over the server's board; one that doesn't land is taken off it, with whatever was made on top, and said so.
+
 A sprint stores links only, so an issue expanded into an edit buffer has no second home there: its block is sliced back out of the buffer verbatim and committed whole through the same `VirtualIssue::parse` its own file goes through (`Modifier::Write`) — body, state, labels, comments and blockers alike. A block that doesn't compose, or whose edit is refused, is never dropped silently: that issue stays as stored, the buffer goes to rejected-changes with a warning naming it, and the rest of the save lands.
 
 `!mv [owner/]repo` on an issue's line sends it to another repo on save, its subtree with it; a moved child detaches from its parent. Every stored reference follows it, archived milestones aside. Across owners GitHub can't transfer, so the tree is recreated there and the originals closed as duplicates pointing at it.

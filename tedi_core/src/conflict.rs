@@ -56,11 +56,10 @@ impl Field {
 
 	/// Inverse of [`Self::read`] for the fields a single value sets.
 	pub fn write(self, issue: &mut Issue, value: &str) -> Result<(), FieldError> {
-		let names = || value.split(", ").filter(|v| !v.is_empty()).map(str::to_string).collect();
 		match self {
 			Field::Title => issue.contents.title = value.to_string(),
-			Field::Labels => issue.contents.labels = names(),
-			Field::Assignees => issue.contents.assignees = names(),
+			Field::Labels => issue.contents.labels = unlist(value),
+			Field::Assignees => issue.contents.assignees = unlist(value),
 			Field::State => issue.contents.state = CloseState::from_checkbox(value).map_err(FieldError::State)?,
 			Field::Body => {
 				let (body, blockers) = split_blockers(value);
@@ -125,6 +124,11 @@ pub enum FieldError {
 	NotWritable(Field),
 	#[error("{0:?} is no state: ` `, `x`, `-`, a progress mark or a duplicate's number")]
 	State(String),
+}
+
+/// Inverse of [`list`].
+pub(crate) fn unlist(list: &str) -> Vec<String> {
+	list.split(", ").filter(|v| !v.is_empty()).map(str::to_string).collect()
 }
 
 impl std::fmt::Display for Conflict {

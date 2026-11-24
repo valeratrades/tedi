@@ -468,7 +468,7 @@ fn use_drop(group: String) -> impl FnMut(DragEvent) + 'static {
 		if card.states[&workflow] == to {
 			return;
 		}
-		spawn(ctx.move_card(card, workflow, to));
+		ctx.move_card(card, workflow, to);
 	}
 }
 
@@ -579,7 +579,7 @@ fn Stacked(view: String, by: GroupBy, groups: Vec<(String, Vec<usize>)>, shown: 
 								move |_| {
 									moving.set(None);
 									if card.states[&workflow] != leaf {
-										spawn(ctx.move_card(card.clone(), workflow.clone(), leaf.clone()));
+										ctx.move_card(card.clone(), workflow.clone(), leaf.clone());
 									}
 								}
 							},

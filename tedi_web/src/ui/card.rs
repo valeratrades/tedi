@@ -370,31 +370,27 @@ fn Stepper(card: Card, axis: Axis) -> Element {
 				.cloned()
 				.collect();
 			labels.extend(to);
-			spawn(ctx.edit(
+			ctx.edit(
 				card.link.clone(),
 				vec![FieldEdit {
 					field: Edited::Labels,
 					seen: list(&card.labels),
 					new: list(&labels),
 				}],
-			));
+			);
 		}
 	};
-	let step = {
-		let (set, values, held) = (set.clone(), values.clone(), held.clone());
-		move |up: bool| {
-			let at = held.as_ref().or(counts_as.as_ref()).map(|v| values.iter().position(|s| s == v).expect("the scheme's own values"));
-			let next = match (at, up) {
-				(None, true) => Some(0),
-				(None, false) => None,
-				(Some(i), true) => (i + 1 < values.len()).then_some(i + 1),
-				(Some(i), false) => i.checked_sub(1),
-			};
-			if let Some(i) = next {
-				set(Some(values[i].clone()));
-			}
-		}
+	let next = |up: bool| {
+		let at = held.as_ref().or(counts_as.as_ref()).map(|v| values.iter().position(|s| s == v).expect("the scheme's own values"));
+		let i = match (at, up) {
+			(None, true) => Some(0),
+			(None, false) => None,
+			(Some(i), true) => Some(i + 1),
+			(Some(i), false) => i.checked_sub(1),
+		};
+		i.and_then(|i| values.get(i).cloned())
 	};
+	let steps = [("−", "lower", "lowest", next(false)), ("+", "raise", "highest", next(true))];
 	if !editable {
 		return match (axis, bare) {
 			(Axis::Type, None) => rsx! {},
@@ -426,8 +422,17 @@ fn Stepper(card: Card, axis: Axis) -> Element {
 				}
 			}
 			if axis != Axis::Type {
-				button { r#type: "button", class: "rounded px-0.5 hover:bg-hover {ink}", title: "lower", onclick: { let step = step.clone(); move |_| step(false) }, "−" }
-				button { r#type: "button", class: "rounded px-0.5 hover:bg-hover {ink}", title: "raise", onclick: move |_| step(true), "+" }
+				for (sign , verb , end , to) in steps {
+					button {
+						key: "{verb}",
+						r#type: "button",
+						class: "rounded px-0.5 enabled:hover:bg-hover disabled:opacity-30 {ink}",
+						disabled: to.is_none(),
+						title: if to.is_some() { "{verb}" } else { "already the {end}" },
+						onclick: { let set = set.clone(); move |_| set(to.clone()) },
+						"{sign}"
+					}
+				}
 			}
 		}
 	}

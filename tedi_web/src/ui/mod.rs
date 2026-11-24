@@ -12,6 +12,7 @@ mod library;
 mod palette;
 mod scope;
 mod shell;
+mod sync;
 mod toast;
 mod toolbar;
 mod view;
@@ -24,10 +25,10 @@ use ev_lib::uikit_dioxus::*;
 use futures::StreamExt as _;
 use icons::{Glyph, Icon};
 use tedi_core::{
-	IssueLink, MilestoneLink,
+	IssueLink,
 	board::{Board, Card, Scope, View, scope_at},
-	conflict::{CommentEdit, Conflict, FieldEdit},
-	workflow::{State, Workflow},
+	conflict::{CommentEdit, Conflict},
+	workflow::Workflow,
 };
 use tilers_dioxus::{Band, DockPanel, Group, GroupId, MinSize, PackedApi, PackedArea, PanelId, Tile, model::serial};
 
@@ -55,7 +56,13 @@ pub fn App() -> Element {
 struct Ctx {
 	setup: Signal<Option<Setup>>,
 	library: Signal<Option<Library>>,
-	board: Signal<Option<Board>>,
+	/// The server's, as last read.
+	stored: Signal<Option<Board>>,
+	/// Edits it may not hold yet, oldest first.
+	pending: Signal<Vec<sync::Pending>>,
+	reading: Signal<Reading>,
+	/// What is shown: `stored` with `pending` over it.
+	board: Memo<Option<Board>>,
 	/// Edits that came back clashing, shown on their issue until answered.
 	conflicts: Signal<HashMap<IssueLink, Conflict>>,
 	panels: Signal<Vec<DockPanel>>,
@@ -317,103 +324,6 @@ impl Ctx {
 		}
 	}
 
-	/// `edits` to `link`, as seen on its card: a landed one can be undone from its note, a clash lands on the
-	/// issue's tab, inline.
-	async fn edit(self, link: IssueLink, edits: Vec<FieldEdit>) {
-		let fields = edits.iter().map(|e| e.field.to_string()).collect::<Vec<_>>().join(", ");
-		let back: Vec<FieldEdit> = edits
-			.iter()
-			.map(|e| FieldEdit {
-				field: e.field,
-				seen: e.new.clone(),
-				new: e.seen.clone(),
-			})
-			.collect();
-		let key = format!("edit:{link}");
-		match api::edit(link.clone(), edits).await {
-			Ok(Edited::Landed) => {
-				let mut conflicts = self.conflicts;
-				conflicts.write().remove(&link);
-				let undo = Callback::new({
-					let link = link.clone();
-					move |()| {
-						spawn(self.edit(link.clone(), back.clone()));
-					}
-				});
-				self.say(key, toast::Tone::Info, format!("Edited {fields} on #{}", link.number()), Some(("Undo", undo)));
-			}
-			Ok(Edited::Conflict(conflict)) => self.clashed(link, conflict),
-			Ok(Edited::Rejected(why)) => self.refused(key, link, format!("Edit refused: {why}")),
-			Err(e) => self.say(key, toast::Tone::Error, e.to_string(), None),
-		}
-	}
-
-	/// `card` to `to` of `workflow`, from where it shows sitting: a landed move can be undone, a hook's
-	/// refusal says why, a clash lands on the issue's tab.
-	async fn move_card(self, card: Card, workflow: String, to: State) {
-		let seen = card.states[&workflow].clone();
-		let key = format!("move:{}", card.link);
-		match api::move_card(card.link.clone(), workflow.clone(), to.clone(), seen.clone()).await {
-			Ok(Edited::Landed) => {
-				let mut conflicts = self.conflicts;
-				conflicts.write().remove(&card.link);
-				let mut moved = card.clone();
-				moved.states.insert(workflow.clone(), to.clone());
-				let undo = Callback::new(move |()| {
-					spawn(self.move_card(moved.clone(), workflow.clone(), seen.clone()));
-				});
-				self.say(key, toast::Tone::Info, format!("Moved #{} → {to}", card.link.number()), Some(("Undo", undo)));
-			}
-			Ok(Edited::Conflict(conflict)) => self.clashed(card.link, conflict),
-			Ok(Edited::Rejected(why)) => self.refused(key, card.link, format!("Move refused: {why}")),
-			Err(e) => self.say(key, toast::Tone::Error, e.to_string(), None),
-		}
-	}
-
-	/// `link` from the milestones `seen` to `new` (their urls), one a repo: told per repo, each undone from its note.
-	async fn set_milestones(self, link: IssueLink, seen: Vec<String>, new: Vec<String>) {
-		let of = |urls: &[String]| -> BTreeMap<String, MilestoneLink> {
-			urls.iter()
-				.map(|u| MilestoneLink::parse(u).expect("offered by the board"))
-				.map(|m| (m.repo_info().to_string(), m))
-				.collect()
-		};
-		let (from, to) = (of(&seen), of(&new));
-		for repo in from.keys().chain(to.keys()).collect::<std::collections::BTreeSet<_>>() {
-			let (was, now) = (from.get(repo), to.get(repo));
-			if was == now {
-				continue;
-			}
-			let key = format!("milestone:{link}:{repo}");
-			match api::set_milestone(link.clone(), repo.clone(), was.cloned(), now.cloned()).await {
-				Ok(Edited::Landed) => {
-					let urls = |m: Option<&MilestoneLink>| m.map(|m| m.as_str().to_string()).into_iter().collect::<Vec<_>>();
-					let (back_from, back_to) = (urls(now), urls(was));
-					let undo = Callback::new({
-						let link = link.clone();
-						move |()| {
-							spawn(self.set_milestones(link.clone(), back_from.clone(), back_to.clone()));
-						}
-					});
-					let told = match now {
-						Some(m) => format!("Put #{} in {repo}'s {}", link.number(), self.titled(m)),
-						None => format!("Took #{} out of {repo}'s milestone", link.number()),
-					};
-					self.say(key, toast::Tone::Info, told, Some(("Undo", undo)));
-				}
-				Ok(Edited::Conflict(conflict)) => self.clashed(link.clone(), conflict),
-				Ok(Edited::Rejected(why)) => self.refused(key, link.clone(), format!("Milestone kept: {why}")),
-				Err(e) => self.say(key, toast::Tone::Error, e.to_string(), None),
-			}
-		}
-	}
-
-	fn titled(&self, milestone: &MilestoneLink) -> String {
-		let board = self.board.read();
-		let target = board.as_ref().and_then(|b| b.targets.iter().find(|t| t.link == *milestone));
-		target.map_or_else(|| format!("milestone {}", milestone.number()), |t| t.title.clone()) // closed since it was offered
-	}
-
 	/// Whether it landed; why not is toasted.
 	async fn comment(self, link: IssueLink, edit: CommentEdit) -> bool {
 		let key = format!("comment:{link}");
@@ -426,24 +336,6 @@ impl Ctx {
 		false
 	}
 
-	/// The reviews asked of `link`, from `seen` to `new`.
-	async fn request_reviews(self, link: IssueLink, seen: Vec<String>, new: Vec<String>) {
-		let asked = new.iter().filter(|r| !seen.contains(r)).map(|r| (r, true));
-		let withdrawn = seen.iter().filter(|r| !new.contains(r)).map(|r| (r, false));
-		for (reviewer, on) in asked.chain(withdrawn) {
-			let key = format!("review:{link}:{reviewer}");
-			match api::request_review(link.clone(), reviewer.clone(), on).await {
-				Ok(()) => self.say(
-					key,
-					toast::Tone::Info,
-					format!("{} {reviewer}'s review of #{}", if on { "Asked for" } else { "Withdrew the ask for" }, link.number()),
-					None,
-				),
-				Err(e) => self.say(key, toast::Tone::Error, e.to_string(), None),
-			}
-		}
-	}
-
 	fn clashed(self, link: IssueLink, conflict: Conflict) {
 		let fields = conflict.clashes.iter().map(|c| c.field.to_string()).collect::<Vec<_>>().join(", ");
 		let mut conflicts = self.conflicts;
@@ -454,8 +346,8 @@ impl Ctx {
 		});
 		self.say(
 			format!("clash:{link}"),
-			toast::Tone::Warn,
-			format!("{fields} on #{} changed on GitHub", link.number()),
+			toast::Tone::Error,
+			format!("{fields} on #{} didn't go through: changed on GitHub meanwhile", link.number()),
 			Some(("Resolve", resolve)),
 		);
 		self.open_issue(link);
@@ -624,21 +516,34 @@ fn use_autosave(ctx: Ctx, api: Signal<Option<PackedApi>>, arranged: Signal<Optio
 
 #[component]
 fn Shell() -> Element {
-	let ctx = use_context_provider(|| Ctx {
-		setup: Signal::new(None),
-		library: Signal::new(None),
-		board: Signal::new(None),
-		conflicts: Signal::new(HashMap::new()),
-		panels: Signal::new(Vec::new()),
-		api: Signal::new(None),
-		arranged: Signal::new(None),
-		failure: Signal::new(None),
-		modal: Signal::new(None),
-		palette: Signal::new(false),
-		into: Signal::new(None),
-		sheet: Signal::new(false),
-		notes: Signal::new(Vec::new()),
-		viewing: Signal::new(None),
+	let ctx = use_context_provider(|| {
+		let (stored, pending) = (Signal::new(None), Signal::new(Vec::new()));
+		Ctx {
+			setup: Signal::new(None),
+			library: Signal::new(None),
+			stored,
+			pending,
+			reading: Signal::new(Reading::Idle),
+			board: Memo::new(move || sync::shown(&stored.read(), &pending.read())),
+			conflicts: Signal::new(HashMap::new()),
+			panels: Signal::new(Vec::new()),
+			api: Signal::new(None),
+			arranged: Signal::new(None),
+			failure: Signal::new(None),
+			modal: Signal::new(None),
+			palette: Signal::new(false),
+			into: Signal::new(None),
+			sheet: Signal::new(false),
+			notes: Signal::new(Vec::new()),
+			viewing: Signal::new(None),
+		}
+	});
+	let unsent = use_memo(move || sync::unsent(&ctx.pending.read()));
+	use_effect(move || {
+		document::eval(match unsent() {
+			true => "window.onbeforeunload = (e) => e.preventDefault()",
+			false => "window.onbeforeunload = null",
+		});
 	});
 	use_autosave(ctx, ctx.api, ctx.arranged, Dock::Tiles);
 	rsx! {
@@ -719,13 +624,33 @@ fn Live() -> Element {
 	rsx! {}
 }
 
+/// The server's board being read: one read at a time, so none older replaces a newer.
+#[derive(Clone, Copy, PartialEq)]
+enum Reading {
+	Idle,
+	Once,
+	/// It may have changed after the read began.
+	Again,
+}
+
 async fn reload(ctx: Ctx) {
-	match api::board().await {
-		Ok(board) => {
-			let mut b = ctx.board;
-			b.set(Some(board));
+	let (mut stored, mut pending, mut reading) = (ctx.stored, ctx.pending, ctx.reading);
+	if *reading.peek() != Reading::Idle {
+		return reading.set(Reading::Again);
+	}
+	loop {
+		reading.set(Reading::Once);
+		let held = sync::landed(&pending.peek());
+		match api::board().await {
+			Ok(board) => {
+				stored.set(Some(board));
+				pending.write().retain(|p| !held.contains(&p.id));
+			}
+			Err(e) => ctx.say("board", toast::Tone::Error, format!("board: {e}"), None),
 		}
-		Err(e) => ctx.say("board", toast::Tone::Error, format!("board: {e}"), None),
+		if *reading.peek() == Reading::Once {
+			return reading.set(Reading::Idle);
+		}
 	}
 }
 

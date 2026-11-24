@@ -4,6 +4,7 @@ Design upstream: [Figma — tedi board UX](https://www.figma.com/design/AKNYVRnU
 
 The client holds every card and runs `tedi_core::board` over them; every edit is a server fn calling
 `tedi_task_operations` in-process — sync, merge, stage and rank are never re-done here.
+Edits on their way there: `src/ui/sync.rs`.
 
 Two processes on one store: `tedi web` serves the API (and, in production, the client bundle); `dx` builds and
 hot-reloads the client, proxying `/api/` to it (`tedi_web/Dioxus.toml`).

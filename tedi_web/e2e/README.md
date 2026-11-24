@@ -6,6 +6,7 @@ frames ([file](https://www.figma.com/design/AKNYVRnUHnGrnoFN6geWii)) pixel for p
 ```sh
 tedi_web/e2e/shoot.sh 01-board            # -> tedi_web/e2e/out/01-board.png   (1440x900; 06* are 390x844)
 tedi_web/e2e/shoot.sh stop                # stop the server it started
+tedi_web/e2e/pending.mjs 7351             # an edit shows before it lands, over the freshly seeded server shoot.sh left running
 E2E_REBUILD=1 tedi_web/e2e/shoot.sh 01-board   # after UI/model changes: rebuild tedi + the client bundle (debug, ~1.5 min)
 E2E_RESEED=1  tedi_web/e2e/shoot.sh 01-board   # rebuild the store from seed/
 tedi_web/e2e/figma.sh [screen]            # reference/*.png from Figma (needs FIGMA_TOKEN; reference/ is committed)

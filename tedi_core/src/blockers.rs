@@ -314,6 +314,23 @@ impl Blockers {
 	}
 }
 
+/// Inverse of [`split_blockers`].
+pub(crate) fn with_blockers(body: &[OwnedEvent], blockers: &Blockers) -> Events {
+	let mut events = body.to_vec();
+	if !blockers.is_empty() {
+		events.push(OwnedEvent::Start(OwnedTag::Heading {
+			level: pulldown_cmark::HeadingLevel::H1,
+			id: None,
+			classes: Vec::new(),
+			attrs: Vec::new(),
+		}));
+		events.push(OwnedEvent::Text("Blockers".to_string()));
+		events.push(OwnedEvent::End(OwnedTagEnd::Heading(pulldown_cmark::HeadingLevel::H1)));
+		events.extend(blockers.to_events());
+	}
+	events.into()
+}
+
 impl From<&Blockers> for String {
 	fn from(seq: &Blockers) -> Self {
 		let mut out = String::new();
