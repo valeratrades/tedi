@@ -17,6 +17,8 @@ Builtins: `on_enter` — `assign_mover`, `close{reason}`, `reopen`, `reject{reas
 rules — `on_pr{state}`, `on_closed{reason}`, `on_reopened`, `closed_for{after}`, each with `to`, `forward_only`
 and `from` (bucket paths it may move out of). Presets in `presets/` are written the same way.
 
+`bottlenecks = "selected"` at the top names the leaf an open issue in the tree of a Bottlenecks is shown no earlier than.
+
 ## A hook library
 Any language with a C ABI: include [`tedi.h`](tedi.h), export a `TediHook` under the symbol the workflow names
 ([`examples/close.c`](examples/close.c)). The host loads it once at startup and checks its `abi_version` against

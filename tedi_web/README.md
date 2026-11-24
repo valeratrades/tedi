@@ -5,7 +5,7 @@ What code renders now: [Figma — tedi — renders](https://www.figma.com/design
 
 The client holds every card and runs `tedi_core::board` over them; every edit is a server fn calling
 `tedi_task_operations` in-process — sync, merge, stage and rank are never re-done here.
-Edits on their way there: `src/ui/sync.rs`. The address bar: `src/ui/route.rs`.
+Edits on their way there: `src/ui/sync.rs`. The address bar: `src/ui/route.rs`. What a screen can sit in: `src/ui/scope.rs`.
 Before the client: `src/loading.js`.
 
 Two processes on one store: `tedi web` serves the API (and, in production, the client bundle); `dx` builds and

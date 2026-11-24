@@ -621,16 +621,6 @@ pub struct Within {
 	/// Each issue in the tree of a Bottlenecks of an org the slice is within, and that Bottlenecks.
 	pressed: HashMap<IssueLink, MilestoneLink>,
 }
-#[derive(Clone, Debug, Default, PartialEq)]
-enum Left {
-	#[default]
-	All,
-	Repos(Vec<String>),
-	Nodes {
-		milestones: HashSet<MilestoneLink>,
-		issues: HashSet<IssueLink>,
-	},
-}
 impl Within {
 	fn holds(&self, issue: &IssueLink) -> bool {
 		match &self.left {
@@ -769,6 +759,17 @@ pub fn group(cards: &[Card], hits: &[usize], by: &GroupBy, workflows: &BTreeMap<
 			(key, lift(&blockers, own, brought))
 		})
 		.collect())
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+enum Left {
+	#[default]
+	All,
+	Repos(Vec<String>),
+	Nodes {
+		milestones: HashSet<MilestoneLink>,
+		issues: HashSet<IssueLink>,
+	},
 }
 
 /// `own` in its order, each card right below whichever of `own` and `lifted` block it, through others too;
