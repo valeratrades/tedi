@@ -49,18 +49,18 @@ pub async fn edit_sprint(repo: RepoInfo, sprint: Sprint, picking: Option<&Pickin
 
 	let own = MilestoneTab::render(&link, sprint, mode).await?;
 	let opened = own.opened.0.serialize();
-	let mut tabs = vec![Tab::Milestone(own)];
+	let mut tabs = vec![Tab::Milestone(Box::new(own))];
 	if let Sprint::Planning(_) = sprint {
 		let beside = |what: &str, e: Report| eprintln!("warning: {what} stays closed: {e:#}");
 		if let Some(picking) = picking {
 			match PickedTab::render(picking, &link, mode).await {
-				Ok(tab) => tabs.push(Tab::Picked(tab, picking)),
+				Ok(tab) => tabs.push(Tab::Picked(Box::new(tab), picking)),
 				Err(e) => beside("selected.md", e),
 			}
 		}
 		if let Some(bottlenecks) = find(Sprint::Bottlenecks) {
 			match MilestoneTab::render(&bottlenecks, Sprint::Bottlenecks, mode).await {
-				Ok(tab) => tabs.push(Tab::Milestone(tab)),
+				Ok(tab) => tabs.push(Tab::Milestone(Box::new(tab))),
 				Err(e) => beside("Bottlenecks", e),
 			}
 		}
@@ -233,8 +233,8 @@ async fn fold_back(raws: &[String], editing: &[Editing], mode: SyncMode) -> Resu
 }
 
 enum Tab<'a> {
-	Milestone(MilestoneTab),
-	Picked(PickedTab, &'a Picking),
+	Milestone(Box<MilestoneTab>),
+	Picked(Box<PickedTab>, &'a Picking),
 }
 impl Tab<'_> {
 	fn name(&self) -> String {
@@ -246,7 +246,8 @@ impl Tab<'_> {
 
 	fn text(&self) -> &str {
 		match self {
-			Tab::Milestone(MilestoneTab { expanded, .. }) | Tab::Picked(PickedTab { expanded, .. }, _) => &expanded.text,
+			Tab::Milestone(tab) => &tab.expanded.text,
+			Tab::Picked(tab, _) => &tab.expanded.text,
 		}
 	}
 

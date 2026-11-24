@@ -259,7 +259,7 @@ async fn request_milestones(settings: &LiveSettings) -> Result<Vec<GithubMilesto
 }
 
 /// Parse owner and repo from various Github URL formats
-/// Supports: "owner/repo", "https://github.com/owner/repo", "git@github.com:owner/repo.git", etc.
+/// Supports: `owner/repo`, `https://github.com/owner/repo`, `git@github.com:owner/repo.git`, etc.
 fn parse_github_repo(url: &str) -> Result<(String, String)> {
 	let url = url.trim();
 

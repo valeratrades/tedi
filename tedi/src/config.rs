@@ -135,7 +135,7 @@ impl Board {
 
 #[derive(Clone, Debug, v_macros::MyConfigPrimitives, v_macros::SettingsNested)]
 pub struct Milestones {
-	/// Github repo URL for milestones (e.g., "https://github.com/owner/repo" or "owner/repo")
+	/// Github repo URL for milestones (e.g., `https://github.com/owner/repo` or `owner/repo`)
 	pub url: String,
 	/// Which milestone timeframe to source blockers from (default: "1d")
 	pub blocker_timeframe: Option<String>,

@@ -2,7 +2,7 @@
 //!
 //! The active sprint is the lowest existing one — the local urgent sprint while it has
 //! open issues, else the stored sprint last focused. Selection is a *path* of node URLs
-//! (root → [milestone] → issue → [child issue …]), validated on every load: segments
+//! (root → milestone? → issue → child issue…), validated on every load: segments
 //! that are closed or no longer children of the previous level truncate the path, empty
 //! paths default to the top open root node. The roots are the sprint's own nodes, then what
 //! is picked up (`selected.md`), then its repo's Bottlenecks. A terminal milestone auto-resolves to its

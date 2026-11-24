@@ -918,7 +918,7 @@ mod types {
 							Err(e) => Err(e.into()),
 						};
 						if let Err(cause) = applied {
-							crate::utils::persist_rejected_changes(&[content.clone()])?;
+							crate::utils::persist_rejected_changes(std::slice::from_ref(&content))?;
 							restore()?;
 							return Err(RejectedEdit(cause).into());
 						}

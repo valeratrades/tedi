@@ -345,7 +345,7 @@ fn catalog(port: u16, user: &str) -> serde_json::Value {
 	serde_json::from_str(&body).unwrap()
 }
 
-fn entry<'a>(catalog: &'a serde_json::Value, owner: serde_json::Value, item: serde_json::Value) -> &'a serde_json::Value {
+fn entry(catalog: &serde_json::Value, owner: serde_json::Value, item: serde_json::Value) -> &serde_json::Value {
 	catalog["entries"]
 		.as_array()
 		.unwrap()
