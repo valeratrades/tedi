@@ -500,19 +500,18 @@ fn Labels(card: Card) -> Element {
 	}
 }
 
-/// The milestones hosting it, of any repo; `+` offers the scope's, one a repo.
+/// The milestones hosting it, of any repo; `+` offers those in the workspace's scope, one a repo.
 #[component]
 fn Milestones(card: Card) -> Element {
 	let ctx = use_context::<Ctx>();
 	let home = card.link.project();
 	let board = ctx.board.read();
 	let board = board.as_ref().expect("the card came from it");
-	let within = ctx.within();
 	let hosts = |t: &Target| t.hosts(&card.link);
 	let mut offered: Vec<&Target> = board
 		.targets
 		.iter()
-		.filter(|t| !matches!(t.sprint(), Some(Sprint::Planning(_))) && (within.covers(t.link.repo_info()) || hosts(t))) // what is planned is its own file's to say
+		.filter(|t| !matches!(t.sprint(), Some(Sprint::Planning(_))) && (ctx.in_scope(t.link.repo_info()) || hosts(t))) // what is planned is its own file's to say
 		.collect();
 	offered.sort_by_key(|t| (t.link.repo_info() != home, t.link.repo_info().to_string(), t.due_on.is_none(), t.due_on, t.title.to_lowercase()));
 	let hosting: Vec<&Target> = offered.iter().copied().filter(|t| hosts(t)).collect();
@@ -802,7 +801,7 @@ fn Title(link: IssueLink, current: String) -> Element {
 	}
 }
 
-/// One select per workflow the card sits in: \`kanban / triage ▾\`.
+/// One select per workflow the card sits in: `kanban / triage ▾`.
 #[component]
 fn StatePicker(card: Card) -> Element {
 	let ctx = use_context::<Ctx>();

@@ -1,37 +1,9 @@
 {
- "scope": "EV / EV-Service-Arb",
- "ids": {
-  "TriageDk": {"Workspace": "Triage desk"},
-  "RelsWeek": {"Workspace": "Release week"},
-  "SprintPl": {"Workspace": "Sprint planning"},
-  "PhoneInb": {"Workspace": "Phone: inbox"},
-  "RelsList": {"View": "Release checklist"}
- },
- "on_screen": {
-  "tiles": {
-   "Xl": "{\"version\":3,\"grid\":{\"cells\":[{\"group\":{\"id\":0,\"tabs\":[\"view:Release checklist\"],\"active\":0},\"x\":0,\"y\":0,\"w\":42,\"h\":40,\"desired_w\":null,\"desired_x\":null,\"desired_h\":null,\"rank\":0},{\"group\":{\"id\":1,\"tabs\":[\"sprint:1w · 2026/11/17\"],\"active\":0},\"x\":42,\"y\":0,\"w\":22,\"h\":40,\"desired_w\":null,\"desired_x\":null,\"desired_h\":null,\"rank\":1}],\"state\":\"Settled\",\"next_group_id\":2}}"
-  },
-  "views": {},
-  "tints": {
-   "Triage": {
-    "state:kanban": {
-     "triage": "orange",
-     "selected": "blue",
-     "in_progress": "blue",
-     "in_review": "purple",
-     "done": "green"
-    }
-   }
-  },
-  "columns": {}
- },
- "filters": {
+ "workspace": "Release week",
+ "views": {
   "Release checklist": {
    "name": "Release checklist",
-   "query": "is:pr is:open label:release",
-   "layout": "list",
    "group_by": "state:pull_requests",
-   "sort": "-updated",
    "shown": [
     "repo",
     "assignees",
@@ -43,16 +15,44 @@
  },
  "workspaces": {
   "Triage desk": {
-   "Xl": "{\"version\":3,\"grid\":{\"cells\":[{\"group\":{\"id\":0,\"tabs\":[\"view:Triage\"],\"active\":0},\"x\":0,\"y\":0,\"w\":42,\"h\":40,\"desired_w\":null,\"desired_x\":null,\"desired_h\":null,\"rank\":0},{\"group\":{\"id\":1,\"tabs\":[\"issue:https://github.com/service-arb/review_archive/issues/46\"],\"active\":0},\"x\":42,\"y\":0,\"w\":22,\"h\":40,\"desired_w\":null,\"desired_x\":null,\"desired_h\":null,\"rank\":1}],\"state\":\"Settled\",\"next_group_id\":2}}"
+   "tiles": {
+    "Xl": "{\"version\":3,\"grid\":{\"cells\":[{\"group\":{\"id\":0,\"tabs\":[\"view:Triage\"],\"active\":0},\"x\":0,\"y\":0,\"w\":42,\"h\":40,\"desired_w\":null,\"desired_x\":null,\"desired_h\":null,\"rank\":0},{\"group\":{\"id\":1,\"tabs\":[\"issue:https://github.com/service-arb/review_archive/issues/46\"],\"active\":0},\"x\":42,\"y\":0,\"w\":22,\"h\":40,\"desired_w\":null,\"desired_x\":null,\"desired_h\":null,\"rank\":1}],\"state\":\"Settled\",\"next_group_id\":2}}"
+   },
+   "lens": {
+    "scope": "repo:service-arb/*",
+    "search": "is:issue is:open state:kanban/icebox,kanban/triage,kanban/selected,kanban/in_progress,kanban/in_review",
+    "sort": "importance"
+   }
   },
   "Release week": {
-   "Xl": "{\"version\":3,\"grid\":{\"cells\":[{\"group\":{\"id\":0,\"tabs\":[\"view:Release checklist\"],\"active\":0},\"x\":0,\"y\":0,\"w\":42,\"h\":40,\"desired_w\":null,\"desired_x\":null,\"desired_h\":null,\"rank\":0},{\"group\":{\"id\":1,\"tabs\":[\"sprint:1w · 2026/11/17\"],\"active\":0},\"x\":42,\"y\":0,\"w\":22,\"h\":40,\"desired_w\":null,\"desired_x\":null,\"desired_h\":null,\"rank\":1}],\"state\":\"Settled\",\"next_group_id\":2}}"
+   "tiles": {
+    "Xl": "{\"version\":3,\"grid\":{\"cells\":[{\"group\":{\"id\":0,\"tabs\":[\"view:Release checklist\"],\"active\":0},\"x\":0,\"y\":0,\"w\":42,\"h\":40,\"desired_w\":null,\"desired_x\":null,\"desired_h\":null,\"rank\":0},{\"group\":{\"id\":1,\"tabs\":[\"sprint:ev-main/devops/3\"],\"active\":0},\"x\":42,\"y\":0,\"w\":22,\"h\":40,\"desired_w\":null,\"desired_x\":null,\"desired_h\":null,\"rank\":1}],\"state\":\"Settled\",\"next_group_id\":2}}"
+   },
+   "lens": {
+    "scope": "repo:service-arb/*",
+    "search": "is:pr is:open label:release",
+    "sort": "created,importance,hours"
+   }
   },
   "Sprint planning": {
-   "Xl": "{\"version\":3,\"grid\":{\"cells\":[{\"group\":{\"id\":0,\"tabs\":[\"sprint:1w · 2026/11/17\"],\"active\":0},\"x\":0,\"y\":0,\"w\":42,\"h\":40,\"desired_w\":null,\"desired_x\":null,\"desired_h\":null,\"rank\":0},{\"group\":{\"id\":1,\"tabs\":[\"view:Triage\"],\"active\":0},\"x\":42,\"y\":0,\"w\":22,\"h\":40,\"desired_w\":null,\"desired_x\":null,\"desired_h\":null,\"rank\":1}],\"state\":\"Settled\",\"next_group_id\":2}}"
+   "tiles": {
+    "Xl": "{\"version\":3,\"grid\":{\"cells\":[{\"group\":{\"id\":0,\"tabs\":[\"sprint:ev-main/devops/3\"],\"active\":0},\"x\":0,\"y\":0,\"w\":42,\"h\":40,\"desired_w\":null,\"desired_x\":null,\"desired_h\":null,\"rank\":0},{\"group\":{\"id\":1,\"tabs\":[\"view:Triage\"],\"active\":0},\"x\":42,\"y\":0,\"w\":22,\"h\":40,\"desired_w\":null,\"desired_x\":null,\"desired_h\":null,\"rank\":1}],\"state\":\"Settled\",\"next_group_id\":2}}"
+   },
+   "lens": {
+    "scope": "repo:service-arb/*",
+    "search": "is:issue is:open",
+    "sort": "created,importance,hours"
+   }
   },
   "Phone: inbox": {
-   "Sm": "{\"version\":3,\"grid\":{\"cells\":[{\"group\":{\"id\":0,\"tabs\":[\"view:Triage\",\"issue:https://github.com/service-arb/review_archive/issues/46\"],\"active\":0},\"x\":0,\"y\":0,\"w\":64,\"h\":40,\"desired_w\":null,\"desired_x\":null,\"desired_h\":null,\"rank\":0}],\"state\":\"Settled\",\"next_group_id\":1}}"
+   "tiles": {
+    "Sm": "{\"version\":3,\"grid\":{\"cells\":[{\"group\":{\"id\":0,\"tabs\":[\"view:Triage\",\"issue:https://github.com/service-arb/review_archive/issues/46\"],\"active\":0},\"x\":0,\"y\":0,\"w\":64,\"h\":40,\"desired_w\":null,\"desired_x\":null,\"desired_h\":null,\"rank\":0}],\"state\":\"Settled\",\"next_group_id\":1}}"
+   },
+   "lens": {
+    "scope": "repo:service-arb/*",
+    "search": "is:issue is:open",
+    "sort": "created,importance,hours"
+   }
   }
  },
  "columns": {},
@@ -64,6 +64,12 @@
    ]
   }
  },
+ "drafts": {
+  "views": {},
+  "workspaces": {}
+ },
+ "laid": {},
+ "locked": [],
  "favorites": [
   {
    "View": "Triage"
@@ -75,10 +81,29 @@
    "Workspace": "Triage desk"
   }
  ],
- "workspace": "Release week",
+ "ids": {
+  "TriageDk": {
+   "Workspace": "Triage desk"
+  },
+  "RelsWeek": {
+   "Workspace": "Release week"
+  },
+  "SprintPl": {
+   "Workspace": "Sprint planning"
+  },
+  "PhoneInb": {
+   "Workspace": "Phone: inbox"
+  },
+  "RelsList": {
+   "View": "Release checklist"
+  }
+ },
+ "forks": [],
  "recent": [
   "Release week",
   "Triage desk",
   "Sprint planning"
- ]
+ ],
+ "autosaved": {},
+ "received": []
 }

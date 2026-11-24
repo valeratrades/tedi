@@ -1,5 +1,5 @@
-//! The open workspace and its menu (Figma: WorkspaceMenu, 04 · Workspace switching), and a shared screen
-//! shown read-only under a banner until it is forked (Flow 2).
+//! The open workspace's name and its menu (Figma: WorkspaceSelect, WorkspaceMenu, 04 · Workspace switching), and a
+//! shared one shown read-only under a banner until it is forked (Flow 2).
 
 use dioxus::prelude::*;
 use ev_lib::uikit_dioxus::{Popover, PopoverContent, PopoverTrigger};
@@ -14,7 +14,7 @@ use super::{
 	route,
 	toast::Tone as Said,
 };
-use crate::api::{self, Arrangement, Construction, Item, Kept, LibraryEdit, Origin, Owner, ShareLink, Shared, Shelf, band_name};
+use crate::api::{self, Construction, Item, Kept, LibraryEdit, Origin, Owner, ShareLink, Shared, Shelf, Workspace, band_name};
 
 /// Where `link` opens this board: its origin and the path it is served under.
 pub(super) fn share_url(link: &ShareLink) -> String {
@@ -30,74 +30,71 @@ pub(super) fn copy_link(ctx: Ctx, link: &ShareLink) {
 	});
 }
 
-/// The workspace on screen: the viewer's own, or the team's.
-fn current(ctx: &Ctx) -> Option<(String, Owner, Arrangement)> {
+/// The open workspace, as last edited, and whose it is.
+fn current(ctx: &Ctx) -> Option<(String, Owner, Workspace)> {
+	if ctx.viewing.read().is_some() {
+		return None; // another viewer's is on the dock
+	}
+	let name = ctx.open_workspace()?;
+	let own = ctx.library.read().as_ref()?.workspaces.contains_key(&name);
+	let workspace = ctx.workspace_named(&name)?;
+	Some((name, if own { Owner::Viewer(String::new()) } else { Owner::Team }, workspace))
+}
+
+/// The workspaces last selected that are still there.
+fn recent(ctx: &Ctx) -> Vec<String> {
 	let library = ctx.library.read();
-	let setup = ctx.setup.read();
-	let name = library.as_ref()?.workspace.clone()?;
-	if let Some(tiles) = library.as_ref()?.workspaces.get(&name) {
-		return Some((name, Owner::Viewer(String::new()), tiles.clone()));
-	}
-	let tiles = setup.as_ref()?.workspaces.get(&name)?.clone();
-	Some((name, Owner::Team, tiles))
+	let names = library.iter().flat_map(|l| l.recent.iter().cloned());
+	names.filter(|n| ctx.id_of(&Item::Workspace(n.clone())).is_some()).collect()
 }
 
-/// The screen, every band it was arranged for, the live one as it stands now.
-fn screen(ctx: &Ctx) -> Arrangement {
-	let mut tiles = ctx.library.read().as_ref().expect("the menu opens from a loaded screen").on_screen.tiles.clone();
-	if let Some(api) = *ctx.api.peek() {
-		tiles.insert(api.band(), super::kept(api));
-	}
-	tiles
-}
-
-/// ⌘S: the live band into the open workspace.
+/// ⌘S: what is yet to settle, saved now.
 fn save(ctx: Ctx) {
-	let Some(api) = *ctx.api.peek() else { return };
 	match current(&ctx) {
-		Some((name, Owner::Viewer(_), _)) => {
-			let tiles = Arrangement::from([(api.band(), super::kept(api))]);
-			spawn(async move {
-				if ctx.keep(LibraryEdit::Keep(Kept::Workspace { name: name.clone(), tiles })).await {
-					ctx.say("workspace", Said::Success, format!("Saved {name}"), None);
-				}
-			});
-		}
+		Some((name, Owner::Viewer(_), _)) =>
+			_ = spawn(async move {
+				ctx.flush().await;
+				ctx.say("workspace", Said::Success, format!("Saved {name}"), None);
+			}),
 		Some((name, Owner::Team, _)) => ctx.say("workspace", Said::Info, format!("{name} is the team's: save it as a copy"), None),
-		None => ctx.say("workspace", Said::Info, "no workspace is open: keep this screen as a new one", None),
+		None => ctx.none_open(),
 	}
 }
 
-/// ⌘⇧C: a pinned link to the open workspace, every band it arranged, in the screen's scope.
+/// ⌘⇧C: a pinned link to the open workspace, every band it arranged and its lens.
 pub(super) fn share_screen(ctx: Ctx) {
-	let Some((name, _, tiles)) = current(&ctx) else {
-		return ctx.say("share", Said::Info, "keep this screen as a workspace to share it", None);
+	let Some((name, owner, workspace)) = current(&ctx) else {
+		return ctx.none_open();
 	};
-	let scope = ctx.library.read().as_ref().and_then(|l| l.scope.clone());
+	let drafted = ctx.library.read().as_ref().is_some_and(|l| l.drafts.workspaces.contains_key(&name));
 	spawn(async move {
-		match api::share(Item::Workspace(name), tiles.keys().copied().collect(), scope).await {
+		ctx.flush().await;
+		match api::share(Item::Workspace(name.clone()), workspace.tiles.keys().copied().collect()).await {
 			Ok(link) => copy_link(ctx, &link),
-			Err(e) => ctx.say("share", Said::Error, e.to_string(), None),
+			Err(e) => return ctx.say("share", Said::Error, e.to_string(), None),
+		}
+		if owner == Owner::Team && drafted {
+			ctx.say("workspace", Said::Info, format!("{name} is linked as the team has it: save yours as a copy to share that"), None);
 		}
 	});
 }
 
-/// The screen kept as `name` and opened; a copy of the team's remembers it as its upstream.
-fn keep_as(ctx: Ctx, name: String, from_team: Option<String>) {
-	let tiles = screen(&ctx);
+/// The open workspace, as last edited, kept as `name` and opened; a copy of the team's remembers it as its upstream.
+fn keep_as(ctx: Ctx, name: String, from: (String, Owner, Workspace)) {
+	let (upstream, owner, workspace) = from;
 	spawn(async move {
-		if let Some(team) = from_team
+		if owner == Owner::Team
 			&& !ctx
 				.keep(LibraryEdit::Fork {
-					from: Origin::Team(Item::Workspace(team)),
+					from: Origin::Team(Item::Workspace(upstream)),
 					name: name.clone(),
 				})
 				.await
 		{
 			return;
 		}
-		if ctx.keep(LibraryEdit::Keep(Kept::Workspace { name: name.clone(), tiles })).await {
-			ctx.keep(LibraryEdit::Workspace(Some(name))).await;
+		if ctx.keep(LibraryEdit::Keep(Kept::Workspace { name: name.clone(), workspace })).await {
+			ctx.go(ctx.at_workspace(&name));
 		}
 	});
 }
@@ -113,12 +110,12 @@ enum Shortcut {
 enum Naming {
 	Copy,
 	Rename,
-	New,
 }
 
-/// The top bar's ▾: save, copy, rename, share or publish the open workspace; the recent ones; a new one; the Library.
+/// The open workspace, by name: ▾ saves, copies, renames, shares or publishes it; offers the recent ones, a new
+/// one, the Library.
 #[component]
-pub(super) fn WorkspaceMenu() -> Element {
+pub(super) fn WorkspaceSelect() -> Element {
 	let ctx = use_context::<Ctx>();
 	let mut open = use_signal(|| false);
 	let mut naming = use_signal(|| None::<Naming>);
@@ -172,12 +169,10 @@ pub(super) fn WorkspaceMenu() -> Element {
 				match key {
 					Shortcut::Save => save(ctx),
 					Shortcut::Share => share_screen(ctx),
-					Shortcut::Recent(at) => {
-						let recent = ctx.library.read().as_ref().map(|l| l.recent.clone()).unwrap_or_default(); // the library not yet arrived
-						if let Some(name) = recent.get(at - 1) {
+					Shortcut::Recent(at) =>
+						if let Some(name) = recent(&ctx).get(at - 1) {
 							ctx.go(ctx.at_workspace(name));
-						}
-					}
+						},
 				}
 			}
 		}
@@ -188,7 +183,11 @@ pub(super) fn WorkspaceMenu() -> Element {
 	};
 	let team = ctx.setup.read().as_ref().map(|s| s.workspaces.clone()).unwrap_or_default(); // setup arrives with the library
 	let at = current(&ctx);
+	let recent = recent(&ctx);
 	let own = matches!(at, Some((_, Owner::Viewer(_), _)));
+	let drafted = at
+		.as_ref()
+		.is_some_and(|(n, ..)| !own && ctx.setup.read().as_ref().and_then(|s| s.workspaces.get(n).cloned()) != ctx.workspace_named(n));
 	let forked = at.as_ref().is_some_and(|(n, ..)| library.forks.iter().any(|f| f.item == Item::Workspace(n.clone())));
 	let mut close = move || {
 		open.set(false);
@@ -209,17 +208,22 @@ pub(super) fn WorkspaceMenu() -> Element {
 						.await
 				});
 			}
-			(Some(Naming::Copy), Some((from, Owner::Team, _))) => keep_as(ctx, name, Some(from)),
-			_ => keep_as(ctx, name, None),
+			(Some(Naming::Copy), Some(from)) => keep_as(ctx, name, from),
+			_ => {} // gone while it was being named
 		}
 	};
 	rsx! {
 		Popover { open: open(), on_open_change: move |v: bool| { open.set(v); if !v { naming.set(None); } },
-			PopoverTrigger { class: "flex size-6 items-center justify-center rounded-[var(--control-radius)] text-ink-soft hover:bg-hover hover:text-ink", aria_label: "Workspace menu",
-				Icon { glyph: Glyph::ChevronDown }
+			PopoverTrigger { class: if open() { "flex h-7 min-w-0 items-center gap-1.5 rounded-[var(--control-radius)] border border-ring px-2" } else { "flex h-7 min-w-0 items-center gap-1.5 rounded-[var(--control-radius)] border border-border px-2 hover:bg-hover" }, aria_label: "Workspace menu",
+				Icon { glyph: Glyph::Workspace, class: "size-3.5 shrink-0 text-chart-6" }
+				match &at {
+					Some((name, ..)) => rsx! { span { class: "truncate text-body font-medium text-ink", "{name}" } },
+					None => rsx! { span { class: "text-body font-medium text-ink-soft", "Workspace" } },
+				}
+				Icon { glyph: Glyph::ChevronDown, class: "size-3.5 shrink-0 text-ink-soft" }
 			}
-			PopoverContent { align: "end", class: "flex w-72 flex-col gap-0.5 rounded-[var(--radius)] border border-border bg-popover p-1 text-ink",
-				if let Some((name, owner, tiles)) = at.clone() {
+			PopoverContent { align: "start", class: "flex w-72 flex-col gap-0.5 rounded-[var(--radius)] border border-border bg-popover p-1 text-ink",
+				if let Some((name, owner, Workspace { tiles, .. })) = at.clone() {
 					div { class: "flex flex-col gap-1 px-2 py-1.5",
 						div { class: "flex items-center gap-1.5",
 							Icon { glyph: Glyph::Workspace, class: "size-3.5 text-primary-ink" }
@@ -237,8 +241,11 @@ pub(super) fn WorkspaceMenu() -> Element {
 							for band in [Band::Sm, Band::Md, Band::Xl] {
 								Chip { key: "{band:?}", tone: if tiles.contains_key(&band) { Tone::Primary } else { Tone::Neutral }, "{band_name(band)}" }
 							}
-							if let (true, Some(at)) = (own, library.autosaved) {
-								span { class: "ml-auto", "autosaved {ago(at)}" }
+							if let (true, Some(at)) = (own, library.autosaved.get(&name)) {
+								span { class: "ml-auto", "autosaved {ago(*at)}" }
+							}
+							if drafted {
+								span { class: "ml-auto", "modified" }
 							}
 						}
 					}
@@ -249,7 +256,7 @@ pub(super) fn WorkspaceMenu() -> Element {
 						div { class: "px-1 py-1",
 							NameForm {
 								initial: if kind == Naming::Rename { at.as_ref().map(|(n, ..)| n.clone()).unwrap_or_default() } else { String::new() }, // renaming starts from the name
-								placeholder: match kind { Naming::Copy => "the copy's name", Naming::Rename => "new name", Naming::New => "the new workspace's name" },
+								placeholder: match kind { Naming::Copy => "the copy's name", Naming::Rename => "new name" },
 								on_name: named,
 								on_cancel: move |()| naming.set(None),
 							}
@@ -257,7 +264,28 @@ pub(super) fn WorkspaceMenu() -> Element {
 					},
 					None => rsx! {
 						if at.is_some() {
-							Row { selected: false, glyph: Glyph::Save, label: "Save", meta: "⌘S", onclick: move |_| { close(); save(ctx); } }
+							if own {
+								Row { selected: false, glyph: Glyph::Save, label: "Save", meta: "⌘S", onclick: move |_| { close(); save(ctx); } }
+							}
+							if drafted {
+								Row {
+									selected: false,
+									glyph: Glyph::Revert,
+									label: "Revert",
+									onclick: {
+										let name = at.as_ref().map(|(n, ..)| n.clone()).expect("drafted");
+										move |_| {
+											close();
+											let name = name.clone();
+											spawn(async move {
+												if ctx.keep(LibraryEdit::Revert(Item::Workspace(name.clone()))).await {
+													ctx.switch(&name).await;
+												}
+											});
+										}
+									},
+								}
+							}
 							Row { selected: false, glyph: Glyph::Fork, label: "Save as copy…", onclick: move |_| naming.set(Some(Naming::Copy)) }
 							if own {
 								Row { selected: false, glyph: Glyph::Pencil, label: "Rename", onclick: move |_| naming.set(Some(Naming::Rename)) }
@@ -275,9 +303,9 @@ pub(super) fn WorkspaceMenu() -> Element {
 								}
 							}
 						}
-						if !library.recent.is_empty() {
+						if !recent.is_empty() {
 							span { class: "px-2 pt-2 pb-1 text-overline text-ink-soft", "Recent" }
-							for (i , name) in library.recent.iter().enumerate() {
+							for (i , name) in recent.iter().enumerate() {
 								Row {
 									key: "{name}",
 									selected: at.as_ref().is_some_and(|(n, ..)| n == name),
@@ -289,7 +317,7 @@ pub(super) fn WorkspaceMenu() -> Element {
 							}
 						}
 						div { class: "my-0.5 h-px bg-border-subtle" }
-						Row { selected: false, glyph: Glyph::Plus, label: "New workspace from screen", onclick: move |_| naming.set(Some(Naming::New)) }
+						Row { selected: false, glyph: Glyph::Plus, label: "New workspace", onclick: move |_| { close(); spawn(ctx.new_workspace()); } }
 						Row { selected: false, glyph: Glyph::Search, label: "Browse all workspaces…", meta: "Library", onclick: move |_| { close(); ctx.open(PanelId("library:workspaces".into())); } }
 					},
 				}
@@ -300,19 +328,20 @@ pub(super) fn WorkspaceMenu() -> Element {
 
 /// `shared`, a workspace, onto the dock in place of the viewer's, nothing of it kept.
 pub(super) fn view_shared(ctx: Ctx, shared: Shared) {
-	let Construction::Workspace(tiles) = &shared.construction else {
+	let Construction::Workspace(Workspace { tiles, .. }) = &shared.construction else {
 		panic!("only a workspace takes the dock: {:?}", shared.link)
 	};
 	let api = (*ctx.api.peek()).expect("a band is entered before a link can be shown");
 	let band = api.band();
-	let layout = tiles.get(&band).cloned();
-	let (mut viewing, mut arranged) = (ctx.viewing, ctx.arranged);
-	arranged.set(None); // what the dock shows now isn't the viewer's to keep
+	let tiles = tiles.clone();
+	super::notice(api, ctx.seen, |made| ctx.keep_tiles(made)); // before the dock is another's
+	let (mut viewing, mut seen) = (ctx.viewing, ctx.seen);
 	viewing.set(Some(shared));
-	match layout {
-		Some(layout) => _ = ctx.show(api, &layout),
-		None => ctx.say("share", Said::Info, format!("the link carries no {} arrangement", band_name(band)), None),
+	if !tiles.contains_key(&band) {
+		ctx.say("share", Said::Info, format!("the link carries no {} arrangement", band_name(band)), None);
 	}
+	ctx.lay_out(api, Some(tiles));
+	seen.set(None); // what the dock shows now isn't the viewer's to keep
 }
 
 /// Opens a link this page was loaded at; over a shared workspace: whose it is, back to the viewer's own, or fork it.
@@ -369,9 +398,7 @@ pub(super) fn Banner() -> Element {
 					move |_| {
 						let (from, name) = (Origin::Link(link.clone()), name.clone());
 						spawn(async move {
-							if ctx.keep(LibraryEdit::Fork { from, name: name.clone() }).await && ctx.keep(LibraryEdit::Workspace(Some(name.clone()))).await {
-								let mut viewing = ctx.viewing;
-								viewing.set(None);
+							if ctx.keep(LibraryEdit::Fork { from, name: name.clone() }).await {
 								ctx.go(ctx.at_workspace(&name));
 							}
 						});

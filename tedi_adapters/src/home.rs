@@ -49,9 +49,8 @@ impl Home {
 		self.ask("query", &serde_json::json!({ "asked": query })).await
 	}
 
-	/// The view `named` there, or that query.
-	pub async fn view(&self, named: &str, group: Option<&GroupBy>) -> Result<Listing, HomeError> {
-		self.ask("view", &serde_json::json!({ "named": named, "group": group })).await
+	pub async fn view(&self, query: &str, group: &GroupBy) -> Result<Listing, HomeError> {
+		self.ask("view", &serde_json::json!({ "query": query, "group": group })).await
 	}
 
 	/// `link`'s card to `to` of `workflow`, made against it sitting at `seen` (`None`: wherever it sits).

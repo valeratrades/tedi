@@ -1,6 +1,6 @@
 import { expect, type Page, test } from "@playwright/test";
 
-test.skip(({ viewport }) => viewport!.width < 768, "the order is in the toolbar's popover");
+test.skip(({ viewport }) => viewport!.width < 768, "the order is in a popover");
 
 const strip = (page: Page) => page.getByRole("group", { name: "Sort", exact: true });
 const labels = (page: Page) => strip(page).locator("[draggable=true]");
@@ -12,7 +12,7 @@ const add = async (page: Page, ...keys: string[]) => {
 };
 const triage = async (page: Page) => {
   await page.goto("/");
-  await page.locator("aside").getByRole("link", { name: "Triage", exact: true }).click();
+  await page.locator("aside").getByRole("link", { name: "Triage desk", exact: true }).click();
   await expect(labels(page)).toHaveText(["importance ↓"]);
 };
 
@@ -41,15 +41,15 @@ test("a click reverses a label, a drag moves it, and both are there on reload", 
   await labels(page).nth(2).getByRole("button", { name: "created: oldest first" }).press("ArrowLeft");
   await expect(labels(page)).toHaveText(["importance ↓", "created ↑", "hours ↑"]);
 
-  await page.waitForTimeout(1500); // the screen is saved as it settles
+  await page.waitForTimeout(1500); // the order is saved as it settles
   await page.reload();
   await expect(labels(page)).toHaveText(["importance ↓", "created ↑", "hours ↑"]);
 });
 
-for (const scope of ["EV", "EV / EV-Service-Arb"])
+for (const scope of ["EV", "EV-Service-Arb"])
   test(`a blocker from an earlier step, or from outside ${scope}, is above what it blocks, edged red`, async ({ page }) => {
     await triage(page);
-    await page.goto(page.url().replace(/scope=[^&]*/, `scope=${encodeURIComponent(scope)}`));
+    await page.locator("aside").getByRole("button", { name: scope, exact: true }).click();
     const card = (title: string) => page.locator("[draggable=true]").filter({ has: page.getByRole("link", { name: title, exact: true }) });
     const titles = () => page.locator("[draggable=true] > div").locator('a.font-medium[href*="issue="]').allTextContents();
     const [blocker, blocked] = ["rotate staging certs", "Epic: a video verification Google accepts, submitted from the PC"]; // ev-main's in triage, service-arb's in selected

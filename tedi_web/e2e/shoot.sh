@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# shoot.sh <screen> [out.png]   screens: 01-board 02-view 03-library 04-workspace 05-scope 06a-mobile 06b-mobile
+# shoot.sh <screen> [out.png]   screens: 01-board 02-view 03-library 04-workspace 05-scope 06a-mobile 06b-mobile 07-first-open 08-none-open
 # shoot.sh stop                 stops the server it started
 # env: E2E_HOME (store, default /tmp/tedi-e2e) E2E_PORT (7351) E2E_RESEED=1 E2E_REBUILD=1 (client bundle) TEDI_BIN
 set -euo pipefail

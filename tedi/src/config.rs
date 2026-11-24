@@ -94,30 +94,29 @@ pub struct Board {
 	/// By name: `preset:<name>` (`kanban`, `pull_requests`) or a workflow file's path.
 	#[serde(default)] // a board may place issues in none
 	pub workflows: BTreeMap<String, String>,
-	pub views: Vec<tedi_task_operations::board::View>,
+	pub views: Vec<tedi_web::api::View>,
 	/// Named slices of the team's repos, nesting narrower ones (`[board.scopes.EV-Main.tooling] repos = ["EV-Main/tilers"]`).
 	#[serde(default)] // a board may have none
 	pub scopes: BTreeMap<String, tedi_task_operations::board::Scope>,
 	/// Column colorings every viewer is offered (`[board.columns.notion] by = "state:kanban"`, `tints = { triage = "orange" }`).
 	#[serde(default)] // a board may have none
 	pub columns: BTreeMap<String, tedi_web::api::Columns>,
-	/// Dock arrangements every viewer is offered, per band (`Xl = "<tilers layout>"`).
+	/// Workspaces every viewer is offered (`tiles = { Xl = "<tilers layout>" }`, `lens = { scope = "repo:EV-Main/*", search = "is:open", sort = "rank" }`).
 	#[serde(default)] // a board may have none
-	pub workspaces: BTreeMap<String, tedi_web::api::Arrangement>,
+	pub workspaces: BTreeMap<String, tedi_web::api::Workspace>,
 	/// Where this board's team config lives in git: its history numbers each object's versions, and a proposal is a pull request on it.
 	pub source: Option<tedi_web::Source>,
 }
 impl Board {
-	/// Its workflows, loaded with their hooks; every workflow a view or a column coloring names is among them.
+	/// Its workflows, loaded with their hooks; every workflow a view, a column layout or a workspace's lens names is among them.
 	pub fn workflows(&self) -> color_eyre::Result<Workflows> {
 		use color_eyre::eyre::bail;
-		use tedi_task_operations::board::{GroupBy, Shown, SortKey};
+		use tedi_task_operations::board::{Facet, GroupBy, Shown, SortKey};
 
 		let loaded = Workflows::load(&self.workflows)?;
 		for view in &self.views {
 			let mut named: Vec<&String> = view.shown.iter().filter_map(|s| if let Shown::State(w) = s { Some(w) } else { None }).collect();
 			named.extend(if let GroupBy::State(w) = &view.group_by { Some(w) } else { None });
-			named.extend(view.sort.keys().iter().filter_map(|s| if let SortKey::State(w) = &s.by { Some(w) } else { None }));
 			if let Some(w) = named.into_iter().find(|w| !loaded.trees.contains_key(*w)) {
 				bail!("the view {} names the workflow {w}, and `board.workflows` doesn't", view.name);
 			}
@@ -127,6 +126,22 @@ impl Board {
 				&& !loaded.trees.contains_key(w)
 			{
 				bail!("the columns {name} are by the workflow {w}, and `board.workflows` doesn't name it");
+			}
+		}
+		for (name, workspace) in &self.workspaces {
+			let lens = &workspace.lens;
+			let mut named: Vec<String> = lens
+				.sort
+				.keys()
+				.iter()
+				.filter_map(|s| if let SortKey::State(w) = &s.by { Some(w.clone()) } else { None })
+				.collect();
+			named.extend([&*lens.scope, &lens.search].iter().flat_map(|q| q.picked(Facet::State)).map(|at| {
+				let (workflow, _) = at.trim_start_matches('-').split_once('/').expect("a state: value is <workflow>/<bucket>");
+				workflow.to_string()
+			}));
+			if let Some(w) = named.into_iter().find(|w| !loaded.trees.contains_key(w)) {
+				bail!("the workspace {name}'s lens names the workflow {w}, and `board.workflows` doesn't");
 			}
 		}
 		Ok(loaded)
