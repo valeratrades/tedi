@@ -14,7 +14,7 @@ use url::Url;
 /// Which local project stores an issue: a Github repo, or the single owner-less `virtual` store.
 /// Uses fixed-size `ArrayString`s to be `Copy`. GitHub limits: owner max 39 chars, repo max 100 chars.
 /// `virtual` is reserved as an owner name so it can't collide with the virtual store's directory.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum RepoInfo {
 	Github {
 		/// Repository owner (fixed max length; following Github spec)

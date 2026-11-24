@@ -235,7 +235,10 @@ impl Query {
 		let passing: Vec<usize> = (0..cards.len()).filter(|&i| self.clauses.iter().all(|c| c.holds(&cards[i], me, &open))).collect();
 		if self.text.is_empty() {
 			let mut sorted = passing;
-			sorted.sort_by_key(|&i| (std::cmp::Reverse(cards[i].rank), cards[i].importance.is_none())); // rank counts an unset `i:` as its default
+			sorted.sort_by_key(|&i| {
+				let Card { rank, importance, link, .. } = &cards[i];
+				(std::cmp::Reverse(*rank), importance.is_none(), link.project(), link.number()) // rank counts an unset `i:` as its default
+			});
 			return Ok(sorted);
 		}
 		let candidates: Vec<tedi_utils::search::Candidate> = passing
