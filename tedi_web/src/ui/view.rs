@@ -195,7 +195,7 @@ struct Lanes {
 }
 
 /// Columns, one per group, each a tile of a dock nested in the view's: resized, reordered, tabbed together,
-/// collapsed to a spine, kept per view and grouping in the viewer's library. Grouped by a workflow, a card
+/// kept per view and grouping in the viewer's library. Grouped by a workflow, a card
 /// dropped on a column moves there.
 #[component]
 fn Columns(view: String, groups: Vec<(String, Vec<usize>)>, by: GroupBy, shown: Vec<Shown>, order: Order) -> Element {
@@ -268,7 +268,7 @@ fn Columns(view: String, groups: Vec<(String, Vec<usize>)>, by: GroupBy, shown: 
 		let Some(mut api) = *api.read() else { return };
 		let hosted = api.tab_ids();
 		let h = api.rows();
-		for (key, members) in groups.iter() {
+		for (key, _) in groups.iter() {
 			let id = PanelId(format!("col:{key}"));
 			if !panels.peek().iter().any(|p| p.id == id) {
 				panels.write().push(column(id.clone(), key.clone()));
@@ -276,9 +276,6 @@ fn Columns(view: String, groups: Vec<(String, Vec<usize>)>, by: GroupBy, shown: 
 			if !hosted.contains(&id) {
 				let group = api.mint_group_id();
 				api.place(Group::new(group, id), 1, h); // at its least width: the row scrolls sideways past the view
-				if members.is_empty() {
-					api.collapse(group); // an empty bucket is a spine, still a drop target
-				}
 			}
 		}
 	});
@@ -325,7 +322,7 @@ fn column(id: PanelId, key: String) -> DockPanel {
 	}
 }
 
-/// `● triage 86`: the tint's dot, the group, its count. A card dropped on a collapsed column lands here.
+/// `● triage 86`: the tint's dot, the group, its count. A card dropped on it lands in the column.
 #[component]
 fn ColumnHead(group: String) -> Element {
 	let lanes = use_context::<Lanes>();
