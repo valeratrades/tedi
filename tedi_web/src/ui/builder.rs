@@ -63,7 +63,7 @@ pub(super) fn Builder(from: Option<String>) -> Element {
 	let changes = upstream
 		.as_ref()
 		.map(|u| api::diff(&Construction::View(u.clone()), &Construction::View(View { name: u.name.clone(), ..d.clone() })));
-	let scope = ctx.scope().map(|(path, _)| path);
+	let scope = ctx.scope().map(|s| ctx.path(&s));
 	rsx! {
 		div { class: "flex h-full min-h-0",
 			div { class: "flex w-[400px] shrink-0 flex-col border-r border-border-subtle bg-card",

@@ -1,10 +1,14 @@
-//! The scope editor (Figma: ScopeEditor): name, the scope it nests in, the repos it covers — explicit or
-//! patterns, with their live count. A scope only narrows; which views exist is none of its business.
+//! What a screen can sit in: the chain's points, read off the board; and the named scopes' editor (Figma:
+//! ScopeEditor): name, the scope it nests in, the repos it covers — explicit or patterns, with their live count.
+//! A scope only narrows; which views exist is none of its business.
 
 use std::collections::BTreeMap;
 
 use dioxus::prelude::*;
-use tedi_core::board::{Query, Scope, scope_at};
+use tedi_core::{
+	board::{Query, Scope, Slice, Within, scope_at},
+	chain::{Orgs, Point},
+};
 
 use super::{
 	Ctx, Editing,
@@ -13,11 +17,137 @@ use super::{
 };
 use crate::api::{Kept, LibraryEdit, Shelf};
 
+/// A point as the scope bar offers it.
+#[derive(Clone, PartialEq)]
+pub(super) struct Offered {
+	pub(super) point: Point,
+	pub(super) name: String,
+	/// Its open cards.
+	pub(super) open: usize,
+}
+
+impl Ctx {
+	fn orgs(&self) -> Orgs {
+		self.setup.read().as_ref().expect("read once setup arrived").orgs.clone()
+	}
+
+	/// `point` and what holds it, from the top.
+	pub(super) fn crumbs(&self, point: &Point) -> Vec<Point> {
+		let orgs = self.orgs();
+		let mut crumbs: Vec<Point> = std::iter::successors(Some(point.clone()), |p| p.above(&orgs)).collect();
+		crumbs.reverse();
+		crumbs
+	}
+
+	pub(super) fn called(&self, point: &Point) -> String {
+		match point {
+			Point::Org(org) => org.to_string(),
+			Point::Repo(repo) => repo.repo().to_string(),
+			Point::Milestone(link) => {
+				let board = self.board.read();
+				let title = board.as_ref().and_then(|b| b.targets.iter().find(|t| t.link == *link)).map(|t| t.title.clone());
+				title.unwrap_or_else(|| format!("milestone {}", link.number())) // not on the board, or not yet
+			}
+			Point::Issue(link) => self.card(link).map_or_else(|| format!("#{}", link.number()), |c| format!("#{} {}", link.number(), c.title)),
+		}
+	}
+
+	/// How the scope bar reads `slice`.
+	pub(super) fn path(&self, slice: &Slice) -> String {
+		match slice {
+			Slice::Named(path) => path.clone(),
+			Slice::Point(point) => self.crumbs(point).iter().map(|p| self.called(p)).collect::<Vec<_>>().join(" / "),
+		}
+	}
+
+	/// Open cards `within` leaves in; `None` before the board arrives.
+	pub(super) fn open_within(&self, within: &Within) -> Option<usize> {
+		let board = self.board.read();
+		let q: Query = "is:open".parse().expect("a clause");
+		Some(q.run(within, &board.as_ref()?.cards, None).expect("a clause runs").len())
+	}
+
+	/// Every org, repo and milestone holding something on the board, from the top.
+	pub(super) fn places(&self) -> Vec<Offered> {
+		let points: Vec<Point> = {
+			let (board, orgs) = (self.board.read(), self.orgs());
+			let Some(board) = board.as_ref() else { return Vec::new() };
+			let repos = board.cards.iter().map(|c| c.link.project()).chain(board.targets.iter().map(|t| t.link.repo_info()));
+			let mut points: Vec<Point> = Vec::new();
+			for point in repos.map(Point::Repo).chain(board.targets.iter().map(|t| Point::Milestone(t.link.clone()))) {
+				for p in std::iter::successors(Some(point), |p| p.above(&orgs)) {
+					if !points.contains(&p) {
+						points.push(p);
+					}
+				}
+			}
+			points
+		};
+		let mut offered: Vec<Offered> = points.into_iter().filter_map(|p| self.offered(p)).collect();
+		offered.sort_by_key(|o| self.path(&Slice::Point(o.point.clone())).to_lowercase());
+		offered
+	}
+
+	/// What `at` holds right below it, orgs at the top, as far as it holds something on the board. A repo's
+	/// issues aside: the palette finds those.
+	pub(super) fn below(&self, at: Option<&Point>) -> Vec<Offered> {
+		let owned: Vec<Point> = {
+			let board = self.board.read();
+			let Some(board) = board.as_ref() else { return Vec::new() };
+			let open = |link: &tedi_core::IssueLink| board.cards.iter().any(|c| c.link == *link && c.open());
+			match at {
+				Some(Point::Milestone(link)) => {
+					let Some(target) = board.targets.iter().find(|t| t.link == *link) else { return Vec::new() };
+					let hosted = target.hosted.iter().filter(|l| open(l)).cloned().map(Point::Issue);
+					target.contains.iter().cloned().map(Point::Milestone).chain(hosted).collect()
+				}
+				Some(Point::Issue(link)) => board
+					.cards
+					.iter()
+					.filter(|c| c.open() && c.parent.as_ref() == Some(link))
+					.map(|c| Point::Issue(c.link.clone()))
+					.collect(),
+				Some(Point::Org(_) | Point::Repo(_)) | None => {
+					let orgs = self.orgs();
+					return self.places().into_iter().filter(|o| o.point.above(&orgs).as_ref() == at).collect();
+				}
+			}
+		};
+		owned.into_iter().filter_map(|p| self.offered(p)).collect()
+	}
+
+	/// `None`: it holds nothing on the board.
+	fn offered(&self, point: Point) -> Option<Offered> {
+		let within = self.left_in(&Slice::Point(point.clone()))?;
+		if let Point::Milestone(_) = point {
+			let board = self.board.read();
+			let held = Query::default().run(&within, &board.as_ref()?.cards, None).expect("an empty query runs");
+			if held.is_empty() {
+				return None;
+			}
+		}
+		Some(Offered {
+			name: self.called(&point),
+			open: self.open_within(&within)?,
+			point,
+		})
+	}
+}
+
+pub(super) fn glyph_at(point: &Point) -> Glyph {
+	match point {
+		Point::Org(_) => Glyph::Users,
+		Point::Repo(_) => Glyph::Scope,
+		Point::Milestone(_) => Glyph::Sprint,
+		Point::Issue(_) => Glyph::Issue,
+	}
+}
+
 /// Open cards \`repo:<pattern>\` holds; \`None\` before the board arrives.
 fn open_in(ctx: &Ctx, pattern: &str) -> Option<usize> {
 	let board = ctx.board.read();
 	let q: Query = format!("repo:{pattern} is:open").parse().expect("a repo pattern parses as a clause");
-	Some(q.run(&board.as_ref()?.cards, ctx.me().as_deref()).expect("a repo clause runs").len())
+	Some(q.run(&Within::default(), &board.as_ref()?.cards, ctx.me().as_deref()).expect("a repo clause runs").len())
 }
 
 #[component]
@@ -39,8 +169,7 @@ pub(super) fn ScopeEditor(editing: Editing) -> Element {
 				let setup = ctx.setup.read();
 				let team = &setup.as_ref().expect("arrives with the library").scopes;
 				// the copy covers, flat, what the team scope and every one nested in it cover
-				let filter = scope_at(team, path).expect("offered from the team's");
-				let repos = filter.strip_prefix("repo:").expect("a scope's filter is a repo clause").split(',').map(str::to_string).collect();
+				let repos = scope_at(team, path).expect("offered from the team's").patterns();
 				(path.clone(), Scope { repos, children: BTreeMap::new() })
 			}
 		}
@@ -118,7 +247,7 @@ pub(super) fn ScopeEditor(editing: Editing) -> Element {
 					return;
 				}
 				if !matches!(editing, Editing::Own(_)) {
-					ctx.keep(LibraryEdit::Scope(Some(to))).await;
+					ctx.keep(LibraryEdit::Scope(Some(Slice::Named(to)))).await;
 				}
 				close();
 			});

@@ -8,7 +8,8 @@ use dioxus_fullstack::{HeaderMap, HeaderValue, http::header::CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
 use tedi_core::{
 	IssueLink, MilestoneLink,
-	board::{GroupBy, Scope, Thread, View},
+	board::{GroupBy, Scope, Slice, Thread, View},
+	chain::Orgs,
 	conflict::{CommentEdit, Conflict, FieldEdit},
 	workflow::{State, Workflow},
 };
@@ -27,6 +28,7 @@ pub struct Setup {
 	pub me: Option<String>,
 	/// What a card sits in, by name: their buckets are a state grouping's columns.
 	pub workflows: BTreeMap<String, Workflow>,
+	pub orgs: Orgs,
 	pub scopes: BTreeMap<String, Scope>,
 	pub views: Vec<View>,
 	/// The team's columns, offered beside each viewer's own.
@@ -48,9 +50,9 @@ pub struct Sprint {
 /// copy: switching to one copies it onto the screen, saving copies the screen's band out.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct Library {
-	/// What everything on screen is narrowed to, by path; none: the whole store.
+	/// What everything on screen is narrowed to; none: the whole store.
 	#[serde(default)]
-	pub scope: Option<String>,
+	pub scope: Option<Slice>,
 	/// The workspace last switched to, by name; none: the screen is no kept workspace's.
 	#[serde(default)]
 	pub workspace: Option<String>,
@@ -260,7 +262,7 @@ pub struct ShareLink {
 	pub version: u32,
 	/// A workspace's: the bands it carries; none for anything else.
 	pub bands: Vec<Band>,
-	pub scope: Option<String>,
+	pub scope: Option<Slice>,
 }
 impl std::fmt::Display for ShareLink {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -271,7 +273,7 @@ impl std::fmt::Display for ShareLink {
 			query.push(format!("bands={}", self.bands.iter().map(|b| band_name(*b)).collect::<Vec<_>>().join(",")));
 		}
 		if let Some(scope) = &self.scope {
-			query.push(format!("scope={}", enc(scope)));
+			query.push(format!("scope={}", enc(&scope.to_string())));
 		}
 		if !query.is_empty() {
 			write!(f, "?{}", query.join("&"))?;
@@ -301,7 +303,7 @@ impl std::str::FromStr for ShareLink {
 		for pair in query.split('&').filter(|p| !p.is_empty()) {
 			match pair.split_once('=').ok_or_else(bad)? {
 				("bands", list) => bands = list.split(',').map(|b| band_named(b).ok_or_else(bad)).collect::<Result<_, _>>()?,
-				("scope", path) => scope = Some(dec(path)?),
+				("scope", slice) => scope = Some(dec(slice)?.parse().map_err(|_| bad())?),
 				_ => return Err(bad()),
 			}
 		}
@@ -561,7 +563,7 @@ pub enum LibraryEdit {
 		what: Item,
 		on: bool,
 	},
-	Scope(Option<String>),
+	Scope(Option<Slice>),
 	/// The workspace the screen now shows: the one arranging it writes to.
 	Workspace(Option<String>),
 	/// A copy kept as `name`, remembering where it came from; a workspace's own views come along unless
@@ -680,7 +682,7 @@ pub async fn catalog() -> Result<Catalog, ServerFnError> {
 
 /// `item` pinned as it stands now; a workspace's only with `bands`.
 #[post("/api/share", headers: HeaderMap)]
-pub async fn share(item: Item, bands: Vec<Band>, scope: Option<String>) -> Result<ShareLink, ServerFnError> {
+pub async fn share(item: Item, bands: Vec<Band>, scope: Option<Slice>) -> Result<ShareLink, ServerFnError> {
 	crate::server::share(&headers, item, bands, scope).await.map_err(failed)
 }
 

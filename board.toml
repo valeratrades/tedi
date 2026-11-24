@@ -1,6 +1,7 @@
 # The team's board: what the team instance and `nix run .#dev` show. Versions of each object on the board are this
 # file's commits; a viewer's proposal is a pull request editing it.
 watch = ["EV-Main", "EV-Estate", "EV-Service-Arb"]
+orgs.EV-Main = ["EV-Service-Arb", "EV-Quant", "EV-Estate"]
 
 [board.workflows]
 kanban = "preset:kanban"
@@ -16,12 +17,3 @@ shown = ["repo", "assignees", "importance", "hours", "type", "blockers"]
 [board.columns.notion]
 by = "state:kanban"
 tints = { triage = "orange", selected = "blue", in_progress = "blue", in_review = "purple", done = "green" }
-
-[board.scopes.EV.EV-Main]
-repos = ["EV-Main/*"]
-
-[board.scopes.EV.EV-Estate]
-repos = ["EV-Estate/*"]
-
-[board.scopes.EV.EV-Service-Arb]
-repos = ["EV-Service-Arb/*"]

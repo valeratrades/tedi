@@ -30,7 +30,7 @@ with `libraries/04-workspace.json`. The renders are code's, never read back; the
 - `seed/state.json`: the GitHub mock's state (issues, labels, assignees, `blocked by`, linked and listed PRs, sprint milestones).
 - `seed/positions.json`: what the mock cannot hold, written into the store after `tedi --mock pull`: kanban / pull_requests
   states (`.states.json`) and label colours (`.meta.json`).
-- `config.toml`: two views, scopes EV ⊃ {EV-Estate, EV-Main, EV-Service-Arb}, column layouts, sprints' milestone repo.
+- `config.toml`: two views, the org ev-main owning service-arb and ev-estate, column layouts, sprints' milestone repo.
 - `libraries/<screen>.json`: the viewer's library (copied to `$XDG_DATA_HOME/tedi/web/mock_user.json` before each shot):
   tiles per band, current scope, workspaces, kept views. Layouts are tilers schema v3 (xl: 64 steps; 01: board tile 42, issue tile 22);
   `on_screen.columns` is empty, the app seeds a column per group. `workspace` names the active workspace tab.
@@ -44,6 +44,6 @@ with `libraries/04-workspace.json`. The renders are code's, never read back; the
 - Label colours: the mock lists names only; colours are injected into `.meta.json` and are guesses (Figma's chips are not read).
 - Counts (Triage 86, EV 153, ...): only the shown issues are seeded.
 - Viewer is `mock_user` (hardcoded in the mock), so `assignee:@me` matches nothing and Figma's "VT" avatar is a seeded `valeratrades` assignee.
-- Viewer scope `core` is top-level in the library (a viewer's scope cannot sit under a team scope); Figma nests it under EV.
+- Viewer scope `core` is top-level in the library; Figma nests it under EV.
 - Figma's own data is inconsistent across frames (Triage query names two buckets but shows four; PR #70 in ev-main appears under a service-arb scope; i:6 on every row of 02/03): 01 is followed.
 - "1 issue doesn't parse": a broken file is seeded in ev-main/gitops; the current UI does not show it.

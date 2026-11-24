@@ -103,11 +103,7 @@ pub(super) fn FacetMenu(facet: Facet, query: Query) -> Element {
 	let Some(Board { cards, .. }) = board.as_ref() else {
 		return rsx! { span { class: "p-2 text-caption text-ink-soft", "Counted once the board is here" } };
 	};
-	let within = match ctx.scope() {
-		Some((_, Some(filter))) => filter.parse().expect("a scope's filter is a repo clause"),
-		Some((path, None)) => unreachable!("a view under the gone scope {path} shows only that"),
-		None => Query::default(),
-	};
+	let within = ctx.within().expect("a view under a gone scope shows only that");
 	let tallies = match query.tally(facet, &within, cards, ctx.me().as_deref()) {
 		Ok(t) => t,
 		Err(e) => return rsx! { span { class: "p-2 text-caption text-accent-error", "{e}" } },

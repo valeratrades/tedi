@@ -23,6 +23,12 @@ const ISSUE_10: &str = "- [ ] Titre application <!-- @mock_user https://github.c
 const PARENT_WITH_CHILD: &str =
 	"- [ ] Parent <!-- @mock_user https://github.com/o/r/issues/10 -->\n  parent body\n\n  - [ ] Child <!--sub @mock_user https://github.com/o/r/issues/11 -->\n\n    child body\n";
 
+// ─── The ownership chain ──────────────────────────────────────────────────────
+
+const SITE: &str = "https://github.com/ev-service-arb/site/milestone/1";
+
+const TILERS: &str = "https://github.com/ev-main/tilers/milestone/1";
+const DATA: &str = "https://github.com/ev-quant/trading_data/milestone/1";
 pub(crate) type EditFn = Box<dyn FnOnce(&Path)>;
 
 impl TestContext {
@@ -2507,12 +2513,6 @@ async fn test_mv_rewrites_blocker_refs_elsewhere() {
 	assert!(ctx.github_calls().iter().any(|c| c.starts_with("update_issue_body(o, r, 12,")), "{:?}", ctx.github_calls());
 }
 
-// ─── The ownership chain ──────────────────────────────────────────────────────
-
-const SITE: &str = "https://github.com/ev-service-arb/site/milestone/1";
-const TILERS: &str = "https://github.com/ev-main/tilers/milestone/1";
-const DATA: &str = "https://github.com/ev-quant/trading_data/milestone/1";
-
 /// Github holds `milestones` (`(url, title, description)`), and the store as pulled; a sprint isn't pulled.
 fn chained(ctx: &TestContext, milestones: &[(&str, &str, &str)]) {
 	ctx.set_issues_dir_override();
@@ -2591,7 +2591,8 @@ fn refused(ctx: &TestContext, url: &str, flags: &[&str], child: &str) -> String 
 fn a_milestone_owning_itself_through_another_org_is_refused() {
 	let ctx = TestContext::build();
 	chained(&ctx, &[(SITE, "v1", "ship"), (TILERS, "0.5", &format!("- {SITE}"))]);
-	insta::assert_snapshot!(refused(&ctx, SITE, &[], TILERS), @r#"
+	let drawn = [refused(&ctx, SITE, &[], TILERS), refused(&ctx, SITE, &["--offline"], SITE)];
+	insta::assert_snapshot!(drawn.join("\n"), @r#"
 	tedi::chain::loop
 
 	  × ev-service-arb/site "v1" would own itself
@@ -2605,8 +2606,6 @@ fn a_milestone_owning_itself_through_another_org_is_refused() {
 	   ·     ╰── already contains ev-service-arb/site · v1
 	   ╰────
 	  help: drop the new link, or ev-service-arb/site from https://github.com/ev-main/tilers/milestone/1
-	"#);
-	insta::assert_snapshot!(refused(&ctx, SITE, &["--offline"], SITE), @r#"
 	tedi::chain::loop
 
 	  × ev-service-arb/site "v1" would own itself
@@ -2647,7 +2646,8 @@ fn a_chain_names_no_repo_twice() {
 	let ctx = TestContext::build();
 	let next = "https://github.com/ev-service-arb/site/milestone/2";
 	chained(&ctx, &[(SITE, "v1", &format!("- {TILERS}")), (next, "v1.1", ""), (TILERS, "0.5", "")]);
-	insta::assert_snapshot!(refused(&ctx, TILERS, &[], next), @r#"
+	let drawn = [refused(&ctx, TILERS, &[], next), refused(&ctx, SITE, &["--offline"], next)];
+	insta::assert_snapshot!(drawn.join("\n"), @r#"
 	tedi::chain::repo_twice
 
 	  × ev-main/tilers "0.5" can't own ev-service-arb/site "v1.1": ev-service-arb/site would be on one chain twice
@@ -2661,8 +2661,6 @@ fn a_chain_names_no_repo_twice() {
 	   ·                      ╰── added by this edit, and here again
 	   ╰────
 	  help: drop the new link: within a repo, milestones relate through their shape (`v1.0` → `v1.1`)
-	"#);
-	insta::assert_snapshot!(refused(&ctx, SITE, &["--offline"], next), @r#"
 	tedi::chain::repo_twice
 
 	  × ev-service-arb/site "v1" can't own ev-service-arb/site "v1.1": ev-service-arb/site would be on one chain twice
@@ -2681,9 +2679,22 @@ fn a_chain_names_no_repo_twice() {
 #[test]
 fn a_root_is_owned_by_no_milestone() {
 	let ctx = TestContext::build();
-	let bottlenecks = "https://github.com/ev-main/.github/milestone/1";
-	chained(&ctx, &[(SITE, "v1", "ship"), (bottlenecks, "Bottlenecks", ""), ("https://github.com/o/r/milestone/7", "1d", "")]);
-	insta::assert_snapshot!(refused(&ctx, SITE, &[], "https://github.com/o/r/milestone/7"), @r#"
+	let (bottlenecks, other) = ("https://github.com/ev-main/.github/milestone/1", "https://github.com/ev-quant/.github/milestone/1");
+	chained(
+		&ctx,
+		&[
+			(SITE, "v1", "ship"),
+			(bottlenecks, "Bottlenecks", ""),
+			(other, "Bottlenecks", ""),
+			("https://github.com/o/r/milestone/7", "1d", ""),
+		],
+	);
+	let drawn = [
+		refused(&ctx, SITE, &[], "https://github.com/o/r/milestone/7"),
+		refused(&ctx, SITE, &["--offline"], bottlenecks),
+		refused(&ctx, bottlenecks, &["--offline"], other),
+	];
+	insta::assert_snapshot!(drawn.join("\n"), @r#"
 	tedi::chain::root
 
 	  × ev-service-arb/site "v1" can't own o/r "1d": nothing owns a sprint
@@ -2694,8 +2705,6 @@ fn a_root_is_owned_by_no_milestone() {
 	   ·         ╰── added by this edit
 	   ╰────
 	  help: drop the new link
-	"#);
-	insta::assert_snapshot!(refused(&ctx, SITE, &["--offline"], bottlenecks), @r#"
 	tedi::chain::root
 
 	  × ev-service-arb/site "v1" can't own ev-main/.github "Bottlenecks": only a sprint owns Bottlenecks
@@ -2706,10 +2715,6 @@ fn a_root_is_owned_by_no_milestone() {
 	   ·                   ╰── added by this edit
 	   ╰────
 	  help: drop the new link
-	"#);
-	let other = "https://github.com/ev-quant/.github/milestone/1";
-	chained(&ctx, &[(other, "Bottlenecks", "")]);
-	insta::assert_snapshot!(refused(&ctx, bottlenecks, &["--offline"], other), @r#"
 	tedi::chain::root
 
 	  × ev-main/.github "Bottlenecks" can't own ev-quant/.github "Bottlenecks": only a sprint owns Bottlenecks
@@ -2944,7 +2949,8 @@ fn contained_milestones_added_on_both_sides_both_survive() {
 	ctx.remote_milestone("ev-service-arb/site", 1, "v1", &format!("ship\n\n- {DATA}"), &[]);
 	pull(&ctx, &["ev-service-arb/site"]);
 	for at in [held(SITE), ctx.remote_milestones()] {
-		assert!(at.contains(TILERS) && at.contains(DATA), "{at}");
+		assert!(at.contains(TILERS), "{at}");
+		assert!(at.contains(DATA), "{at}");
 	}
 
 	ctx.remote_milestone("ev-service-arb/site", 1, "v1", &format!("ship\n\n- {TILERS}"), &[]);

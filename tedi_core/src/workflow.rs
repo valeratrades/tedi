@@ -54,6 +54,9 @@ impl From<State> for String {
 pub struct Workflow {
 	/// Where an issue sits until something moves it.
 	pub intake: State,
+	/// The leaf an open issue in the tree of a Bottlenecks is shown no earlier than; none: it makes no difference.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub bottlenecks: Option<State>,
 	/// In order: a leaf's place in the preorder is what "forward" compares.
 	pub buckets: Vec<Bucket>,
 	/// Tried in order on each pull of an issue; the first yielding a move wins.
@@ -61,7 +64,7 @@ pub struct Workflow {
 	pub rules: Vec<Hook>,
 }
 impl Workflow {
-	/// The tree is well-formed and the intake a leaf of it.
+	/// The tree is well-formed, the intake and the Bottlenecks' leaf leaves of it.
 	pub fn check(&self) -> Result<(), WorkflowError> {
 		fn names(buckets: &[Bucket]) -> Result<(), WorkflowError> {
 			for (i, b) in buckets.iter().enumerate() {
@@ -79,6 +82,9 @@ impl Workflow {
 			return Err(WorkflowError::Empty);
 		}
 		names(&self.buckets)?;
+		if let Some(leaf) = &self.bottlenecks {
+			self.leaf(leaf)?;
+		}
 		self.leaf(&self.intake)
 	}
 
@@ -191,6 +197,7 @@ mod tests {
 	fn leaves_in_preorder() {
 		let w = Workflow {
 			intake: "todo".parse().unwrap(),
+			bottlenecks: None,
 			buckets: vec![
 				bucket("todo", vec![]),
 				bucket("doing", vec![bucket("code", vec![]), bucket("test", vec![])]),

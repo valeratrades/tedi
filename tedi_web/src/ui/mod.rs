@@ -27,7 +27,7 @@ use futures::StreamExt as _;
 use icons::{Glyph, Icon};
 use tedi_core::{
 	IssueLink,
-	board::{Board, Card, Part, Scope, View, scope_at},
+	board::{Board, Card, Part, Scope, Slice, View, Within},
 	conflict::{CommentEdit, Conflict},
 	workflow::Workflow,
 };
@@ -176,11 +176,25 @@ impl Ctx {
 		views
 	}
 
-	/// The scope everything on screen is narrowed to: its path, and its filter while it is still configured.
-	fn scope(&self) -> Option<(String, Option<String>)> {
-		let path = self.library.read().as_ref()?.scope.clone()?;
-		let at = scope_at(&self.scopes(), &path);
-		Some((path, at))
+	/// What everything on screen is narrowed to.
+	fn scope(&self) -> Option<Slice> {
+		self.library.read().as_ref()?.scope.clone()
+	}
+
+	/// What the scope leaves in of the board; the error: it is no longer there, or the board isn't yet.
+	fn within(&self) -> Result<Within, String> {
+		match self.scope() {
+			None => Ok(Within::default()),
+			Some(slice) => self.left_in(&slice).ok_or_else(|| match &slice {
+				Slice::Named(path) => format!("the scope {path} is no longer configured: pick another in the scope bar"),
+				Slice::Point(point) => format!("nothing of {point} is on the board: pick another scope in the scope bar"),
+			}),
+		}
+	}
+
+	fn left_in(&self, slice: &Slice) -> Option<Within> {
+		let (board, setup) = (self.board.read(), self.setup.read());
+		slice.within(board.as_ref()?, &setup.as_ref()?.orgs, &self.scopes())
 	}
 
 	/// The team's, then the viewer's own.

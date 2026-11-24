@@ -532,3 +532,70 @@ fn a_viewers_scope_nests_in_any_scope_by_its_path() {
 	assert_eq!(library["scopes"], serde_json::json!({}));
 	assert_eq!(library["scope"], serde_json::Value::Null);
 }
+
+/// A screen sits in a point of the chain or in a named scope, told apart by the text alone.
+#[test]
+fn a_point_of_the_chain_is_a_scope() {
+	let ctx = TestContext::build();
+	let (_server, port) = serve(&ctx, &format!("orgs.Main = [\"o\"]\n{BOARD}"), &["--viewer-header", "X-Auth-User"]);
+	let me = Some("alice");
+	let (status, setup) = call(port, "GET", "/api/setup", me, None);
+	assert_eq!(status, 200, "{setup}");
+	assert_eq!(serde_json::from_str::<serde_json::Value>(&setup).unwrap()["orgs"], serde_json::json!({ "main": ["o"] }));
+
+	let sit = |scope: &str| edit(port, me, serde_json::json!({ "Scope": scope })).0;
+	for point in [
+		"https://github.com/o",
+		"https://github.com/o/r",
+		"https://github.com/o/r/milestone/1",
+		"https://github.com/O/r/issues/1",
+	] {
+		assert_eq!(sit(point), 200, "{point}");
+		assert_eq!(library(port, me)["scope"], point.to_lowercase());
+	}
+	let long = format!("https://github.com/{}", "o".repeat(40));
+	for bad in ["https://github.com/", "https://github.com/o/r/pull/1", "https://github.com/o/r/issues/x", &long, "Nowhere"] {
+		assert_ne!(sit(bad), 200, "{bad}");
+	}
+	assert_eq!(library(port, me)["scope"], "https://github.com/o/r/issues/1");
+	assert_eq!(sit("Main"), 200, "a named one still reads by its path");
+
+	let kept = |name: &str| edit(port, me, serde_json::json!({ "Keep": { "Scope": { "name": name, "scope": { "repos": ["o/core"] } } } })).0;
+	assert_ne!(kept("https://github.com/o"), 200, "named as a point");
+	assert_eq!(kept("core"), 200);
+	assert_ne!(
+		edit(port, me, serde_json::json!({ "Rename": { "shelf": "Scopes", "from": "core", "to": "https://github.com/core" } })).0,
+		200
+	);
+
+	assert_eq!(
+		edit(
+			port,
+			me,
+			keep_workspace("desk", "Xl", "{\"version\":2,\"grid\":{\"cells\":[],\"state\":\"Settled\",\"next_group_id\":1}}")
+		)
+		.0,
+		200
+	);
+	let ask = serde_json::json!({ "item": { "Workspace": "desk" }, "bands": ["Xl"], "scope": "https://github.com/o/r" });
+	let (status, link) = call(port, "POST", "/api/share", me, Some(ask));
+	assert_eq!(status, 200, "{link}");
+	let link: String = serde_json::from_str(&link).unwrap();
+	assert_eq!(link, "/l/ws/alice/desk@1?bands=xl&scope=https%3A%2F%2Fgithub.com%2Fo%2Fr");
+	let (status, body) = call(port, "POST", "/api/shared", Some("bob"), Some(serde_json::json!({ "link": link })));
+	assert_eq!(status, 200, "{body}");
+}
+
+#[test]
+fn a_config_whose_orgs_or_scopes_cant_be_is_refused() {
+	for (config, why) in [
+		(format!("orgs.a = [\"b\"]\norgs.b = [\"c\"]\n{BOARD}"), "orgs nest one level"),
+		(format!("{BOARD}\n[board.scopes.\"https://github.com/o\"]\nrepos = [\"o/*\"]\n"), "is a place there"),
+	] {
+		let ctx = TestContext::build();
+		std::fs::write(ctx.xdg.inner.root.join("config/tedi.toml"), config).unwrap();
+		let out = ctx.run(&["--mock", "web", "--addr", "127.0.0.1:0"]);
+		assert!(!out.status.success(), "{}", out.stdout);
+		assert!(out.stderr.contains(why) || out.stdout.contains(why), "stdout: {}, stderr: {}", out.stdout, out.stderr);
+	}
+}

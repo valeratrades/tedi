@@ -62,7 +62,7 @@ pub struct Board {
 	#[serde(default)] // a board may place issues in none
 	pub workflows: BTreeMap<String, String>,
 	pub views: Vec<tedi_task_operations::board::View>,
-	/// Named slices of the team's repos, nesting narrower ones (`[board.scopes.EV-Main.tooling] repos = ["EV-Main/tilers"]`).
+	/// Named slices of the team's repos, nesting narrower ones (`[board.scopes.web.tooling] repos = ["EV-Main/tilers"]`).
 	#[serde(default)] // a board may have none
 	pub scopes: BTreeMap<String, tedi_task_operations::board::Scope>,
 	/// Column colorings every viewer is offered (`[board.columns.notion] by = "state:kanban"`, `tints = { triage = "orange" }`).

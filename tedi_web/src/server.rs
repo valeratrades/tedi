@@ -20,7 +20,8 @@ use dioxus_fullstack::ServerEvents;
 use futures::{Stream, StreamExt as _};
 use tedi_core::{
 	IssueLink, MilestoneLink, RepoInfo, TaskView,
-	board::{Part, Scope, Thread, View, scope_at},
+	board::{Part, Scope, Slice, Thread, View, scope_at},
+	chain::{GITHUB, Orgs},
 	conflict::{CommentEdit, Conflict, FieldEdit},
 	workflow::State,
 };
@@ -46,6 +47,7 @@ pub struct Settings {
 	pub mode: SyncMode,
 	pub workflows: Workflows,
 	pub views: Vec<View>,
+	pub orgs: Orgs,
 	pub scopes: BTreeMap<String, Scope>,
 	pub columns: BTreeMap<String, crate::api::Columns>,
 	pub workspaces: BTreeMap<String, Arrangement>,
@@ -86,6 +88,9 @@ pub async fn serve(config: Settings) -> Result<()> {
 	use tower_http::services::{ServeDir, ServeFile};
 
 	let addr = config.addr;
+	for name in config.scopes.keys() {
+		nameable(name)?;
+	}
 	SETTINGS.set(config).map_err(|_| eyre!("one server per process"))?;
 	//UNBOUNDED announcements are repo names, deduplicated by the puller
 	let (announce, announced) = mpsc::unbounded_channel::<String>();
@@ -136,6 +141,7 @@ pub fn setup() -> Setup {
 		me: editor(),
 		workflows: s.workflows.iter().map(|(name, w)| (name.clone(), w.workflow.clone())).collect(),
 		views: s.views.clone(),
+		orgs: s.orgs.clone(),
 		scopes: s.scopes.clone(),
 		columns: s.columns.clone(),
 		workspaces: s.workspaces.clone(),
@@ -294,7 +300,7 @@ pub async fn catalog(headers: &HeaderMap) -> Result<Catalog> {
 				refers.insert((owner_of(viewer, &item), item));
 			}
 		}
-		if let Some(path) = &library.scope {
+		if let Some(Slice::Named(path)) = &library.scope {
 			let mut at = String::new();
 			for name in path.split(" / ") {
 				at = if at.is_empty() { name.to_string() } else { format!("{at} / {name}") };
@@ -372,7 +378,7 @@ pub async fn catalog(headers: &HeaderMap) -> Result<Catalog> {
 	Ok(Catalog { entries })
 }
 
-pub async fn share(headers: &HeaderMap, item: Item, bands: Vec<tilers_core::Band>, scope: Option<String>) -> Result<ShareLink> {
+pub async fn share(headers: &HeaderMap, item: Item, bands: Vec<tilers_core::Band>, scope: Option<Slice>) -> Result<ShareLink> {
 	let me = viewer(headers)?;
 	let workspace = matches!(item, Item::Workspace(_));
 	if workspace == bands.is_empty() {
@@ -846,7 +852,7 @@ fn apply(library: &mut Library, edit: LibraryEdit, fetched: Option<Fetched>) -> 
 				}
 			}
 			match shelf {
-				Shelf::Scopes if library.scope.as_deref().is_some_and(|p| within(p, &name).is_some()) => library.scope = None,
+				Shelf::Scopes if matches!(&library.scope, Some(Slice::Named(p)) if within(p, &name).is_some()) => library.scope = None,
 				Shelf::Workspaces => {
 					if library.workspace.as_deref() == Some(&name) {
 						library.workspace = None;
@@ -862,13 +868,13 @@ fn apply(library: &mut Library, edit: LibraryEdit, fetched: Option<Fetched>) -> 
 			library.favorites.remove(&item);
 			library.forks.retain(|f| f.item != item);
 		}
-		LibraryEdit::Scope(path) => {
-			if let Some(path) = &path
+		LibraryEdit::Scope(scope) => {
+			if let Some(Slice::Named(path)) = &scope
 				&& scope_at(&library.scopes(&settings().scopes).map_err(|e| eyre!(e))?, path).is_none()
 			{
 				bail!("no scope {path}");
 			}
-			library.scope = path;
+			library.scope = scope;
 		}
 		LibraryEdit::Workspace(name) => {
 			if let Some(name) = &name {
@@ -956,6 +962,7 @@ fn apply(library: &mut Library, edit: LibraryEdit, fetched: Option<Fetched>) -> 
 
 /// A new scope can sit at `path`: nothing holds that path yet, and its parent, team's or own, exists.
 fn placeable(library: &Library, path: &str) -> Result<()> {
+	nameable(path)?;
 	let tree = library.scopes(&settings().scopes).map_err(|e| eyre!(e))?;
 	if scope_at(&tree, path).is_some() {
 		bail!("{path} is taken");
@@ -966,6 +973,14 @@ fn placeable(library: &Library, path: &str) -> Result<()> {
 		bail!("no scope {parent} to keep {path} in");
 	}
 	Ok(())
+}
+
+/// A scope may be called so: as text, it is told from a point of the chain.
+fn nameable(scope: &str) -> Result<()> {
+	match scope.starts_with(GITHUB) {
+		true => bail!("no scope is named {scope}: what starts with {GITHUB} is a place there"),
+		false => Ok(()),
+	}
 }
 
 //#[codestyle::skip(swappable-args)]
@@ -994,8 +1009,10 @@ fn rename_scope(library: &mut Library, from: &str, to: &str) -> Result<()> {
 			f.item = Item::Scope(to);
 		}
 	}
-	if let Some(at) = library.scope.as_deref().and_then(moved) {
-		library.scope = Some(at);
+	if let Some(Slice::Named(at)) = &mut library.scope
+		&& let Some(to) = moved(at)
+	{
+		*at = to;
 	}
 	Ok(())
 }

@@ -8,7 +8,8 @@ use dioxus::{core::spawn_forever, prelude::*};
 use ev_lib::uikit_dioxus::{Popover, PopoverContent, PopoverTrigger, Spinner, Textarea};
 use tedi_core::{
 	CloseState, IssueLink, PrState, Review,
-	board::{Card, Query, Said, Shown, Target},
+	board::{Card, Said, Shown, Slice, Target},
+	chain::Point,
 	conflict::{CommentEdit, Conflict, Field as EditedField, FieldEdit, list, sides},
 	labels::{Color, Scheme},
 };
@@ -39,6 +40,12 @@ pub fn IssuePanel(link: IssueLink) -> Element {
 					KindIcon { card: card.clone() }
 					a { class: "truncate text-mono-s text-ink-soft hover:underline", href: "{link}", target: "_blank", "{link.project()}#{link.number()}" }
 					div { class: "flex-1" }
+					Go {
+						to: ctx.at.read().with_scope(Some(Slice::Point(Point::Issue(link.clone())))),
+						class: "inline-flex size-6 shrink-0 items-center justify-center rounded-[var(--control-radius)] text-ink-soft hover:bg-hover hover:text-ink",
+						title: "Scope to it",
+						Icon { glyph: Glyph::Scope }
+					}
 					IconBtn { glyph: Glyph::Link, title: "Copy its link", onclick: { let link = link.clone(); move |_| copy(ctx, link.to_string()) } }
 				}
 				if card.pr.is_none() {
@@ -507,12 +514,9 @@ fn Milestones(card: Card) -> Element {
 	let home = card.link.project();
 	let board = ctx.board.read();
 	let board = board.as_ref().expect("the card came from it");
-	let within: Query = match ctx.scope() {
-		Some((_, Some(filter))) => filter.parse().expect("a scope's filter is a repo clause"),
-		Some((_, None)) | None => Query::default(), // its scope is gone from the config: the panel shows without one
-	};
+	let within = ctx.within().unwrap_or_default(); // its scope is no longer there: the panel shows without one
 	let hosts = |t: &Target| t.hosted.contains(&card.link);
-	let mut offered: Vec<&Target> = board.targets.iter().filter(|t| within.covers(t.link.repo_info()) || hosts(t)).collect();
+	let mut offered: Vec<&Target> = board.targets.iter().filter(|t| within.offers(&t.link) || hosts(t)).collect();
 	offered.sort_by_key(|t| (t.link.repo_info() != home, t.link.repo_info().to_string(), t.due_on.is_none(), t.due_on, t.title.to_lowercase()));
 	let hosting: Vec<&Target> = offered.iter().copied().filter(|t| hosts(t)).collect();
 	let due = |at: jiff::Timestamp| at.strftime("%b %-d").to_string();

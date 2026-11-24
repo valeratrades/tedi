@@ -5,12 +5,13 @@ test.skip(({ viewport }) => viewport!.width < 768, "the shelves are behind a she
 const at = (page: Page) => page.evaluate(() => location.pathname + location.search);
 const shelf = (page: Page, name: string) => page.locator("aside").getByRole("link", { name, exact: true });
 const tab = (page: Page, name: string) => page.locator(`.tl-tab[data-panel="view:${name}"]`);
+const crumb = (page: Page, name: string) => page.locator("div:has(> div button[aria-haspopup])").getByRole("link", { name, exact: true });
 const ISSUE = /[?&]issue=service-arb\/[\w.-]+\/\d+/;
 const card = (page: Page) => page.locator('a[href*="issue=service-arb/"]').first();
 
 test("a bare address is the screen as left, then names it", async ({ page }) => {
   await page.goto("/");
-  await expect.poll(() => at(page)).toMatch(/^\/view\/\w{8}\?ws=\w{8}&scope=EV%20%2F%20EV-Service-Arb$/);
+  await expect.poll(() => at(page)).toMatch(/^\/view\/\w{8}\?ws=\w{8}&scope=https%3A%2F%2Fgithub\.com%2Fservice-arb$/);
   await expect(tab(page, "Release checklist")).toBeVisible();
 });
 
@@ -84,12 +85,56 @@ test("a workspace and a scope are in the query", async ({ page }) => {
   const before = await at(page);
   await shelf(page, "Triage desk").click();
   await expect.poll(async () => new URL(page.url()).searchParams.get("ws")).not.toBe(new URL(before, page.url()).searchParams.get("ws"));
-  await shelf(page, "EV-Main").click();
-  await expect.poll(async () => new URL(page.url()).searchParams.get("scope")).toBe("EV / EV-Main");
-  await page.goBack();
-  await expect.poll(async () => new URL(page.url()).searchParams.get("scope")).toBe("EV / EV-Service-Arb");
+  const scope = async () => new URL(page.url()).searchParams.get("scope");
+  await crumb(page, "ev-main").click();
+  await expect.poll(scope).toBe("https://github.com/ev-main");
+  await shelf(page, "core").click();
+  await expect.poll(scope).toBe("core");
+  for (const was of ["https://github.com/ev-main", "https://github.com/service-arb"]) {
+    await page.goBack();
+    await expect.poll(scope).toBe(was);
+  }
   await page.goBack();
   await expect.poll(() => at(page)).toBe(before);
+});
+
+test("the scope bar goes down the chain, and each crumb back up it", async ({ page }) => {
+  await page.goto("/");
+  const scope = async () => new URL(page.url()).searchParams.get("scope");
+  await expect.poll(scope).toBe("https://github.com/service-arb");
+  const under = async (at: string, name: string) => {
+    await page.getByRole("button", { name: at, exact: true }).click();
+    await page.getByRole("link", { name: new RegExp(`^${name}\\d+$`) }).click();
+  };
+  await under("service-arb", "playbook");
+  await expect.poll(scope).toBe("https://github.com/service-arb/playbook");
+  await expect(crumb(page, "ev-main")).toBeVisible();
+  await crumb(page, "service-arb").click();
+  await expect.poll(scope).toBe("https://github.com/service-arb");
+  await under("service-arb", "All repos");
+  await expect.poll(scope).toBe(null);
+  await under("All repos", "ev-main");
+  await expect.poll(scope).toBe("https://github.com/ev-main");
+  await under("ev-main", "core · mine");
+  await expect.poll(scope).toBe("core");
+});
+
+test("a share link carries the scope, of either kind", async ({ page }) => {
+  await page.goto("/");
+  await expect.poll(() => at(page)).toMatch(/ws=/);
+  const shared = async () => {
+    const [answer] = await Promise.all([page.waitForResponse(/\/api\/share$/), page.getByRole("button", { name: "Copy a link to this screen" }).click()]);
+    return new URL(await answer.json(), page.url()).searchParams.get("scope");
+  };
+  expect(await shared()).toBe("https://github.com/service-arb");
+  await shelf(page, "core").click();
+  await expect.poll(async () => new URL(page.url()).searchParams.get("scope")).toBe("core");
+  expect(await shared()).toBe("core");
+});
+
+test("a point nothing of which is on the board says so", async ({ page }) => {
+  await page.goto("/?scope=https%3A%2F%2Fgithub.com%2Fnobody");
+  await expect(page.getByText("nothing of it is on the board")).toBeVisible();
 });
 
 test("an address nothing has says so", async ({ page }) => {

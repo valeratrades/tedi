@@ -1,5 +1,5 @@
 {
-  "scope": "EV / EV-Service-Arb",
+  "scope": "https://github.com/service-arb",
   "on_screen": {
     "tiles": {
       "Xl": "{\"version\":3,\"grid\":{\"cells\":[{\"group\":{\"id\":0,\"tabs\":[\"builder:Triage\",\"view:Triage\"],\"active\":0},\"x\":0,\"y\":0,\"w\":64,\"h\":40,\"desired_w\":null,\"desired_x\":null,\"desired_h\":null,\"rank\":0}],\"state\":\"Settled\",\"next_group_id\":1}}"

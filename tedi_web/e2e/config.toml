@@ -1,6 +1,7 @@
-# What Figma shows: team board, scopes by owner, two views.
+# What Figma shows: team board, two views.
 github_token = "mock"
 watch = ["service-arb", "ev-main", "ev-estate"]
+orgs.ev-main = ["service-arb", "ev-estate"]
 
 [milestones]
 url = "ev-main/devops"
@@ -30,12 +31,3 @@ tints = { triage = "orange", selected = "blue", in_progress = "blue", in_review 
 [board.columns."triage focus"]
 by = "state:kanban"
 tints = { triage = "orange", selected = "blue" }
-
-[board.scopes.EV.EV-Estate]
-repos = ["ev-estate/*"]
-
-[board.scopes.EV.EV-Main]
-repos = ["ev-main/*"]
-
-[board.scopes.EV.EV-Service-Arb]
-repos = ["service-arb/*"]

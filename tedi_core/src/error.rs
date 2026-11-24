@@ -35,167 +35,6 @@ impl From<ChainDiagnostic> for ChainError {
 	}
 }
 
-#[derive(Debug, miette::Diagnostic, thiserror::Error)]
-pub(crate) enum ChainDiagnostic {
-	#[error("{title}")]
-	#[diagnostic(code("tedi::chain::loop"))]
-	Loop {
-		title: String,
-		#[source_code]
-		src: NamedSource<String>,
-		#[label(collection)]
-		labels: Vec<LabeledSpan>,
-		#[help]
-		help: String,
-	},
-	#[error("{title}")]
-	#[diagnostic(code(tedi::chain::repo_twice))]
-	RepoTwice {
-		title: String,
-		#[source_code]
-		src: NamedSource<String>,
-		#[label(collection)]
-		labels: Vec<LabeledSpan>,
-		#[help]
-		help: String,
-	},
-	#[error("{title}")]
-	#[diagnostic(code(tedi::chain::root))]
-	Root {
-		title: String,
-		#[source_code]
-		src: NamedSource<String>,
-		#[label(collection)]
-		labels: Vec<LabeledSpan>,
-		#[help]
-		help: String,
-	},
-	#[error("{} is not stored here, so what it owns is unknown", link.as_str())]
-	#[diagnostic(code(tedi::chain::unknown), help("own it online: it is fetched with everything it contains"))]
-	Unknown { link: MilestoneLink },
-}
-impl ChainDiagnostic {
-	pub(crate) fn unknown(link: &MilestoneLink) -> Self {
-		Self::Unknown { link: link.clone() }
-	}
-
-	/// `nodes`: each owns the next, the last the first.
-	pub(crate) fn looped(nodes: &[Node], edge: Edge) -> Self {
-		let (first, last) = (&nodes[0], &nodes[nodes.len() - 1]);
-		let mut drawing = Drawing::default();
-		drawing.line("╭─► ", &first.to_string());
-		for (i, node) in nodes.iter().enumerate().skip(1) {
-			drawing.line(&format!("│   {}└─► ", "    ".repeat(i - 1)), &node.to_string());
-		}
-		drawing.line("", &format!("╰{}┘", "─".repeat(4 * nodes.len() - 1)));
-		let closing = nodes.len();
-		let labels = match edge {
-			Edge::Added if nodes.len() == 1 => vec![drawing.label(closing, "added by this edit")],
-			Edge::Added => vec![drawing.label(1, "added by this edit"), drawing.label(closing, &format!("already contains {first}"))],
-			Edge::Held => vec![drawing.label(closing, &format!("contains {first}"))],
-		};
-		let would = if edge == Edge::Added { "would own" } else { "owns" };
-		Self::Loop {
-			title: format!("{} {would} itself", named(first)),
-			src: drawing.source(),
-			labels,
-			help: match edge {
-				Edge::Added if nodes.len() == 1 => "drop the new link".into(),
-				Edge::Added => format!("drop the new link, or {} from {}", first.link.repo_info(), last.link.as_str()),
-				Edge::Held => format!("drop one of its links, in {}", urls(nodes)),
-			},
-		}
-	}
-
-	/// `nodes`: each owns the next, the first and the last of one repo; `added`: the first below the edge.
-	pub(crate) fn repo_twice(nodes: &[Node], added: usize, edge: Edge) -> Self {
-		let last = nodes.len() - 1;
-		let repo = nodes[0].link.repo_info();
-		let drawing = Drawing::of_chain(nodes);
-		let mut labels = vec![drawing.label(0, &format!("{repo} is here"))];
-		match edge {
-			Edge::Added if added == last => labels.push(drawing.label(last, "added by this edit, and here again")),
-			Edge::Added => labels.extend([drawing.label(added, "added by this edit"), drawing.label(last, "and here again")]),
-			Edge::Held => labels.push(drawing.label(last, "and here again")),
-		}
-		Self::RepoTwice {
-			title: match edge {
-				Edge::Added => format!("{} can't own {}: {repo} would be on one chain twice", named(&nodes[added - 1]), named(&nodes[added])),
-				Edge::Held => format!("{repo} is on one chain twice"),
-			},
-			src: drawing.source(),
-			labels,
-			help: match edge {
-				Edge::Added => "drop the new link: within a repo, milestones relate through their shape (`v1.0` → `v1.1`)".into(),
-				Edge::Held => format!("within a repo, milestones relate through their shape (`v1.0` → `v1.1`): drop a link, in {}", urls(&nodes[..last])),
-			},
-		}
-	}
-
-	/// `nodes`: an owner, and the root it can't own.
-	pub(crate) fn root(nodes: &[Node], kind: Kind, edge: Edge) -> Self {
-		let drawing = Drawing::of_chain(nodes);
-		let why = match kind {
-			Kind::Sprint => "nothing owns a sprint",
-			Kind::Bottlenecks => "only a sprint owns Bottlenecks",
-			Kind::Milestone => unreachable!("a milestone is no root"),
-		};
-		Self::Root {
-			title: format!("{} can't own {}: {why}", named(&nodes[0]), named(&nodes[1])),
-			labels: match edge {
-				Edge::Added => vec![drawing.label(1, "added by this edit")],
-				Edge::Held => Vec::new(),
-			},
-			src: drawing.source(),
-			help: match edge {
-				Edge::Added => "drop the new link".into(),
-				Edge::Held => format!("drop the link, in {}", urls(&nodes[..1])),
-			},
-		}
-	}
-}
-
-/// A chain as text, and where in it each line's own text is.
-#[derive(Default)]
-struct Drawing {
-	text: String,
-	spans: Vec<(usize, usize)>,
-}
-impl Drawing {
-	fn of_chain(nodes: &[Node]) -> Self {
-		let mut drawing = Self::default();
-		for (i, node) in nodes.iter().enumerate() {
-			let lead = if i == 0 { String::new() } else { format!("{}└─► ", "    ".repeat(i - 1)) };
-			drawing.line(&lead, &node.to_string());
-		}
-		drawing
-	}
-
-	fn line(&mut self, lead: &str, text: &str) {
-		self.text.push_str(lead);
-		self.spans.push((self.text.len(), text.len()));
-		self.text.push_str(text);
-		self.text.push('\n');
-	}
-
-	fn label(&self, line: usize, says: &str) -> LabeledSpan {
-		let (offset, len) = self.spans[line];
-		LabeledSpan::new(Some(says.into()), offset, len)
-	}
-
-	fn source(self) -> NamedSource<String> {
-		NamedSource::new("ownership", self.text)
-	}
-}
-
-fn named(node: &Node) -> String {
-	format!("{} {:?}", node.link.repo_info(), node.title)
-}
-
-fn urls(nodes: &[Node]) -> String {
-	nodes.iter().map(|n| n.link.as_str()).collect::<Vec<_>>().join(", ")
-}
-
 /// Error type for issue file parsing.
 ///
 /// Contains pre-rendered miette diagnostic and SpanTrace captured at error creation time.
@@ -206,7 +45,6 @@ pub struct ParseError {
 	spantrace: SpanTrace,
 	backtrace: Backtrace,
 }
-
 impl ParseError {
 	fn from_diagnostic(diag: ParseDiagnostic) -> Self {
 		let rendered = format!("{:?}", miette::Report::new(diag));
@@ -292,6 +130,7 @@ pub struct TitleInGitPathError {
 	#[label("expected GitId, found Title selector")]
 	span: SourceSpan,
 }
+
 /// Holds source content and filename for error reporting.
 #[derive(Clone, Debug)]
 pub struct ParseContext {
@@ -335,6 +174,168 @@ impl ParseContext {
 		}
 		self.line_span(start_line)
 	}
+}
+
+#[derive(Debug, miette::Diagnostic, thiserror::Error)]
+pub(crate) enum ChainDiagnostic {
+	#[error("{title}")]
+	#[diagnostic(code("tedi::chain::loop"))]
+	Loop {
+		title: String,
+		#[source_code]
+		src: NamedSource<String>,
+		#[label(collection)]
+		labels: Vec<LabeledSpan>,
+		#[help]
+		help: String,
+	},
+	#[error("{title}")]
+	#[diagnostic(code(tedi::chain::repo_twice))]
+	RepoTwice {
+		title: String,
+		#[source_code]
+		src: NamedSource<String>,
+		#[label(collection)]
+		labels: Vec<LabeledSpan>,
+		#[help]
+		help: String,
+	},
+	#[error("{title}")]
+	#[diagnostic(code(tedi::chain::root))]
+	Root {
+		title: String,
+		#[source_code]
+		src: NamedSource<String>,
+		#[label(collection)]
+		labels: Vec<LabeledSpan>,
+		#[help]
+		help: String,
+	},
+	#[error("{} is not stored here, so what it owns is unknown", link.as_str())]
+	#[diagnostic(code(tedi::chain::unknown), help("own it online: it is fetched with everything it contains"))]
+	Unknown { link: MilestoneLink },
+}
+impl ChainDiagnostic {
+	pub(crate) fn unknown(link: &MilestoneLink) -> Self {
+		Self::Unknown { link: link.clone() }
+	}
+
+	/// `nodes`: each owns the next, the last the first.
+	pub(crate) fn looped(nodes: &[Node], edge: Edge) -> Self {
+		let (first, last) = (&nodes[0], &nodes[nodes.len() - 1]);
+		let mut drawing = Drawing::default();
+		drawing.line("╭─► ", first);
+		for (i, node) in nodes.iter().enumerate().skip(1) {
+			drawing.line(&format!("│   {}└─► ", "    ".repeat(i - 1)), node);
+		}
+		drawing.line("", format!("╰{}┘", "─".repeat(4 * nodes.len() - 1)));
+		let closing = nodes.len();
+		let labels = match edge {
+			Edge::Added if nodes.len() == 1 => vec![drawing.label(closing, "added by this edit")],
+			Edge::Added => vec![drawing.label(1, "added by this edit"), drawing.label(closing, &format!("already contains {first}"))],
+			Edge::Held => vec![drawing.label(closing, &format!("contains {first}"))],
+		};
+		let would = if edge == Edge::Added { "would own" } else { "owns" };
+		Self::Loop {
+			title: format!("{} {would} itself", named(first)),
+			src: drawing.source(),
+			labels,
+			help: match edge {
+				Edge::Added if nodes.len() == 1 => "drop the new link".into(),
+				Edge::Added => format!("drop the new link, or {} from {}", first.link.repo_info(), last.link.as_str()),
+				Edge::Held => format!("drop one of its links, in {}", urls(nodes)),
+			},
+		}
+	}
+
+	/// `nodes`: each owns the next, the first and the last of one repo; `added`: the first below the edge.
+	pub(crate) fn repo_twice(nodes: &[Node], added: usize, edge: Edge) -> Self {
+		let last = nodes.len() - 1;
+		let repo = nodes[0].link.repo_info();
+		let drawing = Drawing::of_chain(nodes);
+		let mut labels = vec![drawing.label(0, &format!("{repo} is here"))];
+		match edge {
+			Edge::Added if added == last => labels.push(drawing.label(last, "added by this edit, and here again")),
+			Edge::Added => labels.extend([drawing.label(added, "added by this edit"), drawing.label(last, "and here again")]),
+			Edge::Held => labels.push(drawing.label(last, "and here again")),
+		}
+		Self::RepoTwice {
+			title: match edge {
+				Edge::Added => format!("{} can't own {}: {repo} would be on one chain twice", named(&nodes[added - 1]), named(&nodes[added])),
+				Edge::Held => format!("{repo} is on one chain twice"),
+			},
+			src: drawing.source(),
+			labels,
+			help: match edge {
+				Edge::Added => "drop the new link: within a repo, milestones relate through their shape (`v1.0` → `v1.1`)".into(),
+				Edge::Held => format!("within a repo, milestones relate through their shape (`v1.0` → `v1.1`): drop a link, in {}", urls(&nodes[..last])),
+			},
+		}
+	}
+
+	/// `nodes`: an owner, and the root it can't own.
+	pub(crate) fn root(nodes: &[Node], kind: Kind, edge: Edge) -> Self {
+		let drawing = Drawing::of_chain(nodes);
+		let why = match kind {
+			Kind::Sprint => "nothing owns a sprint",
+			Kind::Bottlenecks => "only a sprint owns Bottlenecks",
+			Kind::Milestone => unreachable!("a milestone is no root"),
+		};
+		Self::Root {
+			title: format!("{} can't own {}: {why}", named(&nodes[0]), named(&nodes[1])),
+			labels: match edge {
+				Edge::Added => vec![drawing.label(1, "added by this edit")],
+				Edge::Held => Vec::new(),
+			},
+			src: drawing.source(),
+			help: match edge {
+				Edge::Added => "drop the new link".into(),
+				Edge::Held => format!("drop the link, in {}", urls(&nodes[..1])),
+			},
+		}
+	}
+}
+
+/// A chain as text, and where in it each line's own text is.
+#[derive(Default)]
+struct Drawing {
+	text: String,
+	spans: Vec<(usize, usize)>,
+}
+impl Drawing {
+	fn of_chain(nodes: &[Node]) -> Self {
+		let mut drawing = Self::default();
+		for (i, node) in nodes.iter().enumerate() {
+			let lead = if i == 0 { String::new() } else { format!("{}└─► ", "    ".repeat(i - 1)) };
+			drawing.line(&lead, node);
+		}
+		drawing
+	}
+
+	fn line(&mut self, lead: &str, text: impl std::fmt::Display) {
+		let text = text.to_string();
+		self.text.push_str(lead);
+		self.spans.push((self.text.len(), text.len()));
+		self.text.push_str(&text);
+		self.text.push('\n');
+	}
+
+	fn label(&self, line: usize, says: &str) -> LabeledSpan {
+		let (offset, len) = self.spans[line];
+		LabeledSpan::new(Some(says.into()), offset, len)
+	}
+
+	fn source(self) -> NamedSource<String> {
+		NamedSource::new("ownership", self.text)
+	}
+}
+
+fn named(node: &Node) -> String {
+	format!("{} {:?}", node.link.repo_info(), node.title)
+}
+
+fn urls(nodes: &[Node]) -> String {
+	nodes.iter().map(|n| n.link.as_str()).collect::<Vec<_>>().join(", ")
 }
 
 /// Internal miette diagnostic for nice error rendering with source highlighting.

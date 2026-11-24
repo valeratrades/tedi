@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 
 use dioxus::prelude::*;
 use ev_lib::uikit_dioxus::{Popover, PopoverContent, PopoverTrigger, Sheet, SheetContent};
-use tedi_core::board::{Query, Scope, View, scope_at};
+use tedi_core::board::{Query, Scope, Slice, View, scope_at};
 use tilers_dioxus::PanelId;
 
 use super::{
@@ -15,6 +15,7 @@ use super::{
 	kit::{IconBtn, Kbd, MenuItem, Picker},
 	library::NameForm,
 	route::Go as Link,
+	scope::{Offered, glyph_at},
 	workspace,
 };
 use crate::api::{Item, Kept, LibraryEdit, Shelf};
@@ -23,14 +24,12 @@ use crate::api::{Item, Kept, LibraryEdit, Shelf};
 fn count(ctx: &Ctx, query: &str) -> Option<usize> {
 	let board = ctx.board.read();
 	let board = board.as_ref()?;
-	let mut q: Query = query.parse().ok()?;
+	let q: Query = query.parse().ok()?;
 	if ctx.awaits(q.covers_prs()) {
 		return None;
 	}
-	if let Some((_, Some(filter))) = ctx.scope() {
-		q.narrow(&filter.parse().expect("a scope's filter is a repo clause"));
-	}
-	Some(q.run(&board.cards, ctx.me().as_deref()).ok()?.len())
+	let within = ctx.within().unwrap_or_default(); // the scope is no longer there: the bar says so
+	Some(q.run(&within, &board.cards, ctx.me().as_deref()).ok()?.len())
 }
 
 /// What a view's query is about, as the design draws it.
@@ -105,7 +104,7 @@ fn Shelves() -> Element {
 
 	let scopes = library.scopes(&setup.scopes).expect("the server serves no library whose scope lost its parent");
 	let mut scoped = Vec::new();
-	fn walk(ctx: &Ctx, prefix: &str, level: &BTreeMap<String, Scope>, depth: usize, own: &BTreeMap<String, Scope>, current: Option<&String>, out: &mut Vec<Row>) {
+	fn walk(ctx: &Ctx, prefix: &str, level: &BTreeMap<String, Scope>, depth: usize, own: &BTreeMap<String, Scope>, current: Option<&Slice>, out: &mut Vec<Row>) {
 		for (name, scope) in level {
 			let path = if prefix.is_empty() { name.clone() } else { format!("{prefix} / {name}") };
 			out.push(Row {
@@ -114,8 +113,8 @@ fn Shelves() -> Element {
 				depth,
 				favorite: Some(Item::Scope(path.clone())),
 				own: own.contains_key(&path).then_some(Shelf::Scopes),
-				current: current == Some(&path),
-				meta: count(ctx, &format!("{} is:open", scope.filter())).map(|n| n.to_string()).unwrap_or_default(),
+				current: matches!(current, Some(Slice::Named(p)) if *p == path),
+				meta: held(ctx, &path),
 				go: Go::Scope(path.clone()),
 			});
 			walk(ctx, &path, &scope.children, depth + 1, own, current, out);
@@ -337,7 +336,7 @@ fn ShelfRow(row: Row) -> Element {
 	let to = match &go {
 		Go::Panel(id) => ctx.at_panel(id),
 		Go::Workspace(name) => ctx.at_workspace(name),
-		Go::Scope(path) => ctx.at.read().with_scope(Some(path.clone())),
+		Go::Scope(path) => ctx.at.read().with_scope(Some(Slice::Named(path.clone()))),
 		Go::Columns { name, onto: Some(view) } => ctx.at_columns(view, name),
 		Go::Columns { name, onto: None } => ctx.at_panel(&PanelId(format!("library:columns:{name}"))),
 	};
@@ -469,9 +468,18 @@ pub(super) fn TopBar() -> Element {
 				ScopePicker {}
 				match &current {
 					None => rsx! {},
-					Some((path, None)) => rsx! { span { class: "text-caption text-accent-error", "{path} is no longer configured" } },
-					Some((path, Some(filter))) => {
+					Some(slice) if ctx.board.read().is_some() && ctx.left_in(slice).is_none() => rsx! {
+						span { class: "text-caption text-accent-error",
+							match slice {
+								Slice::Named(path) => format!("{path} is no longer configured"),
+								Slice::Point(_) => "nothing of it is on the board".to_string(),
+							}
+						}
+					},
+					Some(Slice::Point(_)) => rsx! {},
+					Some(Slice::Named(path)) => {
 						let editing = if library.scopes.contains_key(path) { Editing::Own(path.clone()) } else { Editing::Team(path.clone()) };
+						let filter = scope_at(&ctx.scopes(), path).map(|s| format!("repo:{}", s.patterns().join(","))).unwrap_or_default(); // gone: said once the board arrives
 						rsx! {
 							span { class: "hidden h-5 max-w-56 items-center truncate rounded-[var(--control-radius)] bg-secondary px-1.5 text-mono-s text-ink-soft lg:inline-flex", title: "What every view, facet and count here is narrowed by", "{filter}" }
 							button {
@@ -509,14 +517,34 @@ pub(super) fn TopBar() -> Element {
 	}
 }
 
-/// \`EV / EV-Service-Arb ▾\`: the scope tree with open-card counts, starred first.
+/// The open cards of the named scope at \`path\`.
+fn held(ctx: &Ctx, path: &str) -> String {
+	let within = ctx.left_in(&Slice::Named(path.to_string()));
+	within.and_then(|w| ctx.open_within(&w)).map(|n| n.to_string()).unwrap_or_default() // before the board arrives
+}
+
+/// \`ev-main / service-arb / site ▾\`: each crumb its scope, the last opening what it holds; below, the named scopes,
+/// starred first.
 #[component]
 fn ScopePicker() -> Element {
 	let ctx = use_context::<Ctx>();
 	let mut open = use_signal(|| false);
-	let scopes = ctx.scopes();
 	let library = ctx.library.read();
 	let library = library.as_ref().expect("the top bar renders once the library arrived");
+	let current = library.scope.clone();
+	let (above, at) = match &current {
+		Some(Slice::Point(point)) => {
+			let mut crumbs = ctx.crumbs(point);
+			crumbs.pop();
+			(crumbs, Some(point.clone()))
+		}
+		_ => (Vec::new(), None),
+	};
+	let leaf = match &current {
+		None => "All repos".to_string(),
+		Some(Slice::Point(point)) => ctx.called(point),
+		Some(Slice::Named(path)) => path.clone(),
+	};
 	let mut rows: Vec<(String, String, usize, bool)> = Vec::new();
 	fn walk(prefix: &str, level: &BTreeMap<String, Scope>, depth: usize, own: &BTreeMap<String, Scope>, out: &mut Vec<(String, String, usize, bool)>) {
 		for (name, scope) in level {
@@ -525,56 +553,73 @@ fn ScopePicker() -> Element {
 			walk(&path, &scope.children, depth + 1, own, out);
 		}
 	}
-	walk("", &scopes, 0, &library.scopes, &mut rows);
+	if open() {
+		walk("", &ctx.scopes(), 0, &library.scopes, &mut rows);
+	}
 	rows.sort_by_key(|(path, ..)| !library.favorites.contains(&Item::Scope(path.clone()))); // stable: the tree's order within each
-	let current = library.scope.clone();
-	let (parent, leaf) = match current.as_deref().map(|p| p.rsplit_once(" / ").unwrap_or(("", p))) {
-		Some((parent, leaf)) => (parent.to_string(), leaf.to_string()),
-		None => (String::new(), "All repos".to_string()),
-	};
+	let below: Vec<Offered> = if open() { ctx.below(at.as_ref()) } else { Vec::new() };
 	let here = ctx.at.read().clone();
+	let line = |on: bool| match on {
+		true => "flex h-7 shrink-0 items-center gap-2 rounded-[var(--control-radius)] bg-selected px-2",
+		false => "flex h-7 shrink-0 items-center gap-2 rounded-[var(--control-radius)] px-2 hover:bg-hover",
+	};
 	rsx! {
-		Popover { open: open(), on_open_change: move |v| open.set(v),
-			PopoverTrigger { class: if open() { "flex h-7 items-center gap-1.5 rounded-[var(--control-radius)] border border-ring px-2" } else { "flex h-7 items-center gap-1.5 rounded-[var(--control-radius)] border border-border px-2 hover:bg-hover" },
-				Icon { glyph: Glyph::Scope, class: "size-3.5 text-chart-3" }
-				if !parent.is_empty() {
-					span { class: "hidden text-body text-ink-soft sm:inline", "{parent}" }
-					span { class: "hidden text-body text-ink-faint sm:inline", "/" }
+		div { class: if open() { "flex h-7 min-w-0 items-center gap-1.5 rounded-[var(--control-radius)] border border-ring px-2" } else { "flex h-7 min-w-0 items-center gap-1.5 rounded-[var(--control-radius)] border border-border px-2" },
+			Icon { glyph: Glyph::Scope, class: "size-3.5 shrink-0 text-chart-3" }
+			for point in above {
+				Link {
+					key: "{point}",
+					to: here.with_scope(Some(Slice::Point(point.clone()))),
+					class: "hidden max-w-40 truncate text-body text-ink-soft hover:text-ink hover:underline sm:inline",
+					{ctx.called(&point)}
 				}
-				span { class: "text-body font-medium text-ink", "{leaf}" }
-				Icon { glyph: Glyph::ChevronDown, class: "size-3.5 text-ink-soft" }
+				span { class: "hidden text-body text-ink-faint sm:inline", "/" }
 			}
-			PopoverContent { align: "start", class: "flex w-[260px] flex-col gap-0.5 rounded-[var(--radius)] border border-border bg-popover p-1 text-ink",
-				span { class: "px-2 pt-1.5 pb-0.5 text-overline text-ink-soft", "scope…" }
-				div { class: "contents", onclick: move |_| open.set(false),
-				Link { to: here.with_scope(None), class: if current.is_none() { "flex h-7 items-center gap-2 rounded-[var(--control-radius)] bg-selected px-2" } else { "flex h-7 items-center gap-2 rounded-[var(--control-radius)] px-2 hover:bg-hover" },
-					span { class: "flex-1 text-left text-body text-ink", "All repos" }
-					span { class: "text-mono-s text-ink-soft", {count(&ctx, "is:open").map(|n| n.to_string()).unwrap_or_default()} }
+			Popover { open: open(), on_open_change: move |v| open.set(v),
+				PopoverTrigger { class: "flex h-full min-w-0 items-center gap-1.5",
+					span { class: "max-w-56 truncate text-body font-medium text-ink", "{leaf}" }
+					Icon { glyph: Glyph::ChevronDown, class: "size-3.5 shrink-0 text-ink-soft" }
 				}
-				for (path , name , depth , own) in rows {
-					{
-						let filter = scope_at(&scopes, &path).expect("walked from these scopes");
-						let n = count(&ctx, &format!("{filter} is:open")).map(|n| n.to_string()).unwrap_or_default();
-						let starred = library.favorites.contains(&Item::Scope(path.clone()));
-						let pad = 8 + depth * 12;
-						rsx! {
-							Link {
-								key: "{path}",
-								to: here.with_scope(Some(path.clone())),
-								class: if current.as_ref() == Some(&path) { "flex h-7 items-center gap-2 rounded-[var(--control-radius)] bg-selected pr-2" } else { "flex h-7 items-center gap-2 rounded-[var(--control-radius)] pr-2 hover:bg-hover" },
-								span { class: "flex-1 truncate text-left text-body text-ink", style: "padding-left: {pad}px", "{name}" if own { span { class: "text-ink-soft", " · mine" } } }
-								if starred { Icon { glyph: Glyph::Star, class: "size-3 fill-accent-warn text-accent-warn" } }
-								span { class: "text-mono-s text-ink-soft", "{n}" }
+				PopoverContent { align: "start", class: "flex max-h-[70vh] w-[280px] flex-col gap-0.5 overflow-y-auto rounded-[var(--radius)] border border-border bg-popover p-1 text-ink",
+					div { class: "contents", onclick: move |_| open.set(false),
+						Link { to: here.with_scope(None), class: line(current.is_none()),
+							span { class: "flex-1 text-left text-body text-ink", "All repos" }
+							span { class: "text-mono-s text-ink-soft", {ctx.open_within(&Default::default()).map(|n| n.to_string()).unwrap_or_default()} }
+						}
+						if !below.is_empty() {
+							span { class: "truncate px-2 pt-1.5 pb-0.5 text-overline text-ink-soft", if at.is_some() { "in {leaf}" } else { "orgs" } }
+						}
+						for o in below {
+							Link { key: "{o.point}", to: here.with_scope(Some(Slice::Point(o.point.clone()))), class: line(false),
+								Icon { glyph: glyph_at(&o.point), class: "size-3.5 shrink-0 text-ink-soft" }
+								span { class: "flex-1 truncate text-left text-body text-ink", "{o.name}" }
+								span { class: "text-mono-s text-ink-soft", "{o.open}" }
+							}
+						}
+						if !rows.is_empty() {
+							span { class: "px-2 pt-1.5 pb-0.5 text-overline text-ink-soft", "named scopes" }
+						}
+						for (path , name , depth , own) in rows {
+							{
+								let starred = library.favorites.contains(&Item::Scope(path.clone()));
+								let pad = depth * 12;
+								let slice = Slice::Named(path.clone());
+								rsx! {
+									Link { key: "{path}", class: line(current.as_ref() == Some(&slice)), to: here.with_scope(Some(slice)),
+										span { class: "flex-1 truncate text-left text-body text-ink", style: "padding-left: {pad}px", "{name}" if own { span { class: "text-ink-soft", " · mine" } } }
+										if starred { Icon { glyph: Glyph::Star, class: "size-3 fill-accent-warn text-accent-warn" } }
+										span { class: "text-mono-s text-ink-soft", {held(&ctx, &path)} }
+									}
+								}
 							}
 						}
 					}
-				}
-				}
-				div { class: "my-0.5 h-px bg-border-subtle" }
-				button { r#type: "button", class: "flex h-7 items-center gap-2 rounded-[var(--control-radius)] px-2 hover:bg-hover",
-					onclick: move |_| { open.set(false); ctx.open(PanelId("library:scopes".into())); },
-					span { class: "flex-1 text-left text-body text-ink", "Edit scopes…" }
-					Kbd { "⌘⇧P" }
+					div { class: "my-0.5 h-px shrink-0 bg-border-subtle" }
+					button { r#type: "button", class: "flex h-7 shrink-0 items-center gap-2 rounded-[var(--control-radius)] px-2 hover:bg-hover",
+						onclick: move |_| { open.set(false); ctx.open(PanelId("library:scopes".into())); },
+						span { class: "flex-1 text-left text-body text-ink", "Edit scopes…" }
+						Kbd { "⌘⇧P" }
+					}
 				}
 			}
 		}

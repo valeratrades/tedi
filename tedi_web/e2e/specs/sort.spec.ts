@@ -46,7 +46,7 @@ test("a click reverses a label, a drag moves it, and both are there on reload", 
   await expect(labels(page)).toHaveText(["importance ↓", "created ↑", "hours ↑"]);
 });
 
-for (const scope of ["EV", "EV / EV-Service-Arb"])
+for (const scope of ["https://github.com/ev-main", "https://github.com/service-arb"])
   test(`a blocker from an earlier step, or from outside ${scope}, is above what it blocks, edged red`, async ({ page }) => {
     await triage(page);
     await page.goto(page.url().replace(/scope=[^&]*/, `scope=${encodeURIComponent(scope)}`));

@@ -65,7 +65,7 @@ async fn shown(ctx: &TestContext, queries: &[&str]) -> String {
 	}
 	let mut out = Vec::new();
 	for q in queries {
-		let hits = q.parse::<Query>().unwrap().run(&board.cards, Some("mock_user")).unwrap();
+		let hits = q.parse::<Query>().unwrap().run(&Default::default(), &board.cards, Some("mock_user")).unwrap();
 		let mut cards: Vec<String> = hits
 			.iter()
 			.map(|&i| {

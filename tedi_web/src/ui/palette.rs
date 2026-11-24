@@ -1,25 +1,26 @@
 //! ⌘K (Figma: CommandPalette): one index over every view, scope, workspace and column layout, the open
 //! issues, and actions. \`v: s: w: c: #\` narrow it to one kind. ⏎ opens in place, ⇧⏎ in a new tile, ⌘⏎ as
-//! its library page.
+//! its library page, ⌥⏎ scopes to it.
 
 use dioxus::prelude::*;
 use ev_lib::uikit_dioxus::use_command_palette_shortcut;
+use tedi_core::{board::Slice, chain::Point};
 use tilers_dioxus::PanelId;
 
 use super::{
 	Ctx, Editing, Modal,
 	icons::{Glyph, Icon},
 	kit::Kbd,
+	scope::glyph_at,
 	shell::glyph_of,
 };
-use crate::api::LibraryEdit;
 
 const KINDS: [(&str, &str); 5] = [("v:", "views"), ("s:", "scopes"), ("w:", "workspaces"), ("c:", "column layouts"), ("#", "issues")];
 
 #[derive(Clone, PartialEq)]
 enum Go {
 	Panel(PanelId),
-	Scope(Option<String>),
+	Scope(Option<Slice>),
 	Workspace(String),
 	NewScope,
 }
@@ -33,6 +34,8 @@ struct Hit {
 	go: Go,
 	/// Its library page, for ⌘⏎.
 	page: Option<PanelId>,
+	/// What ⌥⏎ scopes to.
+	scope: Option<Slice>,
 }
 
 #[component]
@@ -71,9 +74,12 @@ fn Open() -> Element {
 	};
 	let go = {
 		let shown = shown.clone();
-		move |i: usize, beside: bool, page: bool| {
+		move |i: usize, beside: bool, page: bool, scoped: bool| {
 			let Some(hit) = shown.get(i).cloned() else { return };
 			close();
+			if let (true, Some(slice)) = (scoped, hit.scope) {
+				return ctx.go(ctx.at.peek().with_scope(Some(slice)));
+			}
 			match (hit.go, page.then_some(hit.page).flatten()) {
 				(_, Some(page)) => ctx.open(page),
 				(Go::Panel(id), None) => {
@@ -88,9 +94,7 @@ fn Open() -> Element {
 						None => ctx.open(id),
 					}
 				}
-				(Go::Scope(path), None) => {
-					spawn(async move { _ = ctx.keep(LibraryEdit::Scope(path)).await });
-				}
+				(Go::Scope(slice), None) => ctx.go(ctx.at.peek().with_scope(slice)),
 				(Go::Workspace(name), None) => ctx.go(ctx.at_workspace(&name)),
 				(Go::NewScope, None) => {
 					let mut m = ctx.modal;
@@ -127,7 +131,7 @@ fn Open() -> Element {
 								Key::Escape => close(),
 								Key::ArrowDown => at.set((chosen + 1).min(count.saturating_sub(1))),
 								Key::ArrowUp => at.set(chosen.saturating_sub(1)),
-								Key::Enter => go(chosen, e.modifiers().shift(), e.modifiers().meta() || e.modifiers().ctrl()),
+								Key::Enter => go(chosen, e.modifiers().shift(), e.modifiers().meta() || e.modifiers().ctrl(), e.modifiers().alt()),
 								_ => {}
 							}
 						},
@@ -146,7 +150,7 @@ fn Open() -> Element {
 								r#type: "button",
 								class: if i == chosen { "flex h-7 shrink-0 items-center gap-2 rounded-[var(--control-radius)] bg-hover px-2 text-left" } else { "flex h-7 shrink-0 items-center gap-2 rounded-[var(--control-radius)] px-2 text-left" },
 								onmouseenter: move |_| at.set(i),
-								onclick: { let mut go = go.clone(); move |e: MouseEvent| go(i, e.modifiers().shift(), e.modifiers().meta() || e.modifiers().ctrl()) },
+								onclick: { let mut go = go.clone(); move |e: MouseEvent| go(i, e.modifiers().shift(), e.modifiers().meta() || e.modifiers().ctrl(), e.modifiers().alt()) },
 								Icon { glyph: h.glyph, class: "size-3.5 text-ink-soft" }
 								span { class: "flex-1 truncate text-body text-ink", "{h.label}" }
 								span { class: "text-mono-s text-ink-soft", if i == chosen { "⏎ open" } else { "{h.meta}" } }
@@ -159,6 +163,7 @@ fn Open() -> Element {
 					span { "⏎ open" }
 					span { "⇧⏎ open in new tile" }
 					span { "⌘⏎ open in library" }
+					span { "⌥⏎ scope to the issue" }
 				}
 			}
 		}
@@ -179,6 +184,7 @@ fn hits(ctx: &Ctx) -> Vec<Hit> {
 			glyph: glyph_of(&v),
 			meta: if team { "team".into() } else { "mine".into() },
 			page: Some(PanelId(format!("library:views:{}", v.name))),
+			scope: None,
 			go: Go::Panel(PanelId(format!("view:{}", v.name))),
 			label: v.name,
 		});
@@ -191,8 +197,9 @@ fn hits(ctx: &Ctx) -> Vec<Hit> {
 				glyph: Glyph::Scope,
 				label: format!("Scope → {path}"),
 				meta: String::new(),
-				go: Go::Scope(Some(path.clone())),
+				go: Go::Scope(Some(Slice::Named(path.clone()))),
 				page: Some(PanelId(format!("library:scopes:{path}"))),
+				scope: None,
 			});
 			walk(&path, &scope.children, out);
 		}
@@ -204,7 +211,20 @@ fn hits(ctx: &Ctx) -> Vec<Hit> {
 		meta: String::new(),
 		go: Go::Scope(None),
 		page: None,
+		scope: None,
 	});
+	for o in ctx.places() {
+		let slice = Slice::Point(o.point.clone());
+		out.push(Hit {
+			kind: "scopes",
+			glyph: glyph_at(&o.point),
+			label: format!("Scope → {}", ctx.path(&slice)),
+			meta: o.open.to_string(),
+			go: Go::Scope(Some(slice)),
+			page: None,
+			scope: None,
+		});
+	}
 	walk("", &library.scopes(&setup.scopes).expect("the server serves no library whose scope lost its parent"), &mut out);
 	out.push(Hit {
 		kind: "scopes",
@@ -213,6 +233,7 @@ fn hits(ctx: &Ctx) -> Vec<Hit> {
 		meta: String::new(),
 		go: Go::NewScope,
 		page: None,
+		scope: None,
 	});
 	for (n, name) in library.workspaces.keys().enumerate() {
 		out.push(Hit {
@@ -222,6 +243,7 @@ fn hits(ctx: &Ctx) -> Vec<Hit> {
 			meta: if n < 9 { format!("⌘⇧{}", n + 1) } else { String::new() },
 			go: Go::Workspace(name.clone()),
 			page: Some(PanelId(format!("library:workspaces:{name}"))),
+			scope: None,
 		});
 	}
 	for name in setup.columns.keys().chain(library.columns.keys()) {
@@ -232,6 +254,7 @@ fn hits(ctx: &Ctx) -> Vec<Hit> {
 			meta: String::new(),
 			go: Go::Panel(PanelId(format!("library:columns:{name}"))),
 			page: None,
+			scope: None,
 		});
 	}
 	for s in ctx.sprints.read().iter().flatten() {
@@ -242,6 +265,7 @@ fn hits(ctx: &Ctx) -> Vec<Hit> {
 			meta: format!("{}", s.links.len()),
 			go: Go::Panel(PanelId(format!("sprint:{}", s.title))),
 			page: None,
+			scope: None,
 		});
 	}
 	out.push(Hit {
@@ -251,6 +275,7 @@ fn hits(ctx: &Ctx) -> Vec<Hit> {
 		meta: String::new(),
 		go: Go::Panel(PanelId("builder:".into())),
 		page: None,
+		scope: None,
 	});
 	if let Some(board) = ctx.board.read().as_ref() {
 		for c in board.cards.iter().filter(|c| c.open()) {
@@ -261,6 +286,7 @@ fn hits(ctx: &Ctx) -> Vec<Hit> {
 				meta: c.link.project().repo().to_string(),
 				go: Go::Panel(PanelId(format!("issue:{}", c.link))),
 				page: None,
+				scope: Some(Slice::Point(Point::Issue(c.link.clone()))),
 			});
 		}
 	}

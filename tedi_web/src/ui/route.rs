@@ -1,12 +1,13 @@
 //! The address bar. What is on screen reads as an address, and an address moves the screen:
 //! `/view/<id>[/<column layout's id>]`, `/sprint/<title>`, `/library/<at>`, `/builder/<view>` is the panel last brought up;
-//! `?issue=owner/repo/n` the floating issues, the shown one last; `ws=<id>` the workspace; `scope=<path>` the scope.
+//! `?issue=owner/repo/n` the floating issues, the shown one last; `ws=<id>` the workspace; `scope=` the scope, a named one's
+//! path or a point's GitHub URL.
 
 use std::{fmt, str::FromStr};
 
 use dioxus::{core::spawn_forever, prelude::*};
 use futures::StreamExt as _;
-use tedi_core::IssueLink;
+use tedi_core::{IssueLink, board::Slice};
 use tilers_dioxus::{PanelId, model::serial};
 use wasm_bindgen::{JsCast as _, JsValue, closure::Closure};
 
@@ -19,7 +20,7 @@ pub(super) struct Address {
 	issues: Vec<IssueLink>,
 	/// By id.
 	workspace: Option<String>,
-	scope: Option<String>,
+	scope: Option<Slice>,
 }
 impl Address {
 	pub(super) fn href(&self) -> String {
@@ -34,7 +35,7 @@ impl Address {
 		to
 	}
 
-	pub(super) fn with_scope(&self, scope: Option<String>) -> Self {
+	pub(super) fn with_scope(&self, scope: Option<Slice>) -> Self {
 		Self { scope, ..self.clone() }
 	}
 }
@@ -374,7 +375,7 @@ impl fmt::Display for Address {
 			})
 			.collect();
 		query.extend(self.workspace.iter().map(|id| format!("ws={id}")));
-		query.extend(self.scope.iter().map(|path| format!("scope={}", enc(path))));
+		query.extend(self.scope.iter().map(|s| format!("scope={}", enc(&s.to_string()))));
 		match query.is_empty() {
 			true => Ok(()),
 			false => write!(f, "?{}", query.join("&")),
@@ -412,7 +413,7 @@ impl FromStr for Address {
 					to.issues.push(link.ok_or_else(bad)?);
 				}
 				("ws", id) => to.workspace = Some(id.to_string()),
-				("scope", path) => to.scope = Some(dec(path)?),
+				("scope", slice) => to.scope = Some(dec(slice)?.parse().map_err(|_| bad())?),
 				_ => return Err(bad()),
 			}
 		}

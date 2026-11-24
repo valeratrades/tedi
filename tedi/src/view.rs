@@ -4,7 +4,7 @@
 use color_eyre::eyre::{Result, bail, eyre};
 use tedi_task_operations::{
 	TaskView,
-	board::{self, Board, GroupBy, Query},
+	board::{self, Board, GroupBy, Query, Within},
 	open_interactions::SyncMode,
 	sprints::{expand_and_refresh, materialize_new_tasks, sync_embedded_issue_changes},
 };
@@ -39,7 +39,7 @@ pub async fn view_command(settings: &LiveSettings, args: ViewArgs, mode: SyncMod
 		eprintln!("unreadable, left out: {}: {}", path.display(), e.lines().next().unwrap_or_default());
 	}
 	let me = tedi_task_operations::current_user::get();
-	let mut hits = query.parse::<Query>()?.run(&board.cards, me.as_deref())?;
+	let mut hits = query.parse::<Query>()?.run(&Within::default(), &board.cards, me.as_deref())?;
 	let issues = hits.len();
 	hits.retain(|&i| board.cards[i].pr.is_none());
 	if hits.len() < issues {
@@ -47,7 +47,7 @@ pub async fn view_command(settings: &LiveSettings, args: ViewArgs, mode: SyncMod
 	}
 	let mut content = String::new();
 	let trees = workflows.iter().map(|(name, w)| (name.clone(), w.workflow.clone())).collect();
-	for (key, members) in board::group(&board.cards, &hits, &group, &trees)?.into_iter().filter(|(_, m)| !m.is_empty()) {
+	for (key, members) in board::group(&board.cards, &hits, &group, &trees, &Within::default())?.into_iter().filter(|(_, m)| !m.is_empty()) {
 		if group != GroupBy::Nothing {
 			content.push_str(&format!("# {key}\n"));
 		}

@@ -4,7 +4,7 @@
 
 use dioxus::prelude::*;
 use ev_lib::uikit_dioxus::*;
-use tedi_core::board::View;
+use tedi_core::board::{Slice, View};
 use tilers_dioxus::{PanelId, model::serial};
 
 use super::{
@@ -482,7 +482,7 @@ fn open(ctx: Ctx, owner: &Owner, item: &Item, construction: &Construction) {
 		(Item::Workspace(name), _) => ctx.go(ctx.at_workspace(name)),
 		(Item::Scope(path), _) => {
 			let path = path.clone();
-			spawn(async move { _ = ctx.keep(LibraryEdit::Scope(Some(path))).await });
+			spawn(async move { _ = ctx.keep(LibraryEdit::Scope(Some(Slice::Named(path)))).await });
 		}
 		(Item::Columns(name), Construction::Columns(columns)) => {
 			let onto: Vec<String> = ctx.views().into_iter().filter(|v| v.group_by == columns.by).map(|v| v.name).collect();
