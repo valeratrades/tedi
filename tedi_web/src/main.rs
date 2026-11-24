@@ -2,8 +2,6 @@
 
 use dioxus::prelude::*;
 
-const TAILWIND: Asset = asset!("/assets/tailwind.css");
-
 fn main() {
 	// a bundle built with `--base-path` calls its server functions under it, which `dioxus/fullstack` would
 	// arrange and the client goes without (see Cargo.toml); the url parses as absolute
@@ -13,9 +11,13 @@ fn main() {
 	}
 	dioxus::launch(|| {
 		rsx! {
-			document::Stylesheet { href: TAILWIND }
 			document::Title { "tedi" }
 			tedi_web::ui::App {}
 		}
 	});
 }
+
+#[used]
+static TAILWIND: Asset = asset!("/assets/tailwind.css", AssetOptions::css().with_static_head(true));
+#[used]
+static LOADING: Asset = asset!("/src/loading.js", AssetOptions::js().with_static_head(true).with_minify(false));

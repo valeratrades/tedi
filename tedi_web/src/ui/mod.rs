@@ -45,6 +45,14 @@ const HELP: [(&str, &str); 7] = [
 	("drag", "a sort label: what orders first; a click reverses it"),
 ];
 
+#[wasm_bindgen::prelude::wasm_bindgen(js_namespace = loading)]
+extern "C" {
+	/// So many parts of the wait for the board are over.
+	fn reached(parts: usize);
+	/// The wait ended without the board.
+	fn quit();
+}
+
 const PANEL_MIN: MinSize = MinSize::Rem { w: 16.0, h: 8.0 };
 
 #[component]
@@ -75,7 +83,7 @@ struct Ctx {
 	api: Signal<Option<PackedApi>>,
 	/// The band the dock was last arranged for from the library: until then, what it shows isn't the viewer's to keep.
 	arranged: Signal<Option<Band>>,
-	/// Why setup or the library didn't arrive: nothing renders without both.
+	/// Why setup, the library or the first board didn't arrive: nothing renders without all three.
 	failure: Signal<Option<String>>,
 	/// The dialog over the screen.
 	modal: Signal<Option<Modal>>,
@@ -614,6 +622,16 @@ fn Shell() -> Element {
 		});
 	});
 	use_autosave(ctx, ctx.api, ctx.arranged, Dock::Tiles);
+	let over = use_memo(move || match () {
+		_ if ctx.failure.read().is_some() => None,
+		_ if ctx.board.read().is_some() => Some(3),
+		_ if ctx.library.read().is_some() => Some(2),
+		_ => Some(1),
+	});
+	use_effect(move || match over() {
+		Some(parts) => reached(parts),
+		None => quit(),
+	});
 	rsx! {
 		Live {}
 		div { class: "flex h-svh overflow-hidden bg-background text-ink",
@@ -702,7 +720,7 @@ enum Reading {
 }
 
 async fn reload(ctx: Ctx) {
-	let (mut stored, mut pending, mut reading) = (ctx.stored, ctx.pending, ctx.reading);
+	let (mut stored, mut pending, mut reading, mut failure) = (ctx.stored, ctx.pending, ctx.reading, ctx.failure);
 	if *reading.peek() != Reading::Idle {
 		return reading.set(Reading::Again);
 	}
@@ -713,8 +731,12 @@ async fn reload(ctx: Ctx) {
 		match api::board().await {
 			Ok(board) => {
 				stored.set(Some(board));
+				if failure.peek().is_some() {
+					failure.set(None);
+				}
 				pending.write().retain(|p| !held.contains(&p.id));
 			}
+			Err(e) if stored.peek().is_none() => failure.set(Some(format!("board: {e}"))),
 			Err(e) => ctx.say("board", toast::Tone::Error, format!("board: {e}"), None),
 		}
 		if *reading.peek() == Reading::Once {

@@ -3,7 +3,6 @@
 use std::str::FromStr as _;
 
 use dioxus::{core::spawn_forever, prelude::*};
-use ev_lib::uikit_dioxus::*;
 use strum::IntoEnumIterator as _;
 use tedi_core::{
 	board::{GroupBy, Order, Placed, Query, Shown, View, group},
@@ -37,7 +36,7 @@ pub fn SprintPanel(sprint: Sprint) -> Element {
 	let ctx = use_context::<Ctx>();
 	let board = ctx.board.read();
 	let Some(board) = board.as_ref() else {
-		return rsx! { Spinner {} };
+		return rsx! {};
 	};
 	let shown: Vec<Shown> = ctx
 		.workflows()
@@ -104,7 +103,7 @@ fn ViewBody(defined: View) -> Element {
 		}
 	});
 	if ctx.board.read().is_none() {
-		return rsx! { Spinner {} };
+		return rsx! {};
 	}
 	let v = view.read().clone();
 	let error = v.query.parse::<Query>().err().map(|e| e.to_string());

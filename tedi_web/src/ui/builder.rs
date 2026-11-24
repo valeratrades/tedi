@@ -53,7 +53,7 @@ pub(super) fn Builder(from: Option<String>) -> Element {
 		}
 	});
 	if ctx.board.read().is_none() {
-		return rsx! { ev_lib::uikit_dioxus::Spinner {} };
+		return rsx! {};
 	}
 	let d = draft.read().clone();
 	let error = d.query.parse::<Query>().err().map(|e| e.to_string());

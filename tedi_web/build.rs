@@ -5,6 +5,7 @@ fn main() {
 	println!("cargo:rerun-if-changed=build.rs");
 	println!("cargo:rerun-if-changed=input.css");
 	println!("cargo:rerun-if-changed=src/ui");
+	println!("cargo:rerun-if-changed=src/loading.js");
 	if std::env::var_os("CARGO_FEATURE_WEB").is_none() {
 		return; // the server ships no stylesheet
 	}
