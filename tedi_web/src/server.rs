@@ -3,6 +3,7 @@
 //! lock itself.
 
 mod accounts;
+mod migrate;
 
 use std::{
 	collections::{BTreeMap, BTreeSet, HashMap, hash_map::Entry},
@@ -91,6 +92,7 @@ pub async fn serve(config: Settings) -> Result<()> {
 
 	let addr = config.addr;
 	SETTINGS.set(config).map_err(|_| eyre!("one server per process"))?;
+	migrate::migrate(settings()).await?;
 	//UNBOUNDED announcements are repo names, deduplicated by the puller
 	let (announce, announced) = mpsc::unbounded_channel::<Pull>();
 	ANNOUNCE.set(announce).map_err(|_| eyre!("one server per process"))?;
@@ -1161,6 +1163,14 @@ struct Team {
 	workspaces: BTreeMap<String, Workspace>,
 }
 
+fn team_of(config: &str) -> Result<Team> {
+	#[derive(serde::Deserialize)]
+	struct File {
+		board: Team,
+	}
+	Ok(toml::from_str::<File>(config)?.board)
+}
+
 fn items(team: &Team) -> BTreeMap<Item, Construction> {
 	crate::api::constructions(&team.views, &team.scopes, &team.columns, &team.workspaces)
 }
@@ -1186,13 +1196,7 @@ async fn versions() -> Result<Option<Versions>> {
 	let mut versions: Versions = BTreeMap::new();
 	for commit in commits {
 		let held = match &commit.content {
-			Some(text) => {
-				#[derive(serde::Deserialize)]
-				struct File {
-					board: Team,
-				}
-				items(&toml::from_str::<File>(text).wrap_err_with(|| format!("{} as of {}", source.path, commit.sha))?.board)
-			}
+			Some(text) => items(&team_of(text).wrap_err_with(|| format!("{} as of {}", source.path, commit.sha))?),
 			None => BTreeMap::new(),
 		};
 		for (item, construction) in held {
