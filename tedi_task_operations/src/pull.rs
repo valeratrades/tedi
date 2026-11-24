@@ -3,7 +3,7 @@
 //! may move it.
 
 use std::{
-	collections::{BTreeSet, HashSet},
+	collections::{BTreeMap, BTreeSet, HashSet},
 	sync::Arc,
 };
 
@@ -55,6 +55,7 @@ async fn pull_repo(repo: RepoInfo, workflows: &Workflows, now: Timestamp) -> Res
 	Local::update_project_meta(repo, |m| {
 		m.label_colors = labels;
 		m.assignable = assignable;
+		m.dated |= m.pulled_at.is_none() && m.prs_walked_to.is_none(); // all of it is about to be read
 	})?;
 	let since = Local::load_project_meta(repo).pulled_at;
 	let mut after = None;
@@ -124,7 +125,50 @@ async fn pull_repo(repo: RepoInfo, workflows: &Workflows, now: Timestamp) -> Res
 		}
 	}
 	pull_milestones(repo).await?;
-	pull_prs(repo, workflows, &mut moved, now).await
+	pull_prs(repo, workflows, &mut moved, now).await?;
+	if !Local::load_project_meta(repo).dated {
+		date_stored(repo).await?;
+	}
+	Ok(())
+}
+
+/// Only when each was opened: what else of them is stored was left to the pull's cursor, and no rule gets to move one.
+async fn date_stored(repo: RepoInfo) -> Result<()> {
+	let gh = crate::github::client::get()?;
+	let mut opened: BTreeMap<u64, Timestamp> = BTreeMap::new();
+	let mut after = None;
+	//LOOP pages until the remote reports no next cursor
+	loop {
+		let page = gh.list_repo_issues(repo, None, after.as_deref()).await?;
+		opened.extend(page.issues.iter().map(|f| (f.issue.number, f.issue.created_at)));
+		match page.next {
+			Some(next) => after = Some(next),
+			None => break,
+		}
+	}
+	let mut after = None;
+	//LOOP pages until the remote reports no next cursor
+	loop {
+		let page = gh.list_repo_prs(repo, after.as_deref()).await?;
+		opened.extend(page.prs.iter().filter_map(|pr| Some((pr.number, pr.created_at?))));
+		match page.next {
+			Some(next) => after = Some(next),
+			None => break,
+		}
+	}
+	let _store = lock_store().await?;
+	Local::update_prs(repo, |prs| {
+		for (n, pr) in prs {
+			pr.created_at = pr.created_at.or(opened.get(n).copied());
+		}
+	})?;
+	Local::update_project_meta(repo, |m| {
+		for (n, issue) in &mut m.issues {
+			issue.created = issue.created.or(opened.get(n).copied());
+		}
+		m.dated = true;
+	})?;
+	Ok(())
 }
 
 /// `repo`'s open milestones, and those stored as open: what the board offers. A sprint's is its own flow's to sync.

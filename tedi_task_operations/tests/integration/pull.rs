@@ -112,6 +112,40 @@ async fn a_pull_cut_short_resumes_after_the_last_page_it_stored() {
 	"#);
 }
 
+/// What was stored before creation was read gets its date from the next pull, though nothing of it changed since.
+#[tokio::test]
+async fn a_pull_dates_what_was_stored_undated() {
+	let ctx = TestContext::build();
+	for n in [1, 2] {
+		ctx.remote(
+			&parse_virtual(&format!("- [ ] Issue {n} <!-- @mock_user https://github.com/o/r/issues/{n} -->\n  body\n")),
+			Some(Seed::new(n)),
+		);
+	}
+	let pull = || {
+		let out = ctx.run(&["--mock", "pull", "o/r"]);
+		assert!(out.status.success(), "stderr: {}", out.stderr);
+	};
+	let meta_path = ctx.xdg.data_dir().join("issues/o/r/.meta.json");
+	let meta = || -> serde_json::Value { serde_json::from_str(&std::fs::read_to_string(&meta_path).unwrap()).unwrap() };
+	pull();
+	let dated = meta();
+	assert!(dated["issues"]["1"]["created"].is_string(), "{dated}");
+
+	let mut undated = dated.clone();
+	undated.as_object_mut().unwrap().remove("dated").expect("a whole pull dates all it stores");
+	for n in ["1", "2"] {
+		undated["issues"][n].as_object_mut().unwrap().remove("created").expect("pulled");
+	}
+	std::fs::write(&meta_path, undated.to_string()).unwrap();
+	pull();
+	assert_eq!(meta(), dated);
+
+	pull();
+	let lists = ctx.github_calls().into_iter().filter(|c| c.starts_with("list_repo_issues(o/r, None, None")).count();
+	assert_eq!(lists, 2, "the first pull, and the one that dated: never again");
+}
+
 #[tokio::test]
 async fn a_pull_into_a_store_that_cant_commit_fails() {
 	let ctx = TestContext::build();

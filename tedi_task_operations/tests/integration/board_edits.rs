@@ -232,6 +232,7 @@ fn a_review_is_requested_and_withdrawn() {
 				requested: Vec::new(),
 				reviews: Default::default(),
 				updated_at: "2026-11-14T00:00:00Z".parse().unwrap(),
+				created_at: None,
 				closed_at: None,
 			},
 		)

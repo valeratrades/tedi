@@ -39,6 +39,7 @@ GQL issue (one read, `FULL_ISSUE`)           │
                                              │    reattaches it on the way out. The section has to
                                              │    be the tail for that round trip to close.
     author.login  null: `ghost`, as REST     │  LinkedIssueMeta.user
+    createdAt                                │  LinkedIssueMeta.created
     assignees.login                          │  IssueContents.assignees, sorted
     comments                                 │  comments[1..], CommentIdentity::Created { user, id }
                                              │    comments[0] is always the body

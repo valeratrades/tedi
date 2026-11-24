@@ -176,6 +176,7 @@ impl MockGithubClient {
 				let labels_timestamp = parse_ts("labels_timestamp");
 				let state_timestamp = parse_ts("state_timestamp");
 				let assignees_timestamp = parse_ts("assignees_timestamp");
+				let created_at = parse_ts("created_at").unwrap_or(jiff::Timestamp::UNIX_EPOCH); // an untimed mock issue, as in `full_issue`
 
 				let issue_data = MockIssueData {
 					number,
@@ -191,6 +192,7 @@ impl MockGithubClient {
 					labels_timestamp,
 					state_timestamp,
 					assignees_timestamp,
+					created_at,
 					milestone,
 					assignees,
 				};
@@ -395,6 +397,7 @@ impl MockGithubClient {
 			labels_timestamp: timestamp,
 			state_timestamp: timestamp,
 			assignees_timestamp: timestamp,
+			created_at: timestamp.unwrap_or(jiff::Timestamp::UNIX_EPOCH),
 			milestone: None,
 			assignees: Vec::new(),
 		};
@@ -459,7 +462,7 @@ impl MockGithubClient {
 					"labels": i.labels, "assignees": i.assignees,
 					"title_timestamp": ts(i.title_timestamp), "description_timestamp": ts(i.description_timestamp),
 					"labels_timestamp": ts(i.labels_timestamp), "state_timestamp": ts(i.state_timestamp),
-					"assignees_timestamp": ts(i.assignees_timestamp),
+					"assignees_timestamp": ts(i.assignees_timestamp), "created_at": i.created_at,
 				}));
 			}
 		}
@@ -693,6 +696,7 @@ impl MockGithubClient {
 			assignees: data.assignees.iter().map(|login| GithubUser { login: login.clone() }).collect(),
 			pull_request: None,
 			html_url: key.link(data.number).to_string(),
+			created_at: data.created_at,
 		}
 	}
 
@@ -775,6 +779,7 @@ struct MockIssueData {
 	/// Timestamp for state changes (open/closed)
 	state_timestamp: Option<jiff::Timestamp>,
 	assignees_timestamp: Option<jiff::Timestamp>,
+	created_at: jiff::Timestamp,
 	milestone: Option<u64>,
 	assignees: Vec<String>,
 }
@@ -1016,7 +1021,8 @@ impl GithubClient for MockGithubClient {
 		let id = self.next_issue_id.fetch_add(1, Ordering::SeqCst);
 		let number = self.next_number(repo);
 
-		let now = Some(jiff::Timestamp::now());
+		let created_at = jiff::Timestamp::now();
+		let now = Some(created_at);
 		let issue = MockIssueData {
 			number,
 			id,
@@ -1031,6 +1037,7 @@ impl GithubClient for MockGithubClient {
 			labels_timestamp: now,
 			state_timestamp: now,
 			assignees_timestamp: now,
+			created_at,
 			milestone: None,
 			assignees: Vec::new(),
 		};
@@ -1042,6 +1049,7 @@ impl GithubClient for MockGithubClient {
 			id,
 			number,
 			html_url: format!("https://github.com/{owner}/{repo_name}/issues/{number}"),
+			created_at,
 		})
 	}
 

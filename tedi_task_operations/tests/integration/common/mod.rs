@@ -491,6 +491,7 @@ impl TestContext {
 			let timestamps = timestamps_from_seed(seed);
 			let meta = IssueMeta {
 				user: Some(USER.to_string()),
+				created: None,
 				timestamps,
 				blocked_by: Vec::new(),
 				prs: Vec::new(),

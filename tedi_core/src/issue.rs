@@ -299,6 +299,8 @@ pub struct PullRequest {
 	#[serde(default)] // as above
 	pub reviews: BTreeMap<String, Review>,
 	pub updated_at: Timestamp,
+	#[serde(default)] // as above
+	pub created_at: Option<Timestamp>,
 	/// Merged or closed: `None` while open.
 	pub closed_at: Option<Timestamp>,
 }
@@ -309,6 +311,8 @@ pub struct PullRequest {
 pub struct LinkedIssueMeta {
 	/// User who created the issue. None = unknown (treated as ourselves).
 	pub user: Option<String>,
+	/// `None`: not read from Github since it was first stored.
+	pub created: Option<Timestamp>,
 	/// Link to the issue on Github
 	//TODO: I'm pretty sure we can remove this field and just construct it from context when needed
 	link: IssueLink,
@@ -326,6 +330,7 @@ impl LinkedIssueMeta {
 	pub fn new(user: Option<String>, link: IssueLink, timestamps: IssueTimestamps, blocked_by: Vec<IssueLink>) -> Self {
 		Self {
 			user,
+			created: None,
 			link,
 			timestamps,
 			blocked_by,

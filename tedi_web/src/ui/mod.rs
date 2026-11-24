@@ -35,13 +35,14 @@ use tilers_dioxus::{Band, DockPanel, Group, GroupId, MinSize, PackedApi, PackedA
 
 use crate::api::{self, Dock, Edited, Item, Library, LibraryEdit, Setup};
 
-const HELP: [(&str, &str); 6] = [
+const HELP: [(&str, &str); 7] = [
 	("⌘K", "jump to a view, scope, sprint or issue"),
 	("⇧⏎", "in the palette: open in a new tile"),
 	("⇧-click", "a facet value or a card's chip: rule it out"),
 	("⌥-click", "an importance or hours bound: the exact value"),
 	("drag", "a sidebar row onto the dock: open it there"),
 	("drag", "a card onto a column: move it there"),
+	("drag", "a sort label: what orders first; a click reverses it"),
 ];
 
 const PANEL_MIN: MinSize = MinSize::Rem { w: 16.0, h: 8.0 };

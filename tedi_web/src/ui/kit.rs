@@ -123,6 +123,7 @@ pub(super) fn MenuItem(selected: bool, label: String, #[props(default)] meta: St
 #[component]
 pub(super) fn Menu(glyph: Glyph, title: String, children: Element) -> Element {
 	let mut at = use_signal(|| None::<(f64, f64)>);
+	let mut origin = use_signal(|| None::<(f64, f64)>); // what `fixed` is fixed to: inside a popover, the popover
 	let mut node = use_signal(|| None::<std::rc::Rc<MountedData>>);
 	rsx! {
 		button {
@@ -140,12 +141,21 @@ pub(super) fn Menu(glyph: Glyph, title: String, children: Element) -> Element {
 			Icon { glyph }
 		}
 		if let Some((right, bottom)) = at() {
-			div { class: "fixed inset-0 z-[120]", onclick: move |_| at.set(None) }
 			div {
-				class: "fixed z-[121] flex w-60 flex-col gap-0.5 rounded-[var(--radius)] border border-border bg-popover p-1 text-ink",
-				style: "left: {right - 240.}px; top: {bottom + 4.}px",
+				class: "fixed inset-0 z-[120]",
+				onmounted: move |e| async move {
+					let r = e.data().get_client_rect().await.expect("a mounted backdrop has a rect");
+					origin.set(Some((r.min_x(), r.min_y())));
+				},
 				onclick: move |_| at.set(None),
-				{children}
+			}
+			if let Some((x, y)) = origin() {
+				div {
+					class: "fixed z-[121] flex w-60 flex-col gap-0.5 rounded-[var(--radius)] border border-border bg-popover p-1 text-ink",
+					style: "left: {(right - 240.).max(4.) - x}px; top: {bottom + 4. - y}px",
+					onclick: move |_| at.set(None),
+					{children}
+				}
 			}
 		}
 	}

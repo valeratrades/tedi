@@ -408,6 +408,7 @@ impl Local {
 				label_colors: BTreeMap::new(),
 				pulled_at: None,
 				prs_walked_to: None,
+				dated: false,
 				assignable: Vec::new(),
 			};
 			Self::save_project_meta(RepoInfo::Virtual, &project_meta)?;
@@ -474,10 +475,11 @@ impl Local {
 	pub fn save_issue_meta(repo_info: RepoInfo, issue_number: u64, meta: &IssueMeta) -> std::io::Result<()> {
 		let mut project_meta = Self::load_project_meta(repo_info);
 		let mut meta = meta.clone();
-		// a known author is only ever learned from a live fetch; local reconstructions carry None.
-		// never let that None erase an author we already know.
-		if meta.user.is_none() {
-			meta.user = project_meta.issues.get(&issue_number).and_then(|m| m.user.clone());
+		// a known author or creation is only ever learned from a live fetch; local reconstructions carry None.
+		// never let that None erase one we already know.
+		if let Some(known) = project_meta.issues.get(&issue_number) {
+			meta.user = meta.user.or_else(|| known.user.clone());
+			meta.created = meta.created.or(known.created);
 		}
 		project_meta.issues.insert(issue_number, meta);
 		Self::save_project_meta(repo_info, &project_meta)
@@ -558,6 +560,7 @@ impl Local {
 			let blocked_by = issue_meta.map(|m| m.blocked_by.clone()).unwrap_or_default();
 			let link = Self::issue_link(repo_info, *n);
 			let mut linked = crate::LinkedIssueMeta::new(user, link, timestamps, blocked_by);
+			linked.created = issue_meta.and_then(|m| m.created);
 			linked.prs = issue_meta.map(|m| m.prs.clone()).unwrap_or_default();
 			Some(Box::new(linked))
 		} else {
@@ -1114,6 +1117,9 @@ pub struct IssueMeta {
 	/// User who created the issue.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub user: Option<String>,
+	/// When it was opened, as of the last read.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub created: Option<jiff::Timestamp>,
 	/// Timestamps for individual field changes.
 	#[serde(default)]
 	pub timestamps: crate::IssueTimestamps,
@@ -1141,6 +1147,9 @@ pub struct ProjectMeta {
 	/// The newest pull request update the last whole walk of them stored: the next walk stops below it.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub prs_walked_to: Option<jiff::Timestamp>,
+	/// Nothing is left stored from before creation was read.
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub dated: bool,
 	/// The logins its issues can be assigned to, as of the last pull.
 	#[serde(default, skip_serializing_if = "Vec::is_empty")]
 	pub assignable: Vec<String>,
@@ -1297,6 +1306,7 @@ impl<R: LocalReader> crate::LazyIssue<LocalIssueSource<R>> for Issue {
 					};
 					let meta = meta.unwrap_or_default();
 					let mut linked = LinkedIssueMeta::new(meta.user, link, meta.timestamps, meta.blocked_by);
+					linked.created = meta.created;
 					linked.prs = meta.prs;
 					Some(Box::new(linked))
 				}

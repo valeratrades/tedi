@@ -282,6 +282,7 @@ async fn test_comment_only_on_remote_is_not_deleted() {
 			1,
 			&IssueMeta {
 				user: Some(crate::common::USER.to_string()),
+				created: None,
 				timestamps,
 				blocked_by: Vec::new(),
 				prs: Vec::new(),

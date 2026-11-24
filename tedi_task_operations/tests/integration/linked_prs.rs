@@ -23,6 +23,7 @@ async fn linked_prs_persist_with_the_issue() {
 	  "issues": {
 	    "1": {
 	      "user": "mock_user",
+	      "created": "1970-01-01T00:00:00Z",
 	      "timestamps": {
 	        "title": "2001-09-11T08:58:19Z",
 	        "description": "2001-09-11T10:16:54Z",

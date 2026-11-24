@@ -20,4 +20,4 @@ export const config = (testMatch: string, still: boolean) =>
     ],
   });
 
-export default config("url.spec.ts", false);
+export default config("{sort,url}.spec.ts", false);

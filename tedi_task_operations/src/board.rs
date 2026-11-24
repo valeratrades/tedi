@@ -247,6 +247,7 @@ pub(crate) fn card(issue: &Issue, parent: Option<IssueLink>, conflicted: bool, s
 				.chain(t.comments.iter().copied())
 				.max()
 		},
+		created: meta.created,
 		rank: None,
 		importance: scheme.importance,
 		hours: scheme.hours,
@@ -273,6 +274,7 @@ pub(crate) fn pr_card(repo: crate::RepoInfo, pr: PullRequest, states: &States, w
 		},
 		closed_at: pr.closed_at,
 		updated: Some(pr.updated_at),
+		created: pr.created_at,
 		labels: pr.labels,
 		assignees: pr.assignees,
 		rank: None,

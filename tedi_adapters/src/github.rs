@@ -283,6 +283,7 @@ pub struct GithubIssue {
 	pub pull_request: Option<serde::de::IgnoredAny>,
 	/// Where it lives now: an issue moved since is served from its old address too.
 	pub html_url: String,
+	pub created_at: jiff::Timestamp,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -312,6 +313,7 @@ pub struct CreatedIssue {
 	pub id: u64,
 	pub number: u64,
 	pub html_url: String,
+	pub created_at: jiff::Timestamp,
 }
 
 /// When issue fields last changed, and the issue's dependency links.
@@ -880,7 +882,7 @@ impl GithubClient for RealGithubClient {
 
 	async fn list_repo_prs(&self, repo: RepoInfo, after: Option<&str>) -> Result<PrPage, GithubError> {
 		let query = "query($owner: String!, $repo: String!, $after: String) { repository(owner: $owner, name: $repo) { pullRequests(first: 50, after: $after, orderBy: {field: UPDATED_AT, direction: DESC}) { pageInfo { hasNextPage endCursor } nodes {
-			number title body state isDraft updatedAt closedAt
+			number title body state isDraft createdAt updatedAt closedAt
 			author { login }
 			labels(first: 100) { totalCount nodes { name } }
 			assignees(first: 100) { totalCount nodes { login } }
@@ -1237,6 +1239,7 @@ struct GqlPullRequest {
 	body: String,
 	state: String,
 	is_draft: bool,
+	created_at: jiff::Timestamp,
 	updated_at: jiff::Timestamp,
 	closed_at: Option<jiff::Timestamp>,
 	author: Option<GithubUser>,
@@ -1287,6 +1290,7 @@ impl GqlPullRequest {
 				})
 				.collect::<Result<_, GithubError>>()?,
 			updated_at: self.updated_at,
+			created_at: Some(self.created_at),
 			closed_at: self.closed_at,
 		})
 	}
@@ -1409,6 +1413,7 @@ impl GqlIssue {
 				assignees: self.assignees.whole("assignees", n)?,
 				pull_request: None,
 				html_url: self.url,
+				created_at: self.created_at,
 			},
 			comments: self
 				.comments

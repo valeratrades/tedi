@@ -29,6 +29,8 @@ pub struct Card {
 	pub closed_at: Option<jiff::Timestamp>,
 	/// Its last change GitHub dated; `None` when it dated none.
 	pub updated: Option<jiff::Timestamp>,
+	/// `None`: not read from GitHub since it was first stored.
+	pub created: Option<jiff::Timestamp>,
 	/// Where it sits in each workflow the board was loaded with.
 	pub states: BTreeMap<String, State>,
 	/// `None` once closed: rank orders open work only.
@@ -293,7 +295,7 @@ pub enum GroupBy {
 	Nothing,
 }
 /// `importance`, or `-importance` reversed. Each key's own order: importance high→low, hours low→high,
-/// a workflow's states in its order, numbers low→high, the latest updated first; a card lacking the key last
+/// a workflow's states in its order, numbers low→high, the latest updated and the newest first; a card lacking the key last
 /// either way. Only what a card can be ranked by is a key: a name or a kind groups, it doesn't order.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(try_from = "String", into = "String")]
@@ -328,6 +330,7 @@ impl Sort {
 			SortKey::Importance => by(hits, r, |i| cards[i].importance.map(Reverse)),
 			SortKey::Hours => by(hits, r, |i| cards[i].hours),
 			SortKey::Updated => by(hits, r, |i| cards[i].updated.map(Reverse)),
+			SortKey::Created => by(hits, r, |i| cards[i].created.map(Reverse)),
 		}
 		Ok(())
 	}
@@ -397,6 +400,7 @@ pub enum SortKey {
 	Importance,
 	Hours,
 	Updated,
+	Created,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -830,6 +834,7 @@ keyed!(SortKey {
 	Importance = "importance",
 	Hours = "hours",
 	Updated = "updated",
+	Created = "created",
 });
 impl std::fmt::Display for Sort {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -857,21 +862,6 @@ impl TryFrom<String> for Sort {
 impl From<Sort> for String {
 	fn from(sort: Sort) -> String {
 		sort.to_string()
-	}
-}
-
-impl TryFrom<Shown> for SortKey {
-	type Error = Shown;
-
-	fn try_from(shown: Shown) -> Result<Self, Shown> {
-		Ok(match shown {
-			Shown::State(w) => SortKey::State(w),
-			Shown::Importance => SortKey::Importance,
-			Shown::Hours => SortKey::Hours,
-			Shown::Number => SortKey::Number,
-			Shown::Updated => SortKey::Updated,
-			Shown::Repo | Shown::Assignees | Shown::Type | Shown::Labels | Shown::Blockers | Shown::Prs | Shown::Sprint => return Err(shown),
-		})
 	}
 }
 
@@ -908,6 +898,7 @@ mod tests {
 			state: if open { CloseState::Open } else { CloseState::Closed },
 			closed_at: None,
 			updated: None,
+			created: None,
 			states: BTreeMap::from([("kanban".to_string(), state.parse().unwrap())]),
 			rank: None,
 			importance: scheme.importance,
@@ -1101,7 +1092,10 @@ mod tests {
 
 	#[test]
 	fn sorts_unset_last_either_way() {
-		let cards = cards();
+		let mut cards = cards();
+		for (card, created) in cards.iter_mut().zip(["2026-01-03", "2026-01-01", "2026-01-04", "2026-01-02"]) {
+			card.created = Some(format!("{created}T00:00:00Z").parse().unwrap());
+		}
 		let hits: Vec<usize> = (0..cards.len()).collect();
 		let out: Vec<String> = [
 			"rank",
@@ -1113,6 +1107,8 @@ mod tests {
 			"state:kanban",
 			"-number",
 			"updated",
+			"created",
+			"-created",
 			"state:kanban,-importance",
 			"hours,rank",
 			"-hours,-rank",
@@ -1137,6 +1133,8 @@ mod tests {
 		state:kanban: Untyped idea · Crash on save · bump deps · Dark mode · Typo in README
 		-number: Untyped idea · Typo in README · bump deps · Dark mode · Crash on save
 		updated: Crash on save · Dark mode · bump deps · Typo in README · Untyped idea
+		created: bump deps · Crash on save · Typo in README · Dark mode · Untyped idea
+		-created: Dark mode · Typo in README · Crash on save · bump deps · Untyped idea
 		state:kanban,-importance: Untyped idea · Crash on save · bump deps · Dark mode · Typo in README
 		hours,rank: bump deps · Typo in README · Crash on save · Dark mode · Untyped idea
 		-hours,-rank: Crash on save · Typo in README · bump deps · Untyped idea · Dark mode

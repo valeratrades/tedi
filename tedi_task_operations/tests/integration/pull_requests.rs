@@ -29,6 +29,7 @@ fn pr(number: u64, title: &str, state: PrState, assignees: &[&str], closes: &[u6
 		requested: Vec::new(),
 		reviews: Default::default(),
 		updated_at: days_ago(updated),
+		created_at: Some(days_ago(updated + 1)),
 		closed_at: closed.map(days_ago),
 	}
 }

@@ -140,13 +140,14 @@ async fn test_only_local_changed_pushes_local() {
 	assert!(out.status.success(), "Should succeed when only local changed. stderr: {}", out.stderr);
 
 	// Capture the resulting directory state
-	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().redact_timestamps(&[9]), &out), @r#"
+	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().redact_timestamps(&[10]), &out), @r#"
 	//- /o/r/.meta.json
 	{
 	  "next_virtual_issue_number": 0,
 	  "issues": {
 	    "1": {
 	      "user": "mock_user",
+	      "created": "1970-01-01T00:00:00Z",
 	      "timestamps": {
 	        "title": "2001-09-12T11:20:39Z",
 	        [REDACTED - non-deterministic timestamp]
@@ -700,8 +701,8 @@ async fn test_closing_issue_syncs_state_change() {
 
 	let out = ctx.open_issue(&open_issue).edit(&closed_issue).run();
 
-	// Line 11 contains `state` timestamp set via Timestamp::now() when detecting state change
-	let result_str = render_fixture(FixtureRenderer::try_new(&ctx).unwrap().redact_timestamps(&[11]), &out);
+	// Line 12 contains `state` timestamp set via Timestamp::now() when detecting state change
+	let result_str = render_fixture(FixtureRenderer::try_new(&ctx).unwrap().redact_timestamps(&[12]), &out);
 
 	insta::assert_snapshot!(result_str, @r#"
 	//- /o/r/.meta.json
@@ -710,6 +711,7 @@ async fn test_closing_issue_syncs_state_change() {
 	  "issues": {
 	    "1": {
 	      "user": "mock_user",
+	      "created": "1970-01-01T00:00:00Z",
 	      "timestamps": {
 	        "title": "2001-09-11T09:15:20Z",
 	        "description": "2001-09-11T04:30:34Z",
@@ -854,13 +856,14 @@ async fn test_reset_syncs_changes_after_editor() {
 	let out = ctx.open_url(("o", "r").into(), 1).args(&["--reset"]).edit(&modified_issue).run();
 
 	// want to see the issue closed here
-	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().redact_timestamps(&[11]), &out), @r#"
+	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().redact_timestamps(&[12]), &out), @r#"
 	//- /o/r/.meta.json
 	{
 	  "next_virtual_issue_number": 0,
 	  "issues": {
 	    "1": {
 	      "user": "mock_user",
+	      "created": "1970-01-01T00:00:00Z",
 	      "timestamps": {
 	        "title": null,
 	        "description": null,
@@ -1075,13 +1078,14 @@ async fn test_consensus_sink_writes_meta_json_with_timestamps() {
 	assert!(out.status.success(), "Fetch should succeed. stderr: {}", out.stderr);
 
 	// Capture the resulting directory state (includes .meta.json with timestamps)
-	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().redact_timestamps(&[9]), &out), @r#"
+	insta::assert_snapshot!(render_fixture(FixtureRenderer::try_new(&ctx).unwrap().redact_timestamps(&[10]), &out), @r#"
 	//- /o/r/.meta.json
 	{
 	  "next_virtual_issue_number": 0,
 	  "issues": {
 	    "1": {
 	      "user": "mock_user",
+	      "created": "1970-01-01T00:00:00Z",
 	      "timestamps": {
 	        "title": null,
 	        [REDACTED - non-deterministic timestamp]

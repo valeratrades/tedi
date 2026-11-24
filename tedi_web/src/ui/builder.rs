@@ -13,8 +13,8 @@ use super::{
 	card::{Chip, Tone},
 	facets::{FacetBar, InView},
 	icons::{Glyph, Icon},
-	kit::{Btn, Picker, Style},
-	toolbar::OrderMenu,
+	kit::{Btn, Style},
+	toolbar::SortLabels,
 	view::{Empty, Outcome, Results, outcome},
 };
 use crate::api::{self, Construction, Item, Kept, LibraryEdit, Sign};
@@ -114,10 +114,8 @@ pub(super) fn Builder(from: Option<String>) -> Element {
 							}
 						}
 					}
-					Section { title: "Sort",
-						div { class: "flex flex-wrap items-center gap-2",
-							Picker { glyph: Glyph::Sort, label: d.sort.to_string(), OrderMenu { view: draft, workflows: ctx.workflows().into_keys().collect::<Vec<_>>() } }
-						}
+					Section { title: "Sort", hint: "click reverses, drag orders",
+						div { class: "flex", SortLabels { view: draft } }
 					}
 					Section { title: "Shown fields", hint: "drag to order", Fields { view: draft } }
 				}

@@ -448,7 +448,7 @@ mod core {
 			return match prefer {
 				Side::Local => {
 					let mut resolved = local;
-					prs_from(&mut resolved, &remote);
+					read_only_from(&mut resolved, &remote);
 					<Issue as Sink<Remote>>::sink(&mut resolved, Some(&remote)).await?;
 					Ok((resolved, true))
 				}
@@ -519,7 +519,7 @@ mod core {
 		}
 		if found.is_empty() {
 			let mut resolved = local_merged;
-			prs_from(&mut resolved, &remote);
+			read_only_from(&mut resolved, &remote);
 			<Issue as Sink<LocalFs>>::sink(&mut resolved, None).await?;
 			<Issue as Sink<Remote>>::sink(&mut resolved, Some(&remote)).await?;
 			return Ok((resolved, true));
@@ -588,14 +588,15 @@ mod core {
 		}
 	}
 
-	/// Pull requests are read-only, so Github's view of them is the only one.
-	fn prs_from(issue: &mut Issue, remote: &Issue) {
+	/// Read-only, so Github's view of it is the only one.
+	fn read_only_from(issue: &mut Issue, remote: &Issue) {
 		if let (Some(meta), Some(read)) = (issue.identity.mut_linked_issue_meta(), remote.identity.as_linked()) {
+			meta.created = read.created;
 			meta.prs = read.prs.clone();
 		}
 		for (selector, child) in &mut issue.children {
 			if let Some(remote) = remote.children.get(selector) {
-				prs_from(child, remote);
+				read_only_from(child, remote);
 			}
 		}
 	}

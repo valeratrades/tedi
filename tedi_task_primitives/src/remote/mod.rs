@@ -167,6 +167,7 @@ impl RemoteSource {
 			t.blocked_by.clone(),
 		);
 		let meta = identity.mut_linked_issue_meta().expect("just linked");
+		meta.created = Some(fetched.issue.created_at);
 		meta.blocking = Some(t.blocking.clone());
 		meta.prs = t.prs.clone();
 		Ok(identity)
@@ -261,6 +262,7 @@ impl crate::LazyIssue<RemoteSource> for Issue {
 		match self.identity.mut_linked_issue_meta() {
 			Some(meta) => {
 				meta.timestamps.comments = comment_timestamps(&fetched.comments);
+				meta.created = Some(fetched.issue.created_at);
 				meta.blocked_by = fetched.timeline.blocked_by.clone();
 				meta.blocking = Some(fetched.timeline.blocking.clone());
 				meta.prs = fetched.timeline.prs.clone();
@@ -434,6 +436,7 @@ impl Sink<Remote> for Issue {
 			let link = IssueLink::in_project(repo_info, created.number);
 			let user = gh.fetch_authenticated_user().await?;
 			self.identity = IssueIdentity::new_linked(Some(parent_index), Some(user), link, crate::IssueTimestamps::now(), Vec::new());
+			self.identity.mut_linked_issue_meta().expect("just linked").created = Some(created.created_at);
 			changed = true;
 		}
 

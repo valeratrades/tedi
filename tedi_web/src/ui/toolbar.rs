@@ -3,13 +3,13 @@
 
 use dioxus::prelude::*;
 use ev_lib::uikit_dioxus::{Checkbox, Popover, PopoverContent, PopoverTrigger};
-use tedi_core::board::{GroupBy, Order, Query, Shown, Sort, SortKey, View};
+use tedi_core::board::{GroupBy, Query, Shown, Sort, SortKey, View};
 
 use super::{
 	Ctx,
 	facets::FacetBar,
 	icons::{Glyph, Icon},
-	kit::{Btn, IconBtn, MenuItem, Picker, Style},
+	kit::{Btn, IconBtn, Menu, MenuItem, Picker, Style},
 	library::NameForm,
 };
 
@@ -67,7 +67,7 @@ pub(super) fn ViewToolbar(props: Toolbar) -> Element {
 									MenuItem { key: "{g}", selected: g == v.group_by, label: g.to_string(), onclick: { let g = g.clone(); move |_| view.write().group_by = g.clone() } }
 								}
 							}
-							Picker { glyph: Glyph::Sort, label: v.sort.to_string(), OrderMenu { view, workflows: workflows.clone() } }
+							SortLabels { view }
 							Picker { glyph: Glyph::Fields, label: format!("{} fields", v.shown.len()), FieldsMenu { view, workflows } }
 							div { class: "flex items-center gap-1",
 								span { class: "flex-1 text-mono-s text-ink-soft", "{count} cards" }
@@ -99,7 +99,7 @@ pub(super) fn ViewToolbar(props: Toolbar) -> Element {
 						MenuItem { key: "{g}", selected: g == v.group_by, label: g.to_string(), onclick: { let g = g.clone(); move |_| view.write().group_by = g.clone() } }
 					}
 				}
-				Picker { glyph: Glyph::Sort, label: v.sort.to_string(), OrderMenu { view, workflows: workflows.clone() } }
+				SortLabels { view }
 				Picker { glyph: Glyph::Fields, label: format!("{} fields", v.shown.len()), FieldsMenu { view, workflows } }
 			}
 			div { class: "flex items-center gap-1",
@@ -112,58 +112,136 @@ pub(super) fn ViewToolbar(props: Toolbar) -> Element {
 	}
 }
 
-fn keys(workflows: &[String]) -> Vec<SortKey> {
-	[SortKey::Rank, SortKey::Importance, SortKey::Hours, SortKey::Updated]
-		.into_iter()
-		.chain(workflows.iter().cloned().map(SortKey::State))
-		.chain([SortKey::Number])
-		.collect()
-}
-
-/// The first key orders, each \`then\` key orders what those before it tie on; a key picked again flips.
+/// A view's whole order, first key first, each a label: a click reverses it, a drag (or an arrow key) moves it.
 #[component]
-pub(super) fn OrderMenu(view: Signal<View>, workflows: Vec<String>) -> Element {
+pub(super) fn SortLabels(view: Signal<View>) -> Element {
+	let ctx = use_context::<Ctx>();
 	let order = view.read().sort.keys().to_vec();
-	let mut set = move |at: usize, by: Option<SortKey>| {
-		let mut keys = view.peek().sort.keys().to_vec();
-		match by {
-			None => keys.truncate(at),
-			Some(by) => {
-				let flipped = keys.get(at).is_some_and(|s| s.by == by).then(|| !keys[at].reversed);
-				keys.truncate(at);
-				keys.retain(|s| s.by != by);
-				keys.push(Sort {
-					by,
-					reversed: flipped.unwrap_or(false),
-				});
-			}
-		}
-		if !keys.is_empty() {
-			view.write().sort = Order::from(keys);
-		}
-	};
-	let slots = order.len().min(2) + 1;
+	let offered: Vec<SortKey> = [SortKey::Rank, SortKey::Created, SortKey::Updated, SortKey::Importance, SortKey::Hours]
+		.into_iter()
+		.chain(ctx.workflows().into_keys().map(SortKey::State))
+		.chain([SortKey::Number])
+		.filter(|by| !order.iter().any(|s| s.by == *by))
+		.collect();
+	let mut dragged = use_signal(|| None::<usize>);
+	let mut over = use_signal(|| None::<usize>);
+	let last = order.len() - 1;
 	rsx! {
-		for at in 0..slots.min(3) {
-			span { key: "head-{at}", class: "px-2 pt-1.5 pb-0.5 text-overline text-ink-soft", if at == 0 { "Sort by" } else { "then" } }
-			if at > 0 {
-				MenuItem { key: "none-{at}", selected: order.len() == at, label: "nothing", onclick: move |_| set(at, None) }
-			}
-			for by in keys(&workflows) {
+		div {
+			role: "group",
+			aria_label: "Sort",
+			class: "flex min-h-7 flex-wrap items-center gap-1 rounded-[var(--control-radius)] border border-border py-px pr-0.5 pl-2",
+			ondragover: move |e| {
+				if dragged.peek().is_some() {
+					e.prevent_default();
+				}
+			},
+			ondrop: move |e: DragEvent| {
+				let (Some(from), Some(to)) = (dragged.take(), over.take()) else { return };
+				e.prevent_default();
+				reorder(view, |keys| {
+					let moved = keys.remove(from);
+					keys.insert(to, moved);
+				});
+			},
+			Icon { glyph: Glyph::Sort, class: "h-6 w-4 shrink-0 text-ink-soft" }
+			for (i , sort) in order.into_iter().enumerate() {
 				{
-					let held = order.get(at).filter(|s| s.by == by);
-					let meta = match held {
-						Some(Sort { reversed: true, .. }) => "reversed",
-						Some(_) => "↻ flips",
-						None => "",
+					let (arrow, first) = first(&sort);
+					let by = sort.by.to_string();
+					let face = match (dragged(), over()) {
+						(Some(from), _) if from == i => "border-chip-primary-border opacity-40",
+						(Some(from), Some(to)) if to == i && from > i => "border-ring border-l-[3px]",
+						(Some(_), Some(to)) if to == i => "border-ring border-r-[3px]",
+						_ => "border-chip-primary-border hover:bg-hover",
 					};
 					rsx! {
-						MenuItem { key: "{at}-{by}", selected: held.is_some(), label: by.to_string(), meta, onclick: { let by = by.clone(); move |_| set(at, Some(by.clone())) } }
+						span {
+							key: "{by}",
+							class: "inline-flex h-[18px] cursor-grab items-center gap-1 rounded-[var(--chip-radius)] border pr-1 pl-1.5 text-mono-s whitespace-nowrap text-primary-ink {face}",
+							draggable: "true",
+							ondragstart: {
+								let by = by.clone();
+								move |e: DragEvent| {
+									e.data_transfer().set_data("text/plain", &by).expect("a dragstart's transfer is writable"); // Firefox starts no drag without data
+									dragged.set(Some(i));
+								}
+							},
+							ondragover: move |_| {
+								if *over.peek() != Some(i) {
+									over.set(Some(i));
+								}
+							},
+							ondragend: move |_| {
+								dragged.set(None);
+								over.set(None);
+							},
+							// no <button>: Firefox drags nothing by one
+							span {
+								role: "button",
+								tabindex: "0",
+								title: "{first} · click to reverse, drag to move",
+								aria_label: "{by}: {first}",
+								onclick: move |_| reorder(view, |keys| keys[i].reversed = !keys[i].reversed),
+								onkeydown: move |e: KeyboardEvent| {
+									match e.key() {
+										Key::Enter => reorder(view, |keys| keys[i].reversed = !keys[i].reversed),
+										Key::Character(c) if c == " " => reorder(view, |keys| keys[i].reversed = !keys[i].reversed),
+										Key::ArrowLeft if i > 0 => reorder(view, |keys| keys.swap(i, i - 1)),
+										Key::ArrowRight if i < last => reorder(view, |keys| keys.swap(i, i + 1)),
+										_ => return,
+									}
+									e.prevent_default();
+								},
+								"{by} {arrow}"
+							}
+							if last > 0 {
+								button {
+									r#type: "button",
+									class: "opacity-70 hover:opacity-100",
+									title: "Drop {by}",
+									aria_label: "Drop {by}",
+									onclick: move |_| reorder(view, |keys| _ = keys.remove(i)),
+									Icon { glyph: Glyph::X, class: "size-3" }
+								}
+							}
+						}
+					}
+				}
+			}
+			if !offered.is_empty() {
+				Menu { glyph: Glyph::Plus, title: "Add a sort key",
+					for by in offered {
+						MenuItem { key: "{by}", selected: false, label: by.to_string(), onclick: move |_| {
+							let by = by.clone();
+							reorder(view, |keys| {
+								let at = keys.len() - usize::from(keys.last().is_some_and(|s| s.by == SortKey::Rank)); // rank leaves no ties: what follows it orders nothing
+								keys.insert(at, Sort { by, reversed: false });
+							});
+						} }
 					}
 				}
 			}
 		}
 	}
+}
+
+fn reorder(mut view: Signal<View>, f: impl FnOnce(&mut Vec<Sort>)) {
+	let mut keys = view.peek().sort.keys().to_vec();
+	f(&mut keys);
+	view.write().sort = keys.into();
+}
+
+/// Which end comes first: as an arrow, down from the high or the late end, and in words.
+fn first(sort: &Sort) -> (&'static str, &'static str) {
+	let (falls, own, reversed) = match sort.by {
+		SortKey::Rank | SortKey::Importance => (true, "highest first", "lowest first"),
+		SortKey::Created => (true, "newest first", "oldest first"),
+		SortKey::Updated => (true, "latest first", "longest untouched first"),
+		SortKey::Hours | SortKey::Number => (false, "lowest first", "highest first"),
+		SortKey::State(_) => (false, "in the workflow's order", "against the workflow's order"),
+	};
+	(if falls == sort.reversed { "↑" } else { "↓" }, if sort.reversed { reversed } else { own })
 }
 
 /// Every field a card can show; the shown ones in their order, dragged to reorder.

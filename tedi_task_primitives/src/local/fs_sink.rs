@@ -149,6 +149,7 @@ fn sink_issue_node<R: LocalReader>(new: &Issue, maybe_old: Option<&Issue>, reade
 	{
 		let meta = IssueMeta {
 			user: linked.user.clone(),
+			created: linked.created,
 			timestamps: linked.timestamps.clone(),
 			blocked_by: linked.blocked_by.clone(),
 			prs: linked.prs.clone(),
