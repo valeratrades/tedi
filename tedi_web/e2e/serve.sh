@@ -16,7 +16,7 @@ if [ "${1:-}" = stop ]; then
   exit 0
 fi
 
-in_dev() { (cd "$repo" && nix develop -c "$@"); }
+in_dev() { (cd "$repo" && env -u XDG_DATA_HOME -u XDG_STATE_HOME -u XDG_CACHE_HOME nix develop -c "$@"); } # env.sh's cache dir is wiped by seed.sh, and kache and nix keep theirs in it
 tedi_bin=${TEDI_BIN:-$repo/target/debug/tedi}
 if [ ! -x "$tedi_bin" ] || [ -n "${E2E_REBUILD:-}" ]; then in_dev cargo b -p tedi >&2; fi
 if [ ! -d "$here/.bundle/public" ] || [ -n "${E2E_REBUILD:-}" ]; then
