@@ -100,10 +100,9 @@ pub(super) fn FacetMenu(facet: Facet, query: Query) -> Element {
 	let in_view = use_context::<InView>();
 	let mut needle = use_signal(String::new);
 	let board = ctx.board.read();
-	let Some(Board { cards, .. }) = board.as_ref() else {
+	let (Some(Board { cards, .. }), Ok(within)) = (board.as_ref(), ctx.within()) else {
 		return rsx! { span { class: "p-2 text-caption text-ink-soft", "Counted once the board is here" } };
 	};
-	let within = ctx.within().expect("a view under a gone scope shows only that");
 	let tallies = match query.tally(facet, &within, cards, ctx.me().as_deref()) {
 		Ok(t) => t,
 		Err(e) => return rsx! { span { class: "p-2 text-caption text-accent-error", "{e}" } },

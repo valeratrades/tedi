@@ -350,7 +350,7 @@ pub struct Shared {
 pub enum Origin {
 	/// As the team's config holds it now.
 	Team(Item),
-	Link(ShareLink),
+	Link(Box<ShareLink>),
 }
 
 /// Where a proposal lands in the team's config.

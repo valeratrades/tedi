@@ -22,8 +22,8 @@ use crate::api::{Kept, LibraryEdit, Shelf};
 pub(super) struct Offered {
 	pub(super) point: Point,
 	pub(super) name: String,
-	/// Its open cards.
-	pub(super) open: usize,
+	/// Its open cards; `None` before the board arrives.
+	pub(super) open: Option<usize>,
 }
 
 impl Ctx {
@@ -62,6 +62,9 @@ impl Ctx {
 
 	/// Open cards `within` leaves in; `None` before the board arrives.
 	pub(super) fn open_within(&self, within: &Within) -> Option<usize> {
+		if self.awaits(true) {
+			return None;
+		}
 		let board = self.board.read();
 		let q: Query = "is:open".parse().expect("a clause");
 		Some(q.run(within, &board.as_ref()?.cards, None).expect("a clause runs").len())
@@ -128,7 +131,7 @@ impl Ctx {
 		}
 		Some(Offered {
 			name: self.called(&point),
-			open: self.open_within(&within)?,
+			open: self.open_within(&within),
 			point,
 		})
 	}

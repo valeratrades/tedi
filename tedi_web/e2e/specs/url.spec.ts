@@ -5,7 +5,7 @@ test.skip(({ viewport }) => viewport!.width < 768, "the shelves are behind a she
 const at = (page: Page) => page.evaluate(() => location.pathname + location.search);
 const shelf = (page: Page, name: string) => page.locator("aside").getByRole("link", { name, exact: true });
 const tab = (page: Page, name: string) => page.locator(`.tl-tab[data-panel="view:${name}"]`);
-const crumb = (page: Page, name: string) => page.locator("div:has(> div button[aria-haspopup])").getByRole("link", { name, exact: true });
+const crumb = (page: Page, name: string) => page.getByRole("navigation", { name: "Scope" }).getByRole("link", { name, exact: true });
 const ISSUE = /[?&]issue=service-arb\/[\w.-]+\/\d+/;
 const card = (page: Page) => page.locator('a[href*="issue=service-arb/"]').first();
 
@@ -103,8 +103,8 @@ test("the scope bar goes down the chain, and each crumb back up it", async ({ pa
   const scope = async () => new URL(page.url()).searchParams.get("scope");
   await expect.poll(scope).toBe("https://github.com/service-arb");
   const under = async (at: string, name: string) => {
-    await page.getByRole("button", { name: at, exact: true }).click();
-    await page.getByRole("link", { name: new RegExp(`^${name}\\d+$`) }).click();
+    await page.getByRole("navigation", { name: "Scope" }).getByRole("button", { name: at, exact: true }).click();
+    await page.getByRole("link", { name: new RegExp(`^${name} ?\\d+$`) }).click();
   };
   await under("service-arb", "playbook");
   await expect.poll(scope).toBe("https://github.com/service-arb/playbook");

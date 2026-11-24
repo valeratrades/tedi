@@ -12,7 +12,7 @@ use super::{
 	icons::{Glyph, Icon},
 	kit::Kbd,
 	scope::glyph_at,
-	shell::glyph_of,
+	shell::{counted, glyph_of},
 };
 
 const KINDS: [(&str, &str); 5] = [("v:", "views"), ("s:", "scopes"), ("w:", "workspaces"), ("c:", "column layouts"), ("#", "issues")];
@@ -219,7 +219,7 @@ fn hits(ctx: &Ctx) -> Vec<Hit> {
 			kind: "scopes",
 			glyph: glyph_at(&o.point),
 			label: format!("Scope → {}", ctx.path(&slice)),
-			meta: o.open.to_string(),
+			meta: counted(o.open),
 			go: Go::Scope(Some(slice)),
 			page: None,
 			scope: None,

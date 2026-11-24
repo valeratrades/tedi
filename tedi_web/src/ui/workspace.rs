@@ -367,7 +367,7 @@ pub(super) fn Banner() -> Element {
 				onclick: {
 					let (link, name) = (shared.link.clone(), name.clone());
 					move |_| {
-						let (from, name) = (Origin::Link(link.clone()), name.clone());
+						let (from, name) = (Origin::Link(Box::new(link.clone())), name.clone());
 						spawn(async move {
 							if ctx.keep(LibraryEdit::Fork { from, name: name.clone() }).await && ctx.keep(LibraryEdit::Workspace(Some(name.clone()))).await {
 								let mut viewing = ctx.viewing;

@@ -25,7 +25,7 @@ pub(super) fn CardView(card: Card, shown: Vec<Shown>, #[props(default)] lifted: 
 	let open = ctx.panels.read().iter().any(|p| p.id.0 == format!("issue:{link}"));
 	let (edge, why) = match (lifted, card.conflicted, open) {
 		(Some(Lift::Blocks), ..) => ("border-accent-error", "blocks a card here"),
-		(Some(Lift::Bottleneck), ..) => ("border-chart-3", "in the tree of a Bottlenecks"),
+		(Some(Lift::Bottleneck), ..) => ("border-chart-6", "in the tree of a Bottlenecks"),
 		(None, true, _) => ("border-chip-warn-border", ""),
 		(None, false, true) => ("border-primary-ink", ""),
 		(None, false, false) => ("border-border-subtle hover:border-border-strong", ""),

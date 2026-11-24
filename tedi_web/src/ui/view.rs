@@ -139,6 +139,7 @@ fn ViewBody(defined: View) -> Element {
 		true => None,
 		false => match outcome(&ctx, &ran) {
 			Ok(o) => Some(o),
+			Err(_) if ctx.awaits(true) => None, // what the scope holds may be yet to come
 			Err(why) => return rsx! { Empty { glyph: Glyph::Alert, error: true, title: "The view doesn't run", body: why } },
 		},
 	};

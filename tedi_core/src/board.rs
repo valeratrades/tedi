@@ -1571,7 +1571,7 @@ mod tests {
 		both / inner: o/app#1 · o/app#2 · o/app#3 | o/app v1
 		loose: p/lib#1 · p/lib#2 · p/lib#3 | p/lib 0.5
 		https://github.com/nobody: not there
-		https://github.com/o/.github: not there
+		https://github.com/o/.github:  | o/.github Bottlenecks
 		https://github.com/o/app/milestone/7: not there
 		https://github.com/o/app/issues/7: not there
 		gone: not there

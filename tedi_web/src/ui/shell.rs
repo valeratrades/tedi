@@ -468,7 +468,7 @@ pub(super) fn TopBar() -> Element {
 				ScopePicker {}
 				match &current {
 					None => rsx! {},
-					Some(slice) if ctx.board.read().is_some() && ctx.left_in(slice).is_none() => rsx! {
+					Some(slice) if !ctx.awaits(true) && ctx.left_in(slice).is_none() => rsx! {
 						span { class: "text-caption text-accent-error",
 							match slice {
 								Slice::Named(path) => format!("{path} is no longer configured"),
@@ -519,8 +519,11 @@ pub(super) fn TopBar() -> Element {
 
 /// The open cards of the named scope at \`path\`.
 fn held(ctx: &Ctx, path: &str) -> String {
-	let within = ctx.left_in(&Slice::Named(path.to_string()));
-	within.and_then(|w| ctx.open_within(&w)).map(|n| n.to_string()).unwrap_or_default() // before the board arrives
+	counted(ctx.left_in(&Slice::Named(path.to_string())).and_then(|w| ctx.open_within(&w)))
+}
+
+pub(super) fn counted(cards: Option<usize>) -> String {
+	cards.map(|n| n.to_string()).unwrap_or_default() // not before the board arrives
 }
 
 /// \`ev-main / service-arb / site ▾\`: each crumb its scope, the last opening what it holds; below, the named scopes,
@@ -564,9 +567,9 @@ fn ScopePicker() -> Element {
 		false => "flex h-7 shrink-0 items-center gap-2 rounded-[var(--control-radius)] px-2 hover:bg-hover",
 	};
 	rsx! {
-		div { class: if open() { "flex h-7 min-w-0 items-center gap-1.5 rounded-[var(--control-radius)] border border-ring px-2" } else { "flex h-7 min-w-0 items-center gap-1.5 rounded-[var(--control-radius)] border border-border px-2" },
+		nav { aria_label: "Scope", class: if open() { "flex h-7 min-w-0 items-center gap-1.5 rounded-[var(--control-radius)] border border-ring px-2" } else { "flex h-7 min-w-0 items-center gap-1.5 rounded-[var(--control-radius)] border border-border px-2" },
 			Icon { glyph: Glyph::Scope, class: "size-3.5 shrink-0 text-chart-3" }
-			for point in above {
+			for point in above.clone() {
 				Link {
 					key: "{point}",
 					to: here.with_scope(Some(Slice::Point(point.clone()))),
@@ -584,7 +587,13 @@ fn ScopePicker() -> Element {
 					div { class: "contents", onclick: move |_| open.set(false),
 						Link { to: here.with_scope(None), class: line(current.is_none()),
 							span { class: "flex-1 text-left text-body text-ink", "All repos" }
-							span { class: "text-mono-s text-ink-soft", {ctx.open_within(&Default::default()).map(|n| n.to_string()).unwrap_or_default()} }
+							span { class: "text-mono-s text-ink-soft", {counted(ctx.open_within(&Default::default()))} }
+						}
+						for point in above {
+							Link { key: "{point}", to: here.with_scope(Some(Slice::Point(point.clone()))), class: "flex h-7 shrink-0 items-center gap-2 rounded-[var(--control-radius)] px-2 hover:bg-hover sm:hidden", // a phone's bar has no room for the crumbs
+								Icon { glyph: glyph_at(&point), class: "size-3.5 shrink-0 text-ink-soft" }
+								span { class: "flex-1 truncate text-left text-body text-ink", {ctx.called(&point)} }
+							}
 						}
 						if !below.is_empty() {
 							span { class: "truncate px-2 pt-1.5 pb-0.5 text-overline text-ink-soft", if at.is_some() { "in {leaf}" } else { "orgs" } }
@@ -593,7 +602,7 @@ fn ScopePicker() -> Element {
 							Link { key: "{o.point}", to: here.with_scope(Some(Slice::Point(o.point.clone()))), class: line(false),
 								Icon { glyph: glyph_at(&o.point), class: "size-3.5 shrink-0 text-ink-soft" }
 								span { class: "flex-1 truncate text-left text-body text-ink", "{o.name}" }
-								span { class: "text-mono-s text-ink-soft", "{o.open}" }
+								span { class: "text-mono-s text-ink-soft", {counted(o.open)} }
 							}
 						}
 						if !rows.is_empty() {

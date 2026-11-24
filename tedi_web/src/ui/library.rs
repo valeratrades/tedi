@@ -741,7 +741,7 @@ fn SharedDetail(link: ShareLink, on_pick: EventHandler<(Owner, Item)>) -> Elemen
 					onclick: {
 						let (link, name) = (link.clone(), name.clone());
 						move |_| {
-							let (from, name) = (Origin::Link(link.clone()), name.clone());
+							let (from, name) = (Origin::Link(Box::new(link.clone())), name.clone());
 							let shelf = link.item.shelf();
 							spawn(async move {
 								if ctx.keep(LibraryEdit::Fork { from, name: name.clone() }).await {
