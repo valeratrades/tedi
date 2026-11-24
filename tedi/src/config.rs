@@ -20,6 +20,10 @@ pub struct AppConfig {
 	pub manual_stats: Option<ManualStats>,
 	/// Orgs (`owner`) and repos (`owner/repo`) `tedi pull` stores when none are named.
 	pub watch: Option<Vec<String>>,
+	/// Main org → the orgs it owns (`orgs.EV-Main = ["EV-Quant"]`); owning one doesn't pull it.
+	#[settings(skip)]
+	#[serde(default)] // a user may have none
+	pub orgs: tedi_core::chain::Orgs,
 	/// What `tedi view` and the web board read.
 	#[settings(skip)]
 	pub board: Option<Board>,

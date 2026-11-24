@@ -211,6 +211,8 @@ pub struct FileCommit {
 #[derive(Clone, Debug, Deserialize)]
 pub struct GithubMilestone {
 	pub number: u64,
+	/// Under the names GitHub holds by now, whatever it was asked by.
+	pub html_url: String,
 	pub title: String,
 	pub state: String,
 	pub due_on: Option<jiff::Timestamp>,

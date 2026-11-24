@@ -150,7 +150,7 @@ pub async fn sprints_command(settings: &LiveSettings, args: SprintsArgs, mock: O
 			};
 			let mut view = with_must(&raw);
 			view.resolve_bare_refs(None);
-			view.remove_issue_links(&tedi_task_operations::selection::closed_links(&view)); // as an edit would open it
+			view.remove_nodes(&tedi_task_operations::selection::closed_links(&view)); // as an edit would open it
 			// read-only print: not worth a round-trip per referenced issue
 			let expanded = expand_and_refresh(view, false).await?;
 			println!("{expanded}");
@@ -508,7 +508,7 @@ async fn edit_urgent(mode: SyncMode) -> Result<()> {
 	}
 
 	edited_doc.collapse_to_links();
-	edited_doc.remove_issue_links(&tedi_task_operations::selection::closed_links(&edited_doc)); // an issue closed in the buffer leaves urgent with the same save
+	edited_doc.remove_nodes(&tedi_task_operations::selection::closed_links(&edited_doc)); // an issue closed in the buffer leaves urgent with the same save
 	let stored = edited_doc.serialize();
 	// urgent is section-less by design (ARCHITECTURE.md); a header here is inert, not an error
 	let headers: Vec<&str> = stored.lines().filter(|l| l.starts_with('#')).collect();
@@ -587,7 +587,6 @@ async fn edit_milestone(settings: &LiveSettings, tf: Timeframe, mode: SyncMode, 
 	match mode {
 		SyncMode::Full => {
 			pull_milestone(&mut milestone, MergeMode::Normal).await?;
-			refresh_sprint_milestones(&milestone.to_string()).await;
 		}
 		SyncMode::OnExit =>
 			if let Some(conflict_file) = tedi_task_operations::conflict_resolve::check_for_existing_milestone_conflict(&link).await? {
@@ -599,7 +598,7 @@ async fn edit_milestone(settings: &LiveSettings, tf: Timeframe, mode: SyncMode, 
 	let original_description = milestone.to_string();
 	let mut body = milestone.body.clone();
 	let closed = tedi_task_operations::selection::closed_links(&body.0);
-	body.0.remove_issue_links(&closed); // closed by the time it's opened: they leave the sprint
+	body.0.remove_nodes(&closed); // closed by the time it's opened: they leave the sprint
 
 	let expanded_description = expand_and_refresh(with_must(&body.0.serialize()), mode == SyncMode::Full).await?;
 
@@ -659,6 +658,14 @@ async fn edit_milestone(settings: &LiveSettings, tf: Timeframe, mode: SyncMode, 
 		body
 	};
 
+	let new_links = new_body.0.issue_links();
+	// Route the top-level body through the three-way model: apply the new body, then sink to
+	// LocalFs + Consensus (+ Remote when online).
+	let milestone = match modify_and_sync_milestone(milestone, mode, MilestoneModifier::BodyWrite { body: new_body }, SyncOptions::default()).await {
+		Ok(milestone) => milestone,
+		Err(e) => return dump_rejected(&raw, e),
+	};
+
 	// Sync issue↔milestone assignments (incl. unassignments, which the set-union merge can't express).
 	// Best-effort: a failure is reconciled on the next online edit rather than throwing hands.
 	if mode != SyncMode::Offline && (changed || !closed.is_empty()) {
@@ -666,16 +673,11 @@ async fn edit_milestone(settings: &LiveSettings, tf: Timeframe, mode: SyncMode, 
 		orig_doc.resolve_bare_refs(None);
 		orig_doc.relink(&moved); // a moved issue left for another repo, not this milestone
 		let old_links = orig_doc.issue_links();
-		let new_links = new_body.0.issue_links();
 		if let Err(e) = sync_milestone_assignments(settings, milestone_number, &old_links, &new_links).await {
 			tracing::warn!("failed to sync milestone assignments (will reconcile next online edit): {e}");
 			eprintln!("warning: failed to sync milestone assignments: {e}");
 		}
 	}
-
-	// Route the top-level body through the three-way model: apply the new body, then sink to
-	// LocalFs + Consensus (+ Remote when online).
-	let milestone = modify_and_sync_milestone(milestone, mode, MilestoneModifier::BodyWrite { body: new_body }, SyncOptions::default()).await?;
 
 	// Outdated milestones get a due-date bump + an archived snapshot. Direct API, online only, best-effort.
 	// Read off the synced due date: another machine may have bumped it already.

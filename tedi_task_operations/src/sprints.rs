@@ -16,8 +16,10 @@ use tedi_utils::search::{Candidate, SearchKind};
 use crate::{
 	CloseState, HollowIssue, Issue, IssueIdentity, IssueIndex, IssueLink, LazyIssue, Milestone, MilestoneLink, NodeLink, RepoInfo, TaskView, VirtualIssue,
 	clockify_tracking::{self, HaltArgs, ResumeArgs},
-	local::{Consensus, FsReader, GitReader, Local, LocalFs},
-	open_interactions::{MergeMode, MilestoneModifier, Modifier, SyncMode, SyncOptions, fetch_and_store_missing, modify_and_sync_issue, modify_and_sync_milestone, pull_issues, unsynced},
+	local::{Consensus, FsReader, Local, LocalFs},
+	open_interactions::{
+		MergeMode, MilestoneModifier, Modifier, Pull, SyncMode, SyncOptions, fetch_and_store_missing, modify_and_sync_issue, modify_and_sync_milestone, pull_issues, unsynced,
+	},
 	remote::{Remote, load_remote_milestone},
 	selection::{Landing, Selected},
 	sink::Sink,
@@ -88,35 +90,13 @@ pub async fn expand_and_refresh(mut doc: TaskView, pull: bool) -> Result<String>
 	Ok(doc.render(&expansions))
 }
 
-/// Fetch each milestone (deduped) and store it as a durable local file, along with its
-/// hosted issues, so navigation and inline expansion resolve offline. A local copy carrying
-/// unsynced edits is left untouched (it syncs on the next milestone edit).
+/// Fetch each milestone and everything it contains, stored as durable local files along with the issues
+/// they host, so navigation and inline expansion resolve offline. A local copy carrying unsynced edits is
+/// left untouched (it syncs on the next milestone edit).
 pub async fn refresh_milestone_cache(links: &[MilestoneLink]) -> Result<()> {
-	let mut seen = std::collections::HashSet::new();
-	let links: Vec<&MilestoneLink> = links.iter().filter(|l| seen.insert(l.as_str().to_string())).collect();
-	let remotes: Vec<Milestone> = futures::future::try_join_all(links.iter().map(|l| load_remote_milestone(l))).await?;
-
-	let hosted: Vec<IssueLink> = remotes.iter().flat_map(|m| m.body.hosted()).filter(|l| !matches!(l, IssueLink::Virtual(_))).collect();
-	fetch_and_store_missing(&hosted).await;
-
-	for (link, remote) in links.into_iter().zip(remotes) {
-		let local = Local::load_milestone(link, &FsReader)?;
-		let consensus = Local::load_milestone(link, &GitReader)?;
-		let has_unsynced_local = match (&local, &consensus) {
-			(Some(l), Some(c)) => l.to_string() != c.to_string(),
-			(Some(_), None) => true,
-			_ => false,
-		};
-		if has_unsynced_local {
-			tracing::debug!("milestone {} has unsynced local edits; keeping local copy until next sync", link.as_str());
-		} else {
-			let mut milestone = remote;
-			let store = crate::local::lock_store().await?;
-			<Milestone as Sink<LocalFs>>::sink(&mut milestone, None).await?;
-			<Milestone as Sink<Consensus>>::sink(&mut milestone, None).await?;
-			drop(store);
-		}
-	}
+	let mut pull = Pull::reading();
+	pull.contained(links.to_vec()).await;
+	pull.finish().await?;
 	Ok(())
 }
 

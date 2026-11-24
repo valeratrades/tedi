@@ -10,7 +10,9 @@ use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use tedi_md::{as_standalone_block, indent_into};
 
-use crate::{Blockers, IssueChildren, IssueIndex, IssueLink, IssueMarker, IssueSelector, Marker, ParseContext, ParseError, RepoInfo, TitleInGitPathError, blockers::with_blockers};
+use crate::{
+	Blockers, IssueChildren, IssueIndex, IssueLink, IssueMarker, IssueSelector, Marker, MilestoneRef, ParseContext, ParseError, RepoInfo, TitleInGitPathError, blockers::with_blockers,
+};
 
 /// Filename stem for the main issue file when the issue lives in its own directory (has children).
 pub const MAIN_ISSUE_FILENAME: &str = "__main__";
@@ -715,7 +717,8 @@ impl Issue /*{{{1*/ {
 	}
 
 	/// What an edit may not leave in this subtree: a completed issue over an open descendant
-	/// (ARCHITECTURE.md, `### Issue`), or two values of a single-valued label (`labels::check`).
+	/// (ARCHITECTURE.md, `### Issue`), two values of a single-valued label (`labels::check`), or an issue
+	/// owning a milestone (`crate::chain`).
 	pub fn check_edit(&self) -> Result<(), crate::IssueError> {
 		fn name(issue: &Issue) -> String {
 			match issue.git_id() {
@@ -760,11 +763,28 @@ impl Issue /*{{{1*/ {
 		}
 		let mut clashes = Vec::new();
 		labels(self, &mut clashes);
-		match clashes.is_empty() {
+		if !clashes.is_empty() {
+			clashes.sort();
+			return Err(crate::IssueError::new_label_scheme(clashes.join("\n")));
+		}
+
+		fn milestones(issue: &Issue, out: &mut Vec<String>) {
+			let body = crate::TaskView::parse(&issue.contents.comments.description()).milestone_links();
+			let child = MilestoneRef::parse_word(issue.contents.title.trim()).map(|r| r.to_milestone_link());
+			for link in body.into_iter().chain(issue.contents.blockers.milestone_links()).chain(child) {
+				out.push(format!("{} names {}", name(issue), link.as_str()));
+			}
+			for child in issue.children.values() {
+				milestones(child, out);
+			}
+		}
+		let mut owned = Vec::new();
+		milestones(self, &mut owned);
+		match owned.is_empty() {
 			true => Ok(()),
 			false => {
-				clashes.sort();
-				Err(crate::IssueError::new_label_scheme(clashes.join("\n")))
+				owned.sort();
+				Err(crate::IssueError::new_owns_milestone(owned.join("\n")))
 			}
 		}
 	}

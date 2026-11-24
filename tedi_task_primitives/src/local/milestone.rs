@@ -27,7 +27,7 @@ use crate::{Milestone, RepoInfo, sink::Sink};
 /// with any GitHub owner (owners can't contain `_`).
 // ponytail: nesting under issues_dir keeps milestones in the existing git repo; a
 // top-level `milestones/` dir would sit outside it and lose consensus/conflict.
-const MILESTONES_SUBDIR: &str = "__milestones__";
+pub(super) const MILESTONES_SUBDIR: &str = "__milestones__";
 
 /// Per-milestone identity metadata stored in the project `.meta.json`.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -189,7 +189,7 @@ impl Sink<LocalFs> for Milestone {
 	}
 }
 
-/// Consensus (git) sink: stage + commit. File writing is `Sink<LocalFs>`'s job.
+/// Consensus (git) sink: stage + commit its own files, as another's may be past consensus. File writing is `Sink<LocalFs>`'s job.
 impl Sink<Consensus> for Milestone {
 	type Error = crate::local::ConsensusSinkError;
 
@@ -201,27 +201,18 @@ impl Sink<Consensus> for Milestone {
 		let data_dir = Local::issues_dir();
 		let data_dir_str = data_dir.to_str().ok_or_else(crate::local::ConsensusSinkError::new_invalid_data_dir)?;
 
-		let add = Command::new("git")
-			.args([
-				"-C",
-				data_dir_str,
-				"add",
-				"-A",
-				"--",
-				".",
-				&format!(":!{}", super::conflict_detect::CONFLICTS_DIR),
-				&format!(":!{}", super::LOCK_FILE),
-			])
-			.output()?;
+		let dir = format!("{MILESTONES_SUBDIR}/{repo}");
+		let own = [format!(":(glob){dir}/{}_-_*.md", self.number()), format!("{dir}/.meta.json")]; // whatever it was titled before
+		let add = Command::new("git").args(["-C", data_dir_str, "add", "-A", "--"]).args(&own).output()?;
 		if !add.status.success() {
 			return Err(crate::local::ConsensusSinkError::new_git_add(String::from_utf8_lossy(&add.stderr).into_owned()));
 		}
-		let diff = Command::new("git").args(["-C", data_dir_str, "diff", "--cached", "--quiet", "--", "."]).status()?;
+		let diff = Command::new("git").args(["-C", data_dir_str, "diff", "--cached", "--quiet", "--"]).args(&own).status()?;
 		if diff.success() {
 			return Ok(false);
 		}
 		let msg = format!("sync milestone: {repo}#{}", self.number());
-		let commit = Command::new("git").args(["-C", data_dir_str, "commit", "-m", &msg, "--", "."]).output()?; // the repo may hold more than the store: anything staged outside it stays out of consensus
+		let commit = Command::new("git").args(["-C", data_dir_str, "commit", "-m", &msg, "--"]).args(&own).output()?;
 		if !commit.status.success() {
 			return Err(crate::local::ConsensusSinkError::new_git_commit(String::from_utf8_lossy(&commit.stderr).into_owned()));
 		}

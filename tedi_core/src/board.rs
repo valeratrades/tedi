@@ -114,6 +114,8 @@ pub struct Target {
 	pub due_on: Option<jiff::Timestamp>,
 	/// Issues of any repo: its own carry it as their milestone on GitHub, the rest are named in its description.
 	pub hosted: Vec<IssueLink>,
+	/// Milestones of other repos, and a Bottlenecks' of its own.
+	pub contains: Vec<MilestoneLink>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]

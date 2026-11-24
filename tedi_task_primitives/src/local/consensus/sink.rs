@@ -7,7 +7,7 @@
 
 use std::process::Command;
 
-use super::super::Local;
+use super::super::{Local, milestone::MILESTONES_SUBDIR};
 use crate::{Issue, local::ConsensusSinkError, sink::Sink};
 
 /// Marker type for sinking to git (consensus state).
@@ -28,6 +28,7 @@ impl Sink<Consensus> for Issue {
 
 		let data_dir = Local::issues_dir();
 		let data_dir_str = data_dir.to_str().ok_or_else(ConsensusSinkError::new_invalid_data_dir)?;
+		let milestones = format!(":(exclude){MILESTONES_SUBDIR}"); // each one's own sink commits it
 
 		// Stage changes
 		let add_output = Command::new("git")
@@ -40,6 +41,7 @@ impl Sink<Consensus> for Issue {
 				".",
 				&format!(":!{}", crate::local::conflict_detect::CONFLICTS_DIR),
 				&format!(":!{}", crate::local::LOCK_FILE),
+				&milestones,
 			])
 			.output()?;
 		if !add_output.status.success() {
@@ -57,7 +59,7 @@ impl Sink<Consensus> for Issue {
 		}
 
 		// Check if there are staged changes
-		let diff_output = Command::new("git").args(["-C", data_dir_str, "diff", "--cached", "--quiet", "--", "."]).status()?;
+		let diff_output = Command::new("git").args(["-C", data_dir_str, "diff", "--cached", "--quiet", "--", ".", &milestones]).status()?;
 		if diff_output.success() {
 			// No staged changes
 			return Ok(false);
@@ -65,7 +67,7 @@ impl Sink<Consensus> for Issue {
 
 		// Commit
 		let commit_msg = format!("sync: {repo_info}#{git_id}");
-		let commit_output = Command::new("git").args(["-C", data_dir_str, "commit", "-m", &commit_msg, "--", "."]).output()?; // the repo may hold more than the store: anything staged outside it stays out of consensus
+		let commit_output = Command::new("git").args(["-C", data_dir_str, "commit", "-m", &commit_msg, "--", ".", &milestones]).output()?; // the repo may hold more than the store: anything staged outside it stays out of consensus
 		if !commit_output.status.success() {
 			return Err(ConsensusSinkError::new_git_commit(String::from_utf8_lossy(&commit_output.stderr).into_owned()));
 		}

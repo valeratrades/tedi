@@ -1,15 +1,15 @@
-//! The Milestone primitive: identity, body (prose + hosted issue links),
+//! The Milestone primitive: identity, body (prose + hosted nodes),
 //! parse/serialize, and a pure field-level `merge`.
 //!
 //! A milestone is the "even simpler" sibling of `Issue`: it owns no files of its own,
-//! has no comments/blockers/child tree — just free prose plus a flat list of hosted
-//! issue references. Title/state/due_on live in identity (persisted to `.meta.json`),
+//! has no comments/blockers/child tree — just free prose plus a flat list of references
+//! to the issues and milestones it hosts. Title/state/due_on live in identity (persisted to `.meta.json`),
 //! the body is the durable file content (the old `CachedMilestone.content` shape).
 
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
-use crate::{CloseState, IssueLink, MilestoneLink, RepoInfo, TaskView};
+use crate::{CloseState, MilestoneLink, NodeLink, RepoInfo, TaskView};
 
 /// Timestamps tracking when individual milestone fields last changed. A milestone-shaped
 /// sibling of `IssueTimestamps`, used for field-level sync conflict resolution.
@@ -18,7 +18,7 @@ pub struct MilestoneTimestamps {
 	pub title: Option<Timestamp>,
 	pub state: Option<Timestamp>,
 	pub due_on: Option<Timestamp>,
-	/// Description covers both the prose and the hosted-issue set.
+	/// Description covers both the prose and the hosted set.
 	pub description: Option<Timestamp>,
 }
 impl MilestoneTimestamps {
@@ -61,7 +61,7 @@ pub struct MilestoneIdentity {
 	pub timestamps: MilestoneTimestamps,
 }
 
-/// A milestone's body: the lossless task-view document itself. Hosted issue links are
+/// A milestone's body: the lossless task-view document itself. What it hosts is
 /// derived on demand, never a stored projection.
 #[derive(Clone, Default)]
 pub struct MilestoneBody(pub TaskView);
@@ -73,12 +73,12 @@ impl MilestoneBody {
 		Self(doc)
 	}
 
-	/// Hosted issue links, first-seen order, deduplicated (derived, not stored).
-	pub fn hosted(&self) -> Vec<IssueLink> {
+	/// What it owns, first-seen order, deduplicated (derived, not stored).
+	pub fn hosted(&self) -> Vec<NodeLink> {
 		let mut out = Vec::new();
-		for link in self.0.issue_links() {
-			if !out.contains(&link) {
-				out.push(link);
+		for node in self.0.nodes() {
+			if !out.contains(&node) {
+				out.push(node);
 			}
 		}
 		out
@@ -126,7 +126,7 @@ impl Milestone {
 	}
 
 	/// Merge `other` into `self`. Against `base`, a field only one side edited is that side's;
-	/// the rest goes to the newer timestamp, or to `other` under `force`. Hosted links are a set
+	/// the rest goes to the newer timestamp, or to `other` under `force`. What is hosted is a set
 	/// union (same spirit as children merge — merge only adds; removals are a sink concern).
 	pub fn merge(&mut self, other: &Milestone, base: Option<&Milestone>, force: bool) {
 		/// `Some(take other)` when `base` settles it.
@@ -175,8 +175,8 @@ impl Milestone {
 			self.body = other.body.clone();
 		}
 		let present = self.body.hosted();
-		let missing: Vec<IssueLink> = union.into_iter().filter(|l| !present.contains(l)).collect();
-		self.body.0.push_issue_links(&missing);
+		let missing: Vec<NodeLink> = union.into_iter().filter(|l| !present.contains(l)).collect();
+		self.body.0.push_nodes(&missing);
 
 		// Winning value carries the winning (newer) timestamp — keeps stamps consistent with values.
 		self.identity.timestamps = MilestoneTimestamps {
@@ -221,9 +221,8 @@ mod tests {
 	fn parse_and_hosted() {
 		// a terse `#7` and a `r2#8` both name issues relative to the milestone's own `o/r`
 		let body = MilestoneBody::parse("# Goals\n\nship it\n\n- o/r#5\n- https://github.com/o/r/issues/6\n- #7\n- r2#8\n", RepoInfo::new("o", "r"));
-		let hosted: Vec<u64> = body.hosted().iter().map(|l| l.number()).collect();
-		assert_eq!(hosted, [5, 6, 7, 8]);
-		assert_eq!(body.hosted()[3].project(), RepoInfo::new("o", "r2"));
+		let hosted: Vec<String> = body.hosted().iter().map(ToString::to_string).collect();
+		assert_eq!(hosted, ["r/issues/5", "r/issues/6", "r/issues/7", "r2/issues/8"].map(|at| format!("https://github.com/o/{at}")));
 		insta::assert_snapshot!(body.0.serialize(), @"
 		# Goals
 
@@ -277,9 +276,13 @@ mod tests {
 		let b = milestone("new desc\n\n- https://github.com/o/r/issues/6", "t", other_ts);
 		a.merge(&b, None, false);
 		assert!(a.body.0.serialize().contains("new desc"));
-		let mut hosted: Vec<u64> = a.body.hosted().iter().map(|l| l.number()).collect();
+		let mut hosted: Vec<String> = a.body.hosted().iter().map(ToString::to_string).collect();
 		hosted.sort_unstable();
-		assert_eq!(hosted, [5, 6], "hosted is a set union regardless of which description won");
+		assert_eq!(
+			hosted,
+			[5, 6].map(|n| format!("https://github.com/o/r/issues/{n}")),
+			"hosted is a set union regardless of which description won"
+		);
 	}
 
 	#[test]

@@ -8,7 +8,7 @@ use std::fmt;
 
 use tedi_md::Header;
 
-use crate::{IssueLink, IssueSelector};
+use crate::{IssueLink, IssueSelector, MilestoneLink};
 
 /// Vim's default `foldmarker` pair. Kept apart from the string literals below so the markers
 /// can't drift from each other.
@@ -110,6 +110,9 @@ impl IssueMarker {
 				}
 				None => inner,
 			};
+			if MilestoneLink::parse(inner).is_some() {
+				return None; // a milestone's marker marks no issue
+			}
 			let marker = Self::decode(inner);
 			let rest = trimmed[..marker_start].trim_end();
 			return Some((marker, rest));
@@ -286,6 +289,10 @@ impl Marker {
 				return Some(Marker::Comment { user, url: url.to_string(), id });
 			}
 			return None;
+		}
+
+		if MilestoneLink::parse(inner).is_some() {
+			return None; // a milestone's marker marks no issue
 		}
 
 		// Issue marker (delegate to IssueMarker::decode)

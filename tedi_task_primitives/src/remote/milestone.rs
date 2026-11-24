@@ -4,7 +4,7 @@
 
 use std::collections::BTreeSet;
 
-use tedi_core::{CloseState, IssueLink, MilestoneBody, MilestoneIdentity, MilestoneLink, MilestoneTimestamps};
+use tedi_core::{CloseState, IssueLink, MilestoneBody, MilestoneIdentity, MilestoneLink, MilestoneTimestamps, NodeLink};
 
 use super::{Remote, RemoteSinkError};
 use crate::{Milestone, github, sink::Sink};
@@ -25,7 +25,7 @@ pub async fn load_remote_milestone(link: &MilestoneLink) -> Result<Milestone, gi
 		.filter(|issue| issue.pull_request.is_none() && !CloseState::is_duplicate_reason(issue.state_reason.as_deref()))
 		.map(|issue| IssueLink::in_project(repo, issue.number))
 		.collect();
-	body.0.push_issue_links(&assigned_links);
+	body.0.push_nodes(&assigned_links.iter().cloned().map(NodeLink::Issue).collect::<Vec<_>>());
 
 	// GitHub exposes no per-field milestone timestamps — stamp every field with `updated_at`.
 	let ts = milestone.updated_at;
@@ -69,10 +69,10 @@ impl Sink<Remote> for Milestone {
 			// an issue the description doesn't name is hosted by its `milestone` field alone
 			let described = MilestoneBody::parse(gh.get_milestone(repo, number).await?.description.as_deref().unwrap_or(""), repo); // GitHub holds an empty one as null
 			let named = described.hosted();
-			let by_field: Vec<IssueLink> = old
+			let by_field: Vec<NodeLink> = old
 				.iter()
 				.flat_map(|o| &o.assigned)
-				.map(|n| IssueLink::in_project(repo, *n))
+				.map(|n| NodeLink::Issue(IssueLink::in_project(repo, *n)))
 				.filter(|l| !named.contains(l))
 				.collect();
 			let mut written = self.body.clone();
@@ -86,8 +86,8 @@ impl Sink<Remote> for Milestone {
 
 		// Assignment diff: only issues in the milestone's own repo can carry its milestone field.
 		let in_repo = |l: &&IssueLink| l.project() == repo;
-		let new_nums: HashSet<u64> = self.body.hosted().iter().filter(in_repo).map(|l| l.number()).collect();
-		let old_nums: HashSet<u64> = old.map(|o| o.body.hosted().iter().filter(in_repo).map(|l| l.number()).collect()).unwrap_or_default();
+		let new_nums: HashSet<u64> = self.body.0.issue_links().iter().filter(in_repo).map(|l| l.number()).collect();
+		let old_nums: HashSet<u64> = old.map(|o| o.body.0.issue_links().iter().filter(in_repo).map(|l| l.number()).collect()).unwrap_or_default();
 		let mut assigned: BTreeSet<u64> = old.map(|o| o.assigned.iter().copied().collect()).unwrap_or_default(); // without a base, the pushes below are all that's known
 
 		for num in new_nums.difference(&old_nums) {

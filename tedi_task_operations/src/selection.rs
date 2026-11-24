@@ -4,8 +4,8 @@
 //! open issues, else the cached lowest normal sprint. Selection is a *path* of node URLs
 //! (sprint → [milestone] → issue → [child issue …]), validated on every load: segments
 //! that are closed or no longer children of the previous level truncate the path, empty
-//! paths default to the top open root node. A terminal milestone auto-resolves to its
-//! first open, non-delegating issue — a resolution rule, never written back into the path.
+//! paths default to the top open root node. A terminal milestone auto-resolves to its first open,
+//! non-delegating issue, through the milestones it contains — a resolution rule, never written back into the path.
 //! Milestone contents are cached here (fetched by `sprints get/edit`/healthcheck) so
 //! resolution works offline. Urgent prunes its closed issues on every processing (the file is
 //! deleted when nothing else remains) — plain-text items are never cleanup fodder, and cleanup
@@ -133,7 +133,7 @@ impl Selected {
 			Some(NodeLink::Issue(link)) => Ok(Some(link)),
 			Some(NodeLink::Milestone(ml)) => self
 				.resolve_milestone(&ml)?
-				.map(Some)
+				.map(|(_, link)| Some(link))
 				.ok_or_else(|| format!("no open non-delegating issue in milestone '{}'", milestone_title(&ml))),
 		}
 	}
@@ -205,7 +205,9 @@ impl Selected {
 		let child = match &terminal {
 			NodeLink::Milestone(ml) => {
 				let title = milestone_title(ml);
-				sel.resolve_milestone(ml)?.ok_or_else(|| format!("no open non-delegating issue in milestone '{title}'"))?
+				let (through, child) = sel.resolve_milestone(ml)?.ok_or_else(|| format!("no open non-delegating issue in milestone '{title}'"))?;
+				path.extend(through.into_iter().map(NodeLink::Milestone));
+				child
 			}
 			NodeLink::Issue(link) => match issue_children(link).first() {
 				Some(NodeLink::Issue(l)) => l.clone(),
@@ -468,20 +470,36 @@ impl Selected {
 		}
 	}
 
-	/// A milestone resolves to its first open, non-delegating issue; falling back to a
-	/// delegating issue is deliberately not allowed. An issue not stored locally before it errors.
-	fn resolve_milestone(&self, ml: &MilestoneLink) -> Result<Option<IssueLink>, String> {
+	/// A milestone resolves to its first open, non-delegating issue, descending into the open milestones it
+	/// contains; those passed through come with it. Falling back to a delegating issue is deliberately not
+	/// allowed. An issue not stored locally before it errors.
+	fn resolve_milestone(&self, ml: &MilestoneLink) -> Result<Option<(Vec<MilestoneLink>, IssueLink)>, String> {
+		fn walk(sel: &Selected, at: &MilestoneLink, seen: &mut Vec<MilestoneLink>) -> Result<Option<(Vec<MilestoneLink>, IssueLink)>, String> {
+			seen.push(at.clone());
+			for node in sel.children(&NodeLink::Milestone(at.clone())) {
+				match node {
+					NodeLink::Issue(l) =>
+						if is_workable(&load_link(&l)?) {
+							return Ok(Some((Vec::new(), l)));
+						},
+					NodeLink::Milestone(inner) if seen.contains(&inner) => {}
+					NodeLink::Milestone(inner) => match milestone_local(&inner) {
+						Some(m) if m.is_closed() => {}
+						Some(_) =>
+							if let Some((mut through, l)) = walk(sel, &inner, seen)? {
+								through.insert(0, inner);
+								return Ok(Some((through, l)));
+							},
+						None => eprintln!("skipping milestone {}: it is not stored locally, and GitHub may not show it", inner.as_str()),
+					},
+				}
+			}
+			Ok(None)
+		}
 		if milestone_local(ml).is_none() {
 			return Err(format!("milestone {} is not stored locally — run `todo sprints get/edit` online to fetch it", ml.as_str()));
 		}
-		for node in self.children(&NodeLink::Milestone(ml.clone())) {
-			if let NodeLink::Issue(l) = node
-				&& is_workable(&load_link(&l)?)
-			{
-				return Ok(Some(l));
-			}
-		}
-		Ok(None)
+		walk(self, ml, &mut Vec::new())
 	}
 
 	/// Whether `node` is a valid movement landing target; `None` means skip.
@@ -492,7 +510,7 @@ impl Selected {
 			NodeLink::Milestone(ml) => match milestone_local(ml) {
 				Some(milestone) if milestone.is_closed() => Ok(None),
 				_ => self.resolve_milestone(ml).map(|resolved| {
-					resolved.map(|resolved| Landing::Milestone {
+					resolved.map(|(_, resolved)| Landing::Milestone {
 						title: milestone_title(ml),
 						resolved: Some(resolved),
 					})
@@ -514,16 +532,19 @@ impl Selected {
 			}
 			NodeLink::Milestone(ml) => Landing::Milestone {
 				title: milestone_title(ml),
-				resolved: self.resolve_milestone(ml)?,
+				resolved: self.resolve_milestone(ml)?.map(|(_, link)| link),
 			},
 		})
 	}
 
 	/// Every reachable node with its full path, in document order: root nodes,
-	/// cached-milestone issue children, and local issue children, recursive.
+	/// cached-milestone children, and local issue children, recursive; a loop is not entered twice.
 	fn candidate_paths(&self, active: &ActiveSprint) -> Vec<Vec<NodeLink>> {
 		fn walk(sel: &Selected, prefix: &mut Vec<NodeLink>, nodes: &[NodeLink], out: &mut Vec<Vec<NodeLink>>) {
 			for node in nodes {
+				if prefix.contains(node) {
+					continue;
+				}
 				prefix.push(node.clone());
 				out.push(prefix.clone());
 				let children = sel.children(node);
@@ -545,8 +566,9 @@ pub struct ActiveSprint {
 
 /// Issues that reached a closed state (done, not planned, duplicate). A link that doesn't resolve
 /// locally is unknown, not done.
-pub fn closed_links(view: &TaskView) -> Vec<IssueLink> {
-	view.issue_links().into_iter().filter(|l| link_local(l).is_some_and(|vi| vi.contents.state.is_closed())).collect()
+pub fn closed_links(view: &TaskView) -> Vec<NodeLink> {
+	let closed = |l: &IssueLink| link_local(l).is_some_and(|vi| vi.contents.state.is_closed());
+	view.issue_links().into_iter().filter(closed).map(NodeLink::Issue).collect()
 }
 
 fn describe_process(pid: &str) -> String {
@@ -607,7 +629,7 @@ fn cleanup_urgent() {
 	if closed.is_empty() {
 		return;
 	}
-	view.remove_issue_links(&closed);
+	view.remove_nodes(&closed);
 	let remaining = view.serialize();
 	let result = if remaining.trim().is_empty() {
 		std::fs::remove_file(&path)

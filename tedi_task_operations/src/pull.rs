@@ -9,15 +9,16 @@ use std::{
 
 use color_eyre::eyre::{Result, bail};
 use jiff::Timestamp;
-use tedi_core::conflict::Conflict;
+use tedi_core::{chain::Kind, conflict::Conflict};
 
 use crate::{
 	CloseState, Issue, IssueLink, IssueSelector, LazyIssue, Milestone, MilestoneLink, RepoInfo,
 	github::{FetchedIssue, GithubError},
 	local::{Consensus, FsReader, Local, LocalError, LocalFs, LocalIssueSource, conflict_detect::milestone_conflict_path, lock_store},
-	open_interactions::{MergeMode, fetch_and_store_missing, merge_with_remote, pull_milestone},
-	remote::{RemoteSource, load_remote_milestone},
+	open_interactions::{MergeMode, Pull, fetch_and_store_missing, merge_with_remote, pull_issues},
+	remote::RemoteSource,
 	sink::Sink,
+	sprints::load_local_issue,
 	workflow::{MovedOn, Rejected, Workflows, apply_rules},
 };
 
@@ -33,12 +34,14 @@ pub async fn pull_repos(targets: &[String], workflows: &Workflows, now: Timestam
 	}
 
 	let mut behind = Vec::new();
-	for repo in repos {
-		if let Err(e) = pull_repo(repo, workflows, now).await {
+	let mut milestones = Pull::default();
+	for &repo in &repos {
+		if let Err(e) = pull_repo(repo, workflows, &mut milestones, now).await {
 			eprintln!("{repo}: {e:?}");
 			behind.push(repo.to_string());
 		}
 	}
+	pull_hosted(milestones.finish().await?, &repos, workflows, now).await?;
 	if !behind.is_empty() {
 		bail!("not every issue was stored, so these pull again from the last page that was: {}", behind.join(", "));
 	}
@@ -47,7 +50,7 @@ pub async fn pull_repos(targets: &[String], workflows: &Workflows, now: Timestam
 
 /// Page by page, least recently updated first: the cursor moves past a page once all of it is stored,
 /// so a pull cut short (by the rate limit, say) is picked up there.
-async fn pull_repo(repo: RepoInfo, workflows: &Workflows, now: Timestamp) -> Result<()> {
+async fn pull_repo(repo: RepoInfo, workflows: &Workflows, milestones: &mut Pull, now: Timestamp) -> Result<()> {
 	let gh = crate::github::client::get()?;
 	let mut moved = HashSet::new();
 	let labels = gh.list_labels(repo).await?;
@@ -124,10 +127,37 @@ async fn pull_repo(repo: RepoInfo, workflows: &Workflows, now: Timestamp) -> Res
 			None => break,
 		}
 	}
-	pull_milestones(repo).await?;
+	pull_milestones(repo, milestones).await?;
 	pull_prs(repo, workflows, &mut moved, now).await?;
 	if !Local::load_project_meta(repo).dated {
 		date_stored(repo).await?;
+	}
+	Ok(())
+}
+
+/// The issues `milestones` host outside `repos`: no listing of those brings them.
+async fn pull_hosted(milestones: Vec<Milestone>, repos: &[RepoInfo], workflows: &Workflows, now: Timestamp) -> Result<()> {
+	let mut links: Vec<IssueLink> = Vec::new();
+	for link in milestones.iter().flat_map(|m| m.body.0.issue_links()) {
+		let listed = matches!(link, IssueLink::Virtual(_)) || repos.contains(&link.project());
+		let stored = !listed && Local::find_by_number(link.project(), link.number(), FsReader).is_some(); // one GitHub won't show us isn't
+		if stored && !links.contains(&link) {
+			links.push(link);
+		}
+	}
+	let mut issues = Vec::new();
+	for link in links {
+		match load_local_issue(&link).await {
+			Ok(issue) => issues.push(issue),
+			Err(e) => eprintln!("{link} was not pulled: {e:#}"), // a conflict waits on it
+		}
+	}
+	if let Err(e) = pull_issues(&mut issues, MergeMode::Normal).await {
+		eprintln!("{e:#}"); // each recorded as a conflict, or pulled again by the next
+	}
+	let mut moved = HashSet::new();
+	for issue in &issues {
+		rules(issue, workflows, &mut moved, now).await?;
 	}
 	Ok(())
 }
@@ -172,29 +202,23 @@ async fn date_stored(repo: RepoInfo) -> Result<()> {
 }
 
 /// `repo`'s open milestones, and those stored as open: what the board offers. A sprint's is its own flow's to sync.
-pub(crate) async fn pull_milestones(repo: RepoInfo) -> Result<()> {
+pub(crate) async fn pull_milestones(repo: RepoInfo, pull: &mut Pull) -> Result<()> {
+	let sprint = |number: u64, title: &str| Kind::from((&MilestoneLink::in_project(repo, number), title)) == Kind::Sprint;
 	let gh = crate::github::client::get()?;
-	let listed = gh.list_milestones(repo).await?.into_iter().filter(|m| !is_sprint(&m.title)).map(|m| m.number);
+	let listed = gh.list_milestones(repo).await?.into_iter().filter(|m| !sprint(m.number, &m.title)).map(|m| m.number);
 	let held: Vec<u64> = Local::load_milestone_project_meta(repo, &FsReader)
 		.milestones
 		.into_iter()
-		.filter(|(_, m)| !m.state.is_closed() && !is_sprint(&m.title))
+		.filter(|(n, m)| !m.state.is_closed() && !sprint(*n, &m.title))
 		.map(|(n, _)| n)
 		.collect();
 	for number in listed.chain(held).collect::<BTreeSet<_>>() {
 		let link = MilestoneLink::in_project(repo, number);
-		let Some(mut local) = Local::load_milestone(&link, &FsReader)? else {
-			let mut remote = load_remote_milestone(&link).await?;
-			let store = lock_store().await?;
-			<Milestone as Sink<LocalFs>>::sink(&mut remote, None).await?;
-			<Milestone as Sink<Consensus>>::sink(&mut remote, None).await?;
-			drop(store);
-			continue;
-		};
-		match pull_milestone(&mut local, MergeMode::Normal).await {
+		match pull.link(&link).await {
 			Ok(()) => {}
 			Err(e) if matches!(e.downcast_ref::<GithubError>(), Some(GithubError::Api { status, .. }) if status.as_u16() == 404) => {
 				println!("{} is gone from GitHub: kept here, closed", link.as_str());
+				let mut local = Local::load_milestone(&link, &FsReader)?.expect("listed, or held here");
 				local.identity.state = CloseState::NotPlanned;
 				let store = lock_store().await?;
 				<Milestone as Sink<LocalFs>>::sink(&mut local, None).await?;
@@ -206,11 +230,6 @@ pub(crate) async fn pull_milestones(repo: RepoInfo) -> Result<()> {
 		}
 	}
 	Ok(())
-}
-
-/// A sprint's milestone is titled by its timeframe.
-pub(crate) fn is_sprint(title: &str) -> bool {
-	title.parse::<v_utils::Timeframe>().is_ok()
 }
 
 /// Every node of `tree` through each workflow's rules. A move that can't land is told, and the pull goes on.

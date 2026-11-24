@@ -8,15 +8,15 @@ use std::{
 
 use color_eyre::eyre::{Result, bail, eyre};
 pub use tedi_core::board::*;
-use tedi_core::{PrState, PullRequest, conflict::CommentEdit, workflow::State};
+use tedi_core::{NodeLink, PrState, PullRequest, chain::Kind, conflict::CommentEdit, workflow::State};
 
 use crate::{
 	CloseState, Issue, IssueIndex, IssueLink, IssueSelector, LazyIssue, Milestone, MilestoneLink, RepoInfo,
 	conflict_resolve::{FieldEdit, check_for_existing_conflict},
 	labels::Scheme,
 	local::{FsReader, GitReader, Local, LocalError, LocalIssueSource, LocalPath, ProjectMeta, States, lock_store},
-	open_interactions::{MergeMode, MilestoneModifier, Modifier, SyncMode, SyncOptions, modify_and_sync_issue, modify_and_sync_milestone, pull_milestone},
-	pull::{is_sprint, pull_milestones},
+	open_interactions::{MergeMode, MilestoneModifier, Modifier, Pull, SyncMode, SyncOptions, modify_and_sync_issue, modify_and_sync_milestone},
+	pull::pull_milestones,
 	rank::{Task, rank},
 	workflow::{Rejected, Workflows},
 };
@@ -83,12 +83,12 @@ pub async fn set_milestone(link: &IssueLink, repo: RepoInfo, seen: Option<&Miles
 	}
 	stored_index(link)?;
 	if mode != SyncMode::Offline {
-		pull_milestones(repo).await?; // whatever of the repo hosts it by now
+		pull_milestones(repo, &mut Pull::default()).await?; // whatever of the repo hosts it by now
 	}
 	let (hosting, rest): (Vec<Milestone>, Vec<Milestone>) = Local::stored_milestones()?
 		.into_iter()
 		.filter(|m| offered(m) && m.identity.link.repo_info() == repo)
-		.partition(|m| m.body.hosted().contains(link));
+		.partition(|m| m.body.0.issue_links().contains(link));
 	let is_in = |at: Option<&MilestoneLink>| match at {
 		Some(at) => hosting.iter().any(|m| m.link() == at),
 		None => hosting.is_empty(),
@@ -106,18 +106,18 @@ pub async fn set_milestone(link: &IssueLink, repo: RepoInfo, seen: Option<&Miles
 		_ => None,
 	};
 	for mut left in hosting.into_iter().filter(|m| Some(m.link()) != new) {
-		left.body.0.remove_issue_links(std::slice::from_ref(link));
+		left.body.0.remove_nodes(&[NodeLink::Issue(link.clone())]);
 		write(left, mode).await?;
 	}
 	let Some(mut into) = into else { return Ok(()) };
 	match mode == SyncMode::Offline || link.project() != repo {
 		true => {
-			into.body.0.push_issue_links(std::slice::from_ref(link));
+			into.body.0.push_nodes(&[NodeLink::Issue(link.clone())]);
 			write(into, mode).await
 		}
 		false => {
 			crate::github::client::get()?.set_issue_milestone(repo, link.number(), Some(into.number())).await?;
-			pull_milestone(&mut into, MergeMode::Normal).await
+			Pull::default().milestone(&mut into, MergeMode::Normal).await
 		}
 	}
 }
@@ -282,7 +282,8 @@ impl Reading<'_> {
 			.into_iter()
 			.filter(offered)
 			.map(|m| Target {
-				hosted: m.body.hosted(),
+				hosted: m.body.0.issue_links(),
+				contains: m.body.0.milestone_links(),
 				link: m.identity.link,
 				title: m.identity.title,
 				due_on: m.identity.due_on,
@@ -307,7 +308,7 @@ enum Step {
 
 /// A milestone the board shows: open, and no sprint's.
 fn offered(m: &Milestone) -> bool {
-	!m.is_closed() && !is_sprint(&m.identity.title)
+	!m.is_closed() && Kind::from((m.link(), m.identity.title.as_str())) != Kind::Sprint
 }
 
 async fn write(milestone: Milestone, mode: SyncMode) -> Result<()> {

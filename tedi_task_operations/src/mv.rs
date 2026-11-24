@@ -273,7 +273,7 @@ async fn relink_milestones(moved: &HashMap<IssueLink, IssueLink>, editing: Optio
 					continue;
 				}
 				let milestone = Local::load_milestone(&link, &FsReader)?.expect("listed in its project's meta");
-				if milestone.is_closed() || !milestone.body.hosted().iter().any(|l| moved.contains_key(l)) {
+				if milestone.is_closed() || !milestone.body.0.issue_links().iter().any(|l| moved.contains_key(l)) {
 					continue;
 				}
 				let mut body = milestone.body.clone();
