@@ -231,9 +231,9 @@ fn a_text_line_becomes_an_issue_once_online() {
 	- app/issues/3
 
 	---
-	- todos/issues/1
-	- app/issues/5
 	- app/issues/1
+	- app/issues/5
+	- todos/issues/1
 
 	# in_progress
 
@@ -319,8 +319,8 @@ fn a_move_of_a_card_that_left_is_refused_and_the_rest_lands() {
 	insta::assert_snapshot!(lines(&w.stored()), @"
 	# in_progress
 
-	- app/issues/2
 	- app/issues/1
+	- app/issues/2
 
 	# icebox
 
