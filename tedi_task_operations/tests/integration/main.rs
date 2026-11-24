@@ -6,6 +6,7 @@ pub use common::*;
 mod assignees;
 mod blocker_dependencies;
 mod blocker_integrated;
+mod board_edits;
 mod closed_subtree;
 mod conflict;
 mod field_edit;

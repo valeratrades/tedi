@@ -219,6 +219,13 @@ impl TaskView {
 		}
 	}
 
+	/// Undoes [`Self::push_issue_links`]: drops the items of `links` that stand as it appends them.
+	pub fn drop_pushed(&mut self, links: &[IssueLink]) {
+		if let Some(items) = self.sections.get_mut(&Vec::new()) {
+			items.retain(|item| !(item.checkbox.is_none() && item.children.is_empty() && matches!(&item.content, TaskContent::Issue { r#ref: IssueRef::Url(l), .. } if links.contains(l))));
+		}
+	}
+
 	/// Collapse every issue/milestone component to a bare link for storage.
 	pub fn collapse_to_links(&mut self) {
 		for items in self.sections.values_mut() {

@@ -24,9 +24,9 @@ use ev_lib::uikit_dioxus::*;
 use futures::StreamExt as _;
 use icons::{Glyph, Icon};
 use tedi_core::{
-	IssueLink,
+	IssueLink, MilestoneLink,
 	board::{Board, Card, Scope, View, scope_at},
-	conflict::{Conflict, FieldEdit},
+	conflict::{CommentEdit, Conflict, FieldEdit},
 	workflow::{State, Workflow},
 };
 use tilers_dioxus::{Band, DockPanel, Group, GroupId, MinSize, PackedApi, PackedArea, PanelId, Tile, model::serial};
@@ -203,7 +203,7 @@ impl Ctx {
 				None => {
 					let group = Group::new(api.mint_group_id(), id);
 					let (cols, rows) = (api.cols(), api.rows());
-					return api.float(group, (cols * 3).div_euclid(8), (rows * 4).div_euclid(5));
+					return api.float(group, (cols * 5).div_euclid(8), (rows * 4).div_euclid(5)); // room for the conversation and its properties beside it
 				}
 			}
 		}
@@ -367,6 +367,80 @@ impl Ctx {
 			Ok(Edited::Conflict(conflict)) => self.clashed(card.link, conflict),
 			Ok(Edited::Rejected(why)) => self.refused(key, card.link, format!("Move refused: {why}")),
 			Err(e) => self.say(key, toast::Tone::Error, e.to_string(), None),
+		}
+	}
+
+	/// `link` from the milestones `seen` to `new` (their urls), one a repo: told per repo, each undone from its note.
+	async fn set_milestones(self, link: IssueLink, seen: Vec<String>, new: Vec<String>) {
+		let of = |urls: &[String]| -> BTreeMap<String, MilestoneLink> {
+			urls.iter()
+				.map(|u| MilestoneLink::parse(u).expect("offered by the board"))
+				.map(|m| (m.repo_info().to_string(), m))
+				.collect()
+		};
+		let (from, to) = (of(&seen), of(&new));
+		for repo in from.keys().chain(to.keys()).collect::<std::collections::BTreeSet<_>>() {
+			let (was, now) = (from.get(repo), to.get(repo));
+			if was == now {
+				continue;
+			}
+			let key = format!("milestone:{link}:{repo}");
+			match api::set_milestone(link.clone(), repo.clone(), was.cloned(), now.cloned()).await {
+				Ok(Edited::Landed) => {
+					let urls = |m: Option<&MilestoneLink>| m.map(|m| m.as_str().to_string()).into_iter().collect::<Vec<_>>();
+					let (back_from, back_to) = (urls(now), urls(was));
+					let undo = Callback::new({
+						let link = link.clone();
+						move |()| {
+							spawn(self.set_milestones(link.clone(), back_from.clone(), back_to.clone()));
+						}
+					});
+					let told = match now {
+						Some(m) => format!("Put #{} in {repo}'s {}", link.number(), self.titled(m)),
+						None => format!("Took #{} out of {repo}'s milestone", link.number()),
+					};
+					self.say(key, toast::Tone::Info, told, Some(("Undo", undo)));
+				}
+				Ok(Edited::Conflict(conflict)) => self.clashed(link.clone(), conflict),
+				Ok(Edited::Rejected(why)) => self.refused(key, link.clone(), format!("Milestone kept: {why}")),
+				Err(e) => self.say(key, toast::Tone::Error, e.to_string(), None),
+			}
+		}
+	}
+
+	fn titled(&self, milestone: &MilestoneLink) -> String {
+		let board = self.board.read();
+		let target = board.as_ref().and_then(|b| b.targets.iter().find(|t| t.link == *milestone));
+		target.map_or_else(|| format!("milestone {}", milestone.number()), |t| t.title.clone()) // closed since it was offered
+	}
+
+	/// Whether it landed; why not is toasted.
+	async fn comment(self, link: IssueLink, edit: CommentEdit) -> bool {
+		let key = format!("comment:{link}");
+		match api::comment(link.clone(), edit).await {
+			Ok(Edited::Landed) => return true,
+			Ok(Edited::Conflict(conflict)) => self.clashed(link, conflict),
+			Ok(Edited::Rejected(why)) => self.refused(key, link, format!("Comment refused: {why}")),
+			Err(e) => self.say(key, toast::Tone::Error, e.to_string(), None),
+		}
+		false
+	}
+
+	/// The reviews asked of `link`, from `seen` to `new`.
+	async fn request_reviews(self, link: IssueLink, seen: Vec<String>, new: Vec<String>) {
+		let asked = new.iter().filter(|r| !seen.contains(r)).map(|r| (r, true));
+		let withdrawn = seen.iter().filter(|r| !new.contains(r)).map(|r| (r, false));
+		for (reviewer, on) in asked.chain(withdrawn) {
+			let key = format!("review:{link}:{reviewer}");
+			match api::request_review(link.clone(), reviewer.clone(), on).await {
+				Ok(()) => self.say(
+					key,
+					toast::Tone::Info,
+					format!("{} {reviewer}'s review of #{}", if on { "Asked for" } else { "Withdrew the ask for" }, link.number()),
+					None,
+				),
+				Err(e) => self.say(key, toast::Tone::Error, e.to_string(), None),
+			}
 		}
 	}
 

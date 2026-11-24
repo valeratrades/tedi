@@ -187,13 +187,17 @@ and the hosted issue set is the `milestone` field carried by each issue.
 
   in   get_milestone.description  ──parse──▶  MilestoneBody, a TaskView
        list_milestone_issues      ──push_issue_links──▶ folded into that same body, so an issue
-                                    assigned upstream still resolves when offline
+                                    assigned upstream still resolves when offline; pull requests cut
+                                  ─▶ Milestone.assigned — persisted; the base an unassignment on
+                                    GitHub is told apart by (the merge drops one assigned then and
+                                    not now, though a description still names it)
        updated_at                 ──▶  all four stamps at once: GitHub exposes no per-field
                                        milestone timestamp
 
-  out  description  ──▶ PATCH milestones/{n}           when the body or the due date moved
-       hosted set   ──▶ PATCH issues/{n} { milestone } diffed against `old.hosted()`:
-                                                       new ⇒ assign, gone ⇒ unassign
+  out  description  ──▶ PATCH milestones/{n}           when the body or the due date moved; what
+                                                       hosts by its field alone is not written in
+       hosted set   ──▶ PATCH issues/{n} { milestone } new against `old.hosted()` ⇒ assign
+                                                       gone from `old.assigned` ⇒ unassign
 
 Only issues in the milestone's own repo can carry it, so a hosted link pointing elsewhere is
 description-only. The body reaching this sink is already reconciled — the three-way merge that

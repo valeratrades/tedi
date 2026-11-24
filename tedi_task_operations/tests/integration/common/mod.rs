@@ -314,6 +314,46 @@ impl TestContext {
 		self.rebuild_mock_state();
 	}
 
+	/// Github holds an open milestone in `repo`, its issues `assigned`, replacing one of its number.
+	pub fn remote_milestone(&self, repo: &str, number: u64, title: &str, description: &str, assigned: &[u64]) {
+		with_state(self, |s| {
+			s.remote_milestones.retain(|(r, n, ..)| !(r == repo && *n == number));
+			s.remote_milestones
+				.push((repo.to_string(), number, title.to_string(), description.to_string(), assigned.to_vec()));
+		});
+		self.rebuild_mock_state();
+	}
+
+	/// What the mock Github holds by now, its milestones alone: `owner/repo#number title [assigned issues]`, then the description.
+	pub fn remote_milestones(&self) -> String {
+		let state: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&self.mock_state_path).unwrap()).unwrap();
+		let mut lines: Vec<String> = state["milestones"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.map(|m| {
+				let mut assigned: Vec<u64> = state["issues"]
+					.as_array()
+					.unwrap()
+					.iter()
+					.filter(|i| i["owner"] == m["owner"] && i["repo"] == m["repo"] && i["milestone"] == m["number"])
+					.map(|i| i["number"].as_u64().unwrap())
+					.collect();
+				assigned.sort_unstable();
+				format!(
+					"{}/{}#{} {} {assigned:?}\n{}",
+					m["owner"].as_str().unwrap(),
+					m["repo"].as_str().unwrap(),
+					m["number"],
+					m["title"].as_str().unwrap(),
+					m["description"].as_str().unwrap()
+				)
+			})
+			.collect();
+		lines.sort();
+		lines.join("\n")
+	}
+
 	/// Github's `owner/repo` gains a commit by `author` setting `path` to `content`, an hour after the one before.
 	pub fn remote_file_commit(&self, repo: &str, path: &str, author: &str, content: &str) {
 		with_state(self, |s| {
@@ -477,6 +517,13 @@ impl TestContext {
 					if let Some(reason) = &i.state_reason {
 						json["state_reason"] = serde_json::Value::String(reason.clone());
 					}
+					if let Some((_, number, ..)) = state
+						.remote_milestones
+						.iter()
+						.find(|(repo, .., assigned)| *repo == format!("{}/{}", i.owner, i.repo) && assigned.contains(&i.number))
+					{
+						json["milestone"] = serde_json::json!(number);
+					}
 					if !i.labels.is_empty() {
 						json["labels"] = serde_json::json!(i.labels);
 					}
@@ -579,6 +626,16 @@ impl TestContext {
 					.remote_pull_requests
 					.iter()
 					.map(|(owner, repo, pr)| serde_json::json!({ "owner": owner, "repo": repo, "pr": pr }))
+					.collect();
+			}
+			if !state.remote_milestones.is_empty() {
+				mock_state["milestones"] = state
+					.remote_milestones
+					.iter()
+					.map(|(repo, number, title, description, _)| {
+						let (owner, repo) = repo.split_once('/').expect("owner/repo");
+						serde_json::json!({ "owner": owner, "repo": repo, "number": number, "title": title, "description": description })
+					})
 					.collect();
 			}
 			if !state.remote_labels.is_empty() {
@@ -1348,6 +1405,8 @@ struct GitState {
 	remote_dependencies: Vec<(tedi_task_operations::IssueLink, tedi_task_operations::IssueLink, Option<jiff::Timestamp>)>,
 	/// (owner, repo, label names)
 	remote_labels: Vec<(String, String, Vec<String>)>,
+	/// (owner/repo, number, title, description, issues assigned)
+	remote_milestones: Vec<(String, u64, String, String, Vec<u64>)>,
 	/// (issue, pr url, `draft` | `open` | `merged` | `closed`)
 	remote_prs: Vec<(tedi_task_operations::IssueLink, String, String)>,
 	/// (owner, repo, pull request)

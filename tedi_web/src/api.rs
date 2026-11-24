@@ -7,9 +7,9 @@ use dioxus_fullstack::HeaderMap;
 use dioxus_fullstack::{ServerEvents, ServerFnError, get, post, server};
 use serde::{Deserialize, Serialize};
 use tedi_core::{
-	IssueLink,
-	board::{Board, GroupBy, Scope, View},
-	conflict::{Conflict, FieldEdit},
+	IssueLink, MilestoneLink,
+	board::{Board, GroupBy, Scope, Thread, View},
+	conflict::{CommentEdit, Conflict, FieldEdit},
 	workflow::{State, Workflow},
 };
 use tilers_core::Band;
@@ -603,6 +603,28 @@ pub async fn edit(link: IssueLink, edits: Vec<FieldEdit>) -> Result<Edited, Serv
 #[server]
 pub async fn move_card(link: IssueLink, workflow: String, to: State, seen: State) -> Result<Edited, ServerFnError> {
 	crate::server::move_card(link, workflow, to, seen).await.map_err(failed)
+}
+
+/// Which milestone of `repo` (`owner/repo`) hosts `link`, from `seen` to `new`.
+#[post("/api/milestone")]
+pub async fn set_milestone(link: IssueLink, repo: String, seen: Option<MilestoneLink>, new: Option<MilestoneLink>) -> Result<Edited, ServerFnError> {
+	crate::server::set_milestone(link, repo, seen, new).await.map_err(failed)
+}
+
+#[post("/api/thread")]
+pub async fn thread(link: IssueLink) -> Result<Thread, ServerFnError> {
+	crate::server::thread(link).await.map_err(failed)
+}
+
+#[post("/api/comment")]
+pub async fn comment(link: IssueLink, edit: CommentEdit) -> Result<Edited, ServerFnError> {
+	crate::server::comment(link, edit).await.map_err(failed)
+}
+
+/// `reviewer`'s review of the pull request `link` asked for, or the ask withdrawn.
+#[post("/api/review")]
+pub async fn request_review(link: IssueLink, reviewer: String, on: bool) -> Result<(), ServerFnError> {
+	crate::server::request_review(link, reviewer, on).await.map_err(failed)
 }
 
 /// The clash file waiting on `link`'s line, markers and all.

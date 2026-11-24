@@ -43,7 +43,7 @@ pub use blockers::{BlockerItem, BlockerSetState, Blockers, split_blockers};
 pub use error::{IssueError, ParseContext, ParseError, TitleInGitPathError};
 pub use issue::{
 	CloseState, Comment, CommentIdentity, Comments, HollowIssue, Issue, IssueContents, IssueIdentity, IssueTimestamps, LinkedIssueMeta, LinkedPr, MAIN_ISSUE_FILENAME, PrState, Progress,
-	PullRequest, VirtualIssue, issue_dir_name, issue_file_name, sanitize_title,
+	PullRequest, Review, VirtualIssue, issue_dir_name, issue_file_name, sanitize_title,
 };
 pub use locate::{IssueChildren, IssueIndex, IssueIndexParseError, IssueSelector, MAX_INDEX_DEPTH, MAX_LINEAGE_DEPTH, MAX_TITLE_LENGTH};
 pub use marker::{FoldLevel, IssueMarker, Marker};

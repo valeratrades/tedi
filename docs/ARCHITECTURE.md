@@ -12,6 +12,8 @@ this is the primitive through which the targetting of all projects happens.
 
 may or may not contain any number of issues. Unlike issues, they have inherent time component, - deadlines can be set on it.
 
+hosts issues of any repo, and an issue sits in at most one milestone a repo. Its own repo's holds it through GitHub's `milestone` field, any other's by naming it in the description. Remote state putting it in two of one repo is pulled as-is.
+
 no priority ordering exists within it. All tasks contained are assumed to be necessary for completion of the objective.
 
 can have associated discussions/dumps with unstructured thoughts on the subject.
@@ -142,7 +144,7 @@ tedi_md → tedi_core → tedi_task_primitives → tedi_task_operations → tedi
 - `tedi_task_operations` — what we *do* with issues: sync/merge/touch/conflict, sprint flows + per-sprint selection, per-issue Clockify.
 - `tedi_eval` — performance evaluation and manual-stats tracking.
 - `tedi_utils` — leaf utilities on plain data, no tedi deps. `search`: the one engine every issue search goes through ([below](#search)), and its skim picker.
-- `tedi_web` — the board in a browser (dioxus). The client (wasm, `--features web`, built by `dx`) holds every card and runs `tedi_core::board` over them; the server half (`--features server`, linked into `tedi web`) is server fns over `tedi_task_operations`, a GitHub App webhook, the periodic pull of `watch`, and the client bundle. An edit is a `Modifier::Field` made against what the card showed, a drop a move made against the state it showed; changes reach open boards as server-sent ticks. Each viewer (the user a gate names in `--viewer-header`, else the instance's own GitHub user) has a library beside the store, never in it (`$XDG_DATA_HOME/tedi/web/{viewer}.json`): what their screen shows (tiles and columns per band, each view as last edited and whether its columns are locked), saved as it settles, and the open workspace kept current with it; and the filters, workspaces, scopes and column layouts (arrangement and tints) they keep. The team's are config — `board.toml`, read by the flake — read-only on the board; an object's versions are the commits of that file changing it. Every move between team, library, screen and another viewer is a copy remembering its upstream, so either side shows how far the two moved apart:
+- `tedi_web` — the board in a browser (dioxus). The client (wasm, `--features web`, built by `dx`) holds every card and runs `tedi_core::board` over them; the server half (`--features server`, linked into `tedi web`) is server fns over `tedi_task_operations`, a GitHub App webhook, the periodic pull of `watch`, and the client bundle. An edit is a `Modifier::Field` made against what the card showed, a comment's change against the body shown, a milestone set against the one its repo's was shown to be, a drop a move made against the state it showed; changes reach open boards as server-sent ticks. Each viewer (the user a gate names in `--viewer-header`, else the instance's own GitHub user) has a library beside the store, never in it (`$XDG_DATA_HOME/tedi/web/{viewer}.json`): what their screen shows (tiles and columns per band, each view as last edited and whether its columns are locked), saved as it settles, and the open workspace kept current with it; and the filters, workspaces, scopes and column layouts (arrangement and tints) they keep. The team's are config — `board.toml`, read by the flake — read-only on the board; an object's versions are the commits of that file changing it. Every move between team, library, screen and another viewer is a copy remembering its upstream, so either side shows how far the two moved apart:
   ```
   board.toml ──Fork──► library ──Open──► screen
        ▲                │   ▲               │
@@ -167,9 +169,9 @@ GitHub is reached through one module in `tedi_task_primitives` — `LazyIssue<Re
 
 tedi acts as `github_token`'s user or as a `github_app`; the App reaches each account through that account's installation, each with its own rate budget, and edits as its bot (`<slug>[bot]`).
 
-`tedi pull [owner|owner/repo]…` (the config's `watch` when none are named) stores every issue those hold: one not stored yet arrives with its whole tree, one stored is pulled through the same merge as any other sync. It lists a repo a page of whole issues per GraphQL call, least recently updated first, and keeps the update time of the last page it stored whole: the next pull, or one picking up after the rate limit cut it short, lists from there. A clash it meets is recorded as a conflict and doesn't hold the cursor back.
+`tedi pull [owner|owner/repo]…` (the config's `watch` when none are named) stores every issue those hold: one not stored yet arrives with its whole tree, one stored is pulled through the same merge as any other sync. It lists a repo a page of whole issues per GraphQL call, least recently updated first, and keeps the update time of the last page it stored whole: the next pull, or one picking up after the rate limit cut it short, lists from there. A clash it meets is recorded as a conflict and doesn't hold the cursor back. The repo's open milestones are pulled with it through their own three-way merge, sprints' aside; so is who its issues can be assigned to.
 
-A pull request is the *how* of the issues it closes: no blockers, no children, never edited by tedi. Pull mirrors a repo's into `.prs.json` beside its issues, newest first down to the newest the last whole walk stored (GraphQL lists them by no `since`); the board cards them read-only.
+A pull request is the *how* of the issues it closes: no blockers, no children; whose review it waits on is asked straight on GitHub, and nothing else of it is edited by tedi. Pull mirrors a repo's into `.prs.json` beside its issues, newest first down to the newest the last whole walk stored (GraphQL lists them by no `since`); the board cards them read-only.
 
 ### Local
 

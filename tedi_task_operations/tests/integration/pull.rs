@@ -71,8 +71,10 @@ async fn a_pull_reads_whole_issues_a_page_at_a_time() {
 	insta::assert_snapshot!(ctx.github_calls().join("\n"), @r#"
 	fetch_authenticated_user()
 	list_labels(o/r)
+	list_assignable(o/r)
 	list_repo_issues(o/r, None, None)
 	list_repo_issues(o/r, None, Some("2"))
+	list_milestones
 	list_repo_prs(o/r, None)
 	"#);
 }

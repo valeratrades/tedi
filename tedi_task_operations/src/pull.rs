@@ -2,18 +2,21 @@
 //! other sync takes; and their pull requests, mirrored read-only. Each stored, every workflow's rules
 //! may move it.
 
-use std::{collections::HashSet, sync::Arc};
+use std::{
+	collections::{BTreeSet, HashSet},
+	sync::Arc,
+};
 
 use color_eyre::eyre::{Result, bail};
 use jiff::Timestamp;
 use tedi_core::conflict::Conflict;
 
 use crate::{
-	CloseState, Issue, IssueLink, IssueSelector, LazyIssue, RepoInfo,
-	github::FetchedIssue,
-	local::{Consensus, FsReader, Local, LocalError, LocalFs, LocalIssueSource, lock_store},
-	open_interactions::{MergeMode, fetch_and_store_missing, merge_with_remote},
-	remote::RemoteSource,
+	CloseState, Issue, IssueLink, IssueSelector, LazyIssue, Milestone, MilestoneLink, RepoInfo,
+	github::{FetchedIssue, GithubError},
+	local::{Consensus, FsReader, Local, LocalError, LocalFs, LocalIssueSource, conflict_detect::milestone_conflict_path, lock_store},
+	open_interactions::{MergeMode, fetch_and_store_missing, merge_with_remote, pull_milestone},
+	remote::{RemoteSource, load_remote_milestone},
 	sink::Sink,
 	workflow::{MovedOn, Rejected, Workflows, apply_rules},
 };
@@ -48,7 +51,11 @@ async fn pull_repo(repo: RepoInfo, workflows: &Workflows, now: Timestamp) -> Res
 	let gh = crate::github::client::get()?;
 	let mut moved = HashSet::new();
 	let labels = gh.list_labels(repo).await?;
-	Local::update_project_meta(repo, |m| m.label_colors = labels)?;
+	let assignable = gh.list_assignable(repo).await?;
+	Local::update_project_meta(repo, |m| {
+		m.label_colors = labels;
+		m.assignable = assignable;
+	})?;
 	let since = Local::load_project_meta(repo).pulled_at;
 	let mut after = None;
 	loop {
@@ -115,7 +122,50 @@ async fn pull_repo(repo: RepoInfo, workflows: &Workflows, now: Timestamp) -> Res
 			None => break,
 		}
 	}
+	pull_milestones(repo).await?;
 	pull_prs(repo, workflows, &mut moved, now).await
+}
+
+/// `repo`'s open milestones, and those stored as open: what the board offers. A sprint's is its own flow's to sync.
+pub(crate) async fn pull_milestones(repo: RepoInfo) -> Result<()> {
+	let gh = crate::github::client::get()?;
+	let listed = gh.list_milestones(repo).await?.into_iter().filter(|m| !is_sprint(&m.title)).map(|m| m.number);
+	let held: Vec<u64> = Local::load_milestone_project_meta(repo, &FsReader)
+		.milestones
+		.into_iter()
+		.filter(|(_, m)| !m.state.is_closed() && !is_sprint(&m.title))
+		.map(|(n, _)| n)
+		.collect();
+	for number in listed.chain(held).collect::<BTreeSet<_>>() {
+		let link = MilestoneLink::in_project(repo, number);
+		let Some(mut local) = Local::load_milestone(&link, &FsReader)? else {
+			let mut remote = load_remote_milestone(&link).await?;
+			let store = lock_store().await?;
+			<Milestone as Sink<LocalFs>>::sink(&mut remote, None).await?;
+			<Milestone as Sink<Consensus>>::sink(&mut remote, None).await?;
+			drop(store);
+			continue;
+		};
+		match pull_milestone(&mut local, MergeMode::Normal).await {
+			Ok(()) => {}
+			Err(e) if matches!(e.downcast_ref::<GithubError>(), Some(GithubError::Api { status, .. }) if status.as_u16() == 404) => {
+				println!("{} is gone from GitHub: kept here, closed", link.as_str());
+				local.identity.state = CloseState::NotPlanned;
+				let store = lock_store().await?;
+				<Milestone as Sink<LocalFs>>::sink(&mut local, None).await?;
+				<Milestone as Sink<Consensus>>::sink(&mut local, None).await?;
+				drop(store);
+			}
+			Err(e) if milestone_conflict_path(&link).exists() => eprintln!("{e:#}"), // recorded, for the user to resolve
+			Err(e) => return Err(e),
+		}
+	}
+	Ok(())
+}
+
+/// A sprint's milestone is titled by its timeframe.
+pub(crate) fn is_sprint(title: &str) -> bool {
+	title.parse::<v_utils::Timeframe>().is_ok()
 }
 
 /// Every node of `tree` through each workflow's rules. A move that can't land is told, and the pull goes on.
@@ -148,7 +198,7 @@ async fn rule(link: &IssueLink, workflows: &Workflows, moved: &mut HashSet<(Issu
 /// one cut short walks again from the top.
 async fn pull_prs(repo: RepoInfo, workflows: &Workflows, moved: &mut HashSet<(IssueLink, String)>, now: Timestamp) -> Result<()> {
 	let gh = crate::github::client::get()?;
-	let since = Local::load_project_meta(repo).prs_pulled_at;
+	let since = Local::load_project_meta(repo).prs_walked_to;
 	let mut newest = since;
 	let mut after = None;
 	loop {
@@ -168,6 +218,6 @@ async fn pull_prs(repo: RepoInfo, workflows: &Workflows, moved: &mut HashSet<(Is
 			_ => break,
 		}
 	}
-	Local::update_project_meta(repo, |m| m.prs_pulled_at = newest)?;
+	Local::update_project_meta(repo, |m| m.prs_walked_to = newest)?;
 	Ok(())
 }

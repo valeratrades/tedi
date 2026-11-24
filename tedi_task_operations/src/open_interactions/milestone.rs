@@ -163,7 +163,10 @@ async fn resolve_merge(local: Milestone, consensus: Option<Milestone>, remote: M
 
 	let dropped: Vec<IssueLink> = match consensus.as_ref() {
 		Some(base) => {
-			let (in_local, in_remote) = (local.body.hosted(), remote.body.hosted());
+			// a description still names what Github unassigned
+			let unassigned = |l: &IssueLink| l.project() == base.identity.link.repo_info() && base.assigned.contains(&l.number()) && !remote.assigned.contains(&l.number());
+			let in_local = local.body.hosted();
+			let in_remote: Vec<IssueLink> = remote.body.hosted().into_iter().filter(|l| !unassigned(l)).collect();
 			base.body
 				.hosted()
 				.into_iter()

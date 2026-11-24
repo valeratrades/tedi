@@ -111,6 +111,14 @@ pub struct FieldEdit {
 	pub new: String,
 }
 
+/// One change to an issue's comments; one to a comment already there is made against the body it was seen holding.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum CommentEdit {
+	Add { body: String },
+	Change { id: u64, seen: String, new: String },
+	Delete { id: u64, seen: String },
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum FieldError {
 	#[error("{0} is not edited as a field")]

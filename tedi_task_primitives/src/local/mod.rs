@@ -407,7 +407,8 @@ impl Local {
 				issues: BTreeMap::new(),
 				label_colors: BTreeMap::new(),
 				pulled_at: None,
-				prs_pulled_at: None,
+				prs_walked_to: None,
+				assignable: Vec::new(),
 			};
 			Self::save_project_meta(RepoInfo::Virtual, &project_meta)?;
 			Ok(project_meta)
@@ -1138,7 +1139,10 @@ pub struct ProjectMeta {
 	pub pulled_at: Option<jiff::Timestamp>,
 	/// The newest pull request update the last whole walk of them stored: the next walk stops below it.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub prs_pulled_at: Option<jiff::Timestamp>,
+	pub prs_walked_to: Option<jiff::Timestamp>,
+	/// The logins its issues can be assigned to, as of the last pull.
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub assignable: Vec<String>,
 }
 
 /// Type for local filesystem operations.

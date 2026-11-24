@@ -126,6 +126,12 @@ pub trait GithubClient: Send + Sync {
 	/// Replace the issue's assignees. A login the repo can't take is dropped by GitHub, not an error.
 	async fn set_assignees(&self, repo: RepoInfo, issue_number: u64, assignees: &[String]) -> Result<(), GithubError>;
 
+	/// Logins the repo's issues can be assigned to.
+	async fn list_assignable(&self, repo: RepoInfo) -> Result<Vec<String>, GithubError>;
+
+	/// Asks `reviewer` (a login, or a team as `org/team`) for a review of pull request `number`, or withdraws the ask.
+	async fn request_review(&self, repo: RepoInfo, number: u64, reviewer: &str, on: bool) -> Result<(), GithubError>;
+
 	/// The org's repos, archived ones aside.
 	async fn list_org_repos(&self, org: &str) -> Result<Vec<RepoInfo>, GithubError>;
 
@@ -709,7 +715,7 @@ impl GithubClient for RealGithubClient {
 	}
 
 	async fn list_milestones(&self, repo: RepoInfo) -> Result<Vec<GithubMilestone>, GithubError> {
-		let url = format!("https://api.github.com/repos/{}/{}/milestones", repo.owner().expect("github repo"), repo.repo());
+		let url = format!("https://api.github.com/repos/{}/{}/milestones?per_page=100", repo.owner().expect("github repo"), repo.repo());
 		let res = self.get(&url).send().await?;
 		if !res.status().is_success() {
 			let status = res.status();
@@ -869,6 +875,8 @@ impl GithubClient for RealGithubClient {
 			labels(first: 100) { totalCount nodes { name } }
 			assignees(first: 100) { totalCount nodes { login } }
 			closingIssuesReferences(first: 100) { totalCount nodes { url } }
+			reviewRequests(first: 100) { totalCount nodes { requestedReviewer { ... on User { login } ... on Bot { login } ... on Mannequin { login } ... on Team { combinedSlug } } } }
+			latestReviews(first: 100) { totalCount nodes { state author { login } } }
 		} } } }";
 		let variables = serde_json::json!({ "owner": repo.owner().expect("github repo"), "repo": repo.repo(), "after": after });
 		let context = format!("list pull requests of {repo}");
@@ -1063,6 +1071,52 @@ impl GithubClient for RealGithubClient {
 		Ok(labels)
 	}
 
+	async fn list_assignable(&self, repo: RepoInfo) -> Result<Vec<String>, GithubError> {
+		let mut logins = Vec::new();
+		for page in 1.. {
+			let url = format!(
+				"https://api.github.com/repos/{}/{}/assignees?per_page=100&page={page}",
+				repo.owner().expect("github repo"),
+				repo.repo()
+			);
+			let res = self.get(&url).send().await?;
+			if !res.status().is_success() {
+				let status = res.status();
+				let body = res.text().await.unwrap_or_default();
+				return Err(GithubError::new_api(status, body, "list assignable users".to_string()));
+			}
+			let page = res.json::<Vec<GithubUser>>().await?;
+			let last = page.len() < 100;
+			logins.extend(page.into_iter().map(|u| u.login));
+			if last {
+				break;
+			}
+		}
+		Ok(logins)
+	}
+
+	async fn request_review(&self, repo: RepoInfo, number: u64, reviewer: &str, on: bool) -> Result<(), GithubError> {
+		let url = format!(
+			"https://api.github.com/repos/{}/{}/pulls/{number}/requested_reviewers",
+			repo.owner().expect("github repo"),
+			repo.repo()
+		);
+		let json = match reviewer.split_once('/') {
+			Some((_, team)) => serde_json::json!({ "reviewers": [], "team_reviewers": [team] }),
+			None => serde_json::json!({ "reviewers": [reviewer] }),
+		};
+		if on {
+			return self.post_json(&url, &json, "Failed to request a review").await;
+		}
+		let res = self.delete(&url).json(&json).send().await?;
+		if !res.status().is_success() {
+			let status = res.status();
+			let body = res.text().await.unwrap_or_default();
+			return Err(GithubError::new_api(status, body, "Failed to withdraw a review request".to_string()));
+		}
+		Ok(())
+	}
+
 	/// Through the add/remove endpoints rather than a PATCH, which rejects the whole set over one login the repo can't take.
 	async fn set_assignees(&self, repo: RepoInfo, issue_number: u64, assignees: &[String]) -> Result<(), GithubError> {
 		let url = format!(
@@ -1179,6 +1233,8 @@ struct GqlPullRequest {
 	labels: Connection<GithubLabel>,
 	assignees: Connection<GithubUser>,
 	closing_issues_references: Connection<GqlUrl>,
+	review_requests: Connection<GqlReviewRequest>,
+	latest_reviews: Connection<GqlReview>,
 }
 impl GqlPullRequest {
 	fn into_pr(self) -> Result<tedi_core::PullRequest, GithubError> {
@@ -1204,10 +1260,44 @@ impl GqlPullRequest {
 				.into_iter()
 				.map(|u| tedi_core::IssueLink::parse(&u.url).ok_or_else(|| GithubError::new_graphql(format!("#{n} closes {}, which is not an issue", u.url))))
 				.collect::<Result<_, _>>()?,
+			requested: self
+				.review_requests
+				.whole("review requests", n)?
+				.into_iter()
+				.filter_map(|r| Some(r.requested_reviewer?.login))
+				.collect(),
+			reviews: self
+				.latest_reviews
+				.whole("reviews", n)?
+				.into_iter()
+				.filter(|r| r.state != "PENDING") // the token user's own draft, not submitted
+				.map(|r| {
+					let verdict = r.state.parse().map_err(|_| GithubError::new_graphql(format!("unknown review state {} on #{n}", r.state)))?;
+					Ok((r.author.map_or_else(|| "ghost".into(), |a| a.login), verdict))
+				})
+				.collect::<Result<_, GithubError>>()?,
 			updated_at: self.updated_at,
 			closed_at: self.closed_at,
 		})
 	}
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GqlReviewRequest {
+	/// Null on a team the token can't see.
+	requested_reviewer: Option<GqlReviewer>,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GqlReviewer {
+	#[serde(alias = "combinedSlug")]
+	login: String,
+}
+#[derive(Deserialize)]
+struct GqlReview {
+	state: String,
+	author: Option<GithubUser>,
 }
 
 #[derive(Deserialize)]
@@ -1466,6 +1556,14 @@ impl GithubClient for RetryingGithubClient {
 
 	async fn set_assignees(&self, repo: RepoInfo, issue_number: u64, assignees: &[String]) -> Result<(), GithubError> {
 		retrying!(self.inner.set_assignees(repo, issue_number, assignees))
+	}
+
+	async fn list_assignable(&self, repo: RepoInfo) -> Result<Vec<String>, GithubError> {
+		retrying!(self.inner.list_assignable(repo))
+	}
+
+	async fn request_review(&self, repo: RepoInfo, number: u64, reviewer: &str, on: bool) -> Result<(), GithubError> {
+		retrying!(self.inner.request_review(repo, number, reviewer, on))
 	}
 
 	async fn list_org_repos(&self, org: &str) -> Result<Vec<RepoInfo>, GithubError> {
