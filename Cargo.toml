@@ -123,5 +123,5 @@ unused_features = "allow"
 non_kebab_case_bins = "allow"
 
 [patch.crates-io]
-tilers_core = { path = "/home/v/s/ev/tilers/.claude/worktrees/float/tilers_core" }
-tilers_dioxus = { path = "/home/v/s/ev/tilers/.claude/worktrees/float/tilers_dioxus" }
+tilers_core = { path = "/home/v/s/ev/tilers/tilers_core" }
+tilers_dioxus = { path = "/home/v/s/ev/tilers/tilers_dioxus" }
