@@ -36,6 +36,7 @@ const proxy = http.createServer(async (req, res) => {
     r.pipe(res);
   });
   up.on("error", () => res.destroy());
+  res.on("close", () => up.destroy()); // the change stream never ends by itself
   up.end(body);
 });
 await new Promise((r) => proxy.listen(0, "127.0.0.1", r));
@@ -89,6 +90,7 @@ const PANEL = STEPPERS + '.filter((s) => s.closest(".min-h-\\\\[30px\\\\]"))[0]'
 const importance = async () => (await js(PANEL + "?.innerText.match(/i\\s*([0-9?])/)?.[1]")) ?? null;
 const click = (title) => js(PANEL + '.querySelector("button[title*=' + JSON.stringify(title).replaceAll('"', "'") + ']").click()');
 const stored = async () => (await (await fetch("http://127.0.0.1:" + server + "/api/board")).json()).cards.find((c) => c.link === ISSUE);
+const undo = () => js('[...document.querySelectorAll("button")].find((b) => b.innerText.trim() === "Undo" && b.parentElement.innerText.includes("labels on #46")).click()');
 
 let failed = null;
 try {
@@ -96,7 +98,7 @@ try {
   const { importance: before } = await stored();
   assert(before <= 6, "seeded at 6");
 
-  // a run of clicks shows at once, lands as its end, and leaves in as few edits as it can
+  // a run of clicks shows at once, the last of it undone as fast; it lands as its end, in as few edits as it can
   const start = Date.now();
   for (let i = before + 1; i <= 9; i++) {
     await click("raise");
@@ -104,10 +106,16 @@ try {
   }
   assert(Date.now() - start < HELD_MS, "every click showed while the first edit was still held");
   assert(await js(PANEL + '.querySelector("button[title=\'already the highest\']")?.disabled'), "9 is the highest: nothing to raise to");
-  await until("it lands", async () => (await stored()).importance === 9);
-  assert.equal(await importance(), "9");
+  assert(await shows("Edited labels on #46"), "told, and offered to be undone, at the click");
+  await undo();
+  await until("undone: shows i 8, what the click saw", async () => (await importance()) === "8", 400);
+  assert.equal(sent.length, 1, "the first click is still held");
+  await until("it lands", async () => (await stored()).importance === 8);
+  assert.equal(await importance(), "8");
   assert.equal(sent.length, 2, "the first click, then the rest as one: " + JSON.stringify(sent));
-  await until("the outcome is told", () => shows("Edited labels on #46"));
+  await undo();
+  await until("the undo undone, landed as it is", async () => (await importance()) === "9", 400);
+  await until("it lands", async () => (await stored()).importance === 9);
 
   // refused: the value comes back, and what didn't go through is told
   await sleep(HELD_MS);
@@ -126,6 +134,7 @@ try {
   await click("lower");
   await until("shows i 7", async () => (await importance()) === "7", 400);
   await until("the clash is told", () => shows("changed on GitHub"));
+  assert(!(await shows("Edited labels on #46")), "nothing left to undo");
   assert.equal(await importance(), "9", "both taken back");
   await until("yours and theirs are offered", async () => (await shows("i:2, theirs")) && (await shows("i:7")));
   await sleep(HELD_MS);
@@ -138,8 +147,7 @@ try {
   await until("shows closed", async () => js("!!" + button("Reopen")), 400);
   await js(button("Reopen") + ".click()");
   await until("shows open", async () => js("!!" + button("Close")), 400);
-  await until("both landed", async () => sent.length === 3 && shows("Edited state on #46"));
-  assert.equal((await stored()).state, "Open");
+  await until("both land", async () => sent.length === 3 && (await stored()).state === "Open");
 
   // a step takes its card out of the view, the stepper it was made on with it: it still lands
   sent.length = 0;
@@ -152,7 +160,9 @@ try {
   await js(card + ".querySelector('button[title=lower]').click()");
   await until("the card leaves", async () => (await onCard()) === null, 400);
   assert.equal(await importance(), "6", "its tab, still open, agrees");
-  await until("it lands", async () => (await stored()).importance === 6);
+  await undo();
+  await until("undone: the card is back", async () => (await onCard()) === "7", 400);
+  await until("it lands", async () => (await stored()).importance === 7);
   console.log("ok");
 } catch (e) {
   failed = e;

@@ -4,7 +4,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use dioxus::{core::spawn_forever, prelude::*};
+use dioxus::{
+	core::{Runtime, spawn_forever},
+	prelude::*,
+};
 use tedi_core::{
 	IssueLink, MilestoneLink,
 	board::{Board, Card},
@@ -124,14 +127,14 @@ impl Op {
 	/// Its outcome's note: one per issue and what is set, the last told.
 	fn key(&self, link: &IssueLink) -> String {
 		match self {
-			Op::Edit(_) => format!("edit:{link}"),
+			Op::Edit(edits) => format!("edit:{link}:{}", edits.iter().map(|e| e.field.to_string()).collect::<Vec<_>>().join(",")),
 			Op::Move { .. } => format!("move:{link}"),
 			Op::Milestone { repo, .. } => format!("milestone:{link}:{repo}"),
 			Op::Review { reviewer, .. } => format!("review:{link}:{reviewer}"),
 		}
 	}
 
-	/// What was done once landed, and to what.
+	/// What is done, and to what.
 	fn told(&self, link: &IssueLink, ctx: &Ctx) -> (&'static str, String) {
 		let n = link.number();
 		match self {
@@ -170,14 +173,13 @@ pub(super) fn unsent(pending: &[Pending]) -> bool {
 }
 
 impl Ctx {
-	/// `edits` to `link`, as seen on its card: a landed one can be undone from its note, a clash lands on the
-	/// issue's tab, inline.
+	/// `edits` to `link`, as seen on its card: a clash lands on the issue's tab, inline.
 	pub(super) fn edit(self, link: IssueLink, edits: Vec<FieldEdit>) {
 		self.submit(link, Op::Edit(edits));
 	}
 
-	/// `card` to `to` of `workflow`, from where it shows sitting: a landed move can be undone, a hook's
-	/// refusal says why, a clash lands on the issue's tab.
+	/// `card` to `to` of `workflow`, from where it shows sitting: a hook's refusal says why, a clash lands
+	/// on the issue's tab.
 	pub(super) fn move_card(self, card: Card, workflow: String, to: State) {
 		let seen = card.states[&workflow].clone();
 		self.submit(card.link, Op::Move { workflow, seen, to });
@@ -210,10 +212,15 @@ impl Ctx {
 		}
 	}
 
+	/// Told with its own Undo, however it is sent: that is one more edit, made against what this one shows.
 	fn submit(self, link: IssueLink, op: Op) {
-		let (mut pending, mut notes) = (self.pending, self.notes);
-		let key = op.key(&link);
-		notes.write().retain(|n| n.key != key); // its Undo was made against what this replaces
+		let (back, to) = (op.back(), link.clone());
+		// the scope it's made in may leave the screen before its note does
+		let undo = Runtime::current().in_scope(ScopeId::ROOT, || Callback::new(move |()| self.submit(to.clone(), back.clone())));
+		let (done, what) = op.told(&link, &self);
+		self.say(op.key(&link), toast::Tone::Info, format!("{done} {what}"), Some(("Undo", undo)));
+
+		let mut pending = self.pending;
 		let mut pending = pending.write();
 		let sending = pending.iter().any(|p| p.link == link && p.stage != Stage::Landed);
 		if let Op::Edit(edits) = &op
@@ -258,7 +265,7 @@ impl Ctx {
 			};
 			let why = match sent {
 				Ok(Edited::Landed) => {
-					self.landed(id, &link, &op);
+					self.landed(id, &link);
 					continue;
 				}
 				Ok(Edited::Conflict(mut conflict)) => {
@@ -291,26 +298,18 @@ impl Ctx {
 		Some((next.id, next.op.clone()))
 	}
 
-	fn landed(self, id: u64, link: &IssueLink, op: &Op) {
+	fn landed(self, id: u64, link: &IssueLink) {
 		let (mut pending, mut conflicts) = (self.pending, self.conflicts);
-		let followed = {
-			let mut pending = pending.write();
-			pending.iter_mut().find(|p| p.id == id).expect("only its sender takes it off").stage = Stage::Landed;
-			pending.iter().any(|p| p.link == *link && p.stage == Stage::Queued && p.op.rests_on(op))
-		};
+		pending.write().iter_mut().find(|p| p.id == id).expect("only its sender takes it off").stage = Stage::Landed;
 		conflicts.write().remove(link);
 		spawn_forever(super::reload(self));
-		if !followed {
-			let (back, to) = (op.back(), link.clone());
-			let undo = Callback::new(move |()| self.submit(to.clone(), back.clone()));
-			let (done, what) = op.told(link, &self);
-			self.say(op.key(link), toast::Tone::Info, format!("{done} {what}"), Some(("Undo", undo)));
-		}
 	}
 
-	/// `id` and everything queued on top of it, oldest first, off the board.
+	/// `id` and everything queued on top of it, oldest first, off the board: nothing is left to undo.
 	fn take_off(self, id: u64, link: &IssueLink, op: &Op) -> Vec<Op> {
-		let mut pending = self.pending;
+		let (mut pending, mut notes) = (self.pending, self.notes);
+		let key = op.key(link);
+		notes.write().retain(|n| n.key != key);
 		let mut pending = pending.write();
 		let (off, kept): (Vec<Pending>, Vec<Pending>) = pending.drain(..).partition(|p| p.id == id || (p.link == *link && p.stage == Stage::Queued && p.op.rests_on(op)));
 		*pending = kept;
