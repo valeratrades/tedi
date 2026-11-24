@@ -287,6 +287,7 @@ impl MilestoneTab {
 	}
 }
 
+//#[codestyle::skip(swappable-args)]
 /// Another period for `link`, and the one that ended archived as it opened.
 async fn roll_over(link: &MilestoneLink, period: std::time::Duration, description: &str, opened: &str) -> Result<()> {
 	let gh = crate::github::client::get()?;

@@ -2,10 +2,10 @@
 
 use std::{net::SocketAddr, path::PathBuf};
 
-use color_eyre::eyre::{Result, bail, eyre};
+use color_eyre::eyre::{Result, bail};
 use tedi_task_operations::open_interactions::SyncMode;
 
-use crate::config::LiveSettings;
+use crate::config::{LiveSettings, States};
 
 #[derive(clap::Args)]
 pub struct WebArgs {
@@ -25,7 +25,9 @@ pub struct WebArgs {
 
 pub async fn web_command(settings: &LiveSettings, args: WebArgs, mode: SyncMode) -> Result<()> {
 	let config = settings.config()?;
-	let board = config.board.ok_or_else(|| eyre!("`tedi web` reads the config's `board` (`archive_after`, `views`, `scopes`)"))?;
+	let States::Here(board) = config.states()? else {
+		bail!("`tedi web` reads the config's `board` (`workflows`, `views`, `scopes`)");
+	};
 	let pull_every = match args.pull_every {
 		Some(every) => Some(every.to_duration(jiff::SpanRelativeTo::days_are_24_hours())?.unsigned_abs()),
 		None => None,

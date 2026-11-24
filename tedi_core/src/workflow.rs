@@ -2,7 +2,7 @@
 //! pull moves issues between them. Where each issue sits is tedi's own (an extended property), never
 //! GitHub's: absent, it sits in the intake. Hooks are named here only; running them is `tedi_hooks`'.
 
-use std::path::PathBuf;
+use std::{collections::BTreeMap, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -48,6 +48,9 @@ impl From<State> for String {
 		state.to_string()
 	}
 }
+
+/// The workflows cards sit in, by name.
+pub type Trees = BTreeMap<String, Workflow>;
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]

@@ -347,6 +347,17 @@ impl TestContext {
 		self.xdg.write_cache("sprints_selection.json", &serde_json::json!({ "paths": paths, "sprint": url }).to_string());
 	}
 
+	/// GitHub knows `tokens`: each `(token, login, repos it sees)`, in the place of those it knew. Seed issues first.
+	pub fn remote_tokens(&self, tokens: &[(&str, &str, &[&str])]) {
+		let mut state: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&self.mock_state_path).unwrap()).unwrap();
+		state["tokens"] = tokens
+			.iter()
+			.map(|(token, login, repos)| (token.to_string(), serde_json::json!({ "login": login, "repos": repos })))
+			.collect::<serde_json::Map<_, _>>()
+			.into();
+		std::fs::write(&self.mock_state_path, state.to_string()).unwrap();
+	}
+
 	/// What the mock Github holds by now, its milestones alone: `owner/repo#number title [assigned issues]`, then the description.
 	pub fn remote_milestones(&self) -> String {
 		let state: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&self.mock_state_path).unwrap()).unwrap();

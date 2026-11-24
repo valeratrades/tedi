@@ -13,14 +13,14 @@ use tedi_core::board::{Board, Part};
 
 use crate::common::{BINARY_ENV, TestContext, get_binary_path};
 
-const SECRET: &str = "webhook secret";
+pub(crate) const SECRET: &str = "webhook secret";
 
 pub(crate) const BOARD: &str = "[board]\nworkflows = { kanban = \"preset:kanban\" }\nviews = [{ name = \"Triage\", query = \"is:open\", group_by = \"state:kanban\", sort = \"rank\", shown = [] }]\n\n[board.scopes.Main]\nrepos = [\"o/*\"]\n";
 
 /// The team's config at `o/config`, as it stands after each commit.
 const CONFIG_REPO: &str = "o/config";
 
-fn deliver(port: u16, repo: &str) -> u16 {
+pub(crate) fn deliver(port: u16, repo: &str) -> u16 {
 	let body = format!(r#"{{"repository":{{"full_name":"{repo}"}}}}"#);
 	let mut mac = hmac::Hmac::<sha2::Sha256>::new_from_slice(SECRET.as_bytes()).unwrap();
 	mac.update(body.as_bytes());

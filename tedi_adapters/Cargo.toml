@@ -23,7 +23,7 @@ serde.workspace = true
 serde_json.workspace = true
 tedi_core.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["sync", "time"] }
+tokio = { workspace = true, features = ["sync", "time", "rt"] }
 tracing.workspace = true
 tracing-error.workspace = true # `#[wrap_err]` expands to it
 urlencoding.workspace = true

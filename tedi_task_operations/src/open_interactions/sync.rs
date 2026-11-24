@@ -991,6 +991,7 @@ mod types {
 					}
 				}
 				Modifier::Comment(edit) => {
+					let repo = issue.repo_info();
 					let comments = &mut issue.contents.comments.0;
 					let refuse = |why: String| Err(crate::workflow::Rejected(why).into());
 					match edit {
@@ -1004,7 +1005,7 @@ mod types {
 								return refuse("the comment is gone from GitHub".into());
 							};
 							let held = &comments[at];
-							if !held.user().is_some_and(crate::current_user::is) {
+							if held.user().is_none_or(|user| crate::github::client::login_on(repo).as_deref() != Some(user)) {
 								return refuse("only its author edits a comment".into()); // the sink pushes nobody else's
 							}
 							if held.body.to_string() != *seen {

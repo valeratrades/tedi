@@ -11,12 +11,12 @@ use dioxus::{
 use tedi_core::{
 	IssueLink, MilestoneLink, NodeLink,
 	board::{Board, Card},
-	conflict::FieldEdit,
+	conflict::{Edited, FieldEdit},
 	workflow::State,
 };
 
 use super::{Ctx, toast};
-use crate::api::{self, Edited};
+use crate::api;
 
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct Pending {
@@ -295,7 +295,7 @@ impl Ctx {
 		while let Some((id, op)) = self.next(&link) {
 			let sent = match &op {
 				Op::Edit(edits) => api::edit(link.clone(), edits.clone()).await,
-				Op::Move { workflow, seen, to } => api::move_card(link.clone(), workflow.clone(), to.clone(), seen.clone()).await,
+				Op::Move { workflow, seen, to } => api::move_card(link.clone(), workflow.clone(), to.clone(), Some(seen.clone())).await,
 				Op::Milestone { repo, seen, new } => api::set_milestone(link.clone(), repo.clone(), seen.clone(), new.clone()).await,
 				Op::Review { reviewer, on } => api::request_review(link.clone(), reviewer.clone(), *on).await.map(|()| Edited::Landed),
 			};

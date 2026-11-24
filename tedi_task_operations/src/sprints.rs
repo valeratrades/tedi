@@ -727,6 +727,17 @@ async fn adopt(parent: &IssueLink, children: &[IssueLink]) -> Result<()> {
 	Ok(())
 }
 
+/// Those of `links` stored here reconciled with GitHub, where a move made elsewhere may have edited them.
+pub async fn pull_stored(links: &[IssueLink]) -> Result<()> {
+	let mut issues = Vec::new();
+	for link in links {
+		if Local::find_by_number(link.project(), link.number(), FsReader).is_some() {
+			issues.push(load_local_issue(link).await?);
+		}
+	}
+	pull_issues(&mut issues, MergeMode::Normal).await
+}
+
 /// Load a local issue by its IssueLink. A virtual link's path is the file directly; a remote
 /// link is resolved by number under its project.
 pub(crate) async fn load_local_issue(link: &IssueLink) -> Result<Issue> {

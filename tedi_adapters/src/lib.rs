@@ -2,6 +2,7 @@
 
 pub mod clockify;
 pub mod github;
+pub mod home;
 
 // reqwest is built without a bundled TLS provider; `Err` only means one is already installed
 pub(crate) fn client_builder() -> reqwest::ClientBuilder {

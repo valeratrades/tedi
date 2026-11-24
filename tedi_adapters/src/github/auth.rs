@@ -1,4 +1,7 @@
-use std::collections::HashMap;
+use std::{
+	collections::{BTreeMap, HashMap},
+	sync::Arc,
+};
 
 use reqwest::Client;
 use serde::Deserialize;
@@ -8,13 +11,26 @@ use super::GithubError;
 pub(super) enum Auth {
 	Token(String),
 	App(App),
+	/// A person's token on each account they brought one of, `rest` on any other.
+	Keys {
+		keys: BTreeMap<String, String>,
+		rest: Arc<Auth>,
+	},
 }
 impl Auth {
 	/// `owner` is the account the request acts on: an App holds one installation token per account.
 	pub(super) async fn token(&self, http: &Client, owner: Option<&str>) -> Result<String, GithubError> {
-		match self {
-			Auth::Token(token) => Ok(token.clone()),
-			Auth::App(app) => app.installation_token(http, owner.expect("an App's request names the account it acts on")).await,
+		let mut auth = self;
+		//LOOP each step is one layer of keys down
+		loop {
+			match auth {
+				Auth::Token(token) => return Ok(token.clone()),
+				Auth::App(app) => return app.installation_token(http, owner.expect("an App's request names the account it acts on")).await,
+				Auth::Keys { keys, rest } => match owner.and_then(|o| keys.get(&o.to_lowercase())) {
+					Some(token) => return Ok(token.clone()),
+					None => auth = rest,
+				},
+			}
 		}
 	}
 }

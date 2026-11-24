@@ -15,7 +15,7 @@ use crate::{
 	conflict::{Field, FieldError, unlist},
 	labels::{Scheme, Type},
 	rank::Rank,
-	workflow::{State, Workflow, WorkflowError},
+	workflow::{State, Trees, WorkflowError},
 };
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -124,6 +124,32 @@ impl Target {
 	pub fn hosts(&self, link: &IssueLink) -> bool {
 		self.nodes.iter().any(|n| matches!(n, NodeLink::Issue(l) if l == link))
 	}
+}
+
+/// What a query holds for whoever ran it.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct Answer {
+	/// Who ran it: `@me`. `None`: unknown.
+	pub login: Option<String>,
+	pub trees: Trees,
+	/// In the query's order: by rank, unless it is free text.
+	pub hits: Vec<Hit>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct Hit {
+	pub link: IssueLink,
+	/// Where it sits in each of the trees.
+	pub states: BTreeMap<String, State>,
+}
+
+/// A view, or a query, as a task view lists it: no pull requests.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct Listing {
+	pub query: String,
+	/// Those holding any, by key; ungrouped, one under none.
+	pub groups: Vec<(Option<String>, Vec<IssueLink>)>,
+	pub pull_requests: usize,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
@@ -347,7 +373,7 @@ pub struct Sort {
 }
 impl Sort {
 	/// A stable sort of `hits` by this key alone; `place` is each card's place in the query's order.
-	fn apply(&self, cards: &[Card], hits: &mut [usize], workflows: &BTreeMap<String, Workflow>, place: &[usize]) -> Result<(), WorkflowError> {
+	fn apply(&self, cards: &[Card], hits: &mut [usize], workflows: &Trees, place: &[usize]) -> Result<(), WorkflowError> {
 		use std::cmp::Reverse;
 		fn by<K: Ord>(hits: &mut [usize], reversed: bool, key: impl Fn(usize) -> Option<K>) {
 			let mut keyed: Vec<(Option<K>, usize)> = hits.iter().map(|&i| (key(i), i)).collect();
@@ -388,7 +414,7 @@ impl Order {
 	}
 
 	/// Reorders `hits` (as `Query::run` ordered them); ties keep that order.
-	pub fn apply(&self, cards: &[Card], hits: &mut [usize], workflows: &BTreeMap<String, Workflow>) -> Result<(), WorkflowError> {
+	pub fn apply(&self, cards: &[Card], hits: &mut [usize], workflows: &Trees) -> Result<(), WorkflowError> {
 		let mut place = vec![usize::MAX; cards.len()];
 		for (at, &i) in hits.iter().enumerate() {
 			place[i] = at;
@@ -510,7 +536,7 @@ pub struct Placed {
 /// above it in its group goes right above that one, and so does one outside `hits`. A workflow's states come
 /// in its order, every leaf present even when empty, and a further step counts as above: a blocker in an
 /// earlier one than what it blocks goes over to that one's. Other keys sort by name, the ungrouped last.
-pub fn group(cards: &[Card], hits: &[usize], by: &GroupBy, workflows: &BTreeMap<String, Workflow>) -> Result<Vec<(String, Vec<Placed>)>, WorkflowError> {
+pub fn group(cards: &[Card], hits: &[usize], by: &GroupBy, workflows: &Trees) -> Result<Vec<(String, Vec<Placed>)>, WorkflowError> {
 	let open: HashMap<&IssueLink, usize> = cards.iter().enumerate().filter(|(_, c)| c.open()).map(|(i, c)| (&c.link, i)).collect();
 	let blockers: Vec<Vec<usize>> = cards
 		.iter()
@@ -1004,7 +1030,7 @@ mod tests {
 	use super::*;
 	use crate::labels::Scheme;
 
-	fn kanban() -> BTreeMap<String, Workflow> {
+	fn kanban() -> Trees {
 		let buckets = ["icebox", "triage", "selected", "in_progress", "in_review", "done", "wont_do", "backlog"]
 			.map(|name| crate::workflow::Bucket {
 				name: name.into(),
@@ -1012,7 +1038,7 @@ mod tests {
 				buckets: Vec::new(),
 			})
 			.to_vec();
-		let workflow = Workflow {
+		let workflow = crate::workflow::Workflow {
 			intake: "triage".parse().unwrap(),
 			buckets,
 			rules: Vec::new(),

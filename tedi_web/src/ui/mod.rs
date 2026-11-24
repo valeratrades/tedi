@@ -28,12 +28,12 @@ use icons::{Glyph, Icon};
 use tedi_core::{
 	IssueLink, MilestoneLink,
 	board::{Board, Card, Part, Query, Scope, Target, View, scope_at},
-	conflict::{CommentEdit, Conflict},
+	conflict::{CommentEdit, Conflict, Edited},
 	workflow::Workflow,
 };
 use tilers_dioxus::{Band, DockPanel, Group, GroupId, MinSize, PackedApi, PackedArea, PackedGrid, PanelId, Tile, model::serial};
 
-use crate::api::{self, Dock, Edited, Item, Library, LibraryEdit, Setup};
+use crate::api::{self, Dock, Item, Library, LibraryEdit, Setup};
 
 const HELP: [(&str, &str); 7] = [
 	("⌘K", "jump to a view, scope, sprint or issue"),

@@ -28,7 +28,7 @@ pub async fn pull_repos(targets: &[String], workflows: &Workflows, now: Timestam
 	for target in targets {
 		match target.split_once('/') {
 			Some((owner, repo)) => repos.push(RepoInfo::new(owner, repo)),
-			None => repos.extend(gh.list_org_repos(target).await?),
+			None => repos.extend(gh.list_owner_repos(target).await?),
 		}
 	}
 
