@@ -5,7 +5,8 @@ use jiff::{SignedDuration, Timestamp};
 use tedi_core::{IssueLink, PrState, PullRequest};
 use tedi_task_operations::{
 	board::{self, Query},
-	workflow::{Loaded, Workflows},
+	reach::Reach,
+	workflow::Workflows,
 };
 
 use crate::common::{Seed, TestContext, parse_virtual};
@@ -57,8 +58,8 @@ fn seed(ctx: &TestContext) {
 
 async fn shown(ctx: &TestContext, queries: &[&str]) -> String {
 	ctx.set_issues_dir_override();
-	let workflows: Workflows = [("kanban".to_string(), Loaded::load("preset:kanban").unwrap())].into();
-	let mut reading = board::load(&workflows).unwrap();
+	let workflows = Workflows::load(&[("kanban".to_string(), "preset:kanban".to_string())].into()).unwrap();
+	let mut reading = board::load(Reach::All, &workflows.trees).unwrap();
 	let mut board = board::Board::default();
 	while let Some(part) = reading.next().await.unwrap() {
 		board.extend([part]);

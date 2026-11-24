@@ -16,7 +16,7 @@ use crate::{
 	github::{FetchedIssue, GithubError},
 	local::{Consensus, FsReader, Local, LocalError, LocalFs, LocalIssueSource, conflict_detect::milestone_conflict_path, lock_store},
 	open_interactions::{MergeMode, fetch_and_store_missing, merge_with_remote, pull_milestone},
-	remote::{RemoteSource, load_remote_milestone},
+	remote::RemoteSource,
 	sink::Sink,
 	workflow::{MovedOn, Rejected, Workflows, apply_rules},
 };
@@ -28,7 +28,7 @@ pub async fn pull_repos(targets: &[String], workflows: &Workflows, now: Timestam
 	for target in targets {
 		match target.split_once('/') {
 			Some((owner, repo)) => repos.push(RepoInfo::new(owner, repo)),
-			None => repos.extend(gh.list_org_repos(target).await?),
+			None => repos.extend(gh.list_owner_repos(target).await?),
 		}
 	}
 
@@ -171,32 +171,25 @@ async fn date_stored(repo: RepoInfo) -> Result<()> {
 	Ok(())
 }
 
-/// `repo`'s open milestones, and those stored as open: what the board offers. A sprint's is its own flow's to sync.
+/// `repo`'s open milestones, and those stored as open.
 pub(crate) async fn pull_milestones(repo: RepoInfo) -> Result<()> {
 	let gh = crate::github::client::get()?;
-	let listed = gh.list_milestones(repo).await?.into_iter().filter(|m| !is_sprint(&m.title)).map(|m| m.number);
+	let listed = gh.list_milestones(repo).await?.into_iter().map(|m| m.number);
 	let held: Vec<u64> = Local::load_milestone_project_meta(repo, &FsReader)
 		.milestones
 		.into_iter()
-		.filter(|(_, m)| !m.state.is_closed() && !is_sprint(&m.title))
+		.filter(|(_, m)| !m.state.is_closed())
 		.map(|(n, _)| n)
 		.collect();
 	for number in listed.chain(held).collect::<BTreeSet<_>>() {
 		let link = MilestoneLink::in_project(repo, number);
-		let Some(mut local) = Local::load_milestone(&link, &FsReader)? else {
-			let mut remote = load_remote_milestone(&link).await?;
-			let store = lock_store().await?;
-			<Milestone as Sink<LocalFs>>::sink(&mut remote, None).await?;
-			<Milestone as Sink<Consensus>>::sink(&mut remote, None).await?;
-			drop(store);
-			continue;
-		};
-		match pull_milestone(&mut local, MergeMode::Normal).await {
-			Ok(()) => {}
+		match pull_milestone(&link, MergeMode::Normal).await {
+			Ok(_) => {}
 			Err(e) if matches!(e.downcast_ref::<GithubError>(), Some(GithubError::Api { status, .. }) if status.as_u16() == 404) => {
 				println!("{} is gone from GitHub: kept here, closed", link.as_str());
-				local.identity.state = CloseState::NotPlanned;
 				let store = lock_store().await?;
+				let mut local = Local::load_milestone(&link, &FsReader)?.expect("listed a moment ago, or held");
+				local.identity.state = CloseState::NotPlanned;
 				<Milestone as Sink<LocalFs>>::sink(&mut local, None).await?;
 				<Milestone as Sink<Consensus>>::sink(&mut local, None).await?;
 				drop(store);
@@ -206,11 +199,6 @@ pub(crate) async fn pull_milestones(repo: RepoInfo) -> Result<()> {
 		}
 	}
 	Ok(())
-}
-
-/// A sprint's milestone is titled by its timeframe.
-pub(crate) fn is_sprint(title: &str) -> bool {
-	title.parse::<v_utils::Timeframe>().is_ok()
 }
 
 /// Every node of `tree` through each workflow's rules. A move that can't land is told, and the pull goes on.

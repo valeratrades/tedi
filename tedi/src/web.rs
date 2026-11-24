@@ -2,10 +2,10 @@
 
 use std::{net::SocketAddr, path::PathBuf};
 
-use color_eyre::eyre::{Result, bail, eyre};
-use tedi_task_operations::{RepoInfo, open_interactions::SyncMode};
+use color_eyre::eyre::{Result, bail};
+use tedi_task_operations::open_interactions::SyncMode;
 
-use crate::config::LiveSettings;
+use crate::config::{LiveSettings, States};
 
 #[derive(clap::Args)]
 pub struct WebArgs {
@@ -25,7 +25,9 @@ pub struct WebArgs {
 
 pub async fn web_command(settings: &LiveSettings, args: WebArgs, mode: SyncMode) -> Result<()> {
 	let config = settings.config()?;
-	let board = config.board.ok_or_else(|| eyre!("`tedi web` reads the config's `board` (`archive_after`, `views`, `scopes`)"))?;
+	let States::Here(board) = config.states()? else {
+		bail!("`tedi web` reads the config's `board` (`workflows`, `views`, `scopes`)");
+	};
 	let pull_every = match args.pull_every {
 		Some(every) => Some(every.to_duration(jiff::SpanRelativeTo::days_are_24_hours())?.unsigned_abs()),
 		None => None,
@@ -35,13 +37,6 @@ pub async fn web_command(settings: &LiveSettings, args: WebArgs, mode: SyncMode)
 		(None, Some(_), _) => bail!("--pull-every pulls the config's `watch`, and there is none"),
 		(None, _, Some(_)) => bail!("a webhook delivery is pulled only for what the config's `watch` names, and there is none"),
 		(None, None, None) => Vec::new(),
-	};
-	let milestones = match &config.milestones {
-		Some(m) => {
-			let (owner, repo) = crate::sprints::parse_github_repo(&m.url)?;
-			Some(RepoInfo::new(&owner, &repo))
-		}
-		None => None,
 	};
 	tedi_web::serve(tedi_web::Settings {
 		addr: args.addr,
@@ -53,7 +48,6 @@ pub async fn web_command(settings: &LiveSettings, args: WebArgs, mode: SyncMode)
 		columns: board.columns,
 		workspaces: board.workspaces,
 		source: board.source,
-		milestones,
 		watch,
 		pull_every,
 		webhook_secret: config.github_webhook_secret,

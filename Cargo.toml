@@ -71,7 +71,7 @@ tracing = "^0.1.44"
 tracing-error = "^0.2"
 url = "^2.5"
 urlencoding = "^2.1.3"
-v_utils = { version = "^2.24.1", default-features = false } # members name their features: tedi_core must stay wasm-safe
+v_utils = { version = "^2.27", default-features = false } # members name their features: tedi_core must stay wasm-safe
 xdg = "3.0.0"
 
 # web (tedi_web)
@@ -122,9 +122,3 @@ unused_features = "allow"
 
 [workspace.lints.cargo]
 non_kebab_case_bins = "allow"
-
-[patch.crates-io]
-tilers_core = { path = "/home/v/s/ev/tilers/tilers_core" }
-tilers_dioxus = { path = "/home/v/s/ev/tilers/tilers_dioxus" }
-ev_lib = { path = "/home/v/s/ev/web_std/rust" }
-ev_lib_classes = { path = "/home/v/s/ev/web_std/rust/classes" }

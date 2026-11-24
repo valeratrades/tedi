@@ -9,22 +9,31 @@ use color_eyre::eyre::{Result, WrapErr, bail};
 
 use crate::{
 	CloseState, CommentIdentity, Events, Issue, IssueIdentity, IssueIndex, IssueLink, IssueSelector, LazyIssue, MilestoneLink, RepoInfo, VirtualIssue, clockify_tracking,
-	local::{Consensus, FsReader, Local, LocalFs},
-	open_interactions::{MilestoneModifier, Modifier, SyncMode, SyncOptions, modify_and_sync_issue, modify_and_sync_milestone},
+	local::{Consensus, Local, LocalFs, Picked},
+	open_interactions::{BodyWrite, MilestoneModifier, Modifier, SyncMode, SyncOptions, modify_and_sync_issue, modify_and_sync_milestone},
 	remote::{Remote, RemoteSource},
 	selection::{Selected, URGENT_KEY, lock_sprint, urgent_path},
 	sink::Sink,
 	sprints::load_local_issue,
 };
 
-/// Move each issue, subtree included, to its target repo; then repoint every store except the
-/// buffer being edited — that of milestone `editing`, or of urgent when `None` — which is the
-/// caller's to relink. Returns where each moved issue went.
-pub async fn move_issues(moves: &[(IssueLink, RepoInfo)], editing: Option<&MilestoneLink>, mode: SyncMode) -> Result<HashMap<IssueLink, IssueLink>> {
+/// A store whose buffer is open in an editor.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Editing {
+	Urgent,
+	Milestone(MilestoneLink),
+	/// `selected.md` of a repo.
+	Picked(RepoInfo),
+}
+
+/// Move each issue, subtree included, to its target repo; then repoint every store except those
+/// of `editing`, which are the caller's to relink. Returns where each moved issue went.
+pub async fn move_issues(moves: &[(IssueLink, RepoInfo)], editing: &[Editing], mode: SyncMode) -> Result<HashMap<IssueLink, IssueLink>> {
 	assert_ne!(mode, SyncMode::Offline, "moves are rejected offline before reaching here");
-	let _urgent = match editing {
-		Some(_) => Some(lock_sprint(URGENT_KEY).wrap_err("a move repoints links in urgent")?),
-		None => None,
+	let urgent_open = editing.contains(&Editing::Urgent);
+	let _urgent = match urgent_open {
+		false => Some(lock_sprint(URGENT_KEY).wrap_err("a move repoints links in urgent")?),
+		true => None,
 	};
 
 	let mut moved: HashMap<IssueLink, IssueLink> = HashMap::new();
@@ -39,7 +48,7 @@ pub async fn move_issues(moves: &[(IssueLink, RepoInfo)], editing: Option<&Miles
 		moved.extend(step);
 	}
 
-	if editing.is_some() {
+	if !urgent_open {
 		let path = urgent_path();
 		match std::fs::read_to_string(&path) {
 			Ok(content) => {
@@ -54,6 +63,7 @@ pub async fn move_issues(moves: &[(IssueLink, RepoInfo)], editing: Option<&Miles
 		}
 	}
 	relink_milestones(&moved, editing, mode).await?;
+	relink_picked(&moved, editing).await?;
 	Selected::relink(&moved)?;
 	relink_tracked(&moved)?;
 	relink_last_modified(&moved)?;
@@ -248,39 +258,34 @@ fn linked(issue: &Issue) -> &IssueLink {
 	issue.identity.link().expect("checked linked before moving")
 }
 
-/// Open milestones hosting a moved issue (other sprints, bottlenecks). Archived ones are frozen history.
-async fn relink_milestones(moved: &HashMap<IssueLink, IssueLink>, editing: Option<&MilestoneLink>, mode: SyncMode) -> Result<()> {
-	let root = Local::milestones_dir();
-	let owners = match std::fs::read_dir(&root) {
-		Ok(owners) => owners,
-		Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-		Err(e) => return Err(e.into()),
-	};
-	for owner in owners {
-		let owner = owner?;
-		if !owner.file_type()?.is_dir() {
+/// Open milestones hosting a moved issue. Archived ones are frozen history.
+async fn relink_milestones(moved: &HashMap<IssueLink, IssueLink>, editing: &[Editing], mode: SyncMode) -> Result<()> {
+	for milestone in Local::stored_milestones()? {
+		let link = milestone.link();
+		if milestone.is_closed() || editing.contains(&Editing::Milestone(link.clone())) || !milestone.body.hosted().iter().any(|l| moved.contains_key(l)) {
 			continue;
 		}
-		for repo in std::fs::read_dir(owner.path())? {
-			let repo = repo?;
-			if !repo.file_type()?.is_dir() {
-				continue;
-			}
-			let repo = RepoInfo::new(&owner.file_name().to_string_lossy(), &repo.file_name().to_string_lossy());
-			for number in Local::load_milestone_project_meta(repo, &FsReader).milestones.into_keys() {
-				let link = MilestoneLink::parse(&format!("https://github.com/{repo}/milestone/{number}")).expect("well-formed milestone url");
-				if editing == Some(&link) {
-					continue;
-				}
-				let milestone = Local::load_milestone(&link, &FsReader)?.expect("listed in its project's meta");
-				if milestone.is_closed() || !milestone.body.hosted().iter().any(|l| moved.contains_key(l)) {
-					continue;
-				}
-				let mut body = milestone.body.clone();
-				body.0.relink(moved);
-				modify_and_sync_milestone(milestone, mode, MilestoneModifier::BodyWrite { body }, SyncOptions::default()).await?;
-			}
-		}
+		let mut body = milestone.body.clone();
+		body.0.relink(moved);
+		let write = BodyWrite {
+			rendered: milestone.body.clone(),
+			body,
+		};
+		modify_and_sync_milestone(link, mode, MilestoneModifier::BodyWrite(write), SyncOptions::default()).await?;
+	}
+	Ok(())
+}
+
+/// Every `selected.md` naming a moved issue, and the answer beside it: where it sits went along.
+async fn relink_picked(moved: &HashMap<IssueLink, IssueLink>, editing: &[Editing]) -> Result<()> {
+	for repo in Local::picked_repos()? {
+		let Some(picked) = Local::load_picked(repo)?.filter(|_| !editing.contains(&Editing::Picked(repo))) else {
+			continue;
+		};
+		let _store = crate::local::lock_store().await?;
+		let mut relinked = picked.clone();
+		relinked.relink(moved);
+		<Picked as Sink<LocalFs>>::sink(&mut relinked, Some(&picked)).await?;
 	}
 	Ok(())
 }

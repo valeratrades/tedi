@@ -57,6 +57,8 @@ enum Commands {
 	View(view::ViewArgs),
 	/// Store every issue of orgs (`owner`) and repos (`owner/repo`); the config's `watch` when none are named
 	Pull { targets: Vec<String> },
+	/// Sign in to the config's `home`, through the gate before it, in the browser
+	Login,
 	/// Serve this store as the board: the web client, its API, a GitHub App webhook
 	Web(web::WebArgs),
 	/// Set a field of a stored issue, made against the value you saw it hold: if it moved on since, nothing is written
@@ -160,12 +162,8 @@ async fn run() {
 		(Some(_), Ok(at)) => exit_on_error(at.parse::<jiff::Timestamp>().map_err(color_eyre::Report::from)),
 		_ => jiff::Timestamp::now(),
 	};
-	let workflows = || -> color_eyre::Result<tedi_task_operations::workflow::Workflows> {
-		match settings.config()?.board {
-			Some(board) => board.workflows(),
-			None => Ok(Default::default()), // no board: nothing to place issues in
-		}
-	};
+	let states = || -> color_eyre::Result<config::States> { settings.config()?.states() };
+	let workflows = || states()?.workflows();
 
 	// All the functions here can rely on config being correct.
 	exit_on_error(match cli.command {
@@ -175,7 +173,7 @@ async fn run() {
 			let date_format = config.manual_stats.as_ref().map(|m| m.date_format.as_str()).filter(|s| !s.is_empty()).unwrap_or("%Y-%m-%d");
 			tedi_eval::manual_stats::update_or_open(date_format, manual_args).await
 		}
-		Commands::Sprints(sprints_command) => sprints::sprints_command(&settings, sprints_command, cli.mock, mode).await,
+		Commands::Sprints(sprints_command) => sprints::sprints_command(&settings, sprints_command, mode).await,
 		Commands::Init(args) => {
 			shell_init::output(&settings, args);
 			Ok(())
@@ -186,29 +184,66 @@ async fn run() {
 		Commands::Open(args) => tedi_task_operations::open_interactions::open_command(args, mode, cli.mock).await,
 		Commands::View(args) => view::view_command(&settings, args, mode).await,
 		Commands::Web(args) => web::web_command(&settings, args, mode).await,
-		Commands::Set { link, field, new, seen } => tedi_task_operations::board::edit(&link, vec![tedi_task_operations::conflict_resolve::FieldEdit { field, seen, new }], mode).await,
-		Commands::Move { link, to: (workflow, to), seen } => {
-			let workflows = exit_on_error(workflows());
-			let seen = match seen {
-				Some((w, _)) if w != workflow => Err(color_eyre::eyre::eyre!("--seen names {w}, the move {workflow}")),
-				Some((_, seen)) => Ok(Some(seen)),
-				None => Ok(None),
-			};
-			match (seen, tedi_task_operations::current_user::get()) {
-				(Err(e), _) => Err(e),
-				(Ok(_), None) => Err(color_eyre::eyre::eyre!("who moves it is unknown: run once online, so tedi knows your GitHub user")),
-				(Ok(seen), Some(me)) => {
-					let mover = tedi_task_operations::workflow::Mover::Person(me);
-					tedi_task_operations::workflow::move_card(&link, &workflow, &to, seen.as_ref(), &mover, &workflows, mode, now).await
-				}
-			}
+		Commands::Set { link, field, new, seen } => {
+			let link = exit_on_error(tedi_task_operations::reach::Reach::All.issue(link).map_err(color_eyre::Report::from));
+			tedi_task_operations::board::edit(&link, vec![tedi_task_operations::conflict_resolve::FieldEdit { field, seen, new }], mode).await
 		}
+		Commands::Move { link, to: (workflow, to), seen } => move_command(exit_on_error(states()), link, (workflow, to), seen, mode, now).await,
+		Commands::Login => match exit_on_error(states()) {
+			config::States::Home(home) => match home.login(browse).await {
+				Ok(()) => {
+					println!("Signed in");
+					Ok(())
+				}
+				Err(e) => Err(e.into()),
+			},
+			_ => Err(color_eyre::eyre::eyre!("`tedi login` signs in to the config's `home`, and none is set")),
+		},
 		Commands::Pull { targets } => match (targets.is_empty(), exit_on_error(settings.config()).watch) {
 			(false, _) => tedi_task_operations::pull::pull_repos(&targets, &exit_on_error(workflows()), now).await,
 			(true, Some(watch)) => tedi_task_operations::pull::pull_repos(&watch, &exit_on_error(workflows()), now).await,
 			(true, None) => Err(color_eyre::eyre::eyre!("name what to pull, or list it under `watch` in the config")),
 		},
 	});
+}
+
+fn browse(url: &str) {
+	println!("Opening {url}");
+	let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+	if let Err(e) = std::process::Command::new(opener).arg(url).spawn() {
+		eprintln!("warning: {opener}: {e}. Open it yourself");
+	}
+}
+
+async fn move_command(
+	states: config::States,
+	link: tedi_task_operations::IssueLink,
+	(workflow, to): (String, tedi_core::workflow::State),
+	seen: Option<(String, tedi_core::workflow::State)>,
+	mode: SyncMode,
+	now: jiff::Timestamp,
+) -> color_eyre::Result<()> {
+	use color_eyre::eyre::{bail, eyre};
+	use tedi_core::conflict::Edited;
+	use tedi_task_operations::{reach::Reach, workflow::Mover};
+
+	let seen = match seen {
+		Some((w, _)) if w != workflow => bail!("--seen names {w}, the move {workflow}"),
+		Some((_, seen)) => Some(seen),
+		None => None,
+	};
+	match states {
+		config::States::Home(home) => match home.move_card(&link, &workflow, &to, seen.as_ref()).await? {
+			Edited::Landed => tedi_task_operations::sprints::pull_stored(&[link]).await,
+			Edited::Conflict(conflict) => Err(conflict.into()),
+			Edited::Rejected(why) => bail!(why),
+		},
+		states => {
+			let me = tedi_task_operations::current_user::get().ok_or_else(|| eyre!("who moves it is unknown: run once online, so tedi knows your GitHub user"))?;
+			let (link, workflows) = (Reach::All.issue(link)?, states.workflows()?);
+			tedi_task_operations::workflow::move_card(&link, &workflow, &to, seen.as_ref(), &Mover::Person(me), &workflows, mode, now).await
+		}
+	}
 }
 
 /// Extract --log-to value from args before full CLI parsing (needed for early logging init)

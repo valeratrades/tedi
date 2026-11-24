@@ -240,6 +240,17 @@ impl NodeLink {
 		MilestoneLink::parse(url).map(Self::Milestone)
 	}
 }
+impl serde::Serialize for NodeLink {
+	fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+		s.collect_str(self)
+	}
+}
+impl<'de> serde::Deserialize<'de> for NodeLink {
+	fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+		let url = <String as serde::Deserialize>::deserialize(d)?;
+		Self::parse(&url).ok_or_else(|| serde::de::Error::custom(format!("{url} is neither an issue nor a milestone")))
+	}
+}
 
 /// A parsed milestone reference. URL-only for now (no established shorthand syntax).
 #[derive(Clone, Debug, PartialEq)]

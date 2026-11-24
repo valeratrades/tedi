@@ -94,10 +94,7 @@ async fn test_select_resolves_by_real_title() {
 		&issue(2, "Fix: the (weird) crash", "# Blockers\n  - task two"),
 	])
 	.await;
-	ctx.xdg.write_cache(
-		"sprints_selection.json",
-		&serde_json::json!({ "normal": { "key": "1d", "content": "- https://github.com/o/r/issues/1\n- https://github.com/o/r/issues/2\n" } }).to_string(),
-	);
+	ctx.focus_sprint("- https://github.com/o/r/issues/1\n- https://github.com/o/r/issues/2\n", &[]);
 
 	let out = ctx.run(&["--offline", "sprints", "select", "-e", "(weird)"]);
 	assert!(out.status.success(), "stderr: {}", out.stderr);
@@ -114,10 +111,7 @@ async fn test_select_takes_sole_contiguous_row_over_scatters() {
 		&issue(3, "unrelated", "func in the body\n  # Blockers\n  - task three"),
 	])
 	.await;
-	ctx.xdg.write_cache(
-		"sprints_selection.json",
-		&serde_json::json!({ "normal": { "key": "1d", "content": "- https://github.com/o/r/issues/1\n- https://github.com/o/r/issues/2\n- https://github.com/o/r/issues/3\n" } }).to_string(),
-	);
+	ctx.focus_sprint("- https://github.com/o/r/issues/1\n- https://github.com/o/r/issues/2\n- https://github.com/o/r/issues/3\n", &[]);
 
 	let out = ctx.run(&["--offline", "sprints", "select", "func"]);
 	assert!(out.status.success(), "stderr: {}", out.stderr);

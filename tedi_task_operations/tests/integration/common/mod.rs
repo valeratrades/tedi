@@ -324,6 +324,40 @@ impl TestContext {
 		self.rebuild_mock_state();
 	}
 
+	/// A milestone stored here, open unless `closed`.
+	pub fn store_milestone(&self, url: &str, title: &str, closed: bool, body: &str) {
+		use tedi_task_operations::local::{FsReader, Local};
+
+		self.set_issues_dir_override();
+		let link = tedi_task_operations::MilestoneLink::parse(url).unwrap();
+		let repo = link.repo_info();
+		let file = Local::milestone_file_path(repo, link.number(), title);
+		std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+		std::fs::write(&file, format!("{}\n", body.trim_end())).unwrap();
+		let mut meta = serde_json::to_value(Local::load_milestone_project_meta(repo, &FsReader)).unwrap();
+		meta["milestones"][link.number().to_string()] = serde_json::json!({ "title": title, "state": if closed { "Closed" } else { "Open" } });
+		std::fs::write(Local::milestone_project_dir(repo).join(".meta.json"), meta.to_string()).unwrap();
+	}
+
+	/// `1d` of `o/sprints` stored and focused, its selection at `path`.
+	pub fn focus_sprint(&self, body: &str, path: &[&str]) {
+		let url = "https://github.com/o/sprints/milestone/1";
+		self.store_milestone(url, "1d", false, body);
+		let paths = if path.is_empty() { serde_json::json!({}) } else { serde_json::json!({ "1d": path }) };
+		self.xdg.write_cache("sprints_selection.json", &serde_json::json!({ "paths": paths, "sprint": url }).to_string());
+	}
+
+	/// GitHub knows `tokens`: each `(token, login, repos it sees)`, in the place of those it knew. Seed issues first.
+	pub fn remote_tokens(&self, tokens: &[(&str, &str, &[&str])]) {
+		let mut state: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&self.mock_state_path).unwrap()).unwrap();
+		state["tokens"] = tokens
+			.iter()
+			.map(|(token, login, repos)| (token.to_string(), serde_json::json!({ "login": login, "repos": repos })))
+			.collect::<serde_json::Map<_, _>>()
+			.into();
+		std::fs::write(&self.mock_state_path, state.to_string()).unwrap();
+	}
+
 	/// What the mock Github holds by now, its milestones alone: `owner/repo#number title [assigned issues]`, then the description.
 	pub fn remote_milestones(&self) -> String {
 		let state: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&self.mock_state_path).unwrap()).unwrap();

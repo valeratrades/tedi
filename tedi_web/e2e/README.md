@@ -18,7 +18,7 @@ Screens and frames: 01-board 48:5386, 02-view 10:1607, 03-library 11:3139, 04-wo
 ## Specs and renders
 
 ```sh
-nix run .#e2e                  # specs/: the address against the screen (url), a view's order as labels (sort), what is on screen while it loads (loading)
+nix run .#e2e                  # specs/: the address against the screen (url), a view's order as labels (sort), what is on screen while it loads (loading), the account panel (account)
 nix run .#figma                # every page the address can name, at 1440 and 390, onto a new page of `figmaFile` (flake.nix), "tedi — renders"
 ```
 
@@ -27,10 +27,10 @@ with `libraries/04-workspace.json`. The renders are code's, never read back; the
 ## Layout
 
 - `serve.sh`: builds, seeds and serves; `shoot.sh` and the specs run it.
-- `seed/state.json`: the GitHub mock's state (issues, labels, assignees, `blocked by`, linked and listed PRs, sprint milestones).
+- `seed/state.json`: the GitHub mock's state (issues, labels, assignees, `blocked by`, linked and listed PRs, sprint milestones, whose tokens see what).
 - `seed/positions.json`: what the mock cannot hold, written into the store after `tedi --mock pull`: kanban / pull_requests
   states (`.states.json`) and label colours (`.meta.json`).
-- `config.toml`: two views, scopes EV ⊃ {EV-Estate, EV-Main, EV-Service-Arb}, column layouts, sprints' milestone repo.
+- `config.toml`: two views, scopes EV ⊃ {EV-Estate, EV-Main, EV-Service-Arb}, column layouts.
 - `libraries/<screen>.json`: the viewer's library (copied to `$XDG_DATA_HOME/tedi/web/mock_user.json` before each shot):
   tiles per band, current scope, workspaces, kept views. Layouts are tilers schema v3 (xl: 64 steps; 01: board tile 42, issue tile 22);
   `on_screen.columns` is empty, the app seeds a column per group. `workspace` names the active workspace tab.

@@ -154,21 +154,26 @@ Typed while editing, expanded on save.
 
 Read this when you are arranging work, not when you are editing one issue.
 
-A **TaskView** is a markdown document of headers and *links*. Sprints, bottlenecks and
+A **TaskView** is a markdown document of headers and *links*. Sprints, what is picked up and
 searches are all this one primitive. It stores links only — never issue content.
 
 ```
-sprint 1d  (stored in the GitHub milestone description, keyed by timeframe:
-│           1d, 2w, 1Q, 1y, 3y, 7y — `M` is months, `m` would be minutes)
-│ priority runs top → bottom; the period's selection is not expected to complete
-├─ # Must          ← managed section: today's musts
-│   └ - o/r#42
-├─ # whatever      ← your own headers, free
+sprint 1d  (a GitHub milestone's description; its title makes it one:
+│           a period — 1d, 2w, 1Q, 1y, 3y, 7y, `M` is months — or Bottlenecks)
+│ everything in it is a must; priority runs top → bottom
+├─ # whatever      ← your own headers: they group, nothing else
 │   └ - o/r#77
 └─ - https://github.com/o/r/milestone/3
+
+selected.md  (opens beside a planning sprint: what you have picked up, off the home's kanban)
+├─ - o/r#42        ← no header: the `selected` bucket; a line added here is picked up
+├─ # in_progress   ← a header is a bucket: a line moved under it moves there
+│   └ - o/r#43
+└─ # triage        ← a line deleted goes back here
 ```
 
-- A sprint holds milestones and issues. Never blockers.
+- A sprint holds milestones and issues. Never blockers. Only a Bottlenecks sprint can be
+  held, and only by a sprint. Picking something up is `selected.md`'s, not the sprint's.
 - A milestone holds issues and prose, and may carry a deadline. No priority order inside —
   everything in it is required. Not being in any milestone does not stop an issue from
   entering a sprint.

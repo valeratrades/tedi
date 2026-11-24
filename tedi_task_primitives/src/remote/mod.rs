@@ -552,7 +552,7 @@ impl Sink<Remote> for Issue {
 		// Update existing comments
 		for (comment_id, comment) in &diff.comments_to_update {
 			if let CommentIdentity::Created { user, .. } = &comment.identity
-				&& !crate::current_user::is(user)
+				&& github::client::login_on(repo_info).as_ref() != Some(user)
 			{
 				continue;
 			}

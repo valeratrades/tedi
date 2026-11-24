@@ -2,15 +2,15 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use dioxus_fullstack::{ByteStream, ServerEvents, ServerFnError, get, post, server};
+use dioxus_fullstack::{ByteStream, ServerEvents, ServerFnError, get, post};
 #[cfg(feature = "server")]
 use dioxus_fullstack::{HeaderMap, HeaderValue, http::header::CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
 use tedi_core::{
 	IssueLink, MilestoneLink,
-	board::{GroupBy, Scope, Thread, View},
-	conflict::{CommentEdit, Conflict, FieldEdit},
-	workflow::{State, Workflow},
+	board::{Answer, GroupBy, Listing, Scope, Thread, View},
+	conflict::{CommentEdit, Edited, FieldEdit},
+	workflow::{State, Trees},
 };
 use tilers_core::Band;
 
@@ -23,10 +23,12 @@ pub type Tints = BTreeMap<String, Tint>;
 /// What the sidebar and every view start from.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct Setup {
-	/// Who edits. Today the instance's own GitHub user, for every request; per request once editors sign in.
+	/// The viewer, on GitHub: their keys' login, or whoever runs an ungated instance. `None`: no key says.
 	pub me: Option<String>,
+	/// Each viewer brings their own keys and scopes; an ungated instance is its operator's alone.
+	pub accounts: bool,
 	/// What a card sits in, by name: their buckets are a state grouping's columns.
-	pub workflows: BTreeMap<String, Workflow>,
+	pub workflows: Trees,
 	pub scopes: BTreeMap<String, Scope>,
 	pub views: Vec<View>,
 	/// The team's columns, offered beside each viewer's own.
@@ -35,13 +37,6 @@ pub struct Setup {
 	pub workspaces: BTreeMap<String, Arrangement>,
 	/// The team's, as an address names them.
 	pub ids: BTreeMap<String, Item>,
-}
-
-/// An open sprint milestone: its task view's issues, in order.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub struct Sprint {
-	pub title: String,
-	pub links: Vec<IssueLink>,
 }
 
 /// One viewer's board as they left it, and the filters and arrangements they keep, each kept by
@@ -574,40 +569,80 @@ pub enum LibraryEdit {
 	Pull(Item),
 }
 
+/// What a viewer brings: keys to GitHub, and the scopes of it they want stored.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub enum Edited {
-	Landed,
-	/// Nothing landed: a field moved on since it was seen, or GitHub and the store clashed on the pull.
-	Conflict(Conflict),
-	/// Nothing landed: a hook refused the move, or the card left the state it was moved from.
-	Rejected(String),
+pub struct Account {
+	/// Whose the keys are: they all answer one.
+	pub login: Option<String>,
+	pub keys: Vec<Key>,
+	pub scopes: Vec<Stored>,
 }
 
-#[get("/api/setup")]
+/// A GitHub token, by the owner it is used on; the token itself stays with the server.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct Key {
+	pub owner: String,
+	pub outcome: Option<Outcome>,
+}
+
+/// `owner` or `owner/repo`, stored here as far as the key on that owner sees it.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct Stored {
+	pub scope: String,
+	/// As of its last pull.
+	pub repos: usize,
+	pub outcome: Option<Outcome>,
+}
+
+/// How a pull ended. `None` where there is none: not pulled yet.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct Outcome {
+	pub at: jiff::Timestamp,
+	pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub enum AccountEdit {
+	/// Verified against GitHub before it is kept, in the place of one held on that owner.
+	Key {
+		owner: String,
+		token: String,
+	},
+	DropKey(String),
+	Scope(String),
+	DropScope(String),
+}
+
+#[get("/api/setup", headers: HeaderMap)]
 pub async fn setup() -> Result<Setup, ServerFnError> {
-	Ok(crate::server::setup())
+	crate::server::setup(&headers).await.map_err(failed)
 }
 
-/// Read from GitHub on each call.
-#[get("/api/sprints")]
-pub async fn sprints() -> Result<Vec<Sprint>, ServerFnError> {
-	crate::server::sprints().await.map_err(failed)
-}
-
-/// The board's parts, a JSON line each, as they are read.
-#[get("/api/board")]
+/// The board's parts within the viewer's reach, a JSON line each, as they are read.
+#[get("/api/board", headers: HeaderMap)]
 pub async fn board() -> Result<ByteStream, ServerFnError> {
-	let lines = crate::server::board().await.map_err(failed)?;
+	let lines = crate::server::board(&headers).await.map_err(failed)?;
 	let context = FullstackContext::current().expect("in a server fn");
 	context.add_response_header(CONTENT_TYPE, HeaderValue::from_static("text/plain; charset=utf-8"));
 	Ok(lines.into())
 }
 
-/// Pulls every watched repo from GitHub; the board reloads on the tick its end fires.
-#[server]
+/// What the query `asked` holds for the viewer: how an instance whose home this is reads it.
+#[post("/api/query", headers: HeaderMap)]
+pub async fn query(asked: String) -> Result<Answer, ServerFnError> {
+	crate::server::query(&headers, asked).await.map_err(failed)
+}
+
+/// The view `named` here, or that query, as a task view lists it.
+#[post("/api/view", headers: HeaderMap)]
+pub async fn view(named: String, group: Option<GroupBy>) -> Result<Listing, ServerFnError> {
+	crate::server::view(&headers, named, group).await.map_err(failed)
+}
+
+/// Pulls every watched repo and the viewer's own from GitHub; the board reloads on the tick its end fires.
+#[post("/api/refresh", headers: HeaderMap)]
 pub async fn refresh() -> Result<(), ServerFnError> {
-	crate::server::refresh();
-	Ok(())
+	crate::server::refresh(&headers).map_err(failed)
 }
 
 /// Fires whenever the store may have changed: an edit, a webhook's pull, the periodic pull, a refresh.
@@ -616,49 +651,61 @@ pub async fn changes() -> Result<ServerEvents<()>, ServerFnError> {
 	Ok(crate::server::changes())
 }
 
-#[server]
+#[post("/api/edit", headers: HeaderMap)]
 pub async fn edit(link: IssueLink, edits: Vec<FieldEdit>) -> Result<Edited, ServerFnError> {
-	crate::server::edit(link, edits).await.map_err(failed)
+	crate::server::edit(&headers, link, edits).await.map_err(failed)
 }
 
-/// `link`'s card to `to` of `workflow`, moved from `seen`: each bucket it enters runs its hooks.
-#[server]
-pub async fn move_card(link: IssueLink, workflow: String, to: State, seen: State) -> Result<Edited, ServerFnError> {
-	crate::server::move_card(link, workflow, to, seen).await.map_err(failed)
+/// `link`'s card to `to` of `workflow`, moved from `seen` (`None`: wherever it sits): each bucket it enters runs its hooks.
+#[post("/api/move", headers: HeaderMap)]
+pub async fn move_card(link: IssueLink, workflow: String, to: State, seen: Option<State>) -> Result<Edited, ServerFnError> {
+	crate::server::move_card(&headers, link, workflow, to, seen).await.map_err(failed)
 }
 
 /// Which milestone of `repo` (`owner/repo`) hosts `link`, from `seen` to `new`.
-#[post("/api/milestone")]
+#[post("/api/milestone", headers: HeaderMap)]
 pub async fn set_milestone(link: IssueLink, repo: String, seen: Option<MilestoneLink>, new: Option<MilestoneLink>) -> Result<Edited, ServerFnError> {
-	crate::server::set_milestone(link, repo, seen, new).await.map_err(failed)
+	crate::server::set_milestone(&headers, link, repo, seen, new).await.map_err(failed)
 }
 
-#[post("/api/thread")]
+#[post("/api/thread", headers: HeaderMap)]
 pub async fn thread(link: IssueLink) -> Result<Thread, ServerFnError> {
-	crate::server::thread(link).await.map_err(failed)
+	crate::server::thread(&headers, link).await.map_err(failed)
 }
 
-#[post("/api/comment")]
+#[post("/api/comment", headers: HeaderMap)]
 pub async fn comment(link: IssueLink, edit: CommentEdit) -> Result<Edited, ServerFnError> {
-	crate::server::comment(link, edit).await.map_err(failed)
+	crate::server::comment(&headers, link, edit).await.map_err(failed)
 }
 
 /// `reviewer`'s review of the pull request `link` asked for, or the ask withdrawn.
-#[post("/api/review")]
+#[post("/api/review", headers: HeaderMap)]
 pub async fn request_review(link: IssueLink, reviewer: String, on: bool) -> Result<(), ServerFnError> {
-	crate::server::request_review(link, reviewer, on).await.map_err(failed)
+	crate::server::request_review(&headers, link, reviewer, on).await.map_err(failed)
 }
 
 /// The clash file waiting on `link`'s line, markers and all.
-#[server]
+#[post("/api/conflict", headers: HeaderMap)]
 pub async fn pending_conflict(link: IssueLink) -> Result<Option<String>, ServerFnError> {
-	crate::server::pending_conflict(&link).await.map_err(failed)
+	crate::server::pending_conflict(&headers, link).await.map_err(failed)
 }
 
 /// `resolution` written over the pending clash file; landed once it holds no markers. What is still pending comes back.
-#[server]
+#[post("/api/resolve", headers: HeaderMap)]
 pub async fn resolve(link: IssueLink, resolution: String) -> Result<Option<String>, ServerFnError> {
-	crate::server::resolve(&link, resolution).await.map_err(failed)
+	crate::server::resolve(&headers, link, resolution).await.map_err(failed)
+}
+
+/// The requesting viewer's.
+#[get("/api/account", headers: HeaderMap)]
+pub async fn account() -> Result<Account, ServerFnError> {
+	crate::server::account(&headers).await.map_err(failed)
+}
+
+/// The requesting viewer's, after `edit`.
+#[post("/api/account/edit", headers: HeaderMap)]
+pub async fn edit_account(edit: AccountEdit) -> Result<Account, ServerFnError> {
+	crate::server::edit_account(&headers, edit).await.map_err(failed)
 }
 
 /// The requesting viewer's.

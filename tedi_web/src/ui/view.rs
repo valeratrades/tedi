@@ -6,6 +6,7 @@ use dioxus::{core::spawn_forever, prelude::*};
 use ev_lib::uikit_dioxus::Logo;
 use strum::IntoEnumIterator as _;
 use tedi_core::{
+	MilestoneLink, NodeLink,
 	board::{GroupBy, Order, Placed, Query, Shown, View, group},
 	workflow::State,
 };
@@ -16,7 +17,10 @@ use super::{
 	Ctx,
 	facets::InView,
 	icons::{Glyph, Icon},
+	issue::Markdown,
 	kit::MenuItem,
+	route::Go,
+	sprint_panel,
 	toolbar::ViewToolbar,
 };
 use crate::api::{self, Dock, LibraryEdit, Tint, Tints};
@@ -31,18 +35,18 @@ pub fn ViewPanel(name: String) -> Element {
 	}
 }
 
-/// A sprint's issues, in its order.
+/// What a sprint is for, and its musts, in its order.
 #[component]
-pub fn SprintPanel(title: String) -> Element {
+pub fn SprintPanel(link: MilestoneLink) -> Element {
 	let ctx = use_context::<Ctx>();
-	let sprints = ctx.sprints.read();
-	let Some(sprints) = sprints.as_ref() else {
-		return rsx! { div { class: "p-3 text-body-s text-ink-soft", "Asking GitHub…" } };
+	let board = ctx.board.read();
+	let Some(board) = board.as_ref() else {
+		return rsx! { Loader { prs: false } };
 	};
-	let Some(sprint) = sprints.iter().find(|s| s.title == title) else {
-		return rsx! { "The sprint {title} is closed" };
+	let Some(sprint) = board.targets.iter().find(|t| t.link == link) else {
+		return rsx! { div { class: "p-3 text-sm text-ink-soft", "{link.as_str()} is no open sprint here" } };
 	};
-	let prs = !ctx.awaits(false) && sprint.links.iter().any(|l| ctx.card(l).is_none()); // what is no issue may be a pull request
+	let prs = sprint.nodes.iter().any(|n| matches!(n, NodeLink::Issue(l) if ctx.card(l).is_none())); // what is no issue may be a pull request
 	if ctx.awaits(prs) {
 		return rsx! { Loader { prs } };
 	}
@@ -54,13 +58,49 @@ pub fn SprintPanel(title: String) -> Element {
 		.collect();
 	rsx! {
 		div { class: "flex flex-col gap-1 overflow-auto p-2",
-			for link in sprint.links.iter() {
-				match ctx.card(link) {
-					Some(card) => rsx! { CardView { key: "{link}", card, shown: shown.clone() } },
-					None => rsx! { div { key: "{link}", class: "text-xs text-ink-soft", "{link} is not stored here" } },
+			if !sprint.description.is_empty() {
+				div { class: "px-1 pb-1 text-body text-ink-soft", Markdown { text: sprint.description.clone(), ontick: None } }
+			}
+			for node in sprint.nodes.iter() {
+				match node {
+					NodeLink::Issue(link) => match board.cards.iter().find(|c| &c.link == link) {
+						Some(card) => rsx! { CardView { key: "{link}", card: card.clone(), shown: shown.clone() } },
+						None => rsx! { div { key: "{link}", class: "text-xs text-ink-soft", "{link} is not stored here" } },
+					},
+					NodeLink::Milestone(link) => rsx! { Must { key: "{link.as_str()}", link: link.clone() } },
 				}
 			}
 		}
+	}
+}
+
+/// A sprint's tab: its title, once the board arrived.
+#[component]
+pub fn SprintTab(link: MilestoneLink) -> Element {
+	let ctx = use_context::<Ctx>();
+	let board = ctx.board.read();
+	let title = board.iter().flat_map(|b| &b.targets).find(|t| t.link == link).map(|t| t.title.clone());
+	ctx.tab_label(Glyph::Sprint, &title.unwrap_or_else(|| format!("{}/{}", link.repo_info(), link.number()))) // not here yet, or closed
+}
+
+/// A milestone a sprint holds: a sprint opens here, any other on GitHub.
+#[component]
+fn Must(link: MilestoneLink) -> Element {
+	let ctx = use_context::<Ctx>();
+	let board = ctx.board.read();
+	let board = board.as_ref().expect("the sprint holding it came from it");
+	let Some(held) = board.targets.iter().find(|t| t.link == link) else {
+		return rsx! { div { class: "text-xs text-ink-soft", "{link.as_str()} is closed, or not stored here" } };
+	};
+	let line = rsx! {
+		Icon { glyph: Glyph::Sprint, class: "size-3.5 shrink-0 text-ink-soft" }
+		span { class: "truncate", "{held.title}" }
+		span { class: "shrink-0 text-mono-s text-ink-faint", "{link.repo_info().repo()}" }
+	};
+	let class = "flex min-w-0 items-center gap-1.5 rounded-[var(--control-radius)] px-1 py-1 text-body text-ink hover:bg-hover";
+	match held.sprint() {
+		Some(_) => rsx! { Go { to: ctx.at_panel(&sprint_panel(&link)), class, {line} } },
+		None => rsx! { a { class, href: "{link.as_str()}", target: "_blank", {line} } },
 	}
 }
 

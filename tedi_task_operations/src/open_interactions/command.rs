@@ -27,7 +27,7 @@ use crate::{
 /// Shorthand: Use `!b` on its own line to auto-expand to `# Blockers`.
 #[derive(Args, Debug)]
 pub struct OpenArgs {
-	/// Github issue URL (e.g., https://github.com/owner/repo/issues/123) OR a search pattern for local issue files
+	/// Github issue URL (e.g., `https://github.com/owner/repo/issues/123`) OR a search pattern for local issue files
 	/// With --touch: path format is workspace/project/{issue.md, issue/sub-issue.md}
 	/// If omitted, or matching several, opens the picker over all local issue files.
 	pub url_or_pattern: Option<String>,

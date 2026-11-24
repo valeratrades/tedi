@@ -15,6 +15,16 @@ pub struct Conflict {
 	pub clashes: Vec<Clash>,
 	pub files: Vec<PathBuf>,
 }
+/// How an edit asked of whoever holds the store ended.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub enum Edited {
+	Landed,
+	/// Nothing landed: a field moved on since it was seen, or GitHub and the store clashed on the pull.
+	Conflict(Conflict),
+	/// Nothing landed: a hook refused the move, or the card left the state it was moved from.
+	Rejected(String),
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Clash {
 	pub node: IssueLink,

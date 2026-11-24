@@ -47,6 +47,11 @@ clockify_workspace_id = "..."
 # Optional
 default_extension = "md"  # or "typ" for typst
 github_max_in_flight = 32  # GitHub requests in flight at once
+home = "https://example.com/board"  # the `tedi web` holding your workflow states: `move` and `view` ask it (`tedi login` first, behind a gate)
+
+[milestones]
+url = "owner/repo"           # where your sprints live
+selected = "kanban/selected" # the home's bucket opened beside a planning sprint
 ```
 
 
@@ -72,9 +77,10 @@ tedi pull EV-Main owner/repo              # …or of these
 tedi view state:kanban/triage,kanban/selected t:bug i:>=5 --group state:kanban   # A query over the store, opened in $EDITOR; edits sync
 tedi move https://github.com/o/r/issues/1 kanban/selected   # Into a workflow's bucket; entering it runs the bucket's hooks
 
-# Milestones
-todo milestones                           # Show current milestones
-todo milestones push "goal description"   # Add goal to current milestone
+# Sprints
+tedi sprints edit 1d                      # A planning sprint; what you have picked up and the Bottlenecks open in tabs beside it
+tedi sprints edit bottlenecks             # What comes first
+tedi login                                # Sign in to the config's `home`, through the gate before it
 
 # Time tracking
 todo clockify start                       # Start tracking current blocker

@@ -1,13 +1,13 @@
 //! Per-sprint selection state: a path pointer into the active sprint's node tree.
 //!
 //! The active sprint is the lowest existing one — the local urgent sprint while it has
-//! open issues, else the cached lowest normal sprint. Selection is a *path* of node URLs
-//! (sprint → [milestone] → issue → [child issue …]), validated on every load: segments
+//! open issues, else the stored sprint last focused. Selection is a *path* of node URLs
+//! (root → milestone? → issue → child issue…), validated on every load: segments
 //! that are closed or no longer children of the previous level truncate the path, empty
-//! paths default to the top open root node. A terminal milestone auto-resolves to its
+//! paths default to the top open root node. The roots are the sprint's own nodes, then what
+//! is picked up (`selected.md`), then its repo's Bottlenecks. A terminal milestone auto-resolves to its
 //! first open, non-delegating issue — a resolution rule, never written back into the path.
-//! Milestone contents are cached here (fetched by `sprints get/edit`/healthcheck) so
-//! resolution works offline. Urgent prunes its closed issues on every processing (the file is
+//! All of it is read from local files alone, so resolution works offline. Urgent prunes its closed issues on every processing (the file is
 //! deleted when nothing else remains) — plain-text items are never cleanup fodder, and cleanup
 //! defers to a running edit session via the urgent lock.
 
@@ -17,7 +17,7 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use tedi_core::{IssueLink, IssueSelector, MilestoneLink, NodeLink, TaskView, VirtualIssue};
+use tedi_core::{IssueLink, IssueSelector, MilestoneLink, NodeLink, RepoInfo, Sprint, TaskView, VirtualIssue};
 use tedi_utils::search::{self, Candidate, SearchKind};
 
 use crate::local::{FsReader, Local};
@@ -79,10 +79,9 @@ pub struct Selected {
 	/// Every segment except possibly the last is a container of the next.
 	#[serde(default)]
 	paths: HashMap<String, Vec<String>>,
-	/// Cached lowest *normal* sprint (a GitHub milestone description). Refreshed on
-	/// `sprints edit`/`healthcheck`; urgent needs no cache (it is a local file).
+	/// The sprint last focused, urgent aside.
 	#[serde(default)]
-	normal: Option<NormalSprint>,
+	sprint: Option<MilestoneLink>,
 	/// sprint key → explicit selection changes, walked by `--prev`/`--next`.
 	#[serde(default)]
 	history: HashMap<String, History>,
@@ -107,8 +106,8 @@ impl Selected {
 		std::fs::write(path, serde_json::to_string_pretty(self).expect("Selected serialization"))
 	}
 
-	/// The lowest existing sprint: urgent while it has an open issue, else the cached normal
-	/// sprint. A text-only (or fully-closed) urgent never shadows the normal sprint.
+	/// The lowest existing sprint: urgent while it has an open issue, else the focused one.
+	/// A text-only (or fully-closed) urgent never shadows it.
 	pub fn active(&self) -> Option<ActiveSprint> {
 		let urgent = urgent_path();
 		if urgent.exists() {
@@ -116,13 +115,20 @@ impl Selected {
 			let mut view = TaskView::parse(&content);
 			view.resolve_bare_refs(None);
 			if view.issue_links().iter().any(|l| link_local(l).is_some_and(|vi| !vi.contents.state.is_closed())) {
-				return Some(ActiveSprint { key: URGENT_KEY.to_string(), view });
+				return Some(ActiveSprint {
+					key: URGENT_KEY.to_string(),
+					view,
+					repo: None,
+				});
 			}
 		}
-		let normal = self.normal.as_ref()?;
-		let mut view = TaskView::parse(&normal.content);
-		view.resolve_bare_refs(None);
-		Some(ActiveSprint { key: normal.key.clone(), view })
+		let link = self.sprint.as_ref()?;
+		let milestone = milestone_local(link)?;
+		Some(ActiveSprint {
+			key: milestone.identity.title,
+			view: milestone.body.0,
+			repo: Some(link.repo_info()),
+		})
 	}
 
 	/// The selected issue in the active sprint: the validated path's terminal, with a
@@ -166,7 +172,7 @@ impl Selected {
 			return Err("No open items in the active sprint.".into());
 		};
 		let siblings = match path.len() {
-			1 => active.view.cycle_scope(),
+			1 => active.working_set()?,
 			n => sel.children(&path[n - 2]),
 		};
 		if siblings.len() == 1 {
@@ -249,7 +255,7 @@ impl Selected {
 		let mut sel = Self::load();
 		let active = sel.active().ok_or("No active sprint. Run `todo sprints edit 1d` first.")?;
 		guard_urgent(&active)?;
-		let candidates = sel.candidate_paths(&active);
+		let candidates = sel.candidate_paths(&active)?;
 		if candidates.is_empty() {
 			return Err("No items in the active sprint.".into());
 		}
@@ -323,7 +329,14 @@ impl Selected {
 			tracing::warn!("{e}; !s ignored");
 			return Ok(());
 		}
-		let found = sel.candidate_paths(&active).into_iter().find(|path| match path.last() {
+		let candidates = match sel.candidate_paths(&active) {
+			Ok(candidates) => candidates,
+			Err(e) => {
+				tracing::warn!("{e}; !s ignored");
+				return Ok(());
+			}
+		};
+		let found = candidates.into_iter().find(|path| match path.last() {
 			Some(NodeLink::Issue(l)) => resolve(l).is_some_and(|p| p == issue_path),
 			_ => false,
 		});
@@ -340,24 +353,18 @@ impl Selected {
 	}
 
 	/// Whether an active sprint is resolvable without a network fetch — urgent has an open
-	/// issue, or a normal sprint's content is already cached.
+	/// issue, or the focused sprint is stored.
 	pub fn active_ready() -> bool {
 		Self::load().active().is_some()
 	}
 
-	//#[codestyle::skip(swappable-args)]
-	/// Cache the (currently-focused) normal sprint's content (called by `sprints edit`,
-	/// `healthcheck`, and `sprints select <tf>`).
-	pub fn refresh_normal(key: &str, content: &str) -> std::io::Result<()> {
+	pub fn focus(sprint: MilestoneLink) -> std::io::Result<()> {
 		let mut sel = Self::load();
-		sel.normal = Some(NormalSprint {
-			key: key.to_string(),
-			content: content.to_string(),
-		});
+		sel.sprint = Some(sprint);
 		sel.save()
 	}
 
-	/// Point every stored selection (paths, history, the cached normal sprint) at issues' new places.
+	/// Point every stored selection (paths, history) at issues' new places.
 	pub(crate) fn relink(moved: &HashMap<IssueLink, IssueLink>) -> std::io::Result<()> {
 		let relink = |url: &mut String| {
 			if let Some(new) = IssueLink::parse(url).and_then(|l| moved.get(&l)) {
@@ -367,11 +374,6 @@ impl Selected {
 		let mut sel = Self::load();
 		sel.paths.values_mut().flatten().for_each(relink);
 		sel.history.values_mut().flat_map(|h| h.back.iter_mut().chain(h.forward.iter_mut())).flatten().for_each(relink);
-		if let Some(normal) = &mut sel.normal {
-			let mut view = TaskView::parse(&normal.content);
-			view.relink(moved);
-			normal.content = view.serialize();
-		}
 		sel.save()
 	}
 
@@ -403,7 +405,7 @@ impl Selected {
 	/// The truncating walk of `validate_path` over any stored path, without the top-root default.
 	fn validate_stored(&self, active: &ActiveSprint, stored: &[String]) -> Result<Vec<NodeLink>, String> {
 		let mut path: Vec<NodeLink> = Vec::new();
-		let mut siblings = active.view.nodes();
+		let mut siblings = active.roots()?;
 		for url in stored {
 			let Some(node) = NodeLink::parse(url) else { break };
 			if !siblings.contains(&node) || !self.node_is_open(&node)? {
@@ -416,7 +418,7 @@ impl Selected {
 	}
 
 	fn top_root(&self, active: &ActiveSprint) -> Result<Vec<NodeLink>, String> {
-		for node in active.view.nodes() {
+		for node in active.working_set()? {
 			if self.node_is_open(&node)? {
 				return Ok(vec![node]);
 			}
@@ -520,10 +522,13 @@ impl Selected {
 	}
 
 	/// Every reachable node with its full path, in document order: root nodes,
-	/// cached-milestone issue children, and local issue children, recursive.
-	fn candidate_paths(&self, active: &ActiveSprint) -> Vec<Vec<NodeLink>> {
+	/// stored-milestone children, and local issue children, recursive.
+	fn candidate_paths(&self, active: &ActiveSprint) -> Result<Vec<Vec<NodeLink>>, String> {
 		fn walk(sel: &Selected, prefix: &mut Vec<NodeLink>, nodes: &[NodeLink], out: &mut Vec<Vec<NodeLink>>) {
 			for node in nodes {
+				if prefix.contains(node) {
+					continue; // Bottlenecks pulled holding each other
+				}
 				prefix.push(node.clone());
 				out.push(prefix.clone());
 				let children = sel.children(node);
@@ -532,8 +537,8 @@ impl Selected {
 			}
 		}
 		let mut out = Vec::new();
-		walk(self, &mut Vec::new(), &active.view.nodes(), &mut out);
-		out
+		walk(self, &mut Vec::new(), &active.roots()?, &mut out);
+		Ok(out)
 	}
 }
 
@@ -541,6 +546,36 @@ impl Selected {
 pub struct ActiveSprint {
 	pub key: String,
 	pub view: TaskView,
+	/// Whose sprint it is; urgent is nobody's.
+	repo: Option<RepoInfo>,
+}
+impl ActiveSprint {
+	/// What `--up`/`--down` walk: the sprint, then what is picked up or further on.
+	fn working_set(&self) -> Result<Vec<NodeLink>, String> {
+		self.with_picked(true)
+	}
+
+	/// All a path can start from.
+	fn roots(&self) -> Result<Vec<NodeLink>, String> {
+		let mut nodes = self.with_picked(false)?;
+		nodes.extend(
+			self.repo
+				.and_then(|repo| Local::stored_sprint(repo, Sprint::Bottlenecks))
+				.map(NodeLink::Milestone)
+				.filter(|n| !nodes.contains(n)),
+		);
+		Ok(nodes)
+	}
+
+	fn with_picked(&self, started: bool) -> Result<Vec<NodeLink>, String> {
+		let mut nodes = self.view.nodes();
+		if let Some(repo) = self.repo
+			&& let Some(picked) = Local::load_picked(repo).map_err(|e| format!("{e:#}"))?
+		{
+			nodes.extend(picked.links(started).map_err(|e| format!("{e:#}"))?.into_iter().filter(|n| !self.view.nodes().contains(n)));
+		}
+		Ok(nodes)
+	}
 }
 
 /// Issues that reached a closed state (done, not planned, duplicate). A link that doesn't resolve
@@ -622,12 +657,6 @@ fn cleanup_urgent() {
 struct History {
 	back: Vec<Vec<String>>,
 	forward: Vec<Vec<String>>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-struct NormalSprint {
-	key: String,
-	content: String,
 }
 
 /// Resolve an issue link to its local path.
