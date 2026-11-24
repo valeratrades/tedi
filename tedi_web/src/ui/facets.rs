@@ -54,6 +54,7 @@ pub(super) fn FacetChip(facet: Facet, query: Query) -> Element {
 				let (sign, at) = out.map_or(("", v.as_str()), |at| ("-", at));
 				format!("{sign}{}", at.split_once('/').map_or(at, |(_, bucket)| bucket)) // a bucket reads without its workflow
 			}
+			(Facet::Importance | Facet::Hours, _) => v.replace(">=", "≥ ").replace("<=", "≤ "),
 			_ => v,
 		})
 		.collect();
@@ -108,14 +109,45 @@ pub(super) fn FacetMenu(facet: Facet, query: Query) -> Element {
 		Ok(t) => t,
 		Err(e) => return rsx! { span { class: "p-2 text-caption text-accent-error", "{e}" } },
 	};
-	let bound = match facet {
-		Facet::Importance => Some(">="),
-		Facet::Hours => Some("<="),
-		_ => None,
+	// the direction its picked bound has, else the one the facet is mostly read in
+	let held = query.picked(facet).into_iter().find_map(|v| [">=", "<="].into_iter().find(|d| v.starts_with(d)));
+	let mut dir = use_signal(|| held.unwrap_or(if facet == Facet::Hours { "<=" } else { ">=" }));
+	let bound = matches!(facet, Facet::Importance | Facet::Hours).then(|| dir());
+	let flip = move |to: &'static str| {
+		dir.set(to);
+		let picked = in_view
+			.0
+			.peek()
+			.query
+			.parse::<Query>()
+			.expect("a facet's menu is open only over a query that parses")
+			.picked(facet)
+			.into_iter()
+			.find(|v| v.starts_with(">=") || v.starts_with("<="));
+		if let Some(was) = picked {
+			let at = format!("{to}{}", &was[2..]);
+			in_view.narrow(|q| {
+				q.clear(facet);
+				q.toggle(facet, &at, false).expect("a bound the facet reads");
+			});
+		}
 	};
 	rsx! {
 		div { class: "flex flex-col gap-0.5",
-			div { class: "flex h-7 items-center gap-1.5 rounded-[var(--control-radius)] border border-border-subtle px-2",
+			if bound.is_some() {
+				div { class: "flex items-center gap-0.5 rounded-[var(--control-radius)] border border-border-subtle p-0.5",
+					for (d , label) in [(">=", "≥ at least"), ("<=", "≤ at most")] {
+						button {
+							key: "{d}",
+							r#type: "button",
+							class: if dir() == d { "h-6 flex-1 rounded-[var(--control-radius)] bg-active text-body-s font-medium text-ink" } else { "h-6 flex-1 rounded-[var(--control-radius)] text-body-s font-medium text-ink-soft hover:text-ink" },
+							onclick: { let mut flip = flip; move |_| flip(d) },
+							"{label}"
+						}
+					}
+				}
+			}
+			div { class: if bound.is_some() { "hidden" } else { "flex h-7 items-center gap-1.5 rounded-[var(--control-radius)] border border-border-subtle px-2" },
 				Icon { glyph: Glyph::Search, class: "size-3.5 text-ink-faint" }
 				input {
 					class: "min-w-0 flex-1 bg-transparent text-body text-ink outline-none placeholder:text-ink-faint",
@@ -141,8 +173,8 @@ pub(super) fn FacetMenu(facet: Facet, query: Query) -> Element {
 			div { class: "flex items-center gap-2 px-2 py-1",
 				span { class: "flex-1 text-caption text-ink-soft",
 					match bound {
-						Some(_) => "⌥ exact  ·  ⇧ excludes",
-						None => "⇧-click excludes  ·  -{facet}:",
+						Some(_) => format!("type {facet}:5 for exactly 5"),
+						None => format!("⇧-click excludes  ·  -{facet}:"),
 					}
 				}
 				Btn { style: Style::Ghost, onclick: move |_| in_view.narrow(|q| q.clear(facet)), "Clear" }
@@ -163,10 +195,10 @@ fn Bounds(facet: Facet, bound: &'static str, tallies: Vec<Tally>, needle: String
 	let mut reached = 0;
 	let rows: Vec<(String, String, usize, f32, Option<bool>)> = exact
 		.into_iter()
-		.map(|(v, n, exact_pick)| {
+		.map(|(v, n, _)| {
 			reached += n;
 			let value = format!("{bound}{v}");
-			let picked = tallies.iter().find(|t| t.value == value).and_then(|t| t.picked).or(exact_pick);
+			let picked = tallies.iter().find(|t| t.value == value).and_then(|t| t.picked);
 			(value, format!("{} {v}", if bound == ">=" { "≥" } else { "≤" }), reached, n as f32 / most as f32, picked)
 		})
 		.collect();
@@ -176,7 +208,7 @@ fn Bounds(facet: Facet, bound: &'static str, tallies: Vec<Tally>, needle: String
 			Value { key: "{value}", facet, value, label, count, picked, bar: Some(bar) }
 		}
 		if let Some(t) = unset {
-			Value { facet, value: "none", label: "unset", count: t.count, picked: t.picked, bar: None }
+			Value { facet, value: "none", label: "also unset", count: t.count, picked: t.picked, bar: None }
 		}
 	}
 }
@@ -184,20 +216,18 @@ fn Bounds(facet: Facet, bound: &'static str, tallies: Vec<Tally>, needle: String
 #[component]
 fn Value(facet: Facet, value: String, label: String, count: usize, picked: Option<bool>, bar: Option<f32>) -> Element {
 	let in_view = use_context::<InView>();
-	let exact = value.trim_start_matches(['>', '<', '=']).to_string();
 	rsx! {
 		button {
 			r#type: "button",
 			class: if picked.is_some() { "relative flex h-7 items-center gap-2 rounded-[var(--control-radius)] bg-selected px-2 text-left" } else { "relative flex h-7 items-center gap-2 rounded-[var(--control-radius)] px-2 text-left hover:bg-hover" },
 			onclick: move |e: MouseEvent| {
-				let m = e.modifiers();
-				match (bar.is_some(), m.alt()) {
-					(true, false) if picked != Some(true) => in_view.narrow(|q| {
+				match bar {
+					Some(_) if picked != Some(true) => in_view.narrow(|q| {
 						q.clear(facet);
 						q.toggle(facet, &value, false).expect("a bound the facet reads");
 					}),
-					(true, true) => in_view.toggle(facet, &exact, m.shift()),
-					_ => in_view.toggle(facet, &value, m.shift()),
+					Some(_) => in_view.narrow(|q| q.clear(facet)),
+					None => in_view.toggle(facet, &value, e.modifiers().shift()),
 				}
 			},
 			if let Some(bar) = bar {

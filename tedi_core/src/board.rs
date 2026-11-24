@@ -233,8 +233,8 @@ pub enum GroupBy {
 	Nothing,
 }
 /// `importance`, or `-importance` reversed. Each key's own order: importance high→low, hours low→high,
-/// a workflow's states in its order, names A→Z, numbers low→high, most blockers first, the latest updated
-/// first; a card lacking the key last either way.
+/// a workflow's states in its order, numbers low→high, the latest updated first; a card lacking the key last
+/// either way. Only what a card can be ranked by is a key: a name or a kind groups, it doesn't order.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct Sort {
@@ -260,21 +260,13 @@ impl Sort {
 		match &self.by {
 			SortKey::Rank if r => by(hits, r, |i| Some((cards[i].rank.is_some(), place[i]))), // the unranked stay last
 			SortKey::Rank => by(hits, r, |i| Some(place[i])),
-			SortKey::Title => by(hits, r, |i| Some(cards[i].title.to_lowercase())),
 			SortKey::Number => by(hits, r, |i| Some(cards[i].link.number())),
-			SortKey::Repo => by(hits, r, |i| Some(cards[i].link.project().to_string())),
 			SortKey::State(w) => {
 				let workflow = workflows.get(w).ok_or_else(|| WorkflowError::Unknown(w.clone()))?;
 				by(hits, r, |i| Some(workflow.order(&cards[i].states[w])))
 			}
-			SortKey::Assignee => by(hits, r, |i| cards[i].assignees.iter().map(|a| a.to_lowercase()).min()),
-			SortKey::Type => by(hits, r, |i| cards[i].kind.map(|k| k.to_string())),
 			SortKey::Importance => by(hits, r, |i| cards[i].importance.map(Reverse)),
 			SortKey::Hours => by(hits, r, |i| cards[i].hours),
-			SortKey::Blockers => {
-				let open = open(cards);
-				by(hits, r, |i| Some(Reverse(cards[i].blocked_by.iter().filter(|b| open.contains(b)).count())))
-			}
 			SortKey::Updated => by(hits, r, |i| cards[i].updated.map(Reverse)),
 		}
 		Ok(())
@@ -339,16 +331,11 @@ impl From<Order> for String {
 pub enum SortKey {
 	/// As the query ordered them: by free-text relevance when there is any, else by rank.
 	Rank,
-	Title,
 	Number,
-	Repo,
 	/// `state:<workflow>`
 	State(String),
-	Assignee,
-	Type,
 	Importance,
 	Hours,
-	Blockers,
 	Updated,
 }
 
@@ -777,14 +764,9 @@ keyed!(Shown {
 });
 keyed!(SortKey {
 	Rank = "rank",
-	Title = "title",
 	Number = "number",
-	Repo = "repo",
-	Assignee = "assignee",
-	Type = "type",
 	Importance = "importance",
 	Hours = "hours",
-	Blockers = "blockers",
 	Updated = "updated",
 });
 impl std::fmt::Display for Sort {
@@ -821,16 +803,12 @@ impl TryFrom<Shown> for SortKey {
 
 	fn try_from(shown: Shown) -> Result<Self, Shown> {
 		Ok(match shown {
-			Shown::Repo => SortKey::Repo,
-			Shown::Assignees => SortKey::Assignee,
 			Shown::State(w) => SortKey::State(w),
 			Shown::Importance => SortKey::Importance,
 			Shown::Hours => SortKey::Hours,
-			Shown::Type => SortKey::Type,
-			Shown::Blockers => SortKey::Blockers,
 			Shown::Number => SortKey::Number,
 			Shown::Updated => SortKey::Updated,
-			Shown::Labels | Shown::Prs | Shown::Sprint => return Err(shown),
+			Shown::Repo | Shown::Assignees | Shown::Type | Shown::Labels | Shown::Blockers | Shown::Prs | Shown::Sprint => return Err(shown),
 		})
 	}
 }
@@ -1064,8 +1042,19 @@ mod tests {
 		let cards = cards();
 		let hits: Vec<usize> = (0..cards.len()).collect();
 		let out: Vec<String> = [
-			"rank", "-rank", "title", "importance", "-importance", "hours", "-hours", "state:kanban", "assignee", "-assignee", "type", "blockers", "-repo", "-number", "type,-importance",
-			"repo,hours", "hours,rank", "-hours,-rank", "state:kanban,title",
+			"rank",
+			"-rank",
+			"importance",
+			"-importance",
+			"hours",
+			"-hours",
+			"state:kanban",
+			"-number",
+			"updated",
+			"state:kanban,-importance",
+			"hours,rank",
+			"-hours,-rank",
+			"state:kanban,hours",
 		]
 		.into_iter()
 		.map(|s| {
@@ -1079,23 +1068,17 @@ mod tests {
 		insta::assert_snapshot!(out.join("\n"), @"
 		rank: Crash on save · Dark mode · bump deps · Typo in README · Untyped idea
 		-rank: Untyped idea · Typo in README · bump deps · Dark mode · Crash on save
-		title: bump deps · Crash on save · Dark mode · Typo in README · Untyped idea
 		importance: Crash on save · Dark mode · Typo in README · bump deps · Untyped idea
 		-importance: Typo in README · Dark mode · Crash on save · bump deps · Untyped idea
 		hours: bump deps · Typo in README · Crash on save · Dark mode · Untyped idea
 		-hours: Crash on save · bump deps · Typo in README · Dark mode · Untyped idea
 		state:kanban: Untyped idea · Crash on save · bump deps · Dark mode · Typo in README
-		assignee: Crash on save · Typo in README · Dark mode · bump deps · Untyped idea
-		-assignee: Dark mode · Crash on save · Typo in README · bump deps · Untyped idea
-		type: Crash on save · Typo in README · bump deps · Dark mode · Untyped idea
-		blockers: Untyped idea · Dark mode · Crash on save · bump deps · Typo in README
-		-repo: bump deps · Typo in README · Crash on save · Dark mode · Untyped idea
 		-number: Untyped idea · Typo in README · bump deps · Dark mode · Crash on save
-		type,-importance: Typo in README · Crash on save · bump deps · Dark mode · Untyped idea
-		repo,hours: Crash on save · Dark mode · Untyped idea · bump deps · Typo in README
+		updated: Crash on save · Dark mode · bump deps · Typo in README · Untyped idea
+		state:kanban,-importance: Untyped idea · Crash on save · bump deps · Dark mode · Typo in README
 		hours,rank: bump deps · Typo in README · Crash on save · Dark mode · Untyped idea
 		-hours,-rank: Crash on save · Typo in README · bump deps · Untyped idea · Dark mode
-		state:kanban,title: Untyped idea · bump deps · Crash on save · Dark mode · Typo in README
+		state:kanban,hours: Untyped idea · bump deps · Crash on save · Dark mode · Typo in README
 		");
 	}
 }

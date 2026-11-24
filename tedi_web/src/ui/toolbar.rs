@@ -137,7 +137,7 @@ fn keys(workflows: &[String]) -> Vec<SortKey> {
 	[SortKey::Rank, SortKey::Importance, SortKey::Hours, SortKey::Updated]
 		.into_iter()
 		.chain(workflows.iter().cloned().map(SortKey::State))
-		.chain([SortKey::Title, SortKey::Number, SortKey::Repo, SortKey::Assignee, SortKey::Type, SortKey::Blockers])
+		.chain([SortKey::Number])
 		.collect()
 }
 

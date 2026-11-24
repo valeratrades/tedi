@@ -115,3 +115,36 @@ pub(super) fn MenuItem(selected: bool, label: String, #[props(default)] meta: St
 		}
 	}
 }
+
+/// A button whose menu opens over everything: inside a tile's header (which clips what overflows it) a
+/// menu anchored in place would be cut off.
+#[component]
+pub(super) fn Menu(glyph: Glyph, title: String, children: Element) -> Element {
+	let mut at = use_signal(|| None::<(f64, f64)>);
+	let mut node = use_signal(|| None::<std::rc::Rc<MountedData>>);
+	rsx! {
+		button {
+			r#type: "button",
+			class: "inline-flex size-6 shrink-0 items-center justify-center rounded-[var(--control-radius)] text-ink-soft hover:bg-hover hover:text-ink",
+			title: "{title}",
+			aria_label: "{title}",
+			onmounted: move |e| node.set(Some(e.data())),
+			onclick: move |e: MouseEvent| async move {
+				e.stop_propagation();
+				let n = node.peek().clone().expect("clicked, so mounted");
+				let r = n.get_client_rect().await.expect("a mounted button has a rect");
+				at.set(Some((r.max_x(), r.max_y())));
+			},
+			Icon { glyph }
+		}
+		if let Some((right, bottom)) = at() {
+			div { class: "fixed inset-0 z-[120]", onclick: move |_| at.set(None) }
+			div {
+				class: "fixed z-[121] flex w-60 flex-col gap-0.5 rounded-[var(--radius)] border border-border bg-popover p-1 text-ink",
+				style: "left: {right - 240.}px; top: {bottom + 4.}px",
+				onclick: move |_| at.set(None),
+				{children}
+			}
+		}
+	}
+}

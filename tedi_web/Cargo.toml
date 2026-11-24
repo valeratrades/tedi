@@ -32,6 +32,7 @@ web = [
     "dep:getrandom",
     "dep:futures",
     "dep:gloo-timers",
+    "dep:pulldown-cmark",
     "jiff/js",
 ]
 # `#[server]` emits its handler half under this crate's own `server` feature.
@@ -67,6 +68,7 @@ gloo-timers = { workspace = true, features = ["futures"], optional = true }
 hex = { workspace = true, optional = true }
 hmac = { workspace = true, optional = true }
 jiff.workspace = true
+pulldown-cmark = { workspace = true, optional = true }
 serde.workspace = true
 serde_json = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }

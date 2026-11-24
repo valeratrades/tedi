@@ -187,8 +187,27 @@ impl Ctx {
 			api.load(&serial::save(&grid)).expect("its own save, another tab shown");
 			return;
 		}
+		if let Some(float) = grid.floats.iter_mut().find(|f| f.group.tabs.contains(&id)) {
+			float.group.active = float.group.tabs.iter().position(|t| *t == id).expect("found in it");
+			api.load(&serial::save(&grid)).expect("its own save, another tab shown");
+			return;
+		}
 		let issue = |p: &PanelId| p.0.starts_with("issue:");
-		if let Some(cell) = grid.cells.iter().filter(|c| c.group.tabs.iter().any(|t| issue(t) == issue(&id))).max_by_key(|c| c.w * c.h) {
+		if issue(&id) {
+			// an issue opens above the board, never squeezing it: one float holds them as tabs
+			match grid.floats.iter().find(|f| f.group.tabs.iter().any(issue)) {
+				Some(float) => {
+					api.add_tab(float.group.id, id.clone());
+					return self.open(id);
+				}
+				None => {
+					let group = Group::new(api.mint_group_id(), id);
+					let (cols, rows) = (api.cols(), api.rows());
+					return api.float(group, (cols * 3).div_euclid(8), (rows * 4).div_euclid(5));
+				}
+			}
+		}
+		if let Some(cell) = grid.cells.iter().filter(|c| c.group.tabs.iter().any(|t| !issue(t))).max_by_key(|c| c.w * c.h) {
 			api.add_tab(cell.group.id, id.clone());
 			return self.open(id);
 		}
@@ -197,7 +216,7 @@ impl Ctx {
 		match grid.cells.iter().enumerate().max_by_key(|(_, c)| c.w) {
 			None => api.place(group, cols, rows),
 			Some((i, widest)) => {
-				let w = if issue(&id) { (cols * 3).div_euclid(8) } else { widest.w.div_euclid(2) };
+				let w = widest.w.div_euclid(2);
 				if widest.w > w {
 					api.resize(i, widest.w - w, widest.h);
 				}
@@ -280,28 +299,21 @@ impl Ctx {
 			_ => (Glyph::Alert, id.0.clone(), rsx! { "Unknown panel {id.0}" }),
 		};
 		DockPanel {
-			label: Some(self.tab_label(glyph, &title, &id)),
+			label: Some(self.tab_label(glyph, &title)),
 			id,
 			title,
 			content,
 			min: MinSize::Rem { w: 16.0, h: 8.0 },
+			locked: false,
 		}
 	}
 
-	/// A tab as the design draws it (Figma: Tab): what it holds, its title, and × to close it.
-	pub(super) fn tab_label(&self, glyph: Glyph, title: &str, id: &PanelId) -> Element {
-		let (api, id, title) = (self.api, id.clone(), title.to_string());
+	/// A tab as the design draws it (Figma: Tab): what it holds, and its title.
+	pub(super) fn tab_label(&self, glyph: Glyph, title: &str) -> Element {
 		rsx! {
-			span { class: "group/tab flex min-w-0 items-center gap-1.5",
+			span { class: "flex min-w-0 items-center gap-1.5",
 				Icon { glyph, class: "size-3.5 shrink-0 text-ink-soft" }
 				span { class: "truncate text-body", "{title}" }
-				button {
-					r#type: "button",
-					class: "flex size-4 shrink-0 items-center justify-center rounded text-ink-faint opacity-0 group-hover/tab:opacity-100 hover:bg-hover hover:text-ink [.tl-active_&]:opacity-100",
-					aria_label: "Close {title}",
-					onclick: move |_| (*api.peek()).expect("a tab shows on an entered dock").close(&id),
-					Icon { glyph: Glyph::X, class: "size-3" }
-				}
 			}
 		}
 	}
@@ -580,6 +592,11 @@ fn Shell() -> Element {
 							})),
 							config: None,
 							actions: Some(Callback::new(|tile: Tile| rsx! { TileActions { tile } })),
+							on_add: Some(Callback::new(move |group: GroupId| {
+								let (mut into, mut p) = (ctx.into, ctx.palette);
+								into.set(Some(group));
+								p.set(true);
+							})),
 						}
 					}
 				}
@@ -639,22 +656,23 @@ async fn reload(ctx: Ctx) {
 	}
 }
 
-/// A tile's header, right of its tabs (Figma: TileBar): + a panel into it, split the shown one off, maximize, close.
+/// Buttons a tile's header adds beside tilers' own (Figma: TileBar): split the shown panel off, maximize.
 #[component]
 fn TileActions(tile: Tile) -> Element {
 	let ctx = use_context::<Ctx>();
-	let Tile { group, active, maximized, .. } = tile;
-	if ctx.band() == Some(Band::Sm) {
-		return rsx! {}; // one tile at a time: nothing to split, maximize or close beside
+	let Tile {
+		group, active, maximized, floating, ..
+	} = tile;
+	if ctx.band() == Some(Band::Sm) || floating {
+		return rsx! {}; // one tile at a time, or above them: nothing to split or maximize beside
 	}
 	let tabs = {
 		let api = (*ctx.api.read()).expect("a tile shows on an entered dock");
 		let grid = serial::load(&api.save()).expect("a layout loads back from its own save");
-		grid.cells.into_iter().find(|c| c.group.id == group).map(|c| c.group.tabs).expect("the tile is the dock's")
+		grid.cells.into_iter().find(|c| c.group.id == group).map(|c| c.group.tabs).expect("a docked tile is a cell")
 	};
 	let api = move || (*ctx.api.peek()).expect("a tile shows on an entered dock");
 	rsx! {
-		kit::IconBtn { glyph: Glyph::Plus, title: "Add a panel here", onclick: move |_| { let (mut into, mut p) = (ctx.into, ctx.palette); into.set(Some(group)); p.set(true); } }
 		if tabs.len() > 1 {
 			kit::IconBtn {
 				glyph: Glyph::Split,
@@ -672,7 +690,6 @@ fn TileActions(tile: Tile) -> Element {
 			}
 		}
 		kit::IconBtn { glyph: Glyph::Maximize, title: if maximized { "Restore" } else { "Maximize" }, active: maximized, onclick: move |_| api().maximize(group) }
-		kit::IconBtn { glyph: Glyph::X, title: "Close the tile", onclick: move |_| { let mut a = api(); for t in tabs.iter() { a.close(t); } } }
 	}
 }
 
