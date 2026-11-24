@@ -124,6 +124,8 @@ A view is a named board query (`tedi_core::board`: `repo:` `assignee:` `state:<w
 
 A scope is a named slice of repos, nesting narrower ones; it narrows, and never chooses which views exist — every view is offered in every scope. The team's are config; a viewer keeps their own beside them, never under a team scope's name. The web screen sits in one scope at a time, everything on it — facet counts included — narrowed by the scope's `repo:` clause.
 
+A state of the web screen worth pointing at is in its address (`tedi_web/src/ui/route.rs`), and a move between such states is a link. An id in it names a view, workspace or column layout: a viewer's through renames, the team's by its name. A bare `/` is the screen as left.
+
 #### Bottlenecks
 a primitive over Milestones; name is immutable, can contain other milestones. In many ways it's much like [sprints](#sprints), - except it reasons in terms of current global priorities, serving as guideline for compiling the latter.
 

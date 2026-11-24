@@ -58,7 +58,7 @@ pub struct MockGithubClient {
 	sub_issues: Mutex<HashMap<RepoKey, HashMap<u64, Vec<u64>>>>,
 
 	/// All milestones, keyed by (owner, repo) -> number -> milestone
-	milestones: Mutex<HashMap<RepoKey, HashMap<u64, MockMilestoneData>>>,
+	milestones: Mutex<HashMap<RepoKey, BTreeMap<u64, MockMilestoneData>>>,
 
 	/// Labels defined per repo; a repo listed here exists even without issues
 	labels: Mutex<HashMap<RepoKey, Vec<String>>>,

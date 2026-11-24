@@ -2,7 +2,7 @@
 
 use std::str::FromStr as _;
 
-use dioxus::prelude::*;
+use dioxus::{core::spawn_forever, prelude::*};
 use ev_lib::uikit_dioxus::*;
 use strum::IntoEnumIterator as _;
 use tedi_core::{
@@ -156,12 +156,13 @@ pub(super) fn outcome(ctx: &Ctx, ran: &View) -> Result<Outcome, String> {
 #[component]
 pub(super) fn Results(ran: View, groups: Vec<(String, Vec<usize>)>) -> Element {
 	let ctx = use_context::<Ctx>();
+	let relaid = ctx.relaid.read().get(&ran.name).copied().unwrap_or(0); // never laid out anew
 	rsx! {
 		div { class: "flex min-h-0 flex-1 flex-col p-2",
 			if ctx.band() == Some(Band::Sm) {
 				Stacked { view: ran.name.clone(), by: ran.group_by.clone(), groups, shown: ran.shown.clone() }
 			} else {
-				Columns { key: "{ran.group_by}", view: ran.name.clone(), groups, by: ran.group_by.clone(), shown: ran.shown.clone(), order: ran.sort.clone() }
+				Columns { key: "{ran.group_by}-{relaid}", view: ran.name.clone(), groups, by: ran.group_by.clone(), shown: ran.shown.clone(), order: ran.sort.clone() }
 			}
 		}
 	}
@@ -372,26 +373,7 @@ fn ColumnActions(tile: Tile) -> Element {
 			.collect()
 	};
 	let mut naming = use_signal(|| false);
-	let apply = {
-		let tint = tint.clone();
-		move |name: String| {
-			let a = (*lanes.api.peek()).expect("the column dock entered a band before its menu shows");
-			let band = a.band();
-			let kept = ctx.library.peek().as_ref().expect("arrived before the menu").columns.get(&name).cloned();
-			let kept = kept
-				.or_else(|| ctx.setup.peek().as_ref().expect("arrived before the menu").columns.get(&name).cloned())
-				.expect("offered from the viewer's columns or the team's");
-			if let Some(layout) = kept.layout.get(&band) {
-				let mut a = a;
-				if let Err(e) = a.load(layout) {
-					ctx.say("columns", super::toast::Tone::Error, format!("{name}'s {band} columns don't load ({e:?})"), None);
-				}
-			}
-			if *lanes.tints.peek() != kept.tints {
-				tint(kept.tints);
-			}
-		}
-	};
+	let laid = ctx.laid(&view);
 	rsx! {
 		super::kit::Menu { glyph: Glyph::More, title: "Column menu",
 				span { class: "px-2 pt-1.5 pb-0.5 text-overline text-ink-soft", "Tint" }
@@ -420,7 +402,7 @@ fn ColumnActions(tile: Tile) -> Element {
 				div { class: "my-0.5 h-px bg-border-subtle" }
 				span { class: "px-2 pt-1.5 pb-0.5 text-overline text-ink-soft", "Column layouts" }
 				for name in team.into_iter().chain(mine) {
-					MenuItem { key: "{name}", selected: false, label: name.clone(), onclick: { let (apply, name) = (apply.clone(), name.clone()); move |_| apply(name.clone()) } }
+					MenuItem { key: "{name}", selected: laid.as_ref() == Some(&name), label: name.clone(), onclick: { let (view, name) = (view.clone(), name.clone()); move |_| { spawn_forever(ctx.lay(view.clone(), name.clone())); } } }
 				}
 				if naming() {
 					div { class: "px-1 py-1", onclick: |e: MouseEvent| e.stop_propagation(),
@@ -429,8 +411,13 @@ fn ColumnActions(tile: Tile) -> Element {
 							on_name: move |name: String| {
 								naming.set(false);
 													let a = (*lanes.api.peek()).expect("the column dock entered a band before its menu shows");
-								let edit = LibraryEdit::Keep(api::Kept::Columns { name, by: lanes.by.peek().clone(), band: a.band(), layout: a.save(), tints: lanes.tints.peek().clone() });
-								spawn(async move { _ = ctx.keep(edit).await });
+								let edit = LibraryEdit::Keep(api::Kept::Columns { name: name.clone(), by: lanes.by.peek().clone(), band: a.band(), layout: a.save(), tints: lanes.tints.peek().clone() });
+								let view = view.clone();
+								spawn_forever(async move {
+									if ctx.keep(edit).await {
+										ctx.lay(view, name).await;
+									}
+								});
 							},
 							on_cancel: move |()| naming.set(false),
 						}

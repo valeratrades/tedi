@@ -91,7 +91,7 @@ fn Open() -> Element {
 				(Go::Scope(path), None) => {
 					spawn(async move { _ = ctx.keep(LibraryEdit::Scope(path)).await });
 				}
-				(Go::Workspace(name), None) => ctx.switch(&name),
+				(Go::Workspace(name), None) => ctx.go(ctx.at_workspace(&name)),
 				(Go::NewScope, None) => {
 					let mut m = ctx.modal;
 					m.set(Some(Modal::Scope(Editing::New)));

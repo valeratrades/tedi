@@ -15,6 +15,7 @@ use super::{
 	Ctx,
 	facets::Pick,
 	icons::{Glyph, Icon},
+	route::Go,
 };
 
 #[component]
@@ -50,10 +51,9 @@ pub(super) fn CardView(card: Card, shown: Vec<Shown>) -> Element {
 					}
 				}
 			}
-			button {
-				r#type: "button",
+			Go {
+				to: ctx.at.read().with_issue(&link),
 				class: "text-left text-body font-medium text-ink hover:underline",
-				onclick: { let link = link.clone(); move |_| ctx.open_issue(link.clone()) },
 				"{card.title}"
 			}
 			if !meta.is_empty() {
@@ -73,7 +73,7 @@ pub(super) fn CardView(card: Card, shown: Vec<Shown>) -> Element {
 				div { class: "flex items-center gap-1.5 rounded-[var(--chip-radius)] bg-accent-warn/14 px-1.5 py-1",
 					Icon { glyph: Glyph::Alert, class: "size-3 shrink-0 text-accent-warn" }
 					span { class: "flex-1 text-caption text-accent-warn", "a field clashed with GitHub" }
-					button { r#type: "button", class: "text-body-s font-medium text-accent-warn hover:underline", onclick: { let link = link.clone(); move |_| ctx.open_issue(link.clone()) }, "Resolve" }
+					Go { to: ctx.at.read().with_issue(&link), class: "text-body-s font-medium text-accent-warn hover:underline", "Resolve" }
 				}
 			}
 		}
@@ -132,11 +132,10 @@ fn Blockers(card: Card) -> Element {
 			Icon { glyph: Glyph::Blocker, class: "size-3 shrink-0" }
 			span { "blocked by" }
 			for (i , b) in open.into_iter().enumerate() {
-				button {
+				Go {
 					key: "{b}",
-					r#type: "button",
+					to: ctx.at.read().with_issue(&b),
 					class: "hover:underline",
-					onclick: { let b = b.clone(); move |_| ctx.open_issue(b.clone()) },
 					if i > 0 { ", " }
 					"{b.shorthand(card.link.project())}"
 				}
@@ -201,10 +200,9 @@ pub(super) fn Field(card: Card, shown: Shown) -> Element {
 		Shown::Prs => match &card.pr {
 			Some(pr) => rsx! {
 				for issue in pr.closes.iter() {
-					button {
+					Go {
 						key: "{issue}",
-						r#type: "button",
-						onclick: { let issue = issue.clone(); move |_| ctx.open_issue(issue.clone()) },
+						to: ctx.at.read().with_issue(issue),
 						Chip { tone: Tone::Info, Icon { glyph: Glyph::Issue, class: "size-3" } "closes {issue.shorthand(card.link.project())}" }
 					}
 				}
