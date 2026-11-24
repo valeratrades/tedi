@@ -26,6 +26,7 @@ tedi_core.workspace = true
 tedi_hooks.workspace = true
 tedi_task_primitives.workspace = true
 tedi_utils = { workspace = true, features = ["picker"] }
+tempfile.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true

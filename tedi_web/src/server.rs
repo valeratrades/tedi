@@ -19,8 +19,8 @@ use dioxus::server::{
 use dioxus_fullstack::ServerEvents;
 use futures::{Stream, StreamExt as _};
 use tedi_core::{
-	IssueLink, MilestoneLink, RepoInfo, TaskView,
-	board::{Part, Scope, Thread, View, scope_at},
+	IssueLink, MilestoneLink, RepoInfo,
+	board::{Scope, Thread, View, scope_at},
 	conflict::{CommentEdit, Conflict, FieldEdit},
 	workflow::State,
 };
@@ -32,8 +32,8 @@ use tedi_task_operations::{
 use tokio::sync::{Mutex, broadcast, mpsc};
 
 use crate::api::{
-	Arrangement, Catalog, Change, Construction, Dock, Edited, Entry, Fork, Forked, Item, Kept, Library, LibraryEdit, Onto, Origin, Owner, Setup, ShareLink, Shared, Shelf, Sprint, Upstream,
-	Usage, Version, diff,
+	Arrangement, Catalog, Change, Construction, Dock, Edited, Entry, Fork, Forked, Item, Kept, Library, LibraryEdit, Onto, Origin, Owner, Setup, ShareLink, Shared, Shelf, Upstream, Usage,
+	Version, diff,
 };
 
 /// Each team object's versions, oldest first, with what each holds: a version per commit that changed it.
@@ -50,8 +50,6 @@ pub struct Settings {
 	pub columns: BTreeMap<String, crate::api::Columns>,
 	pub workspaces: BTreeMap<String, Arrangement>,
 	pub source: Option<Source>,
-	/// Where the sprint milestones live.
-	pub milestones: Option<RepoInfo>,
 	/// Owners and `owner/repo`s: what the periodic pull pulls, and the only repos a webhook delivery is pulled for.
 	pub watch: Vec<String>,
 	/// Pull all of `watch` this often, catching whatever no webhook announced.
@@ -128,10 +126,6 @@ pub async fn setup() -> Result<Setup> {
 		columns: s.columns.clone(),
 		workspaces: s.workspaces.clone(),
 		ids: addressed(team_items(s).into_keys()).map(|item| (id("team", &item), item)).collect(),
-		sprints: match s.milestones {
-			Some(repo) => sprints(repo).await?,
-			None => Vec::new(),
-		},
 	})
 }
 
@@ -496,7 +490,7 @@ impl SharedReading {
 		if let Some(line) = lines.get(n) {
 			return Ok(Some(line.clone()));
 		}
-		let mut part = match reading.next().await {
+		let part = match reading.next().await {
 			Ok(Some(part)) => part,
 			Ok(None) => return Ok(None),
 			Err(e) => {
@@ -507,9 +501,6 @@ impl SharedReading {
 				return Err(e);
 			}
 		};
-		if let Part::Rest { targets, .. } = &mut part {
-			targets.retain(|t| Some(t.link.repo_info()) != settings().milestones); // shown as sprints
-		}
 		let mut line = serde_json::to_vec(&part)?;
 		line.push(b'\n');
 		let line = Bytes::from(line);
@@ -625,20 +616,6 @@ fn refused(edited: Result<()>) -> Result<Edited> {
 /// Who edits: the instance's GitHub user until editors sign in, then the request's.
 fn editor() -> Option<String> {
 	tedi_task_operations::current_user::get()
-}
-
-async fn sprints(repo: RepoInfo) -> Result<Vec<Sprint>> {
-	let milestones = tedi_task_operations::github::client::get()?.list_milestones(repo).await?;
-	Ok(milestones
-		.into_iter()
-		.filter_map(|m| {
-			let view = TaskView::parse(m.description.as_deref()?);
-			Some(Sprint {
-				title: m.title,
-				links: view.issue_links(),
-			})
-		})
-		.collect())
 }
 
 /// The viewer's key, as their library's file stem.

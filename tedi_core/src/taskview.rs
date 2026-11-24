@@ -15,19 +15,6 @@ use tedi_md::indent_into;
 
 use crate::{Events, IssueLink, IssueMarker, IssueRef, MilestoneLink, MilestoneRef, NodeLink, OwnedEvent, OwnedTag, OwnedTagEnd, RepoInfo};
 
-/// Sprint header sections tedi assigns meaning to. The variant name is the header text.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, strum::Display, strum::EnumString)]
-#[strum(ascii_case_insensitive)]
-pub enum ManagedSection {
-	Must,
-}
-impl ManagedSection {
-	/// Classify a section key's last segment.
-	pub fn of(header_text: &str) -> Option<Self> {
-		header_text.trim().parse().ok()
-	}
-}
-
 /// A parsed task view: header-path → ordered components, plus un-itemized prose per section.
 #[derive(Clone, Default)]
 pub struct TaskView {
@@ -129,61 +116,27 @@ impl TaskView {
 
 	/// Collect all node links (issues and milestones), in document order.
 	pub fn nodes(&self) -> Vec<NodeLink> {
-		let mut nodes = Vec::new();
-		for key in &self.order {
+		self.sections().flat_map(|(_, nodes)| nodes).collect()
+	}
+
+	/// Each section's header path and the node links it holds itself, in document order.
+	pub fn sections(&self) -> impl Iterator<Item = (&[String], Vec<NodeLink>)> {
+		self.order.iter().map(|key| {
+			let mut nodes = Vec::new();
 			if let Some(items) = self.sections.get(key) {
 				collect_nodes(items, &mut nodes);
 			}
-		}
-		nodes
+			(key.as_slice(), nodes)
+		})
 	}
 
-	/// Index into `order` of a managed section's own header path.
-	fn managed_index(&self, section: ManagedSection) -> Option<usize> {
-		self.order.iter().position(|key| key.last().and_then(|h| ManagedSection::of(h)) == Some(section))
-	}
-
-	fn section_nodes(&self, key: &Vec<String>, out: &mut Vec<NodeLink>) {
-		if let Some(items) = self.sections.get(key) {
-			collect_nodes(items, out);
-		}
-	}
-
-	/// Give the view an empty `section` header at the top if it has none, so a managed section is
-	/// something to fill in rather than something to remember. Only a view that already opens with a
-	/// header takes one: anywhere below the top is not the top, a new top header would swallow
-	/// header-less leading content on the next parse, and a section-less view (urgent, search
-	/// results) has no headers to be managed among.
-	pub fn ensure_managed(&mut self, section: ManagedSection) {
-		if !self.order.first().is_some_and(|key| !key.is_empty()) || self.managed_index(section).is_some() {
-			return;
-		}
-		let key = vec![section.to_string()];
-		self.order.insert(0, key.clone());
-		self.sections.insert(key, Vec::new());
-	}
-
-	/// Node links held directly by a managed section, in document order.
-	pub fn managed_nodes(&self, section: ManagedSection) -> Vec<NodeLink> {
-		let mut nodes = Vec::new();
-		if let Some(i) = self.managed_index(section) {
-			self.section_nodes(&self.order[i], &mut nodes);
-		}
-		nodes
-	}
-
-	/// Nodes reachable by `--up`/`--down`: the `# Must` section plus the first section
-	/// below it. Absent a `# Must` section, the whole view.
-	pub fn cycle_scope(&self) -> Vec<NodeLink> {
-		let Some(must) = self.managed_index(ManagedSection::Must) else {
-			return self.nodes();
-		};
-		let next = self.order[must + 1..].iter().find(|key| key.last().and_then(|h| ManagedSection::of(h)).is_none());
-		let mut nodes = Vec::new();
-		for key in std::iter::once(&self.order[must]).chain(next) {
-			self.section_nodes(key, &mut nodes);
-		}
-		nodes
+	/// The prose before the first header: what the whole view is about.
+	pub fn description(&self) -> String {
+		let root: &[String] = &[];
+		self.prose
+			.get(root)
+			.map(|events| String::from(Events::from(events.clone())).trim().to_string())
+			.unwrap_or_default() // a view may say nothing of itself
 	}
 
 	/// Drop every issue component (with its children) — prunes a fully-closed sprint.

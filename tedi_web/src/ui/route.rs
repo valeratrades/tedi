@@ -1,5 +1,5 @@
 //! The address bar. What is on screen reads as an address, and an address moves the screen:
-//! `/view/<id>[/<column layout's id>]`, `/sprint/<title>`, `/library/<at>`, `/builder/<view>` is the panel last brought up;
+//! `/view/<id>[/<column layout's id>]`, `/sprint/<owner>/<repo>/<n>`, `/library/<at>`, `/builder/<view>` is the panel last brought up;
 //! `?issue=owner/repo/n` the floating issues, the shown one last; `ws=<id>` the workspace; `scope=<path>` the scope.
 
 use std::{fmt, str::FromStr};
@@ -360,7 +360,9 @@ impl fmt::Display for Address {
 			Some(Main::Panel(panel)) => {
 				let (kind, at) = panel.0.split_once(':').expect("a panel's id is <kind>:<what>");
 				write!(f, "/{kind}")?;
-				if !at.is_empty() {
+				if kind == "sprint" {
+					write!(f, "/{at}")?; // a milestone's path
+				} else if !at.is_empty() {
 					write!(f, "/{}", enc(at))?;
 				}
 			}
@@ -397,7 +399,8 @@ impl FromStr for Address {
 				columns: Some(columns.to_string()),
 			}),
 			[kind @ ("library" | "builder")] => Some(Main::Panel(PanelId(format!("{kind}:")))),
-			[kind @ ("sprint" | "library" | "builder"), at] => Some(Main::Panel(PanelId(format!("{kind}:{}", dec(at)?)))),
+			["sprint", owner, repo, n] => Some(Main::Panel(PanelId(format!("sprint:{owner}/{repo}/{n}")))),
+			[kind @ ("library" | "builder"), at] => Some(Main::Panel(PanelId(format!("{kind}:{}", dec(at)?)))),
 			_ => return Err(bad()),
 		};
 		let mut to = Address { main, ..Default::default() };

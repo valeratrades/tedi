@@ -26,8 +26,8 @@ use ev_lib::uikit_dioxus::*;
 use futures::StreamExt as _;
 use icons::{Glyph, Icon};
 use tedi_core::{
-	IssueLink,
-	board::{Board, Card, Part, Scope, View, scope_at},
+	IssueLink, MilestoneLink,
+	board::{Board, Card, Part, Query, Scope, Target, View, scope_at},
 	conflict::{CommentEdit, Conflict},
 	workflow::Workflow,
 };
@@ -179,6 +179,28 @@ impl Ctx {
 		Some((path, at))
 	}
 
+	/// The repo clause of the scope on screen.
+	fn within(&self) -> Query {
+		match self.scope() {
+			Some((_, Some(filter))) => filter.parse().expect("a scope's filter is a repo clause"),
+			Some((_, None)) | None => Query::default(), // its scope is gone from the config: shown without one
+		}
+	}
+
+	/// The scope's sprints: what is planned, the shortest period first, then the bottlenecks.
+	fn sprints(&self) -> Vec<Target> {
+		let within = self.within();
+		let board = self.board.read();
+		let mut sprints: Vec<Target> = board
+			.iter()
+			.flat_map(|b| &b.targets)
+			.filter(|t| t.sprint().is_some() && within.covers(t.link.repo_info()))
+			.cloned()
+			.collect();
+		sprints.sort_by_key(|t| (t.sprint(), t.link.repo_info().to_string()));
+		sprints
+	}
+
 	/// The team's, then the viewer's own.
 	fn scopes(&self) -> BTreeMap<String, Scope> {
 		let library = self.library.read();
@@ -309,8 +331,6 @@ impl Ctx {
 
 	/// The panel `id` names, its content looked up afresh: a layout holds ids only.
 	fn panel(&self, id: PanelId) -> DockPanel {
-		let setup = self.setup.peek();
-		let setup = setup.as_ref().expect("panels are hosted once setup arrived");
 		let (glyph, title, content) = match id.0.split_once(':') {
 			Some(("view", name)) => (
 				self.views().iter().find(|v| v.name == name).map_or(Glyph::View, shell::glyph_of),
@@ -323,9 +343,17 @@ impl Ctx {
 				if from.is_empty() { "New view (draft)".to_string() } else { format!("{from} (draft)") },
 				rsx! { builder::Builder { from: (!from.is_empty()).then(|| from.to_string()) } },
 			),
-			Some(("sprint", title)) => match setup.sprints.iter().find(|s| s.title == title) {
-				Some(sprint) => (Glyph::Sprint, title.to_string(), rsx! { view::SprintPanel { sprint: sprint.clone() } }),
-				None => (Glyph::Sprint, title.to_string(), rsx! { "The sprint {title} is closed" }),
+			Some(("sprint", at)) => match sprint_at(at) {
+				Some(link) => {
+					return DockPanel {
+						label: Some(rsx! { view::SprintTab { link: link.clone() } }),
+						title: at.to_string(),
+						content: rsx! { view::SprintPanel { link: link.clone() } },
+						id,
+						min: PANEL_MIN,
+					};
+				}
+				None => (Glyph::Alert, id.0.clone(), rsx! { "Not a sprint: {at}" }),
 			},
 			Some(("issue", link)) => match IssueLink::parse(link) {
 				Some(link) => {
@@ -522,6 +550,17 @@ enum Editing {
 	Own(String),
 	/// The team's, by path: saved, it becomes the viewer's own.
 	Team(String),
+}
+
+/// A sprint's panel, named by its milestone: titles repeat across repos.
+fn sprint_panel(link: &MilestoneLink) -> PanelId {
+	PanelId(format!("sprint:{}/{}", link.repo_info(), link.number()))
+}
+
+/// The milestone an `owner/repo/n` names.
+fn sprint_at(at: &str) -> Option<MilestoneLink> {
+	let [owner, repo, n] = at.split('/').collect::<Vec<_>>().try_into().ok()?; //IGNORED_ERROR: it names no milestone
+	MilestoneLink::parse(&format!("https://github.com/{owner}/{repo}/milestone/{n}"))
 }
 
 /// What a tile wants when it opens.

@@ -21,4 +21,5 @@ pub mod pull;
 pub mod search;
 pub mod selection;
 pub mod sprints;
+pub mod tabs;
 pub mod workflow;

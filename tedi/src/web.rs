@@ -3,7 +3,7 @@
 use std::{net::SocketAddr, path::PathBuf};
 
 use color_eyre::eyre::{Result, bail, eyre};
-use tedi_task_operations::{RepoInfo, open_interactions::SyncMode};
+use tedi_task_operations::open_interactions::SyncMode;
 
 use crate::config::LiveSettings;
 
@@ -36,13 +36,6 @@ pub async fn web_command(settings: &LiveSettings, args: WebArgs, mode: SyncMode)
 		(None, _, Some(_)) => bail!("a webhook delivery is pulled only for what the config's `watch` names, and there is none"),
 		(None, None, None) => Vec::new(),
 	};
-	let milestones = match &config.milestones {
-		Some(m) => {
-			let (owner, repo) = crate::sprints::parse_github_repo(&m.url)?;
-			Some(RepoInfo::new(&owner, &repo))
-		}
-		None => None,
-	};
 	tedi_web::serve(tedi_web::Settings {
 		addr: args.addr,
 		public: args.public,
@@ -53,7 +46,6 @@ pub async fn web_command(settings: &LiveSettings, args: WebArgs, mode: SyncMode)
 		columns: board.columns,
 		workspaces: board.workspaces,
 		source: board.source,
-		milestones,
 		watch,
 		pull_every,
 		webhook_secret: config.github_webhook_secret,

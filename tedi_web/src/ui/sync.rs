@@ -9,7 +9,7 @@ use dioxus::{
 	prelude::*,
 };
 use tedi_core::{
-	IssueLink, MilestoneLink,
+	IssueLink, MilestoneLink, NodeLink,
 	board::{Board, Card},
 	conflict::FieldEdit,
 	workflow::State,
@@ -68,10 +68,10 @@ impl Op {
 			Op::Milestone { seen, new, .. } =>
 				for t in &mut board.targets {
 					if Some(&t.link) == seen.as_ref() {
-						t.hosted.retain(|h| h != link);
+						t.nodes.retain(|n| *n != NodeLink::Issue(link.clone()));
 					}
-					if Some(&t.link) == new.as_ref() && !t.hosted.contains(link) {
-						t.hosted.push(link.clone());
+					if Some(&t.link) == new.as_ref() && !t.hosts(link) {
+						t.nodes.push(NodeLink::Issue(link.clone()));
 					}
 				},
 			Op::Review { reviewer, on } => {

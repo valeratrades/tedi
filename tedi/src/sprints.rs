@@ -1,15 +1,13 @@
 use clap::Args;
-use color_eyre::eyre::{Report, Result, bail, eyre};
+use color_eyre::eyre::{Result, bail, eyre};
 use jiff::Timestamp;
 use tedi_adapters::github::GithubMilestone;
-use tedi_core::RepoInfo;
+use tedi_core::{RepoInfo, Sprint, SprintError};
 use tedi_task_operations::{
-	IssueLink, MilestoneLink, TaskView,
+	TaskView,
 	clockify_tracking::{HaltArgs, ResumeArgs},
-	mv::move_issues,
 	open_interactions::SyncMode,
 	search::SearchArgs,
-	sprints::{expand_and_refresh, materialize_new_tasks, sync_embedded_issue_changes, sync_milestone_changes},
 };
 use tedi_utils::search::SearchKind;
 use v_utils::{Timeframe, TimeframeDesignator};
@@ -21,7 +19,7 @@ pub enum SprintsCommands {
 	Get {
 		sprint: SprintRef,
 	},
-	/// Edit a sprint (milestone description, or the local urgent list) in your $EDITOR
+	/// Edit a sprint (a milestone, or the local urgent list) in your $EDITOR; a planning one opens with its Bottlenecks beside it
 	Edit {
 		sprint: SprintRef,
 	},
@@ -72,7 +70,7 @@ pub enum SprintsCommands {
 pub enum SelectedOp {
 	/// Open the selected issue file in $EDITOR
 	Open,
-	/// Print the sprint's `# Must` strip and day completion, then the selected issue's blockers
+	/// Print the sprint's strip of musts and their completion, then the selected issue's blockers
 	List {
 		/// Emit Pango markup (for eww labels) instead of ANSI color.
 		#[arg(long)]
@@ -109,19 +107,19 @@ pub struct SprintsArgs {
 	#[command(subcommand)]
 	command: SprintsCommands,
 }
-/// A sprint designator: a milestone timeframe, or the local urgent list.
+/// A planning sprint, Bottlenecks, or the local urgent list.
 #[derive(Clone)]
 pub enum SprintRef {
 	Urgent,
-	Tf(Timeframe),
+	Milestone(Sprint),
 }
 impl std::str::FromStr for SprintRef {
-	type Err = Report;
+	type Err = SprintError;
 
-	fn from_str(s: &str) -> Result<Self> {
+	fn from_str(s: &str) -> Result<Self, SprintError> {
 		match s {
 			"urgent" => Ok(Self::Urgent),
-			_ => s.parse().map(Self::Tf),
+			_ => s.parse().map(Self::Milestone),
 		}
 	}
 }
@@ -129,37 +127,50 @@ impl std::str::FromStr for SprintRef {
 pub static HEALTHCHECK_REL_PATH: &str = "healthcheck.status";
 pub static SPRINT_HEADER_REL_PATH: &str = "sprint_header.md";
 
-pub async fn sprints_command(settings: &LiveSettings, args: SprintsArgs, mock: Option<tedi_task_operations::MockType>, mode: SyncMode) -> Result<()> {
-	use tedi_task_operations::sprints as ops;
+pub async fn sprints_command(settings: &LiveSettings, args: SprintsArgs, mode: SyncMode) -> Result<()> {
+	use tedi_task_operations::{selection::Selected, sprints as ops, tabs};
 
 	let yes = || settings.config().map(|c| c.yes).unwrap_or(false);
 	match args.command {
 		SprintsCommands::Get { sprint } => {
-			let raw = match sprint {
+			let mut view = match sprint {
 				SprintRef::Urgent => match std::fs::read_to_string(tedi_task_operations::selection::urgent_path()) {
-					Ok(c) => c,
+					Ok(raw) => TaskView::parse(&raw),
 					Err(e) if e.kind() == std::io::ErrorKind::NotFound => bail!("No urgent sprint. Create one with `sprints edit urgent`."),
 					Err(e) => return Err(e.into()),
 				},
-				SprintRef::Tf(tf) => {
-					let retrieved_milestones = request_milestones(settings).await?;
-					let raw = get_milestone(tf, &retrieved_milestones)?;
-					refresh_sprint_milestones(&raw).await;
-					raw
+				SprintRef::Milestone(sprint) => {
+					let milestone = ops::fetch_sprint(milestone_repo(settings)?, sprint, mode).await?;
+					if let Sprint::Planning(_) = sprint {
+						not_outdated(sprint, milestone.identity.due_on)?;
+					}
+					milestone.body.0
 				}
 			};
-			let mut view = with_must(&raw);
 			view.resolve_bare_refs(None);
 			view.remove_issue_links(&tedi_task_operations::selection::closed_links(&view)); // as an edit would open it
 			// read-only print: not worth a round-trip per referenced issue
-			let expanded = expand_and_refresh(view, false).await?;
-			println!("{expanded}");
+			println!("{}", ops::expand_and_refresh(view, false).await?.text);
 			Ok(())
 		}
-		SprintsCommands::Edit { sprint } => match sprint {
-			SprintRef::Urgent => edit_urgent(mode).await,
-			SprintRef::Tf(tf) => edit_milestone(settings, tf, mode, mock.is_some()).await,
-		},
+		SprintsCommands::Edit { sprint: SprintRef::Urgent } => tabs::edit_urgent(mode).await,
+		SprintsCommands::Edit {
+			sprint: SprintRef::Milestone(sprint),
+		} => {
+			let link = tabs::edit_sprint(milestone_repo(settings)?, sprint, mode, tedi_eval::same_day_buffer()).await?;
+			if sprint == blocker_sprint(settings)? {
+				Selected::focus(link)?;
+			}
+			// The edit is already saved above; the trailing healthcheck is informational. It hard-requires the
+			// `2w` sprint, so never let its absence abort a completed edit and make it read as discarded.
+			if mode != SyncMode::Offline
+				&& let Err(e) = healthcheck(settings).await
+			{
+				tracing::warn!("post-edit healthcheck failed (your edit was already saved): {e}");
+				eprintln!("warning: post-edit healthcheck failed (your edit was already saved): {e}");
+			}
+			Ok(())
+		}
 		SprintsCommands::Healthcheck => healthcheck(settings).await,
 		SprintsCommands::Select {
 			pattern,
@@ -172,25 +183,23 @@ pub async fn sprints_command(settings: &LiveSettings, args: SprintsArgs, mock: O
 			out,
 			top,
 		} => {
-			// A bare timeframe (`sprints select 1d`) focuses that sprint precision; anything else
-			// is an issue pattern within the currently-active sprint. The alpha-designator guard
-			// keeps numeric issue patterns (`select 2`) from parsing as a timeframe.
+			// A bare sprint (`sprints select 1d`) focuses it; anything else is an issue pattern
+			// within the currently-active sprint.
 			if mode != SyncMode::Offline
 				&& !next && !prev
 				&& !up && !down
 				&& !enter && !out
-				&& !top && let Some(p) = pattern.as_deref()
-				&& p.chars().any(|c| c.is_ascii_alphabetic())
-				&& let Ok(tf) = p.parse::<Timeframe>()
+				&& !top && let Some(sprint) = pattern.as_deref().and_then(|p| p.parse::<Sprint>().ok())
 			{
-				focus_sprint(settings, tf, yes()).await
+				Selected::focus(ops::fetch_sprint(milestone_repo(settings)?, sprint, mode).await?.link().clone())?;
+				ops::selected_show(yes()).await
 			} else {
-				ensure_selection_cache(settings, mode).await?;
+				ensure_selection(settings, mode).await?;
 				ops::select(pattern, SearchKind::try_from(search)?, next, prev, up, down, enter, out, top, yes()).await
 			}
 		}
 		SprintsCommands::Selected { op } => {
-			ensure_selection_cache(settings, mode).await?;
+			ensure_selection(settings, mode).await?;
 			match op {
 				SelectedOp::Open => ops::selected_open(mode, yes()).await,
 				SelectedOp::List { markup } => ops::selected_list(markup),
@@ -206,77 +215,39 @@ pub async fn sprints_command(settings: &LiveSettings, args: SprintsArgs, mock: O
 	}
 }
 
-/// Refresh the milestone-content cache for every milestone ref in `content` (best-effort:
-/// select ops serve stale cache; freshness is bounded by the fetching commands).
-async fn refresh_sprint_milestones(content: &str) {
-	let links = TaskView::parse(content).milestone_links();
-	if links.is_empty() {
-		return;
-	}
-	if let Err(e) = tedi_task_operations::sprints::refresh_milestone_cache(&links).await {
-		tracing::warn!("failed to refresh milestone cache: {e}");
-		eprintln!("warning: failed to refresh milestone cache: {e}");
-	}
-}
+/// Ensure an active sprint is resolvable for selection. Urgent (a local file) needs nothing; otherwise, when
+/// cold and online, fetch the lowest sprint (`blocker_tf`). When online, also fetch any milestone in the
+/// active view not stored yet. Only what is missing locally is fetched, so `--sync-on-exit` reaches it too.
+async fn ensure_selection(settings: &LiveSettings, mode: SyncMode) -> Result<()> {
+	use tedi_task_operations::{selection::Selected, sprints as ops};
 
-/// Ensure an active sprint is resolvable for selection. Urgent (a local file) needs nothing;
-/// otherwise, when cold and online, fetch the lowest normal sprint (`blocker_tf`) into the cache.
-/// When online, also fetch any milestone in the active view missing from the milestone cache.
-/// Only what is missing locally is fetched, so `--sync-on-exit` reaches it too.
-async fn ensure_selection_cache(settings: &LiveSettings, mode: SyncMode) -> Result<()> {
-	let offline = mode == SyncMode::Offline;
-	if !offline {
-		let missing = tedi_task_operations::selection::Selected::uncached_active_milestones();
-		if !missing.is_empty()
-			&& let Err(e) = tedi_task_operations::sprints::refresh_milestone_cache(&missing).await
-		{
-			tracing::warn!("failed to refresh milestone cache: {e}");
-			eprintln!("warning: failed to refresh milestone cache: {e}");
-		}
-	}
-	if offline || tedi_task_operations::selection::Selected::active_ready() {
+	if mode == SyncMode::Offline {
 		return Ok(());
 	}
-	let config = settings.config()?;
-	let blocker_tf = config.milestones.as_ref().map(|m| m.blocker_tf()).unwrap_or("1d").to_string();
-	let milestones = request_milestones(settings).await?;
-	let desc = milestones
-		.iter()
-		.find(|m| m.title == blocker_tf)
-		.and_then(|m| m.description.clone())
-		.ok_or_else(|| eyre!("No `{blocker_tf}` sprint on GitHub yet. Add issues to the '{blocker_tf}' milestone (or create an urgent list)."))?;
-	tedi_task_operations::sprints::refresh_selection_cache(&blocker_tf, &desc);
-	refresh_sprint_milestones(&desc).await;
+	let missing = Selected::uncached_active_milestones();
+	if !missing.is_empty() {
+		ops::refresh_milestones(&missing).await;
+	}
+	if !Selected::active_ready() {
+		Selected::focus(ops::fetch_sprint(milestone_repo(settings)?, blocker_sprint(settings)?, mode).await?.link().clone())?;
+	}
 	Ok(())
 }
 
-/// `sprints select <tf>` — focus a sprint precision: cache its content and show its selection
-/// (persisted, or auto-set to the top open issue).
-async fn focus_sprint(settings: &LiveSettings, tf: Timeframe, yes: bool) -> Result<()> {
-	let milestones = request_milestones(settings).await?;
-	let desc = milestones
-		.iter()
-		.find(|m| m.title == tf.to_string())
-		.and_then(|m| m.description.clone())
-		.ok_or_else(|| eyre!("Sprint '{tf}' not found on GitHub (or it has no description)."))?;
-	tedi_task_operations::sprints::refresh_selection_cache(&tf.to_string(), &desc);
-	refresh_sprint_milestones(&desc).await;
-	tedi_task_operations::sprints::selected_show(yes).await
-}
-async fn request_milestones(settings: &LiveSettings) -> Result<Vec<GithubMilestone>> {
+/// The sprint blockers are sourced from.
+fn blocker_sprint(settings: &LiveSettings) -> Result<Sprint> {
 	let config = settings.config()?;
-	let milestones_config = config
-		.milestones
-		.as_ref()
-		.ok_or_else(|| eyre!("milestones config section is required. Add [milestones] section with url to your config"))?;
-	let (owner, repo) = parse_github_repo(&milestones_config.url)?;
+	Ok(config.milestones.as_ref().map(|m| m.blocker_tf()).unwrap_or("1d").parse()?)
+}
+
+async fn request_milestones(settings: &LiveSettings) -> Result<Vec<GithubMilestone>> {
 	let client = tedi_adapters::github::client::get()?;
-	Ok(client.list_milestones(RepoInfo::new(&owner, &repo)).await?)
+	Ok(client.list_milestones(milestone_repo(settings)?).await?)
 }
 
 /// Parse owner and repo from various Github URL formats
 /// Supports: "owner/repo", "https://github.com/owner/repo", "git@github.com:owner/repo.git", etc.
-pub(crate) fn parse_github_repo(url: &str) -> Result<(String, String)> {
+fn parse_github_repo(url: &str) -> Result<(String, String)> {
 	let url = url.trim();
 
 	// Handle "owner/repo" format directly
@@ -303,9 +274,9 @@ pub(crate) fn parse_github_repo(url: &str) -> Result<(String, String)> {
 }
 
 #[derive(Clone, Debug, PartialEq, thiserror::Error)]
-#[error("Error on `{requested_tf}` milestone: {source}")]
+#[error("Error on `{sprint}` milestone: {source}")]
 struct GetMilestoneError {
-	requested_tf: Timeframe,
+	sprint: Sprint,
 	#[source]
 	source: MilestoneError,
 }
@@ -318,9 +289,6 @@ enum MilestoneError {
 	#[error("Milestone is outdated (due_on: {due_on}). Try moving it to a later date.")]
 	MilestoneOutdated { due_on: Timestamp },
 
-	#[error("Requested milestone on minute-designated timeframe (`m`). You likely meant to request Monthly (`M`).")]
-	MinuteMilestone,
-
 	#[error("Milestone not found. Here are all the existing milestones:\n{existing_milestones:?}")]
 	MilestoneNotFound { existing_milestones: Vec<String> },
 
@@ -328,46 +296,24 @@ enum MilestoneError {
 	MissingDescription,
 }
 
-fn get_milestone(tf: Timeframe, retrieved_milestones: &[GithubMilestone]) -> Result<String, GetMilestoneError> {
-	if tf.designator() == TimeframeDesignator::Minutes {
-		return Err(GetMilestoneError {
-			requested_tf: tf,
-			source: MilestoneError::MinuteMilestone,
-		});
-	}
+fn not_outdated(sprint: Sprint, due_on: Option<Timestamp>) -> Result<(), GetMilestoneError> {
+	let source = match due_on {
+		None => MilestoneError::MissingDueOn,
+		Some(due_on) if due_on + tedi_eval::same_day_buffer() < Timestamp::now() => MilestoneError::MilestoneOutdated { due_on },
+		Some(_) => return Ok(()),
+	};
+	Err(GetMilestoneError { sprint, source })
+}
 
-	match retrieved_milestones.iter().find(|m| m.title == tf.to_string()) {
-		Some(milestone) => {
-			let due_on = milestone.due_on.as_ref().ok_or(GetMilestoneError {
-				requested_tf: tf,
-				source: MilestoneError::MissingDueOn,
-			})?;
-
-			if *due_on + tedi_eval::same_day_buffer() < Timestamp::now() {
-				return Err(GetMilestoneError {
-					requested_tf: tf,
-					source: MilestoneError::MilestoneOutdated { due_on: *due_on },
-				});
-			}
-
-			match milestone.description.clone() {
-				Some(description) => Ok(description),
-				None => Err(GetMilestoneError {
-					requested_tf: tf,
-					source: MilestoneError::MissingDescription,
-				}),
-			}
-		}
-		None => {
-			let milestone_titles = retrieved_milestones.iter().map(|m| m.title.clone()).collect::<Vec<String>>();
-			Err(GetMilestoneError {
-				requested_tf: tf,
-				source: MilestoneError::MilestoneNotFound {
-					existing_milestones: milestone_titles,
-				},
-			})
-		}
-	}
+fn get_milestone(sprint: Sprint, retrieved_milestones: &[GithubMilestone]) -> Result<String, GetMilestoneError> {
+	let error = |source| GetMilestoneError { sprint, source };
+	let milestone = retrieved_milestones.iter().find(|m| Sprint::titled(&m.title) == Some(sprint)).ok_or_else(|| {
+		error(MilestoneError::MilestoneNotFound {
+			existing_milestones: retrieved_milestones.iter().map(|m| m.title.clone()).collect(),
+		})
+	})?;
+	not_outdated(sprint, milestone.due_on)?;
+	milestone.description.clone().ok_or_else(|| error(MilestoneError::MissingDescription))
 }
 
 static KEY_MILESTONES: [Timeframe; 6] = [
@@ -387,7 +333,7 @@ async fn healthcheck(settings: &LiveSettings) -> Result<()> {
 	let retrieved_milestones = request_milestones(settings).await?;
 	let results = KEY_MILESTONES
 		.iter()
-		.map(|tf| get_milestone(*tf, &retrieved_milestones))
+		.map(|tf| get_milestone(Sprint::Planning(*tf), &retrieved_milestones))
 		.collect::<Vec<Result<String, GetMilestoneError>>>();
 	{
 		let mut health = String::new();
@@ -424,422 +370,23 @@ async fn healthcheck(settings: &LiveSettings) -> Result<()> {
 		fs::write(v_utils::xdg_data_file!(SPRINT_HEADER_REL_PATH), sprint_header).unwrap();
 	}
 
-	// Cache the blocker timeframe milestone for blocker commands
-	cache_blocker_milestone(settings, &retrieved_milestones).await;
-
-	Ok(())
-}
-
-/// Cache the blocker timeframe milestone description for synchronous blocker commands,
-/// plus the contents of any milestone it references.
-async fn cache_blocker_milestone(settings: &LiveSettings, milestones: &[GithubMilestone]) {
-	let config = match settings.config() {
-		Ok(c) => c,
-		Err(_) => return,
-	};
-	let blocker_tf = config.milestones.as_ref().map(|m| m.blocker_tf()).unwrap_or("1d");
-
-	if let Some(ms) = milestones.iter().find(|m| m.title == blocker_tf)
-		&& let Some(ref desc) = ms.description
-	{
-		tedi_task_operations::sprints::refresh_selection_cache(blocker_tf, desc);
-		refresh_sprint_milestones(desc).await;
-	}
-}
-
-/// Edit the local urgent list (creating it if absent). Same expand/sync/collapse cycle as
-/// milestones, but the storage is `urgent_path()` — no GitHub involved.
-async fn edit_urgent(mode: SyncMode) -> Result<()> {
-	use std::fs;
-
-	let _lock = tedi_task_operations::selection::lock_sprint(tedi_task_operations::selection::URGENT_KEY)?;
-
-	let path = tedi_task_operations::selection::urgent_path();
-	let original = match fs::read_to_string(&path) {
-		Ok(c) => c,
-		Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-		Err(e) => return Err(e.into()),
-	};
-	let expanded = expand_and_refresh(TaskView::parse(&original), mode == SyncMode::Full).await?;
-
-	let tmp_path = tempfile::tempdir()?.keep().join("milestone_urgent.md");
-	fs::write(&tmp_path, &expanded)?;
-	eprintln!("[milestone] tmp_path: {}", tmp_path.display());
-
-	tedi_task_operations::utils::open_file(&tmp_path, None).await?;
-	let _syncing = v_utils::io::Spinner::start(); // until the edit is synced
-
-	let raw = fs::read_to_string(&tmp_path)?;
-	if raw == expanded {
-		sync_embedded_issue_changes(&raw, mode).await?; // an issue a killed run left unsynced has nothing else to carry it
-		println!("No changes made to urgent sprint");
-		return Ok(());
-	}
-	let (edited_content, moves) = match take_moves(&raw, mode) {
-		Ok(taken) => taken,
-		Err(e) => return dump_rejected(&raw, e),
-	};
-
-	let mut edited_doc = TaskView::parse(&edited_content);
-	// urgent is local-only: milestone refs live on GitHub and have no meaning here
-	let milestone_links = edited_doc.milestone_links();
-	if !milestone_links.is_empty() {
-		return dump_rejected(
-			&raw,
-			eyre!(
-				"urgent sprint cannot contain milestone refs: {}",
-				milestone_links.iter().map(|l| l.as_str()).collect::<Vec<_>>().join(", ")
-			),
-		);
-	}
-
-	if let Err(e) = sync_embedded_issue_changes(&edited_content, mode).await {
-		return dump_rejected(&raw, e);
-	}
-	if !moves.is_empty() {
-		match move_issues(&moves, None, mode).await {
-			Ok(moved) => edited_doc.relink(&moved),
-			Err(e) => return dump_rejected(&raw, e),
-		}
-	}
-
-	if let Err(e) = materialize_new_tasks(&mut edited_doc, None, mode).await {
-		return dump_rejected(&raw, e);
-	}
-
-	edited_doc.collapse_to_links();
-	edited_doc.remove_issue_links(&tedi_task_operations::selection::closed_links(&edited_doc)); // an issue closed in the buffer leaves urgent with the same save
-	let stored = edited_doc.serialize();
-	// urgent is section-less by design (ARCHITECTURE.md); a header here is inert, not an error
-	let headers: Vec<&str> = stored.lines().filter(|l| l.starts_with('#')).collect();
-	if !headers.is_empty() {
-		eprintln!("warning: urgent is a flat list — these headers carry no meaning in it: {}", headers.join(", "));
-	}
-
-	if stored.trim().is_empty() {
-		if path.exists() {
-			fs::remove_file(&path)?;
-		}
-		println!("Urgent sprint is empty; removed");
-		return Ok(());
-	}
-	fs::create_dir_all(path.parent().expect("urgent_path is always nested under data dir"))?;
-	fs::write(&path, stored)?;
-	println!("Updated urgent sprint");
-	Ok(())
-}
-
-async fn edit_milestone(settings: &LiveSettings, tf: Timeframe, mode: SyncMode, mock: bool) -> Result<()> {
-	use std::fs;
-
-	use tedi_task_operations::{
-		MilestoneBody,
-		local::{FsReader, Local},
-		open_interactions::{MergeMode, MilestoneModifier, SyncOptions, modify_and_sync_milestone, pull_milestone},
-		remote::load_remote_milestone,
-	};
-
-	let _lock = tedi_task_operations::selection::lock_sprint(&tf.to_string())?;
-
-	// GitHub unreachable → degrade the whole run to offline: every edit persists to LocalFs as a
-	// divergence from Consensus, reconciled by the next online sync of it.
-	let mode = match mode == SyncMode::Full && !mock && !tedi_adapters::github::reachable().await {
-		true => SyncMode::Offline,
-		false => mode,
-	};
-
-	// The {app}_MOCK_MILESTONE file shortcut (existing mock tests) bypasses the client + three-way model.
-	if let Ok(mock_milestone_path) = std::env::var(concat!(env!("CARGO_PKG_NAME"), "_MOCK_MILESTONE")) {
-		return edit_milestone_mock_file(&mock_milestone_path, tf, mode).await;
-	}
-
-	let (owner, repo) = milestone_repo(settings)?;
-	let repo_info = RepoInfo::new(&owner, &repo);
-	let cached_number = || {
-		Local::load_milestone_project_meta(repo_info, &FsReader)
-			.milestones
-			.iter()
-			.find(|(_, m)| m.title == tf.to_string())
-			.map(|(n, _)| *n)
-	};
-	let number = match (mode, cached_number()) {
-		(SyncMode::OnExit | SyncMode::Offline, Some(n)) => n,
-		(SyncMode::Offline, None) => bail!("Cannot edit '{tf}' offline — it was never fetched while online (no local milestone cache)."),
-		(SyncMode::Full, _) | (SyncMode::OnExit, None) => {
-			let retrieved = request_milestones(settings).await?;
-			retrieved.iter().find(|m| m.title == tf.to_string()).map(|m| m.number).ok_or_else(|| {
-				let existing = retrieved.iter().map(|m| m.title.clone()).collect::<Vec<_>>();
-				eyre!("Milestone '{tf}' not found. Existing milestones: {existing:?}")
-			})?
-		}
-	};
-	let link = MilestoneLink::parse(&format!("https://github.com/{owner}/{repo}/milestone/{number}")).expect("well-formed milestone url");
-
-	// Local-first load (mirrors `sync_milestone_changes`): a diverged local body seeds the editor so a
-	// prior deferred edit stays visible and is preserved in the new body. Remote only when never cached.
-	let mut milestone = match Local::load_milestone(&link, &FsReader)? {
-		Some(m) => m,
-		None if mode == SyncMode::Offline => bail!("Cannot edit '{tf}' offline — it was never fetched while online (no local milestone cache)."),
-		None => load_remote_milestone(&link).await?,
-	};
-	// The buffer is what the edit is reasoned against, so reconcile before rendering it — not on the
-	// way out, where whatever Github gained since would already have been typed over.
-	match mode {
-		SyncMode::Full => {
-			pull_milestone(&mut milestone, MergeMode::Normal).await?;
-			refresh_sprint_milestones(&milestone.to_string()).await;
-		}
-		SyncMode::OnExit =>
-			if let Some(conflict_file) = tedi_task_operations::conflict_resolve::check_for_existing_milestone_conflict(&link).await? {
-				bail!("Unresolved milestone conflict in {}. Resolve the markers, then re-run.", conflict_file.display());
-			},
-		SyncMode::Offline => {}
-	}
-	let milestone_number = milestone.number();
-	let original_description = milestone.to_string();
-	let mut body = milestone.body.clone();
-	let closed = tedi_task_operations::selection::closed_links(&body.0);
-	body.0.remove_issue_links(&closed); // closed by the time it's opened: they leave the sprint
-
-	let expanded_description = expand_and_refresh(with_must(&body.0.serialize()), mode == SyncMode::Full).await?;
-
-	// Use keep() so the temp file survives panics/errors.
-	let tmp_path = tempfile::tempdir()?.keep().join(format!("milestone_{tf}.md"));
-	fs::write(&tmp_path, &expanded_description)?;
-	eprintln!("[milestone] tmp_path: {}", tmp_path.display());
-
-	tedi_task_operations::utils::open_file(&tmp_path, None).await?;
-	let _syncing = v_utils::io::Spinner::start(); // until the edit is synced
-
-	let mode = match mode == SyncMode::OnExit && !mock && !tedi_adapters::github::reachable().await {
-		true => SyncMode::Offline,
-		false => mode,
-	};
-
-	let raw = fs::read_to_string(&tmp_path)?;
-	// Compare against expanded (not original) — expansion itself is not a user edit.
-	let changed = raw != expanded_description;
-	let (edited_content, moves) = match take_moves(&raw, mode) {
-		Ok(taken) => taken,
-		Err(e) => return dump_rejected(&raw, e),
-	};
-
-	let mut edited_doc = TaskView::parse(&edited_content);
-	// Unchanged too: an issue a killed run left unsynced has nothing else to carry it.
-	if let Err(e) = sync_embedded_issue_changes(&edited_content, mode).await {
-		// Transient GitHub errors are retried, probed to offline, or deferred at the sync boundary,
-		// so a bail reaching here is a genuine non-transient parse/logic failure.
-		return dump_rejected(&raw, e);
-	}
-	let moved = match moves.is_empty() {
-		true => Default::default(),
-		false => match move_issues(&moves, Some(&link), mode).await {
-			Ok(moved) => moved,
-			Err(e) => return dump_rejected(&raw, e),
-		},
-	};
-	edited_doc.relink(&moved);
-	if changed {
-		// Top-level new tasks belong to this milestone → materialize as real issues in the milestones repo.
-		if let Err(e) = materialize_new_tasks(&mut edited_doc, Some(link.clone()), mode).await {
-			return dump_rejected(&raw, e);
-		}
-		// Persist edits inside inlined milestone blocks (incl. materialized tasks) to their own nodes.
-		if let Err(e) = sync_milestone_changes(&edited_doc, mode).await {
-			return dump_rejected(&raw, e);
-		}
-		edited_doc.collapse_to_links();
-	}
-
-	// No editor change → reuse the loaded body verbatim (so `collapse(expand(x)) != x` formatting jitter
-	// can't spuriously push); the sync below still reflushes any prior divergence.
-	let new_body = if changed {
-		MilestoneBody::parse(&edited_doc.serialize(), milestone.identity.link.repo_info())
-	} else {
-		body
-	};
-
-	// Sync issue↔milestone assignments (incl. unassignments, which the set-union merge can't express).
-	// Best-effort: a failure is reconciled on the next online edit rather than throwing hands.
-	if mode != SyncMode::Offline && (changed || !closed.is_empty()) {
-		let mut orig_doc = TaskView::parse(&original_description);
-		orig_doc.resolve_bare_refs(None);
-		orig_doc.relink(&moved); // a moved issue left for another repo, not this milestone
-		let old_links = orig_doc.issue_links();
-		let new_links = new_body.0.issue_links();
-		if let Err(e) = sync_milestone_assignments(settings, milestone_number, &old_links, &new_links).await {
-			tracing::warn!("failed to sync milestone assignments (will reconcile next online edit): {e}");
-			eprintln!("warning: failed to sync milestone assignments: {e}");
-		}
-	}
-
-	// Route the top-level body through the three-way model: apply the new body, then sink to
-	// LocalFs + Consensus (+ Remote when online).
-	let milestone = modify_and_sync_milestone(milestone, mode, MilestoneModifier::BodyWrite { body: new_body }, SyncOptions::default()).await?;
-
-	// Outdated milestones get a due-date bump + an archived snapshot. Direct API, online only, best-effort.
-	// Read off the synced due date: another machine may have bumped it already.
-	let is_outdated = milestone.identity.due_on.map(|d| d + tedi_eval::same_day_buffer() < Timestamp::now()).unwrap_or(true);
-	if mode != SyncMode::Offline && is_outdated {
-		let new_date = Timestamp::now() + tf.duration();
-		println!("Milestone was outdated, updating due date to {}", new_date.strftime("%Y-%m-%d"));
-		let archive_title = format!("{}_{tf}", Timestamp::now().strftime("%Y/%m/%d"));
-		let description = milestone.to_string();
-		let (update_result, archive_result) = tokio::join!(
-			update_milestone(settings, milestone_number, &description, Some(new_date)),
-			create_closed_milestone(settings, &archive_title, &original_description)
-		);
-		if let Err(e) = update_result {
-			tracing::warn!("failed to bump milestone due date (will reconcile next online edit): {e}");
-		}
-		if let Err(e) = archive_result {
-			tracing::warn!("Failed to archive old milestone contents: {e}");
-		}
-	}
-
-	let blocker_tf = settings.config()?.milestones.as_ref().map(|m| m.blocker_tf().to_string()).unwrap_or_else(|| "1d".to_string());
-	if tf.to_string() == blocker_tf {
-		tedi_task_operations::sprints::refresh_selection_cache(&blocker_tf, &milestone.to_string());
-	}
-
-	println!("Updated milestone '{tf}'");
-
-	// The edit is already saved above; the trailing healthcheck is informational. It hard-requires the
-	// `2w` sprint, so never let its absence abort a completed edit and make it read as discarded.
-	if mode != SyncMode::Offline
-		&& let Err(e) = healthcheck(settings).await
-	{
-		tracing::warn!("post-edit healthcheck failed (your edit was already saved): {e}");
-		eprintln!("warning: post-edit healthcheck failed (your edit was already saved): {e}");
+	// blocker commands read the sprint from the store
+	let blockers = blocker_sprint(settings)?;
+	if retrieved_milestones.iter().any(|m| Sprint::titled(&m.title) == Some(blockers)) {
+		let sprint = tedi_task_operations::sprints::fetch_sprint(milestone_repo(settings)?, blockers, SyncMode::Full).await?;
+		tedi_task_operations::selection::Selected::focus(sprint.link().clone())?;
 	}
 
 	Ok(())
 }
 
-/// Cut the `!mv` requests out of an edited buffer; GitHub must be reachable to carry any of them.
-pub(crate) fn take_moves(buffer: &str, mode: SyncMode) -> Result<(String, Vec<(IssueLink, RepoInfo)>)> {
-	let (rest, moves) = tedi_core::take_moves(buffer)?;
-	if mode == SyncMode::Offline && !moves.is_empty() {
-		bail!("`!mv` needs GitHub, and this edit runs offline");
-	}
-	Ok((rest, moves))
-}
-
-/// A sectioned sprint gets an empty `# Must` when it has none, so the strip is offered without the
-/// header having to be remembered.
-fn with_must(content: &str) -> TaskView {
-	let mut doc = TaskView::parse(content);
-	doc.ensure_managed(tedi_core::ManagedSection::Must);
-	doc
-}
-
-/// Persist an editor buffer that failed a genuine (non-transient) sync/parse, and surface the path.
-pub(crate) fn dump_rejected(edited_content: &str, e: Report) -> Result<()> {
-	tedi_task_operations::utils::persist_rejected_changes(edited_content)?;
-	eprintln!("Your changes were saved to /tmp/tedi/rejected-changes.md — you can recover them from there.");
-	Err(e)
-}
-
-/// The {app}_MOCK_MILESTONE file shortcut: read/edit/write the milestone body from a plain file,
-/// bypassing the client and the three-way model. Used by the simplest mock integration tests.
-async fn edit_milestone_mock_file(mock_milestone_path: &str, tf: Timeframe, mode: SyncMode) -> Result<()> {
-	use std::fs;
-
-	let original_description = fs::read_to_string(mock_milestone_path)?;
-	let expanded_description = expand_and_refresh(with_must(&original_description), false).await?;
-
-	let tmp_path = tempfile::tempdir()?.keep().join(format!("milestone_{tf}.md"));
-	fs::write(&tmp_path, &expanded_description)?;
-	eprintln!("[milestone] tmp_path: {}", tmp_path.display());
-
-	tedi_task_operations::utils::open_file(&tmp_path, None).await?;
-
-	let edited_content = fs::read_to_string(&tmp_path)?;
-	if edited_content == expanded_description {
-		println!("No changes made to milestone '{tf}'");
-		return Ok(());
-	}
-
-	if let Err(e) = sync_embedded_issue_changes(&edited_content, mode).await {
-		return dump_rejected(&edited_content, e);
-	}
-	let mut edited_doc = TaskView::parse(&edited_content);
-	if let Err(e) = materialize_new_tasks(&mut edited_doc, None, mode).await {
-		return dump_rejected(&edited_content, e);
-	}
-	// Mock file mode never reaches the network.
-	if let Err(e) = sync_milestone_changes(&edited_doc, SyncMode::Offline).await {
-		return dump_rejected(&edited_content, e);
-	}
-
-	edited_doc.collapse_to_links();
-	fs::write(mock_milestone_path, edited_doc.serialize())?;
-	println!("Updated milestone '{tf}'");
-	Ok(())
-}
-
-async fn update_milestone(settings: &LiveSettings, milestone_number: u64, description: &str, due_on: Option<Timestamp>) -> Result<()> {
-	let (owner, repo) = milestone_repo(settings)?;
-	let client = tedi_adapters::github::client::get()?;
-	client.update_milestone(RepoInfo::new(&owner, &repo), milestone_number, description, due_on).await?;
-	Ok(())
-}
-
-//#[codestyle::skip(swappable-args)]
-/// Creates a new milestone with the given title, description, and immediately closes it
-async fn create_closed_milestone(settings: &LiveSettings, title: &str, description: &str) -> Result<()> {
-	let (owner, repo) = milestone_repo(settings)?;
-	let client = tedi_adapters::github::client::get()?;
-	client.create_milestone(RepoInfo::new(&owner, &repo), title, description, true).await?;
-	Ok(())
-}
-
-/// Resolve the (owner, repo) of the milestones repository from config.
-fn milestone_repo(settings: &LiveSettings) -> Result<(String, String)> {
+/// The milestones repository from config.
+pub(crate) fn milestone_repo(settings: &LiveSettings) -> Result<RepoInfo> {
 	let config = settings.config()?;
-	let milestones_config = config.milestones.as_ref().ok_or_else(|| eyre!("milestones config section is required"))?;
-	parse_github_repo(&milestones_config.url)
-}
-
-/// Sync milestone assignments on GitHub.
-///
-/// Compares issue links in old vs new description, then:
-/// - Assigns newly added issues to the milestone
-/// - Unassigns removed issues from the milestone
-/// Only operates on issues in the same repo as the milestone.
-async fn sync_milestone_assignments(settings: &LiveSettings, milestone_number: u64, old_links: &[IssueLink], new_links: &[IssueLink]) -> Result<()> {
-	use std::collections::HashSet;
-
-	let config = settings.config()?;
-	let milestones_config = config.milestones.as_ref().ok_or_else(|| eyre!("milestones config section is required"))?;
-	let (ms_owner, ms_repo) = parse_github_repo(&milestones_config.url)?;
-
-	let ms_repo_info: tedi_core::RepoInfo = (ms_owner.as_str(), ms_repo.as_str()).into();
-	let old_numbers: HashSet<u64> = old_links.iter().filter(|l| l.project() == ms_repo_info).map(|l| l.number()).collect();
-	let new_numbers: HashSet<u64> = new_links.iter().filter(|l| l.project() == ms_repo_info).map(|l| l.number()).collect();
-
-	let to_assign: Vec<u64> = new_numbers.difference(&old_numbers).copied().collect();
-	let to_unassign: Vec<u64> = old_numbers.difference(&new_numbers).copied().collect();
-
-	if to_assign.is_empty() && to_unassign.is_empty() {
-		return Ok(());
-	}
-
-	let client = tedi_adapters::github::client::get()?;
-	let repo = tedi_core::RepoInfo::new(&ms_owner, &ms_repo);
-
-	let mut futs = Vec::new();
-	for num in &to_assign {
-		println!("Assigning #{num} to milestone");
-		futs.push(client.set_issue_milestone(repo, *num, Some(milestone_number)));
-	}
-	for num in &to_unassign {
-		println!("Unassigning #{num} from milestone");
-		futs.push(client.set_issue_milestone(repo, *num, None));
-	}
-	for fut in futs {
-		fut.await?;
-	}
-
-	Ok(())
+	let milestones = config
+		.milestones
+		.as_ref()
+		.ok_or_else(|| eyre!("milestones config section is required. Add [milestones] section with url to your config"))?;
+	let (owner, repo) = parse_github_repo(&milestones.url)?;
+	Ok(RepoInfo::new(&owner, &repo))
 }

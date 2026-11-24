@@ -12,7 +12,6 @@ use std::{
 
 use crate::common::{ENV_MOCK_CALL_LOG, RunOutput, Seed, TestContext, drain_pipe, get_binary_path, issue_tree, parse_virtual, set_nonblocking};
 
-const ENV_MOCK_MILESTONE: &str = concat!("tedi", "_MOCK_MILESTONE");
 const ENV_MOCK_PIPE: &str = concat!("tedi", "_MOCK_PIPE");
 const ENV_MOCK_STATE: &str = concat!("tedi", "_MOCK_STATE");
 const ENV_MOCK_FAIL_GET_MILESTONE: &str = concat!("tedi", "_MOCK_FAIL_GET_MILESTONE");
@@ -26,37 +25,31 @@ const PARENT_WITH_CHILD: &str =
 pub(crate) type EditFn = Box<dyn FnOnce(&Path)>;
 
 impl TestContext {
-	/// Run `milestones edit` in mock mode against a milestone file.
-	///
-	/// Writes `milestone_content` to a file, runs the binary with `--mock milestones edit 1d`.
-	/// The editor mock (pipe) fires immediately — so the expanded content is what gets "saved".
-	/// Returns the RunOutput + the resulting milestone file content.
-	fn milestone_edit_no_changes(&self, milestone_content: &str) -> (RunOutput, String) {
-		self.milestone_edit_impl(milestone_content, &["--mock", "sprints", "edit", "1d"], None)
+	/// Run `sprints edit 1d --offline` over a stored sprint holding `body`. Returns the output and the sprint as stored after.
+	fn milestone_edit_no_changes(&self, body: &str) -> (RunOutput, String) {
+		self.milestone_edit_impl(body, None)
 	}
 
-	/// Run `milestones edit --offline` in mock mode, modifying the temp file before signaling the pipe.
-	fn milestone_edit_with_changes(&self, milestone_content: &str, edit_fn: impl FnOnce(&Path) + 'static) -> (RunOutput, String) {
-		self.milestone_edit_impl(milestone_content, &["--mock", "--offline", "sprints", "edit", "1d"], Some(Box::new(edit_fn) as EditFn))
+	/// The same, modifying the temp file before signaling the pipe.
+	fn milestone_edit_with_changes(&self, body: &str, edit_fn: impl FnOnce(&Path) + 'static) -> (RunOutput, String) {
+		self.milestone_edit_impl(body, Some(Box::new(edit_fn) as EditFn))
 	}
 
-	/// Run `milestones edit` in mock mode ONLINE (no `--offline`), so a task belonging to a milestone
-	/// is created upstream as a real Github issue (via the mock client) instead of being deferred.
-	fn milestone_edit_online(&self, milestone_content: &str, edit_fn: impl FnOnce(&Path) + 'static) -> (RunOutput, String) {
-		self.milestone_edit_impl(milestone_content, &["--mock", "sprints", "edit", "1d"], Some(Box::new(edit_fn) as EditFn))
-	}
-
-	fn milestone_edit_impl(&self, milestone_content: &str, args: &[&str], edit_fn: Option<EditFn>) -> (RunOutput, String) {
-		self.set_issues_dir_override();
-		let milestone_path = self.xdg.inner.root.join("mock_milestone.md");
-		std::fs::write(&milestone_path, milestone_content).unwrap();
-
+	fn milestone_edit_impl(&self, body: &str, edit_fn: Option<EditFn>) -> (RunOutput, String) {
+		self.focus_sprint(body, &[]);
+		self.xdg.write_config("config.toml", "github_token = \"test_token\"\n\n[milestones]\nurl = \"o/sprints\"\n");
 		let mut cmd = Command::new(get_binary_path());
-		cmd.args(args);
-		cmd.env(ENV_MOCK_MILESTONE, &milestone_path);
+		cmd.args(["--mock", "--offline", "sprints", "edit", "1d"]);
 		let out = self.drive_editor_session(cmd, edit_fn);
-		let result = std::fs::read_to_string(&milestone_path).unwrap_or_default();
-		(out, result)
+		(out, self.stored_milestone("o/sprints", 1).trim_end().to_string())
+	}
+
+	/// A stored milestone's body.
+	fn stored_milestone(&self, repo: &str, number: u64) -> String {
+		use tedi_task_operations::local::{FsReader, Local};
+		self.set_issues_dir_override();
+		let (owner, repo) = repo.split_once('/').unwrap();
+		std::fs::read_to_string(Local::find_milestone_path(tedi_task_operations::RepoInfo::new(owner, repo), number, &FsReader).expect("stored")).unwrap()
 	}
 
 	/// Run `sprints edit urgent --offline`, modifying the temp file before signaling the pipe.
@@ -68,7 +61,7 @@ impl TestContext {
 		self.drive_editor_session(cmd, Some(Box::new(edit_fn) as EditFn))
 	}
 
-	/// Drive `sprints edit` through the mock *client* (not the `MOCK_MILESTONE` file shortcut): sets
+	/// Drive `sprints edit` against the mock GitHub: sets
 	/// `MOCK_STATE` so `list`/`get_milestone` are served from the seeded milestones, optionally injects
 	/// a GitHub outage via the fail toggle, and applies `edit_fn` once the editor is parked.
 	fn milestone_client_edit(&self, args: &[&str], fail_status: Option<&str>, edit_fn: Option<EditFn>) -> RunOutput {
@@ -202,7 +195,6 @@ async fn test_expand_shorthand_ref() {
 	let (out, result) = ctx.milestone_edit_no_changes("# Sprint\n\n- o/r#10\n\nFooter");
 
 	assert!(out.status.success(), "stderr: {}", out.stderr);
-	assert!(out.stdout.contains("No changes"), "expected 'No changes' in stdout: {}", out.stdout);
 	insta::assert_snapshot!(result, @"
 	# Sprint
 
@@ -231,7 +223,6 @@ async fn test_expand_child_issue() {
 	let (out, result) = ctx.milestone_edit_no_changes("- o/r#2");
 
 	assert!(out.status.success(), "stderr: {}", out.stderr);
-	assert!(out.stdout.contains("No changes"), "expected 'No changes', got stdout: {}\nstderr: {}", out.stdout, out.stderr);
 	insta::assert_snapshot!(result, @"- o/r#2");
 }
 
@@ -271,44 +262,8 @@ async fn test_milestone_edit_adds_blockers() {
 	");
 }
 
-/// A sprint without a `# Must` section gets one, empty, at the top — and it persists on save,
-/// so the strip is offered without the user having to remember the header.
-#[tokio::test]
-async fn test_must_section_materialized_when_absent() {
-	let ctx = TestContext::build_with_preexisting_state_unsafe("");
-
-	let vi = parse_virtual("- [ ] My Issue <!-- @mock_user https://github.com/o/r/issues/10 -->\n\tbody\n");
-	ctx.local(&vi, Some(Seed::new(0))).await;
-
-	let buffer = ctx.xdg.inner.root.join("expanded_buffer.md");
-	let capture = buffer.clone();
-	let (out, milestone) = ctx.milestone_edit_with_changes("# important today\n\n- o/r#10", move |tmp_path| {
-		std::fs::copy(tmp_path, &capture).unwrap();
-		let content = std::fs::read_to_string(tmp_path).unwrap();
-		std::fs::write(tmp_path, content.trim_end().to_string() + "\n\t# Blockers\n\t- keep going\n").unwrap();
-	});
-	assert!(out.status.success(), "stderr: {}", out.stderr);
-
-	let snap_before = std::fs::read_to_string(&buffer).unwrap();
-	insta::assert_snapshot!(format!("{snap_before}\n---\n{}", milestone), @"
-	# Must
-
-	# important today
-
-	- [ ] My Issue <!-- @mock_user https://github.com/o/r/issues/10 --> <!--{{{3-->
-	  body
-	  <!--}}}1-->
-	---
-	# Must
-
-	# important today
-
-	- https://github.com/o/r/issues/10
-	");
-}
-
 /// `[.]` is a first-class state, not a checkbox tedi merely tolerates: it must survive the
-/// expand → edit → collapse → re-expand cycle of a `# Must` sprint section.
+/// expand → edit → collapse → re-expand cycle of a sprint.
 #[tokio::test]
 async fn test_partial_state_survives_sprint_edit() {
 	use crate::common::are_you_sure::read_issue_file;
@@ -320,7 +275,7 @@ async fn test_partial_state_survives_sprint_edit() {
 
 	let buffer = ctx.xdg.inner.root.join("expanded_buffer.md");
 	let capture = buffer.clone();
-	let (out, milestone) = ctx.milestone_edit_with_changes("# Must\n\n- o/r#10", move |tmp_path| {
+	let (out, milestone) = ctx.milestone_edit_with_changes("- o/r#10", move |tmp_path| {
 		std::fs::copy(tmp_path, &capture).unwrap();
 		let content = std::fs::read_to_string(tmp_path).unwrap();
 		std::fs::write(tmp_path, content.trim_end().to_string() + "\n\t# Blockers\n\t- keep going\n").unwrap();
@@ -332,14 +287,10 @@ async fn test_partial_state_survives_sprint_edit() {
 	let path =
 		tedi_task_operations::local::Local::find_by_number(tedi_task_operations::RepoInfo::new("o", "r"), 10, tedi_task_operations::local::FsReader).expect("issue #10 should still exist");
 	insta::assert_snapshot!(format!("{snap_before}\n---\n{milestone}\n---\n{}", read_issue_file(&path)), @r"
-	# Must
-
 	- \[.] Half Done <!-- @mock_user https://github.com/o/r/issues/10 --> <!--{{{3-->
 	  body
 	  <!--}}}1-->
 	---
-	# Must
-
 	- https://github.com/o/r/issues/10
 	---
 	- \[.] Half Done <!-- @mock_user https://github.com/o/r/issues/10 -->
@@ -718,35 +669,6 @@ async fn test_sprint_edit_orphan_blocker_line_is_refused_loudly() {
 	assert!(!local_issue(62).contains("orphan line"), "{}", local_issue(62));
 }
 
-/// With no milestones repo configured (mock, offline), a top-level task in an edited milestone
-/// body has no known upstream repo, so it degrades to a local virtual issue. Real usage (with a
-/// milestones repo) creates it upstream instead — see `test_inlined_milestone_task_creates_real_issue`.
-#[tokio::test]
-async fn test_milestone_edit_without_repo_falls_back_to_virtual() {
-	let ctx = TestContext::build_with_preexisting_state_unsafe("");
-
-	let (out, result_milestone) = ctx.milestone_edit_with_changes("# Sprint", |tmp_path| {
-		let content = std::fs::read_to_string(tmp_path).unwrap();
-		std::fs::write(tmp_path, content.trim_end().to_string() + "\n\n- [ ] milestone task\n  # Blockers\n  - step one\n").unwrap();
-	});
-	assert!(out.status.success(), "stderr: {}", out.stderr);
-
-	let issues_str = ctx.xdg.data_dir().join("issues").display().to_string();
-	assert_eq!(
-		result_milestone.replace(&issues_str, "<ISSUES>"),
-		"# Must\n\n# Sprint\n\n- <ISSUES>/virtual/1_-_milestone_task.md"
-	);
-
-	ctx.set_issues_dir_override();
-	let path = tedi_task_operations::local::Local::find_by_number(tedi_task_operations::RepoInfo::Virtual, 1, tedi_task_operations::local::FsReader)
-		.expect("materialized issue must be findable by number");
-	insta::assert_snapshot!(std::fs::read_to_string(&path).unwrap().replace(&issues_str, "<ISSUES>"), @"
-	- [ ] milestone task <!-- virtual <ISSUES>/virtual/1_-_milestone_task.md -->
-	  # Blockers
-	  - step one
-	");
-}
-
 /// Category headers (with an issue ref among children) and single-word childless
 /// items stay plain text — no virtual project gets created for them.
 #[tokio::test]
@@ -770,42 +692,12 @@ async fn test_urgent_edit_skips_category_headers_and_half_typed() {
 	");
 }
 
-/// Seed `sprints_selection.json` with a normal ("1d") sprint and an optional pre-set
-/// selection path, plus durable local milestone files (`(url, title, closed, content)`)
-/// — milestones are now first-class local files, not an in-memory cache.
-fn seed_selection(ctx: &TestContext, sprint_content: &str, milestones: &[(&str, &str, bool, &str)], path: &[&str]) {
-	use std::collections::BTreeMap;
-
-	let mut metas: BTreeMap<(String, String), serde_json::Map<String, serde_json::Value>> = BTreeMap::new();
-	for (url, title, closed, content) in milestones {
-		let link = tedi_task_operations::MilestoneLink::parse(url).unwrap();
-		let repo = link.repo_info();
-		let file = tedi_task_operations::local::Local::milestone_file_path(repo, link.number(), title);
-		std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-		std::fs::write(&file, format!("{}\n", content.trim_end())).unwrap();
-		metas
-			.entry((repo.owner().expect("github project").to_string(), repo.repo().to_string()))
-			.or_default()
-			.insert(link.number().to_string(), serde_json::json!({ "title": title, "state": if *closed { "Closed" } else { "Open" } }));
+/// The `1d` sprint focused at `path`, with milestones (`(url, title, closed, body)`) stored beside it.
+fn seed_selection(ctx: &TestContext, sprint: &str, milestones: &[(&str, &str, bool, &str)], path: &[&str]) {
+	for (url, title, closed, body) in milestones {
+		ctx.store_milestone(url, title, *closed, body);
 	}
-	for ((owner, name), ms) in metas {
-		let repo = tedi_task_operations::RepoInfo::new(&owner, &name);
-		let meta_path = tedi_task_operations::local::Local::milestone_project_dir(repo).join(".meta.json");
-		std::fs::write(&meta_path, serde_json::json!({ "milestones": ms }).to_string()).unwrap();
-	}
-
-	let mut paths = serde_json::Map::new();
-	if !path.is_empty() {
-		paths.insert("1d".to_string(), serde_json::json!(path));
-	}
-	ctx.xdg.write_cache(
-		"sprints_selection.json",
-		&serde_json::json!({
-			"paths": paths,
-			"normal": { "key": "1d", "content": sprint_content },
-		})
-		.to_string(),
-	);
+	ctx.focus_sprint(sprint, path);
 }
 
 /// Milestone as a select target: `--down` lands on it (output shows the cached title and
@@ -1102,7 +994,7 @@ async fn test_milestone_edit_expands_milestone_ref_and_syncs_inner_blockers() {
 	assert!(out.status.success(), "stderr: {}", out.stderr);
 
 	// bare milestone link only — inner issues never leak into assignment sync
-	assert_eq!(result_milestone, "# Must\n\n# Sprint\n\n- https://github.com/o/r/milestone/3");
+	assert_eq!(result_milestone, "# Sprint\n\n- https://github.com/o/r/milestone/3");
 
 	ctx.set_issues_dir_override();
 	let path =
@@ -1143,8 +1035,6 @@ async fn test_sprint_fold_levels_follow_nesting() {
 	let rendered = std::fs::read_to_string(&buffer).unwrap();
 	let milestone_path = rendered.split_once("](").unwrap().1.split_once(')').unwrap().0.to_string();
 	insta::assert_snapshot!(rendered.replace(&milestone_path, "<milestone_path>"), @"
-	# Must
-
 	# Sprint
 
 	- [ ] [big_feature](<milestone_path>) <!-- https://github.com/o/r/milestone/3 --> <!--{{{1-->
@@ -1240,15 +1130,17 @@ async fn test_inlined_milestone_task_creates_real_issue_and_does_not_remateriali
 	let ctx = TestContext::build_with_preexisting_state_unsafe("");
 
 	// milestone/3 starts empty; the sprint inlines it and holds a fresh task under it.
-	seed_selection(&ctx, "", &[("https://github.com/o/r/milestone/3", "big_feature", false, "")], &[]);
+	ctx.remote_milestone("o/r", 3, "big_feature", "", &[]);
+	seed_sprint_milestone(&ctx, "# Sprint\n\n- https://github.com/o/r/milestone/3", "2099-01-01T00:00:00Z", "2099-01-01T00:00:00Z");
 
-	let (out, _result) = ctx.milestone_edit_online("# Sprint\n\n- https://github.com/o/r/milestone/3\n", |tmp_path| {
+	let edit = Box::new(|tmp_path: &Path| {
 		std::fs::write(
 			tmp_path,
 			"# Sprint\n\n- [ ] big_feature <!-- https://github.com/o/r/milestone/3 -->\n  - [ ] hit 500 connections\n",
 		)
 		.unwrap();
-	});
+	}) as EditFn;
+	let out = ctx.milestone_client_edit(&["--mock", "sprints", "edit", "1d"], None, Some(edit));
 	assert!(out.status.success(), "stderr: {}", out.stderr);
 
 	ctx.set_issues_dir_override();
@@ -1299,25 +1191,6 @@ async fn test_saved_link_to_remote_only_issue_is_fetched() {
 		tedi_task_operations::local::Local::find_by_number(tedi_task_operations::RepoInfo::new("o", "r"), 19, tedi_task_operations::local::FsReader).is_some(),
 		"linked issue must be stored locally after save"
 	);
-}
-
-/// Old-format cache (flat string `selections`) loads with `normal` intact; the dropped
-/// field is silently ignored and the selection re-derives from the top open item.
-#[tokio::test]
-async fn test_selection_cache_format_upgrade() {
-	let ctx = TestContext::build_with_preexisting_state_unsafe("");
-
-	let vi = parse_virtual("- [ ] My Issue <!-- @mock_user https://github.com/o/r/issues/10 -->\n\n  # Blockers\n  - old task\n");
-	ctx.local(&vi, Some(Seed::new(0))).await;
-
-	ctx.xdg.write_cache(
-		"sprints_selection.json",
-		r#"{"selections":{"1d":"https://github.com/o/r/issues/10"},"normal":{"key":"1d","content":"- https://github.com/o/r/issues/10"}}"#,
-	);
-
-	let out = ctx.run(&["--offline", "sprints", "selected", "current"]);
-	assert!(out.status.success(), "stderr: {}", out.stderr);
-	assert!(out.stdout.contains("old task"), "stdout: {}", out.stdout);
 }
 
 /// Urgent is local-only: milestone refs are rejected and nothing is saved.
@@ -1405,7 +1278,7 @@ async fn test_milestone_edit_deletion_is_not_resurrected() {
 /// A GitHub outage during a top-level milestone-body edit must NOT throw the edit away: it degrades
 /// to a local save (LocalFs diverges from Consensus, no `rejected-changes.md`), and the next online
 /// `tme <tf>` reflushes it via the pre-open sync (LocalFs == Consensus). Drives through the mock
-/// *client* (not the `MOCK_MILESTONE` shortcut) so the real deferral path runs; the 503 toggle fails
+/// client so the real deferral path runs; the 503 toggle fails
 /// `get_milestone`, so the outage surfaces at the sync boundary inside `modify_and_sync_milestone`.
 #[tokio::test]
 async fn test_milestone_body_edit_defers_on_outage_then_reflushes() {
@@ -1751,12 +1624,15 @@ fn seed_sprint_milestone(ctx: &TestContext, body: &str, remote_due_on: &str, loc
 
 	let (repo, title, number) = (RepoInfo::new("o", "r"), "1d", 7u64);
 	let mut mock_state: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&ctx.mock_state_path).unwrap()).unwrap();
-	mock_state["milestones"] = serde_json::json!([{
+	if !mock_state["milestones"].is_array() {
+		mock_state["milestones"] = serde_json::json!([]);
+	}
+	mock_state["milestones"].as_array_mut().unwrap().push(serde_json::json!({
 		"owner": "o", "repo": "r", "number": number, "title": title, "state": "open",
 		"description": body,
 		"due_on": remote_due_on,
 		"updated_at": "2020-01-01T00:00:00Z",
-	}]);
+	}));
 	std::fs::write(&ctx.mock_state_path, mock_state.to_string()).unwrap();
 
 	let ms_file = Local::milestone_file_path(repo, number, title);
@@ -2106,6 +1982,9 @@ async fn rollover(edit_fn: Option<EditFn>) -> String {
 		ctx.remote(&parse_virtual(&vi), Some(Seed::new(-100)));
 		ctx.consensus(&parse_virtual(&vi), Some(Seed::new(-100))).await;
 	}
+	let mut mock_state: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&ctx.mock_state_path).unwrap()).unwrap();
+	mock_state["issues"].as_array_mut().unwrap().iter_mut().find(|i| i["number"] == 10).unwrap()["milestone"] = 7.into();
+	std::fs::write(&ctx.mock_state_path, mock_state.to_string()).unwrap();
 	seed_sprint_milestone(&ctx, "- https://github.com/o/r/issues/10\n- https://github.com/o/r/issues/11", PAST, PAST);
 
 	let out = ctx.milestone_client_edit(&["--mock", "sprints", "edit", "1d"], None, edit_fn);
@@ -2508,4 +2387,180 @@ async fn test_mv_rewrites_blocker_refs_elsewhere() {
 
 	assert!(local_issue(12).contains("- repo_b#1"), "{}", local_issue(12));
 	assert!(ctx.github_calls().iter().any(|c| c.starts_with("update_issue_body(o, r, 12,")), "{:?}", ctx.github_calls());
+}
+
+/// GitHub's `1d` (o/r#7) becomes `body` and is pulled into the store: what a server's puller does while the editor is open.
+fn pull_midway(ctx: &TestContext, body: &'static str) -> impl FnOnce() + 'static {
+	let milestone = serde_json::json!({
+		"owner": "o", "repo": "r", "number": 7, "title": "1d", "state": "open",
+		"description": body, "due_on": "2099-01-01T00:00:00Z", "updated_at": "2030-01-01T00:00:00Z",
+	});
+	let (edit_path, state_path) = (ctx.remote_edit_path(), ctx.mock_state_path.clone());
+	let mut pull = Command::new(get_binary_path());
+	pull.args(["--mock", "pull", "o/r"]).envs(crate::common::BINARY_ENV).envs(ctx.xdg.env_vars());
+	pull.env(concat!("tedi", "_GITHUB_TOKEN"), "test_token").env(ENV_MOCK_STATE, &ctx.mock_state_path);
+	move || {
+		let mut state: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&state_path).unwrap()).unwrap();
+		let held = state["milestones"].as_array_mut().unwrap();
+		held.retain(|m| m["number"] != 7);
+		held.push(milestone.clone());
+		std::fs::write(&state_path, state.to_string()).unwrap();
+		let out = pull.output().unwrap();
+		assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+		std::fs::write(edit_path, serde_json::json!({ "milestones": [milestone] }).to_string()).unwrap(); // the binary in the editor sees it too
+	}
+}
+
+/// A pull landing while a sprint is open in the editor: what it brought is no deletion of the user's, nor is the edit undone.
+#[rstest::rstest]
+#[case::gained("- https://github.com/o/r/issues/10\n- https://github.com/o/r/issues/11", "[10, 11, 12]")]
+#[case::dropped("nothing left", "[12]")]
+#[tokio::test]
+async fn test_pull_while_a_sprint_is_open_loses_nothing(#[case] remote: &'static str, #[case] expected: &str) {
+	let ctx = TestContext::build();
+	for n in [11, 12] {
+		ctx.remote(
+			&parse_virtual(&format!("- [ ] Issue {n} <!-- @mock_user https://github.com/o/r/issues/{n} -->\n  body\n")),
+			Some(Seed::new(-100)),
+		);
+	}
+	seed_sprint(&ctx, ISSUE_10, ISSUE_10, -100, "2099-01-01T00:00:00Z").await;
+
+	let land = pull_midway(&ctx, remote);
+	let edit = Box::new(move |tmp: &Path| {
+		land();
+		let c = std::fs::read_to_string(tmp).unwrap();
+		std::fs::write(tmp, format!("{c}\n- https://github.com/o/r/issues/12\n")).unwrap();
+	}) as EditFn;
+	let out = ctx.milestone_client_edit(&["--mock", "sprints", "edit", "1d"], None, Some(edit));
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+
+	let numbers = |text: &str| {
+		let mut all: Vec<u64> = text
+			.match_indices("issues/")
+			.map(|(i, m)| text[i + m.len()..].split(|c: char| !c.is_ascii_digit()).next().unwrap().parse().unwrap())
+			.collect();
+		all.sort_unstable();
+		format!("{all:?}")
+	};
+	assert_eq!(numbers(&ctx.stored_milestone("o/r", 7)), expected);
+	assert_eq!(numbers(&ctx.remote_milestones()), expected);
+}
+
+/// A milestone inlined in a sprint and left as it opened reverts nothing a pull brought it meanwhile.
+#[tokio::test]
+async fn test_pull_of_an_untouched_inlined_milestone_stands() {
+	let ctx = TestContext::build();
+	for n in [11, 12] {
+		ctx.remote(
+			&parse_virtual(&format!("- [ ] Issue {n} <!-- @mock_user https://github.com/o/r/issues/{n} -->\n  body\n")),
+			Some(Seed::new(-100)),
+		);
+	}
+	ctx.remote_milestone("o/r", 7, "big_feature", "- https://github.com/o/r/issues/11", &[]);
+	ctx.remote_milestone("o/r", 8, "1d", "- https://github.com/o/r/milestone/7", &[]);
+	ctx.xdg.write_config("config.toml", "github_token = \"test_token\"\n\n[milestones]\nurl = \"o/r\"\n");
+
+	let land = pull_midway(&ctx, "- https://github.com/o/r/issues/11\n- https://github.com/o/r/issues/12");
+	let edit = Box::new(move |tmp: &Path| {
+		land();
+		let c = std::fs::read_to_string(tmp).unwrap();
+		std::fs::write(tmp, format!("typed meanwhile\n\n{c}\n")).unwrap();
+	}) as EditFn;
+	let out = ctx.milestone_client_edit(&["--mock", "sprints", "edit", "1d"], None, Some(edit));
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+	insta::assert_snapshot!(format!("{}---\n{}", ctx.stored_milestone("o/r", 7), ctx.stored_milestone("o/r", 8)), @"
+	- https://github.com/o/r/issues/11
+	- https://github.com/o/r/issues/12
+	---
+	typed meanwhile
+
+	- https://github.com/o/r/milestone/7
+	");
+}
+
+/// Only a sprint holds a sprint, and only a Bottlenecks one, never round; what an edit didn't add stands.
+#[tokio::test]
+async fn test_what_may_hold_a_sprint() {
+	let ctx = TestContext::build();
+	let url = |n: u64| format!("- https://github.com/o/r/milestone/{n}");
+	ctx.store_milestone("https://github.com/o/r/milestone/1", "1d", false, "");
+	ctx.store_milestone("https://github.com/o/r/milestone/2", "Bottlenecks", false, "");
+	ctx.store_milestone("https://github.com/o/r/milestone/3", "2w", false, &url(5)); // as pulled
+	ctx.store_milestone("https://github.com/o/r/milestone/4", "v1", false, "");
+	ctx.store_milestone("https://github.com/o/r/milestone/5", "1Q", false, "");
+	ctx.store_milestone("https://github.com/p/r/milestone/2", "Bottlenecks", false, &url(2));
+	ctx.xdg.write_config("config.toml", "github_token = \"test_token\"\n\n[milestones]\nurl = \"o/r\"\n");
+	let edit = |sprint: &str, line: String| {
+		let mut cmd = Command::new(get_binary_path());
+		cmd.args(["--mock", "--offline", "sprints", "edit", sprint]);
+		let edit = Box::new(move |tmp: &Path| {
+			let c = std::fs::read_to_string(tmp).unwrap();
+			std::fs::write(tmp, format!("{c}\n{line}\n")).unwrap();
+		}) as EditFn;
+		ctx.drive_editor_session(cmd, Some(edit)).status.success()
+	};
+	assert!(edit("1d", url(2)), "a planning sprint holds Bottlenecks");
+	assert!(edit("1d", url(4)), "and any other milestone");
+	assert!(!edit("1d", url(5)), "but no planning one");
+	assert!(edit("2w", url(4)), "held before this edit, the 1Q in it stands");
+	assert!(!edit("bottlenecks", url(1)), "nothing holds a planning sprint");
+	assert!(!edit("bottlenecks", url(2)), "itself");
+	assert!(!edit("bottlenecks", "- https://github.com/p/r/milestone/2".into()), "it holds it already");
+	assert!(edit("bottlenecks", url(4)));
+	assert_eq!(ctx.stored_milestone("o/r", 2).trim_end(), url(4));
+}
+
+/// Bottlenecks pulled holding each other: the search over all they reach ends.
+#[tokio::test]
+async fn test_selection_walks_no_cycle_round() {
+	let ctx = TestContext::build();
+	let vi = parse_virtual("- [ ] Deep <!-- @mock_user https://github.com/o/r/issues/20 -->\n\n  # Blockers\n  - dig\n");
+	ctx.local(&vi, Some(Seed::new(0))).await;
+	ctx.store_milestone("https://github.com/o/sprints/milestone/2", "Bottlenecks", false, "- https://github.com/p/r/milestone/2");
+	ctx.store_milestone(
+		"https://github.com/p/r/milestone/2",
+		"Bottlenecks",
+		false,
+		"- https://github.com/o/sprints/milestone/2\n- https://github.com/o/r/issues/20",
+	);
+	ctx.focus_sprint("", &[]);
+	let out = ctx.run(&["--offline", "sprints", "select", "-e", "Deep"]);
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+	assert!(out.stdout.contains("Selected: o/r#20"), "stdout: {}", out.stdout);
+}
+
+/// `--up`/`--down` walk the sprint, then what `selected.md` holds at its bucket or further on; the rest of it and the
+/// Bottlenecks are a pattern away.
+#[tokio::test]
+async fn test_select_walks_the_sprint_and_what_is_picked_up() {
+	let ctx = TestContext::build();
+	for n in [10, 11, 12, 13, 14] {
+		let vi = parse_virtual(&format!("- [ ] Issue {n} <!-- @mock_user https://github.com/o/r/issues/{n} -->\n\n  # Blockers\n  - task {n}\n"));
+		ctx.local(&vi, Some(Seed::new(0))).await;
+	}
+	let link = |n: u64| format!("https://github.com/o/r/issues/{n}");
+	ctx.focus_sprint(&format!("- {}\n", link(10)), &[]);
+	ctx.store_milestone("https://github.com/o/sprints/milestone/2", "Bottlenecks", false, &format!("- {}", link(14)));
+	let buckets = ["triage", "selected", "in_progress"].map(|name| serde_json::json!({ "name": name, "on_enter": [], "buckets": [] }));
+	let answer = serde_json::json!({
+		"workflow": "kanban",
+		"tree": { "intake": "triage", "buckets": buckets, "rules": [] },
+		"bucket": "selected",
+		"placed": [[link(11), "selected"], [link(12), "in_progress"], [link(13), "triage"]],
+	});
+	let dir = ctx.xdg.data_dir().join("issues/__milestones__/o/sprints");
+	std::fs::write(dir.join(".selected.json"), answer.to_string()).unwrap();
+	std::fs::write(dir.join("selected.md"), format!("- {}\n\n# in_progress\n- {}\n\n# triage\n- {}\n", link(11), link(12), link(13))).unwrap();
+
+	let step = |args: &[&str]| {
+		let out = ctx.run(&[&["--offline", "sprints", "select"], args].concat());
+		assert!(out.status.success(), "{args:?}: {}", out.stderr);
+		out.stdout.lines().find_map(|l| l.strip_prefix("Selected: ")).expect("says where it landed").to_string()
+	};
+	let landed: Vec<String> = [&["--down"][..], &["--down"], &["--down"], &["--up"], &["-e", "Issue 13"], &["-e", "Issue 14"], &["--top"]]
+		.into_iter()
+		.map(step)
+		.collect();
+	assert_eq!(landed, ["o/r#11", "o/r#12", "o/r#10", "o/r#12", "o/r#13", "o/r#14", "o/r#10"]);
 }

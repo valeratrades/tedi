@@ -11,6 +11,7 @@ use super::{
 	icons::{Glyph, Icon},
 	kit::Kbd,
 	shell::glyph_of,
+	sprint_panel,
 };
 use crate::api::LibraryEdit;
 
@@ -234,13 +235,13 @@ fn hits(ctx: &Ctx) -> Vec<Hit> {
 			page: None,
 		});
 	}
-	for s in setup.sprints.iter() {
+	for s in ctx.sprints() {
 		out.push(Hit {
 			kind: "sprints",
 			glyph: Glyph::Sprint,
 			label: s.title.clone(),
-			meta: format!("{}", s.links.len()),
-			go: Go::Panel(PanelId(format!("sprint:{}", s.title))),
+			meta: format!("{} {}", s.link.repo_info().repo(), s.nodes.len()),
+			go: Go::Panel(sprint_panel(&s.link)),
 			page: None,
 		});
 	}

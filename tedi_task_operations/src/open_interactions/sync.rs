@@ -142,7 +142,7 @@ pub async fn modify_and_sync_issue(mut issue: Issue, mode: SyncMode, modifier: M
 		&& !repo_info.is_virtual()
 		&& let Err(missing) = check_repo_labels(&before, &issue).await?
 	{
-		crate::utils::persist_rejected_changes(&issue.to_string())?;
+		crate::utils::persist_rejected_changes(&[issue.to_string()])?;
 		<Issue as Sink<LocalFs>>::sink(&mut before.clone(), Some(&issue)).await?;
 		return Err(RejectedEdit(missing.into()).into());
 	}
@@ -880,7 +880,7 @@ mod types {
 						crate::utils::Position::new(line, Some(col))
 					});
 
-					crate::utils::open_file(&path, position).await?;
+					crate::utils::open_files(&[&path], position).await?;
 
 					let mtime_after = std::fs::metadata(&path)?.modified()?;
 					let file_modified = mtime_after != mtime_before;
@@ -918,7 +918,7 @@ mod types {
 							Err(e) => Err(e.into()),
 						};
 						if let Err(cause) = applied {
-							crate::utils::persist_rejected_changes(&content)?;
+							crate::utils::persist_rejected_changes(&[content.clone()])?;
 							restore()?;
 							return Err(RejectedEdit(cause).into());
 						}

@@ -15,7 +15,7 @@ use super::{
 	kit::{IconBtn, Kbd, MenuItem, Picker},
 	library::NameForm,
 	route::Go as Link,
-	workspace,
+	sprint_panel, workspace,
 };
 use crate::api::{Item, Kept, LibraryEdit, Shelf};
 
@@ -142,18 +142,21 @@ fn Shelves() -> Element {
 		})
 		.collect();
 
-	let sprints: Vec<Row> = setup
-		.sprints
+	let held = ctx.sprints();
+	let sprints: Vec<Row> = held
 		.iter()
 		.map(|s| Row {
-			glyph: if s.title == "urgent" { Glyph::Alert } else { Glyph::Sprint },
+			glyph: Glyph::Sprint,
 			label: s.title.clone(),
 			depth: 0,
-			go: Go::Panel(PanelId(format!("sprint:{}", s.title))),
+			go: Go::Panel(sprint_panel(&s.link)),
 			favorite: None,
 			own: None,
-			current: ctx.shows(&PanelId(format!("sprint:{}", s.title))),
-			meta: s.links.len().to_string(),
+			current: ctx.shows(&sprint_panel(&s.link)),
+			meta: match held.iter().filter(|o| o.title == s.title).count() {
+				1 => s.nodes.len().to_string(),
+				_ => format!("{} {}", s.link.repo_info().repo(), s.nodes.len()),
+			},
 		})
 		.collect();
 

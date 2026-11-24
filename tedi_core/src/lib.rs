@@ -36,6 +36,7 @@ pub mod locate;
 pub mod marker;
 pub mod milestone;
 pub mod rank;
+pub mod sprint;
 pub mod taskview;
 pub mod uri;
 pub mod workflow;
@@ -48,6 +49,7 @@ pub use issue::{
 pub use locate::{IssueChildren, IssueIndex, IssueIndexParseError, IssueSelector, MAX_INDEX_DEPTH, MAX_LINEAGE_DEPTH, MAX_TITLE_LENGTH};
 pub use marker::{FoldLevel, IssueMarker, Marker};
 pub use milestone::{Milestone, MilestoneBody, MilestoneIdentity, MilestoneTimestamps};
-pub use taskview::{Expansion, HomelessTask, ManagedSection, MoveError, TaskItemId, TaskView, embedded_issues, take_moves};
+pub use sprint::{Sprint, SprintError};
+pub use taskview::{Expansion, HomelessTask, MoveError, TaskItemId, TaskView, embedded_issues, take_moves};
 pub use tedi_md::{Events, Header, OwnedCodeBlockKind, OwnedEvent, OwnedTag, OwnedTagEnd};
 pub use uri::{IssueLink, IssueRef, MilestoneLink, MilestoneRef, NodeLink, RepoInfo};

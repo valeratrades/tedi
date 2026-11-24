@@ -3,124 +3,179 @@
 //! Three-way merge (local ⇄ consensus ⇄ remote) and the same recorded-conflict flow,
 //! over the simpler `Milestone` primitive (no children, no comments).
 
-use color_eyre::eyre::{Result, bail};
+use color_eyre::eyre::{Result, bail, eyre};
+use tedi_core::{Sprint, issue_file_name};
 
 use super::sync::{MergeMode, Side, SyncMode, SyncOptions, clash};
 use crate::{
 	IssueLink, Milestone, MilestoneBody, MilestoneLink,
 	conflict_resolve::{check_for_existing_milestone_conflict, record_conflict},
-	local::{Consensus, GitReader, Local, LocalFs, conflict_detect::milestone_conflict_path},
+	local::{Consensus, FsReader, GitReader, Local, LocalFs, conflict_detect::milestone_conflict_path},
 	remote::{Remote, load_remote_milestone},
 	sink::Sink,
+	workflow::Rejected,
 };
 
 /// How to modify a milestone before syncing.
 #[derive(Debug)]
 pub enum MilestoneModifier {
-	/// Open the milestone's local body file in `$EDITOR`.
+	/// Open the milestone's body in `$EDITOR`.
 	Editor,
-	/// Replace the milestone body wholesale (used by inline-edit propagation).
-	BodyWrite { body: MilestoneBody },
+	BodyWrite(BodyWrite),
 }
 
-/// Load the consensus (git HEAD) milestone, or `None` if not yet committed.
-pub async fn load_consensus_milestone(link: &MilestoneLink) -> Result<Option<Milestone>> {
-	Local::load_milestone(link, &GitReader)
+/// `body` as edited out of `rendered`: it lands over whatever is stored by then, only what the edit changed.
+#[derive(Clone, Debug)]
+pub struct BodyWrite {
+	pub rendered: MilestoneBody,
+	pub body: MilestoneBody,
 }
-
-/// Reconcile a milestone with GitHub — the milestone mirror of `pull_issues`, and the same reason:
-/// a body rendered into the editor from the local cache alone is a body the user edits blind.
-pub async fn pull_milestone(milestone: &mut Milestone, mode: MergeMode) -> Result<()> {
-	let consensus = load_consensus_milestone(&milestone.identity.link).await?;
-	if let Err(e) = sync(milestone, consensus, mode).await {
-		if !super::sync::is_transient_sync_error(&e) {
-			return Err(e);
+impl BodyWrite {
+	/// Whether `stored` changed.
+	fn apply(self, stored: &mut Milestone) -> Result<bool> {
+		let Self { rendered, body } = self;
+		if body == rendered {
+			return Ok(false);
 		}
-		tracing::warn!("GitHub transient during pre-open milestone sync — proceeding with local: {e}");
-	}
-	Ok(())
-}
-
-/// Modify a local milestone, then sync back to GitHub (parity with `modify_and_sync_issue`).
-/// Returns the milestone as it ends up stored.
-pub async fn modify_and_sync_milestone(mut milestone: Milestone, mode: SyncMode, modifier: MilestoneModifier, sync_opts: SyncOptions) -> Result<Milestone> {
-	let link = milestone.identity.link.clone();
-
-	// `BodyWrite` applies a buffer rendered earlier: a pull between that render and the apply reads as the user reverting whatever the remote gained meanwhile.
-	let pulled = mode == SyncMode::Full && matches!(modifier, MilestoneModifier::Editor);
-	if pulled {
-		pull_milestone(&mut milestone, sync_opts.take_merge_mode()).await?;
-	}
-
-	// Unpulled, the sync below is the only reconciliation — callers read the synced state even when nothing was typed.
-	if !apply_modifier(&mut milestone, modifier).await? && (pulled || mode == SyncMode::Offline) {
-		v_utils::log!("Aborted (no milestone changes made)");
-		return Ok(milestone);
-	}
-
-	match mode {
-		SyncMode::Offline => {
-			<Milestone as Sink<LocalFs>>::sink(&mut milestone, None).await?;
-			println!("Offline: milestone saved locally.");
-			Ok(milestone)
-		}
-		SyncMode::OnExit | SyncMode::Full => {
-			let mode = sync_opts.take_merge_mode();
-			let consensus = load_consensus_milestone(&link).await?;
-			if let Err(e) = sync(&mut milestone, consensus, mode).await {
-				if !super::sync::is_transient_sync_error(&e) {
-					return Err(e);
+		holds(stored, &rendered, &body)?;
+		let old = stored.clone();
+		match stored.body == rendered {
+			true => stored.body = body,
+			false => {
+				let base = Milestone { body: rendered, ..old.clone() };
+				let mut edited = Milestone { body, ..old.clone() };
+				edited.post_update(&base);
+				if concurrent_edit(&edited, &base, &old) {
+					return Err(Rejected(format!("{} ({}) changed while it was edited, in the same place", old.identity.title, old.link().as_str())).into());
 				}
-				tracing::warn!("GitHub transient during milestone sync — deferring to local: {e}");
-				eprintln!("GitHub unreachable; milestone edit saved locally (will sync next online edit).");
-				<Milestone as Sink<LocalFs>>::sink(&mut milestone, None).await?;
+				let (edited_links, old_links) = (edited.body.hosted(), old.body.hosted());
+				let dropped: Vec<IssueLink> = base.body.hosted().into_iter().filter(|l| !edited_links.contains(l) || !old_links.contains(l)).collect();
+				edited.merge(&old, Some(&base), false);
+				edited.body.0.remove_issue_links(&dropped);
+				*stored = edited;
 			}
-			Ok(milestone)
 		}
+		stored.post_update(&old);
+		Ok(stored.body != old.body)
 	}
 }
 
-async fn apply_modifier(milestone: &mut Milestone, modifier: MilestoneModifier) -> Result<bool> {
-	let old = milestone.clone();
-	let modified = match modifier {
+/// Reconcile `link` with GitHub, storing it if it isn't yet — the milestone mirror of `pull_issues`, and the same
+/// reason: a body rendered into the editor from the local cache alone is a body the user edits blind.
+pub async fn pull_milestone(link: &MilestoneLink, mode: MergeMode) -> Result<Milestone> {
+	match sync(link, None, mode).await {
+		Err(e) if super::sync::is_transient_sync_error(&e) => match Local::load_milestone(link, &FsReader)? {
+			Some(stored) => {
+				tracing::warn!("GitHub transient during pre-open milestone sync — proceeding with local: {e}");
+				Ok(stored)
+			}
+			None => Err(e),
+		},
+		synced => synced,
+	}
+}
+
+/// Modify a milestone, then sync back to GitHub (parity with `modify_and_sync_issue`).
+/// Returns the milestone as it ends up stored.
+pub async fn modify_and_sync_milestone(link: &MilestoneLink, mode: SyncMode, modifier: MilestoneModifier, sync_opts: SyncOptions) -> Result<Milestone> {
+	let stored = || Local::load_milestone(link, &FsReader)?.ok_or_else(|| eyre!("milestone {} is not stored locally", link.as_str()));
+	let edit = match modifier {
+		MilestoneModifier::BodyWrite(edit) => edit,
 		MilestoneModifier::Editor => {
-			let repo = milestone.identity.link.repo_info();
-			let path = Local::milestone_file_path(repo, milestone.number(), &milestone.identity.title);
-			std::fs::create_dir_all(path.parent().expect("milestone file always has a parent"))?;
+			let milestone = match mode {
+				SyncMode::Full => pull_milestone(link, sync_opts.take_merge_mode()).await?,
+				SyncMode::OnExit | SyncMode::Offline => stored()?,
+			};
+			let path = tempfile::tempdir()?.keep().join(issue_file_name(Some(link.number()), &milestone.identity.title, false)); // kept: an edit outlives a crash
 			std::fs::write(&path, format!("{milestone}\n"))?;
-			crate::utils::open_file(&path, None).await?;
-			let content = std::fs::read_to_string(&path)?;
-			let new_body = MilestoneBody::parse(&content, repo);
-			let changed = new_body != milestone.body;
-			milestone.body = new_body;
-			changed
-		}
-		MilestoneModifier::BodyWrite { body } => {
-			let changed = milestone.body != body;
-			milestone.body = body;
-			changed
+			crate::utils::open_files(&[&path], None).await?;
+			let body = MilestoneBody::parse(&std::fs::read_to_string(&path)?, link.repo_info());
+			// Unpulled, the sync below is the only reconciliation — callers read the synced state even when nothing was typed.
+			if body == milestone.body && mode != SyncMode::OnExit {
+				v_utils::log!("Aborted (no milestone changes made)");
+				return Ok(milestone);
+			}
+			BodyWrite { rendered: milestone.body, body }
 		}
 	};
-	if modified {
-		milestone.post_update(&old);
+
+	if mode == SyncMode::Offline {
+		return save(&mut stored()?, edit).await;
 	}
-	Ok(modified)
+	for added in added(&edit.rendered, &edit.body) {
+		if Local::find_milestone_path(added.repo_info(), added.number(), &FsReader).is_none() {
+			pull_milestone(&added, MergeMode::Normal).await?; // what it is decides whether it can be held
+		}
+	}
+	match sync(link, Some(edit.clone()), sync_opts.take_merge_mode()).await {
+		Err(e) if super::sync::is_transient_sync_error(&e) => {
+			tracing::warn!("GitHub transient during milestone sync — deferring to local: {e}");
+			eprintln!("GitHub unreachable; milestone edit saved locally (will sync next online edit).");
+			save(&mut stored()?, edit).await
+		}
+		synced => synced,
+	}
 }
 
-async fn sync(milestone: &mut Milestone, consensus: Option<Milestone>, mode: MergeMode) -> Result<()> {
-	let link = milestone.identity.link.clone();
+async fn save(milestone: &mut Milestone, edit: BodyWrite) -> Result<Milestone> {
+	let _store = crate::local::lock_store().await?;
+	if edit.apply(milestone)? {
+		<Milestone as Sink<LocalFs>>::sink(milestone, None).await?;
+		println!("Milestone saved locally.");
+	}
+	Ok(milestone.clone())
+}
+
+/// Only a sprint holds a sprint, only Bottlenecks are held, and never round. What an edit didn't add stands, whatever it is.
+fn holds(holder: &Milestone, rendered: &MilestoneBody, body: &MilestoneBody) -> Result<()> {
+	for link in added(rendered, body) {
+		let Some(held) = Local::load_milestone(&link, &FsReader)? else { continue }; // unfetched offline: what it is isn't known here
+		let refuse = |why: &str| Err(Rejected(format!("{} can't hold {}: {why}", holder.identity.title, held.identity.title)).into());
+		match (held.sprint(), holder.sprint()) {
+			(None, _) => {}
+			(Some(Sprint::Planning(_)), _) => return refuse("a planning sprint is held by nothing"),
+			(Some(Sprint::Bottlenecks), None) => return refuse("only a sprint holds a sprint"),
+			(Some(Sprint::Bottlenecks), Some(_)) => {
+				let (mut seen, mut next) = (Vec::new(), vec![link]);
+				while let Some(at) = next.pop() {
+					if at == *holder.link() {
+						return refuse("it holds it, itself or through others");
+					}
+					if !seen.contains(&at) {
+						next.extend(Local::load_milestone(&at, &FsReader)?.into_iter().flat_map(|m| m.body.0.milestone_links()));
+						seen.push(at);
+					}
+				}
+			}
+		}
+	}
+	Ok(())
+}
+
+fn added(rendered: &MilestoneBody, body: &MilestoneBody) -> Vec<MilestoneLink> {
+	let before = rendered.0.milestone_links();
+	body.0.milestone_links().into_iter().filter(|l| !before.contains(l)).collect()
+}
+
+async fn sync(link: &MilestoneLink, edit: Option<BodyWrite>, mode: MergeMode) -> Result<Milestone> {
 	tracing::info!("Syncing milestone {}", link.as_str());
-	if let Some(conflict_file) = check_for_existing_milestone_conflict(&link).await? {
+	if let Some(conflict_file) = check_for_existing_milestone_conflict(link).await? {
 		bail!("Unresolved milestone conflict in {}. Resolve the markers, then re-run.", conflict_file.display());
 	}
-	let remote = load_remote_milestone(&link).await?;
+	let remote = load_remote_milestone(link).await?;
 
-	let store = crate::local::lock_store().await?;
-	*milestone = resolve_merge(milestone.clone(), consensus, remote, mode).await?;
-	<Milestone as Sink<LocalFs>>::sink(milestone, None).await?;
-	<Milestone as Sink<Consensus>>::sink(milestone, None).await?;
-	drop(store);
-	Ok(())
+	let _store = crate::local::lock_store().await?;
+	let consensus = Local::load_milestone(link, &GitReader)?;
+	let mut milestone = Local::load_milestone(link, &FsReader)?.unwrap_or_else(|| remote.clone()); // not stored yet: GitHub's is what there is
+	if let Some(edit) = edit
+		&& edit.apply(&mut milestone)?
+	{
+		<Milestone as Sink<LocalFs>>::sink(&mut milestone, None).await?; // whatever comes of the merge, the edit is kept
+	}
+	let mut milestone = resolve_merge(milestone, consensus, remote, mode).await?;
+	<Milestone as Sink<LocalFs>>::sink(&mut milestone, None).await?;
+	<Milestone as Sink<Consensus>>::sink(&mut milestone, None).await?;
+	Ok(milestone)
 }
 
 /// Three-way resolution; a divergence is recorded for resolution in its own conflict file.

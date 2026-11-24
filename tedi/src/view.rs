@@ -1,12 +1,9 @@
-//! `tedi view`: a query over the store, opened as a task view — one `#` section per group — through
-//! the sprint flow's expand-and-fold-back. A view stores nothing: only the issues it expanded change.
+//! `tedi view`: a query over the store, opened as a task view — one `#` section per group.
 
-use color_eyre::eyre::{Result, bail, eyre};
+use color_eyre::eyre::{Result, eyre};
 use tedi_task_operations::{
-	TaskView,
 	board::{self, Board, GroupBy, Query},
 	open_interactions::SyncMode,
-	sprints::{expand_and_refresh, materialize_new_tasks, sync_embedded_issue_changes},
 };
 
 use crate::config::LiveSettings;
@@ -60,28 +57,5 @@ pub async fn view_command(settings: &LiveSettings, args: ViewArgs, mode: SyncMod
 		return Ok(());
 	}
 
-	let expanded = expand_and_refresh(TaskView::parse(&content), mode == SyncMode::Full).await?;
-	let tmp_path = tempfile::tempdir()?.keep().join("view.md");
-	std::fs::write(&tmp_path, &expanded)?;
-	eprintln!("[view] tmp_path: {}", tmp_path.display());
-	tedi_task_operations::utils::open_file(&tmp_path, None).await?;
-	let _syncing = v_utils::io::Spinner::start(); // until the edit is synced
-
-	let raw = std::fs::read_to_string(&tmp_path)?;
-	if raw == expanded {
-		return sync_embedded_issue_changes(&raw, mode).await; // an issue a killed run left unsynced has nothing else to carry it
-	}
-	let fold_back = async {
-		let (edited, moves) = crate::sprints::take_moves(&raw, mode)?;
-		if !moves.is_empty() {
-			bail!("`!mv` repoints the sprints that host an issue; move it from one of those, or with `tedi open`");
-		}
-		sync_embedded_issue_changes(&edited, mode).await?;
-		materialize_new_tasks(&mut TaskView::parse(&edited), None, mode).await?;
-		Ok(())
-	};
-	match fold_back.await {
-		Ok(()) => Ok(()),
-		Err(e) => crate::sprints::dump_rejected(&raw, e),
-	}
+	tedi_task_operations::tabs::edit_view(&content, mode).await
 }

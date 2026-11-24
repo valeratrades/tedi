@@ -8,16 +8,16 @@ pub use v_utils::io::file_open::{Client as OpenClient, OpenMode, Position};
 /// Environment variable name for mock pipe (integration tests)
 const ENV_MOCK_PIPE: &str = "tedi_MOCK_PIPE";
 const REJECTED_CHANGES_PATH: &str = "/tmp/tedi/rejected-changes.md";
-/// Open a file in editor.
+/// Open files in editor together, a tab each where it has them.
 ///
 /// Behavior depends on environment:
 /// - If `{PKG_NAME}_MOCK_PIPE` env var is set: waits for any data on the named pipe, then returns.
 ///   This allows integration tests to control when the "editor" closes.
 /// - Otherwise: opens with $EDITOR normally.
 ///
-/// If `position` is provided, the editor will open at the specified line and column (if supported).
+/// If `position` is provided, the editor will open at the specified line and column of the first (if supported).
 #[instrument(level = "debug")]
-pub async fn open_file<P: AsRef<Path> + std::fmt::Debug>(path: P, position: Option<Position>) -> Result<()> {
+pub async fn open_files<P: AsRef<Path> + std::fmt::Debug>(paths: &[P], position: Option<Position>) -> Result<()> {
 	// Check for integration test pipe-based mock mode
 	if let Ok(pipe_path) = std::env::var(ENV_MOCK_PIPE) {
 		if let Some(pos) = &position {
@@ -44,7 +44,7 @@ pub async fn open_file<P: AsRef<Path> + std::fmt::Debug>(path: P, position: Opti
 		debug!("Opening file at position: {pos:?}");
 		client = client.at(pos);
 	}
-	client.open(path).await?;
+	client.open_tabs(paths).await?;
 	Ok(())
 }
 /// Run fd (find alternative) with the given arguments.
@@ -78,8 +78,8 @@ pub fn rg(args: &[&str], dir: &Path) -> Result<String> {
 }
 /// Persist rejected user-edited content to a known path for recovery.
 /// Call this before propagating a parse/validation error on user-edited content.
-pub fn persist_rejected_changes(content: &str) -> std::io::Result<()> {
+pub fn persist_rejected_changes(buffers: &[String]) -> std::io::Result<()> {
 	let path = Path::new(REJECTED_CHANGES_PATH);
 	std::fs::create_dir_all(path.parent().expect("REJECTED_CHANGES_PATH is absolute"))?;
-	std::fs::write(path, content)
+	std::fs::write(path, buffers.join("\n"))
 }

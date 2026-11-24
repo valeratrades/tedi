@@ -32,20 +32,12 @@ pub struct Setup {
 	pub workflows: BTreeMap<String, Workflow>,
 	pub scopes: BTreeMap<String, Scope>,
 	pub views: Vec<View>,
-	pub sprints: Vec<Sprint>,
 	/// The team's columns, offered beside each viewer's own.
 	pub columns: BTreeMap<String, Columns>,
 	/// The team's workspaces, offered beside each viewer's own.
 	pub workspaces: BTreeMap<String, Arrangement>,
 	/// The team's, as an address names them.
 	pub ids: BTreeMap<String, Item>,
-}
-
-/// An open sprint milestone: its task view's issues, in order.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub struct Sprint {
-	pub title: String,
-	pub links: Vec<IssueLink>,
 }
 
 /// One viewer's board as they left it, and the filters and arrangements they keep, each kept by

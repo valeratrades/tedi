@@ -1092,6 +1092,7 @@ pub use local_path::{LocalPath, LocalPathError, LocalPathErrorKind, LocalPathRes
 
 mod fs_sink;
 mod milestone;
+mod picked;
 mod states;
 //==============================================================================
 // Error Types
@@ -1105,6 +1106,7 @@ use color_eyre::eyre::{Report, Result, bail, eyre};
 pub use consensus::Consensus;
 pub use fs_sink::{LocalFs, LocalFsSinkError};
 pub use milestone::{MilestoneMeta, MilestoneProjectMeta};
+pub use picked::{Picked, Placements};
 use serde::{Deserialize, Serialize};
 pub use states::States;
 use tedi_utils::search::Candidate;

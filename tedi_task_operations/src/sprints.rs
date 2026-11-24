@@ -2,8 +2,8 @@
 //! back into their own files, drive the active sprint's selection (`select`), and the
 //! per-selected-issue operations (`selected add/pop/set/list/open/resume/halt`) plus `search`.
 //!
-//! These are the config-free halves of the sprint command — the bin owns config,
-//! CLI dispatch, and the GitHub milestone-metadata calls.
+//! These are the config-free halves of the sprint command — the bin owns config and CLI dispatch;
+//! editing is [`crate::tabs`]'.
 
 use std::{
 	collections::HashMap,
@@ -11,15 +11,19 @@ use std::{
 };
 
 use color_eyre::eyre::{Result, bail, eyre};
+use tedi_core::Sprint;
 use tedi_utils::search::{Candidate, SearchKind};
 
 use crate::{
-	CloseState, HollowIssue, Issue, IssueIdentity, IssueIndex, IssueLink, LazyIssue, Milestone, MilestoneLink, NodeLink, RepoInfo, TaskView, VirtualIssue,
+	CloseState, HollowIssue, Issue, IssueIdentity, IssueIndex, IssueLink, LazyIssue, Milestone, MilestoneBody, MilestoneLink, NodeLink, RepoInfo, TaskView, VirtualIssue,
 	clockify_tracking::{self, HaltArgs, ResumeArgs},
-	local::{Consensus, FsReader, GitReader, Local, LocalFs},
-	open_interactions::{MergeMode, MilestoneModifier, Modifier, SyncMode, SyncOptions, fetch_and_store_missing, modify_and_sync_issue, modify_and_sync_milestone, pull_issues, unsynced},
-	remote::{Remote, load_remote_milestone},
-	selection::{Landing, Selected},
+	local::{Consensus, FsReader, Local, LocalFs},
+	open_interactions::{
+		BodyWrite, MergeMode, MilestoneModifier, Modifier, SyncMode, SyncOptions, fetch_and_store_missing, modify_and_sync_issue, modify_and_sync_milestone, pull_issues, pull_milestone,
+		unsynced,
+	},
+	remote::Remote,
+	selection::{Landing, Selected, URGENT_KEY},
 	sink::Sink,
 };
 
@@ -34,27 +38,23 @@ use crate::{
 /// be built from current state — anything typed on top of a superseded body folds back as a
 /// deletion of everything Github gained since. A read-only view (`search`) keeps it off.
 ///
-pub async fn expand_and_refresh(mut doc: TaskView, pull: bool) -> Result<String> {
+pub async fn expand_and_refresh(mut doc: TaskView, pull: bool) -> Result<Expanded> {
 	doc.resolve_bare_refs(None);
 
-	let mut milestones: Vec<(String, Milestone, TaskView)> = Vec::new();
+	let mut milestones: Vec<Milestone> = Vec::new();
 	for link in doc.milestone_links() {
-		let url = link.as_str().to_string();
-		if milestones.iter().any(|(u, ..)| *u == url) {
+		if milestones.iter().any(|m| *m.link() == link) {
 			continue;
 		}
 		match Local::load_milestone(&link, &FsReader)? {
-			Some(milestone) => {
-				let inner = milestone.body.0.clone();
-				milestones.push((url, milestone, inner));
-			}
-			None => tracing::warn!("milestone {url} not stored locally; leaving as bare link (run `sprints get/edit` online to fetch it)"),
+			Some(milestone) => milestones.push(milestone),
+			None => tracing::warn!("milestone {} not stored locally; leaving as bare link (run `sprints get/edit` online to fetch it)", link.as_str()),
 		}
 	}
 
 	let mut links = doc.issue_links();
-	for (_, _, inner) in &milestones {
-		links.extend(inner.issue_links());
+	for milestone in &milestones {
+		links.extend(milestone.body.0.issue_links());
 	}
 
 	let mut seen = std::collections::HashSet::new();
@@ -76,48 +76,58 @@ pub async fn expand_and_refresh(mut doc: TaskView, pull: bool) -> Result<String>
 		.map(|(link, issue)| (link.to_string(), tedi_core::Expansion::Issue(issue.to_string())))
 		.collect();
 
-	for (url, milestone, inner) in milestones {
+	for milestone in &milestones {
+		let url = milestone.link().as_str().to_string();
 		let checkbox = if milestone.is_closed() { 'x' } else { ' ' };
 		// markdown-link title → `gf`-jumpable to the milestone's own local file from the edit buffer;
 		// the marker still carries identity, so this collapses back to the bare URL on save.
 		let abspath = Local::milestone_file_path(milestone.identity.link.repo_info(), milestone.number(), &milestone.identity.title);
 		let head = format!("- [{checkbox}] [{}]({}) <!-- {url} -->", milestone.identity.title, abspath.display());
-		expansions.insert(url, tedi_core::Expansion::Milestone { head, body: inner });
+		let body = milestone.body.0.clone();
+		expansions.insert(url, tedi_core::Expansion::Milestone { head, body });
 	}
 
-	Ok(doc.render(&expansions))
+	Ok(Expanded {
+		text: doc.render(&expansions),
+		milestones: milestones.into_iter().map(|m| (m.identity.link, m.body)).collect(),
+	})
 }
 
-/// Fetch each milestone (deduped) and store it as a durable local file, along with its
-/// hosted issues, so navigation and inline expansion resolve offline. A local copy carrying
-/// unsynced edits is left untouched (it syncs on the next milestone edit).
-pub async fn refresh_milestone_cache(links: &[MilestoneLink]) -> Result<()> {
+/// A task view as its buffer opens.
+pub struct Expanded {
+	pub text: String,
+	/// The milestones inlined in it, as they were then.
+	milestones: Vec<(MilestoneLink, MilestoneBody)>,
+}
+
+/// Reconcile each milestone with GitHub, and store the issues it hosts, so navigation and inline
+/// expansion resolve offline. One that can't be is said so, and stays as stored.
+pub async fn refresh_milestones(links: &[MilestoneLink]) {
 	let mut seen = std::collections::HashSet::new();
-	let links: Vec<&MilestoneLink> = links.iter().filter(|l| seen.insert(l.as_str().to_string())).collect();
-	let remotes: Vec<Milestone> = futures::future::try_join_all(links.iter().map(|l| load_remote_milestone(l))).await?;
-
-	let hosted: Vec<IssueLink> = remotes.iter().flat_map(|m| m.body.hosted()).filter(|l| !matches!(l, IssueLink::Virtual(_))).collect();
-	fetch_and_store_missing(&hosted).await;
-
-	for (link, remote) in links.into_iter().zip(remotes) {
-		let local = Local::load_milestone(link, &FsReader)?;
-		let consensus = Local::load_milestone(link, &GitReader)?;
-		let has_unsynced_local = match (&local, &consensus) {
-			(Some(l), Some(c)) => l.to_string() != c.to_string(),
-			(Some(_), None) => true,
-			_ => false,
-		};
-		if has_unsynced_local {
-			tracing::debug!("milestone {} has unsynced local edits; keeping local copy until next sync", link.as_str());
-		} else {
-			let mut milestone = remote;
-			let store = crate::local::lock_store().await?;
-			<Milestone as Sink<LocalFs>>::sink(&mut milestone, None).await?;
-			<Milestone as Sink<Consensus>>::sink(&mut milestone, None).await?;
-			drop(store);
+	let mut hosted: Vec<IssueLink> = Vec::new();
+	for link in links.iter().filter(|l| seen.insert(l.as_str())) {
+		match pull_milestone(link, MergeMode::Normal).await {
+			Ok(milestone) => hosted.extend(milestone.body.hosted().into_iter().filter(|l| !matches!(l, IssueLink::Virtual(_)))),
+			Err(e) => eprintln!("warning: {} stays as stored: {e:#}", link.as_str()),
 		}
 	}
-	Ok(())
+	fetch_and_store_missing(&hosted).await;
+}
+
+/// `repo`'s `sprint`, reconciled with GitHub along with what it references; Offline, as stored.
+pub async fn fetch_sprint(repo: RepoInfo, sprint: Sprint, mode: SyncMode) -> Result<Milestone> {
+	if mode == SyncMode::Offline {
+		let stored = Local::stored_sprint(repo, sprint).ok_or_else(|| eyre!("'{sprint}' of {repo} was never fetched while online"))?;
+		return Ok(Local::load_milestone(&stored, &FsReader)?.expect("listed in its project's meta"));
+	}
+	let listed = crate::github::client::get()?.list_milestones(repo).await?;
+	let number = listed.iter().find(|m| Sprint::titled(&m.title) == Some(sprint)).map(|m| m.number).ok_or_else(|| {
+		let titles: Vec<&str> = listed.iter().map(|m| m.title.as_str()).collect();
+		eyre!("no milestone '{sprint}' in {repo}. It has: {titles:?}")
+	})?;
+	let milestone = pull_milestone(&MilestoneLink::in_project(repo, number), MergeMode::Normal).await?;
+	refresh_milestones(&milestone.body.0.milestone_links()).await;
+	Ok(milestone)
 }
 
 /// Materialize every item of an edited task view: linked refs not stored locally are fetched,
@@ -199,46 +209,42 @@ pub async fn materialize_new_tasks(doc: &mut TaskView, ambient: Option<Milestone
 	Ok(created)
 }
 
-/// Propagate edits made inside inlined milestone blocks of a sprint back to each milestone's
-/// own durable store + upstream. The general form of the old materialize-only push: every
-/// inlined milestone whose body changed is routed through `modify_and_sync_milestone`, so
-/// materialized tasks (and any body edit) persist and never re-materialize.
-pub async fn sync_milestone_changes(doc: &TaskView, mode: SyncMode) -> Result<()> {
-	for (link, body_text) in doc.embedded_milestone_bodies() {
-		let new_body = crate::MilestoneBody::parse(&body_text, link.repo_info());
-
-		let milestone = match Local::load_milestone(&link, &FsReader)? {
-			Some(m) => m,
-			None if mode == SyncMode::Offline => {
-				tracing::warn!("milestone {} not stored locally; its inline edits will sync on the next online edit", link.as_str());
-				continue;
-			}
-			None => load_remote_milestone(&link).await?,
-		};
-
-		if milestone.body == new_body {
+/// Propagate edits made inside the milestone blocks `expanded` inlined back to each milestone's
+/// own durable store + upstream, as any body edit, so materialized tasks persist and never
+/// re-materialize. A block left as it opened is nobody's edit.
+pub async fn sync_milestone_changes(expanded: &Expanded, edited: &TaskView, mode: SyncMode) -> Result<()> {
+	let opened = TaskView::parse(&expanded.text).embedded_milestone_bodies();
+	for (link, text) in edited.embedded_milestone_bodies() {
+		if opened.iter().any(|(l, t)| *l == link && *t == text) {
 			continue;
 		}
-
+		if mode == SyncMode::Offline && Local::load_milestone(&link, &FsReader)?.is_none() {
+			tracing::warn!("milestone {} not stored locally; its inline edits will sync on the next online edit", link.as_str());
+			continue;
+		}
+		let write = BodyWrite {
+			rendered: expanded.milestones.iter().find(|(l, _)| *l == link).map(|(_, body)| body.clone()).unwrap_or_default(), // expanded by hand: all of it is the edit
+			body: MilestoneBody::parse(&text, link.repo_info()),
+		};
 		println!("Syncing milestone changes for {}", link.as_str());
-		modify_and_sync_milestone(milestone, mode, MilestoneModifier::BodyWrite { body: new_body }, SyncOptions::default()).await?;
+		modify_and_sync_milestone(&link, mode, MilestoneModifier::BodyWrite(write), SyncOptions::default()).await?;
 	}
 	Ok(())
 }
-/// Fold every issue block edited inside a sprint buffer back into its own issue, in full —
-/// the sprint file stores only links, so anything not carried here has no second home.
+/// Fold every issue block edited inside buffers opened together back into its own issue, in full —
+/// a task view stores only links, so anything not carried here has no second home.
 ///
 /// Each block is parsed by the same `VirtualIssue::parse` an issue's own file goes through, so a
 /// block that doesn't compose (stray text under `# Blockers`, say) is a loud error, not a drop.
 ///
-/// An issue whose edit fails is left as stored and warned about, the buffer kept in rejected-changes;
+/// An issue whose edit fails is left as stored and warned about, the buffers kept in rejected-changes;
 /// the other issues still land.
-pub async fn sync_embedded_issue_changes(content: &str, mode: SyncMode) -> Result<()> {
+pub async fn sync_embedded_issue_changes(buffers: &[String], mode: SyncMode) -> Result<()> {
 	let mut rejected: Vec<(IssueLink, color_eyre::Report)> = Vec::new();
-	// An issue can be rendered several times in one buffer (held by the sprint *and* by an inlined
-	// milestone). Grouping is what keeps the untouched copies from reverting the edited one.
+	// An issue can be rendered several times (held by the sprint *and* by an inlined milestone, or in
+	// two buffers). Grouping is what keeps the untouched copies from reverting the edited one.
 	let mut grouped: Vec<(IssueLink, Vec<VirtualIssue>)> = Vec::new();
-	for (link, block) in tedi_core::embedded_issues(content) {
+	for (link, block) in buffers.iter().flat_map(|b| tedi_core::embedded_issues(b)) {
 		let path = match &link {
 			IssueLink::Virtual(p) => p.clone(),
 			IssueLink::Owned(_) => PathBuf::from(format!("<sprint block for {link}>")),
@@ -358,7 +364,7 @@ pub async fn sync_embedded_issue_changes(content: &str, mode: SyncMode) -> Resul
 	}
 
 	if !rejected.is_empty() {
-		crate::utils::persist_rejected_changes(content)?;
+		crate::utils::persist_rejected_changes(buffers)?;
 		for (link, e) in &rejected {
 			eprintln!("warning: {link} was not saved: {e:#}");
 		}
@@ -388,15 +394,8 @@ pub async fn search(query: &str, kind: SearchKind) -> Result<()> {
 		return Ok(());
 	}
 	let content: String = links.iter().map(|l| format!("- {l}\n")).collect();
-	println!("{}", expand_and_refresh(TaskView::parse(&content), false).await?);
+	println!("{}", expand_and_refresh(TaskView::parse(&content), false).await?.text);
 	Ok(())
-}
-//#[codestyle::skip(swappable-args)]
-/// Refresh the cached lowest-normal-sprint content (called by the bin after `edit`/`healthcheck`).
-pub fn refresh_selection_cache(key: &str, content: &str) {
-	if let Err(e) = Selected::refresh_normal(key, content) {
-		tracing::warn!("failed to refresh selection cache: {e}");
-	}
 }
 //#[codestyle::skip(swappable-args)]
 /// `sprints select [pattern] [--next|--prev|--up|--down|--in|--out|--top]` — change the active sprint's selection.
@@ -441,8 +440,7 @@ pub async fn selected_show(yes: bool) -> Result<()> {
 pub async fn selected_open(mode: SyncMode, yes: bool) -> Result<()> {
 	match Selected::load().current_node().map_err(|e| eyre!("{e}"))? {
 		Some(NodeLink::Milestone(ml)) => {
-			let milestone = Local::load_milestone(&ml, &FsReader)?.ok_or_else(|| eyre!("milestone {} is not stored locally", ml.as_str()))?;
-			modify_and_sync_milestone(milestone, mode, MilestoneModifier::Editor, SyncOptions::default()).await?;
+			modify_and_sync_milestone(&ml, mode, MilestoneModifier::Editor, SyncOptions::default()).await?;
 		}
 		Some(NodeLink::Issue(link)) => {
 			let path = Local::find_by_number(link.project(), link.number(), FsReader).ok_or_else(|| eyre!("issue #{} not found locally", link.number()))?;
@@ -455,12 +453,12 @@ pub async fn selected_open(mode: SyncMode, yes: bool) -> Result<()> {
 	retrack_if_changed(yes).await?;
 	Ok(())
 }
-/// `sprints selected list` — print the active sprint's `# Must` strip (one box per item plus
-/// the day's completion), then the selected issue's blockers.
+/// `sprints selected list` — print the active sprint's strip (one box per must plus
+/// the period's completion), then the selected issue's blockers.
 ///
 /// `markup`: emit Pango markup for eww labels (GTK, not a terminal) instead of ANSI color.
 pub fn selected_list(markup: bool) -> Result<()> {
-	if let Some(strip) = must_strip(markup) {
+	if let Some(strip) = must_strip(markup)? {
 		println!("{strip}\n---");
 	}
 	let (_, path) = selected_link_path()?;
@@ -534,27 +532,26 @@ fn overlay_states(issue: &mut Issue, states: &HashMap<IssueIndex, CloseState>) {
 	}
 }
 
-/// One `[state] title` line per `# Must` item of the active sprint, in document order, followed
-/// by the day's completion. `None` when the active sprint has no `# Must` section — the feature
-/// isn't in use, so nothing is prefixed.
+/// One `[state] title` line per must of the active sprint, in document order, followed by its
+/// completion. `None` for urgent, which is no collection of musts, and for an empty sprint.
 ///
 /// Completion weighs `[x]` full and `[.]` half over the items that are still on the table; `[-]`
 /// and `[N]` were taken off it, so they leave the denominator entirely. With nothing left in it
-/// there is no day completion to report and the line is omitted.
-fn must_strip(markup: bool) -> Option<String> {
-	let active = Selected::load().active()?;
-	let musts = active.view.managed_nodes(tedi_core::ManagedSection::Must);
-	if musts.is_empty() {
-		return None;
+/// there is no completion to report and the line is omitted.
+fn must_strip(markup: bool) -> Result<Option<String>> {
+	let Some(active) = Selected::load().active().filter(|a| a.key != URGENT_KEY) else {
+		return Ok(None);
+	};
+	let mut states: Vec<(crate::CloseState, String)> = Vec::new();
+	for node in active.view.nodes() {
+		states.extend(match node {
+			NodeLink::Issue(link) => crate::selection::link_local(&link).map(|vi| (vi.contents.state, vi.contents.title)),
+			NodeLink::Milestone(link) => Local::load_milestone(&link, &FsReader)?.map(|m| (m.identity.state, m.identity.title)),
+		});
 	}
-
-	let states: Vec<(crate::CloseState, String)> = musts
-		.iter()
-		.filter_map(|node| match node {
-			NodeLink::Issue(link) => crate::selection::link_local(link).map(|vi| (vi.contents.state, vi.contents.title)),
-			NodeLink::Milestone(_) => None,
-		})
-		.collect();
+	if states.is_empty() {
+		return Ok(None);
+	}
 
 	let mut out = String::new();
 	for (state, title) in &states {
@@ -569,10 +566,10 @@ fn must_strip(markup: bool) -> Option<String> {
 		let done = f64::from(counted.iter().sum::<u32>()) / f64::from(2 * counted.len() as u32);
 		out.push_str(&format!("{}%", (done * 100.).round()));
 	}
-	Some(out.trim_end_matches('\n').to_string())
+	Ok(Some(out.trim_end_matches('\n').to_string()))
 }
 
-/// A Must item's contribution to the day's completion, counted in halves so a `[.]` is exact.
+/// A must's contribution to the completion, counted in halves so a `[.]` is exact.
 /// `None` — the item is off the table and leaves the denominator with it.
 fn weight(state: &crate::CloseState) -> Option<u32> {
 	use crate::CloseState as S;

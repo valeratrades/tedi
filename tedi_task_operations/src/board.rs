@@ -7,15 +7,15 @@ use std::{
 
 use color_eyre::eyre::{Result, bail, eyre};
 pub use tedi_core::board::*;
-use tedi_core::{PrState, PullRequest, conflict::CommentEdit, workflow::State};
+use tedi_core::{PrState, PullRequest, Sprint, conflict::CommentEdit, workflow::State};
 
 use crate::{
-	CloseState, Issue, IssueIndex, IssueLink, IssueSelector, LazyIssue, Milestone, MilestoneLink, RepoInfo,
+	CloseState, Issue, IssueIndex, IssueLink, IssueSelector, LazyIssue, Milestone, MilestoneLink, RepoInfo, TaskView,
 	conflict_resolve::{FieldEdit, check_for_existing_conflict},
 	labels::Scheme,
 	local::{FsReader, GitReader, Local, LocalError, LocalIssueSource, LocalPath, States, lock_store},
-	open_interactions::{MergeMode, MilestoneModifier, Modifier, SyncMode, SyncOptions, modify_and_sync_issue, modify_and_sync_milestone, pull_milestone},
-	pull::{is_sprint, pull_milestones},
+	open_interactions::{BodyWrite, MergeMode, MilestoneModifier, Modifier, SyncMode, SyncOptions, modify_and_sync_issue, modify_and_sync_milestone, pull_milestone},
+	pull::pull_milestones,
 	rank::{Task, rank},
 	workflow::{Rejected, Workflows},
 };
@@ -82,7 +82,7 @@ pub async fn set_milestone(link: &IssueLink, repo: RepoInfo, seen: Option<&Miles
 	}
 	let (hosting, rest): (Vec<Milestone>, Vec<Milestone>) = Local::stored_milestones()?
 		.into_iter()
-		.filter(|m| offered(m) && m.identity.link.repo_info() == repo)
+		.filter(|m| !m.is_closed() && !matches!(m.sprint(), Some(Sprint::Planning(_))) && m.identity.link.repo_info() == repo) // what is planned is its own file's to say
 		.partition(|m| m.body.hosted().contains(link));
 	let is_in = |at: Option<&MilestoneLink>| match at {
 		Some(at) => hosting.iter().any(|m| m.link() == at),
@@ -100,21 +100,27 @@ pub async fn set_milestone(link: &IssueLink, repo: RepoInfo, seen: Option<&Miles
 		),
 		_ => None,
 	};
-	for mut left in hosting.into_iter().filter(|m| Some(m.link()) != new) {
-		left.body.0.remove_issue_links(std::slice::from_ref(link));
-		write(left, mode).await?;
+	let write = async |milestone: &Milestone, change: &dyn Fn(&mut TaskView)| {
+		let mut body = milestone.body.clone();
+		change(&mut body.0);
+		let write = BodyWrite {
+			rendered: milestone.body.clone(),
+			body,
+		};
+		modify_and_sync_milestone(milestone.link(), mode, MilestoneModifier::BodyWrite(write), SyncOptions::default()).await
+	};
+	for left in hosting.iter().filter(|m| Some(m.link()) != new) {
+		write(left, &|body| body.remove_issue_links(std::slice::from_ref(link))).await?;
 	}
-	let Some(mut into) = into else { return Ok(()) };
+	let Some(into) = into else { return Ok(()) };
 	match mode == SyncMode::Offline || link.project() != repo {
-		true => {
-			into.body.0.push_issue_links(std::slice::from_ref(link));
-			write(into, mode).await
-		}
+		true => write(&into, &|body| body.push_issue_links(std::slice::from_ref(link))).await?,
 		false => {
 			crate::github::client::get()?.set_issue_milestone(repo, link.number(), Some(into.number())).await?;
-			pull_milestone(&mut into, MergeMode::Normal).await
+			pull_milestone(into.link(), MergeMode::Normal).await?
 		}
-	}
+	};
+	Ok(())
 }
 
 /// What is said on `link`, as stored: its author, then its comments, oldest first.
@@ -275,9 +281,10 @@ impl Reading<'_> {
 		}
 		let targets = Local::stored_milestones()?
 			.into_iter()
-			.filter(offered)
+			.filter(|m| !m.is_closed())
 			.map(|m| Target {
-				hosted: m.body.hosted(),
+				nodes: m.body.0.nodes(),
+				description: m.body.0.description(),
 				link: m.identity.link,
 				title: m.identity.title,
 				due_on: m.identity.due_on,
@@ -296,17 +303,6 @@ impl Reading<'_> {
 enum Step {
 	Issue { path: PathBuf, bytes: u64 },
 	Prs { repo: RepoInfo, bytes: u64 },
-}
-
-/// A milestone the board shows: open, and no sprint's.
-fn offered(m: &Milestone) -> bool {
-	!m.is_closed() && !is_sprint(&m.identity.title)
-}
-
-async fn write(milestone: Milestone, mode: SyncMode) -> Result<()> {
-	let stored = Local::load_milestone(milestone.link(), &FsReader)?.expect("edited from the stored one");
-	modify_and_sync_milestone(stored, mode, MilestoneModifier::BodyWrite { body: milestone.body }, SyncOptions::default()).await?;
-	Ok(())
 }
 
 fn card_tree(issue: &Issue, parent: Option<&IssueLink>, conflicted: bool, states: &States, workflows: &Workflows, out: &mut Vec<Card>) -> Result<()> {

@@ -7,25 +7,10 @@ use crate::common::{
 	parse_virtual,
 };
 
-/// Build a `sprints_selection.json` whose active (normal) sprint embeds `titles`
-/// (a list of `(title, user, url)`), with no selection path pinned.
-fn selection_cache_json(titles: &[(&str, &str, &str)]) -> String {
-	let content: String = titles
-		.iter()
-		.enumerate()
-		.map(|(i, (title, user, url))| {
-			let sep = if i + 1 < titles.len() { "\n\n" } else { "" };
-			format!("- [ ] {title} <!-- @{user} {url} -->{sep}")
-		})
-		.collect();
-	serde_json::json!({
-		"normal": { "key": "1d", "content": content }
-	})
-	.to_string()
-}
-
+/// The active sprint holds `titles` (`(title, user, url)`), with no selection path pinned.
 fn write_selection(ctx: &TestContext, titles: &[(&str, &str, &str)]) {
-	ctx.xdg.write_cache("sprints_selection.json", &selection_cache_json(titles));
+	let body: String = titles.iter().map(|(title, user, url)| format!("- [ ] {title} <!-- @{user} {url} -->\n")).collect();
+	ctx.focus_sprint(&body, &[]);
 }
 
 /// `fixture` stored locally as the active sprint's selected issue, then `args` run on it (in the mock
@@ -402,8 +387,8 @@ async fn test_search_finds_matching_issue() {
 	assert!(!out.stdout.contains("Unrelated"), "should not surface unrelated issue. stdout: {}", out.stdout);
 }
 
-/// `sprints selected list` prefixes the day's `# Must` strip: one box per item, the completion
-/// percentage over what is still on the table, then `---` and the selected issue's blockers.
+/// `sprints selected list` prefixes the sprint's strip: one box per must, whatever header it sits under, the
+/// completion percentage over what is still on the table, then `---` and the selected issue's blockers.
 #[tokio::test]
 async fn test_selected_list_must_strip() {
 	let ctx = TestContext::build_with_preexisting_state_unsafe("");
@@ -418,10 +403,8 @@ async fn test_selected_list_must_strip() {
 	}
 
 	let content = (1..=4).map(|n| format!("- https://github.com/o/r/issues/{n}\n")).collect::<String>();
-	ctx.xdg.write_cache(
-		"sprints_selection.json",
-		&serde_json::json!({ "normal": { "key": "1d", "content": format!("# Must\n{content}") } }).to_string(),
-	);
+	ctx.store_milestone("https://github.com/o/r/milestone/3", "fewer yaks", true, "");
+	ctx.focus_sprint(&format!("the day\n\n# grouped\n{content}\n# and\n- https://github.com/o/r/milestone/3\n"), &[]);
 
 	let plain = ctx.run(&["--offline", "sprints", "selected", "list"]);
 	assert!(plain.status.success(), "stderr: {}", plain.stderr);
@@ -434,7 +417,8 @@ async fn test_selected_list_must_strip() {
 	[.] write the plan
 	[ ] shave yak
 	[-] rewrite the parser
-	50%
+	[x] fewer yaks
+	63%
 	---
 	- current blocker
 	  - nested blocker
@@ -443,7 +427,8 @@ async fn test_selected_list_must_strip() {
 	<span foreground="#ba6e3d">[.]</span> write the plan
 	<span foreground="#ffffff">[ ]</span> shave yak
 	[-] rewrite the parser
-	50%
+	<span foreground="#b8d8b4">[x]</span> fewer yaks
+	63%
 	---
 	- current blocker
 	  - nested blocker

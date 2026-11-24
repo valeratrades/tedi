@@ -11,7 +11,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-	CloseState, Events, IssueLink, LinkedPr, MilestoneLink, PrState, RepoInfo, Review, blockers,
+	CloseState, Events, IssueLink, LinkedPr, MilestoneLink, NodeLink, PrState, RepoInfo, Review, Sprint, blockers,
 	conflict::{Field, FieldError, unlist},
 	labels::{Scheme, Type},
 	rank::Rank,
@@ -106,14 +106,24 @@ pub struct Said {
 	pub body: String,
 }
 
-/// An open milestone, a sprint's aside.
+/// An open milestone.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct Target {
 	pub link: MilestoneLink,
 	pub title: String,
 	pub due_on: Option<jiff::Timestamp>,
-	/// Issues of any repo: its own carry it as their milestone on GitHub, the rest are named in its description.
-	pub hosted: Vec<IssueLink>,
+	pub description: String,
+	/// In order. An issue is of any repo: its own carry it as their milestone on GitHub, the rest are named in its body.
+	pub nodes: Vec<NodeLink>,
+}
+impl Target {
+	pub fn sprint(&self) -> Option<Sprint> {
+		Sprint::titled(&self.title)
+	}
+
+	pub fn hosts(&self, link: &IssueLink) -> bool {
+		self.nodes.iter().any(|n| matches!(n, NodeLink::Issue(l) if l == link))
+	}
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
