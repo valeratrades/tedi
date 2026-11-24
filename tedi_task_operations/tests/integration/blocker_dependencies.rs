@@ -74,7 +74,8 @@ async fn test_github_only_link_lands_atop_blockers() {
 	let out = ctx.open_issue(&base).run();
 
 	assert!(out.status.success(), "stderr: {}", out.stderr);
-	insta::assert_snapshot!(read_issue_file(&ctx.resolve_issue_path(&base)), @"
+	let snap_before = read_issue_file(&ctx.resolve_issue_path(&base));
+	insta::assert_snapshot!(format!("{snap_before}\n---\n{}", dependency_calls(&ctx)), @"
 	- [ ] Target <!-- @mock_user https://github.com/o/r/issues/1 -->
 	  body
 
@@ -84,8 +85,9 @@ async fn test_github_only_link_lands_atop_blockers() {
 	  - #2
 	  - step one
 	  - step two
+
+	---
 	");
-	insta::assert_snapshot!(dependency_calls(&ctx), @"");
 }
 
 #[tokio::test]
@@ -180,15 +182,18 @@ async fn test_link_dropped_on_github_leaves_blockers() {
 	let out = ctx.open_issue(&base).run();
 
 	assert!(out.status.success(), "stderr: {}", out.stderr);
-	insta::assert_snapshot!(read_issue_file(&ctx.resolve_issue_path(&base)), @"
+	let snap_before = read_issue_file(&ctx.resolve_issue_path(&base));
+	let run2 = ctx.github_calls().split_off(calls);
+	insta::assert_snapshot!(format!("{snap_before}\n---\n{}", run2.iter().filter(|c| c.contains("blocked_by(") || c.contains("update_issue_body")).cloned().collect::<Vec<_>>().join("\n")), @"
 	- [ ] Target <!-- @mock_user https://github.com/o/r/issues/1 -->
 	  body
 
 	  # Blockers
 	  - step
+
+	---
+	update_issue_body(o, r, 1, <body>)
 	");
-	let run2 = ctx.github_calls().split_off(calls);
-	insta::assert_snapshot!(run2.iter().filter(|c| c.contains("blocked_by(") || c.contains("update_issue_body")).cloned().collect::<Vec<_>>().join("\n"), @"update_issue_body(o, r, 1, <body>)");
 }
 
 #[tokio::test]

@@ -76,19 +76,24 @@ pub trait GithubClient: Send + Sync {
 	/// Delete a comment
 	async fn delete_comment(&self, repo: RepoInfo, comment_id: u64) -> Result<(), GithubError>;
 
+	//#[codestyle::skip(swappable-args)]
 	/// Create a new issue
 	async fn create_issue(&self, repo: RepoInfo, title: &str, body: &str) -> Result<CreatedIssue, GithubError>;
 
+	//#[codestyle::skip(swappable-args)]
 	/// Add a sub-issue to a parent issue
 	/// Note: `child_issue_id` is the resource ID (not the issue number)
 	async fn add_sub_issue(&self, repo: RepoInfo, parent_issue_number: u64, child_issue_id: u64) -> Result<(), GithubError>;
 
+	//#[codestyle::skip(swappable-args)]
 	/// Note: `child_issue_id` is the resource ID (not the issue number)
 	async fn remove_sub_issue(&self, repo: RepoInfo, parent_issue_number: u64, child_issue_id: u64) -> Result<(), GithubError>;
 
+	//#[codestyle::skip(swappable-args)]
 	/// Mark an issue as blocked by another, in any repo. `blocker_id` is the resource ID (not the issue number)
 	async fn add_blocked_by(&self, repo: RepoInfo, issue_number: u64, blocker_id: u64) -> Result<(), GithubError>;
 
+	//#[codestyle::skip(swappable-args)]
 	/// `blocker_id` is the resource ID (not the issue number)
 	async fn remove_blocked_by(&self, repo: RepoInfo, issue_number: u64, blocker_id: u64) -> Result<(), GithubError>;
 
@@ -111,6 +116,7 @@ pub trait GithubClient: Send + Sync {
 	/// List all issues (open and closed) assigned to a milestone.
 	async fn list_milestone_issues(&self, repo: RepoInfo, milestone_number: u64) -> Result<Vec<GithubIssue>, GithubError>;
 
+	//#[codestyle::skip(swappable-args)]
 	/// Create a milestone. `closed` opens it in the `closed` state (used for archival).
 	async fn create_milestone(&self, repo: RepoInfo, title: &str, description: &str, closed: bool) -> Result<(), GithubError>;
 
@@ -141,6 +147,7 @@ pub trait GithubClient: Send + Sync {
 	/// The page from `after` of every pull request, most recently updated first.
 	async fn list_repo_prs(&self, repo: RepoInfo, after: Option<&str>) -> Result<PrPage, GithubError>;
 
+	//#[codestyle::skip(swappable-args)]
 	/// Every commit on `branch` touching `path`, oldest first, each with the file as it left it.
 	async fn file_history(&self, repo: RepoInfo, path: &str, branch: &str) -> Result<Vec<FileCommit>, GithubError>;
 
@@ -343,7 +350,7 @@ pub struct RealGithubClient {
 impl RealGithubClient {
 	pub fn new(github_token: String) -> Self {
 		Self {
-			http_client: Client::new(),
+			http_client: crate::client_builder().build().expect("default client config"),
 			auth: auth::Auth::Token(github_token),
 		}
 	}
@@ -351,7 +358,7 @@ impl RealGithubClient {
 	/// As a GitHub App: each account it acts on through that account's installation.
 	pub fn app(id: u64, private_key: &str) -> Result<Self, GithubError> {
 		Ok(Self {
-			http_client: Client::new(),
+			http_client: crate::client_builder().build().expect("default client config"),
 			auth: auth::Auth::App(auth::App::try_new(id, private_key)?),
 		})
 	}
@@ -389,6 +396,7 @@ impl RealGithubClient {
 		self.request(reqwest::Method::DELETE, url)
 	}
 
+	//#[codestyle::skip(swappable-args)]
 	/// Send a PATCH request with JSON body, returning an error on non-success status
 	async fn patch_json(&self, url: &str, json: &serde_json::Value, error_context: &str) -> Result<(), GithubError> {
 		let res = self.patch(url).json(json).send().await?;
@@ -402,6 +410,7 @@ impl RealGithubClient {
 		Ok(())
 	}
 
+	//#[codestyle::skip(swappable-args)]
 	/// Run a GraphQL request, surfacing both HTTP and GraphQL-level errors. `repo` is what it acts on, so an App picks its owner's installation.
 	async fn graphql(&self, repo: RepoInfo, query: &str, variables: serde_json::Value, error_context: &str) -> Result<serde_json::Value, GithubError> {
 		let res = self
@@ -421,6 +430,7 @@ impl RealGithubClient {
 		Ok(response)
 	}
 
+	//#[codestyle::skip(swappable-args)]
 	/// Send a POST request with JSON body, returning an error on non-success status
 	async fn post_json(&self, url: &str, json: &serde_json::Value, error_context: &str) -> Result<(), GithubError> {
 		let res = self.post(url).json(json).send().await?;

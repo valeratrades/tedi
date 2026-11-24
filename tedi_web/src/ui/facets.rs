@@ -214,6 +214,7 @@ fn Bounds(facet: Facet, bound: &'static str, tallies: Vec<Tally>, needle: String
 	}
 }
 
+//#[codestyle::skip(swappable-args)]
 #[component]
 fn Value(facet: Facet, value: String, label: String, count: usize, picked: Option<bool>, bar: Option<f32>) -> Element {
 	let in_view = use_context::<InView>();

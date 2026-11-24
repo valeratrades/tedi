@@ -807,6 +807,7 @@ impl RepoKey {
 		crate::IssueLink::in_project(RepoInfo::new(&self.owner, &self.repo), number)
 	}
 
+	//#[codestyle::skip(swappable-args)]
 	fn new(owner: &str, repo: &str) -> Self {
 		Self {
 			owner: owner.to_string(),

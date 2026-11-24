@@ -71,7 +71,7 @@ pub async fn main(yes: bool, args: ClockifyArgs) -> Result<()> {
 		}
 		Command::Stop(stop_args) => {
 			let api_key = env::var("CLOCKIFY_API_KEY").wrap_err("Set CLOCKIFY_API_KEY in your environment with a valid API token")?;
-			let client = reqwest::Client::builder().default_headers(make_headers(&api_key)?).build()?;
+			let client = crate::client_builder().default_headers(make_headers(&api_key)?).build()?;
 
 			let workspace_id = match stop_args.workspace {
 				Some(w) => resolve_workspace(&client, &w).await?,
@@ -82,7 +82,7 @@ pub async fn main(yes: bool, args: ClockifyArgs) -> Result<()> {
 		}
 		Command::Start(start_args) => {
 			let api_key = env::var("CLOCKIFY_API_KEY").wrap_err("Set CLOCKIFY_API_KEY in your environment with a valid API token")?;
-			let client = reqwest::Client::builder().default_headers(make_headers(&api_key)?).build()?;
+			let client = crate::client_builder().default_headers(make_headers(&api_key)?).build()?;
 
 			let workspace_id = match start_args.workspace {
 				Some(w) => resolve_workspace(&client, &w).await?,
@@ -144,6 +144,7 @@ pub async fn main(yes: bool, args: ClockifyArgs) -> Result<()> {
 
 	Ok(())
 }
+//#[codestyle::skip(swappable-args)]
 pub async fn start_time_entry_with_defaults(
 	workspace: Option<&str>,
 	project: Option<&str>,
@@ -154,7 +155,7 @@ pub async fn start_time_entry_with_defaults(
 	yes: bool,
 ) -> Result<()> {
 	let api_key = env::var("CLOCKIFY_API_KEY").wrap_err("Set CLOCKIFY_API_KEY in your environment with a valid API token")?;
-	let client = reqwest::Client::builder().default_headers(make_headers(&api_key)?).build()?;
+	let client = crate::client_builder().default_headers(make_headers(&api_key)?).build()?;
 
 	// Resolve workspace - use active workspace if not provided
 	let workspace_id = match workspace {
@@ -215,7 +216,7 @@ pub async fn start_time_entry_with_defaults(
 }
 pub async fn stop_time_entry_with_defaults(workspace: Option<&str>) -> Result<()> {
 	let api_key = env::var("CLOCKIFY_API_KEY").wrap_err("Set CLOCKIFY_API_KEY in your environment with a valid API token")?;
-	let client = reqwest::Client::builder().default_headers(make_headers(&api_key)?).build()?;
+	let client = crate::client_builder().default_headers(make_headers(&api_key)?).build()?;
 
 	// Resolve workspace - use active workspace if not provided
 	let workspace_id = match workspace {
@@ -311,6 +312,7 @@ async fn get_active_workspace(client: &reqwest::Client) -> Result<String> {
 		.wrap_err("Failed to parse user response")?;
 	Ok(user.active_workspace)
 }
+//#[codestyle::skip(swappable-args)]
 async fn resolve_project(client: &reqwest::Client, ws: &str, input: &str, yes: bool) -> Result<String> {
 	// If input looks like an ID (UUID-ish), try it directly by fetching it
 	if looks_like_id(input)
@@ -376,11 +378,13 @@ async fn resolve_project(client: &reqwest::Client, ws: &str, input: &str, yes: b
 		Err(eyre!("Project not found and user declined to create: {input}"))
 	}
 }
+//#[codestyle::skip(swappable-args)]
 async fn fetch_project_by_id(client: &reqwest::Client, ws: &str, id: &str) -> Result<String> {
 	let url = format!("https://api.clockify.me/api/v1/workspaces/{ws}/projects/{id}");
 	let _p: Project = client.get(url).send().await?.error_for_status()?.json().await?;
 	Ok(id.to_string())
 }
+//#[codestyle::skip(swappable-args)]
 async fn resolve_task(client: &reqwest::Client, ws: &str, project_id: &str, input: &str) -> Result<String> {
 	if looks_like_id(input)
 		&& let Ok(id) = fetch_task_by_id(client, ws, project_id, input).await
@@ -399,11 +403,13 @@ async fn resolve_task(client: &reqwest::Client, ws: &str, project_id: &str, inpu
 	}
 	Err(eyre!("Task not found in project {project_id}: {input}"))
 }
+//#[codestyle::skip(swappable-args)]
 async fn fetch_task_by_id(client: &reqwest::Client, ws: &str, project_id: &str, id: &str) -> Result<String> {
 	let url = format!("https://api.clockify.me/api/v1/workspaces/{ws}/projects/{project_id}/tasks/{id}");
 	let _t: Task = client.get(url).send().await?.error_for_status()?.json().await?;
 	Ok(id.to_string())
 }
+//#[codestyle::skip(swappable-args)]
 async fn resolve_tags(client: &reqwest::Client, ws: &str, input: &str) -> Result<Vec<String>> {
 	// Split by comma and trim
 	let wanted: Vec<String> = input.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
@@ -454,6 +460,7 @@ async fn fetch_tags(client: &reqwest::Client, ws: &str) -> Result<Vec<Tag>> {
 	let tags: Vec<Tag> = client.get(url).send().await?.error_for_status()?.json().await?;
 	Ok(tags.into_iter().filter(|t| !t.archived).collect())
 }
+//#[codestyle::skip(swappable-args)]
 async fn create_project(client: &reqwest::Client, ws: &str, name: &str) -> Result<String> {
 	let url = format!("https://api.clockify.me/api/v1/workspaces/{ws}/projects");
 
@@ -545,7 +552,7 @@ async fn resolve_workspace(client: &reqwest::Client, input: &str) -> Result<Stri
 async fn stop_current_entry_by_id(workspace_id: &str) -> Result<()> {
 	let api_key = std::env::var("CLOCKIFY_API_KEY").wrap_err("Set CLOCKIFY_API_KEY in your environment with a valid API token")?;
 
-	let client = reqwest::Client::builder().default_headers(make_headers(&api_key)?).build()?;
+	let client = crate::client_builder().default_headers(make_headers(&api_key)?).build()?;
 
 	// Get user ID first
 	let user: User = client
@@ -620,7 +627,7 @@ async fn stop_current_entry_by_id(workspace_id: &str) -> Result<()> {
 async fn list_workspaces() -> Result<()> {
 	let api_key = std::env::var("CLOCKIFY_API_KEY").wrap_err("Set CLOCKIFY_API_KEY in your environment with a valid API token")?;
 
-	let client = reqwest::Client::builder().default_headers(make_headers(&api_key)?).build()?;
+	let client = crate::client_builder().default_headers(make_headers(&api_key)?).build()?;
 
 	let workspaces: Vec<Workspace> = client
 		.get("https://api.clockify.me/api/v1/workspaces")
@@ -643,7 +650,7 @@ async fn list_workspaces() -> Result<()> {
 async fn list_projects(workspace_input: &str) -> Result<()> {
 	let api_key = std::env::var("CLOCKIFY_API_KEY").wrap_err("Set CLOCKIFY_API_KEY in your environment with a valid API token")?;
 
-	let client = reqwest::Client::builder().default_headers(make_headers(&api_key)?).build()?;
+	let client = crate::client_builder().default_headers(make_headers(&api_key)?).build()?;
 
 	let workspace_id = if workspace_input == "default" {
 		get_active_workspace(&client).await?

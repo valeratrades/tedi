@@ -173,6 +173,7 @@ fn sink_issue_node<R: LocalReader>(new: &Issue, maybe_old: Option<&Issue>, reade
 	Ok(any_written)
 }
 
+//#[codestyle::skip(swappable-args)]
 /// Clean up old file locations when format or state changes.
 ///
 /// Strategy: find all matching paths via `matching_subpaths`, compute the correct target path

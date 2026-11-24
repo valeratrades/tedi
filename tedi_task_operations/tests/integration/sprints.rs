@@ -289,7 +289,8 @@ async fn test_must_section_materialized_when_absent() {
 	});
 	assert!(out.status.success(), "stderr: {}", out.stderr);
 
-	insta::assert_snapshot!(std::fs::read_to_string(&buffer).unwrap(), @"
+	let snap_before = std::fs::read_to_string(&buffer).unwrap();
+	insta::assert_snapshot!(format!("{snap_before}\n---\n{}", milestone), @"
 	# Must
 
 	# important today
@@ -297,8 +298,7 @@ async fn test_must_section_materialized_when_absent() {
 	- [ ] My Issue <!-- @mock_user https://github.com/o/r/issues/10 --> <!--{{{3-->
 	  body
 	  <!--}}}1-->
-	");
-	insta::assert_snapshot!(milestone, @"
+	---
 	# Must
 
 	# important today
@@ -327,23 +327,21 @@ async fn test_partial_state_survives_sprint_edit() {
 	});
 	assert!(out.status.success(), "stderr: {}", out.stderr);
 
-	insta::assert_snapshot!(std::fs::read_to_string(&buffer).unwrap(), @r"
+	let snap_before = std::fs::read_to_string(&buffer).unwrap();
+	ctx.set_issues_dir_override();
+	let path =
+		tedi_task_operations::local::Local::find_by_number(tedi_task_operations::RepoInfo::new("o", "r"), 10, tedi_task_operations::local::FsReader).expect("issue #10 should still exist");
+	insta::assert_snapshot!(format!("{snap_before}\n---\n{milestone}\n---\n{}", read_issue_file(&path)), @r"
 	# Must
 
 	- \[.] Half Done <!-- @mock_user https://github.com/o/r/issues/10 --> <!--{{{3-->
 	  body
 	  <!--}}}1-->
-	");
-	insta::assert_snapshot!(milestone, @"
+	---
 	# Must
 
 	- https://github.com/o/r/issues/10
-	");
-
-	ctx.set_issues_dir_override();
-	let path =
-		tedi_task_operations::local::Local::find_by_number(tedi_task_operations::RepoInfo::new("o", "r"), 10, tedi_task_operations::local::FsReader).expect("issue #10 should still exist");
-	insta::assert_snapshot!(read_issue_file(&path), @r"
+	---
 	- \[.] Half Done <!-- @mock_user https://github.com/o/r/issues/10 -->
 	  body
 
@@ -2206,13 +2204,15 @@ async fn test_checkbox_on_category_header_adopts_grouped_issues() {
 		.filter(|p| p.ends_with(".md"))
 		.collect();
 	tree.sort();
-	insta::assert_snapshot!(tree.join("\n"), @"
+	let snap_before = tree.join("\n");
+	let sprint = std::fs::read_to_string(tedi_task_operations::local::Local::milestone_file_path(RepoInfo::new("o", "todos"), 7, "1d")).unwrap();
+	insta::assert_snapshot!(format!("{snap_before}\n---\n{}", sprint), @"
 	o/r/12_-_fix_reported_bugs/10_-_first_bug.md
 	o/r/12_-_fix_reported_bugs/11_-_second_bug.md
 	o/r/12_-_fix_reported_bugs/__main__.md
+	---
+	- https://github.com/o/r/issues/12
 	");
-	let sprint = std::fs::read_to_string(tedi_task_operations::local::Local::milestone_file_path(RepoInfo::new("o", "todos"), 7, "1d")).unwrap();
-	insta::assert_snapshot!(sprint, @"- https://github.com/o/r/issues/12");
 }
 
 /// A task's checkbox naming a repo creates it there: `[repo]` under the sprint's owner, `[owner/repo]` as written.
@@ -2242,15 +2242,15 @@ async fn test_checkbox_naming_repo_creates_issue_there() {
 	assert!(out.status.success(), "stderr: {}", out.stderr);
 
 	let created: Vec<String> = ctx.github_calls().into_iter().filter(|c| c.starts_with("create_issue(")).collect();
-	insta::assert_snapshot!(created.join("\n"), @r#"
+	let snap_before = created.join("\n");
+	let sprint = std::fs::read_to_string(tedi_task_operations::local::Local::milestone_file_path(RepoInfo::new("o", "todos"), 7, "1d")).unwrap();
+	insta::assert_snapshot!(format!("{snap_before}\n---\n{}", sprint), @r#"
 	create_issue(o, r, fix the button, "why it matters")
 	create_issue(other, x, cross owner thing, "")
-	"#);
-	let sprint = std::fs::read_to_string(tedi_task_operations::local::Local::milestone_file_path(RepoInfo::new("o", "todos"), 7, "1d")).unwrap();
-	insta::assert_snapshot!(sprint, @"
+	---
 	- https://github.com/o/r/issues/1
 	- https://github.com/other/x/issues/1
-	");
+	"#);
 }
 
 /// Dropping a child's link line from its parent's block, as `tme` runs it, detaches it: unlinked upstream,
@@ -2356,11 +2356,15 @@ async fn test_mv_same_owner_transfers_and_relinks() {
 	assert!(out.status.success(), "stderr: {}", out.stderr);
 
 	assert!(ctx.github_calls().iter().any(|c| c == "transfer_issue(o, r, 10, o/repo_b)"), "{:?}", ctx.github_calls());
-	insta::assert_snapshot!(issue_tree(&ctx), @"o/repo_b/1_-_Fix_button.md");
+	let snap_before = issue_tree(&ctx);
 	let moved = std::fs::read_to_string(ctx.xdg.data_dir().join("issues/o/repo_b/1_-_Fix_button.md")).unwrap();
 	assert!(moved.starts_with("- [ ] (bug) Fix button <!-- @mock_user https://github.com/o/repo_b/issues/1 -->"), "{moved}");
 	assert!(out.stderr.contains("`x`"), "the label repo_b lacks is reported: {}", out.stderr);
-	insta::assert_snapshot!(sprint_body(), @"- https://github.com/o/repo_b/issues/1");
+	insta::assert_snapshot!(format!("{snap_before}\n---\n{}", sprint_body()), @"
+	o/repo_b/1_-_Fix_button.md
+	---
+	- https://github.com/o/repo_b/issues/1
+	");
 
 	let selection: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(ctx.xdg.cache_dir().join("sprints_selection.json")).unwrap()).unwrap();
 	assert_eq!(selection["paths"]["1d"], serde_json::json!(["https://github.com/o/repo_b/issues/1"]));
@@ -2395,12 +2399,16 @@ async fn test_mv_cross_owner_recreates_and_closes_original() {
 			.any(|c| c.starts_with("create_comment(o, r, 10, ") && c.contains("Moved to https://github.com/ev/repo_c/issues/1") && c.contains("cc @a")),
 		"{calls:?}"
 	);
-	insta::assert_snapshot!(issue_tree(&ctx), @"ev/repo_c/1_-_Fix_button.md");
+	let snap_before = issue_tree(&ctx);
 	let moved = std::fs::read_to_string(ctx.xdg.data_dir().join("issues/ev/repo_c/1_-_Fix_button.md")).unwrap();
 	assert!(moved.contains("Opened by @other"), "{moved}");
 	assert!(moved.contains("their comment"), "{moved}");
 	assert!(moved.contains("— @other"), "{moved}");
-	insta::assert_snapshot!(sprint_body(), @"- https://github.com/ev/repo_c/issues/1");
+	insta::assert_snapshot!(format!("{snap_before}\n---\n{}", sprint_body()), @"
+	ev/repo_c/1_-_Fix_button.md
+	---
+	- https://github.com/ev/repo_c/issues/1
+	");
 }
 
 /// Where it sits in each workflow is the issue's: it moves with it, under its new number.
@@ -2439,11 +2447,13 @@ async fn test_mv_parent_carries_subtree() {
 	let ctx = mv_in_parent_with_child("- [ ] Parent <!--").await;
 
 	assert!(ctx.github_calls().iter().any(|c| c.starts_with("add_sub_issue(o, repo_b, parent=2,")), "{:?}", ctx.github_calls());
-	insta::assert_snapshot!(issue_tree(&ctx), @"
+	let snap_before = issue_tree(&ctx);
+	insta::assert_snapshot!(format!("{snap_before}\n---\n{}", sprint_body()), @"
 	o/repo_b/2_-_Parent/1_-_Child.md
 	o/repo_b/2_-_Parent/__main__.md
+	---
+	- https://github.com/o/repo_b/issues/2
 	");
-	insta::assert_snapshot!(sprint_body(), @"- https://github.com/o/repo_b/issues/2");
 }
 
 /// A child moved on its own leaves its parent: it becomes a top-level issue of the target.
@@ -2452,11 +2462,13 @@ async fn test_mv_child_detaches_from_parent() {
 	let ctx = mv_in_parent_with_child("issues/11 -->").await;
 
 	assert!(ctx.github_calls().iter().any(|c| c.starts_with("remove_sub_issue(o, r, parent=10,")), "{:?}", ctx.github_calls());
-	insta::assert_snapshot!(issue_tree(&ctx), @"
+	let snap_before = issue_tree(&ctx);
+	insta::assert_snapshot!(format!("{snap_before}\n---\n{}", sprint_body()), @"
 	o/r/10_-_Parent.md
 	o/repo_b/1_-_Child.md
+	---
+	- https://github.com/o/r/issues/10
 	");
-	insta::assert_snapshot!(sprint_body(), @"- https://github.com/o/r/issues/10");
 }
 
 /// Offline, nothing can move: the edit is rejected whole.

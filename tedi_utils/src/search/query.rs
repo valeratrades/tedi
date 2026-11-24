@@ -335,6 +335,7 @@ impl TermHit {
 	}
 }
 
+//#[codestyle::skip(swappable-args)]
 /// Item score: contiguous hit count, per-field hit counts (title first), summed quality, summed nucleo score.
 /// shortcut: components saturate (15 terms per count, 31 quality, 1023 nucleo), far past any typed query.
 fn pack(contiguous: u32, title: u32, context: u32, body: u32, quality: u32, nucleo: u32) -> i32 {

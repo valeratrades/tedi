@@ -122,6 +122,7 @@ impl Ctx {
 		}
 	}
 
+	//#[codestyle::skip(swappable-args)]
 	pub(super) fn at_columns(&self, view: &str, columns: &str) -> Address {
 		Address {
 			main: self.id_of(&Item::View(view.to_string())).map(|id| Main::View {
@@ -245,10 +246,12 @@ impl Ctx {
 		settling.set(true);
 	}
 
+	//#[codestyle::skip(swappable-args)]
 	fn lost(&self, what: &str, id: &str) {
 		self.say("address", Tone::Error, format!("no {what} {id} here: another viewer's opens by a share link"), None);
 	}
 
+	//#[codestyle::skip(swappable-args)]
 	/// `view` laid out as the column layout `columns`, whatever was dragged since it last was.
 	pub(super) async fn lay(self, view: String, columns: String) {
 		if self.keep(LibraryEdit::Lay { view: view.clone(), columns }).await {
@@ -300,6 +303,7 @@ pub(super) fn use_address(ctx: Ctx) {
 		}
 	});
 	use_future(move || async move {
+		//UNBOUNDED one unit per popstate event
 		let (tell, mut told) = futures::channel::mpsc::unbounded::<()>();
 		let listener = Closure::<dyn FnMut(web_sys::Event)>::new(move |_| tell.unbounded_send(()).expect("the shell listens for good"));
 		web_sys::window()
@@ -324,6 +328,7 @@ pub(super) fn use_address(ctx: Ctx) {
 	});
 }
 
+//#[codestyle::skip(swappable-args)]
 /// A link to `to`: a plain click moves this screen, any other is the browser's.
 #[component]
 pub(super) fn Go(to: Address, #[props(default)] class: String, #[props(default)] title: String, children: Element) -> Element {

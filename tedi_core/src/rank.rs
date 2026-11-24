@@ -151,6 +151,7 @@ fn tarjan(successors: &[Vec<usize>]) -> Vec<Vec<usize>> {
 			}
 			if low[v] == order[v] {
 				let mut members = Vec::new();
+				//LOOP ends at `v`, which is on the stack
 				loop {
 					let w = stack.pop().expect("v is still on the stack");
 					on_stack[w] = false;

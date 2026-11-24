@@ -698,6 +698,7 @@ fn Comment(link: IssueLink, said: Said) -> Element {
 	}
 }
 
+//#[codestyle::skip(swappable-args)]
 /// Markdown being written: Ctrl+Enter keeps it, Esc drops it.
 #[component]
 fn Draft(text: String, #[props(default)] placeholder: String, oninput: EventHandler<String>, onsave: EventHandler<()>, ondrop: EventHandler<()>) -> Element {

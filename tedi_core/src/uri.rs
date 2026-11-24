@@ -27,6 +27,7 @@ pub enum RepoInfo {
 }
 
 impl RepoInfo {
+	//#[codestyle::skip(swappable-args)]
 	/// Create a Github RepoInfo.
 	/// Owner and repo are lowercased: GitHub treats them case-insensitively,
 	/// so this is a primitive-level invariant (every `RepoInfo` is normalized).

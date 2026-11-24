@@ -168,6 +168,7 @@ pub(super) fn Results(ran: View, groups: Vec<(String, Vec<usize>)>) -> Element {
 	}
 }
 
+//#[codestyle::skip(swappable-args)]
 /// Says why it's empty and what fills it (Figma: EmptyState).
 #[component]
 pub(super) fn Empty(glyph: Glyph, #[props(default)] error: bool, title: String, body: String, children: Element) -> Element {
@@ -575,6 +576,7 @@ fn Stacked(view: String, by: GroupBy, groups: Vec<(String, Vec<usize>)>, shown: 
 	}
 }
 
+//#[codestyle::skip(swappable-args)]
 /// A group's header, full width above its rows (Figma: ColumnHeader): the tint's dot and wash, the group, its count.
 #[component]
 fn GroupHead(view: String, by: GroupBy, group: String, count: usize) -> Element {

@@ -17,6 +17,7 @@ pub(super) enum Style {
 	Danger,
 }
 
+//#[codestyle::skip(swappable-args)]
 #[component]
 pub(super) fn Btn(
 	style: Style,
@@ -96,6 +97,7 @@ pub(super) fn Picker(glyph: Glyph, label: String, children: Element) -> Element 
 	}
 }
 
+//#[codestyle::skip(swappable-args)]
 /// A menu row: label, and a count or shortcut on the right.
 #[component]
 pub(super) fn MenuItem(selected: bool, label: String, #[props(default)] meta: String, glyph: Option<Glyph>, onclick: EventHandler<MouseEvent>) -> Element {

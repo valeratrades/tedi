@@ -53,6 +53,7 @@ pub async fn resolve_pending_conflict(index: IssueIndex) -> Result<()> {
 	Ok(())
 }
 
+//#[codestyle::skip(swappable-args)]
 /// Write `path` holding both sides between markers, the remote's kept aside to tell whether GitHub
 /// moved on before it is resolved.
 pub fn record_conflict(path: &Path, local: &str, consensus: Option<&str>, remote: &str) -> Result<()> {

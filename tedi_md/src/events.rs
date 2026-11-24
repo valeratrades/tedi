@@ -438,6 +438,7 @@ impl Events {
 	}
 }
 
+//#[codestyle::skip(swappable-args)]
 /// Append `content` to `out`, prefixing each line with `prefix`.
 /// Preserves trailing newline from content.
 pub fn indent_into(out: &mut String, content: &str, prefix: &str) {

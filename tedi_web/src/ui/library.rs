@@ -17,6 +17,7 @@ use super::{
 };
 use crate::api::{self, Catalog, Construction, Entry, Item, LibraryEdit, Onto, Origin, Owner, ShareLink, Shelf, band_name, constructions, diff};
 
+//#[codestyle::skip(swappable-args)]
 /// A name typed in place: Enter takes it, Escape or leaving the field drops it.
 #[component]
 pub fn NameForm(#[props(default)] initial: String, placeholder: String, on_name: EventHandler<String>, on_cancel: EventHandler<()>) -> Element {
@@ -891,6 +892,7 @@ pub(super) fn ApplyColumns(name: String, owner: Owner) -> Element {
 	}
 }
 
+//#[codestyle::skip(swappable-args)]
 /// `part` of `whole` grid steps, in percent.
 fn pct(part: u32, whole: u32) -> f64 {
 	f64::from(part) * 100. / f64::from(whole)

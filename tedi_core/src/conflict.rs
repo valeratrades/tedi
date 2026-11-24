@@ -72,6 +72,7 @@ impl Field {
 	}
 }
 
+//#[codestyle::skip(swappable-args)]
 /// A clash file: the whole node as each side holds it, between markers. Removing them resolves it.
 pub fn markers(local: &str, consensus: Option<&str>, remote: &str) -> String {
 	let side = |s: &str| match s.ends_with('\n') {

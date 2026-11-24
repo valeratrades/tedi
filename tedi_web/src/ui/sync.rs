@@ -247,6 +247,7 @@ impl Ctx {
 		self.queue(link, op.back());
 	}
 
+	//#[codestyle::skip(swappable-args)]
 	fn tell(self, link: &IssueLink, key: String, text: String) {
 		let more = self.made.peek().get(&key).is_some_and(|run| !run.is_empty());
 		let undo = more.then(|| {

@@ -92,20 +92,20 @@ async fn a_pull_cut_short_resumes_after_the_last_page_it_stored() {
 
 	let cut = ctx.run_with_env(&["--mock", "pull", "o/r"], &[(ENV_MOCK_RATE_LIMITED_AFTER_PAGES, "1")]);
 	assert!(!cut.status.success(), "a pull that didn't store everything fails. stdout: {}", cut.stdout);
-	insta::assert_snapshot!(issue_tree(&ctx), @"
-	o/r/1_-_Issue_1.md
-	o/r/3_-_Issue_3.md
-	");
+	let snap_before = issue_tree(&ctx);
 
 	let resumed = ctx.run(&["--mock", "pull", "o/r"]);
 	assert!(resumed.status.success(), "stderr: {}", resumed.stderr);
-	insta::assert_snapshot!(issue_tree(&ctx), @"
+	let snap_resumed = issue_tree(&ctx);
+	let lists: Vec<String> = ctx.github_calls().into_iter().filter(|c| c.starts_with("list_repo_issues")).collect();
+	insta::assert_snapshot!(format!("{snap_before}\n---\n{snap_resumed}\n---\n{}", lists.join("\n")), @r#"
+	o/r/1_-_Issue_1.md
+	o/r/3_-_Issue_3.md
+	---
 	o/r/1_-_Issue_1.md
 	o/r/2_-_Issue_2.md
 	o/r/3_-_Issue_3.md
-	");
-	let lists: Vec<String> = ctx.github_calls().into_iter().filter(|c| c.starts_with("list_repo_issues")).collect();
-	insta::assert_snapshot!(lists.join("\n"), @r#"
+	---
 	list_repo_issues(o/r, None, None)
 	list_repo_issues(o/r, None, Some("2"))
 	list_repo_issues(o/r, Some(2001-09-11T14:19:09Z), None)

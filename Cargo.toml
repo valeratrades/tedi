@@ -46,7 +46,7 @@ derive_more = { version = "2.1.1", features = ["from_str", "display", "from", "i
 futures = "0.3.32"
 image = "0.25.10"
 jiff = { version = "^0.2", features = ["serde"] }
-jsonwebtoken = { version = "11", features = ["aws_lc_rs"] }
+jsonwebtoken = { version = "11", features = ["rust_crypto"] }
 libloading = "0.8.9"
 libwayshot = "0.7.3"
 miette = { version = "7", features = ["fancy"] }
@@ -55,7 +55,8 @@ png = "0.18"
 pulldown-cmark = "0.13"
 pulldown-cmark-to-cmark = "22"
 regex = "1.12.3"
-reqwest = { version = "^0.13.3", features = ["blocking", "json"] }
+reqwest = { version = "^0.13.3", default-features = false, features = ["charset", "http2", "json", "rustls-no-provider", "system-proxy"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 serde = { version = "^1.0.228", features = ["derive"] }
 serde_json = { version = "^1.0.149", features = ["std"] }
 skim = { version = "~5.9", default-features = false } # pinned to minor: we replace `App::matcher`, reachable only through `app_mut`

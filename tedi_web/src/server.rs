@@ -81,6 +81,7 @@ pub async fn serve(config: Settings) -> Result<()> {
 
 	let addr = config.addr;
 	SETTINGS.set(config).map_err(|_| eyre!("one server per process"))?;
+	//UNBOUNDED announcements are repo names, deduplicated by the puller
 	let (announce, announced) = mpsc::unbounded_channel::<String>();
 	ANNOUNCE.set(announce).map_err(|_| eyre!("one server per process"))?;
 
@@ -483,6 +484,7 @@ fn settings() -> &'static Settings {
 /// Owned by `serve`, so a client hanging up never cancels a pull midway.
 async fn puller(mut announced: mpsc::UnboundedReceiver<String>) -> Result<()> {
 	let mut every = settings().pull_every.map(tokio::time::interval);
+	//LOOP serves announcements for the life of the server
 	loop {
 		let targets = tokio::select! {
 			repo = announced.recv() => {
@@ -726,7 +728,12 @@ fn apply(library: &mut Library, edit: LibraryEdit, fetched: Option<Fetched>) -> 
 				bail!("{to} is taken");
 			}
 			let construction = kept(library, &old).ok_or_else(|| eyre!("{from} is not kept"))?;
-			let id = library.ids.iter().find(|(_, held)| **held == old).map(|(id, _)| id.clone()).expect("every kept object but a scope has one");
+			let id = library
+				.ids
+				.iter()
+				.find(|(_, held)| **held == old)
+				.map(|(id, _)| id.clone())
+				.expect("every kept object but a scope has one");
 			drop_kept(library, &old);
 			library.ids.insert(id, new.clone());
 			put(library, &new, construction);
@@ -906,6 +913,7 @@ fn placeable(library: &Library, path: &str) -> Result<()> {
 	Ok(())
 }
 
+//#[codestyle::skip(swappable-args)]
 /// The viewer's scope at `from` and every one of theirs inside it moved to `to`, with what refers to them.
 fn rename_scope(library: &mut Library, from: &str, to: &str) -> Result<()> {
 	if !library.scopes.contains_key(from) {
@@ -1301,6 +1309,7 @@ fn write_shares(owner: &str, shares: &Shares) -> Result<()> {
 	Ok(())
 }
 
+//#[codestyle::skip(swappable-args)]
 /// `head` with `construction` written as the team's `target`, everything else as it was.
 fn proposed(head: &str, target: &str, update: bool, construction: &Construction) -> Result<String> {
 	use toml_edit::{DocumentMut, Item as Toml, Table};
@@ -1384,6 +1393,7 @@ fn named(name: String) -> Result<String> {
 	}
 }
 
+//#[codestyle::skip(swappable-args)]
 /// What follows `top` in `path` when `path` is `top` or nested in it.
 fn within<'a>(path: &'a str, top: &str) -> Option<&'a str> {
 	path.strip_prefix(top).filter(|rest| rest.is_empty() || rest.starts_with(" / "))

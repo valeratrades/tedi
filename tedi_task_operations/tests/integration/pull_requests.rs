@@ -113,17 +113,17 @@ async fn a_pr_changed_since_is_reread_and_the_walk_stops_at_the_last_ones_newest
 
 	assert!(out.status.success(), "stderr: {}", out.stderr);
 	let walks: Vec<String> = ctx.github_calls().into_iter().filter(|c| c.starts_with("list_repo_prs")).collect();
-	insta::assert_snapshot!(walks.join("\n"), @r#"
+	let snap_before = walks.join("\n");
+	insta::assert_snapshot!(format!("{snap_before}\n---\n{}", shown(&ctx, &["is:pr is:closed"]).await), @r#"
 	list_repo_prs(o/r, None)
 	list_repo_prs(o/r, Some("2"))
 	list_repo_prs(o/r, Some("4"))
 	list_repo_prs(o/r, None)
 	list_repo_prs(o/r, Some("2"))
-	"#);
-	insta::assert_snapshot!(shown(&ctx, &["is:pr is:closed"]).await, @"
+	---
 	is:pr is:closed
 	  #3 Ready [done] PR merged
 	  #4 Landed [done] PR merged
 	  #5 Abandoned [backlog] PR closed
-	");
+	"#);
 }

@@ -383,6 +383,7 @@ impl Day {
 }
 static PBS_FILENAME: &str = ".pbs.json";
 
+//#[codestyle::skip(swappable-args)]
 fn print_relative(date_format: &str, days_back: usize, n: usize) -> Result<()> {
 	ensure!(n >= 2, "n must be at least 2 to have something to compare against");
 

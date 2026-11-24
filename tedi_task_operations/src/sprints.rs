@@ -391,12 +391,14 @@ pub async fn search(query: &str, kind: SearchKind) -> Result<()> {
 	println!("{}", expand_and_refresh(TaskView::parse(&content), false).await?);
 	Ok(())
 }
+//#[codestyle::skip(swappable-args)]
 /// Refresh the cached lowest-normal-sprint content (called by the bin after `edit`/`healthcheck`).
 pub fn refresh_selection_cache(key: &str, content: &str) {
 	if let Err(e) = Selected::refresh_normal(key, content) {
 		tracing::warn!("failed to refresh selection cache: {e}");
 	}
 }
+//#[codestyle::skip(swappable-args)]
 /// `sprints select [pattern] [--next|--prev|--up|--down|--in|--out|--top]` — change the active sprint's selection.
 #[expect(clippy::too_many_arguments)]
 pub async fn select(pattern: Option<String>, kind: SearchKind, next: bool, prev: bool, up: bool, down: bool, enter: bool, out: bool, top: bool, yes: bool) -> Result<()> {
@@ -493,6 +495,7 @@ pub fn selected_current(markup: bool) -> Result<()> {
 	}
 	Ok(())
 }
+//#[codestyle::skip(swappable-args)]
 pub async fn selected_add(text: String, nest: bool, mode: SyncMode, yes: bool) -> Result<()> {
 	modify_selected(mode, Modifier::BlockerAdd { text, nest }, yes).await
 }
@@ -617,6 +620,7 @@ fn tracking_dot(key: &str) -> String {
 fn pango_escape(s: &str) -> String {
 	s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
 }
+//#[codestyle::skip(swappable-args)]
 /// Mark a homeless task block with `marker` on its title line so `VirtualIssue::parse` accepts it.
 fn mark_task_block(block: &str, marker: &str) -> String {
 	let mut lines = block.lines();

@@ -58,6 +58,7 @@ async fn pull_repo(repo: RepoInfo, workflows: &Workflows, now: Timestamp) -> Res
 	})?;
 	let since = Local::load_project_meta(repo).pulled_at;
 	let mut after = None;
+	//LOOP pages until the remote reports no next cursor
 	loop {
 		let page = gh.list_repo_issues(repo, since, after.as_deref()).await?;
 		let read: Vec<Arc<FetchedIssue>> = page
@@ -201,6 +202,7 @@ async fn pull_prs(repo: RepoInfo, workflows: &Workflows, moved: &mut HashSet<(Is
 	let since = Local::load_project_meta(repo).prs_walked_to;
 	let mut newest = since;
 	let mut after = None;
+	//LOOP pages until the remote reports no next cursor
 	loop {
 		let page = gh.list_repo_prs(repo, after.as_deref()).await?;
 		let listed = page.prs.len();

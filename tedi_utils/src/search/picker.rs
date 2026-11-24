@@ -23,6 +23,7 @@ pub(super) async fn run(prepared: Vec<Prepared>, kind: SearchKind, query: &str) 
 		.bind(vec!["ctrl-r:ignore".to_owned()]) // rotate-mode rebuilds skim's own engine over ours
 		.build()
 		.expect("static options");
+	//UNBOUNDED sent once, whole
 	let (tx, rx) = unbounded();
 	tx.send(prepared.into_iter().map(|p| Arc::new(Item { prepared: p, kind }) as Arc<dyn SkimItem>).collect())
 		.expect("receiver is held right here");

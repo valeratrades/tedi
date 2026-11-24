@@ -964,6 +964,7 @@ mod local_path {
 			Ok(self)
 		}
 
+		//#[codestyle::skip(swappable-args)]
 		/// Construct the deterministic target path for writing.
 		///
 		/// Based on:

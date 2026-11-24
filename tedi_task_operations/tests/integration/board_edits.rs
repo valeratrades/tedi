@@ -80,15 +80,15 @@ fn within_a_repo_a_milestone_is_swapped_and_its_description_left_alone() {
 	assert_eq!(set(port, "o/r", Some(1), Some(2)), "Landed");
 
 	assert_eq!(milestones(port), ["o/r/milestone/2 v2"]);
-	insta::assert_snapshot!(ctx.remote_milestones(), @"
+	let snap_before = ctx.remote_milestones();
+	assert_eq!(set(port, "o/r", Some(2), None), "Landed");
+	assert_eq!(milestones(port), [""; 0]);
+	insta::assert_snapshot!(format!("{snap_before}\n---\n{}", ctx.remote_milestones()), @"
 	o/r#1 v1 [2]
 	ship it
 	o/r#2 v2 [1]
 	ship more
-	");
-	assert_eq!(set(port, "o/r", Some(2), None), "Landed");
-	assert_eq!(milestones(port), [""; 0]);
-	insta::assert_snapshot!(ctx.remote_milestones(), @"
+	---
 	o/r#1 v1 [2]
 	ship it
 	o/r#2 v2 []
@@ -113,17 +113,17 @@ fn another_repos_milestone_names_the_issue_in_its_description() {
 	assert_eq!(set(port, "o/s", None, Some(4)), "Landed");
 
 	assert_eq!(milestones(port), ["o/r/milestone/1 v1", "o/s/milestone/4 launch"]);
-	insta::assert_snapshot!(ctx.remote_milestones(), @"
+	let snap_before = ctx.remote_milestones();
+	assert_eq!(set(port, "o/s", Some(4), None), "Landed");
+	assert_eq!(milestones(port), ["o/r/milestone/1 v1"]);
+	insta::assert_snapshot!(format!("{snap_before}\n---\n{}", ctx.remote_milestones()), @"
 	o/r#1 v1 [1]
 	ship it
 	o/s#4 launch [7]
 	go live
 
 	- https://github.com/o/r/issues/1
-	");
-	assert_eq!(set(port, "o/s", Some(4), None), "Landed");
-	assert_eq!(milestones(port), ["o/r/milestone/1 v1"]);
-	insta::assert_snapshot!(ctx.remote_milestones(), @"
+	---
 	o/r#1 v1 [1]
 	ship it
 	o/s#4 launch [7]

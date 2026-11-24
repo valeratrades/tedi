@@ -247,6 +247,7 @@ enum Add {
 	Builder,
 }
 
+//#[codestyle::skip(swappable-args)]
 /// \`VIEWS 🔍 +\`: collapse, browse this kind in the library, + new from the screen.
 #[component]
 fn Section(title: &'static str, kind: &'static str, rows: Vec<Row>, empty: &'static str, add: Add) -> Element {

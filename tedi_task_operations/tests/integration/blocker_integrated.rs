@@ -425,7 +425,11 @@ async fn test_selected_list_must_strip() {
 
 	let plain = ctx.run(&["--offline", "sprints", "selected", "list"]);
 	assert!(plain.status.success(), "stderr: {}", plain.stderr);
-	insta::assert_snapshot!(without_tracing(&plain.stdout), @"
+	let snap_before = without_tracing(&plain.stdout);
+
+	let markup = ctx.run(&["--offline", "sprints", "selected", "list", "--markup"]);
+	assert!(markup.status.success(), "stderr: {}", markup.stderr);
+	insta::assert_snapshot!(format!("{snap_before}\n---\n{}", without_tracing(&markup.stdout)), @r##"
 	[x] ship it
 	[.] write the plan
 	[ ] shave yak
@@ -434,11 +438,7 @@ async fn test_selected_list_must_strip() {
 	---
 	- current blocker
 	  - nested blocker
-	");
-
-	let markup = ctx.run(&["--offline", "sprints", "selected", "list", "--markup"]);
-	assert!(markup.status.success(), "stderr: {}", markup.stderr);
-	insta::assert_snapshot!(without_tracing(&markup.stdout), @r##"
+	---
 	<span foreground="#b8d8b4">[x]</span> ship it
 	<span foreground="#ba6e3d">[.]</span> write the plan
 	<span foreground="#ffffff">[ ]</span> shave yak

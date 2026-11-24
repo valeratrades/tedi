@@ -166,6 +166,7 @@ pub(super) fn Builder(from: Option<String>) -> Element {
 	}
 }
 
+//#[codestyle::skip(swappable-args)]
 #[component]
 fn Section(title: &'static str, #[props(default)] hint: &'static str, children: Element) -> Element {
 	rsx! {

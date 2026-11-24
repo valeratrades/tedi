@@ -377,6 +377,7 @@ impl Ctx {
 		self.open_issue(link);
 	}
 
+	//#[codestyle::skip(swappable-args)]
 	fn refused(self, key: String, link: IssueLink, why: String) {
 		let open = Callback::new(move |()| self.open_issue(link.clone()));
 		self.say(key, toast::Tone::Error, why, Some(("Open", open)));
@@ -704,6 +705,7 @@ async fn reload(ctx: Ctx) {
 	if *reading.peek() != Reading::Idle {
 		return reading.set(Reading::Again);
 	}
+	//LOOP rereads while a refresh was requested mid-read
 	loop {
 		reading.set(Reading::Once);
 		let held = sync::landed(&pending.peek());

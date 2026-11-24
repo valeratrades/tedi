@@ -785,6 +785,7 @@ async fn update_milestone(settings: &LiveSettings, milestone_number: u64, descri
 	Ok(())
 }
 
+//#[codestyle::skip(swappable-args)]
 /// Creates a new milestone with the given title, description, and immediately closes it
 async fn create_closed_milestone(settings: &LiveSettings, title: &str, description: &str) -> Result<()> {
 	let (owner, repo) = milestone_repo(settings)?;

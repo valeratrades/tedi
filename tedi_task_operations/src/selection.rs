@@ -345,6 +345,7 @@ impl Selected {
 		Self::load().active().is_some()
 	}
 
+	//#[codestyle::skip(swappable-args)]
 	/// Cache the (currently-focused) normal sprint's content (called by `sprints edit`,
 	/// `healthcheck`, and `sprints select <tf>`).
 	pub fn refresh_normal(key: &str, content: &str) -> std::io::Result<()> {
