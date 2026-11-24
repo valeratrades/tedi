@@ -34,6 +34,8 @@ pub struct Setup {
 	pub columns: BTreeMap<String, Columns>,
 	/// The team's workspaces, offered beside each viewer's own.
 	pub workspaces: BTreeMap<String, Arrangement>,
+	/// The team's, as an address names them.
+	pub ids: BTreeMap<String, Item>,
 }
 
 /// An open sprint milestone: its task view's issues, in order.
@@ -61,6 +63,9 @@ pub struct Library {
 	#[serde(default)]
 	pub scopes: BTreeMap<String, Scope>,
 	pub favorites: BTreeSet<Item>,
+	/// What is kept here, as an address names it: the same through a rename. Scopes are named by path.
+	#[serde(default)]
+	pub ids: BTreeMap<String, Item>,
 	/// What each kept copy was copied from.
 	#[serde(default)]
 	pub forks: Vec<Forked>,
@@ -106,6 +111,9 @@ pub struct OnScreen {
 	pub columns: BTreeMap<String, BTreeMap<GroupBy, Arrangement>>,
 	#[serde(default)]
 	pub tints: BTreeMap<String, BTreeMap<GroupBy, Tints>>,
+	/// The column layout each view's columns were last laid out as, per grouping; what was dragged since stands.
+	#[serde(default)]
+	pub laid: BTreeMap<String, BTreeMap<GroupBy, String>>,
 	/// The views whose columns are locked.
 	#[serde(default)]
 	pub locked: BTreeSet<String>,
@@ -530,6 +538,11 @@ pub enum LibraryEdit {
 		view: String,
 		by: GroupBy,
 		tints: Tints,
+	},
+	/// `view`'s columns as the column layout `columns`: its tints, and its arrangement of every band it keeps one for.
+	Lay {
+		view: String,
+		columns: String,
 	},
 	Locked {
 		view: String,

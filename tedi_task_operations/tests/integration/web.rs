@@ -177,6 +177,84 @@ fn a_library_keeps_each_band_and_its_names_straight() {
 	assert_eq!(library["workspaces"], serde_json::json!({ "other": { "Xl": "x" } }));
 }
 
+/// The id `of` (`{ids: {id: item}}`) gives `item`.
+fn id(of: &serde_json::Value, item: serde_json::Value) -> String {
+	let ids = of["ids"].as_object().expect("a map of ids").iter();
+	let held: Vec<&String> = ids.filter(|(_, held)| **held == item).map(|(id, _)| id).collect();
+	let [id] = held.as_slice() else { panic!("{item} has ids {held:?}") };
+	id.to_string()
+}
+
+#[test]
+fn an_object_keeps_its_id_through_a_rename() {
+	let ctx = TestContext::build();
+	let (_server, port) = serve(&ctx, BOARD, &["--viewer-header", "X-Auth-User"]);
+	let me = Some("alice");
+	let kept = |name: &str| serde_json::json!({ "Keep": { "Filter": { "view": view(name, "is:open"), "arranged_as": "Triage" } } });
+	assert_eq!(edit(port, me, kept("first")).0, 200);
+	let first = id(&library(port, me), serde_json::json!({ "View": "first" }));
+	assert_eq!(edit(port, me, kept("first")).0, 200);
+	assert_eq!(id(&library(port, me), serde_json::json!({ "View": "first" })), first, "kept again");
+
+	assert_eq!(edit(port, me, serde_json::json!({ "Rename": { "shelf": "Filters", "from": "first", "to": "second" } })).0, 200);
+	assert_eq!(id(&library(port, me), serde_json::json!({ "View": "second" })), first);
+	assert_eq!(edit(port, me, kept("first")).0, 200);
+	assert_ne!(id(&library(port, me), serde_json::json!({ "View": "first" })), first, "another view under the old name");
+
+	assert_eq!(edit(port, me, serde_json::json!({ "Drop": { "shelf": "Filters", "name": "second" } })).0, 200);
+	assert!(library(port, me)["ids"].get(&first).is_none(), "a dropped view's id names nothing");
+
+	assert_eq!(edit(port, me, keep_workspace("focus", "Xl", "{}")).0, 200);
+	id(&library(port, me), serde_json::json!({ "Workspace": "focus" }));
+}
+
+#[test]
+fn a_library_kept_before_ids_is_given_lasting_ones() {
+	let ctx = TestContext::build();
+	let (_server, port) = serve(&ctx, BOARD, &["--viewer-header", "X-Auth-User"]);
+	let me = Some("alice");
+	assert_eq!(edit(port, me, keep_workspace("focus", "Xl", "{}")).0, 200);
+	let file = ctx.xdg.inner.root.join("data/tedi/web/alice.json");
+	let mut old: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+	old.as_object_mut().unwrap().remove("ids");
+	std::fs::write(&file, old.to_string()).unwrap();
+
+	let given = id(&library(port, me), serde_json::json!({ "Workspace": "focus" }));
+	assert_eq!(edit(port, me, serde_json::json!({ "Favorite": { "what": { "Workspace": "focus" }, "on": true } })).0, 200);
+	assert_eq!(id(&library(port, me), serde_json::json!({ "Workspace": "focus" })), given);
+}
+
+#[test]
+fn a_view_is_laid_out_as_a_column_layout() {
+	let ctx = TestContext::build();
+	let board = format!("{BOARD}\n[board.columns.team]\nby = \"state:kanban\"\ntints = {{ triage = \"blue\" }}\n");
+	let (_server, port) = serve(&ctx, &board, &["--viewer-header", "X-Auth-User"]);
+	let me = Some("alice");
+	let columns = serde_json::json!({ "Keep": { "Columns": { "name": "mine", "by": "state:kanban", "band": "Xl", "layout": "tabbed", "tints": { "triage": "red" } } } });
+	assert_eq!(edit(port, me, columns).0, 200);
+	let lay = |columns: &str| serde_json::json!({ "Lay": { "view": "Triage", "columns": columns } });
+
+	assert_eq!(edit(port, me, lay("mine")).0, 200);
+	let on_screen = &library(port, me)["on_screen"];
+	assert_eq!(on_screen["columns"]["Triage"]["state:kanban"], serde_json::json!({ "Xl": "tabbed" }));
+	assert_eq!(on_screen["tints"]["Triage"]["state:kanban"], serde_json::json!({ "triage": "red" }));
+	assert_eq!(on_screen["laid"]["Triage"]["state:kanban"], "mine");
+
+	let (status, body) = edit(port, me, serde_json::json!({ "Rename": { "shelf": "Columns", "from": "mine", "to": "ours" } }));
+	assert_eq!(status, 200, "{body}");
+	assert_eq!(library(port, me)["on_screen"]["laid"]["Triage"]["state:kanban"], "ours");
+
+	assert_eq!(edit(port, me, lay("team")).0, 200);
+	let on_screen = &library(port, me)["on_screen"];
+	assert_eq!(on_screen["columns"]["Triage"]["state:kanban"], serde_json::json!({ "Xl": "tabbed" }), "it arranges no band");
+	assert_eq!(on_screen["tints"]["Triage"]["state:kanban"], serde_json::json!({ "triage": "blue" }));
+	assert_ne!(edit(port, me, lay("nowhere")).0, 200);
+
+	assert_eq!(edit(port, me, lay("ours")).0, 200);
+	assert_eq!(edit(port, me, serde_json::json!({ "Drop": { "shelf": "Columns", "name": "ours" } })).0, 200);
+	assert_eq!(library(port, me)["on_screen"]["laid"]["Triage"], serde_json::json!({}), "the layout it named is gone");
+}
+
 #[test]
 fn a_view_kept_under_a_new_name_keeps_its_columns() {
 	let ctx = TestContext::build();

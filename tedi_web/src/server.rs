@@ -119,6 +119,7 @@ pub async fn setup() -> Result<Setup> {
 		scopes: s.scopes.clone(),
 		columns: s.columns.clone(),
 		workspaces: s.workspaces.clone(),
+		ids: addressed(team_items(s).into_keys()).map(|item| (id("team", &item), item)).collect(),
 		sprints: match s.milestones {
 			Some(repo) => sprints(repo).await?,
 			None => Vec::new(),
@@ -610,7 +611,15 @@ fn library_file(key: &str) -> PathBuf {
 fn read_library(key: &str) -> Result<Library> {
 	let file = library_file(key);
 	match std::fs::read_to_string(&file) {
-		Ok(json) => serde_json::from_str(&json).wrap_err_with(|| format!("{} doesn't read as a library", file.display())),
+		Ok(json) => {
+			let mut library: Library = serde_json::from_str(&json).wrap_err_with(|| format!("{} doesn't read as a library", file.display()))?;
+			for item in addressed(kept_items(&library).into_iter()) {
+				if !library.ids.values().any(|held| *held == item) {
+					library.ids.insert(id(key, &item), item); // kept before ids were; a rename writes it down
+				}
+			}
+			Ok(library)
+		}
 		Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Library::default()), // a viewer who never kept anything
 		Err(e) => Err(e.into()),
 	}
@@ -641,6 +650,18 @@ fn apply(library: &mut Library, edit: LibraryEdit, fetched: Option<Fetched>) -> 
 		}
 		LibraryEdit::Viewed(view) => _ = library.on_screen.views.insert(view.name.clone(), view),
 		LibraryEdit::Tinted { view, by, tints } => _ = library.on_screen.tints.entry(view).or_default().insert(by, tints),
+		LibraryEdit::Lay { view, columns } => {
+			let laid = library
+				.columns
+				.get(&columns)
+				.or_else(|| settings().columns.get(&columns))
+				.cloned()
+				.ok_or_else(|| eyre!("no column layout {columns}"))?;
+			let on_screen = &mut library.on_screen;
+			on_screen.columns.entry(view.clone()).or_default().entry(laid.by.clone()).or_default().extend(laid.layout);
+			on_screen.tints.entry(view.clone()).or_default().insert(laid.by.clone(), laid.tints);
+			on_screen.laid.entry(view).or_default().insert(laid.by, columns);
+		}
 		LibraryEdit::Locked { view, locked: true } => _ = library.on_screen.locked.insert(view),
 		LibraryEdit::Locked { view, locked: false } => _ = library.on_screen.locked.remove(&view),
 		LibraryEdit::Keep(Kept::Filter { view, arranged_as }) => {
@@ -651,6 +672,9 @@ fn apply(library: &mut Library, edit: LibraryEdit, fetched: Option<Fetched>) -> 
 			}
 			if let Some(tints) = library.on_screen.tints.get(&arranged_as).cloned() {
 				library.on_screen.tints.insert(name.clone(), tints);
+			}
+			if let Some(laid) = library.on_screen.laid.get(&arranged_as).cloned() {
+				library.on_screen.laid.insert(name.clone(), laid);
 			}
 			if library.on_screen.locked.contains(&arranged_as) {
 				library.on_screen.locked.insert(name.clone());
@@ -702,7 +726,9 @@ fn apply(library: &mut Library, edit: LibraryEdit, fetched: Option<Fetched>) -> 
 				bail!("{to} is taken");
 			}
 			let construction = kept(library, &old).ok_or_else(|| eyre!("{from} is not kept"))?;
+			let id = library.ids.iter().find(|(_, held)| **held == old).map(|(id, _)| id.clone()).expect("every kept object but a scope has one");
 			drop_kept(library, &old);
+			library.ids.insert(id, new.clone());
 			put(library, &new, construction);
 			match shelf {
 				Shelf::Filters => {
@@ -711,6 +737,9 @@ fn apply(library: &mut Library, edit: LibraryEdit, fetched: Option<Fetched>) -> 
 					}
 					if let Some(tints) = library.on_screen.tints.remove(&from) {
 						library.on_screen.tints.insert(to.clone(), tints);
+					}
+					if let Some(laid) = library.on_screen.laid.remove(&from) {
+						library.on_screen.laid.insert(to.clone(), laid);
 					}
 					if library.on_screen.locked.remove(&from) {
 						library.on_screen.locked.insert(to.clone());
@@ -728,7 +757,10 @@ fn apply(library: &mut Library, edit: LibraryEdit, fetched: Option<Fetched>) -> 
 						*name = to.clone();
 					}
 				}
-				Shelf::Columns => {}
+				Shelf::Columns =>
+					for name in library.on_screen.laid.values_mut().flat_map(BTreeMap::values_mut).filter(|n| **n == from) {
+						*name = to.clone();
+					},
 				Shelf::Scopes => unreachable!("renamed above"),
 			}
 			if library.favorites.remove(&old) {
@@ -759,6 +791,10 @@ fn apply(library: &mut Library, edit: LibraryEdit, fetched: Option<Fetched>) -> 
 					}
 					library.recent.retain(|n| *n != name);
 				}
+				Shelf::Columns =>
+					for laid in library.on_screen.laid.values_mut() {
+						laid.retain(|_, n| *n != name);
+					},
 				_ => {}
 			}
 			library.favorites.remove(&item);
@@ -927,7 +963,24 @@ fn kept(library: &Library, item: &Item) -> Option<Construction> {
 	}
 }
 
+/// What an address names by id: all but scopes, which it names by path.
+fn addressed(items: impl Iterator<Item = Item>) -> impl Iterator<Item = Item> {
+	items.filter(|item| item.shelf() != Shelf::Scopes)
+}
+
+/// Eight letters and digits for `item`, the same for the same `seed`.
+fn id(seed: &str, item: &Item) -> String {
+	use sha2::Digest as _;
+	const DIGITS: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+	let hash = sha2::Sha256::digest(format!("{seed}\n{}\n{}", item.shelf(), item.name()));
+	hash.iter().take(8).map(|b| DIGITS[usize::from(*b) % DIGITS.len()] as char).collect()
+}
+
 fn put(library: &mut Library, item: &Item, construction: Construction) {
+	if item.shelf() != Shelf::Scopes && !library.ids.values().any(|held| held == item) {
+		// seeded by the moment: the name's last holder may still hold its id, renamed
+		library.ids.insert(id(&jiff::Timestamp::now().as_nanosecond().to_string(), item), item.clone());
+	}
 	let name = item.name().to_string();
 	match (item, construction) {
 		(Item::View(_), Construction::View(v)) => _ = library.filters.insert(name, v),
@@ -940,6 +993,7 @@ fn put(library: &mut Library, item: &Item, construction: Construction) {
 
 /// Whether it was kept.
 fn drop_kept(library: &mut Library, item: &Item) -> bool {
+	library.ids.retain(|_, held| held != item);
 	let name = item.name();
 	match item {
 		Item::View(_) => library.filters.remove(name).is_some(),
