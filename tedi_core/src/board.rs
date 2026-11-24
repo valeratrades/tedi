@@ -1,6 +1,5 @@
-//! The board: every stored issue as a card, a query over them, and views — named queries with a
-//! grouping and an order. Pure over cards; reading them from the store and editing them
-//! through the sync are the operations' business.
+//! The board: every stored issue as a card, a query over them, their order and grouping. Pure over cards;
+//! reading them from the store and editing them through the sync are the operations' business.
 
 use std::{
 	collections::{BTreeMap, HashMap, HashSet},
@@ -143,7 +142,7 @@ pub struct Hit {
 	pub states: BTreeMap<String, State>,
 }
 
-/// A view, or a query, as a task view lists it: no pull requests.
+/// A query as a task view lists it: no pull requests.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct Listing {
 	pub query: String,
@@ -216,6 +215,8 @@ pub enum QueryError {
 	Is(String),
 	#[error("{0}: takes a value")]
 	Empty(Facet),
+	#[error("only clauses (repo:, is:, t:, …) narrow here, and {0:?} is free text")]
+	Text(String),
 	#[error(transparent)]
 	Search(#[from] tedi_utils::search::SearchError),
 }
@@ -223,7 +224,8 @@ pub enum QueryError {
 /// `repo:EV-Service-Arb/*,EV-Main/tilers assignee:@me state:kanban/triage,kanban/selected -t:chore i:>=5,none h:<=8 is:blocked label:x free text`.
 /// Clauses AND, the values of one OR, a `-` clause holds none of them; `none` is a value unset.
 /// What isn't a clause is free text, ranked by `tedi_utils::search`.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[serde(try_from = "String", into = "String")]
 pub struct Query {
 	clauses: Vec<Clause>,
 	text: String,
@@ -288,9 +290,7 @@ impl Query {
 		})
 	}
 
-	/// Narrowed further by `within`'s clauses (a scope's).
-	pub fn narrow(&mut self, within: &Query) {
-		assert!(within.text.is_empty(), "a scope narrows by clauses, never by text");
+	pub fn narrow(&mut self, within: &Terms) {
 		self.clauses.extend(within.clauses.iter().cloned());
 	}
 
@@ -309,11 +309,10 @@ impl Query {
 
 	/// Every value of `facet` the query's hits `within` take, with the facet's own clauses lifted (never
 	/// `within`'s), most taken first; and each value those clauses pick, taken or not.
-	pub fn tally(&self, facet: Facet, within: &Query, cards: &[Card], me: Option<&str>) -> Result<Vec<Tally>, QueryError> {
+	pub fn tally(&self, facet: Facet, within: &Terms, cards: &[Card], me: Option<&str>) -> Result<Vec<Tally>, QueryError> {
 		let mut rest = self.clone();
 		rest.clear(facet);
-		assert!(within.text.is_empty(), "a scope narrows by clauses, never by text");
-		rest.clauses.extend(within.clauses.iter().cloned());
+		rest.narrow(within);
 		let hits = rest.run(cards, me)?;
 		let open = open(cards);
 		let mut counted: Vec<(Filter, usize)> = Vec::new();
@@ -353,15 +352,25 @@ pub struct Tally {
 	pub picked: Option<bool>,
 }
 
-/// A named query, and how its result is grouped and ordered.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct View {
-	pub name: String,
-	pub query: String,
-	pub group_by: GroupBy,
-	pub sort: Order,
-	/// What a card shows beside its title, in this order.
-	pub shown: Vec<Shown>,
+/// A query of clauses alone.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize, derive_more::Deref)]
+#[serde(try_from = "String", into = "String")]
+pub struct Terms(Query);
+impl FromStr for Terms {
+	type Err = QueryError;
+
+	fn from_str(s: &str) -> Result<Self, QueryError> {
+		let query: Query = s.parse()?;
+		match query.text.is_empty() {
+			true => Ok(Terms(query)),
+			false => Err(QueryError::Text(query.text)),
+		}
+	}
+}
+impl std::fmt::Display for Terms {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		self.0.fmt(f)
+	}
 }
 
 /// How a view splits its cards: by `state:<workflow>`, `repo`, `assignee`, `type`, `importance` or `nothing`.
@@ -503,18 +512,19 @@ pub enum Shown {
 	Sprint,
 	Updated,
 }
-/// A named slice of the team's repos, nesting narrower ones: it covers its own `repos` (`owner/repo`,
-/// `owner/*`) and those of every scope inside it. It narrows; which views exist is none of its business.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+/// A named starting point: the terms narrowing to its own `repos` (`owner/repo`, `owner/*`) with those of every scope
+/// inside it, and to its own `terms`.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct Scope {
-	#[serde(default)] // a scope may only group nested ones
+	#[serde(default, skip_serializing_if = "Vec::is_empty")] // a scope may only group nested ones, or only hold terms
 	pub repos: Vec<String>,
+	#[serde(default, skip_serializing_if = "unset")] // a scope may only cover repos
+	pub terms: Terms,
 	#[serde(flatten)]
 	pub children: BTreeMap<String, Scope>,
 }
 impl Scope {
-	/// The `repo:` filter matching every repo this scope covers.
-	pub fn filter(&self) -> String {
+	pub fn filter(&self) -> Terms {
 		fn collect<'a>(scope: &'a Scope, out: &mut Vec<&'a str>) {
 			out.extend(scope.repos.iter().map(String::as_str));
 			for child in scope.children.values() {
@@ -523,19 +533,42 @@ impl Scope {
 		}
 		let mut repos = Vec::new();
 		collect(self, &mut repos);
-		assert!(!repos.is_empty(), "a configured scope names at least one repo, itself or nested");
-		format!("repo:{}", repos.join(","))
+		let mut filter = Terms::default();
+		if !repos.is_empty() {
+			filter.0.clauses.push(Clause {
+				negated: false,
+				any: repos.into_iter().map(|r| Filter::Repo(r.to_string())).collect(),
+			});
+		}
+		filter.0.narrow(&self.terms);
+		filter
+	}
+
+	/// What it lacks to be one: it holds neither repos, nor terms, nor another scope.
+	pub fn is_empty(&self) -> bool {
+		self.repos.is_empty() && unset(&self.terms) && self.children.is_empty()
+	}
+}
+/// Its first `repo:` clause as repos, what else it narrows by as terms.
+impl From<Terms> for Scope {
+	fn from(Terms(mut query): Terms) -> Self {
+		let repos = query.clauses.iter().position(|c| c.facet() == Facet::Repo && !c.negated).map(|at| query.clauses.remove(at));
+		Scope {
+			repos: repos.map_or_else(Vec::new, |c| c.any.iter().map(ToString::to_string).collect()), // it narrows by no repo
+			terms: Terms(query),
+			children: BTreeMap::new(),
+		}
 	}
 }
 
-/// The `repo:` filter of the scope at `path` (names ` / `-joined).
-pub fn scope_at(scopes: &BTreeMap<String, Scope>, path: &str) -> Option<String> {
+/// The scope at `path` (names ` / `-joined).
+pub fn scope_at<'a>(scopes: &'a BTreeMap<String, Scope>, path: &str) -> Option<&'a Scope> {
 	let (mut level, mut at) = (scopes, None);
 	for name in path.split(" / ") {
 		let scope = level.get(name)?;
 		(level, at) = (&scope.children, Some(scope));
 	}
-	Some(at?.filter())
+	at
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -630,6 +663,10 @@ pub fn group(cards: &[Card], hits: &[usize], by: &GroupBy, workflows: &Trees) ->
 			(key, lift(&blockers, own, brought))
 		})
 		.collect())
+}
+
+fn unset(terms: &Terms) -> bool {
+	terms.clauses.is_empty()
 }
 
 /// `own` in its order, each card right below whichever of `own` and `lifted` block it, through others too;
@@ -830,6 +867,31 @@ impl FromStr for Query {
 		}
 		query.text = text.join(" ");
 		Ok(query)
+	}
+}
+
+impl TryFrom<String> for Query {
+	type Error = QueryError;
+
+	fn try_from(s: String) -> Result<Self, QueryError> {
+		s.parse()
+	}
+}
+impl From<Query> for String {
+	fn from(query: Query) -> String {
+		query.to_string()
+	}
+}
+impl TryFrom<String> for Terms {
+	type Error = QueryError;
+
+	fn try_from(s: String) -> Result<Self, QueryError> {
+		s.parse()
+	}
+}
+impl From<Terms> for String {
+	fn from(terms: Terms) -> String {
+		terms.to_string()
 	}
 }
 
@@ -1189,7 +1251,7 @@ mod tests {
 		]
 		.into_iter()
 		.map(|(q, facet)| {
-			let tallies = q.parse::<Query>().unwrap().tally(facet, &Query::default(), &cards, None).unwrap();
+			let tallies = q.parse::<Query>().unwrap().tally(facet, &Terms::default(), &cards, None).unwrap();
 			let shown: Vec<String> = tallies
 				.iter()
 				.map(|t| {
@@ -1220,7 +1282,7 @@ mod tests {
 	#[test]
 	fn tally_never_lifts_the_scope() {
 		let cards = cards();
-		let within: Query = "repo:o/app".parse().unwrap();
+		let within: Terms = "repo:o/app".parse().unwrap();
 		let out: Vec<String> = [("", Facet::Repo), ("repo:o/lib", Facet::Repo), ("", Facet::Is)]
 			.into_iter()
 			.map(|(q, facet)| {
@@ -1243,7 +1305,7 @@ mod tests {
 	fn a_tallied_value_picks_what_it_counted() {
 		let cards = cards();
 		for facet in <Facet as strum::IntoEnumIterator>::iter() {
-			for t in Query::default().tally(facet, &Query::default(), &cards, None).unwrap() {
+			for t in Query::default().tally(facet, &Terms::default(), &cards, None).unwrap() {
 				let mut q = Query::default();
 				q.toggle(facet, &t.value, false).unwrap();
 				assert_eq!(q.run(&cards, None).unwrap().len(), t.count, "{q}");

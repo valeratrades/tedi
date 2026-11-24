@@ -8,7 +8,7 @@ use dioxus_fullstack::{HeaderMap, HeaderValue, http::header::CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
 use tedi_core::{
 	IssueLink, MilestoneLink,
-	board::{Answer, GroupBy, Listing, Scope, Thread, View},
+	board::{Answer, GroupBy, Listing, Order, Query, Scope, Shown, Sort, SortKey, Terms, Thread},
 	conflict::{CommentEdit, Edited, FieldEdit},
 	workflow::{State, Trees},
 };
@@ -34,28 +34,104 @@ pub struct Setup {
 	/// The team's columns, offered beside each viewer's own.
 	pub columns: BTreeMap<String, Columns>,
 	/// The team's workspaces, offered beside each viewer's own.
-	pub workspaces: BTreeMap<String, Arrangement>,
+	pub workspaces: BTreeMap<String, Workspace>,
 	/// The team's, as an address names them.
 	pub ids: BTreeMap<String, Item>,
 }
 
-/// One viewer's board as they left it, and the filters and arrangements they keep, each kept by
-/// copy: switching to one copies it onto the screen, saving copies the screen's band out.
+/// How the groups of a grouping are boxed.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+pub struct Boxes {
+	#[serde(default, skip_serializing_if = "BTreeMap::is_empty")] // a band without one seeds a box per group
+	pub arrangement: Arrangement,
+	#[serde(default, skip_serializing_if = "BTreeMap::is_empty")] // untinted
+	pub tints: Tints,
+	/// The groups not shown: one that appears later is.
+	#[serde(default, skip_serializing_if = "BTreeSet::is_empty")] // all are shown
+	pub hidden: BTreeSet<String>,
+}
+
+/// How cards are shown; which, and in what order, is the lens's.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct View {
+	pub name: String,
+	pub group_by: GroupBy,
+	/// What a card shows beside its title, in this order.
+	pub shown: Vec<Shown>,
+	#[serde(flatten)]
+	pub boxes: Boxes,
+}
+impl View {
+	pub fn set(&mut self, part: ViewPart) {
+		match part {
+			ViewPart::GroupBy(by) if by == self.group_by => {}
+			ViewPart::GroupBy(by) => (self.group_by, self.boxes) = (by, Boxes::default()),
+			ViewPart::Shown(shown) => self.shown = shown,
+			ViewPart::Arrangement { band, layout } => _ = self.boxes.arrangement.insert(band, layout),
+			ViewPart::Tints(tints) => self.boxes.tints = tints,
+			ViewPart::Hidden(hidden) => self.boxes.hidden = hidden,
+		}
+	}
+}
+
+/// A view's boxes, kept for the grouping whose groups they box.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct Columns {
+	pub by: GroupBy,
+	#[serde(flatten)]
+	pub boxes: Boxes,
+}
+
+/// Which cards every tile of a workspace shows, and in what order.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct Lens {
+	pub scope: Terms,
+	pub search: Query,
+	pub sort: Order,
+}
+impl Default for Lens {
+	fn default() -> Self {
+		Self {
+			scope: Terms::default(),
+			search: Query::default(),
+			sort: vec![Sort { by: SortKey::Rank, reversed: false }].into(), // the query's own order
+		}
+	}
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+pub struct Workspace {
+	pub tiles: Arrangement,
+	pub lens: Lens,
+}
+impl Workspace {
+	pub fn set(&mut self, part: WorkspacePart) {
+		match part {
+			WorkspacePart::Tiles { band, layout } => _ = self.tiles.insert(band, layout),
+			WorkspacePart::Scope(scope) => self.lens.scope = scope,
+			WorkspacePart::Search(search) => self.lens.search = search,
+			WorkspacePart::Sort(sort) => self.lens.sort = sort,
+		}
+	}
+}
+
+/// What one viewer keeps, each by copy, and what they have on screen.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct Library {
-	/// What everything on screen is narrowed to, by path; none: the whole store.
-	#[serde(default)]
-	pub scope: Option<String>,
-	/// The workspace last switched to, by name; none: the screen is no kept workspace's.
-	#[serde(default)]
+	/// The workspace last selected, by name: what a bare address opens. None: the last one selected is gone.
 	pub workspace: Option<String>,
-	pub on_screen: OnScreen,
-	pub filters: BTreeMap<String, View>,
-	pub workspaces: BTreeMap<String, Arrangement>,
+	pub views: BTreeMap<String, View>,
+	pub workspaces: BTreeMap<String, Workspace>,
 	pub columns: BTreeMap<String, Columns>,
 	/// Beside the team's, never named as one of theirs.
-	#[serde(default)]
 	pub scopes: BTreeMap<String, Scope>,
+	pub drafts: Drafts,
+	/// The column layout each view was last laid out as, under the grouping it shows; what was dragged since stands.
+	#[serde(default)]
+	pub laid: BTreeMap<String, String>,
+	/// The views whose columns are locked.
+	#[serde(default)]
+	pub locked: BTreeSet<String>,
 	pub favorites: BTreeSet<Item>,
 	/// What is kept here, as an address names it: the same through a rename. Scopes are named by path.
 	#[serde(default)]
@@ -63,17 +139,29 @@ pub struct Library {
 	/// What each kept copy was copied from.
 	#[serde(default)]
 	pub forks: Vec<Forked>,
-	/// Workspaces switched to, the latest first, at most 9.
+	/// Workspaces selected, the latest first, at most 9.
 	#[serde(default)]
 	pub recent: Vec<String>,
-	/// When arranging the screen last wrote the current workspace.
+	/// When each workspace was last edited.
 	#[serde(default)]
-	pub autosaved: Option<jiff::Timestamp>,
+	pub autosaved: BTreeMap<String, jiff::Timestamp>,
 	/// Links opened, the latest first: shared with this viewer.
 	#[serde(default)]
 	pub received: Vec<ShareLink>,
 }
 impl Library {
+	/// `name` as last edited: the viewer's own, or the team's.
+	pub fn view(&self, team: &[View], name: &str) -> Option<View> {
+		let kept = self.views.get(name).or_else(|| team.iter().find(|v| v.name == name))?;
+		Some(self.drafts.views.get(name).unwrap_or(kept).clone()) // undrafted: as kept
+	}
+
+	/// `name` as last edited: the viewer's own, or the team's.
+	pub fn workspace(&self, team: &BTreeMap<String, Workspace>, name: &str) -> Option<Workspace> {
+		let kept = self.workspaces.get(name).or_else(|| team.get(name))?;
+		Some(self.drafts.workspaces.get(name).unwrap_or(kept).clone()) // undrafted: as kept
+	}
+
 	/// The team's scopes with the viewer's own in them, each at its path (`EV / core`); a parent gone from the
 	/// team's config leaves its own scope nowhere to sit, which is the error.
 	pub fn scopes(&self, team: &BTreeMap<String, Scope>) -> Result<BTreeMap<String, Scope>, String> {
@@ -95,32 +183,35 @@ impl Library {
 	}
 }
 
-#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
-pub struct OnScreen {
-	pub tiles: Arrangement,
-	/// Each view as last edited: it reopens so.
-	#[serde(default)]
-	pub views: BTreeMap<String, View>,
-	/// Each view's columns, per grouping.
-	pub columns: BTreeMap<String, BTreeMap<GroupBy, Arrangement>>,
-	#[serde(default)]
-	pub tints: BTreeMap<String, BTreeMap<GroupBy, Tints>>,
-	/// The column layout each view's columns were last laid out as, per grouping; what was dragged since stands.
-	#[serde(default)]
-	pub laid: BTreeMap<String, BTreeMap<GroupBy, String>>,
-	/// The views whose columns are locked.
-	#[serde(default)]
-	pub locked: BTreeSet<String>,
+/// A viewer's who never opened the board.
+impl Default for Library {
+	fn default() -> Self {
+		let first = "ws 1".to_string();
+		Self {
+			workspace: Some(first.clone()),
+			views: BTreeMap::new(),
+			workspaces: BTreeMap::from([(first, Workspace::default())]),
+			columns: BTreeMap::new(),
+			scopes: BTreeMap::new(),
+			drafts: Drafts::default(),
+			laid: BTreeMap::new(),
+			locked: BTreeSet::new(),
+			favorites: BTreeSet::new(),
+			ids: BTreeMap::new(),
+			forks: Vec::new(),
+			recent: Vec::new(),
+			autosaved: BTreeMap::new(),
+			received: Vec::new(),
+		}
+	}
 }
 
-/// A view's columns, kept for the grouping whose keys they are.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub struct Columns {
-	pub by: GroupBy,
-	#[serde(default)]
-	pub layout: Arrangement,
-	#[serde(default)]
-	pub tints: Tints,
+/// What is kept elsewhere, as last edited, where it differs.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+pub struct Drafts {
+	pub views: BTreeMap<String, View>,
+	/// The team's: the viewer's own are written as they are edited.
+	pub workspaces: BTreeMap<String, Workspace>,
 }
 
 /// Notion's palette.
@@ -151,7 +242,7 @@ pub enum Item {
 impl Item {
 	pub fn new(shelf: Shelf, name: String) -> Self {
 		match shelf {
-			Shelf::Filters => Item::View(name),
+			Shelf::Views => Item::View(name),
 			Shelf::Workspaces => Item::Workspace(name),
 			Shelf::Columns => Item::Columns(name),
 			Shelf::Scopes => Item::Scope(name),
@@ -160,7 +251,7 @@ impl Item {
 
 	pub fn shelf(&self) -> Shelf {
 		match self {
-			Item::View(_) => Shelf::Filters,
+			Item::View(_) => Shelf::Views,
 			Item::Scope(_) => Shelf::Scopes,
 			Item::Workspace(_) => Shelf::Workspaces,
 			Item::Columns(_) => Shelf::Columns,
@@ -178,7 +269,7 @@ impl Item {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, strum::Display, strum::EnumIter, strum::EnumString)]
 pub enum Shelf {
 	#[strum(serialize = "view")]
-	Filters,
+	Views,
 	#[strum(serialize = "ws")]
 	Workspaces,
 	#[strum(serialize = "columns")]
@@ -208,12 +299,12 @@ impl std::fmt::Display for Owner {
 pub enum Construction {
 	View(View),
 	Scope(Scope),
-	Workspace(Arrangement),
+	Workspace(Workspace),
 	Columns(Columns),
 }
 
 /// Every object these hold, a scope at each of its paths.
-pub fn constructions(views: &[View], scopes: &BTreeMap<String, Scope>, columns: &BTreeMap<String, Columns>, workspaces: &BTreeMap<String, Arrangement>) -> BTreeMap<Item, Construction> {
+pub fn constructions(views: &[View], scopes: &BTreeMap<String, Scope>, columns: &BTreeMap<String, Columns>, workspaces: &BTreeMap<String, Workspace>) -> BTreeMap<Item, Construction> {
 	fn walk(at: &str, scopes: &BTreeMap<String, Scope>, out: &mut BTreeMap<Item, Construction>) {
 		for (name, scope) in scopes {
 			let path = if at.is_empty() { name.clone() } else { format!("{at} / {name}") };
@@ -245,8 +336,8 @@ pub struct Forked {
 	pub upstream: Upstream,
 }
 
-/// `/l/{view|scope|ws|columns}/{owner}/{name}@{version}?bands=md,xl&scope=…`: one version of a library
-/// object, read-only to whoever opens it until they fork it; the scope is the sharer's, which the receiver may drop.
+/// `/l/{view|scope|ws|columns}/{owner}/{name}@{version}?bands=md,xl`: one version of a library object, read-only
+/// to whoever opens it until they fork it.
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct ShareLink {
@@ -255,21 +346,13 @@ pub struct ShareLink {
 	pub version: u32,
 	/// A workspace's: the bands it carries; none for anything else.
 	pub bands: Vec<Band>,
-	pub scope: Option<String>,
 }
 impl std::fmt::Display for ShareLink {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		let enc = |s: &str| urlencoding::encode(s).into_owned();
 		write!(f, "/l/{}/{}/{}@{}", self.item.shelf(), enc(&self.owner.to_string()), enc(self.item.name()), self.version)?;
-		let mut query = Vec::new();
 		if !self.bands.is_empty() {
-			query.push(format!("bands={}", self.bands.iter().map(|b| band_name(*b)).collect::<Vec<_>>().join(",")));
-		}
-		if let Some(scope) = &self.scope {
-			query.push(format!("scope={}", enc(scope)));
-		}
-		if !query.is_empty() {
-			write!(f, "?{}", query.join("&"))?;
+			write!(f, "?bands={}", self.bands.iter().map(|b| band_name(*b)).collect::<Vec<_>>().join(","))?;
 		}
 		Ok(())
 	}
@@ -292,20 +375,18 @@ impl std::str::FromStr for ShareLink {
 			"team" => Owner::Team,
 			viewer => Owner::Viewer(viewer.to_string()),
 		};
-		let (mut bands, mut scope) = (Vec::new(), None);
-		for pair in query.split('&').filter(|p| !p.is_empty()) {
-			match pair.split_once('=').ok_or_else(bad)? {
-				("bands", list) => bands = list.split(',').map(|b| band_named(b).ok_or_else(bad)).collect::<Result<_, _>>()?,
-				("scope", path) => scope = Some(dec(path)?),
-				_ => return Err(bad()),
+		let bands = match query {
+			"" => Vec::new(),
+			_ => {
+				let list = query.strip_prefix("bands=").ok_or_else(bad)?;
+				list.split(',').map(|b| band_named(b).ok_or_else(bad)).collect::<Result<_, _>>()?
 			}
-		}
+		};
 		Ok(ShareLink {
 			item: Item::new(shelf, dec(name)?),
 			owner,
 			version: version.parse().map_err(|_| bad())?,
 			bands,
-			scope,
 		})
 	}
 }
@@ -379,7 +460,7 @@ pub struct Entry {
 /// Counted over every viewer's library.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct Usage {
-	/// Viewers whose library refers to it: on screen, in a workspace, as the scope, a favorite or a fork.
+	/// Viewers whose library refers to it: in a workspace, as the one selected, a favorite or a fork.
 	pub viewers: u32,
 	pub forks: u32,
 	pub favorites: u32,
@@ -415,46 +496,55 @@ pub enum Sign {
 	Changed,
 }
 
-/// What turns `from` into `to`, line by line: query clauses, fields, repos, tints, bands.
+/// What turns `from` into `to`, line by line: clauses, fields, repos, tints, bands.
 pub fn diff(from: &Construction, to: &Construction) -> Vec<Change> {
 	let mut out = Vec::new();
 	let mut push = |sign, text: String| out.push(Change { sign, text });
-	fn sets<'a>(from: impl IntoIterator<Item = &'a str>, to: impl IntoIterator<Item = &'a str>) -> (Vec<&'a str>, Vec<&'a str>) {
-		let (from, to): (Vec<&str>, Vec<&str>) = (from.into_iter().collect(), to.into_iter().collect());
-		(
-			to.iter().filter(|t| !from.contains(t)).copied().collect(),
-			from.iter().filter(|f| !to.contains(f)).copied().collect(),
-		)
+	fn sets<T: PartialEq + ToString>(label: &str, from: impl IntoIterator<Item = T>, to: impl IntoIterator<Item = T>, push: &mut dyn FnMut(Sign, String)) {
+		let (from, to): (Vec<T>, Vec<T>) = (from.into_iter().collect(), to.into_iter().collect());
+		to.iter().filter(|t| !from.contains(t)).for_each(|t| push(Sign::Added, format!("{label}{}", t.to_string())));
+		from.iter().filter(|f| !to.contains(f)).for_each(|f| push(Sign::Removed, format!("{label}{}", f.to_string())));
+	}
+	fn arrangements(from: &Arrangement, to: &Arrangement, push: &mut dyn FnMut(Sign, String)) {
+		for band in from.keys().chain(to.keys()).collect::<BTreeSet<_>>() {
+			let sign = match (from.get(band), to.get(band)) {
+				(None, Some(_)) => Sign::Added,
+				(Some(_), None) => Sign::Removed,
+				(a, b) if a != b => Sign::Changed,
+				_ => continue,
+			};
+			push(sign, format!("{} arrangement", band_name(*band)));
+		}
+	}
+	fn boxes(from: &Boxes, to: &Boxes, push: &mut dyn FnMut(Sign, String)) {
+		for group in from.tints.keys().chain(to.tints.keys()).collect::<BTreeSet<_>>() {
+			match (from.tints.get(group), to.tints.get(group)) {
+				(None, Some(t)) => push(Sign::Added, format!("{group} {t}")),
+				(Some(t), None) => push(Sign::Removed, format!("{group} {t}")),
+				(Some(x), Some(y)) if x != y => push(Sign::Changed, format!("{group} {x} → {y}")),
+				_ => {}
+			}
+		}
+		sets("hidden: ", &from.hidden, &to.hidden, push);
+		arrangements(&from.arrangement, &to.arrangement, push);
+	}
+	fn clauses(query: &Query) -> Vec<String> {
+		query.to_string().split_whitespace().map(str::to_string).collect()
 	}
 	match (from, to) {
 		(Construction::View(a), Construction::View(b)) => {
-			let (added, removed) = sets(a.query.split_whitespace(), b.query.split_whitespace());
-			added.into_iter().for_each(|c| push(Sign::Added, c.to_string()));
-			removed.into_iter().for_each(|c| push(Sign::Removed, c.to_string()));
 			if a.group_by != b.group_by {
 				push(Sign::Changed, format!("group_by {} → {}", a.group_by, b.group_by));
 			}
-			if a.sort != b.sort {
-				push(Sign::Changed, format!("sort {} → {}", a.sort, b.sort));
-			}
-			let (fa, fb): (Vec<String>, Vec<String>) = (a.shown.iter().cloned().map(String::from).collect(), b.shown.iter().cloned().map(String::from).collect());
-			let (added, removed) = sets(fa.iter().map(String::as_str), fb.iter().map(String::as_str));
-			added.into_iter().for_each(|f| push(Sign::Added, format!("field: {f}")));
-			removed.into_iter().for_each(|f| push(Sign::Removed, format!("field: {f}")));
+			sets("field: ", &a.shown, &b.shown, &mut push);
+			boxes(&a.boxes, &b.boxes, &mut push);
 		}
 		(Construction::Scope(a), Construction::Scope(b)) => {
 			fn walk(at: &str, a: Option<&Scope>, b: Option<&Scope>, push: &mut dyn FnMut(Sign, String)) {
-				let empty = Scope {
-					repos: Vec::new(),
-					children: BTreeMap::new(),
-				};
-				let (a, b) = (a.unwrap_or(&empty), b.unwrap_or(&empty));
-				for repo in b.repos.iter().filter(|r| !a.repos.contains(r)) {
-					push(Sign::Added, format!("{at}repo:{repo}"));
-				}
-				for repo in a.repos.iter().filter(|r| !b.repos.contains(r)) {
-					push(Sign::Removed, format!("{at}repo:{repo}"));
-				}
+				let empty = Scope::default();
+				let (a, b) = (a.unwrap_or(&empty), b.unwrap_or(&empty)); // on one side only: all of it is added or removed
+				sets(&format!("{at}repo:"), &a.repos, &b.repos, push);
+				sets(at, clauses(&a.terms), clauses(&b.terms), push);
 				for name in a.children.keys().chain(b.children.keys()).collect::<BTreeSet<_>>() {
 					let (ca, cb) = (a.children.get(name), b.children.get(name));
 					match (ca, cb) {
@@ -467,32 +557,19 @@ pub fn diff(from: &Construction, to: &Construction) -> Vec<Change> {
 			}
 			walk("", Some(a), Some(b), &mut push);
 		}
-		(Construction::Workspace(a), Construction::Workspace(b)) =>
-			for band in a.keys().chain(b.keys()).collect::<BTreeSet<_>>() {
-				match (a.get(band), b.get(band)) {
-					(None, Some(_)) => push(Sign::Added, format!("{} arrangement", band_name(*band))),
-					(Some(_), None) => push(Sign::Removed, format!("{} arrangement", band_name(*band))),
-					(Some(x), Some(y)) if x != y => push(Sign::Changed, format!("{} arrangement", band_name(*band))),
-					_ => {}
-				}
-			},
+		(Construction::Workspace(a), Construction::Workspace(b)) => {
+			sets("scope ", clauses(&a.lens.scope), clauses(&b.lens.scope), &mut push);
+			sets("search ", clauses(&a.lens.search), clauses(&b.lens.search), &mut push);
+			if a.lens.sort != b.lens.sort {
+				push(Sign::Changed, format!("sort {} → {}", a.lens.sort, b.lens.sort));
+			}
+			arrangements(&a.tiles, &b.tiles, &mut push);
+		}
 		(Construction::Columns(a), Construction::Columns(b)) => {
 			if a.by != b.by {
 				push(Sign::Changed, format!("by {} → {}", a.by, b.by));
 			}
-			for group in a.tints.keys().chain(b.tints.keys()).collect::<BTreeSet<_>>() {
-				match (a.tints.get(group), b.tints.get(group)) {
-					(None, Some(t)) => push(Sign::Added, format!("{group} {t}")),
-					(Some(t), None) => push(Sign::Removed, format!("{group} {t}")),
-					(Some(x), Some(y)) if x != y => push(Sign::Changed, format!("{group} {x} → {y}")),
-					_ => {}
-				}
-			}
-			for band in a.layout.keys().chain(b.layout.keys()).collect::<BTreeSet<_>>() {
-				if a.layout.get(band) != b.layout.get(band) {
-					push(Sign::Changed, format!("{} arrangement", band_name(*band)));
-				}
-			}
+			boxes(&a.boxes, &b.boxes, &mut push);
 		}
 		(from, to) => panic!("a diff compares one kind: {from:?} against {to:?}"),
 	}
@@ -500,40 +577,51 @@ pub fn diff(from: &Construction, to: &Construction) -> Vec<Change> {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub enum Dock {
-	Tiles,
-	Columns { view: String, by: GroupBy },
+pub enum WorkspacePart {
+	Tiles { band: Band, layout: String },
+	Scope(Terms),
+	Search(Query),
+	Sort(Order),
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub enum ViewPart {
+	/// Another grouping's groups are boxed anew.
+	GroupBy(GroupBy),
+	Shown(Vec<Shown>),
+	Arrangement {
+		band: Band,
+		layout: String,
+	},
+	Tints(Tints),
+	Hidden(BTreeSet<String>),
+}
+
+/// Each replaces `name` whole.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub enum Kept {
-	/// Replaces the view whole, with the columns and tints on screen as `arranged_as`'s.
-	Filter { view: View, arranged_as: String },
-	/// Replaces `name`'s bands `tiles` holds, keeping its others.
-	Workspace { name: String, tiles: Arrangement },
-	/// Replaces `name`'s `band` and its tints.
-	Columns { name: String, by: GroupBy, band: Band, layout: String, tints: Tints },
-	/// Replaces `name` whole.
+	View(View),
+	Workspace { name: String, workspace: Workspace },
+	Columns { name: String, columns: Columns },
 	Scope { name: String, scope: Scope },
 }
 
 /// One change to a library, each touching only what it names, so two tabs of one viewer don't undo each other.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub enum LibraryEdit {
-	/// What a dock on screen now shows.
-	Arranged {
-		dock: Dock,
-		band: Band,
-		layout: String,
+	/// The viewer's own is written; the team's is drafted.
+	Workspace {
+		workspace: String,
+		part: WorkspacePart,
 	},
-	/// What a view on screen now shows.
-	Viewed(View),
-	Tinted {
+	/// Drafted, whosever it is.
+	View {
 		view: String,
-		by: GroupBy,
-		tints: Tints,
+		part: ViewPart,
 	},
-	/// `view`'s columns as the column layout `columns`: its tints, and its arrangement of every band it keeps one for.
+	/// Its draft is dropped.
+	Revert(Item),
+	/// `view`'s boxes as the column layout `columns` has them.
 	Lay {
 		view: String,
 		columns: String,
@@ -556,9 +644,10 @@ pub enum LibraryEdit {
 		what: Item,
 		on: bool,
 	},
-	Scope(Option<String>),
-	/// The workspace the screen now shows: the one arranging it writes to.
-	Workspace(Option<String>),
+	/// The workspace last selected.
+	Open(String),
+	/// An empty one, under the lowest `ws N` nobody's is, and selected.
+	NewWorkspace,
 	/// A copy kept as `name`, remembering where it came from; a workspace's own views come along unless
 	/// one of that name is already there.
 	Fork {
@@ -633,10 +722,10 @@ pub async fn query(asked: String) -> Result<Answer, ServerFnError> {
 	crate::server::query(&headers, asked).await.map_err(failed)
 }
 
-/// The view `named` here, or that query, as a task view lists it.
+/// What the query holds for the viewer, as a task view lists it.
 #[post("/api/view", headers: HeaderMap)]
-pub async fn view(named: String, group: Option<GroupBy>) -> Result<Listing, ServerFnError> {
-	crate::server::view(&headers, named, group).await.map_err(failed)
+pub async fn view(query: String, group: GroupBy) -> Result<Listing, ServerFnError> {
+	crate::server::view(&headers, query, group).await.map_err(failed)
 }
 
 /// Pulls every watched repo and the viewer's own from GitHub; the board reloads on the tick its end fires.
@@ -727,8 +816,8 @@ pub async fn catalog() -> Result<Catalog, ServerFnError> {
 
 /// `item` pinned as it stands now; a workspace's only with `bands`.
 #[post("/api/share", headers: HeaderMap)]
-pub async fn share(item: Item, bands: Vec<Band>, scope: Option<String>) -> Result<ShareLink, ServerFnError> {
-	crate::server::share(&headers, item, bands, scope).await.map_err(failed)
+pub async fn share(item: Item, bands: Vec<Band>) -> Result<ShareLink, ServerFnError> {
+	crate::server::share(&headers, item, bands).await.map_err(failed)
 }
 
 /// What `link` pins; it joins the requesting viewer's `received`.

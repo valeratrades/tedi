@@ -10,7 +10,7 @@ const card = (page: Page) => page.locator('a[href*="issue=service-arb/"]').first
 
 test("a bare address is the screen as left, then names it", async ({ page }) => {
   await page.goto("/");
-  await expect.poll(() => at(page)).toMatch(/^\/view\/\w{8}\?ws=\w{8}&scope=EV%20%2F%20EV-Service-Arb$/);
+  await expect.poll(() => at(page)).toMatch(/^\/view\/\w{8}\?ws=\w{8}$/);
   await expect(tab(page, "Release checklist")).toBeVisible();
 });
 
@@ -78,18 +78,26 @@ test("a column layout is under its view", async ({ page }) => {
   expect(await at(page)).toBe(focus);
 });
 
-test("a workspace and a scope are in the query", async ({ page }) => {
+test("a workspace is in the query, and a scope picked in it is an edit, not a move", async ({ page }) => {
   await page.goto("/");
   await expect.poll(() => at(page)).toMatch(/ws=/);
   const before = await at(page);
   await shelf(page, "Triage desk").click();
-  await expect.poll(async () => new URL(page.url()).searchParams.get("ws")).not.toBe(new URL(before, page.url()).searchParams.get("ws"));
-  await shelf(page, "EV-Main").click();
-  await expect.poll(async () => new URL(page.url()).searchParams.get("scope")).toBe("EV / EV-Main");
-  await page.goBack();
-  await expect.poll(async () => new URL(page.url()).searchParams.get("scope")).toBe("EV / EV-Service-Arb");
+  await expect.poll(async () => new URL(page.url()).searchParams.get("ws")).toBe("TriageDk");
+  await expect(tab(page, "Triage")).toBeVisible();
+  const desk = await at(page);
+  await page.locator("aside").getByRole("button", { name: "EV-Main", exact: true }).click();
+  const scope = page.getByRole("group", { name: "Scope", exact: true });
+  await expect(scope).toContainText("repo:ev-main/*");
+  expect(await at(page)).toBe(desk);
   await page.goBack();
   await expect.poll(() => at(page)).toBe(before);
+  await expect(scope).toContainText("repo:service-arb/*");
+});
+
+test("an address with a scope of its own is none", async ({ page }) => {
+  await page.goto("/?scope=EV");
+  await expect(page.getByText("is no address on this board")).toBeVisible();
 });
 
 test("an address nothing has says so", async ({ page }) => {

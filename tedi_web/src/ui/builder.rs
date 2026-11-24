@@ -1,25 +1,22 @@
-//! The view builder (Figma: 02 · View construction): a view is name, query, layout, grouping, order and the
-//! fields a card shows. The left builds it, the right runs the draft live over the board, and the diff says
-//! what changed against where it came from.
+//! The view builder (Figma: 02 · View construction): a view is a name, a grouping, the fields a card shows and the
+//! boxes they are in. The left builds it, the right shows the workspace's cards through the draft, and the diff
+//! says what changed against where it came from.
 
 use dioxus::prelude::*;
 use ev_lib::uikit_dioxus::Checkbox;
-use strum::IntoEnumIterator as _;
-use tedi_core::board::{Facet, GroupBy, Query, Shown, Sort, SortKey, View};
+use tedi_core::board::{GroupBy, Shown};
 use tilers_dioxus::PanelId;
 
 use super::{
 	Ctx, Modal,
-	card::{Chip, Tone},
-	facets::{FacetBar, InView},
 	icons::{Glyph, Icon},
 	kit::{Btn, Style},
-	toolbar::SortLabels,
-	view::{Empty, Outcome, Results, outcome},
+	toolbar::ColumnsPicker,
+	view::{Empty, Loader, Results, count, outcome, prs},
 };
-use crate::api::{self, Construction, Item, Kept, LibraryEdit, Sign};
+use crate::api::{self, Boxes, Construction, Item, Kept, LibraryEdit, Sign, View, ViewPart};
 
-/// \`from\`: the view the draft starts as; none: a blank one.
+/// `from`: the view the draft starts as; none: a blank one.
 #[component]
 pub(super) fn Builder(from: Option<String>) -> Element {
 	let ctx = use_context::<Ctx>();
@@ -28,42 +25,36 @@ pub(super) fn Builder(from: Option<String>) -> Element {
 		.map(|name| ctx.views().into_iter().find(|v| &v.name == name).expect("a builder opens on a kept view"));
 	let mine = from
 		.as_ref()
-		.is_some_and(|name| ctx.library.peek().as_ref().expect("arrived before any panel").filters.contains_key(name));
-	let draft = use_signal(|| match &upstream {
-		Some(v) if mine => v.clone(),
+		.is_some_and(|name| ctx.library.peek().as_ref().expect("arrived before any panel").views.contains_key(name));
+	let mut draft = use_signal(|| match from.as_ref().and_then(|name| ctx.view(name)) {
+		Some(v) if mine => v,
 		Some(v) => View {
 			name: format!("{} (mine)", v.name),
-			..v.clone()
+			..v
 		},
 		None => View {
 			name: String::new(),
-			query: "is:open".into(),
 			group_by: ctx.workflows().into_keys().next().map_or(GroupBy::Nothing, GroupBy::State),
-			sort: vec![Sort { by: SortKey::Rank, reversed: false }].into(),
 			shown: vec![Shown::Repo, Shown::Assignees, Shown::Importance, Shown::Hours, Shown::Labels],
+			boxes: Boxes::default(),
 		},
 	});
-	let arranged_as = use_hook(|| draft.peek().name.clone()); // the name being typed is no view's yet: the preview's columns stay under one
-	use_context_provider(|| InView(draft));
-	let mut good = use_signal(|| draft.peek().clone());
-	use_effect(move || {
-		let now = draft.read().clone();
-		if now.query.parse::<Query>().is_ok() && *good.peek() != now {
-			good.set(now);
-		}
+	let edit = use_callback(move |part: ViewPart| draft.write().set(part));
+	let mut relaid = use_signal(|| 0);
+	let onlay = use_callback(move |columns: String| {
+		let laid = ctx.columns(&columns).expect("offered from the library or the team's");
+		draft.write().boxes = laid.boxes;
+		relaid += 1;
 	});
 	let d = draft.read().clone();
-	let error = d.query.parse::<Query>().err().map(|e| e.to_string());
-	let ran = if error.is_none() { d.clone() } else { good.read().clone() };
-	let prs = ran.query.parse::<Query>().expect("the draft's own, or the last that parsed").covers_prs();
-	if ctx.awaits(prs) {
-		return rsx! { super::view::Loader { prs } };
-	}
-	let outcome = outcome(&ctx, &ran);
+	let outcome = outcome(&ctx, &d.group_by);
+	let groups: Vec<String> = match &outcome {
+		Some(Ok(groups)) => groups.iter().map(|(g, _)| g.clone()).collect(),
+		Some(Err(_)) | None => Vec::new(), // nothing to show a box of
+	};
 	let changes = upstream
 		.as_ref()
 		.map(|u| api::diff(&Construction::View(u.clone()), &Construction::View(View { name: u.name.clone(), ..d.clone() })));
-	let scope = ctx.scope().map(|(path, _)| path);
 	rsx! {
 		div { class: "flex h-full min-h-0",
 			div { class: "flex w-[400px] shrink-0 flex-col border-r border-border-subtle bg-card",
@@ -85,59 +76,39 @@ pub(super) fn Builder(from: Option<String>) -> Element {
 							oninput: { let mut draft = draft; move |e: FormEvent| draft.write().name = e.value() },
 						}
 					}
-					Section { title: "Query", hint: "the whole of the narrowing",
-						label { class: if error.is_some() { "flex h-7 items-center gap-2 rounded-[var(--control-radius)] border border-accent-error px-2" } else { "flex h-7 items-center gap-2 rounded-[var(--control-radius)] border border-input px-2 focus-within:border-ring" },
-							title: error.clone().unwrap_or_default(),
-							Icon { glyph: Glyph::Search, class: "size-4 text-ink-soft" }
-							input {
-								class: "min-w-0 flex-1 bg-transparent text-mono text-ink outline-none placeholder:text-ink-faint",
-								value: d.query.clone(),
-								placeholder: "repo:, state:, assignee:, t:, i:>=5, label: or words",
-								spellcheck: "false",
-								oninput: { let mut draft = draft; move |e: FormEvent| draft.write().query = e.value() },
-							}
-						}
-						if let Ok(o) = &outcome {
-							Clauses { query: o.query.clone() }
-							FacetBar { query: o.query.clone(), wrap: true }
-						}
-					}
 					Section { title: "Group by", hint: "a board grouped by state is the kanban",
 						div { class: "flex flex-wrap gap-1",
-							for g in ctx.workflows().into_keys().map(GroupBy::State).chain([GroupBy::Repo, GroupBy::Assignee, GroupBy::Type, GroupBy::Importance, GroupBy::Nothing]) {
+							for g in ctx.groupings() {
 								button {
 									key: "{g}",
 									r#type: "button",
 									class: if g == d.group_by { "h-6 rounded-[var(--control-radius)] border border-primary-border bg-selected px-2 text-mono-s text-primary-ink" } else { "h-6 rounded-[var(--control-radius)] border border-border-subtle px-2 text-mono-s text-ink-mid hover:bg-hover" },
-									onclick: { let (g, mut draft) = (g.clone(), draft); move |_| draft.write().group_by = g.clone() },
+									onclick: { let g = g.clone(); move |_| edit.call(ViewPart::GroupBy(g.clone())) },
 									"{g}"
 								}
 							}
 						}
 					}
-					Section { title: "Sort", hint: "click reverses, drag orders",
-						div { class: "flex", SortLabels { view: draft } }
-					}
 					Section { title: "Shown fields", hint: "drag to order", Fields { view: draft } }
+					Section { title: "Columns",
+						div { class: "flex", ColumnsPicker { groups, hidden: d.boxes.hidden.clone(), edit } }
+					}
 				}
 				div { class: "flex shrink-0 items-center gap-2 border-t border-border-subtle px-4 py-3",
 					Btn { style: Style::Ghost, md: true, onclick: move |_| close(ctx), "Discard" }
 					div { class: "flex-1" }
 					if upstream.is_some() && !mine {
-						Btn { style: Style::Outline, md: true, glyph: Glyph::Publish, disabled: d.name.trim().is_empty(), onclick: { let (d, arranged_as) = (d.clone(), arranged_as.clone()); move |_| keep(ctx, d.clone(), arranged_as.clone(), true) }, "Propose to team" }
+						Btn { style: Style::Outline, md: true, glyph: Glyph::Publish, disabled: d.name.trim().is_empty(), onclick: { let d = d.clone(); move |_| keep(ctx, d.clone(), true) }, "Propose to team" }
 					}
-					Btn { style: Style::Primary, md: true, glyph: Glyph::Save, disabled: d.name.trim().is_empty() || error.is_some(), onclick: { let (d, arranged_as) = (d.clone(), arranged_as.clone()); move |_| keep(ctx, d.clone(), arranged_as.clone(), false) }, "Save to mine" }
+					Btn { style: Style::Primary, md: true, glyph: Glyph::Save, disabled: d.name.trim().is_empty(), onclick: { let d = d.clone(); move |_| keep(ctx, d.clone(), false) }, "Save to mine" }
 				}
 			}
 			div { class: "flex min-w-0 flex-1 flex-col",
 				div { class: "flex h-9 shrink-0 items-center gap-2 border-b border-border-subtle px-3",
 					span { class: "size-1.5 rounded-full bg-positive-ink" }
 					span { class: "text-body-s font-medium text-ink", "Live preview" }
-					if let Ok(o) = &outcome {
-						span { class: "text-mono-s text-ink-soft",
-							"{o.count} cards  ·  {o.groups.len()} groups"
-							if let Some(s) = &scope { "  ·  in {s}" }
-						}
+					if let Some(Ok(groups)) = &outcome {
+						span { class: "text-mono-s text-ink-soft", "{count(groups, &d.boxes.hidden)} cards  ·  {groups.len()} groups  ·  in this workspace" }
 					}
 					div { class: "flex-1" }
 					if let (Some(u), Some(changes)) = (&upstream, &changes) {
@@ -157,8 +128,9 @@ pub(super) fn Builder(from: Option<String>) -> Element {
 					}
 				}
 				match outcome {
-					Ok(Outcome { groups, .. }) => rsx! { Results { ran: View { name: arranged_as, ..ran }, groups } },
-					Err(why) => rsx! { Empty { glyph: Glyph::Alert, error: true, title: "The draft doesn't run", body: why } },
+					Some(Ok(groups)) => rsx! { Results { view: d, groups, relaid: relaid(), edit, onlay } },
+					Some(Err(why)) => rsx! { Empty { glyph: Glyph::Alert, error: true, title: "The draft doesn't run", body: why } },
+					None => rsx! { Loader { prs: prs(&ctx) } },
 				}
 			}
 		}
@@ -179,60 +151,17 @@ fn Section(title: &'static str, #[props(default)] hint: &'static str, children: 
 	}
 }
 
-/// The query's clauses as chips, each dropped by its ×: the query and its chips edit each other.
-#[component]
-fn Clauses(query: Query) -> Element {
-	let in_view = use_context::<InView>();
-	let clauses: Vec<(Facet, String)> = Facet::iter().flat_map(|f| query.picked(f).into_iter().map(move |v| (f, v))).collect();
-	rsx! {
-		div { class: "flex flex-wrap gap-1",
-			for (facet , value) in clauses {
-				{
-					let excluded = value.starts_with('-');
-					let tone = if excluded { Tone::Error } else { Tone::Warn };
-					rsx! {
-						Chip { key: "{facet}{value}", tone,
-							"{facet}:{value}"
-							button {
-								r#type: "button",
-								class: "opacity-70 hover:opacity-100",
-								title: "drop it",
-								onclick: { let value = value.clone(); move |_| in_view.narrow(|q| q.toggle(facet, value.trim_start_matches('-'), excluded).expect("a clause's own value parses")) },
-								Icon { glyph: Glyph::X, class: "size-3" }
-							}
-						}
-					}
-				}
-			}
-		}
-	}
-}
-
 /// Every field a card can show, as checkboxes; the shown ones lead, in their order, dragged to reorder.
 #[component]
 fn Fields(view: Signal<View>) -> Element {
 	let ctx = use_context::<Ctx>();
 	let mut view = view;
 	let shown = view.read().shown.clone();
-	let all: Vec<Shown> = [Shown::Repo, Shown::Number, Shown::Assignees]
-		.into_iter()
-		.chain(ctx.workflows().into_keys().map(Shown::State))
-		.chain([
-			Shown::Importance,
-			Shown::Hours,
-			Shown::Type,
-			Shown::Labels,
-			Shown::Blockers,
-			Shown::Prs,
-			Shown::Sprint,
-			Shown::Updated,
-		])
-		.collect();
 	let ordered: Vec<(Shown, bool)> = shown
 		.iter()
 		.cloned()
 		.map(|s| (s, true))
-		.chain(all.into_iter().filter(|s| !shown.contains(s)).map(|s| (s, false)))
+		.chain(ctx.fields().filter(|s| !shown.contains(s)).map(|s| (s, false)))
 		.collect();
 	let mut dragged = use_signal(|| None::<usize>);
 	rsx! {
@@ -278,12 +207,12 @@ fn close(ctx: Ctx) {
 	}
 }
 
-/// Saves the draft into the viewer's views, and opens it; \`propose\` then offers it to the team.
-fn keep(ctx: Ctx, draft: View, arranged_as: String, propose: bool) {
+/// Saves the draft into the viewer's views, and opens it; `propose` then offers it to the team.
+fn keep(ctx: Ctx, draft: View, propose: bool) {
 	let name = draft.name.trim().to_string();
 	let view = View { name: name.clone(), ..draft };
 	spawn(async move {
-		if !ctx.keep(LibraryEdit::Keep(Kept::Filter { view, arranged_as })).await {
+		if !ctx.keep(LibraryEdit::Keep(Kept::View(view))).await {
 			return;
 		}
 		close(ctx);

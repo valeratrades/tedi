@@ -19,7 +19,7 @@ export default async function stack({ metadata }: FullConfig) {
   execFileSync(`${here}serve.sh`, ["--viewer-header", "X-Auth-User"], { env, stdio: ["ignore", 2, 2] });
 
   const library = read("04-workspace");
-  library.on_screen.tiles.Sm = read("06a-mobile").on_screen.tiles.Sm;
+  library.workspaces["Release week"].tiles.Sm = read("06a-mobile").workspaces["Phone: inbox"].tiles.Sm;
   const dir = `${HOME}/data/tedi/web`;
   mkdirSync(dir, { recursive: true });
   const sign = (n: number) => writeFileSync(`${dir}/viewer-${n}.json`, JSON.stringify(library));
@@ -28,7 +28,7 @@ export default async function stack({ metadata }: FullConfig) {
   let next = 0;
   const proxy = http.createServer((req, res) => {
     if (metadata.still && /^\/api\/changes/.test(req.url!)) return void res.writeHead(200, { "content-type": "text/event-stream" }).end();
-    let viewer = /(?:^|; )viewer=(\d+)/.exec(req.headers.cookie ?? "")?.[1];
+    let viewer = /(?:^|; )viewer=([\w-]+)/.exec(req.headers.cookie ?? "")?.[1]; // a test's own has no library until it edits one
     const fresh = viewer === undefined;
     if (viewer === undefined) {
       const n = next++ % VIEWERS;

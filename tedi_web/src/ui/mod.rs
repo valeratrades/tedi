@@ -1,11 +1,12 @@
-//! The client: a sidebar of workspaces, views, scopes and sprints over a tiled workspace, every tile a view or
-//! an issue. Cards arrive whole and are queried here; edits leave as server fns. What is on screen, and what
-//! the viewer keeps, is their library on the server.
+//! The client: a sidebar of workspaces, views, scopes and sprints over the open workspace: its lens, then its
+//! tiles, every one a view or an issue. Cards arrive whole and are queried here; edits leave as server fns. What
+//! is on screen, and what the viewer keeps, is their library on the server.
 
 mod account;
 mod builder;
 mod card;
 mod facets;
+mod filter;
 mod icons;
 mod issue;
 mod kit;
@@ -20,26 +21,35 @@ mod toolbar;
 mod view;
 mod workspace;
 
-use std::collections::{BTreeMap, HashMap};
+use std::{
+	collections::{BTreeMap, HashMap},
+	rc::Rc,
+};
 
-use dioxus::{core::spawn_forever, prelude::*};
+use dioxus::{
+	core::{Runtime, spawn_forever},
+	prelude::*,
+};
 use ev_lib::uikit_dioxus::*;
 use futures::StreamExt as _;
 use icons::{Glyph, Icon};
 use tedi_core::{
-	IssueLink, MilestoneLink,
-	board::{Board, Card, Part, Query, Scope, Target, View, scope_at},
+	IssueLink, MilestoneLink, RepoInfo,
+	board::{Board, Card, GroupBy, Part, Scope, Shown, Target},
 	conflict::{CommentEdit, Conflict, Edited},
 	workflow::Workflow,
 };
-use tilers_dioxus::{Band, DockPanel, Group, GroupId, MinSize, PackedApi, PackedArea, PackedGrid, PanelId, Tile, model::serial};
+use tilers_dioxus::{
+	Band, DockPanel, Group, GroupId, MinSize, PackedApi, PackedArea, PackedGrid, PanelId, Tile,
+	model::{packed::GridState, serial},
+};
 
-use crate::api::{self, Dock, Item, Library, LibraryEdit, Setup};
+use crate::api::{self, Arrangement, Columns, Item, Lens, Library, LibraryEdit, Setup, View, ViewPart, Workspace, WorkspacePart};
 
 const HELP: [(&str, &str); 7] = [
 	("⌘K", "jump to a view, scope, sprint or issue"),
 	("⇧⏎", "in the palette: open in a new tile"),
-	("⇧-click", "a facet value or a card's chip: rule it out"),
+	("⇧-click", "a facet value or a card's chip: rule it out of the workspace"),
 	("⌥-click", "an importance or hours bound: the exact value"),
 	("drag", "a sidebar row onto the dock: open it there"),
 	("drag", "a card onto a column: move it there"),
@@ -52,6 +62,8 @@ extern "C" {
 	fn started();
 }
 
+/// How long what settles is let settle.
+const SETTLES: std::time::Duration = std::time::Duration::from_millis(800);
 const PANEL_MIN: MinSize = MinSize::Rem { w: 16.0, h: 8.0 };
 
 #[component]
@@ -66,7 +78,18 @@ pub fn App() -> Element {
 #[derive(Clone, Copy)]
 struct Ctx {
 	setup: Signal<Option<Setup>>,
+	/// The server's, as last read.
 	library: Signal<Option<Library>>,
+	/// Edits it may not hold yet, oldest first: everything shown is `library` with these over it.
+	unsaved: Signal<Vec<Unsaved>>,
+	/// What sends them once they settle.
+	saving: Signal<Option<dioxus::core::Task>>,
+	/// Held by whoever sends: edits land in the order they were made.
+	wire: Signal<Rc<futures::lock::Mutex<()>>>,
+	/// The workspace this tab shows, by id.
+	workspace: Signal<Option<String>>,
+	/// What every tile runs: the open workspace's. None: none is open.
+	lens: Memo<Option<Lens>>,
 	/// The server's, as last read.
 	stored: Signal<Option<Board>>,
 	/// Edits it may not hold yet, oldest first.
@@ -80,8 +103,8 @@ struct Ctx {
 	conflicts: Signal<HashMap<IssueLink, Conflict>>,
 	panels: Signal<Vec<DockPanel>>,
 	api: Signal<Option<PackedApi>>,
-	/// The band the dock was last arranged for from the library: until then, what it shows isn't the viewer's to keep.
-	arranged: Signal<Option<Band>>,
+	/// The dock as it was last arranged or kept. None: what it shows isn't the viewer's to keep.
+	seen: Signal<Option<Seen>>,
 	/// What of the first board is here.
 	loading: Signal<Loading>,
 	/// Why setup or the library didn't arrive: nothing renders without both.
@@ -96,6 +119,8 @@ struct Ctx {
 	sheet: Signal<bool>,
 	/// The outcomes on screen, oldest first.
 	notes: Signal<Vec<toast::Note>>,
+	/// The address the page was loaded at is yet to be reached.
+	landing: Signal<bool>,
 	/// A shared workspace on the dock in place of the viewer's, read-only.
 	viewing: Signal<Option<api::Shared>>,
 	/// What the address bar names.
@@ -154,13 +179,13 @@ impl Ctx {
 		self.setup.read().as_ref()?.me.clone()
 	}
 
-	/// The team views, then the viewer's own.
+	/// Each as kept: the team's, then the viewer's own.
 	fn views(&self) -> Vec<View> {
 		let setup = self.setup.read();
 		let library = self.library.read();
 		let team = setup.as_ref().map(|s| s.views.clone()).into_iter().flatten();
 		let mut views: Vec<View> = team
-			.chain(library.as_ref().map(|l| l.filters.values().cloned().collect::<Vec<_>>()).into_iter().flatten())
+			.chain(library.as_ref().map(|l| l.views.values().cloned().collect::<Vec<_>>()).into_iter().flatten())
 			.collect();
 		if let Some(shared) = &*self.viewing.read() {
 			views.extend(
@@ -175,44 +200,180 @@ impl Ctx {
 		views
 	}
 
-	/// The scope everything on screen is narrowed to: its path, and its filter while it is still configured.
-	fn scope(&self) -> Option<(String, Option<String>)> {
-		let path = self.library.read().as_ref()?.scope.clone()?;
-		let at = scope_at(&self.scopes(), &path);
-		Some((path, at))
-	}
-
-	/// The repo clause of the scope on screen.
-	fn within(&self) -> Query {
-		match self.scope() {
-			Some((_, Some(filter))) => filter.parse().expect("a scope's filter is a repo clause"),
-			Some((_, None)) | None => Query::default(), // its scope is gone from the config: shown without one
+	/// The view `name` as last edited.
+	fn view(&self, name: &str) -> Option<View> {
+		let mut view = {
+			let (setup, library) = (self.setup.read(), self.library.read());
+			match library.as_ref()?.view(&setup.as_ref()?.views, name) {
+				Some(view) => view,
+				None => {
+					let viewing = self.viewing.read();
+					return viewing.as_ref().and_then(|s| s.carried.get(name)).map(|(_, v)| v.clone());
+				}
+			}
+		};
+		for edit in self.unsaved.read().iter() {
+			match &edit.edit {
+				LibraryEdit::View { view: edited, part } if edited == name => view.set(part.clone()),
+				_ => {}
+			}
 		}
+		Some(view)
 	}
 
-	/// The scope's sprints: what is planned, the shortest period first, then the bottlenecks.
+	/// Whether the open workspace's scope leaves `repo` in.
+	fn in_scope(&self, repo: RepoInfo) -> bool {
+		self.lens.read().as_ref().is_none_or(|l| l.scope.covers(repo))
+	}
+
+	/// The sprints of the open workspace's scope: what is planned, the shortest period first, then the bottlenecks.
 	fn sprints(&self) -> Vec<Target> {
-		let within = self.within();
 		let board = self.board.read();
 		let mut sprints: Vec<Target> = board
 			.iter()
 			.flat_map(|b| &b.targets)
-			.filter(|t| t.sprint().is_some() && within.covers(t.link.repo_info()))
+			.filter(|t| t.sprint().is_some() && self.in_scope(t.link.repo_info()))
 			.cloned()
 			.collect();
 		sprints.sort_by_key(|t| (t.sprint(), t.link.repo_info().to_string()));
 		sprints
 	}
 
-	/// The team's, then the viewer's own.
-	fn scopes(&self) -> BTreeMap<String, Scope> {
-		let library = self.library.read();
-		let setup = self.setup.read();
-		library
+	/// The column layout `name`: the viewer's, or the team's.
+	fn columns(&self, name: &str) -> Option<Columns> {
+		let (setup, library) = (self.setup.read(), self.library.read());
+		library.as_ref()?.columns.get(name).or_else(|| setup.as_ref()?.columns.get(name)).cloned()
+	}
+
+	/// The open workspace's name.
+	fn open_workspace(&self) -> Option<String> {
+		match self.named(self.workspace.read().as_ref()?)? {
+			Item::Workspace(name) => Some(name),
+			other => panic!("only a workspace is open: {other:?}"),
+		}
+	}
+
+	fn workspace_named(&self, name: &str) -> Option<Workspace> {
+		workspace_named(&self.setup.read(), &self.library.read(), &self.unsaved.read(), name)
+	}
+
+	/// What cards can be grouped by.
+	fn groupings(&self) -> impl Iterator<Item = GroupBy> {
+		let workflows = self.workflows().into_keys().map(GroupBy::State);
+		workflows.chain([GroupBy::Repo, GroupBy::Assignee, GroupBy::Type, GroupBy::Importance, GroupBy::Nothing])
+	}
+
+	/// What a card can show.
+	fn fields(&self) -> impl Iterator<Item = Shown> {
+		let states = self.workflows().into_keys().map(Shown::State);
+		[Shown::Repo, Shown::Number, Shown::Assignees].into_iter().chain(states).chain([
+			Shown::Importance,
+			Shown::Hours,
+			Shown::Type,
+			Shown::Labels,
+			Shown::Blockers,
+			Shown::Prs,
+			Shown::Sprint,
+			Shown::Updated,
+		])
+	}
+
+	/// The view `name` as kept again.
+	async fn revert(self, name: String) {
+		if self.keep(LibraryEdit::Revert(Item::View(name.clone()))).await {
+			self.relay(name);
+		}
+	}
+
+	/// `view`'s columns mount anew, as it has them.
+	fn relay(self, view: String) {
+		let mut relaid = self.relaid;
+		*relaid.write().entry(view).or_default() += 1;
+	}
+
+	fn edit_view(self, view: &str, part: ViewPart) {
+		let kept = {
+			let (setup, library) = (self.setup.peek(), self.library.peek());
+			let (setup, library) = (setup.as_ref().expect("views render once setup arrived"), library.as_ref().expect("it arrives with setup"));
+			library.view(&setup.views, view).is_some()
+		};
+		match kept {
+			true => self.settle(LibraryEdit::View { view: view.to_string(), part }),
+			false => self.say("view", toast::Tone::Info, format!("{view} is shared with you: fork it to change it"), None),
+		}
+	}
+
+	/// A part of the open workspace's lens; of a shared one, as it is viewed.
+	fn edit_lens(self, part: WorkspacePart) {
+		let mut viewing = self.viewing;
+		if viewing.peek().is_some() {
+			return match &mut viewing.write().as_mut().expect("peeked").construction {
+				api::Construction::Workspace(workspace) => workspace.set(part),
+				other => panic!("only a workspace takes the dock: {other:?}"),
+			};
+		}
+		match self.open_workspace() {
+			Some(workspace) => self.settle(LibraryEdit::Workspace { workspace, part }),
+			None => self.none_open(),
+		}
+	}
+
+	/// What `lens` is, or is about to be: a memo peeked at may be a change behind.
+	fn lens_now(&self) -> Option<Lens> {
+		lens(&self.setup.peek(), &self.library.peek(), &self.unsaved.peek(), &self.workspace.peek(), &self.viewing.peek())
+	}
+
+	fn none_open(&self) {
+		self.say("workspace", toast::Tone::Info, "no workspace is open: pick one first", None);
+	}
+
+	/// The scope's terms copied into the open workspace.
+	fn start_from(self, path: Option<String>) {
+		let (terms, what) = match &path {
+			None => (Default::default(), "all repos"),
+			Some(path) => {
+				let at = self.scopes().into_iter().find(|s| s.path == *path).expect("offered from these scopes");
+				(at.scope.filter(), path.as_str())
+			}
+		};
+		let Some(Lens { scope: was, .. }) = self.lens_now() else {
+			return self.none_open();
+		};
+		if was == terms {
+			return;
+		}
+		self.edit_lens(WorkspacePart::Scope(terms));
+		let kept = self.viewing.peek().is_none().then(|| self.open_workspace()).flatten();
+		let undo = kept.map(|workspace| {
+			let back = LibraryEdit::Workspace {
+				workspace,
+				part: WorkspacePart::Scope(was),
+			};
+			// what it is picked from leaves the screen before its note does
+			Runtime::current().in_scope(ScopeId::ROOT, || Callback::new(move |()| self.settle(back.clone())))
+		});
+		self.say("scope", toast::Tone::Info, format!("Started from {what}"), undo.map(|undo| ("Undo", undo)));
+	}
+
+	/// The team's with the viewer's own in them, parents before what they hold.
+	fn scopes(&self) -> Vec<ScopeAt> {
+		fn walk(prefix: &str, level: BTreeMap<String, Scope>, depth: usize, out: &mut Vec<ScopeAt>) {
+			for (name, scope) in level {
+				let path = if prefix.is_empty() { name } else { format!("{prefix} / {name}") };
+				let children = scope.children.clone();
+				out.push(ScopeAt { path: path.clone(), depth, scope });
+				walk(&path, children, depth + 1, out);
+			}
+		}
+		let (library, setup) = (self.library.read(), self.setup.read());
+		let tree = library
 			.as_ref()
 			.expect("read once the library arrived")
 			.scopes(&setup.as_ref().expect("arrives with the library").scopes)
-			.expect("the server serves no library whose scope lost its parent")
+			.expect("the server serves no library whose scope lost its parent");
+		let mut out = Vec::new();
+		walk("", tree, 0, &mut out);
+		out
 	}
 
 	fn favorite(&self, what: &Item) -> bool {
@@ -226,6 +387,9 @@ impl Ctx {
 	/// Shows `id`, hosting it first if it isn't: as a tab of the largest tile holding its kind (issues one,
 	/// views and sprints the other), else beside the widest tile, which gives up the room.
 	fn open(&self, id: PanelId) {
+		if self.lens_now().is_none() {
+			return self.none_open();
+		}
 		let mut api = (*self.api.peek()).expect("a band is entered before anything can be opened");
 		let library = |p: &PanelId| p.0.starts_with("library:");
 		if library(&id)
@@ -290,6 +454,9 @@ impl Ctx {
 
 	/// Shows `id` in a tile of its own beside the widest, which gives up the room.
 	pub(super) fn open_beside(&self, id: PanelId) {
+		if self.lens_now().is_none() {
+			return self.none_open();
+		}
 		let mut api = (*self.api.peek()).expect("a band is entered before anything can be opened");
 		self.host(&id);
 		let grid = serial::load(&api.save()).expect("a layout loads back from its own save");
@@ -318,6 +485,9 @@ impl Ctx {
 
 	/// A sidebar item started a drag: wherever it drops on the dock, `id` lands.
 	fn carry(&self, id: PanelId) {
+		if self.lens_now().is_none() {
+			return self.none_open();
+		}
 		let mut api = (*self.api.peek()).expect("a band is entered before the sidebar can be dragged from");
 		self.host(&id);
 		let (w, h) = size(&id);
@@ -335,11 +505,7 @@ impl Ctx {
 	/// The panel `id` names, its content looked up afresh: a layout holds ids only.
 	fn panel(&self, id: PanelId) -> DockPanel {
 		let (glyph, title, content) = match id.0.split_once(':') {
-			Some(("view", name)) => (
-				self.views().iter().find(|v| v.name == name).map_or(Glyph::View, shell::glyph_of),
-				name.to_string(),
-				rsx! { view::ViewPanel { name: name.to_string() } },
-			),
+			Some(("view", name)) => (Glyph::View, name.to_string(), rsx! { view::ViewPanel { key: "{name}", name: name.to_string() } }),
 			Some(("library", at)) => (Glyph::Search, "Library".to_string(), rsx! { library::LibraryPanel { at: at.to_string() } }),
 			Some(("builder", from)) => (
 				Glyph::View,
@@ -426,12 +592,70 @@ impl Ctx {
 		self.say(key, toast::Tone::Error, why, Some(("Open", open)));
 	}
 
-	/// Whether it landed; why not is toasted.
+	/// Shown at once, sent as it settles, in place of any edit of the same not sent yet.
+	fn settle(self, edit: LibraryEdit) {
+		let (mut unsaved, mut saving) = (self.unsaved, self.saving);
+		{
+			let mut unsaved = unsaved.write();
+			unsaved.retain(|held| held.sent || !supersedes(&edit, &held.edit));
+			unsaved.push(Unsaved { edit, sent: false });
+		}
+		if let Some(task) = saving.take() {
+			task.cancel();
+		}
+		saving.set(Some(spawn_forever(async move {
+			gloo_timers::future::sleep(SETTLES).await;
+			spawn_forever(self.flush()); // what is being sent outlives the next edit's cancel
+		})));
+	}
+
+	/// Everything unsaved, sent.
+	async fn flush(self) {
+		let wire = self.wire.peek().clone();
+		let _sending = wire.lock().await;
+		self.drain().await;
+	}
+
+	/// Whether it landed; why not is toasted. What was unsaved lands before it.
 	async fn keep(self, edit: LibraryEdit) -> bool {
+		let wire = self.wire.peek().clone();
+		let _sending = wire.lock().await;
+		self.drain().await;
+		self.send_edit(edit).await
+	}
+
+	async fn drain(self) {
+		let mut unsaved = self.unsaved;
+		while let Some(edit) = self.next_unsaved() {
+			self.send_edit(edit).await;
+			unsaved.write().remove(0); // only the wire's holder takes one off, and what is sent stays first
+		}
+	}
+
+	fn next_unsaved(self) -> Option<LibraryEdit> {
+		let mut unsaved = self.unsaved;
+		if unsaved.peek().is_empty() {
+			return None;
+		}
+		let mut unsaved = unsaved.write();
+		let next = &mut unsaved[0];
+		next.sent = true;
+		Some(next.edit.clone())
+	}
+
+	async fn send_edit(self, edit: LibraryEdit) -> bool {
 		match api::edit_library(edit).await {
 			Ok(library) => {
 				let mut l = self.library;
 				l.set(Some(library));
+				if self.workspace.peek().is_some() && self.open_workspace().is_none() {
+					let (mut workspace, mut seen) = (self.workspace, self.seen);
+					workspace.set(None); // dropped
+					seen.set(None);
+					if let Some(mut api) = *self.api.peek() {
+						api.reset();
+					}
+				}
 				true
 			}
 			Err(e) => {
@@ -441,31 +665,48 @@ impl Ctx {
 		}
 	}
 
-	/// The band's tiles as the library has them, else the first view.
+	/// What the viewer did to the dock's tiles, to the workspace it was done in.
+	fn keep_tiles(self, (band, layout): (Band, String)) {
+		let workspace = self.open_workspace().expect("a dock is kept only while a workspace is open");
+		self.settle(LibraryEdit::Workspace {
+			workspace,
+			part: WorkspacePart::Tiles { band, layout },
+		});
+	}
+
+	/// The open workspace's tiles onto the dock: the one the address names, else the one last selected.
 	fn arrange(self, api: PackedApi) {
 		let (true, Some(library)) = (self.setup.peek().is_some(), self.library.peek().clone()) else {
 			return; // `Live` arranges once both arrived
 		};
-		let band = api.band();
 		if let Some(shared) = self.viewing.peek().clone() {
 			return workspace::view_shared(self, shared); // a band change keeps the link on the dock
 		}
-		let shown = match library.on_screen.tiles.get(&band) {
-			Some(layout) => self.show(api, layout),
-			None => {
-				if let Some(view) = self.views().into_iter().next() {
-					self.open(PanelId(format!("view:{}", view.name)));
-				}
-				true
-			}
-		};
-		if shown {
-			let mut arranged = self.arranged;
-			arranged.set(Some(band));
-			let to = self.at.peek().clone();
+		let (mut landing, mut workspace) = (self.landing, self.workspace);
+		let to = self.at.peek().clone();
+		if *landing.peek() {
+			let named = to.workspace().filter(|id| matches!(self.named(id), Some(Item::Workspace(_))));
+			workspace.set(named.or_else(|| library.workspace.and_then(|name| self.id_of(&Item::Workspace(name)))));
+		}
+		let open = self.open_workspace().and_then(|name| self.workspace_named(&name));
+		self.lay_out(api, open.map(|w| w.tiles));
+		if landing.take() {
 			if to != route::Address::default() {
-				spawn_forever(self.reach(to)); // a bare address is the screen as left
+				spawn_forever(self.reach(to));
 			}
+		} else {
+			spawn_forever(self.reach(to.issues_only())); // they float above any band's tiles
+		}
+	}
+
+	/// The band's of `tiles` on the dock, an empty one when it has none; none: no workspace's, nothing of it kept.
+	fn lay_out(self, mut api: PackedApi, tiles: Option<Arrangement>) {
+		let mut seen = self.seen;
+		seen.set(None);
+		api.reset();
+		let Some(tiles) = tiles else { return };
+		if tiles.get(&api.band()).is_none_or(|layout| self.show(api, layout)) {
+			seen.set(Some(Seen::of(api)));
 		}
 	}
 
@@ -478,10 +719,7 @@ impl Ctx {
 				for id in grid.cells.iter().flat_map(|c| c.group.tabs.iter()) {
 					self.host(id);
 				}
-				let rows = api.rows();
-				for cell in grid.cells.iter_mut().filter(|c| c.y < rows && c.y + c.h > rows) {
-					cell.h = rows - cell.y;
-				}
+				cut(&mut grid, api.rows());
 				api.load(&serial::save(&grid)).expect("parsed above, heights cut");
 				true
 			}
@@ -497,37 +735,80 @@ impl Ctx {
 		}
 	}
 
-	/// Workspace `name` onto the dock, if it has this band's.
+	/// Workspace `name` in place of the one open.
 	async fn switch(self, name: &str) {
 		let api = (*self.api.peek()).expect("a band is entered before a workspace can be switched to");
-		let band = api.band();
-		let library = self.library.peek();
-		let setup = self.setup.peek();
-		let workspace = library
-			.as_ref()
-			.and_then(|l| l.workspaces.get(name))
-			.or_else(|| setup.as_ref().and_then(|s| s.workspaces.get(name)))
-			.expect("offered from the library or the team's");
-		match workspace.get(&band) {
-			Some(layout) => {
-				let layout = layout.clone();
-				drop((library, setup));
-				let mut viewing = self.viewing;
-				viewing.set(None);
-				if self.show(api, &layout) {
-					let mut arranged = self.arranged;
-					arranged.set(Some(band));
-				}
-				self.keep(LibraryEdit::Workspace(Some(name.to_string()))).await;
-			}
-			None => self.say(
-				"workspace",
-				toast::Tone::Warn,
-				format!("{name} keeps no {band} arrangement: arrange this screen, then save it as {name}"),
-				None,
-			),
+		notice(api, self.seen, |made| self.keep_tiles(made)); // before the dock is another's
+		let (mut viewing, mut workspace) = (self.viewing, self.workspace);
+		viewing.set(None);
+		workspace.set(Some(self.id_of(&Item::Workspace(name.to_string())).expect("offered from the library or the team's")));
+		let Workspace { tiles, .. } = self.workspace_named(name).expect("it has an id");
+		self.lay_out(api, Some(tiles));
+		if self.library.peek().as_ref().expect("read above").workspace.as_deref() != Some(name) {
+			self.keep(LibraryEdit::Open(name.to_string())).await;
 		}
 	}
+
+	async fn new_workspace(self) {
+		if self.keep(LibraryEdit::NewWorkspace).await {
+			let library = self.library.peek().clone().expect("its edit just landed");
+			self.go(self.at_workspace(&library.workspace.expect("it selected the new one")));
+		}
+	}
+}
+
+/// A scope, and where it sits.
+struct ScopeAt {
+	path: String,
+	depth: usize,
+	scope: Scope,
+}
+impl ScopeAt {
+	fn name(&self) -> &str {
+		self.path.rsplit(" / ").next().expect("split yields one")
+	}
+}
+
+/// A library edit shown over the library until the server holds it.
+#[derive(Clone, PartialEq)]
+struct Unsaved {
+	edit: LibraryEdit,
+	sent: bool,
+}
+
+/// `edit` sets all that `held` did.
+fn supersedes(edit: &LibraryEdit, held: &LibraryEdit) -> bool {
+	use std::mem::discriminant;
+	match (edit, held) {
+		(LibraryEdit::Workspace { workspace, part }, LibraryEdit::Workspace { workspace: w, part: p }) =>
+			workspace == w
+				&& match (part, p) {
+					(WorkspacePart::Tiles { band, .. }, WorkspacePart::Tiles { band: b, .. }) => band == b,
+					_ => discriminant(part) == discriminant(p),
+				},
+		(LibraryEdit::View { view, part }, LibraryEdit::View { view: v, part: p }) =>
+			view == v
+				&& match (part, p) {
+					(_, ViewPart::GroupBy(_)) => false, // each boxes anew
+					(ViewPart::GroupBy(_), ViewPart::Shown(_)) => false,
+					(ViewPart::GroupBy(_), _) => true,
+					(ViewPart::Arrangement { band, .. }, ViewPart::Arrangement { band: b, .. }) => band == b,
+					_ => discriminant(part) == discriminant(p),
+				},
+		_ => false,
+	}
+}
+
+/// The workspace `name` as last edited.
+fn workspace_named(setup: &Option<Setup>, library: &Option<Library>, unsaved: &[Unsaved], name: &str) -> Option<Workspace> {
+	let mut workspace = library.as_ref()?.workspace(&setup.as_ref()?.workspaces, name)?;
+	for edit in unsaved {
+		match &edit.edit {
+			LibraryEdit::Workspace { workspace: edited, part } if edited == name => workspace.set(part.clone()),
+			_ => {}
+		}
+	}
+	Some(workspace)
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -549,7 +830,8 @@ enum Modal {
 
 #[derive(Clone, Debug, PartialEq)]
 enum Editing {
-	New,
+	/// Starting as this.
+	New(Scope),
 	/// One of the viewer's, by name.
 	Own(String),
 	/// The team's, by path: saved, it becomes the viewer's own.
@@ -589,35 +871,87 @@ fn without_floating_issues(grid: &mut PackedGrid) {
 }
 
 /// The dock as a library keeps it.
-fn kept(api: PackedApi) -> String {
+fn kept(api: PackedApi) -> PackedGrid {
 	let mut grid = serial::load(&api.save()).expect("a layout loads back from its own save");
 	without_floating_issues(&mut grid);
-	serial::save(&grid)
+	grid
 }
 
-/// Sends what `api`'s dock shows as `dock`'s, once it settles, from the moment it was arranged for its band.
-fn use_autosave(ctx: Ctx, api: Signal<Option<PackedApi>>, arranged: Signal<Option<Band>>, dock: Dock) {
-	let mut pending = use_signal(|| None::<dioxus::core::Task>);
-	let mut sent = use_signal(|| None::<(Band, String)>);
+/// Its tiles no lower than `rows`.
+fn cut(grid: &mut PackedGrid, rows: u32) {
+	for cell in grid.cells.iter_mut().filter(|c| c.y < rows && c.y + c.h > rows) {
+		cell.h = rows - cell.y;
+	}
+}
+
+/// A dock as the viewer laid it out: free of what this window's size alone decides.
+#[derive(Clone, PartialEq)]
+struct Seen {
+	band: Band,
+	grid: PackedGrid,
+}
+impl Seen {
+	fn of(api: PackedApi) -> Self {
+		let mut grid = kept(api);
+		for c in &mut grid.cells {
+			c.w = c.desired_w.take().unwrap_or(c.w); // unclamped: as wanted
+			c.x = c.desired_x.take().unwrap_or(c.x);
+			c.h = c.desired_h.take().unwrap_or(c.h);
+			c.y = 0; // follows from the rest
+		}
+		Self { band: api.band(), grid }
+	}
+}
+
+/// What `api`'s dock shows, when the viewer changed it since it was last `seen`, at rest.
+fn notice(api: PackedApi, mut seen: Signal<Option<Seen>>, made: impl FnOnce((Band, String))) {
+	let grid = kept(api);
+	if grid.state != GridState::Settled {
+		return;
+	}
+	let now = Seen::of(api);
+	let changed = seen.peek().as_ref().is_some_and(|was| was.band == now.band && was.grid != now.grid);
+	if changed {
+		seen.set(Some(now));
+		made((api.band(), serial::save(&grid)));
+	}
+}
+
+/// The dock's heights as `kept` has them, cut to the rows it shows now: the bars above it and the window come and go.
+fn recut(mut api: PackedApi, mut seen: Signal<Option<Seen>>, kept: Option<String>) {
+	let rows = api.rows();
+	if rows == 0 || *seen.peek() != Some(Seen::of(api)) {
+		return; // out of sight, or as the viewer is making it
+	}
+	let held = kept.map(|layout| serial::load(&layout).expect("it was shown"));
+	let mut grid = serial::load(&api.save()).expect("a layout loads back from its own save");
+	let was = grid.clone();
+	for cell in &mut grid.cells {
+		let held = held.iter().flat_map(|g| &g.cells).find(|c| c.group.id == cell.group.id);
+		cell.h = held.map_or(rows, |c| c.desired_h.unwrap_or(c.h)); // not among those kept: seeded, at full height
+		cell.desired_h = None;
+	}
+	cut(&mut grid, rows);
+	if grid != was {
+		api.load(&serial::save(&grid)).expect("its own save, heights changed");
+		seen.set(Some(Seen::of(api)));
+	}
+}
+
+/// What the viewer does to `api`'s dock, once `seen`, goes to `made`; until then it shows what is `kept` for its band.
+fn use_kept(api: Signal<Option<PackedApi>>, seen: Signal<Option<Seen>>, kept: Callback<Band, Option<String>>, made: Callback<(Band, String)>) {
 	use_effect(move || {
-		let Some(api) = *api.read() else { return };
-		let layout = match dock {
-			Dock::Tiles => kept(api),
-			Dock::Columns { .. } => api.save(),
-		};
-		let band = api.band();
-		if *arranged.read() != Some(band) || sent.peek().as_ref() == Some(&(band, layout.clone())) {
-			return;
+		if let Some(api) = *api.read() {
+			notice(api, seen, |layout| made.call(layout));
 		}
-		if let Some(task) = pending.take() {
-			task.cancel();
+	});
+	let rows = use_memo(move || (*api.read()).map(|a| a.rows()));
+	use_effect(move || {
+		if rows().is_some() {
+			let api = (*api.peek()).expect("its rows were read");
+			notice(api, seen, |layout| made.call(layout));
+			recut(api, seen, kept.call(api.band()));
 		}
-		let dock = dock.clone();
-		pending.set(Some(spawn(async move {
-			gloo_timers::future::sleep(std::time::Duration::from_millis(800)).await;
-			sent.set(Some((band, layout.clone())));
-			ctx.keep(LibraryEdit::Arranged { dock, band, layout }).await;
-		})));
 	});
 }
 
@@ -625,9 +959,16 @@ fn use_autosave(ctx: Ctx, api: Signal<Option<PackedApi>>, arranged: Signal<Optio
 fn Shell() -> Element {
 	let ctx = use_context_provider(|| {
 		let (stored, pending) = (Signal::new(None), Signal::new(Vec::new()));
+		let (setup, library, unsaved) = (Signal::new(None), Signal::new(None), Signal::new(Vec::new()));
+		let (workspace, viewing) = (Signal::new(None), Signal::new(None));
 		Ctx {
-			setup: Signal::new(None),
-			library: Signal::new(None),
+			setup,
+			library,
+			unsaved,
+			saving: Signal::new(None),
+			wire: Signal::new(Rc::default()),
+			workspace,
+			lens: Memo::new(move || lens(&setup.read(), &library.read(), &unsaved.read(), &workspace.read(), &viewing.read())),
 			stored,
 			pending,
 			made: Signal::new(HashMap::new()),
@@ -636,7 +977,7 @@ fn Shell() -> Element {
 			conflicts: Signal::new(HashMap::new()),
 			panels: Signal::new(Vec::new()),
 			api: Signal::new(None),
-			arranged: Signal::new(None),
+			seen: Signal::new(None),
 			loading: Signal::new(Loading::default()),
 			failure: Signal::new(None),
 			modal: Signal::new(None),
@@ -644,7 +985,8 @@ fn Shell() -> Element {
 			into: Signal::new(None),
 			sheet: Signal::new(false),
 			notes: Signal::new(Vec::new()),
-			viewing: Signal::new(None),
+			landing: Signal::new(true),
+			viewing,
 			at: Signal::new(route::Address::default()),
 			main: Signal::new(None),
 			up: Signal::new(Vec::new()),
@@ -668,7 +1010,8 @@ fn Shell() -> Element {
 			false => "window.onbeforeunload = null",
 		});
 	});
-	use_autosave(ctx, ctx.api, ctx.arranged, Dock::Tiles);
+	let kept = use_callback(move |band| ctx.open_workspace().and_then(|name| ctx.workspace_named(&name)?.tiles.remove(&band)));
+	use_kept(ctx.api, ctx.seen, kept, use_callback(move |made| ctx.keep_tiles(made)));
 	use_hook(started);
 	rsx! {
 		Live {}
@@ -677,6 +1020,7 @@ fn Shell() -> Element {
 			div { class: "flex min-w-0 flex-1 flex-col",
 				shell::TopBar {}
 				workspace::Banner {}
+				filter::FilterBar {}
 				div { class: "relative min-h-0 flex-1",
 					if let Some(why) = ctx.failure.read().clone() {
 						div { class: "absolute inset-0 z-10 flex items-start justify-center bg-background p-8",
@@ -687,9 +1031,9 @@ fn Shell() -> Element {
 						PackedArea {
 							panels: ctx.panels,
 							on_band: Some(Callback::new(move |api: PackedApi| {
-								let (mut handle, mut arranged) = (ctx.api, ctx.arranged);
+								let (mut handle, mut seen) = (ctx.api, ctx.seen);
 								handle.set(Some(api));
-								arranged.set(None);
+								seen.set(None);
 								ctx.arrange(api);
 							})),
 							config: None,
@@ -708,6 +1052,20 @@ fn Shell() -> Element {
 		Modals {}
 		palette::Palette {}
 		toast::Toasts {}
+	}
+}
+
+fn lens(setup: &Option<Setup>, library: &Option<Library>, unsaved: &[Unsaved], workspace: &Option<String>, viewing: &Option<api::Shared>) -> Option<Lens> {
+	if let Some(shared) = viewing {
+		let api::Construction::Workspace(shared) = &shared.construction else {
+			panic!("only a workspace takes the dock: {:?}", shared.link)
+		};
+		return Some(shared.lens.clone());
+	}
+	let id = workspace.as_ref()?;
+	match library.as_ref()?.ids.get(id).or_else(|| setup.as_ref()?.ids.get(id))? {
+		Item::Workspace(name) => Some(workspace_named(setup, library, unsaved, name)?.lens),
+		other => panic!("only a workspace is open: {other:?}"),
 	}
 }
 

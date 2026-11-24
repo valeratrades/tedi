@@ -42,11 +42,11 @@ const proxy = http.createServer(async (req, res) => {
 await new Promise((r) => proxy.listen(0, "127.0.0.1", r));
 
 // what a step below 7 takes a card out of
-const viewed = { name: "Triage", query: "is:issue is:open i:>=7", group_by: "state:kanban", sort: "importance", shown: ["repo", "number", "importance"] };
+const { workspace } = await (await fetch("http://127.0.0.1:" + server + "/api/library")).json();
 const kept = await fetch("http://127.0.0.1:" + server + "/api/library/edit", {
   method: "POST",
   headers: { "content-type": "application/json" },
-  body: JSON.stringify({ edit: { Viewed: viewed } }),
+  body: JSON.stringify({ edit: { Workspace: { workspace, part: { Search: "is:issue is:open i:>=7" } } } }),
 });
 assert(kept.ok, await kept.text());
 

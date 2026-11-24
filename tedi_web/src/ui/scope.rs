@@ -1,10 +1,9 @@
 //! The scope editor (Figma: ScopeEditor): name, the scope it nests in, the repos it covers — explicit or
-//! patterns, with their live count. A scope only narrows; which views exist is none of its business.
-
-use std::collections::BTreeMap;
+//! patterns, with their live count — and the terms every card holds. Saved, it is a starting point: no workspace
+//! it was applied to follows it.
 
 use dioxus::prelude::*;
-use tedi_core::board::{Query, Scope, scope_at};
+use tedi_core::board::{Query, Scope, Terms};
 
 use super::{
 	Ctx, Editing,
@@ -13,11 +12,15 @@ use super::{
 };
 use crate::api::{Kept, LibraryEdit, Shelf};
 
-/// Open cards \`repo:<pattern>\` holds; \`None\` before the board arrives.
-fn open_in(ctx: &Ctx, pattern: &str) -> Option<usize> {
+/// Open cards `terms` hold; `None` before they arrive.
+pub(super) fn open_in(ctx: &Ctx, terms: &Terms) -> Option<usize> {
 	let board = ctx.board.read();
-	let q: Query = format!("repo:{pattern} is:open").parse().expect("a repo pattern parses as a clause");
-	Some(q.run(&board.as_ref()?.cards, ctx.me().as_deref()).expect("a repo clause runs").len())
+	let mut q: Query = "is:open".parse().expect("a constant, valid query");
+	q.narrow(terms);
+	if ctx.awaits(q.covers_prs()) {
+		return None;
+	}
+	Some(q.run(&board.as_ref()?.cards, ctx.me().as_deref()).expect("clauses run").len())
 }
 
 #[component]
@@ -27,21 +30,11 @@ pub(super) fn ScopeEditor(editing: Editing) -> Element {
 		let library = ctx.library.read();
 		let library = library.as_ref().expect("the editor opens from a loaded screen");
 		match &editing {
-			Editing::New => (
-				String::new(),
-				Scope {
-					repos: Vec::new(),
-					children: BTreeMap::new(),
-				},
-			),
+			Editing::New(scope) => (String::new(), scope.clone()),
 			Editing::Own(path) => (path.clone(), library.scopes[path].clone()),
 			Editing::Team(path) => {
-				let setup = ctx.setup.read();
-				let team = &setup.as_ref().expect("arrives with the library").scopes;
-				// the copy covers, flat, what the team scope and every one nested in it cover
-				let filter = scope_at(team, path).expect("offered from the team's");
-				let repos = filter.strip_prefix("repo:").expect("a scope's filter is a repo clause").split(',').map(str::to_string).collect();
-				(path.clone(), Scope { repos, children: BTreeMap::new() })
+				let at = ctx.scopes().into_iter().find(|s| s.path == *path).expect("offered from the team's");
+				(path.clone(), Scope::from(at.scope.filter())) // flat: what it and every one nested in it cover
 			}
 		}
 	};
@@ -54,6 +47,10 @@ pub(super) fn ScopeEditor(editing: Editing) -> Element {
 	let mut parent = use_signal(|| initial_parent.clone());
 	let mut repos = use_signal(|| initial.repos.clone());
 	let mut typed = use_signal(String::new);
+	let mut terms = use_signal(|| initial.terms.clone());
+	let mut term = use_signal(String::new);
+	let mut bad = use_signal(|| None::<String>);
+	let nested = initial.children.clone();
 	let close = move || {
 		let mut m = ctx.modal;
 		m.set(None);
@@ -70,38 +67,30 @@ pub(super) fn ScopeEditor(editing: Editing) -> Element {
 		.filter(|r| !repos.read().contains(r) && r.to_lowercase().contains(&needle))
 		.take(12)
 		.map(|r| {
-			let n = open_in(&ctx, &r).unwrap_or(0); // offered only from the board's cards, so it has arrived
+			let scope = Scope {
+				repos: vec![r.clone()],
+				..Default::default()
+			};
+			let n = open_in(&ctx, &scope.filter()).unwrap_or(0); // offered only from the board's cards, so it has arrived
 			(r, n)
 		})
 		.collect();
-	let filter = format!("repo:{}", repos.read().join(","));
-	let covers = (!repos.read().is_empty()).then(|| open_in(&ctx, &repos.read().join(","))).flatten();
-	let parents: Vec<String> = {
-		let mut out = Vec::new();
-		fn walk(prefix: &str, level: &BTreeMap<String, Scope>, out: &mut Vec<String>) {
-			for (n, s) in level {
-				let path = if prefix.is_empty() { n.clone() } else { format!("{prefix} / {n}") };
-				out.push(path.clone());
-				walk(&path, &s.children, out);
-			}
-		}
-		walk("", &ctx.scopes(), &mut out);
-		out.retain(|p| *p != initial_path && !p.starts_with(&format!("{initial_path} / ")));
-		out
+	let scope = Scope {
+		repos: repos.read().clone(),
+		terms: terms.read().clone(),
+		children: nested,
 	};
+	let covers = (!scope.is_empty()).then(|| open_in(&ctx, &scope.filter())).flatten();
+	let inside = format!("{initial_path} / ");
+	let parents: Vec<String> = ctx.scopes().into_iter().map(|s| s.path).filter(|p| *p != initial_path && !p.starts_with(&inside)).collect();
 	let path = match parent() {
 		Some(p) => format!("{p} / {}", name.read().trim()),
 		None => name.read().trim().to_string(),
 	};
 	let save = {
-		let editing = editing.clone();
-		let path = path.clone();
+		let (editing, path, scope) = (editing.clone(), path.clone(), scope.clone());
 		move |_| {
-			let scope = Scope {
-				repos: repos.read().clone(),
-				children: BTreeMap::new(),
-			};
-			let (editing, to) = (editing.clone(), path.clone());
+			let (editing, to, scope) = (editing.clone(), path.clone(), scope.clone());
 			spawn(async move {
 				if let Editing::Own(from) = &editing
 					&& *from != to && !ctx
@@ -114,13 +103,9 @@ pub(super) fn ScopeEditor(editing: Editing) -> Element {
 				{
 					return;
 				}
-				if !ctx.keep(LibraryEdit::Keep(Kept::Scope { name: to.clone(), scope })).await {
-					return;
+				if ctx.keep(LibraryEdit::Keep(Kept::Scope { name: to, scope })).await {
+					close();
 				}
-				if !matches!(editing, Editing::Own(_)) {
-					ctx.keep(LibraryEdit::Scope(Some(to))).await;
-				}
-				close();
 			});
 		}
 	};
@@ -138,7 +123,7 @@ pub(super) fn ScopeEditor(editing: Editing) -> Element {
 				onkeydown: move |e: KeyboardEvent| if e.key() == Key::Escape { close() },
 				div { class: "flex h-6 items-center gap-2",
 					Icon { glyph: Glyph::Scope, class: "size-4 text-chart-3" }
-					span { class: "text-h3 text-ink", match &editing { Editing::New => "New scope", _ => "Edit scope" } }
+					span { class: "text-h3 text-ink", match &editing { Editing::New(_) => "New scope", _ => "Edit scope" } }
 					if team {
 						span { class: "flex items-center gap-1 text-caption text-ink-soft", Icon { glyph: Glyph::Users, class: "size-3" } "team · read-only" }
 					} else {
@@ -210,10 +195,61 @@ pub(super) fn ScopeEditor(editing: Editing) -> Element {
 							}
 						}
 					}
-					span { class: "text-caption text-ink-soft",
-						match covers {
-							Some(n) => format!("{filter}  ·  {n} open cards  ·  patterns stay live as repos are added"),
-							None => "names no repo yet".to_string(),
+					span { class: "text-caption text-ink-soft", "patterns stay live as repos are added" }
+				}
+				div { class: "flex flex-col gap-1.5",
+					span { class: "text-body-s font-medium text-ink-mid", "Terms" }
+					div { class: "flex flex-col gap-2 rounded-[var(--control-radius)] border border-border p-2",
+						if *terms.read() != Terms::default() {
+							div { class: "flex flex-wrap gap-1",
+								for (i , t) in terms.read().to_string().split_whitespace().map(str::to_string).enumerate() {
+									span { key: "{i}-{t}", class: "inline-flex h-5 items-center gap-1 rounded-[var(--control-radius)] border border-primary-border bg-selected pr-1 pl-1.5 text-mono-s text-ink",
+										"{t}"
+										button {
+											r#type: "button",
+											class: "text-ink-soft hover:text-ink",
+											title: "Drop {t}",
+											onclick: move |_| {
+												let shown = terms.peek().to_string();
+												let rest: Vec<&str> = shown.split_whitespace().enumerate().filter(|(at, _)| *at != i).map(|(_, t)| t).collect();
+												terms.set(rest.join(" ").parse().expect("each was a clause"));
+											},
+											Icon { glyph: Glyph::X, class: "size-3" }
+										}
+									}
+								}
+							}
+						}
+						form {
+							class: if bad.read().is_some() { "flex h-7 items-center gap-1.5 rounded-[var(--control-radius)] border border-accent-error px-2" } else { "flex h-7 items-center gap-1.5 rounded-[var(--control-radius)] border border-border-subtle px-2 focus-within:border-ring" },
+							onsubmit: move |e: FormEvent| {
+								e.prevent_default();
+								match format!("{} {}", terms.peek(), term.peek()).parse::<Terms>() {
+									Ok(all) => {
+										terms.set(all);
+										term.set(String::new());
+										bad.set(None);
+									}
+									Err(why) => bad.set(Some(why.to_string())),
+								}
+							},
+							Icon { glyph: Glyph::Search, class: "size-3.5 text-ink-soft" }
+							input {
+								class: "min-w-0 flex-1 bg-transparent text-mono text-ink outline-none placeholder:font-sans placeholder:text-body-s placeholder:text-ink-faint",
+								value: term(),
+								placeholder: "a term (is:issue, t:bug) and Enter",
+								oninput: move |e: FormEvent| {
+									term.set(e.value());
+									bad.set(None);
+								},
+							}
+						}
+					}
+					span { class: if bad.read().is_some() { "text-caption text-accent-error" } else { "text-caption text-ink-soft" },
+						match (bad(), covers) {
+							(Some(why), _) => why,
+							(None, Some(n)) => format!("every card holds them too, no free text  ·  {n} open cards"),
+							(None, None) => "narrows by nothing yet".to_string(),
 						}
 					}
 				}
@@ -226,7 +262,7 @@ pub(super) fn ScopeEditor(editing: Editing) -> Element {
 					Btn {
 						style: Style::Primary,
 						md: true,
-						disabled: name.read().trim().is_empty() || repos.read().is_empty(),
+						disabled: name.read().trim().is_empty() || scope.is_empty(),
 						onclick: save,
 						if team { "Fork to my library" } else { "Save scope" }
 					}

@@ -1,21 +1,20 @@
-//! A view tile: a query, laid out as columns, grouped and sorted as the view says.
+//! A view tile: the workspace's cards, boxed as the view says.
 
-use std::str::FromStr as _;
+use std::{collections::BTreeSet, str::FromStr as _};
 
 use dioxus::{core::spawn_forever, prelude::*};
 use ev_lib::uikit_dioxus::Logo;
 use strum::IntoEnumIterator as _;
 use tedi_core::{
 	MilestoneLink, NodeLink,
-	board::{GroupBy, Order, Placed, Query, Shown, View, group},
+	board::{GroupBy, Order, Placed, Shown, group},
 	workflow::State,
 };
 use tilers_dioxus::{Band, Config, DockPanel, Group, LockScope, MinSize, PackedApi, PackedArea, PanelId, Tile};
 
 pub(super) use super::card::CardView;
 use super::{
-	Ctx,
-	facets::InView,
+	Ctx, Seen,
 	icons::{Glyph, Icon},
 	issue::Markdown,
 	kit::MenuItem,
@@ -23,9 +22,11 @@ use super::{
 	sprint_panel,
 	toolbar::ViewToolbar,
 };
-use crate::api::{self, Dock, LibraryEdit, Tint, Tints};
+use crate::api::{Arrangement, Columns as Layout, Kept, LibraryEdit, Tint, Tints, View, ViewPart};
 
-/// The view `name`: as last edited on screen, against how it is kept; an edit is saved as it settles, and `↺` goes back.
+type Groups = Vec<(String, Vec<Placed>)>;
+
+/// The view `name`: as last edited, against how it is kept.
 #[component]
 pub fn ViewPanel(name: String) -> Element {
 	let ctx = use_context::<Ctx>();
@@ -127,40 +128,22 @@ pub(super) fn Loader(prs: bool) -> Element {
 #[component]
 fn ViewBody(defined: View) -> Element {
 	let ctx = use_context::<Ctx>();
-	let view = use_signal(|| {
-		let library = ctx.library.peek();
-		let on_screen = &library.as_ref().expect("views render once the library arrived").on_screen.views;
-		on_screen.get(&defined.name).cloned().unwrap_or_else(|| defined.clone()) // never edited on screen: as kept
+	let name = use_hook(|| defined.name.clone());
+	let view = use_memo({
+		let name = name.clone();
+		move || ctx.view(&name)
 	});
-	use_context_provider(|| InView(view));
-	// a query mid-edit that doesn't parse leaves the board on the last one that did
-	let mut good = use_signal(|| view.peek().clone());
-	let mut sent = use_signal(|| view.peek().clone());
-	let mut pending = use_signal(|| None::<dioxus::core::Task>);
-	use_effect(move || {
-		let now = view.read().clone();
-		if now.query.parse::<Query>().is_ok() && *good.peek() != now {
-			good.set(now.clone());
-		}
-		if *sent.peek() == now {
-			return;
-		}
-		if let Some(task) = pending.take() {
-			task.cancel();
-		}
-		pending.set(Some(spawn(async move {
-			gloo_timers::future::sleep(std::time::Duration::from_millis(800)).await;
-			sent.set(now.clone());
-			ctx.keep(LibraryEdit::Viewed(now)).await;
-		})));
+	let edit = use_callback({
+		let name = name.clone();
+		move |part| ctx.edit_view(&name, part)
 	});
 	let locked = use_signal(|| {
 		let library = ctx.library.peek();
-		library.as_ref().expect("views render once the library arrived").on_screen.locked.contains(&defined.name)
+		library.as_ref().expect("views render once the library arrived").locked.contains(&defined.name)
 	});
 	let mut lock_sent = use_signal(|| *locked.peek());
 	use_effect({
-		let name = defined.name.clone();
+		let name = name.clone();
 		move || {
 			let now = locked();
 			if *lock_sent.peek() != now {
@@ -170,71 +153,77 @@ fn ViewBody(defined: View) -> Element {
 			}
 		}
 	});
-	let v = view.read().clone();
-	let error = v.query.parse::<Query>().err().map(|e| e.to_string());
-	let ran = if error.is_none() { v.clone() } else { good.read().clone() };
-	let query: Query = ran.query.parse().expect("the view's own, or the last that parsed");
-	let prs = query.covers_prs();
-	let outcome = match ctx.awaits(prs) {
-		true => None,
-		false => match outcome(&ctx, &ran) {
-			Ok(o) => Some(o),
-			Err(why) => return rsx! { Empty { glyph: Glyph::Alert, error: true, title: "The view doesn't run", body: why } },
-		},
+	let by = use_memo(move || view.read().as_ref().map(|v| v.group_by.clone()));
+	// off the dock its tile stays mounted, out of sight: another workspace's
+	let docked = use_memo({
+		let id = PanelId(format!("view:{name}"));
+		move || ctx.api.read().is_some_and(|a| a.tab_ids().contains(&id))
+	});
+	let outcome = use_memo(move || docked().then(|| outcome(&ctx, by.read().as_ref()?)).flatten());
+	let relaid = ctx.relaid.read().get(&name).copied().unwrap_or(0); // never laid out anew
+	let Some(view) = view.read().clone().filter(|_| docked()) else {
+		return rsx! {};
 	};
+	let groups = match outcome.read().clone().transpose() {
+		Ok(groups) => groups,
+		Err(why) => return rsx! { Empty { glyph: Glyph::Alert, error: true, title: "The view doesn't run", body: why } },
+	};
+	let count = groups.as_ref().map(|groups| count(groups, &view.boxes.hidden));
 	rsx! {
 		LockScope { locked,
 			div { class: "flex h-full flex-col",
-				ViewToolbar { view, defined, query, error, count: outcome.as_ref().map(|o| o.count) }
-				match outcome {
-					Some(o) => rsx! { Results { ran, groups: o.groups } },
-					None => rsx! { Loader { prs } },
+				if ctx.band() != Some(Band::Sm) {
+					ViewToolbar { view: view.clone(), defined, groups: groups.iter().flatten().map(|(g, _)| g.clone()).collect::<Vec<_>>(), count, edit }
+				}
+				match groups {
+					Some(groups) => rsx! { Results { view, groups, relaid, edit, onlay: { let name = name.clone(); move |columns| { spawn_forever(ctx.lay(name.clone(), columns)); } } } },
+					None => rsx! { Loader { prs: prs(&ctx) } },
 				}
 			}
 		}
 	}
 }
 
-/// What a view shows: its query narrowed by the scope, ordered and grouped.
-pub(super) struct Outcome {
-	pub(super) query: Query,
-	pub(super) count: usize,
-	pub(super) groups: Vec<(String, Vec<Placed>)>,
+/// Whether the open workspace's lens leaves pull requests in.
+pub(super) fn prs(ctx: &Ctx) -> bool {
+	ctx.lens.read().as_ref().is_some_and(|l| l.search.covers_prs() && l.scope.covers_prs())
 }
 
-pub(super) fn outcome(ctx: &Ctx, ran: &View) -> Result<Outcome, String> {
+/// The open workspace's cards as its lens has them, grouped `by`; none before they arrive, or while none is open.
+pub(super) fn outcome(ctx: &Ctx, by: &GroupBy) -> Option<Result<Groups, String>> {
+	let lens = ctx.lens.read().clone()?;
+	if ctx.awaits(prs(ctx)) {
+		return None;
+	}
 	let board = ctx.board.read();
-	let board = board.as_ref().expect("views run once the board loaded");
-	let within: Query = match ctx.scope() {
-		None => Query::default(),
-		Some((path, None)) => return Err(format!("the scope {path} is no longer configured: pick another in the scope bar")),
-		Some((_, Some(filter))) => filter.parse().expect("a scope's filter is a repo clause"),
-	};
+	let cards = &board.as_ref()?.cards;
 	let workflows = ctx.workflows();
-	let query: Query = ran.query.parse().map_err(|e: tedi_core::board::QueryError| e.to_string())?;
-	let me = ctx.me();
-	let run = |q: &Query| -> Result<Vec<usize>, String> {
-		let mut scoped = q.clone();
-		scoped.narrow(&within);
-		scoped.run(&board.cards, me.as_deref()).map_err(|e| e.to_string())
+	let mut query = lens.search;
+	query.narrow(&lens.scope);
+	let run = || -> Result<Groups, String> {
+		let mut hits = query.run(cards, ctx.me().as_deref()).map_err(|e| e.to_string())?;
+		lens.sort.apply(cards, &mut hits, &workflows).map_err(|e| e.to_string())?;
+		group(cards, &hits, by, &workflows).map_err(|e| e.to_string())
 	};
-	let mut hits = run(&query)?;
-	ran.sort.apply(&board.cards, &mut hits, &workflows).map_err(|e| e.to_string())?;
-	let groups = group(&board.cards, &hits, &ran.group_by, &workflows).map_err(|e| e.to_string())?;
-	Ok(Outcome { query, count: hits.len(), groups })
+	Some(run())
 }
 
-/// The view's cards, a column per group.
+/// The cards in the boxes shown.
+pub(super) fn count(groups: &Groups, hidden: &BTreeSet<String>) -> usize {
+	let shown = groups.iter().filter(|(group, _)| !hidden.contains(group));
+	shown.flat_map(|(_, members)| members.iter().map(|p| p.card)).collect::<BTreeSet<_>>().len()
+}
+
+/// The view's cards, a column per group shown.
 #[component]
-pub(super) fn Results(ran: View, groups: Vec<(String, Vec<Placed>)>) -> Element {
+pub(super) fn Results(view: View, groups: Groups, relaid: usize, edit: Callback<ViewPart>, onlay: Callback<String>) -> Element {
 	let ctx = use_context::<Ctx>();
-	let relaid = ctx.relaid.read().get(&ran.name).copied().unwrap_or(0); // never laid out anew
 	rsx! {
 		div { class: "flex min-h-0 flex-1 flex-col p-2",
 			if ctx.band() == Some(Band::Sm) {
-				Stacked { view: ran.name.clone(), by: ran.group_by.clone(), groups, shown: ran.shown.clone() }
+				Stacked { view, groups }
 			} else {
-				Columns { key: "{ran.group_by}-{relaid}", view: ran.name.clone(), groups, by: ran.group_by.clone(), shown: ran.shown.clone(), order: ran.sort.clone() }
+				Columns { key: "{view.group_by}-{relaid}", view, groups, edit, onlay }
 			}
 		}
 	}
@@ -259,42 +248,57 @@ pub(super) fn Empty(glyph: Glyph, #[props(default)] error: bool, title: String, 
 /// What every column of a view reads: its tiles are hosted by a dock of their own, so they don't take props from the view.
 #[derive(Clone, Copy)]
 struct Lanes {
-	groups: Signal<Vec<(String, Vec<Placed>)>>,
-	by: Signal<GroupBy>,
-	shown: Signal<Vec<Shown>>,
-	order: Signal<Order>,
+	view: Signal<View>,
+	groups: Signal<Groups>,
 	dragged: Signal<Option<tedi_core::IssueLink>>,
-	tints: Signal<Tints>,
 	api: Signal<Option<PackedApi>>,
+	edit: Callback<ViewPart>,
+	onlay: Callback<String>,
+}
+impl Lanes {
+	fn by(&self) -> GroupBy {
+		self.view.read().group_by.clone()
+	}
+
+	fn tint(&self, group: &str) -> Option<Tint> {
+		self.view.read().boxes.tints.get(group).copied()
+	}
 }
 
-/// Columns, one per group, each a tile of a dock nested in the view's: resized, reordered, tabbed together,
-/// kept per view and grouping in the viewer's library. Grouped by a workflow, a card
-/// dropped on a column moves there.
+/// The groups `api`'s dock has a column for.
+fn columns_of(api: PackedApi) -> BTreeSet<String> {
+	let key = |id: PanelId| id.0.strip_prefix("col:").expect("a column dock hosts only columns").to_string();
+	api.tab_ids().into_iter().map(key).collect()
+}
+
+/// Columns, one per group shown, each a tile of a dock nested in the view's: resized, reordered, tabbed together.
+/// Grouped by a workflow, a card dropped on a column moves there.
 #[component]
-fn Columns(view: String, groups: Vec<(String, Vec<Placed>)>, by: GroupBy, shown: Vec<Shown>, order: Order) -> Element {
+fn Columns(view: View, groups: Groups, edit: Callback<ViewPart>, onlay: Callback<String>) -> Element {
 	let ctx = use_context::<Ctx>();
-	let tints: Tints = {
-		let library = ctx.library.read();
-		let on_screen = &library.as_ref().expect("views render once the library arrived").on_screen.tints;
-		on_screen.get(&view).and_then(|t| t.get(&by)).cloned().unwrap_or_default() // never tinted
-	};
 	let mut panels = use_signal(Vec::<DockPanel>::new);
 	let mut api = use_signal(|| None::<PackedApi>);
 	let lanes = use_context_provider(|| Lanes {
+		view: Signal::new(view.clone()),
 		groups: Signal::new(groups.clone()),
-		by: Signal::new(by.clone()),
-		shown: Signal::new(shown.clone()),
-		order: Signal::new(order.clone()),
 		dragged: Signal::new(None),
-		tints: Signal::new(tints.clone()),
 		api,
+		edit,
+		onlay,
 	});
-	use_context_provider(|| ColumnsOf(view.clone()));
-	let mut arranged = use_signal(|| None::<Band>);
-	super::use_autosave(ctx, api, arranged, Dock::Columns { view: view.clone(), by: by.clone() });
-	// `layout`'s columns hosted, then shown; the effect below adds any group it lacks
-	let show = move |mut a: PackedApi, layout: &str| -> bool {
+	let mut seen = use_signal(|| None::<Seen>);
+	// the columns the dock had when last looked at: what is there since, the viewer closed or brought back
+	let mut placed = use_signal(BTreeSet::<String>::new);
+	let made = use_callback(move |(band, layout)| edit.call(ViewPart::Arrangement { band, layout }));
+	let kept = use_callback(move |band| lanes.view.peek().boxes.arrangement.get(&band).cloned());
+	super::use_kept(api, seen, kept, made);
+	let mut host = move |key: &str| {
+		let id = PanelId(format!("col:{key}"));
+		if !panels.peek().iter().any(|p| p.id == id) {
+			panels.write().push(column(id, key.to_string()));
+		}
+	};
+	let mut show = move |mut a: PackedApi, layout: &str| -> bool {
 		let mut grid = match tilers_dioxus::model::serial::load(layout) {
 			Ok(grid) => grid,
 			Err(e) => {
@@ -307,50 +311,61 @@ fn Columns(view: String, groups: Vec<(String, Vec<Placed>)>, by: GroupBy, shown:
 				return false;
 			}
 		};
-		let mut panels = panels;
-		for id in grid.cells.iter().flat_map(|c| c.group.tabs.iter()) {
-			if !panels.peek().iter().any(|p| &p.id == id) {
-				let key = id.0.strip_prefix("col:").expect("a column dock hosts only columns").to_string();
-				panels.write().push(column(id.clone(), key));
+		let kept: Vec<PanelId> = grid.cells.iter().flat_map(|c| c.group.tabs.iter()).cloned().collect();
+		for id in kept {
+			let key = id.0.strip_prefix("col:").expect("a column dock hosts only columns");
+			match lanes.view.peek().boxes.hidden.contains(key) {
+				true => grid.close(&id), // arranged before it was hidden, in another band
+				false => host(key),
 			}
 		}
-		let rows = a.rows(); // a row is a fixed height: columns kept on a taller view are cut to this one
-		for cell in grid.cells.iter_mut().filter(|c| c.y < rows && c.y + c.h > rows) {
-			cell.h = rows - cell.y;
-		}
+		super::cut(&mut grid, a.rows());
 		a.load(&tilers_dioxus::model::serial::save(&grid)).expect("parsed above, heights cut");
 		true
 	};
-	use_effect(use_reactive!(|groups, shown, tints, order| {
-		let (mut g, mut s, mut t, mut o) = (lanes.groups, lanes.shown, lanes.tints, lanes.order);
+	use_effect(use_reactive!(|view, groups| {
+		let (mut v, mut g) = (lanes.view, lanes.groups);
+		if *v.peek() != view {
+			v.set(view);
+		}
 		if *g.peek() != groups {
 			g.set(groups);
 		}
-		if *s.peek() != shown {
-			s.set(shown);
-		}
-		if *t.peek() != tints {
-			t.set(tints);
-		}
-		if *o.peek() != order {
-			o.set(order);
-		}
 	}));
-	// every group hosted; a group the query no longer yields keeps its tile, empty
+	// the dock and what is hidden follow each other; a group no card is in any more keeps its tile, empty
 	use_effect(move || {
-		let groups = lanes.groups.read();
 		let Some(mut api) = *api.read() else { return };
-		let hosted = api.tab_ids();
-		let h = api.rows();
-		for (key, _) in groups.iter() {
-			let id = PanelId(format!("col:{key}"));
-			if !panels.peek().iter().any(|p| p.id == id) {
-				panels.write().push(column(id.clone(), key.clone()));
+		let groups = lanes.groups.read();
+		let was_hidden = lanes.view.read().boxes.hidden.clone();
+		let on_dock = columns_of(api);
+		let hidden: BTreeSet<String> = {
+			let was = placed.peek();
+			let closed = was.difference(&on_dock).cloned();
+			let back: BTreeSet<&String> = on_dock.difference(&was).collect();
+			was_hidden.iter().cloned().chain(closed).filter(|g| !back.contains(g)).collect()
+		};
+		let extra: Vec<&String> = on_dock.intersection(&hidden).collect();
+		let missing: Vec<&String> = groups.iter().map(|(g, _)| g).filter(|g| !hidden.contains(*g) && !on_dock.contains(*g)).collect();
+		if !extra.is_empty() || !missing.is_empty() {
+			super::notice(api, seen, |layout| made.call(layout)); // before the dock holds more than what the viewer did
+			let h = api.rows();
+			for group in extra {
+				api.close(&PanelId(format!("col:{group}")));
 			}
-			if !hosted.contains(&id) {
-				let group = api.mint_group_id();
-				api.place(Group::new(group, id), 1, h); // at its least width: the row scrolls sideways past the view
+			for group in missing {
+				host(group);
+				let id = api.mint_group_id();
+				api.place(Group::new(id, PanelId(format!("col:{group}"))), 1, h); // at its least width: the row scrolls sideways past the view
 			}
+			if seen.peek().is_some() {
+				seen.set(Some(Seen::of(api)));
+			}
+		}
+		placed.set(columns_of(api));
+		if hidden != was_hidden {
+			let mut view = lanes.view;
+			view.write().boxes.hidden = hidden.clone();
+			edit.call(ViewPart::Hidden(hidden));
 		}
 	});
 	rsx! {
@@ -358,21 +373,14 @@ fn Columns(view: String, groups: Vec<(String, Vec<Placed>)>, by: GroupBy, shown:
 			div { class: "absolute inset-0",
 				PackedArea {
 					panels,
-					on_band: Some(Callback::new({
-						let view = view.clone();
-						move |a: PackedApi| {
-							let band = a.band();
-							arranged.set(None);
-							let kept = ctx.library.peek().as_ref().and_then(|l| l.on_screen.columns.get(&view)?.get(&*lanes.by.peek())?.get(&band).cloned());
-							let shown = match kept {
-								Some(layout) => show(a, &layout),
-								None => true, // the effect above seeds a tile per group
-							};
-							if shown {
-								arranged.set(Some(band));
-							}
-							api.set(Some(a));
+					on_band: Some(Callback::new(move |a: PackedApi| {
+						seen.set(None);
+						let kept = lanes.view.peek().boxes.arrangement.get(&a.band()).cloned();
+						if kept.is_none_or(|layout| show(a, &layout)) {
+							seen.set(Some(Seen::of(a)));
 						}
+						placed.set(columns_of(a));
+						api.set(Some(a));
 					})),
 					config: Some(Config { scroll_x: true, ..Config::default() }),
 					actions: Some(Callback::new(|tile: Tile| rsx! { ColumnActions { tile } })),
@@ -381,10 +389,6 @@ fn Columns(view: String, groups: Vec<(String, Vec<Placed>)>, by: GroupBy, shown:
 		}
 	}
 }
-
-/// Which view a column dock belongs to.
-#[derive(Clone)]
-struct ColumnsOf(String);
 
 fn column(id: PanelId, key: String) -> DockPanel {
 	DockPanel {
@@ -400,7 +404,7 @@ fn column(id: PanelId, key: String) -> DockPanel {
 #[component]
 fn ColumnHead(group: String) -> Element {
 	let lanes = use_context::<Lanes>();
-	let tint = lanes.tints.read().get(&group).copied();
+	let tint = lanes.tint(&group);
 	let count = lanes.groups.read().iter().find(|(k, _)| *k == group).map_or(0, |(_, m)| m.len());
 	let drop = use_drop(group.clone());
 	rsx! {
@@ -417,36 +421,14 @@ fn ColumnHead(group: String) -> Element {
 fn ColumnActions(tile: Tile) -> Element {
 	let ctx = use_context::<Ctx>();
 	let lanes = use_context::<Lanes>();
-	let ColumnsOf(view) = use_context::<ColumnsOf>();
 	let group = tile.active.0.strip_prefix("col:").expect("a column dock hosts only columns").to_string();
-	let by = lanes.by.read().clone();
-	let tint = {
-		let (view, by) = (view.clone(), by.clone());
-		move |tints: Tints| {
-			let edit = LibraryEdit::Tinted {
-				view: view.clone(),
-				by: by.clone(),
-				tints,
-			};
-			spawn(async move { _ = ctx.keep(edit).await });
-		}
-	};
-	let library = ctx.library.read();
-	let library = library.as_ref().expect("views render once the library arrived");
-	let mine: Vec<String> = library.columns.iter().filter(|(_, c)| c.by == by).map(|(n, _)| n.clone()).collect();
-	let team: Vec<String> = {
-		let setup = ctx.setup.read();
-		setup
-			.as_ref()
-			.expect("views render once setup arrived")
-			.columns
-			.iter()
-			.filter(|(_, c)| c.by == by)
-			.map(|(n, _)| n.clone())
-			.collect()
-	};
+	let by = lanes.by();
+	let (setup, library) = (ctx.setup.read(), ctx.library.read());
+	let team = &setup.as_ref().expect("views render once setup arrived").columns;
+	let mine = &library.as_ref().expect("views render once the library arrived").columns;
+	let layouts: Vec<String> = team.iter().chain(mine).filter(|(_, c)| c.by == by).map(|(n, _)| n.clone()).collect();
 	let mut naming = use_signal(|| false);
-	let laid = ctx.laid(&view);
+	let laid = ctx.laid(&lanes.view.read().name);
 	rsx! {
 		super::kit::Menu { glyph: Glyph::More, title: "Column menu",
 				span { class: "px-2 pt-1.5 pb-0.5 text-overline text-ink-soft", "Tint" }
@@ -456,17 +438,17 @@ fn ColumnActions(tile: Tile) -> Element {
 							key: "{choice:?}",
 							r#type: "button",
 							title: choice.map_or_else(|| "none".to_string(), |t| t.to_string()),
-							class: if lanes.tints.read().get(&group).copied() == choice { "size-5 rounded-full border-2 border-ink" } else { "size-5 rounded-full border border-border hover:border-ink-soft" },
+							class: if lanes.tint(&group) == choice { "size-5 rounded-full border-2 border-ink" } else { "size-5 rounded-full border border-border hover:border-ink-soft" },
 							style: choice.map_or_else(|| "background: var(--card)".to_string(), |t| format!("background: var(--tint-{t})")),
 							onclick: {
-								let (group, tint) = (group.clone(), tint.clone());
+								let group = group.clone();
 								move |_| {
-									let mut tints = lanes.tints.peek().clone();
+									let mut tints: Tints = lanes.view.peek().boxes.tints.clone();
 									match choice {
 										Some(t) => _ = tints.insert(group.clone(), t),
 										None => _ = tints.remove(&group),
 									}
-									tint(tints);
+									lanes.edit.call(ViewPart::Tints(tints));
 								}
 							},
 						}
@@ -474,8 +456,8 @@ fn ColumnActions(tile: Tile) -> Element {
 				}
 				div { class: "my-0.5 h-px bg-border-subtle" }
 				span { class: "px-2 pt-1.5 pb-0.5 text-overline text-ink-soft", "Column layouts" }
-				for name in team.into_iter().chain(mine) {
-					MenuItem { key: "{name}", selected: laid.as_ref() == Some(&name), label: name.clone(), onclick: { let (view, name) = (view.clone(), name.clone()); move |_| { spawn_forever(ctx.lay(view.clone(), name.clone())); } } }
+				for name in layouts {
+					MenuItem { key: "{name}", selected: laid.as_ref() == Some(&name), label: name.clone(), onclick: move |_| lanes.onlay.call(name.clone()) }
 				}
 				if naming() {
 					div { class: "px-1 py-1", onclick: |e: MouseEvent| e.stop_propagation(),
@@ -483,12 +465,13 @@ fn ColumnActions(tile: Tile) -> Element {
 							placeholder: "keep these columns as…",
 							on_name: move |name: String| {
 								naming.set(false);
-													let a = (*lanes.api.peek()).expect("the column dock entered a band before its menu shows");
-								let edit = LibraryEdit::Keep(api::Kept::Columns { name: name.clone(), by: lanes.by.peek().clone(), band: a.band(), layout: a.save(), tints: lanes.tints.peek().clone() });
-								let view = view.clone();
+								let a = (*lanes.api.peek()).expect("the column dock entered a band before its menu shows");
+								let View { group_by: by, mut boxes, .. } = lanes.view.peek().clone();
+								boxes.arrangement.extend(Arrangement::from([(a.band(), a.save())])); // as it stands, dragged or not
+								let edit = LibraryEdit::Keep(Kept::Columns { name: name.clone(), columns: Layout { by, boxes } });
 								spawn_forever(async move {
 									if ctx.keep(edit).await {
-										ctx.lay(view, name).await;
+										lanes.onlay.call(name);
 									}
 								});
 							},
@@ -507,17 +490,12 @@ fn use_drop(group: String) -> impl FnMut(DragEvent) + 'static {
 	let ctx = use_context::<Ctx>();
 	let lanes = use_context::<Lanes>();
 	let mut dragged = lanes.dragged;
-	let by = lanes.by;
 	move |e: DragEvent| {
 		e.prevent_default();
 		let Some(link) = dragged.take() else { return };
-		let GroupBy::State(workflow) = by.peek().clone() else {
-			ctx.say(
-				"drop",
-				super::toast::Tone::Warn,
-				format!("Only a workflow's columns take a drop; this view groups by {}", by.peek()),
-				None,
-			);
+		let by = lanes.view.peek().group_by.clone();
+		let GroupBy::State(workflow) = by else {
+			ctx.say("drop", super::toast::Tone::Warn, format!("Only a workflow's columns take a drop; this view groups by {by}"), None);
 			return;
 		};
 		let to = State::from_str(&group).expect("a workflow's columns are keyed by its leaves");
@@ -535,21 +513,23 @@ fn Column(group: String) -> Element {
 	let lanes = use_context::<Lanes>();
 	let mut dragged = lanes.dragged;
 	let mut over = use_signal(|| false);
-	let draggable = matches!(*lanes.by.read(), GroupBy::State(_));
+	let by = lanes.by();
+	let draggable = matches!(by, GroupBy::State(_));
 	let board = ctx.board.read();
 	let cards = &board.as_ref().expect("views render once the board loaded").cards;
+	let order: Option<Order> = ctx.lens.read().as_ref().map(|l| l.sort.clone());
 	let groups = lanes.groups.read();
 	let members = groups.iter().find(|(k, _)| *k == group).map_or(&[][..], |(_, m)| m.as_slice());
-	let shown = lanes.shown.read();
+	let shown = lanes.view.read().shown.clone();
 	let mut drop = use_drop(group.clone());
-	let here = |c: &tedi_core::board::Card| matches!(&*lanes.by.read(), GroupBy::State(w) if c.states[w].to_string() == group);
-	// where the dragged card would land: its place in this column under the view's order
-	let landing = match (over(), dragged.read().as_ref()) {
-		(true, Some(link)) => cards.iter().position(|c| &c.link == link && !here(c)).map(|at| {
+	let here = |c: &tedi_core::board::Card| matches!(&by, GroupBy::State(w) if c.states[w].to_string() == group);
+	// where the dragged card would land: its place in this column under the workspace's order
+	let landing = match (over(), dragged.read().as_ref(), &order) {
+		(true, Some(link), Some(order)) => cards.iter().position(|c| &c.link == link && !here(c)).map(|at| {
 			let mut with: Vec<usize> = members.iter().filter(|p| !p.lifted).map(|p| p.card).collect(); // what it lifts, it does again
 			with.push(at);
 			let workflows = ctx.workflows();
-			lanes.order.read().apply(cards, &mut with, &workflows).expect("the view's order ran on these cards");
+			order.apply(cards, &mut with, &workflows).expect("the lens's order ran on these cards");
 			let groups = tedi_core::board::group(cards, &with, &GroupBy::Nothing, &workflows).expect("no workflow to be unknown");
 			let mut below = groups[0].1.iter().skip_while(|p| p.card != at).skip(1);
 			below.find_map(|next| members.iter().position(|p| p.card == next.card)).unwrap_or(members.len()) // none below it: last
@@ -598,19 +578,19 @@ fn Column(group: String) -> Element {
 
 /// A board on a phone (Figma: 06a): its groups stacked, headers sticky; a long press on a card moves it.
 #[component]
-fn Stacked(view: String, by: GroupBy, groups: Vec<(String, Vec<Placed>)>, shown: Vec<Shown>) -> Element {
+fn Stacked(view: View, groups: Groups) -> Element {
 	let ctx = use_context::<Ctx>();
 	let mut moving = use_signal(|| None::<tedi_core::board::Card>);
 	let board = ctx.board.read();
 	let cards = &board.as_ref().expect("views render once the board loaded").cards;
-	let workflow = match &by {
+	let workflow = match &view.group_by {
 		GroupBy::State(w) => Some(w.clone()),
 		_ => None,
 	};
 	rsx! {
 		div { class: "flex h-full flex-col gap-1.5 overflow-auto",
-			for (key , members) in groups.into_iter().filter(|(_, m)| !m.is_empty()) {
-				div { key: "head-{key}", class: "sticky top-0 z-[5] bg-background pb-0.5", GroupHead { view: view.clone(), by: by.clone(), group: key.clone(), count: members.len() } }
+			for (key , members) in groups.into_iter().filter(|(g, m)| !m.is_empty() && !view.boxes.hidden.contains(g)) {
+				div { key: "head-{key}", class: "sticky top-0 z-[5] bg-background pb-0.5", GroupHead { tint: view.boxes.tints.get(&key).copied(), group: key.clone(), count: members.len() } }
 				for Placed { card: i , lifted } in members {
 					div {
 						key: "{key}-{cards[i].link}",
@@ -621,7 +601,7 @@ fn Stacked(view: String, by: GroupBy, groups: Vec<(String, Vec<Placed>)>, shown:
 								moving.set(Some(card.clone()));
 							}
 						},
-						CardView { card: cards[i].clone(), shown: shown.clone(), lifted }
+						CardView { card: cards[i].clone(), shown: view.shown.clone(), lifted }
 					}
 				}
 			}
@@ -655,17 +635,7 @@ fn Stacked(view: String, by: GroupBy, groups: Vec<(String, Vec<Placed>)>, shown:
 //#[codestyle::skip(swappable-args)]
 /// A group's header, full width above its rows (Figma: ColumnHeader): the tint's dot and wash, the group, its count.
 #[component]
-fn GroupHead(view: String, by: GroupBy, group: String, count: usize) -> Element {
-	let ctx = use_context::<Ctx>();
-	let tint = ctx
-		.library
-		.read()
-		.as_ref()
-		.expect("views render once the library arrived")
-		.on_screen
-		.tints
-		.get(&view)
-		.and_then(|t| t.get(&by)?.get(&group).copied());
+fn GroupHead(tint: Option<Tint>, group: String, count: usize) -> Element {
 	let wash = tint.map_or_else(String::new, |t| format!("background: color-mix(in srgb, var(--tint-{t}) 14%, var(--card))"));
 	rsx! {
 		div { class: "flex h-8 shrink-0 items-center gap-1.5 rounded-[var(--radius)] bg-card pr-1 pl-2", style: wash,

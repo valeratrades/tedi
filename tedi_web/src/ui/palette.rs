@@ -1,5 +1,5 @@
 //! ⌘K (Figma: CommandPalette): one index over every view, scope, workspace and column layout, the open
-//! issues, and actions. \`v: s: w: c: #\` narrow it to one kind. ⏎ opens in place, ⇧⏎ in a new tile, ⌘⏎ as
+//! issues, and actions. `v: s: w: c: #` narrow it to one kind. ⏎ opens in place, ⇧⏎ in a new tile, ⌘⏎ as
 //! its library page.
 
 use dioxus::prelude::*;
@@ -10,16 +10,15 @@ use super::{
 	Ctx, Editing, Modal,
 	icons::{Glyph, Icon},
 	kit::Kbd,
-	shell::glyph_of,
 	sprint_panel,
 };
-use crate::api::LibraryEdit;
 
 const KINDS: [(&str, &str); 5] = [("v:", "views"), ("s:", "scopes"), ("w:", "workspaces"), ("c:", "column layouts"), ("#", "issues")];
 
 #[derive(Clone, PartialEq)]
 enum Go {
 	Panel(PanelId),
+	/// Copied into the open workspace.
 	Scope(Option<String>),
 	Workspace(String),
 	NewScope,
@@ -89,13 +88,11 @@ fn Open() -> Element {
 						None => ctx.open(id),
 					}
 				}
-				(Go::Scope(path), None) => {
-					spawn(async move { _ = ctx.keep(LibraryEdit::Scope(path)).await });
-				}
+				(Go::Scope(path), None) => ctx.start_from(path),
 				(Go::Workspace(name), None) => ctx.go(ctx.at_workspace(&name)),
 				(Go::NewScope, None) => {
 					let mut m = ctx.modal;
-					m.set(Some(Modal::Scope(Editing::New)));
+					m.set(Some(Modal::Scope(Editing::New(Default::default()))));
 				}
 			}
 		}
@@ -174,39 +171,34 @@ fn hits(ctx: &Ctx) -> Vec<Hit> {
 		return out;
 	};
 	for v in ctx.views() {
-		let team = !library.filters.contains_key(&v.name);
+		let team = !library.views.contains_key(&v.name);
 		out.push(Hit {
 			kind: "views",
-			glyph: glyph_of(&v),
+			glyph: Glyph::View,
 			meta: if team { "team".into() } else { "mine".into() },
 			page: Some(PanelId(format!("library:views:{}", v.name))),
 			go: Go::Panel(PanelId(format!("view:{}", v.name))),
 			label: v.name,
 		});
 	}
-	fn walk(prefix: &str, level: &std::collections::BTreeMap<String, tedi_core::board::Scope>, out: &mut Vec<Hit>) {
-		for (name, scope) in level {
-			let path = if prefix.is_empty() { name.clone() } else { format!("{prefix} / {name}") };
-			out.push(Hit {
-				kind: "scopes",
-				glyph: Glyph::Scope,
-				label: format!("Scope → {path}"),
-				meta: String::new(),
-				go: Go::Scope(Some(path.clone())),
-				page: Some(PanelId(format!("library:scopes:{path}"))),
-			});
-			walk(&path, &scope.children, out);
-		}
-	}
 	out.push(Hit {
 		kind: "scopes",
 		glyph: Glyph::Scope,
-		label: "Scope → All repos".into(),
+		label: "Start from → All repos".into(),
 		meta: String::new(),
 		go: Go::Scope(None),
 		page: None,
 	});
-	walk("", &library.scopes(&setup.scopes).expect("the server serves no library whose scope lost its parent"), &mut out);
+	for s in ctx.scopes() {
+		out.push(Hit {
+			kind: "scopes",
+			glyph: Glyph::Scope,
+			label: format!("Start from → {}", s.path),
+			meta: String::new(),
+			page: Some(PanelId(format!("library:scopes:{}", s.path))),
+			go: Go::Scope(Some(s.path)),
+		});
+	}
 	out.push(Hit {
 		kind: "scopes",
 		glyph: Glyph::Plus,
@@ -215,12 +207,12 @@ fn hits(ctx: &Ctx) -> Vec<Hit> {
 		go: Go::NewScope,
 		page: None,
 	});
-	for (n, name) in library.workspaces.keys().enumerate() {
+	for (n, name) in setup.workspaces.keys().chain(library.workspaces.keys()).enumerate() {
 		out.push(Hit {
 			kind: "workspaces",
 			glyph: Glyph::Workspace,
 			label: format!("Switch workspace: {name}"),
-			meta: if n < 9 { format!("⌘⇧{}", n + 1) } else { String::new() },
+			meta: if n < setup.workspaces.len() { "team".into() } else { String::new() },
 			go: Go::Workspace(name.clone()),
 			page: Some(PanelId(format!("library:workspaces:{name}"))),
 		});

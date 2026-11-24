@@ -49,3 +49,28 @@ async fn a_view_shows_what_matches_and_its_edits_sync() {
 	assert!(read_issue_file(&ctx.resolve_issue_path(&bug)).contains("edited body"));
 	assert_eq!(read_issue_file(&ctx.resolve_issue_path(&chore)), CHORE);
 }
+
+#[tokio::test]
+async fn a_views_name_is_no_query() {
+	let ctx = TestContext::build();
+	ctx.consensus(&parse_virtual(BUG), Some(Seed::new(0))).await;
+	std::fs::write(
+		ctx.xdg.inner.root.join("config/tedi.toml"),
+		"[board]\nviews = [{ name = \"t:bug\", group_by = \"repo\", shown = [], hidden = [\"o/r\"] }]\n",
+	)
+	.unwrap();
+
+	let shown = Rc::new(RefCell::new(String::new()));
+	let seen = shown.clone();
+	let mut cmd = Command::new(get_binary_path());
+	cmd.args(["--mock", "--offline", "view", "t:bug"]);
+	cmd.env(concat!("tedi", "_MOCK_STATE"), &ctx.mock_state_path);
+	let out = ctx.drive_editor_session(cmd, Some(Box::new(move |tmp: &Path| *seen.borrow_mut() = std::fs::read_to_string(tmp).unwrap()) as EditFn));
+
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+	insta::assert_snapshot!(shown.borrow(), @"
+	- [ ] (t:bug) Fix it <!-- @mock_user https://github.com/o/r/issues/1 --> <!--{{{3-->
+	  body
+	  <!--}}}1-->
+	");
+}
