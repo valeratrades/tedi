@@ -13,6 +13,7 @@ use super::{
 	kit::Kbd,
 	scope::glyph_at,
 	shell::{counted, glyph_of},
+	sprint_panel,
 };
 
 const KINDS: [(&str, &str); 5] = [("v:", "views"), ("s:", "scopes"), ("w:", "workspaces"), ("c:", "column layouts"), ("#", "issues")];
@@ -257,13 +258,13 @@ fn hits(ctx: &Ctx) -> Vec<Hit> {
 			scope: None,
 		});
 	}
-	for s in ctx.sprints.read().iter().flatten() {
+	for s in ctx.sprints() {
 		out.push(Hit {
 			kind: "sprints",
 			glyph: Glyph::Sprint,
 			label: s.title.clone(),
-			meta: format!("{}", s.links.len()),
-			go: Go::Panel(PanelId(format!("sprint:{}", s.title))),
+			meta: format!("{} {}", s.link.repo_info().repo(), s.nodes.len()),
+			go: Go::Panel(sprint_panel(&s.link)),
 			page: None,
 			scope: None,
 		});

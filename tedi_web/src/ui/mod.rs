@@ -2,6 +2,7 @@
 //! an issue. Cards arrive whole and are queried here; edits leave as server fns. What is on screen, and what
 //! the viewer keeps, is their library on the server.
 
+mod account;
 mod builder;
 mod card;
 mod facets;
@@ -26,14 +27,14 @@ use ev_lib::uikit_dioxus::*;
 use futures::StreamExt as _;
 use icons::{Glyph, Icon};
 use tedi_core::{
-	IssueLink,
-	board::{Board, Card, Part, Scope, Slice, View, Within},
-	conflict::{CommentEdit, Conflict},
+	IssueLink, MilestoneLink,
+	board::{Board, Card, Part, Scope, Slice, Target, View, Within},
+	conflict::{CommentEdit, Conflict, Edited},
 	workflow::Workflow,
 };
 use tilers_dioxus::{Band, DockPanel, Group, GroupId, MinSize, PackedApi, PackedArea, PackedGrid, PanelId, Tile, model::serial};
 
-use crate::api::{self, Dock, Edited, Item, Library, LibraryEdit, Setup};
+use crate::api::{self, Dock, Item, Library, LibraryEdit, Setup};
 
 const HELP: [(&str, &str); 7] = [
 	("⌘K", "jump to a view, scope, sprint or issue"),
@@ -83,8 +84,6 @@ struct Ctx {
 	arranged: Signal<Option<Band>>,
 	/// What of the first board is here.
 	loading: Signal<Loading>,
-	/// GitHub's, the last to arrive.
-	sprints: Signal<Option<Vec<api::Sprint>>>,
 	/// Why setup or the library didn't arrive: nothing renders without both.
 	failure: Signal<Option<String>>,
 	/// The dialog over the screen.
@@ -142,7 +141,7 @@ impl Ctx {
 	}
 
 	/// What cards sit in, by name.
-	fn workflows(&self) -> BTreeMap<String, Workflow> {
+	fn workflows(&self) -> Trees {
 		self.setup.read().as_ref().expect("tiles render once setup arrived").workflows.clone()
 	}
 
@@ -195,6 +194,20 @@ impl Ctx {
 	fn left_in(&self, slice: &Slice) -> Option<Within> {
 		let (board, setup) = (self.board.read(), self.setup.read());
 		slice.within(board.as_ref()?, &setup.as_ref()?.orgs, &self.scopes())
+	}
+
+	/// The scope's sprints: what is planned, the shortest period first, then the bottlenecks.
+	fn sprints(&self) -> Vec<Target> {
+		let within = self.within().unwrap_or_default(); // its scope is no longer there: shown without one
+		let board = self.board.read();
+		let mut sprints: Vec<Target> = board
+			.iter()
+			.flat_map(|b| &b.targets)
+			.filter(|t| t.sprint().is_some() && within.offers(&t.link))
+			.cloned()
+			.collect();
+		sprints.sort_by_key(|t| (t.sprint(), t.link.repo_info().to_string()));
+		sprints
 	}
 
 	/// The team's, then the viewer's own.
@@ -339,7 +352,18 @@ impl Ctx {
 				if from.is_empty() { "New view (draft)".to_string() } else { format!("{from} (draft)") },
 				rsx! { builder::Builder { from: (!from.is_empty()).then(|| from.to_string()) } },
 			),
-			Some(("sprint", title)) => (Glyph::Sprint, title.to_string(), rsx! { view::SprintPanel { title: title.to_string() } }),
+			Some(("sprint", at)) => match sprint_at(at) {
+				Some(link) => {
+					return DockPanel {
+						label: Some(rsx! { view::SprintTab { link: link.clone() } }),
+						title: at.to_string(),
+						content: rsx! { view::SprintPanel { link: link.clone() } },
+						id,
+						min: PANEL_MIN,
+					};
+				}
+				None => (Glyph::Alert, id.0.clone(), rsx! { "Not a sprint: {at}" }),
+			},
 			Some(("issue", link)) => match IssueLink::parse(link) {
 				Some(link) => {
 					return DockPanel {
@@ -514,6 +538,7 @@ impl Ctx {
 
 #[derive(Clone, Debug, PartialEq)]
 enum Modal {
+	Account,
 	Scope(Editing),
 	/// The stored issues the board couldn't read, and why.
 	Unreadable,
@@ -535,6 +560,17 @@ enum Editing {
 	Own(String),
 	/// The team's, by path: saved, it becomes the viewer's own.
 	Team(String),
+}
+
+/// A sprint's panel, named by its milestone: titles repeat across repos.
+fn sprint_panel(link: &MilestoneLink) -> PanelId {
+	PanelId(format!("sprint:{}/{}", link.repo_info(), link.number()))
+}
+
+/// The milestone an `owner/repo/n` names.
+fn sprint_at(at: &str) -> Option<MilestoneLink> {
+	let [owner, repo, n] = at.split('/').collect::<Vec<_>>().try_into().ok()?; //IGNORED_ERROR: it names no milestone
+	MilestoneLink::parse(&format!("https://github.com/{owner}/{repo}/milestone/{n}"))
 }
 
 /// What a tile wants when it opens.
@@ -608,7 +644,6 @@ fn Shell() -> Element {
 			api: Signal::new(None),
 			arranged: Signal::new(None),
 			loading: Signal::new(Loading::default()),
-			sprints: Signal::new(None),
 			failure: Signal::new(None),
 			modal: Signal::new(None),
 			palette: Signal::new(false),
@@ -699,15 +734,6 @@ fn Live() -> Element {
 			}
 			(Err(e), _) => failure.set(Some(format!("setup: {e}"))),
 			(_, Err(e)) => failure.set(Some(format!("your library: {e}"))),
-		}
-	});
-	use_future(move || async move {
-		match api::sprints().await {
-			Ok(read) => {
-				let mut sprints = ctx.sprints;
-				sprints.set(Some(read));
-			}
-			Err(e) => ctx.say("sprints", toast::Tone::Error, format!("sprints: {e}"), None),
 		}
 	});
 	use_future(move || async move {
@@ -882,6 +908,7 @@ fn Modals() -> Element {
 		div { class: "relative z-[100]",
 			match modal {
 				None => rsx! {},
+				Some(Modal::Account) => rsx! { account::AccountPanel {} },
 				Some(Modal::Scope(editing)) => rsx! { scope::ScopeEditor { key: "{editing:?}", editing } },
 				Some(Modal::Propose(item)) => rsx! { library::Propose { key: "{item:?}", item } },
 				Some(Modal::ApplyColumns { name, owner }) => rsx! { library::ApplyColumns { name, owner } },

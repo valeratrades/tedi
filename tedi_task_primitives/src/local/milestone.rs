@@ -18,7 +18,7 @@ use std::{
 use color_eyre::eyre::{Result, eyre};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
-use tedi_core::{CloseState, MilestoneBody, MilestoneIdentity, MilestoneLink, MilestoneTimestamps};
+use tedi_core::{CloseState, MilestoneBody, MilestoneIdentity, MilestoneLink, MilestoneTimestamps, Sprint};
 
 use super::{Consensus, FsReader, Local, LocalFs, LocalReader};
 use crate::{Milestone, RepoInfo, sink::Sink};
@@ -51,7 +51,7 @@ pub struct MilestoneProjectMeta {
 
 impl Local {
 	/// `{issues_dir}/__milestones__/` — root of milestone storage (inside the git repo).
-	pub fn milestones_dir() -> PathBuf {
+	fn milestones_dir() -> PathBuf {
 		Self::issues_dir().join(MILESTONES_SUBDIR)
 	}
 
@@ -128,8 +128,8 @@ impl Local {
 		}))
 	}
 
-	/// Every repo's stored milestones, closed ones included.
-	pub fn stored_milestones() -> Result<Vec<Milestone>> {
+	/// The repos milestones are stored of.
+	pub(super) fn milestone_repos() -> Result<Vec<RepoInfo>> {
 		let names = |dir: &Path| match FsReader.list_dir(dir) {
 			Ok(names) => Ok(names),
 			Err(e) if e.is_not_found() => Ok(Vec::new()), // none stored yet
@@ -137,15 +137,29 @@ impl Local {
 		};
 		let mut out = Vec::new();
 		for owner in names(&Self::milestones_dir())? {
-			for repo in names(&Self::milestones_dir().join(&owner))? {
-				let repo = RepoInfo::new(&owner, &repo);
-				for number in Self::load_milestone_project_meta(repo, &FsReader).milestones.into_keys() {
-					let link = MilestoneLink::in_project(repo, number);
-					out.push(Self::load_milestone(&link, &FsReader)?.ok_or_else(|| eyre!("{} has metadata but no body stored", link.as_str()))?);
-				}
+			out.extend(names(&Self::milestones_dir().join(&owner))?.iter().map(|repo| RepoInfo::new(&owner, repo)));
+		}
+		Ok(out)
+	}
+
+	/// Every repo's stored milestones, closed ones included.
+	pub fn stored_milestones() -> Result<Vec<Milestone>> {
+		let mut out = Vec::new();
+		for repo in Self::milestone_repos()? {
+			for number in Self::load_milestone_project_meta(repo, &FsReader).milestones.into_keys() {
+				let link = MilestoneLink::in_project(repo, number);
+				out.push(Self::load_milestone(&link, &FsReader)?.ok_or_else(|| eyre!("{} has metadata but no body stored", link.as_str()))?);
 			}
 		}
 		Ok(out)
+	}
+
+	/// `sprint` of whoever owns `repo`, if stored.
+	pub fn stored_sprint(repo: RepoInfo, sprint: Sprint) -> Option<MilestoneLink> {
+		let home = sprint.home(repo);
+		let held = Self::load_milestone_project_meta(home, &FsReader).milestones;
+		let (number, _) = held.into_iter().find(|(_, m)| !m.state.is_closed() && m.title == sprint.to_string())?;
+		Some(MilestoneLink::in_project(home, number))
 	}
 }
 

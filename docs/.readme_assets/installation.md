@@ -20,4 +20,9 @@ clockify_workspace_id = "..."
 # Optional
 default_extension = "md"  # or "typ" for typst
 github_max_in_flight = 32  # GitHub requests in flight at once
+home = "https://example.com/board"  # the `tedi web` holding your workflow states: `move` and `view` ask it (`tedi login` first, behind a gate)
+
+[milestones]
+url = "owner/repo"           # where your sprints live
+selected = "kanban/selected" # the home's bucket opened beside a planning sprint
 ```

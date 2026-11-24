@@ -62,16 +62,15 @@ pub enum Entered {
 	Rejected(String),
 }
 
-/// A workflow with its hooks loaded. Only the instance's operator configures one: a library is code run in their process.
-pub struct Loaded {
-	pub workflow: Workflow,
+/// A workflow's hooks, loaded. Only the instance's operator configures one: a library is code run in their process.
+pub struct Hooks {
 	/// By bucket path.
 	on_enter: HashMap<Vec<String>, Vec<Loaded1>>,
 	rules: Vec<Loaded1>,
 }
-impl Loaded {
+impl Hooks {
 	/// `preset:<name>`, or a workflow file; a library it names is found relative to the file.
-	pub fn load(spec: &str) -> Result<Self, LoadError> {
+	pub fn load(spec: &str) -> Result<(Workflow, Self), LoadError> {
 		match spec.strip_prefix("preset:") {
 			Some(name) => {
 				let (_, src) = PRESETS.iter().find(|(n, _)| *n == name).ok_or_else(|| LoadError::Preset(name.into()))?;
@@ -85,7 +84,7 @@ impl Loaded {
 		}
 	}
 
-	fn parse(src: &str, dir: Option<&Path>) -> Result<Self, LoadError> {
+	fn parse(src: &str, dir: Option<&Path>) -> Result<(Workflow, Self), LoadError> {
 		let workflow: Workflow = toml::from_str(src)?;
 		workflow.check()?;
 		let load = |named: &Named, role: Role, at: String| -> Result<Loaded1, LoadError> {
@@ -128,17 +127,17 @@ impl Loaded {
 			.enumerate()
 			.map(|(i, h)| load(h, Role::Rule, format!("rules[{i}]")))
 			.collect::<Result<Vec<_>, _>>()?;
-		Ok(Self { workflow, on_enter, rules })
+		Ok((workflow, Self { on_enter, rules }))
 	}
 
 	/// Every `on_enter` hook of the buckets a move from `from` to `to` enters (those on `to`'s path below
 	/// where the two part), outermost first, each shown the same card.
-	pub fn enter(&self, card: &Card, from: &State, to: &State, mover: &Mover, now: Timestamp) -> Result<Entered, HookError> {
+	pub fn enter(&self, workflow: &Workflow, card: &Card, from: &State, to: &State, mover: &Mover, now: Timestamp) -> Result<Entered, HookError> {
 		let mut edits = Vec::new();
 		for bucket in self.entered(from, to) {
 			for loaded in &self.on_enter[&bucket] {
 				let mut out = Buffer::default();
-				self.call(loaded, card, now, Moment::Entering { from, to, mover }, &mut out)?;
+				self.call(loaded, workflow, card, now, Moment::Entering { from, to, mover }, &mut out)?;
 				if let Some(why) = out.rejected {
 					return Ok(Entered::Rejected(why));
 				}
@@ -154,14 +153,14 @@ impl Loaded {
 	}
 
 	/// Where the first rule moving `card` off `current` sends it.
-	pub fn rule(&self, card: &Card, current: &State, now: Timestamp) -> Result<Option<State>, HookError> {
+	pub fn rule(&self, workflow: &Workflow, card: &Card, current: &State, now: Timestamp) -> Result<Option<State>, HookError> {
 		for loaded in &self.rules {
 			let mut out = Buffer::default();
-			self.call(loaded, card, now, Moment::Pulled { current }, &mut out)?;
+			self.call(loaded, workflow, card, now, Moment::Pulled { current }, &mut out)?;
 			if let Some(to) = out.move_to
 				&& &to != current
 			{
-				self.workflow.leaf(&to).map_err(|e| HookError {
+				workflow.leaf(&to).map_err(|e| HookError {
 					at: loaded.at.clone(),
 					why: e.to_string(),
 				})?;
@@ -176,9 +175,9 @@ impl Loaded {
 		(shared + 1..=to.names().len()).map(|n| to.names()[..n].to_vec()).collect()
 	}
 
-	fn call(&self, loaded: &Loaded1, card: &Card, now: Timestamp, at: Moment, out: &mut Buffer) -> Result<(), HookError> {
+	fn call(&self, loaded: &Loaded1, workflow: &Workflow, card: &Card, now: Timestamp, at: Moment, out: &mut Buffer) -> Result<(), HookError> {
 		let ctx = Ctx {
-			workflow: &self.workflow,
+			workflow,
 			card,
 			params: &loaded.params,
 			now,
@@ -253,7 +252,7 @@ mod tests {
 	#[test]
 	fn presets_load() {
 		for (name, _) in PRESETS {
-			Loaded::load(&format!("preset:{name}")).unwrap_or_else(|e| panic!("{name}: {e}"));
+			Hooks::load(&format!("preset:{name}")).unwrap_or_else(|e| panic!("{name}: {e}"));
 		}
 	}
 }

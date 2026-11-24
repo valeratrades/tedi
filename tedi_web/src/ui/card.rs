@@ -161,10 +161,10 @@ pub(super) fn Field(card: Card, shown: Shown) -> Element {
 			}
 		},
 		Shown::Sprint => {
-			let sprints: Vec<String> = ctx.sprints.read().iter().flatten().filter(|s| s.links.contains(&card.link)).map(|s| s.title.clone()).collect();
+			let sprints = ctx.sprints();
 			rsx! {
-				for s in sprints {
-					span { key: "{s}", class: "inline-flex items-center gap-1 text-caption text-ink-soft", Icon { glyph: Glyph::Sprint, class: "size-3" } "{s}" }
+				for s in sprints.iter().filter(|s| s.hosts(&card.link)) {
+					span { key: "{s.link.as_str()}", class: "inline-flex items-center gap-1 text-caption text-ink-soft", Icon { glyph: Glyph::Sprint, class: "size-3" } "{s.title}" }
 				}
 			}
 		}

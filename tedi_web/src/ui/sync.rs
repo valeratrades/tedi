@@ -9,14 +9,14 @@ use dioxus::{
 	prelude::*,
 };
 use tedi_core::{
-	IssueLink, MilestoneLink,
+	IssueLink, MilestoneLink, NodeLink,
 	board::{Board, Card},
-	conflict::FieldEdit,
+	conflict::{Edited, FieldEdit},
 	workflow::State,
 };
 
 use super::{Ctx, toast};
-use crate::api::{self, Edited};
+use crate::api;
 
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct Pending {
@@ -68,10 +68,10 @@ impl Op {
 			Op::Milestone { seen, new, .. } =>
 				for t in &mut board.targets {
 					if Some(&t.link) == seen.as_ref() {
-						t.hosted.retain(|h| h != link);
+						t.nodes.retain(|n| *n != NodeLink::Issue(link.clone()));
 					}
-					if Some(&t.link) == new.as_ref() && !t.hosted.contains(link) {
-						t.hosted.push(link.clone());
+					if Some(&t.link) == new.as_ref() && !t.hosts(link) {
+						t.nodes.push(NodeLink::Issue(link.clone()));
 					}
 				},
 			Op::Review { reviewer, on } => {
@@ -295,7 +295,7 @@ impl Ctx {
 		while let Some((id, op)) = self.next(&link) {
 			let sent = match &op {
 				Op::Edit(edits) => api::edit(link.clone(), edits.clone()).await,
-				Op::Move { workflow, seen, to } => api::move_card(link.clone(), workflow.clone(), to.clone(), seen.clone()).await,
+				Op::Move { workflow, seen, to } => api::move_card(link.clone(), workflow.clone(), to.clone(), Some(seen.clone())).await,
 				Op::Milestone { repo, seen, new } => api::set_milestone(link.clone(), repo.clone(), seen.clone(), new.clone()).await,
 				Op::Review { reviewer, on } => api::request_review(link.clone(), reviewer.clone(), *on).await.map(|()| Edited::Landed),
 			};

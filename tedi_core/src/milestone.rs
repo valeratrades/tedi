@@ -9,7 +9,7 @@
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
-use crate::{CloseState, MilestoneLink, NodeLink, RepoInfo, TaskView};
+use crate::{CloseState, MilestoneLink, NodeLink, RepoInfo, Sprint, TaskView};
 
 /// Timestamps tracking when individual milestone fields last changed. A milestone-shaped
 /// sibling of `IssueTimestamps`, used for field-level sync conflict resolution.
@@ -116,6 +116,10 @@ impl Milestone {
 
 	pub fn is_closed(&self) -> bool {
 		self.identity.state.is_closed()
+	}
+
+	pub fn sprint(&self) -> Option<Sprint> {
+		Sprint::of(self.identity.link.repo_info(), &self.identity.title)
 	}
 
 	/// Recompute timestamps after a modification, diffing against the pre-edit state.

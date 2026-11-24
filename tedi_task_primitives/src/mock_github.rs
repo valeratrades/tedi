@@ -7,7 +7,7 @@ use std::{
 	collections::{BTreeMap, BTreeSet, HashMap},
 	path::{Path, PathBuf},
 	sync::{
-		Mutex,
+		Arc, Mutex,
 		atomic::{AtomicU64, Ordering},
 	},
 };
@@ -18,8 +18,8 @@ use tracing::instrument;
 
 use crate::{
 	github::{
-		CreatedIssue, FetchedIssue, FileCommit, FileProposal, GithubClient, GithubComment, GithubError, GithubIssue, GithubLabel, GithubMilestone, GithubUser, GraphqlTimeline, IssuePage,
-		PrPage, RepoInfo, SubIssue,
+		BoxedGithubClient, CreatedIssue, FetchedIssue, FileCommit, FileProposal, GithubClient, GithubComment, GithubError, GithubIssue, GithubLabel, GithubMilestone, GithubUser,
+		GraphqlTimeline, IssuePage, PrPage, RepoInfo, SubIssue,
 	},
 	local::Local,
 };
@@ -36,95 +36,36 @@ const ENV_MOCK_REMOTE_EDIT: &str = "tedi_MOCK_REMOTE_EDIT";
 const ENV_MOCK_RATE_LIMITED_AFTER_PAGES: &str = "tedi_MOCK_RATE_LIMITED_AFTER_PAGES";
 /// Every call is appended here as it happens, so a test can see what reached GitHub up to a point.
 const ENV_MOCK_CALL_LOG: &str = "tedi_MOCK_CALL_LOG";
+const FIRST_ISSUE_ID: u64 = 1000;
+const FIRST_COMMENT_ID: u64 = 5000;
+
 /// Mock Github client that stores all state in memory.
 /// Thread-safe for use in async contexts.
 pub struct MockGithubClient {
 	/// The authenticated user's login
 	user_login: String,
-
-	/// Counter for generating unique issue IDs
-	next_issue_id: AtomicU64,
-
-	/// Counter for generating unique comment IDs
-	next_comment_id: AtomicU64,
-
-	/// All issues, keyed by (owner, repo) -> issue_number -> issue
-	issues: Mutex<HashMap<RepoKey, HashMap<u64, MockIssueData>>>,
-
-	/// All comments, keyed by (owner, repo) -> comment_id -> comment
-	comments: Mutex<HashMap<RepoKey, BTreeMap<u64, MockCommentData>>>,
-
-	/// Sub-issue relationships: parent_issue_number -> vec of child issue numbers
-	sub_issues: Mutex<HashMap<RepoKey, HashMap<u64, Vec<u64>>>>,
-
-	/// All milestones, keyed by (owner, repo) -> number -> milestone
-	milestones: Mutex<HashMap<RepoKey, BTreeMap<u64, MockMilestoneData>>>,
-
-	/// Labels defined per repo; a repo listed here exists even without issues
-	labels: Mutex<HashMap<RepoKey, Vec<String>>>,
-
-	/// `blocked by` links, across repos
-	dependencies: Mutex<Vec<MockDependency>>,
-
-	/// `blocked by` links removed on Github: their removal event stamps the blocked issue
-	unlinked: Mutex<Vec<MockDependency>>,
-
-	/// Pull requests referencing an issue
-	prs: Mutex<HashMap<(RepoKey, u64), Vec<crate::LinkedPr>>>,
-
-	pull_requests: Mutex<HashMap<RepoKey, BTreeMap<u64, tedi_core::PullRequest>>>,
-
-	/// Owners by their former names: GitHub redirects from them
-	renames: Mutex<HashMap<String, String>>,
-
-	/// Where a transferred issue went: GitHub redirects its old address there
-	transferred: Mutex<HashMap<(RepoKey, u64), (RepoKey, u64)>>,
-
-	/// A file's commits on the default branch, oldest first.
-	files: Mutex<HashMap<(RepoKey, String), Vec<FileCommit>>>,
-
-	/// Pull requests opened by `propose_file`, with their numbers.
-	proposals: Mutex<Vec<(RepoKey, u64, FileProposal)>>,
-
-	/// When set, `get_milestone`/`update_milestone` fail with this status (fault injection).
-	fail_status: Option<reqwest::StatusCode>,
-
-	rate_limited_after_pages: Option<u64>,
-	pages_listed: AtomicU64,
-
-	/// Call log for debugging
-	call_log: Mutex<Vec<String>>,
-
-	state_file: Option<PathBuf>,
+	/// Tokens by owner, acted as instead there.
+	keys: BTreeMap<String, String>,
+	state: Arc<MockState>,
 }
 impl MockGithubClient {
 	/// Create a new mock client with the given authenticated user login
 	pub fn new(user_login: &str) -> Self {
-		let client = Self {
-			user_login: user_login.to_string(),
-			next_issue_id: AtomicU64::new(1000),
-			next_comment_id: AtomicU64::new(5000),
-			issues: Mutex::new(HashMap::new()),
-			comments: Mutex::new(HashMap::new()),
-			sub_issues: Mutex::new(HashMap::new()),
-			milestones: Mutex::new(HashMap::new()),
-			labels: Mutex::new(HashMap::new()),
-			dependencies: Mutex::new(Vec::new()),
-			unlinked: Mutex::new(Vec::new()),
-			prs: Mutex::new(HashMap::new()),
-			pull_requests: Mutex::new(HashMap::new()),
-			renames: Mutex::new(HashMap::new()),
-			transferred: Mutex::new(HashMap::new()),
-			files: Mutex::new(HashMap::new()),
-			proposals: Mutex::new(Vec::new()),
+		let state = MockState {
+			next_issue_id: AtomicU64::new(FIRST_ISSUE_ID),
+			next_comment_id: AtomicU64::new(FIRST_COMMENT_ID),
 			fail_status: std::env::var(ENV_MOCK_FAIL_GET_MILESTONE)
 				.ok()
 				.and_then(|v| v.parse::<u16>().ok())
 				.and_then(|c| reqwest::StatusCode::from_u16(c).ok()),
 			rate_limited_after_pages: std::env::var(ENV_MOCK_RATE_LIMITED_AFTER_PAGES).ok().map(|v| v.parse().expect("a page count")),
-			pages_listed: AtomicU64::new(0),
-			call_log: Mutex::new(Vec::new()),
 			state_file: std::env::var_os(ENV_MOCK_STATE).map(PathBuf::from),
+			..Default::default()
+		};
+		let client = Self {
+			user_login: user_login.to_string(),
+			keys: BTreeMap::new(),
+			state: Arc::new(state),
 		};
 
 		if let Some(state_file) = &client.state_file
@@ -134,10 +75,23 @@ impl MockGithubClient {
 				eprintln!("[mock] Failed to load state from {}: {e}", state_file.display());
 			} else {
 				eprintln!("[mock] Loaded state from {}", state_file.display());
+				*client.read_at.lock().unwrap() = written_at(state_file);
 			}
 		}
 
 		client
+	}
+
+	/// The token `owner` is acted on with, if any.
+	fn token(&self, owner: &str) -> Result<Option<MockToken>, GithubError> {
+		let Some(key) = self.keys.get(&owner.to_lowercase()) else { return Ok(None) };
+		let revoked = || GithubError::new_api(reqwest::StatusCode::UNAUTHORIZED, "Bad credentials".to_string(), "mock".to_string());
+		Ok(Some(self.tokens.lock().unwrap().get(key).cloned().ok_or_else(revoked)?))
+	}
+
+	/// Whom `owner` sees acting.
+	fn login_on(&self, owner: &str) -> Result<String, GithubError> {
+		Ok(self.token(owner)?.map_or_else(|| self.user_login.clone(), |t| t.login))
 	}
 
 	/// Load state from JSON content
@@ -145,6 +99,10 @@ impl MockGithubClient {
 		use serde_json::Value;
 
 		let state: Value = serde_json::from_str(content).map_err(|e| e.to_string())?;
+
+		if let Some(tokens) = state.get("tokens") {
+			*self.tokens.lock().unwrap() = serde_json::from_value(tokens.clone()).map_err(|e| e.to_string())?;
+		}
 
 		// Load issues
 		if let Some(issues) = state.get("issues").and_then(|v| v.as_array()) {
@@ -549,12 +507,53 @@ impl MockGithubClient {
 		let state = json!({
 			"issues": issues, "sub_issues": sub_issues, "comments": comments, "dependencies": dependencies, "unlinked": unlinked,
 			"prs": prs, "pull_requests": pull_requests, "transferred": transferred, "labels": labels, "milestones": milestones,
-			"files": files, "proposals": proposals, "renames": renames,
+			"files": files, "proposals": proposals, "renames": renames, "tokens": *self.tokens.lock().unwrap(),
 		});
 		// renamed into place, so another process never reads it half-written
 		let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
 		std::fs::write(&tmp, serde_json::to_string_pretty(&state).expect("mock state is plain json")).expect("mock state file is writable");
 		std::fs::rename(&tmp, path).expect("mock state file is writable");
+		*self.read_at.lock().unwrap() = written_at(path);
+	}
+
+	/// What another process changed on GitHub since: the state file is all of it.
+	fn catch_up(&self) {
+		let Some(path) = &self.state_file else { return };
+		let at = written_at(path);
+		let mut read_at = self.read_at.lock().unwrap();
+		if at.is_none() || *read_at == at {
+			return;
+		}
+		let fresh = Self {
+			user_login: self.user_login.clone(),
+			keys: BTreeMap::new(),
+			state: Arc::new(MockState {
+				next_issue_id: AtomicU64::new(FIRST_ISSUE_ID), // ids follow load order
+				..Default::default()
+			}),
+		};
+		let content = std::fs::read_to_string(path).expect("written a moment ago");
+		fresh.load_state_json(&content).expect("mock state file must be valid mock state");
+		let swap = |held: &MockState, with: &MockState| {
+			std::mem::swap(&mut *held.issues.lock().unwrap(), &mut *with.issues.lock().unwrap()); // never seen empty midway
+			std::mem::swap(&mut *held.comments.lock().unwrap(), &mut *with.comments.lock().unwrap());
+			std::mem::swap(&mut *held.sub_issues.lock().unwrap(), &mut *with.sub_issues.lock().unwrap());
+			std::mem::swap(&mut *held.milestones.lock().unwrap(), &mut *with.milestones.lock().unwrap());
+			std::mem::swap(&mut *held.labels.lock().unwrap(), &mut *with.labels.lock().unwrap());
+			std::mem::swap(&mut *held.dependencies.lock().unwrap(), &mut *with.dependencies.lock().unwrap());
+			std::mem::swap(&mut *held.unlinked.lock().unwrap(), &mut *with.unlinked.lock().unwrap());
+			std::mem::swap(&mut *held.prs.lock().unwrap(), &mut *with.prs.lock().unwrap());
+			std::mem::swap(&mut *held.pull_requests.lock().unwrap(), &mut *with.pull_requests.lock().unwrap());
+			std::mem::swap(&mut *held.renames.lock().unwrap(), &mut *with.renames.lock().unwrap());
+			std::mem::swap(&mut *held.transferred.lock().unwrap(), &mut *with.transferred.lock().unwrap());
+			std::mem::swap(&mut *held.files.lock().unwrap(), &mut *with.files.lock().unwrap());
+			std::mem::swap(&mut *held.proposals.lock().unwrap(), &mut *with.proposals.lock().unwrap());
+			std::mem::swap(&mut *held.tokens.lock().unwrap(), &mut *with.tokens.lock().unwrap());
+		};
+		swap(self, &fresh);
+		self.next_issue_id.store(fresh.next_issue_id.load(Ordering::SeqCst), Ordering::SeqCst);
+		self.next_comment_id.fetch_max(fresh.next_comment_id.load(Ordering::SeqCst), Ordering::SeqCst);
+		*read_at = at;
 	}
 
 	fn by_now(&self, repo: RepoInfo) -> RepoKey {
@@ -563,6 +562,7 @@ impl MockGithubClient {
 	}
 
 	fn log_call(&self, call: &str) {
+		self.catch_up();
 		// the file is absent until the test makes the edit
 		if let Ok(path) = std::env::var(ENV_MOCK_REMOTE_EDIT)
 			&& let Ok(content) = std::fs::read_to_string(&path)
@@ -732,6 +732,78 @@ impl MockGithubClient {
 	}
 }
 
+impl std::ops::Deref for MockGithubClient {
+	type Target = MockState;
+
+	fn deref(&self) -> &MockState {
+		&self.state
+	}
+}
+
+/// What GitHub holds, whoever looks.
+#[derive(Default)]
+pub struct MockState {
+	/// Counter for generating unique issue IDs
+	next_issue_id: AtomicU64,
+
+	/// Counter for generating unique comment IDs
+	next_comment_id: AtomicU64,
+
+	/// All issues, keyed by (owner, repo) -> issue_number -> issue
+	issues: Mutex<HashMap<RepoKey, HashMap<u64, MockIssueData>>>,
+
+	/// All comments, keyed by (owner, repo) -> comment_id -> comment
+	comments: Mutex<HashMap<RepoKey, BTreeMap<u64, MockCommentData>>>,
+
+	/// Sub-issue relationships: parent_issue_number -> vec of child issue numbers
+	sub_issues: Mutex<HashMap<RepoKey, HashMap<u64, Vec<u64>>>>,
+
+	/// All milestones, keyed by (owner, repo) -> number -> milestone
+	milestones: Mutex<HashMap<RepoKey, BTreeMap<u64, MockMilestoneData>>>,
+
+	/// Labels defined per repo; a repo listed here exists even without issues
+	labels: Mutex<HashMap<RepoKey, Vec<String>>>,
+
+	/// `blocked by` links, across repos
+	dependencies: Mutex<Vec<MockDependency>>,
+
+	/// `blocked by` links removed on Github: their removal event stamps the blocked issue
+	unlinked: Mutex<Vec<MockDependency>>,
+
+	/// Pull requests referencing an issue
+	prs: Mutex<HashMap<(RepoKey, u64), Vec<crate::LinkedPr>>>,
+
+	pull_requests: Mutex<HashMap<RepoKey, BTreeMap<u64, tedi_core::PullRequest>>>,
+
+	/// Owners by their former names: GitHub redirects from them
+	renames: Mutex<HashMap<String, String>>,
+
+	/// Where a transferred issue went: GitHub redirects its old address there
+	transferred: Mutex<HashMap<(RepoKey, u64), (RepoKey, u64)>>,
+
+	/// A file's commits on the default branch, oldest first.
+	files: Mutex<HashMap<(RepoKey, String), Vec<FileCommit>>>,
+
+	/// Pull requests opened by `propose_file`, with their numbers.
+	proposals: Mutex<Vec<(RepoKey, u64, FileProposal)>>,
+
+	/// Whose each token is, and the repos it sees.
+	tokens: Mutex<BTreeMap<String, MockToken>>,
+
+	/// When set, `get_milestone`/`update_milestone` fail with this status (fault injection).
+	fail_status: Option<reqwest::StatusCode>,
+
+	rate_limited_after_pages: Option<u64>,
+	pages_listed: AtomicU64,
+
+	/// Call log for debugging
+	call_log: Mutex<Vec<String>>,
+
+	state_file: Option<PathBuf>,
+	/// The state file's last write this has seen, its own included.
+	read_at: Mutex<Option<std::time::SystemTime>>,
+}
+
 /// Scan the project directory for the maximum issue number in filenames.
 /// Looks at files/dirs matching pattern `{number}_-_*` or just `{number}`.
 fn scan_max_issue_number(repo_info: RepoInfo) -> u64 {
@@ -814,6 +886,17 @@ impl MockIssueData {
 	}
 }
 
+fn written_at(path: &Path) -> Option<std::time::SystemTime> {
+	std::fs::metadata(path).and_then(|m| m.modified()).ok() //IGNORED_ERROR: not there, nothing written
+}
+
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+struct MockToken {
+	login: String,
+	/// `owner/repo`s.
+	repos: Vec<String>,
+}
+
 /// `blocked` is blocked by `blocker`, linked at `at`.
 #[derive(Clone, Debug)]
 struct MockDependency {
@@ -887,11 +970,22 @@ impl From<RepoInfo> for RepoKey {
 
 #[async_trait]
 impl GithubClient for MockGithubClient {
+	fn keyed(&self, keys: &BTreeMap<String, String>) -> BoxedGithubClient {
+		Arc::new(Self {
+			user_login: self.user_login.clone(),
+			keys: keys.iter().map(|(owner, token)| (owner.to_lowercase(), token.clone())).collect(),
+			state: self.state.clone(),
+		})
+	}
+
 	#[instrument(skip_all)]
 	async fn fetch_authenticated_user(&self) -> Result<String, GithubError> {
 		tracing::info!(target: "mock_github", "fetch_authenticated_user");
 		self.log_call("fetch_authenticated_user()");
-		Ok(self.user_login.clone())
+		match self.keys.keys().next() {
+			Some(owner) => self.login_on(owner),
+			None => Ok(self.user_login.clone()),
+		}
 	}
 
 	#[instrument(skip_all, fields(issue_number))]
@@ -988,13 +1082,14 @@ impl GithubClient for MockGithubClient {
 
 		let key = RepoKey::new(owner, repo_name);
 		let comment_id = self.next_comment_id.fetch_add(1, Ordering::SeqCst);
+		let login = self.login_on(owner)?;
 
 		let now = jiff::Timestamp::now().to_string();
 		let comment = MockCommentData {
 			id: comment_id,
 			issue_number,
 			body: body.to_string(),
-			owner_login: self.user_login.clone(),
+			owner_login: login.clone(),
 			created_at: now.clone(),
 			updated_at: now.clone(),
 		};
@@ -1004,7 +1099,7 @@ impl GithubClient for MockGithubClient {
 		Ok(GithubComment {
 			id: comment_id,
 			body: Some(body.to_string()),
-			user: GithubUser { login: self.user_login.clone() },
+			user: GithubUser { login },
 			created_at: now.clone(),
 			updated_at: now,
 		})
@@ -1047,7 +1142,7 @@ impl GithubClient for MockGithubClient {
 			state: "open".to_string(),
 			state_reason: None,
 			labels: Vec::new(),
-			owner_login: self.user_login.clone(),
+			owner_login: self.login_on(owner)?,
 			title_timestamp: now,
 			description_timestamp: now,
 			labels_timestamp: now,
@@ -1196,11 +1291,15 @@ impl GithubClient for MockGithubClient {
 		self.log_call(&format!("repo_exists({owner}, {repo_name})"));
 
 		let key = RepoKey::new(owner, repo_name);
+		if let Some(token) = self.token(owner)?
+			&& !token.repos.contains(&repo.to_string())
+		{
+			return Ok(false);
+		}
 		Ok(self.issues.lock().unwrap().contains_key(&key) || self.labels.lock().unwrap().contains_key(&key))
 	}
 
 	// Milestones are served from in-memory state seeded via the `milestones` array of {app}_MOCK_STATE.
-	// The {app}_MOCK_MILESTONE file shortcut (see sprints.rs) bypasses the client for the simplest tests.
 	async fn list_milestones(&self, repo: RepoInfo) -> Result<Vec<GithubMilestone>, GithubError> {
 		self.log_call("list_milestones");
 		let key = RepoKey::from(repo);
@@ -1374,16 +1473,18 @@ impl GithubClient for MockGithubClient {
 			.collect())
 	}
 
-	async fn list_org_repos(&self, org: &str) -> Result<Vec<RepoInfo>, GithubError> {
-		self.log_call(&format!("list_org_repos({org})"));
+	async fn list_owner_repos(&self, owner: &str) -> Result<Vec<RepoInfo>, GithubError> {
+		self.log_call(&format!("list_owner_repos({owner})"));
+		let token = self.token(owner)?;
 		let mut repos: Vec<RepoInfo> = self
 			.issues
 			.lock()
 			.unwrap()
 			.keys()
 			.chain(self.labels.lock().unwrap().keys())
-			.filter(|k| k.owner == org)
+			.filter(|k| k.owner.eq_ignore_ascii_case(owner))
 			.map(|k| RepoInfo::new(&k.owner, &k.repo))
+			.filter(|r| token.as_ref().is_none_or(|t| t.repos.contains(&r.to_string())))
 			.collect();
 		repos.sort_by_key(|r| r.to_string());
 		repos.dedup();

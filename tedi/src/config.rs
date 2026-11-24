@@ -1,5 +1,7 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, path::PathBuf};
 
+use tedi_adapters::home::Home;
+use tedi_task_operations::workflow::Workflows;
 use v_utils::macros as v_macros;
 
 pub const EXE_NAME: &str = env!("CARGO_PKG_NAME");
@@ -24,9 +26,11 @@ pub struct AppConfig {
 	#[settings(skip)]
 	#[serde(default)] // a user may have none
 	pub orgs: tedi_core::chain::Orgs,
-	/// What `tedi view` and the web board read.
+	/// What `tedi view` and the web board read. An instance holds its workflows with this, or asks the one that does: its `home`.
 	#[settings(skip)]
-	pub board: Option<Board>,
+	board: Option<Board>,
+	/// The `tedi web` holding the workflow states, by the url it is served at.
+	home: Option<String>,
 	#[settings(skip)]
 	#[serde(default)]
 	pub yes: bool,
@@ -41,6 +45,39 @@ impl AppConfig {
 			(None, None) => Err(color_eyre::eyre::eyre!("neither `github_token` nor `github_app` is set")),
 		}
 	}
+
+	/// Who answers for workflow states.
+	pub fn states(&self) -> color_eyre::Result<States> {
+		match (&self.board, &self.home) {
+			(Some(_), Some(_)) => Err(color_eyre::eyre::eyre!(
+				"both `board` and `home` are set: an instance holds its workflows, or asks the one that does"
+			)),
+			(Some(board), None) => Ok(States::Here(board.clone())),
+			(None, Some(home)) => Ok(States::Home(Home::new(home, session_file()))),
+			(None, None) => Ok(States::Nowhere),
+		}
+	}
+}
+
+pub enum States {
+	Here(Board),
+	Home(Home),
+	/// Nothing places issues in anything.
+	Nowhere,
+}
+impl States {
+	/// Those held here: with a home, no rule of them runs.
+	pub fn workflows(&self) -> color_eyre::Result<Workflows> {
+		match self {
+			States::Here(board) => board.workflows(),
+			States::Home(_) | States::Nowhere => Ok(Workflows::default()),
+		}
+	}
+}
+
+/// Where `tedi login` keeps the session with the home.
+pub fn session_file() -> PathBuf {
+	tedi_task_operations::paths::state_file("session.json")
 }
 
 /// Whom tedi acts as on GitHub.
@@ -76,31 +113,22 @@ pub struct Board {
 }
 impl Board {
 	/// Its workflows, loaded with their hooks; every workflow a view or a column coloring names is among them.
-	pub fn workflows(&self) -> color_eyre::Result<tedi_task_operations::workflow::Workflows> {
-		use color_eyre::eyre::{WrapErr as _, bail};
+	pub fn workflows(&self) -> color_eyre::Result<Workflows> {
+		use color_eyre::eyre::bail;
 		use tedi_task_operations::board::{GroupBy, Shown, SortKey};
 
-		let loaded: tedi_task_operations::workflow::Workflows = self
-			.workflows
-			.iter()
-			.map(|(name, spec)| {
-				Ok((
-					name.clone(),
-					tedi_task_operations::workflow::Loaded::load(spec).wrap_err_with(|| format!("the workflow {name} ({spec})"))?,
-				))
-			})
-			.collect::<color_eyre::Result<_>>()?;
+		let loaded = Workflows::load(&self.workflows)?;
 		for view in &self.views {
 			let mut named: Vec<&String> = view.shown.iter().filter_map(|s| if let Shown::State(w) = s { Some(w) } else { None }).collect();
 			named.extend(if let GroupBy::State(w) = &view.group_by { Some(w) } else { None });
 			named.extend(view.sort.keys().iter().filter_map(|s| if let SortKey::State(w) = &s.by { Some(w) } else { None }));
-			if let Some(w) = named.into_iter().find(|w| !loaded.contains_key(*w)) {
+			if let Some(w) = named.into_iter().find(|w| !loaded.trees.contains_key(*w)) {
 				bail!("the view {} names the workflow {w}, and `board.workflows` doesn't", view.name);
 			}
 		}
 		for (name, columns) in &self.columns {
 			if let GroupBy::State(w) = &columns.by
-				&& !loaded.contains_key(w)
+				&& !loaded.trees.contains_key(w)
 			{
 				bail!("the columns {name} are by the workflow {w}, and `board.workflows` doesn't name it");
 			}
@@ -111,10 +139,12 @@ impl Board {
 
 #[derive(Clone, Debug, v_macros::MyConfigPrimitives, v_macros::SettingsNested)]
 pub struct Milestones {
-	/// Github repo URL for milestones (e.g., "https://github.com/owner/repo" or "owner/repo")
+	/// Github repo URL for milestones (e.g., `https://github.com/owner/repo` or `owner/repo`)
 	pub url: String,
 	/// Which milestone timeframe to source blockers from (default: "1d")
 	pub blocker_timeframe: Option<String>,
+	/// The bucket of the `home`'s that reads as picked up (`kanban/selected`): opening a planning sprint opens it beside
+	pub selected: Option<String>,
 }
 impl Milestones {
 	pub fn blocker_tf(&self) -> &str {

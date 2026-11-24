@@ -11,8 +11,8 @@ use tracing_error::SpanTrace;
 use v_utils::macros::wrap_err;
 
 use crate::{
-	MilestoneLink,
-	chain::{Edge, Kind, Node},
+	MilestoneLink, Sprint,
+	chain::{Edge, Node},
 };
 
 /// An ownership the chain forbids, drawn.
@@ -274,12 +274,11 @@ impl ChainDiagnostic {
 	}
 
 	/// `nodes`: an owner, and the root it can't own.
-	pub(crate) fn root(nodes: &[Node], kind: Kind, edge: Edge) -> Self {
+	pub(crate) fn root(nodes: &[Node], root: Sprint, edge: Edge) -> Self {
 		let drawing = Drawing::of_chain(nodes);
-		let why = match kind {
-			Kind::Sprint => "nothing owns a sprint",
-			Kind::Bottlenecks => "only a sprint owns Bottlenecks",
-			Kind::Milestone => unreachable!("a milestone is no root"),
+		let why = match root {
+			Sprint::Planning(_) => "nothing owns a planning sprint",
+			Sprint::Bottlenecks => "only a sprint owns Bottlenecks",
 		};
 		Self::Root {
 			title: format!("{} can't own {}: {why}", named(&nodes[0]), named(&nodes[1])),

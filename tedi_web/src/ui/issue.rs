@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 use dioxus::{core::spawn_forever, prelude::*};
 use ev_lib::uikit_dioxus::{Popover, PopoverContent, PopoverTrigger, Spinner, Textarea};
 use tedi_core::{
-	CloseState, IssueLink, PrState, Review,
+	CloseState, IssueLink, PrState, Review, Sprint,
 	board::{Card, Said, Shown, Slice, Target},
 	chain::Point,
 	conflict::{CommentEdit, Conflict, Field as EditedField, FieldEdit, list, sides},
@@ -515,8 +515,12 @@ fn Milestones(card: Card) -> Element {
 	let board = ctx.board.read();
 	let board = board.as_ref().expect("the card came from it");
 	let within = ctx.within().unwrap_or_default(); // its scope is no longer there: the panel shows without one
-	let hosts = |t: &Target| t.hosted.contains(&card.link);
-	let mut offered: Vec<&Target> = board.targets.iter().filter(|t| within.offers(&t.link) || hosts(t)).collect();
+	let hosts = |t: &Target| t.hosts(&card.link);
+	let mut offered: Vec<&Target> = board
+		.targets
+		.iter()
+		.filter(|t| !matches!(t.sprint(), Some(Sprint::Planning(_))) && (within.offers(&t.link) || hosts(t))) // what is planned is its own file's to say
+		.collect();
 	offered.sort_by_key(|t| (t.link.repo_info() != home, t.link.repo_info().to_string(), t.due_on.is_none(), t.due_on, t.title.to_lowercase()));
 	let hosting: Vec<&Target> = offered.iter().copied().filter(|t| hosts(t)).collect();
 	let due = |at: jiff::Timestamp| at.strftime("%b %-d").to_string();
@@ -544,7 +548,7 @@ fn Milestones(card: Card) -> Element {
 			if hosting.is_empty() { None_ { "none" } }
 			for t in hosting {
 				{
-					let known: Vec<&Card> = board.cards.iter().filter(|c| t.hosted.contains(&c.link)).collect();
+					let known: Vec<&Card> = board.cards.iter().filter(|c| t.hosts(&c.link)).collect();
 					let closed = known.iter().filter(|c| !c.open()).count();
 					let share = (closed * 100).div_euclid(known.len()); // it holds this card at least
 					let url = t.link.as_str().to_string();
@@ -880,7 +884,7 @@ fn Editable(link: IssueLink, author: Option<String>, current: String, children: 
 /// GitHub markdown, read. Raw HTML in it shows as text: a body is anyone's writing, never markup to run.
 /// `ontick`: a task's box is clicked, at this byte of `text`.
 #[component]
-fn Markdown(text: String, ontick: Option<EventHandler<usize>>) -> Element {
+pub(super) fn Markdown(text: String, ontick: Option<EventHandler<usize>>) -> Element {
 	use pulldown_cmark::{Event, Options, Parser, html};
 	let events = Parser::new_ext(&text, Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS)
 		.into_offset_iter()

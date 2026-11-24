@@ -2,14 +2,18 @@
 //! One process serves one store; every write goes through `tedi_task_operations`, which takes the store
 //! lock itself.
 
+mod accounts;
+
 use std::{
-	collections::{BTreeMap, BTreeSet},
+	collections::{BTreeMap, BTreeSet, HashMap, hash_map::Entry},
 	net::SocketAddr,
 	path::PathBuf,
 	sync::{Arc, LazyLock, OnceLock},
 	time::Duration,
 };
 
+use accounts::Caller;
+pub use accounts::{account, edit_account};
 use color_eyre::eyre::{Result, WrapErr as _, bail, eyre};
 use dioxus::server::{
 	DioxusRouterExt as _, FullstackState,
@@ -19,21 +23,23 @@ use dioxus::server::{
 use dioxus_fullstack::ServerEvents;
 use futures::{Stream, StreamExt as _};
 use tedi_core::{
-	IssueLink, MilestoneLink, RepoInfo, TaskView,
-	board::{Part, Scope, Slice, Thread, View, scope_at},
+	IssueLink, MilestoneLink, RepoInfo,
+	board::{Answer, Board, GroupBy, Hit, Listing, Query, Scope, Slice, Thread, View, Within, scope_at},
 	chain::{GITHUB, Orgs},
-	conflict::{CommentEdit, Conflict, FieldEdit},
+	conflict::{CommentEdit, Conflict, Edited, FieldEdit},
 	workflow::State,
 };
 use tedi_task_operations::{
 	board::Reading,
+	github::client,
 	open_interactions::SyncMode,
+	reach::{Reach, Reached},
 	workflow::{MovedOn, Mover, Rejected, Workflows},
 };
 use tokio::sync::{Mutex, broadcast, mpsc};
 
 use crate::api::{
-	Arrangement, Catalog, Change, Construction, Dock, Edited, Entry, Fork, Forked, Item, Kept, Library, LibraryEdit, Onto, Origin, Owner, Setup, ShareLink, Shared, Shelf, Sprint, Upstream,
+	Arrangement, Catalog, Change, Construction, Dock, Entry as Cataloged, Fork, Forked, Item, Kept, Library, LibraryEdit, Onto, Origin, Owner, Setup, ShareLink, Shared, Shelf, Upstream,
 	Usage, Version, diff,
 };
 
@@ -52,8 +58,6 @@ pub struct Settings {
 	pub columns: BTreeMap<String, crate::api::Columns>,
 	pub workspaces: BTreeMap<String, Arrangement>,
 	pub source: Option<Source>,
-	/// Where the sprint milestones live.
-	pub milestones: Option<RepoInfo>,
 	/// Owners and `owner/repo`s: what the periodic pull pulls, and the only repos a webhook delivery is pulled for.
 	pub watch: Vec<String>,
 	/// Pull all of `watch` this often, catching whatever no webhook announced.
@@ -93,7 +97,7 @@ pub async fn serve(config: Settings) -> Result<()> {
 	}
 	SETTINGS.set(config).map_err(|_| eyre!("one server per process"))?;
 	//UNBOUNDED announcements are repo names, deduplicated by the puller
-	let (announce, announced) = mpsc::unbounded_channel::<String>();
+	let (announce, announced) = mpsc::unbounded_channel::<Pull>();
 	ANNOUNCE.set(announce).map_err(|_| eyre!("one server per process"))?;
 
 	let mut router = Router::new().register_server_functions().with_state(FullstackState::headless());
@@ -123,11 +127,14 @@ pub async fn serve(config: Settings) -> Result<()> {
 	Ok(())
 }
 
-/// Every watched repo pulled now, after any pull already running.
-pub fn refresh() {
+/// Every watched repo and the viewer's own pulled now, after any pull already running.
+pub fn refresh(headers: &HeaderMap) -> Result<()> {
+	let key = viewer(headers)?;
 	for w in &settings().watch {
-		announce(w.clone());
+		announce(Pull::Watched(w.clone()));
 	}
+	announce(Pull::Account(key));
+	Ok(())
 }
 
 pub fn changes() -> ServerEvents<()> {
@@ -135,106 +142,133 @@ pub fn changes() -> ServerEvents<()> {
 	ServerEvents::from_stream(tokio_stream::wrappers::BroadcastStream::new(CHANGES.subscribe()).map(|_| Ok(())))
 }
 
-pub fn setup() -> Setup {
+pub async fn setup(headers: &HeaderMap) -> Result<Setup> {
 	let s = settings();
-	Setup {
-		me: editor(),
-		workflows: s.workflows.iter().map(|(name, w)| (name.clone(), w.workflow.clone())).collect(),
+	Ok(Setup {
+		me: Caller::of(headers)?.act(async { client::login() }).await,
+		accounts: matches!(s.viewer, Viewer::Header(_)),
+		workflows: s.workflows.trees.clone(),
 		views: s.views.clone(),
 		orgs: s.orgs.clone(),
 		scopes: s.scopes.clone(),
 		columns: s.columns.clone(),
 		workspaces: s.workspaces.clone(),
 		ids: addressed(team_items(s).into_keys()).map(|item| (id("team", &item), item)).collect(),
-	}
-}
-
-pub async fn sprints() -> Result<Vec<Sprint>> {
-	let Some(repo) = settings().milestones else {
-		return Ok(Vec::new());
-	};
-	let milestones = tedi_task_operations::github::client::get()?.list_milestones(repo).await?;
-	Ok(milestones
-		.into_iter()
-		.filter_map(|m| {
-			let view = TaskView::parse(m.description.as_deref()?);
-			Some(Sprint {
-				title: m.title,
-				links: view.issue_links(),
-			})
-		})
-		.collect())
+	})
 }
 
 /// Its parts, a line each, as they are read.
-pub async fn board() -> Result<impl Stream<Item = Result<Bytes>>> {
-	let mut held = BOARD.lock().await;
-	let reading = match &*held {
-		Some(reading) => reading.clone(),
-		None => {
-			let reading = tedi_task_operations::board::load(&settings().workflows)?;
-			let shared = Arc::new(SharedReading(Mutex::new((Vec::new(), reading))));
-			*held = Some(shared.clone());
-			shared
-		}
-	};
+pub async fn board(headers: &HeaderMap) -> Result<impl Stream<Item = Result<Bytes>> + use<>> {
+	let reading = reading(Caller::of(headers)?.reach).await?;
 	Ok(futures::stream::try_unfold((reading, 0), |(reading, n)| async move {
 		Ok(reading.line(n).await?.map(|line| (line, (reading, n + 1))))
 	}))
 }
 
-pub async fn edit(link: IssueLink, edits: Vec<FieldEdit>) -> Result<Edited> {
-	let edited = tedi_task_operations::board::edit(&link, edits, settings().mode).await;
+pub async fn query(headers: &HeaderMap, asked: String) -> Result<Answer> {
+	let caller = Caller::of(headers)?;
+	let login = caller.act(async { client::login() }).await;
+	let board = whole(caller.reach).await?;
+	let hits = asked.parse::<Query>()?.run(&board.cards, login.as_deref())?;
+	Ok(Answer {
+		trees: settings().workflows.trees.clone(),
+		hits: hits
+			.into_iter()
+			.map(|i| Hit {
+				link: board.cards[i].link.clone(),
+				states: board.cards[i].states.clone(),
+			})
+			.collect(),
+		login,
+	})
+}
+
+pub async fn view(headers: &HeaderMap, named: String, group: Option<GroupBy>) -> Result<Listing> {
+	let caller = Caller::of(headers)?;
+	let login = caller.act(async { client::login() }).await;
+	let s = settings();
+	tedi_task_operations::board::listing(&whole(caller.reach).await?, &named, group, &s.views, &s.workflows.trees, login.as_deref())
+}
+
+pub async fn edit(headers: &HeaderMap, link: IssueLink, edits: Vec<FieldEdit>) -> Result<Edited> {
+	let caller = Caller::of(headers)?;
+	let link = caller.reach.issue(link)?;
+	let edited = caller.act(tedi_task_operations::board::edit(&link, edits, settings().mode)).await;
 	changed().await; // a failed edit may still have pulled
 	refused(edited)
 }
 
-pub async fn move_card(link: IssueLink, workflow: String, to: State, seen: State) -> Result<Edited> {
-	let Some(me) = editor() else {
-		bail!("who moves it is unknown: this instance never learned its GitHub user");
+pub async fn move_card(headers: &HeaderMap, link: IssueLink, workflow: String, to: State, seen: Option<State>) -> Result<Edited> {
+	let caller = Caller::of(headers)?;
+	let link = caller.reach.issue(link)?;
+	let Some(me) = caller.act(async { client::login() }).await else {
+		bail!("who moves it is unknown: bring a key of yours to GitHub, under your account");
 	};
-	let s = settings();
-	let moved = tedi_task_operations::workflow::move_card(&link, &workflow, &to, Some(&seen), &Mover::Person(me), &s.workflows, s.mode, jiff::Timestamp::now()).await;
+	let (s, mover) = (settings(), Mover::Person(me));
+	let moved = caller
+		.act(tedi_task_operations::workflow::move_card(
+			&link,
+			&workflow,
+			&to,
+			seen.as_ref(),
+			&mover,
+			&s.workflows,
+			s.mode,
+			jiff::Timestamp::now(),
+		))
+		.await;
 	changed().await; // a failed move may still have pulled
 	refused(moved)
 }
 
-pub async fn set_milestone(link: IssueLink, repo: String, seen: Option<MilestoneLink>, new: Option<MilestoneLink>) -> Result<Edited> {
+pub async fn set_milestone(headers: &HeaderMap, link: IssueLink, repo: String, seen: Option<MilestoneLink>, new: Option<MilestoneLink>) -> Result<Edited> {
+	let caller = Caller::of(headers)?;
 	let (owner, name) = repo.split_once('/').ok_or_else(|| eyre!("a milestone's repo is `owner/repo`, not {repo}"))?;
-	let set = tedi_task_operations::board::set_milestone(&link, RepoInfo::new(owner, name), seen.as_ref(), new.as_ref(), settings().mode).await;
+	let (link, repo) = (caller.reach.issue(link)?, caller.reach.repo(RepoInfo::new(owner, name))?);
+	let set = caller
+		.act(tedi_task_operations::board::set_milestone(&link, &repo, seen.as_ref(), new.as_ref(), settings().mode))
+		.await;
 	changed().await; // a failed one may still have pulled
 	refused(set)
 }
 
-pub async fn thread(link: IssueLink) -> Result<Thread> {
-	tedi_task_operations::board::thread(&link).await
+pub async fn thread(headers: &HeaderMap, link: IssueLink) -> Result<Thread> {
+	tedi_task_operations::board::thread(&Caller::of(headers)?.reach.issue(link)?).await
 }
 
-pub async fn comment(link: IssueLink, edit: CommentEdit) -> Result<Edited> {
-	let said = tedi_task_operations::board::comment(&link, edit, settings().mode).await;
+pub async fn comment(headers: &HeaderMap, link: IssueLink, edit: CommentEdit) -> Result<Edited> {
+	let caller = Caller::of(headers)?;
+	let link = caller.reach.issue(link)?;
+	let said = caller.act(tedi_task_operations::board::comment(&link, edit, settings().mode)).await;
 	changed().await; // a failed one may still have pulled
 	refused(said)
 }
 
-pub async fn request_review(link: IssueLink, reviewer: String, on: bool) -> Result<()> {
-	tedi_task_operations::board::request_review(&link, &reviewer, on).await?;
+pub async fn request_review(headers: &HeaderMap, link: IssueLink, reviewer: String, on: bool) -> Result<()> {
+	let caller = Caller::of(headers)?;
+	let link = caller.reach.issue(link)?;
+	caller.act(tedi_task_operations::board::request_review(&link, &reviewer, on)).await?;
 	changed().await;
 	Ok(())
 }
 
-pub async fn pending_conflict(link: &IssueLink) -> Result<Option<String>> {
-	match tedi_task_operations::board::pending_conflict(link).await? {
-		Some(path) => Ok(Some(std::fs::read_to_string(path)?)),
-		None => Ok(None),
-	}
+pub async fn pending_conflict(headers: &HeaderMap, link: IssueLink) -> Result<Option<String>> {
+	let caller = Caller::of(headers)?;
+	let link = caller.reach.issue(link)?;
+	caller.act(pending(&link)).await
 }
 
-pub async fn resolve(link: &IssueLink, resolution: String) -> Result<Option<String>> {
-	let Some(path) = tedi_task_operations::board::pending_conflict(link).await? else {
-		bail!("nothing is pending on {link}: someone resolved it first");
-	};
-	std::fs::write(&path, resolution)?;
-	let still = pending_conflict(link).await;
+pub async fn resolve(headers: &HeaderMap, link: IssueLink, resolution: String) -> Result<Option<String>> {
+	let caller = Caller::of(headers)?;
+	let link = caller.reach.issue(link)?;
+	let resolved = caller.act(async {
+		let Some(path) = tedi_task_operations::board::pending_conflict(&link).await? else {
+			bail!("nothing is pending on {}: someone resolved it first", *link);
+		};
+		std::fs::write(&path, resolution)?;
+		pending(&link).await
+	});
+	let still = resolved.await;
 	changed().await;
 	still
 }
@@ -349,7 +383,7 @@ pub async fn catalog(headers: &HeaderMap) -> Result<Catalog> {
 	let mut entries = Vec::new();
 	for (item, running) in &team {
 		let history: Vec<(Version, Construction)> = versions.as_ref().and_then(|v| v.get(item)).cloned().unwrap_or_default(); // an object absent from every commit has no history
-		entries.push(Entry {
+		entries.push(Cataloged {
 			owner: Owner::Team,
 			usage: usage.get(&(Owner::Team, item.clone())).cloned().unwrap_or_default(), // nobody refers to it
 			version: history.iter().rev().find(|(_, c)| c == running).map(|(v, _)| v.v),
@@ -362,7 +396,7 @@ pub async fn catalog(headers: &HeaderMap) -> Result<Catalog> {
 	let mine = libraries.iter().find(|(v, _)| *v == me).map(|(_, l)| l.clone()).unwrap_or_default(); // a viewer who never kept anything
 	let owner = Owner::Viewer(me.clone());
 	for item in kept_items(&mine) {
-		entries.push(Entry {
+		entries.push(Cataloged {
 			usage: usage.get(&(owner.clone(), item.clone())).cloned().unwrap_or_default(), // nobody refers to it
 			history: Vec::new(),
 			version: None,
@@ -510,6 +544,36 @@ pub async fn propose(headers: &HeaderMap, item: Item, onto: Onto, message: Strin
 	Ok(client.propose_file(repo, &proposal).await?)
 }
 
+async fn pending(link: &Reached<IssueLink>) -> Result<Option<String>> {
+	match tedi_task_operations::board::pending_conflict(link).await? {
+		Some(path) => Ok(Some(std::fs::read_to_string(path)?)),
+		None => Ok(None),
+	}
+}
+
+/// The board within `reach`, as whoever reaches as much reads it.
+async fn reading(reach: Reach) -> Result<Arc<SharedReading>> {
+	let mut held = BOARDS.lock().await;
+	Ok(match held.entry(reach) {
+		Entry::Occupied(e) => e.get().clone(),
+		Entry::Vacant(e) => {
+			let reading = tedi_task_operations::board::load(e.key().clone(), &settings().workflows.trees)?;
+			e.insert(Arc::new(SharedReading(Mutex::new((Vec::new(), reading))))).clone()
+		}
+	})
+}
+
+async fn whole(reach: Reach) -> Result<Board> {
+	let reading = reading(reach).await?;
+	let mut board = Board::default();
+	let mut n = 0;
+	while let Some(line) = reading.line(n).await? {
+		board.extend([serde_json::from_slice(&line)?]);
+		n += 1;
+	}
+	Ok(board)
+}
+
 /// A reading of the board, shared by whoever asks for it: each reads on from where the furthest got.
 struct SharedReading(Mutex<(Vec<Bytes>, Reading<'static>)>);
 impl SharedReading {
@@ -519,20 +583,14 @@ impl SharedReading {
 		if let Some(line) = lines.get(n) {
 			return Ok(Some(line.clone()));
 		}
-		let mut part = match reading.next().await {
+		let part = match reading.next().await {
 			Ok(Some(part)) => part,
 			Ok(None) => return Ok(None),
 			Err(e) => {
-				let mut held = BOARD.lock().await;
-				if held.as_ref().is_some_and(|h| Arc::ptr_eq(h, self)) {
-					*held = None; // the next to ask reads anew
-				}
+				BOARDS.lock().await.retain(|_, held| !Arc::ptr_eq(held, self)); // the next to ask reads anew
 				return Err(e);
 			}
 		};
-		if let Part::Rest { targets, .. } = &mut part {
-			targets.retain(|t| Some(t.link.repo_info()) != settings().milestones); // shown as sprints
-		}
 		let mut line = serde_json::to_vec(&part)?;
 		line.push(b'\n');
 		let line = Bytes::from(line);
@@ -544,10 +602,10 @@ impl SharedReading {
 
 static SETTINGS: OnceLock<Settings> = OnceLock::new();
 /// What the puller pulls next; never dropped, so its channel never closes.
-static ANNOUNCE: OnceLock<mpsc::UnboundedSender<String>> = OnceLock::new();
+static ANNOUNCE: OnceLock<mpsc::UnboundedSender<Pull>> = OnceLock::new();
 static CHANGES: LazyLock<broadcast::Sender<()>> = LazyLock::new(|| broadcast::channel(16).0);
-/// Read once per change rather than once per open board.
-static BOARD: Mutex<Option<Arc<SharedReading>>> = Mutex::const_new(None);
+/// Read once per change and reach rather than once per open board.
+static BOARDS: LazyLock<Mutex<HashMap<Reach, Arc<SharedReading>>>> = LazyLock::new(Default::default);
 /// Held across each library's read-modify-write.
 static LIBRARIES: Mutex<()> = Mutex::const_new(());
 
@@ -555,36 +613,62 @@ fn settings() -> &'static Settings {
 	SETTINGS.get().expect("set by `serve` before the router exists")
 }
 
-/// Runs every pull, one at a time: what a webhook announced, and the whole `watch` every `pull_every`.
-/// Owned by `serve`, so a client hanging up never cancels a pull midway.
-async fn puller(mut announced: mpsc::UnboundedReceiver<String>) -> Result<()> {
+/// What the puller is asked for.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum Pull {
+	/// An entry of `watch`, or a repo under one.
+	Watched(String),
+	/// A repo under accounts' scopes.
+	Repo(String),
+	/// All of an account's scopes.
+	Account(String),
+}
+
+/// Runs every pull, one at a time: what a webhook announced, and the whole `watch` and every account's scopes
+/// each `pull_every`. Owned by `serve`, so a client hanging up never cancels a pull midway.
+async fn puller(mut announced: mpsc::UnboundedReceiver<Pull>) -> Result<()> {
 	let mut every = settings().pull_every.map(tokio::time::interval);
 	//LOOP serves announcements for the life of the server
 	loop {
-		let targets = tokio::select! {
-			repo = announced.recv() => {
-				let mut repos = vec![repo.expect("`ANNOUNCE` holds a sender for good")];
+		let pulls: BTreeSet<Pull> = tokio::select! {
+			first = announced.recv() => {
+				let mut pulls = BTreeSet::from([first.expect("`ANNOUNCE` holds a sender for good")]);
 				while let Ok(more) = announced.try_recv() {
-					repos.push(more);
+					pulls.insert(more);
 				}
-				repos.sort();
-				repos.dedup();
-				repos
+				pulls
 			}
-			_ = async { every.as_mut().expect("guarded").tick().await }, if every.is_some() => settings().watch.clone(),
+			_ = async { every.as_mut().expect("guarded").tick().await }, if every.is_some() => {
+				let accounts = accounts::keys()?.into_iter().map(Pull::Account);
+				settings().watch.iter().cloned().map(Pull::Watched).chain(accounts).collect()
+			}
 		};
-		if let Err(e) = tedi_task_operations::pull::pull_repos(&targets, &settings().workflows, jiff::Timestamp::now()).await {
-			tracing::warn!("pull of {targets:?}: {e:#}"); // GitHub unreachable or an issue unstorable: the cursor holds, the next pull retries
+		let watched: Vec<String> = pulls.iter().filter_map(|p| if let Pull::Watched(w) = p { Some(w.clone()) } else { None }).collect();
+		if let Err(e) = tedi_task_operations::pull::pull_repos(&watched, &settings().workflows, jiff::Timestamp::now()).await {
+			tracing::warn!("pull of {watched:?}: {e:#}"); // GitHub unreachable or an issue unstorable: the cursor holds, the next pull retries
+		}
+		for pull in pulls {
+			let pulled = match &pull {
+				Pull::Watched(_) => continue,
+				Pull::Account(key) => accounts::pull(key, None).await,
+				Pull::Repo(repo) => match accounts::naming(repo)?.first() {
+					Some(key) => accounts::pull(key, Some(repo)).await, // the store is one: whoever of them sees it
+					None => continue,                                   // no scope names it any more
+				},
+			};
+			if let Err(e) = pulled {
+				tracing::warn!("{pull:?}: {e:#}");
+			}
 		}
 		changed().await;
 	}
 }
 
-fn announce(target: String) {
+fn announce(pull: Pull) {
 	ANNOUNCE
 		.get()
 		.expect("set by `serve` before the router exists")
-		.send(target)
+		.send(pull)
 		.expect("the puller lives as long as the server");
 }
 
@@ -617,11 +701,21 @@ async fn webhook(headers: HeaderMap, body: Bytes) -> StatusCode {
 	match serde_json::from_slice::<Delivery>(&body) {
 		Ok(Delivery { repository: Some(repo) }) => {
 			let owner = repo.full_name.split_once('/').map_or(repo.full_name.as_str(), |(owner, _)| owner);
-			if !settings().watch.iter().any(|w| w.eq_ignore_ascii_case(owner) || w.eq_ignore_ascii_case(&repo.full_name)) {
-				return StatusCode::NO_CONTENT; // the App is public: anyone's install delivers here
+			if settings().watch.iter().any(|w| w.eq_ignore_ascii_case(owner) || w.eq_ignore_ascii_case(&repo.full_name)) {
+				announce(Pull::Watched(repo.full_name));
+				return StatusCode::ACCEPTED;
 			}
-			announce(repo.full_name);
-			StatusCode::ACCEPTED
+			match accounts::naming(&repo.full_name) {
+				Ok(accounts) if accounts.is_empty() => StatusCode::NO_CONTENT, // the App is public: anyone's install delivers here
+				Ok(_) => {
+					announce(Pull::Repo(repo.full_name));
+					StatusCode::ACCEPTED
+				}
+				Err(e) => {
+					tracing::error!("a delivery of {}: {e:#}", repo.full_name);
+					StatusCode::INTERNAL_SERVER_ERROR
+				}
+			}
 		}
 		Ok(Delivery { repository: None }) => StatusCode::NO_CONTENT, // an org- or app-level event: no repo's issues moved
 		Err(_) => StatusCode::BAD_REQUEST,
@@ -629,7 +723,7 @@ async fn webhook(headers: HeaderMap, body: Bytes) -> StatusCode {
 }
 
 async fn changed() {
-	*BOARD.lock().await = None;
+	BOARDS.lock().await.clear();
 	let _ = CHANGES.send(()); // errs only while no board is open: nobody to tell
 }
 
@@ -645,11 +739,6 @@ fn refused(edited: Result<()>) -> Result<Edited> {
 	}
 }
 
-/// Who edits: the instance's GitHub user until editors sign in, then the request's.
-fn editor() -> Option<String> {
-	tedi_task_operations::current_user::get()
-}
-
 /// The viewer's key, as their library's file stem.
 fn viewer(headers: &HeaderMap) -> Result<String> {
 	let key = match &settings().viewer {
@@ -658,7 +747,7 @@ fn viewer(headers: &HeaderMap) -> Result<String> {
 			.ok_or_else(|| eyre!("the request carries no `{name}`: the gate in front of this board names the signed-in user in it"))?
 			.to_str()?
 			.to_string(),
-		Viewer::Operator => editor().ok_or_else(|| eyre!("a library belongs to a viewer, and this ungated instance doesn't know its GitHub user"))?,
+		Viewer::Operator => tedi_task_operations::current_user::get().ok_or_else(|| eyre!("a library belongs to a viewer, and this ungated instance doesn't know its GitHub user"))?,
 	};
 	let plain = key != "team" && !key.is_empty() && !key.starts_with('.') && key.chars().all(|c| c.is_ascii_alphanumeric() || "._@[]-".contains(c));
 	if !plain {

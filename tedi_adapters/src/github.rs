@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use reqwest::Client;
 use serde::Deserialize;
 pub use tedi_core::RepoInfo;
-use tedi_core::{CloseState, labels::Color};
+use tedi_core::{CloseState, Sprint, SprintError, labels::Color};
 use v_utils::macros::wrap_err;
 
 mod auth;
@@ -49,6 +49,9 @@ pub type BoxedGithubClient = Arc<dyn GithubClient>;
 /// This allows for both real API calls and mock implementations for testing.
 #[async_trait]
 pub trait GithubClient: Send + Sync {
+	/// The same GitHub as whoever holds `keys`, a token per owner of one person's; any other owner is reached as this does.
+	fn keyed(&self, keys: &BTreeMap<String, String>) -> BoxedGithubClient;
+
 	/// Fetch the authenticated user's login name
 	async fn fetch_authenticated_user(&self) -> Result<String, GithubError>;
 
@@ -138,8 +141,8 @@ pub trait GithubClient: Send + Sync {
 	/// Asks `reviewer` (a login, or a team as `org/team`) for a review of pull request `number`, or withdraws the ask.
 	async fn request_review(&self, repo: RepoInfo, number: u64, reviewer: &str, on: bool) -> Result<(), GithubError>;
 
-	/// The org's repos, archived ones aside.
-	async fn list_org_repos(&self, org: &str) -> Result<Vec<RepoInfo>, GithubError>;
+	/// The repos of a person's or an org's account, those only they can see included, archived ones aside.
+	async fn list_owner_repos(&self, owner: &str) -> Result<Vec<RepoInfo>, GithubError>;
 
 	/// The page from `after` of every issue updated at or after `since`, open and closed, least recently updated first.
 	async fn list_repo_issues(&self, repo: RepoInfo, since: Option<jiff::Timestamp>, after: Option<&str>) -> Result<IssuePage, GithubError>;
@@ -232,6 +235,10 @@ pub enum GithubError {
 	/// Signing the GitHub App's JWT failed.
 	#[foreign]
 	Jwt(jsonwebtoken::errors::Error),
+
+	/// A milestone that can't be where it was to be created.
+	#[foreign]
+	Sprint(SprintError),
 
 	/// GitHub API returned a non-success status code.
 	#[leaf]
@@ -348,14 +355,14 @@ pub struct GraphqlTimeline {
 /// Real Github API client that makes HTTP requests
 pub struct RealGithubClient {
 	http_client: Client,
-	auth: auth::Auth,
+	auth: Arc<auth::Auth>,
 }
 
 impl RealGithubClient {
 	pub fn new(github_token: String) -> Self {
 		Self {
 			http_client: crate::client_builder().build().expect("default client config"),
-			auth: auth::Auth::Token(github_token),
+			auth: Arc::new(auth::Auth::Token(github_token)),
 		}
 	}
 
@@ -363,7 +370,7 @@ impl RealGithubClient {
 	pub fn app(id: u64, private_key: &str) -> Result<Self, GithubError> {
 		Ok(Self {
 			http_client: crate::client_builder().build().expect("default client config"),
-			auth: auth::Auth::App(auth::App::try_new(id, private_key)?),
+			auth: Arc::new(auth::Auth::App(auth::App::try_new(id, private_key)?)),
 		})
 	}
 
@@ -415,10 +422,10 @@ impl RealGithubClient {
 	}
 
 	//#[codestyle::skip(swappable-args)]
-	/// Run a GraphQL request, surfacing both HTTP and GraphQL-level errors. `repo` is what it acts on, so an App picks its owner's installation.
-	async fn graphql(&self, repo: RepoInfo, query: &str, variables: serde_json::Value, error_context: &str) -> Result<serde_json::Value, GithubError> {
+	/// Run a GraphQL request, surfacing both HTTP and GraphQL-level errors. `owner` is the account it acts on.
+	async fn graphql(&self, owner: &str, query: &str, variables: serde_json::Value, error_context: &str) -> Result<serde_json::Value, GithubError> {
 		let res = self
-			.request_as(reqwest::Method::POST, "https://api.github.com/graphql", Some(repo.owner().expect("github repo")))
+			.request_as(reqwest::Method::POST, "https://api.github.com/graphql", Some(owner))
 			.json(&serde_json::json!({ "query": query, "variables": variables }))
 			.send()
 			.await?;
@@ -454,14 +461,14 @@ impl RealGithubClient {
 /// rate limit. Wrapping the client once covers every method — no per-call site edits.
 pub struct RetryingGithubClient {
 	inner: BoxedGithubClient,
-	in_flight: tokio::sync::Semaphore,
+	in_flight: Arc<tokio::sync::Semaphore>,
 }
 impl RetryingGithubClient {
 	pub fn new(inner: BoxedGithubClient, max_in_flight: usize) -> Self {
 		assert!(max_in_flight > 0, "a zero cap would deadlock every request");
 		Self {
 			inner,
-			in_flight: tokio::sync::Semaphore::new(max_in_flight),
+			in_flight: Arc::new(tokio::sync::Semaphore::new(max_in_flight)),
 		}
 	}
 }
@@ -532,6 +539,13 @@ pub fn is_github_issue_url(s: &str) -> bool {
 	s.contains("github.com/") && s.contains("/issues/")
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PageInfo {
+	has_next_page: bool,
+	end_cursor: Option<String>,
+}
+
 /// A request whose token is picked at `send`, by the account it acts on.
 struct Request<'a> {
 	client: &'a RealGithubClient,
@@ -554,11 +568,26 @@ impl Request<'_> {
 
 #[async_trait]
 impl GithubClient for RealGithubClient {
+	fn keyed(&self, keys: &BTreeMap<String, String>) -> BoxedGithubClient {
+		Arc::new(Self {
+			http_client: self.http_client.clone(),
+			auth: Arc::new(auth::Auth::Keys {
+				keys: keys.iter().map(|(owner, token)| (owner.to_lowercase(), token.clone())).collect(),
+				rest: self.auth.clone(),
+			}),
+		})
+	}
+
 	async fn fetch_authenticated_user(&self) -> Result<String, GithubError> {
-		if let auth::Auth::App(app) = &self.auth {
-			return app.login(&self.http_client).await;
-		}
-		let res = self.get("https://api.github.com/user").send().await?;
+		let res = match &*self.auth {
+			auth::Auth::App(app) => return app.login(&self.http_client).await,
+			auth::Auth::Token(_) => self.get("https://api.github.com/user").send().await?,
+			// one person's, whichever answers
+			auth::Auth::Keys { keys, .. } =>
+				self.request_as(reqwest::Method::GET, "https://api.github.com/user", keys.keys().next().map(String::as_str))
+					.send()
+					.await?,
+		};
 
 		if !res.status().is_success() {
 			let status = res.status();
@@ -588,7 +617,10 @@ impl GithubClient for RealGithubClient {
 		let query = format!("query($owner: String!, $repo: String!, $number: Int!) {{ repository(owner: $owner, name: $repo) {{ issue(number: $number) {{ ...Full }} }} }} {FULL_ISSUE}");
 		let variables = serde_json::json!({ "owner": repo.owner().expect("github repo"), "repo": repo.repo(), "number": issue_number as i64 });
 		let context = format!("fetch {repo}#{issue_number}");
-		let mut response = self.graphql(repo, &query, variables, &context).await.map_err(|e| not_found_as_404(e, &context))?;
+		let mut response = self
+			.graphql(repo.owner().expect("github repo"), &query, variables, &context)
+			.await
+			.map_err(|e| not_found_as_404(e, &context))?;
 		let issue = response.pointer_mut("/data/repository/issue").map(serde_json::Value::take).unwrap_or_default();
 		if issue.is_null() {
 			return Err(GithubError::new_api(reqwest::StatusCode::NOT_FOUND, response.to_string(), context));
@@ -725,7 +757,11 @@ impl GithubClient for RealGithubClient {
 	async fn repo_exists(&self, repo: RepoInfo) -> Result<bool, GithubError> {
 		let url = format!("https://api.github.com/repos/{}/{}", repo.owner().expect("github repo"), repo.repo());
 		let res = self.get(&url).send().await?;
-		Ok(res.status().is_success())
+		match res.status() {
+			status if status.is_success() => Ok(true),
+			reqwest::StatusCode::NOT_FOUND => Ok(false),
+			status => Err(GithubError::new_api(status, res.text().await.unwrap_or_default(), format!("look {repo} up"))), // the status alone still names the failure
+		}
 	}
 
 	async fn list_milestones(&self, repo: RepoInfo) -> Result<Vec<GithubMilestone>, GithubError> {
@@ -766,6 +802,7 @@ impl GithubClient for RealGithubClient {
 	}
 
 	async fn create_milestone(&self, repo: RepoInfo, title: &str, description: &str, closed: bool) -> Result<(), GithubError> {
+		Sprint::check(repo, title)?;
 		let url = format!("https://api.github.com/repos/{}/{}/milestones", repo.owner().expect("github repo"), repo.repo());
 		let mut body = serde_json::json!({ "title": title, "description": description });
 		if closed {
@@ -792,7 +829,7 @@ impl GithubClient for RealGithubClient {
 		"#;
 		let ids = self
 			.graphql(
-				repo,
+				repo.owner().expect("github repo"),
 				query,
 				serde_json::json!({ "owner": repo.owner().expect("github repo"), "repo": repo.repo(), "number": issue_number as i64, "target": target.repo() }),
 				"resolve transfer ids",
@@ -811,7 +848,7 @@ impl GithubClient for RealGithubClient {
 		"#;
 		let moved = self
 			.graphql(
-				repo,
+				repo.owner().expect("github repo"),
 				mutation,
 				serde_json::json!({ "issue": id("/data/repository/issue/id")?, "target": id("/data/target/id")? }),
 				"transfer issue",
@@ -823,28 +860,37 @@ impl GithubClient for RealGithubClient {
 			.ok_or_else(|| GithubError::new_graphql(format!("transferIssue returned no number: {moved}")))
 	}
 
-	async fn list_org_repos(&self, org: &str) -> Result<Vec<RepoInfo>, GithubError> {
+	async fn list_owner_repos(&self, owner: &str) -> Result<Vec<RepoInfo>, GithubError> {
 		#[derive(Deserialize)]
+		#[serde(rename_all = "camelCase")]
+		struct Repos {
+			page_info: PageInfo,
+			nodes: Vec<Repo>,
+		}
+		#[derive(Deserialize)]
+		#[serde(rename_all = "camelCase")]
 		struct Repo {
 			name: String,
-			archived: bool,
+			is_archived: bool,
 		}
+		let query = "query($owner: String!, $after: String) { repositoryOwner(login: $owner) { repositories(first: 100, after: $after, ownerAffiliations: OWNER) { pageInfo { hasNextPage endCursor } nodes { name isArchived } } } }";
+		let context = format!("list repos of {owner}");
 		let mut repos = Vec::new();
-		for page in 1.. {
-			let res = self.get(&format!("https://api.github.com/orgs/{org}/repos?per_page=100&page={page}")).send().await?;
-			if !res.status().is_success() {
-				let status = res.status();
-				let body = res.text().await.unwrap_or_default();
-				return Err(GithubError::new_api(status, body, format!("list repos of {org}")));
+		let mut after: Option<String> = None;
+		//LOOP pages until GitHub reports no next cursor
+		loop {
+			let mut response = self.graphql(owner, query, serde_json::json!({ "owner": owner, "after": after }), &context).await?;
+			let listed = response.pointer_mut("/data/repositoryOwner").map(serde_json::Value::take).unwrap_or_default();
+			if listed.is_null() {
+				return Err(GithubError::new_api(reqwest::StatusCode::NOT_FOUND, response.to_string(), context));
 			}
-			let batch = res.json::<Vec<Repo>>().await?;
-			let last = batch.len() < 100;
-			repos.extend(batch.into_iter().filter(|r| !r.archived).map(|r| RepoInfo::new(org, &r.name)));
-			if last {
-				break;
+			let page: Repos = serde_json::from_value(listed["repositories"].clone()).map_err(|e| GithubError::new_graphql(format!("{context}: {e}")))?;
+			repos.extend(page.nodes.into_iter().filter(|r| !r.is_archived).map(|r| RepoInfo::new(owner, &r.name)));
+			match page.page_info.has_next_page {
+				true => after = page.page_info.end_cursor,
+				false => return Ok(repos),
 			}
 		}
-		Ok(repos)
 	}
 
 	async fn list_repo_issues(&self, repo: RepoInfo, since: Option<jiff::Timestamp>, after: Option<&str>) -> Result<IssuePage, GithubError> {
@@ -854,13 +900,10 @@ impl GithubClient for RealGithubClient {
 		);
 		let variables = serde_json::json!({ "owner": repo.owner().expect("github repo"), "repo": repo.repo(), "since": since, "after": after });
 		let context = format!("list issues of {repo}");
-		let mut response = self.graphql(repo, &query, variables, &context).await.map_err(|e| not_found_as_404(e, &context))?;
-		#[derive(Deserialize)]
-		#[serde(rename_all = "camelCase")]
-		struct PageInfo {
-			has_next_page: bool,
-			end_cursor: Option<String>,
-		}
+		let mut response = self
+			.graphql(repo.owner().expect("github repo"), &query, variables, &context)
+			.await
+			.map_err(|e| not_found_as_404(e, &context))?;
 		#[derive(Deserialize)]
 		#[serde(rename_all = "camelCase")]
 		struct Page {
@@ -894,13 +937,10 @@ impl GithubClient for RealGithubClient {
 		} } } }";
 		let variables = serde_json::json!({ "owner": repo.owner().expect("github repo"), "repo": repo.repo(), "after": after });
 		let context = format!("list pull requests of {repo}");
-		let mut response = self.graphql(repo, query, variables, &context).await.map_err(|e| not_found_as_404(e, &context))?;
-		#[derive(Deserialize)]
-		#[serde(rename_all = "camelCase")]
-		struct PageInfo {
-			has_next_page: bool,
-			end_cursor: Option<String>,
-		}
+		let mut response = self
+			.graphql(repo.owner().expect("github repo"), query, variables, &context)
+			.await
+			.map_err(|e| not_found_as_404(e, &context))?;
 		#[derive(Deserialize)]
 		#[serde(rename_all = "camelCase")]
 		struct Page {
@@ -928,12 +968,6 @@ impl GithubClient for RealGithubClient {
 			author { name user { login } }
 			file(path: $path) { object { ... on Blob { text } } }
 		} } } } } }";
-		#[derive(Deserialize)]
-		#[serde(rename_all = "camelCase")]
-		struct PageInfo {
-			has_next_page: bool,
-			end_cursor: Option<String>,
-		}
 		#[derive(Deserialize)]
 		#[serde(rename_all = "camelCase")]
 		struct Page {
@@ -970,7 +1004,10 @@ impl GithubClient for RealGithubClient {
 		let mut after: Option<String> = None;
 		loop {
 			let variables = serde_json::json!({ "owner": repo.owner().expect("github repo"), "repo": repo.repo(), "ref": branch, "path": path, "after": after });
-			let mut response = self.graphql(repo, query, variables, &context).await.map_err(|e| not_found_as_404(e, &context))?;
+			let mut response = self
+				.graphql(repo.owner().expect("github repo"), query, variables, &context)
+				.await
+				.map_err(|e| not_found_as_404(e, &context))?;
 			let page = response
 				.pointer_mut("/data/repository/object/history")
 				.map(serde_json::Value::take)
@@ -1475,6 +1512,13 @@ macro_rules! retrying {
 
 #[async_trait]
 impl GithubClient for RetryingGithubClient {
+	fn keyed(&self, keys: &BTreeMap<String, String>) -> BoxedGithubClient {
+		Arc::new(Self {
+			inner: self.inner.keyed(keys),
+			in_flight: self.in_flight.clone(),
+		})
+	}
+
 	async fn fetch_authenticated_user(&self) -> Result<String, GithubError> {
 		retrying!(self.inner.fetch_authenticated_user())
 	}
@@ -1583,8 +1627,8 @@ impl GithubClient for RetryingGithubClient {
 		retrying!(self.inner.request_review(repo, number, reviewer, on))
 	}
 
-	async fn list_org_repos(&self, org: &str) -> Result<Vec<RepoInfo>, GithubError> {
-		retrying!(self.inner.list_org_repos(org))
+	async fn list_owner_repos(&self, org: &str) -> Result<Vec<RepoInfo>, GithubError> {
+		retrying!(self.inner.list_owner_repos(org))
 	}
 
 	async fn list_repo_issues(&self, repo: RepoInfo, since: Option<jiff::Timestamp>, after: Option<&str>) -> Result<IssuePage, GithubError> {
@@ -1609,20 +1653,69 @@ impl GithubClient for RetryingGithubClient {
 //==============================================================================
 
 /// Process-wide GitHub client: set once at startup, shared by every thread that syncs.
+/// The client every sync goes through, and whom it acts as.
 pub mod client {
-	use std::sync::RwLock;
+	use std::{collections::BTreeMap, sync::RwLock};
 
-	use super::BoxedGithubClient;
+	use tedi_core::{RepoInfo, current_user};
+
+	use super::{BoxedGithubClient, GithubError};
 
 	static CLIENT: RwLock<Option<BoxedGithubClient>> = RwLock::new(None);
+
+	tokio::task_local! {
+		static ACTOR: Actor;
+	}
+
+	/// Someone else than this process acting on GitHub: a person with keys of their own, what those don't cover done as the process.
+	#[derive(Clone)]
+	pub struct Actor {
+		client: BoxedGithubClient,
+		owners: Vec<String>,
+		login: Option<String>,
+	}
+	impl Actor {
+		/// `login`'s, by `keys`: a token per owner.
+		pub fn try_new(login: Option<String>, keys: &BTreeMap<String, String>) -> Result<Self, GithubError> {
+			Ok(Self {
+				client: default()?.keyed(keys),
+				owners: keys.keys().cloned().collect(),
+				login,
+			})
+		}
+	}
 
 	/// Must be called before any sink operations.
 	pub fn set(client: BoxedGithubClient) {
 		*CLIENT.write().expect("never held across a panic") = Some(client);
 	}
 
-	pub fn get() -> Result<BoxedGithubClient, super::GithubError> {
-		CLIENT.read().expect("never held across a panic").clone().ok_or_else(super::GithubError::new_not_initialized)
+	/// Whoever acts in this task: the `actor` it runs [as](acting), else the process.
+	pub fn get() -> Result<BoxedGithubClient, GithubError> {
+		match ACTOR.try_with(|a| a.client.clone()) {
+			Ok(client) => Ok(client),
+			Err(_) => default(), // nobody else acts here
+		}
+	}
+
+	/// `f` with `actor` acting in it.
+	pub async fn acting<F: Future>(actor: Actor, f: F) -> F::Output {
+		ACTOR.scope(actor, f).await
+	}
+
+	/// The person acting; `None`: unknown.
+	pub fn login() -> Option<String> {
+		ACTOR.try_with(|a| a.login.clone()).unwrap_or_else(|_| current_user::get())
+	}
+
+	/// Whom GitHub sees acting on `repo`.
+	pub fn login_on(repo: RepoInfo) -> Option<String> {
+		let keyed = |a: &Actor| repo.owner().is_some_and(|o| a.owners.iter().any(|k| k.eq_ignore_ascii_case(o)));
+		ACTOR.try_with(|a| keyed(a).then(|| a.login.clone())).ok().flatten().unwrap_or_else(current_user::get) // as the process where nobody else acts
+	}
+
+	fn default() -> Result<BoxedGithubClient, GithubError> {
+		CLIENT.read().expect("never held across a panic").clone().ok_or_else(GithubError::new_not_initialized)
 	}
 }
 

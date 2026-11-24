@@ -9,10 +9,9 @@ use std::{
 
 use arrayvec::ArrayString;
 use serde::{Deserialize, Serialize};
-use v_utils::Timeframe;
 
 pub use crate::error::ChainError;
-use crate::{IssueLink, Milestone, MilestoneLink, RepoInfo, error::ChainDiagnostic};
+use crate::{IssueLink, Milestone, MilestoneLink, RepoInfo, Sprint, error::ChainDiagnostic};
 
 /// What GitHub links start with, and so what tells a [`Point`] from a name.
 pub const GITHUB: &str = "https://github.com/";
@@ -161,25 +160,6 @@ impl From<Point> for String {
 	}
 }
 
-/// What a milestone's link and title make it; each owns those below it, and any [`Kind::Milestone`].
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, strum::Display)]
-pub enum Kind {
-	Milestone,
-	/// An org's, its sprint.
-	Bottlenecks,
-	/// A person's, titled by its timeframe.
-	Sprint,
-}
-impl From<(&MilestoneLink, &str)> for Kind {
-	fn from((link, title): (&MilestoneLink, &str)) -> Self {
-		match () {
-			() if title.parse::<Timeframe>().is_ok() => Kind::Sprint,
-			() if title == "Bottlenecks" && link.repo_info().repo() == ".github" => Kind::Bottlenecks,
-			() => Kind::Milestone,
-		}
-	}
-}
-
 /// How the edges a [`check`] is asked of stand.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Edge {
@@ -193,17 +173,16 @@ pub enum Edge {
 pub fn check(known: &[Milestone], owner: &Milestone, children: &[MilestoneLink], edge: Edge) -> Result<(), ChainError> {
 	let mut by: HashMap<&MilestoneLink, &Milestone> = known.iter().map(|m| (m.link(), m)).collect();
 	by.insert(owner.link(), owner);
-	// not known: below a milestone only a milestone belongs
-	let kind = |link: &MilestoneLink| by.get(link).map_or(Kind::Milestone, |m| Kind::from((link, m.identity.title.as_str())));
+	let sprint = |link: &MilestoneLink| by.get(link).and_then(|m| m.sprint()); // one not known is taken for a milestone
 	let mut owners: HashMap<MilestoneLink, Vec<MilestoneLink>> = HashMap::new();
 	for m in known {
 		for child in m.body.0.milestone_links() {
 			owners.entry(child).or_default().push(m.link().clone());
 		}
 	}
-	let plain = |links: Vec<MilestoneLink>| links.into_iter().filter(|l| kind(l) == Kind::Milestone).collect::<Vec<_>>();
-	let below = |link: &MilestoneLink| plain(by.get(link).map(|m| m.body.0.milestone_links()).unwrap_or_default()); // not known: nor is what it owns
-	let above = |link: &MilestoneLink| plain(owners.get(link).cloned().unwrap_or_default()); // none owns it
+	let below = |link: &MilestoneLink| by.get(link).map(|m| m.body.0.milestone_links()).unwrap_or_default(); // not known: nor is what it owns
+	let above = |link: &MilestoneLink| owners.get(link).cloned().unwrap_or_default(); // none owns it
+	let plain = |links: Vec<MilestoneLink>| links.into_iter().filter(|l| sprint(l).is_none()).collect::<Vec<_>>(); // a root's own repo doesn't count
 	let draw = |links: &[MilestoneLink]| -> Vec<Node> {
 		links
 			.iter()
@@ -215,21 +194,19 @@ pub fn check(known: &[Milestone], owner: &Milestone, children: &[MilestoneLink],
 	};
 
 	let of = owner.link();
-	let up = match kind(of) {
-		Kind::Milestone => walk(of, above),
-		Kind::Bottlenecks | Kind::Sprint => Vec::new(), // a root: its own repo doesn't count
+	let up = match sprint(of) {
+		None => walk(of, |l| plain(above(l))),
+		Some(_) => Vec::new(),
 	};
+	let mut nearest: HashMap<RepoInfo, usize> = HashMap::new();
+	for (i, step) in up.iter().enumerate() {
+		nearest.entry(step.link.repo_info()).or_insert(i); // the walk is shortest first
+	}
 	for child in children {
 		if !by.contains_key(child) {
 			if edge == Edge::Added {
 				return Err(ChainDiagnostic::unknown(child).into());
 			}
-			continue;
-		}
-		if kind(child) != Kind::Milestone && kind(child) >= kind(of) {
-			return Err(ChainDiagnostic::root(&draw(&[of.clone(), child.clone()]), kind(child), edge).into());
-		}
-		if kind(of) != Kind::Milestone {
 			continue;
 		}
 		let down = walk(child, below);
@@ -243,10 +220,12 @@ pub fn check(known: &[Milestone], owner: &Milestone, children: &[MilestoneLink],
 			}
 			return Err(ChainDiagnostic::looped(&draw(&path), edge).into());
 		}
-		let mut nearest: HashMap<RepoInfo, usize> = HashMap::new();
-		for (i, step) in up.iter().enumerate() {
-			nearest.entry(step.link.repo_info()).or_insert(i); // the walk is shortest first
+		match (sprint(child), sprint(of)) {
+			(Some(Sprint::Bottlenecks), Some(_)) | (None, Some(_)) => continue,
+			(Some(root), _) => return Err(ChainDiagnostic::root(&draw(&[of.clone(), child.clone()]), root, edge).into()),
+			(None, None) => {}
 		}
+		let down = walk(child, |l| plain(below(l)));
 		let twice = down
 			.iter()
 			.enumerate()

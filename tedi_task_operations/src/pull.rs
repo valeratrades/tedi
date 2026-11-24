@@ -9,7 +9,7 @@ use std::{
 
 use color_eyre::eyre::{Result, bail};
 use jiff::Timestamp;
-use tedi_core::{chain::Kind, conflict::Conflict};
+use tedi_core::conflict::Conflict;
 
 use crate::{
 	CloseState, Issue, IssueLink, IssueSelector, LazyIssue, Milestone, MilestoneLink, RepoInfo,
@@ -29,7 +29,7 @@ pub async fn pull_repos(targets: &[String], workflows: &Workflows, now: Timestam
 	for target in targets {
 		match target.split_once('/') {
 			Some((owner, repo)) => repos.push(RepoInfo::new(owner, repo)),
-			None => repos.extend(gh.list_org_repos(target).await?),
+			None => repos.extend(gh.list_owner_repos(target).await?),
 		}
 	}
 
@@ -201,26 +201,28 @@ async fn date_stored(repo: RepoInfo) -> Result<()> {
 	Ok(())
 }
 
-/// `repo`'s open milestones, and those stored as open: what the board offers. A sprint's is its own flow's to sync.
+/// `repo`'s open milestones, and those stored as open.
 pub(crate) async fn pull_milestones(repo: RepoInfo, pull: &mut Pull) -> Result<()> {
-	let sprint = |number: u64, title: &str| Kind::from((&MilestoneLink::in_project(repo, number), title)) == Kind::Sprint;
 	let gh = crate::github::client::get()?;
-	let listed = gh.list_milestones(repo).await?.into_iter().filter(|m| !sprint(m.number, &m.title)).map(|m| m.number);
+	let listed = gh.list_milestones(repo).await?.into_iter().map(|m| m.number);
 	let held: Vec<u64> = Local::load_milestone_project_meta(repo, &FsReader)
 		.milestones
 		.into_iter()
-		.filter(|(n, m)| !m.state.is_closed() && !sprint(*n, &m.title))
+		.filter(|(_, m)| !m.state.is_closed())
 		.map(|(n, _)| n)
 		.collect();
 	for number in listed.chain(held).collect::<BTreeSet<_>>() {
 		let link = MilestoneLink::in_project(repo, number);
-		match pull.link(&link).await {
-			Ok(()) => {}
+		if pull.pulled(&link) {
+			continue;
+		}
+		match pull.link(&link, MergeMode::Normal).await {
+			Ok(_) => {}
 			Err(e) if matches!(e.downcast_ref::<GithubError>(), Some(GithubError::Api { status, .. }) if status.as_u16() == 404) => {
 				println!("{} is gone from GitHub: kept here, closed", link.as_str());
-				let mut local = Local::load_milestone(&link, &FsReader)?.expect("listed, or held here");
-				local.identity.state = CloseState::NotPlanned;
 				let store = lock_store().await?;
+				let mut local = Local::load_milestone(&link, &FsReader)?.expect("listed a moment ago, or held");
+				local.identity.state = CloseState::NotPlanned;
 				<Milestone as Sink<LocalFs>>::sink(&mut local, None).await?;
 				<Milestone as Sink<Consensus>>::sink(&mut local, None).await?;
 				drop(store);

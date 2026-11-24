@@ -127,20 +127,6 @@ test.describe("what waits for the board is the views on screen, each for what it
     await expect(cards(checklist).first()).toBeVisible();
     await expect(bars(page)).toHaveCount(0);
   });
-
-  test("GitHub's sprints hold nothing else", async ({ page }) => {
-    let go!: () => void;
-    const slow = new Promise<void>((on) => (go = on));
-    await page.route(/\/api\/sprints$/, async (route) => {
-      await slow;
-      await route.continue();
-    });
-    await page.goto("/");
-    await expect(cards(tile(page)).first()).toBeVisible();
-    await expect(page.getByText("Asking GitHub…")).toBeVisible();
-    go();
-    await expect(page.getByText("Asking GitHub…")).toHaveCount(0);
-  });
 });
 
 test("the theme's mark is over the bar", async ({ page }) => {

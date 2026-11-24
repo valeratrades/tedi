@@ -16,7 +16,7 @@ use super::{
 	library::NameForm,
 	route::Go as Link,
 	scope::{Offered, glyph_at},
-	workspace,
+	sprint_panel, workspace,
 };
 use crate::api::{Item, Kept, LibraryEdit, Shelf};
 
@@ -144,20 +144,21 @@ fn Shelves() -> Element {
 		})
 		.collect();
 
-	let sprints: Vec<Row> = ctx
-		.sprints
-		.read()
+	let held = ctx.sprints();
+	let sprints: Vec<Row> = held
 		.iter()
-		.flatten()
 		.map(|s| Row {
-			glyph: if s.title == "urgent" { Glyph::Alert } else { Glyph::Sprint },
+			glyph: Glyph::Sprint,
 			label: s.title.clone(),
 			depth: 0,
-			go: Go::Panel(PanelId(format!("sprint:{}", s.title))),
+			go: Go::Panel(sprint_panel(&s.link)),
 			favorite: None,
 			own: None,
-			current: ctx.shows(&PanelId(format!("sprint:{}", s.title))),
-			meta: s.links.len().to_string(),
+			current: ctx.shows(&sprint_panel(&s.link)),
+			meta: match held.iter().filter(|o| o.title == s.title).count() {
+				1 => s.nodes.len().to_string(),
+				_ => format!("{} {}", s.link.repo_info().repo(), s.nodes.len()),
+			},
 		})
 		.collect();
 
@@ -186,7 +187,19 @@ fn Shelves() -> Element {
 					}
 				}
 				div { class: "flex-1" }
-				if let Some(me) = me {
+				if setup.accounts {
+					button {
+						r#type: "button",
+						class: "inline-flex h-6 items-center gap-1 rounded-[var(--control-radius)] px-1 text-body-s text-ink-mid hover:bg-hover hover:text-ink",
+						title: "Account",
+						aria_label: "Account",
+						onclick: move |e: MouseEvent| { e.stop_propagation(); let mut m = ctx.modal; m.set(Some(Modal::Account)); },
+						match me {
+							Some(me) => rsx! { Avatar { login: me } },
+							None => rsx! { Icon { glyph: Glyph::User, class: "size-4" } "Bring your keys" },
+						}
+					}
+				} else if let Some(me) = me {
 					Avatar { login: me }
 				}
 			}

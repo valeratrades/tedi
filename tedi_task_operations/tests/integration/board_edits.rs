@@ -34,7 +34,7 @@ fn milestones(port: u16) -> Vec<String> {
 		.as_array()
 		.unwrap()
 		.iter()
-		.filter(|t| t["hosted"].as_array().unwrap().contains(&json!(ISSUE)))
+		.filter(|t| t["nodes"].as_array().unwrap().contains(&json!(ISSUE)))
 		.map(|t| format!("{} {}", t["link"].as_str().unwrap().strip_prefix("https://github.com/").unwrap(), t["title"].as_str().unwrap()))
 		.collect();
 	held.sort();
@@ -55,14 +55,30 @@ fn set(port: u16, repo: &str, seen: Option<u64>, new: Option<u64>) -> serde_json
 }
 
 #[test]
-fn the_board_shows_open_milestones_and_no_sprint() {
+fn the_board_shows_open_milestones_an_orgs_sprints_among_them() {
 	let ctx = TestContext::build();
 	pulled(&ctx, |ctx| {
 		ctx.remote_milestone("o/r", 1, "v1", "ship it", &[1]);
-		ctx.remote_milestone("o/r", 2, "1d", "- #1", &[]);
+		ctx.remote_milestone("o/r", 2, "1d", "the day\n\n# grouped\n- #1\n- https://github.com/o/.github/milestone/3", &[]);
+		ctx.remote_milestone("o/.github", 3, "Bottlenecks", "- o/r#1", &[]);
 	});
 	let (_server, port) = serve(&ctx, BOARD, &[]);
-	assert_eq!(milestones(port), ["o/r/milestone/1 v1"]);
+	let targets = board(port)["targets"].clone();
+	let shown: Vec<String> = targets
+		.as_array()
+		.unwrap()
+		.iter()
+		.map(|t| format!("{} {} {}", t["title"], t["description"], t["nodes"]))
+		.collect();
+	insta::assert_snapshot!(shown.join("\n"), @r#"
+	"v1" "ship it" ["https://github.com/o/r/issues/1"]
+	"1d" "the day" ["https://github.com/o/r/issues/1","https://github.com/o/r/milestone/3"]
+	"Bottlenecks" "" ["https://github.com/o/r/issues/1"]
+	"#);
+
+	// what is planned is not the board's to say; what is a bottleneck is
+	assert!(set(port, "o/r", Some(1), Some(2)).get("Rejected").is_some());
+	assert_eq!(set(port, "o/.github", Some(3), None), "Landed");
 }
 
 #[test]
