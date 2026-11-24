@@ -11,7 +11,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-	CloseState, IssueLink, LinkedPr, PrState,
+	CloseState, IssueLink, LinkedPr, MilestoneLink, PrState, RepoInfo, Review,
 	labels::Type,
 	rank::Rank,
 	workflow::{State, Workflow, WorkflowError},
@@ -42,7 +42,7 @@ pub struct Card {
 	pub body: String,
 	/// Shown as of consensus: a clash on it waits for resolution.
 	pub conflicted: bool,
-	/// `Some` on a pull request: read-only, with no blockers or children of its own.
+	/// `Some` on a pull request: read-only but for its review requests, with no blockers or children of its own.
 	pub pr: Option<Pr>,
 }
 impl Card {
@@ -56,15 +56,47 @@ pub struct Pr {
 	pub state: PrState,
 	pub author: String,
 	pub closes: Vec<IssueLink>,
+	pub requested: Vec<String>,
+	pub reviews: BTreeMap<String, Review>,
+}
+
+/// What is said on an issue.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct Thread {
+	/// `None`: unknown.
+	pub author: Option<String>,
+	pub comments: Vec<Said>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct Said {
+	/// `None`: not on GitHub yet.
+	pub id: Option<u64>,
+	pub by: Option<String>,
+	pub at: Option<jiff::Timestamp>,
+	pub body: String,
+}
+
+/// An open milestone, a sprint's aside.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct Target {
+	pub link: MilestoneLink,
+	pub title: String,
+	pub due_on: Option<jiff::Timestamp>,
+	/// Issues of any repo: its own carry it as their milestone on GitHub, the rest are named in its description.
+	pub hosted: Vec<IssueLink>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct Board {
 	pub cards: Vec<Card>,
+	pub targets: Vec<Target>,
 	/// Stored issues that don't parse, with why: shown beside the board, not hidden by it.
 	pub unreadable: Vec<(PathBuf, String)>,
 	/// Per `owner/repo`, its labels' colours as last read from GitHub; a label missing here is uncoloured.
 	pub colors: BTreeMap<String, BTreeMap<String, crate::labels::Color>>,
+	/// Per `owner/repo`, the logins its issues can be assigned to, as last read from GitHub.
+	pub assignable: BTreeMap<String, Vec<String>>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -133,6 +165,16 @@ impl Query {
 			}
 		}
 		Ok(())
+	}
+
+	/// Whether its `repo:` clauses leave `repo` in.
+	pub fn covers(&self, repo: RepoInfo) -> bool {
+		self.clauses.iter().filter(|c| c.facet() == Facet::Repo).all(|c| {
+			c.any.iter().any(|v| match v {
+				Filter::Repo(pattern) => names(pattern, repo),
+				other => unreachable!("{other} in a repo clause"),
+			}) != c.negated
+		})
 	}
 
 	/// Narrowed further by `within`'s clauses (a scope's).
@@ -494,15 +536,7 @@ impl Filter {
 
 	fn holds(&self, card: &Card, me: Option<&str>, open: &HashSet<&IssueLink>) -> bool {
 		match self {
-			Filter::Repo(pattern) => {
-				let project = card.link.project();
-				match pattern.split_once('/') {
-					// GitHub names are case-insensitive, and links store them lowercased
-					Some((owner, "*")) => project.owner().is_some_and(|o| o.eq_ignore_ascii_case(owner)),
-					Some(_) => project.to_string().eq_ignore_ascii_case(pattern),
-					None => project.repo().eq_ignore_ascii_case(pattern),
-				}
-			}
+			Filter::Repo(pattern) => names(pattern, card.link.project()),
 			Filter::Assignee(Assignee::Me) => me.is_some_and(|me| card.assignees.iter().any(|a| a == me)),
 			Filter::Importance(Some((cmp, n))) => card.importance.is_some_and(|i| cmp.holds(i, *n)),
 			Filter::Hours(Some((cmp, n))) => card.hours.is_some_and(|h| cmp.holds(h, *n)),
@@ -671,6 +705,16 @@ fn items(value: &str) -> Vec<String> {
 	}
 	items.retain(|i| !i.is_empty());
 	items
+}
+
+/// Whether a `repo:` value (`owner/repo`, `owner/*`, a bare name) names `project`.
+fn names(pattern: &str, project: RepoInfo) -> bool {
+	match pattern.split_once('/') {
+		// GitHub names are case-insensitive, and links store them lowercased
+		Some((owner, "*")) => project.owner().is_some_and(|o| o.eq_ignore_ascii_case(owner)),
+		Some(_) => project.to_string().eq_ignore_ascii_case(pattern),
+		None => project.repo().eq_ignore_ascii_case(pattern),
+	}
 }
 
 fn open(cards: &[Card]) -> HashSet<&IssueLink> {

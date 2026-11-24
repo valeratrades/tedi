@@ -18,9 +18,9 @@ use dioxus::server::{
 };
 use dioxus_fullstack::ServerEvents;
 use tedi_core::{
-	IssueLink, RepoInfo, TaskView,
-	board::{Board, Scope, View, scope_at},
-	conflict::{Conflict, FieldEdit},
+	IssueLink, MilestoneLink, RepoInfo, TaskView,
+	board::{Board, Scope, Thread, View, scope_at},
+	conflict::{CommentEdit, Conflict, FieldEdit},
 	workflow::State,
 };
 use tedi_task_operations::{
@@ -131,7 +131,9 @@ pub async fn board() -> Result<Arc<Board>> {
 	if let Some(board) = &*cached {
 		return Ok(board.clone());
 	}
-	let board = Arc::new(tedi_task_operations::board::load(&settings().workflows).await?);
+	let mut board = tedi_task_operations::board::load(&settings().workflows).await?;
+	board.targets.retain(|t| Some(t.link.repo_info()) != settings().milestones); // shown as sprints
+	let board = Arc::new(board);
 	*cached = Some(board.clone());
 	Ok(board)
 }
@@ -139,13 +141,7 @@ pub async fn board() -> Result<Arc<Board>> {
 pub async fn edit(link: IssueLink, edits: Vec<FieldEdit>) -> Result<Edited> {
 	let edited = tedi_task_operations::board::edit(&link, edits, settings().mode).await;
 	changed().await; // a failed edit may still have pulled
-	match edited {
-		Ok(()) => Ok(Edited::Landed),
-		Err(e) => match e.downcast::<Conflict>() {
-			Ok(conflict) => Ok(Edited::Conflict(conflict)),
-			Err(e) => Err(e),
-		},
-	}
+	refused(edited)
 }
 
 pub async fn move_card(link: IssueLink, workflow: String, to: State, seen: State) -> Result<Edited> {
@@ -155,14 +151,30 @@ pub async fn move_card(link: IssueLink, workflow: String, to: State, seen: State
 	let s = settings();
 	let moved = tedi_task_operations::workflow::move_card(&link, &workflow, &to, Some(&seen), &Mover::Person(me), &s.workflows, s.mode, jiff::Timestamp::now()).await;
 	changed().await; // a failed move may still have pulled
-	match moved {
-		Ok(()) => Ok(Edited::Landed),
-		Err(e) => match e.downcast::<Conflict>() {
-			Ok(conflict) => Ok(Edited::Conflict(conflict)),
-			Err(e) if e.downcast_ref::<Rejected>().is_some() || e.downcast_ref::<MovedOn>().is_some() => Ok(Edited::Rejected(e.to_string())),
-			Err(e) => Err(e),
-		},
-	}
+	refused(moved)
+}
+
+pub async fn set_milestone(link: IssueLink, repo: String, seen: Option<MilestoneLink>, new: Option<MilestoneLink>) -> Result<Edited> {
+	let (owner, name) = repo.split_once('/').ok_or_else(|| eyre!("a milestone's repo is `owner/repo`, not {repo}"))?;
+	let set = tedi_task_operations::board::set_milestone(&link, RepoInfo::new(owner, name), seen.as_ref(), new.as_ref(), settings().mode).await;
+	changed().await; // a failed one may still have pulled
+	refused(set)
+}
+
+pub async fn thread(link: IssueLink) -> Result<Thread> {
+	tedi_task_operations::board::thread(&link).await
+}
+
+pub async fn comment(link: IssueLink, edit: CommentEdit) -> Result<Edited> {
+	let said = tedi_task_operations::board::comment(&link, edit, settings().mode).await;
+	changed().await; // a failed one may still have pulled
+	refused(said)
+}
+
+pub async fn request_review(link: IssueLink, reviewer: String, on: bool) -> Result<()> {
+	tedi_task_operations::board::request_review(&link, &reviewer, on).await?;
+	changed().await;
+	Ok(())
 }
 
 pub async fn pending_conflict(link: &IssueLink) -> Result<Option<String>> {
@@ -541,6 +553,18 @@ async fn webhook(headers: HeaderMap, body: Bytes) -> StatusCode {
 async fn changed() {
 	*BOARD.lock().await = None;
 	let _ = CHANGES.send(()); // errs only while no board is open: nobody to tell
+}
+
+/// How an edit ended, when nothing broke.
+fn refused(edited: Result<()>) -> Result<Edited> {
+	match edited {
+		Ok(()) => Ok(Edited::Landed),
+		Err(e) => match e.downcast::<Conflict>() {
+			Ok(conflict) => Ok(Edited::Conflict(conflict)),
+			Err(e) if e.downcast_ref::<Rejected>().is_some() || e.downcast_ref::<MovedOn>().is_some() => Ok(Edited::Rejected(e.to_string())),
+			Err(e) => Err(e),
+		},
+	}
 }
 
 /// Who edits: the instance's GitHub user until editors sign in, then the request's.

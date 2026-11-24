@@ -4,7 +4,7 @@
 //! all data in memory and can be used for integration testing without hitting the real API.
 
 use std::{
-	collections::{BTreeMap, HashMap},
+	collections::{BTreeMap, BTreeSet, HashMap},
 	path::{Path, PathBuf},
 	sync::{
 		Mutex,
@@ -52,7 +52,7 @@ pub struct MockGithubClient {
 	issues: Mutex<HashMap<RepoKey, HashMap<u64, MockIssueData>>>,
 
 	/// All comments, keyed by (owner, repo) -> comment_id -> comment
-	comments: Mutex<HashMap<RepoKey, HashMap<u64, MockCommentData>>>,
+	comments: Mutex<HashMap<RepoKey, BTreeMap<u64, MockCommentData>>>,
 
 	/// Sub-issue relationships: parent_issue_number -> vec of child issue numbers
 	sub_issues: Mutex<HashMap<RepoKey, HashMap<u64, Vec<u64>>>>,
@@ -1180,7 +1180,10 @@ impl GithubClient for MockGithubClient {
 		self.log_call("list_milestones");
 		let key = RepoKey::from(repo);
 		let milestones = self.milestones.lock().unwrap();
-		Ok(milestones.get(&key).map(|m| m.values().map(MockMilestoneData::to_github).collect()).unwrap_or_default())
+		Ok(milestones
+			.get(&key)
+			.map(|m| m.values().filter(|m| m.state == "open").map(MockMilestoneData::to_github).collect())
+			.unwrap_or_default())
 	}
 
 	async fn get_milestone(&self, repo: RepoInfo, number: u64) -> Result<GithubMilestone, GithubError> {
@@ -1194,7 +1197,7 @@ impl GithubClient for MockGithubClient {
 			.get(&key)
 			.and_then(|m| m.get(&number))
 			.map(MockMilestoneData::to_github)
-			.ok_or_else(|| GithubError::new_other(format!("mock has no milestone #{number}")))
+			.ok_or_else(|| GithubError::new_api(reqwest::StatusCode::NOT_FOUND, format!("mock has no milestone #{number}"), "get milestone".to_string()))
 	}
 
 	async fn list_milestone_issues(&self, repo: RepoInfo, milestone_number: u64) -> Result<Vec<GithubIssue>, GithubError> {
@@ -1305,6 +1308,36 @@ impl GithubClient for MockGithubClient {
 	}
 
 	/// Seeded labels are names only: each wears GitHub's default grey.
+	/// Whoever the repo's issues name.
+	async fn list_assignable(&self, repo: RepoInfo) -> Result<Vec<String>, GithubError> {
+		self.log_call(&format!("list_assignable({repo})"));
+		let issues = self.issues.lock().unwrap();
+		let logins: BTreeSet<String> = issues
+			.get(&RepoKey::from(repo))
+			.into_iter()
+			.flat_map(|m| m.values())
+			.flat_map(|i| i.assignees.iter().chain([&i.owner_login]).cloned())
+			.collect();
+		Ok(logins.into_iter().collect())
+	}
+
+	async fn request_review(&self, repo: RepoInfo, number: u64, reviewer: &str, on: bool) -> Result<(), GithubError> {
+		self.log_call(&format!("request_review({repo}, {number}, {reviewer}, {on})"));
+		{
+			let mut prs = self.pull_requests.lock().unwrap();
+			let pr = prs
+				.get_mut(&RepoKey::from(repo))
+				.and_then(|m| m.get_mut(&number))
+				.ok_or_else(|| GithubError::new_other(format!("mock has no pull request #{number}")))?;
+			pr.requested.retain(|r| r != reviewer);
+			if on {
+				pr.requested.push(reviewer.to_string());
+			}
+		}
+		self.persist();
+		Ok(())
+	}
+
 	async fn list_labels(&self, repo: RepoInfo) -> Result<BTreeMap<String, Color>, GithubError> {
 		self.log_call(&format!("list_labels({repo})"));
 		let labels = self.labels.lock().unwrap();

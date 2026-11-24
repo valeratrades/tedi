@@ -14,7 +14,7 @@ use crate::common::{BINARY_ENV, TestContext, get_binary_path};
 
 const SECRET: &str = "webhook secret";
 
-const BOARD: &str = "[board]\nworkflows = { kanban = \"preset:kanban\" }\nviews = [{ name = \"Triage\", query = \"is:open\", layout = \"board\", group_by = \"state:kanban\", sort = \"rank\", shown = [] }]\n\n[board.scopes.Main]\nrepos = [\"o/*\"]\n";
+pub(crate) const BOARD: &str = "[board]\nworkflows = { kanban = \"preset:kanban\" }\nviews = [{ name = \"Triage\", query = \"is:open\", group_by = \"state:kanban\", sort = \"rank\", shown = [] }]\n\n[board.scopes.Main]\nrepos = [\"o/*\"]\n";
 
 /// The team's config at `o/config`, as it stands after each commit.
 const CONFIG_REPO: &str = "o/config";
@@ -36,7 +36,7 @@ fn deliver(port: u16, repo: &str) -> u16 {
 	response.split(' ').nth(1).expect("an HTTP status line").parse().unwrap()
 }
 
-struct Server(Child);
+pub(crate) struct Server(Child);
 impl Drop for Server {
 	fn drop(&mut self) {
 		self.0.kill().unwrap(); // a failed assert must not leave it serving, holding the harness' stderr open
@@ -45,7 +45,7 @@ impl Drop for Server {
 }
 
 /// `tedi --mock web` over `ctx`'s store, with `config` as its config and `args` after `web`; serving once this returns.
-fn serve(ctx: &TestContext, config: &str, args: &[&str]) -> (Server, u16) {
+pub(crate) fn serve(ctx: &TestContext, config: &str, args: &[&str]) -> (Server, u16) {
 	std::fs::write(ctx.xdg.inner.root.join("config/tedi.toml"), config).unwrap();
 	let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
 	let mut cmd = Command::new(get_binary_path());
@@ -85,7 +85,7 @@ fn a_delivery_for_a_repo_outside_watch_is_not_pulled() {
 }
 
 /// `(status, body)` of one request; `user` rides in `X-Auth-User`.
-fn call(port: u16, method: &str, path: &str, user: Option<&str>, body: Option<serde_json::Value>) -> (u16, String) {
+pub(crate) fn call(port: u16, method: &str, path: &str, user: Option<&str>, body: Option<serde_json::Value>) -> (u16, String) {
 	let body = body.map(|b| b.to_string()).unwrap_or_default();
 	let user = user.map(|u| format!("X-Auth-User: {u}\r\n")).unwrap_or_default();
 	let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
@@ -238,7 +238,7 @@ fn the_board_carries_its_repos_label_colors_as_of_the_last_pull() {
 
 fn team_file(triage_sort: &str) -> String {
 	format!(
-		"# the team's board\n\n[[board.views]]\nname = \"Triage\"\nquery = \"is:open\"\nlayout = \"board\"\ngroup_by = \"state:kanban\"\nsort = \"{triage_sort}\"\nshown = []\n\n[[board.views]]\nname = \"PRs\"\nquery = \"is:pr\"\nlayout = \"list\"\ngroup_by = \"state:kanban\"\nsort = \"rank\"\nshown = []\n"
+		"# the team's board\n\n[[board.views]]\nname = \"Triage\"\nquery = \"is:open\"\ngroup_by = \"state:kanban\"\nsort = \"{triage_sort}\"\nshown = []\n\n[[board.views]]\nname = \"PRs\"\nquery = \"is:pr\"\ngroup_by = \"state:kanban\"\nsort = \"rank\"\nshown = []\n"
 	)
 }
 
@@ -249,7 +249,7 @@ fn sourced(triage_sort: &str) -> String {
 }
 
 fn view(name: &str, query: &str) -> serde_json::Value {
-	serde_json::json!({ "name": name, "query": query, "layout": "board", "group_by": "state:kanban", "sort": "importance", "shown": [] })
+	serde_json::json!({ "name": name, "query": query, "group_by": "state:kanban", "sort": "importance", "shown": [] })
 }
 
 fn catalog(port: u16, user: &str) -> serde_json::Value {
@@ -414,10 +414,7 @@ fn a_proposal_is_a_pull_request_replacing_only_that_object() {
 	assert_eq!(serde_json::from_str::<String>(&body).unwrap(), format!("https://github.com/{CONFIG_REPO}/pull/1"));
 	let [proposal] = ctx.remote_proposals().try_into().unwrap();
 	assert_eq!((proposal.base.as_str(), proposal.path.as_str()), ("main", "board.toml"));
-	assert_eq!(
-		proposal.content,
-		team_file("importance").replace("query = \"is:open\"\nlayout = \"board\"", "query = \"is:open repo:o/r\"\nlayout = \"board\"")
-	);
+	assert_eq!(proposal.content, team_file("importance").replace("query = \"is:open\"", "query = \"is:open repo:o/r\""));
 	assert!(proposal.body.starts_with("narrow it\n\n```diff\n+ repo:o/r\n```"), "{}", proposal.body);
 }
 

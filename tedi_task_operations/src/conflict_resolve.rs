@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 
 use color_eyre::eyre::{Result, WrapErr};
-pub use tedi_core::conflict::{Clash, Conflict, Field, FieldEdit};
+pub use tedi_core::conflict::{Clash, CommentEdit, Conflict, Field, FieldEdit};
 
 use crate::{
 	Issue, IssueIndex, IssueLink, LazyIssue as _, VirtualIssue,
@@ -112,6 +112,7 @@ pub async fn check_for_existing_milestone_conflict(link: &crate::MilestoneLink) 
 				timestamps: meta.timestamps,
 			},
 			body,
+			assigned: meta.assigned,
 		};
 		if let Some(consensus) = Local::load_milestone(link, &GitReader)? {
 			m.post_update(&consensus);

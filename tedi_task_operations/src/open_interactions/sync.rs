@@ -30,7 +30,7 @@ pub use types::*;
 use super::merge::Merge;
 use crate::{
 	BlockerSetState, Issue, IssueIndex, IssueLink, IssueSelector, LazyIssue, RepoInfo, VirtualIssue,
-	conflict_resolve::{Clash, Conflict, Field, FieldEdit},
+	conflict_resolve::{Clash, CommentEdit, Conflict, Field, FieldEdit},
 	local::{Consensus, FsReader, Local, LocalFs, LocalIssueSource, LocalPath, consensus::load_consensus_issue, lock_store},
 	remote::{Remote, RemoteSource},
 	selection::Selected,
@@ -472,8 +472,9 @@ mod core {
 		};
 
 		let mut local = local;
+		let mut base = consensus.clone();
 		let mut found = Vec::new();
-		if let (MergeMode::Normal, Some(base)) = (mode, &consensus) {
+		if let (MergeMode::Normal, Some(base)) = (mode, &mut base) {
 			clashes(&local, Some(base), &view, true, &mut found);
 			take_one_sided(&mut local, base, &mut view);
 		}
@@ -482,13 +483,13 @@ mod core {
 		let mut local_merged = local.clone();
 		let mut remote_merged = view.clone();
 
-		if let Some(ref consensus) = consensus {
-			local_merged.merge(consensus, false)?;
+		if let Some(base) = &base {
+			local_merged.merge(base, false)?;
 		}
 		local_merged.merge(&view, force_remote_wins)?;
 
-		if let Some(ref consensus) = consensus {
-			remote_merged.merge(consensus, false)?;
+		if let Some(base) = &base {
+			remote_merged.merge(base, false)?;
 		}
 		remote_merged.merge(&local, force_local_wins)?;
 
@@ -613,8 +614,9 @@ mod core {
 	}
 
 	/// A field only one side moved off `base` is that side's, whatever the timestamps say: Github
-	/// can change one without a newer one (a label deleted from its repo leaves no event).
-	fn take_one_sided(local: &mut Issue, base: &Issue, remote: &mut Issue) {
+	/// can change one without a newer one (a label deleted from its repo leaves no event). `base` takes it
+	/// too, so the merges don't bring its old value back: a deleted comment leaves no timestamp to win by.
+	fn take_one_sided(local: &mut Issue, base: &mut Issue, remote: &mut Issue) {
 		fn copy(field: Field, from: &Issue, to: &mut Issue) {
 			match field {
 				Field::Title => to.contents.title = from.contents.title.clone(),
@@ -638,13 +640,19 @@ mod core {
 		for field in [Field::Title, Field::Labels, Field::Assignees, Field::Body, Field::State, Field::Comments] {
 			let b = field.read(base);
 			match (field.read(local) == b, field.read(remote) == b) {
-				(true, false) => copy(field, remote, local),
-				(false, true) => copy(field, local, remote),
+				(true, false) => {
+					copy(field, remote, local);
+					copy(field, remote, base);
+				}
+				(false, true) => {
+					copy(field, local, remote);
+					copy(field, local, base);
+				}
 				_ => {}
 			}
 		}
 		for (selector, child) in &mut local.children {
-			if let (Some(b), Some(r)) = (base.children.get(selector), remote.children.get_mut(selector)) {
+			if let (Some(b), Some(r)) = (base.children.get_mut(selector), remote.children.get_mut(selector)) {
 				take_one_sided(child, b, r);
 			}
 		}
@@ -839,6 +847,7 @@ mod types {
 		Field {
 			edits: Vec<FieldEdit>,
 		},
+		Comment(CommentEdit),
 		/// Repoint blocker refs at issues that moved repo (`!mv`).
 		Relink {
 			moved: std::collections::HashMap<IssueLink, IssueLink>,
@@ -975,6 +984,37 @@ mod types {
 						e.field.write(issue, &e.new)?;
 					}
 					issue.check_edit()?;
+					ModifyResult {
+						output: None,
+						file_modified: *issue != old_issue,
+					}
+				}
+				Modifier::Comment(edit) => {
+					let comments = &mut issue.contents.comments.0;
+					let refuse = |why: String| Err(crate::workflow::Rejected(why).into());
+					match edit {
+						CommentEdit::Add { body } if body.trim().is_empty() => return refuse("an empty comment".into()),
+						CommentEdit::Add { body } => comments.push(crate::Comment {
+							identity: crate::CommentIdentity::Pending,
+							body: tedi_core::Events::parse(body),
+						}),
+						CommentEdit::Change { id, seen, .. } | CommentEdit::Delete { id, seen } => {
+							let Some(at) = comments.iter().position(|c| c.id() == Some(*id)) else {
+								return refuse("the comment is gone from GitHub".into());
+							};
+							let held = &comments[at];
+							if !held.user().is_some_and(crate::current_user::is) {
+								return refuse("only its author edits a comment".into()); // the sink pushes nobody else's
+							}
+							if held.body.to_string() != *seen {
+								return refuse("the comment changed since it was seen".into());
+							}
+							match edit {
+								CommentEdit::Change { new, .. } => comments[at].body = tedi_core::Events::parse(new),
+								_ => _ = comments.remove(at),
+							}
+						}
+					}
 					ModifyResult {
 						output: None,
 						file_modified: *issue != old_issue,

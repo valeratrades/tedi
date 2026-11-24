@@ -102,6 +102,8 @@ impl std::fmt::Debug for MilestoneBody {
 pub struct Milestone {
 	pub identity: MilestoneIdentity,
 	pub body: MilestoneBody,
+	/// Issues of its own repo carrying it as their `milestone` field as of the last read or push: the base one unassigned on Github is told apart by.
+	pub assigned: Vec<u64>,
 }
 impl Milestone {
 	pub fn link(&self) -> &MilestoneLink {
@@ -211,6 +213,7 @@ mod tests {
 				timestamps: ts,
 			},
 			body: MilestoneBody::parse(body, RepoInfo::new("o", "r")),
+			assigned: Vec::new(),
 		}
 	}
 
@@ -245,6 +248,7 @@ mod tests {
 		let m2 = Milestone {
 			identity: m.identity.clone(),
 			body: reparsed,
+			assigned: Vec::new(),
 		};
 		assert_eq!(s1, m2.to_string(), "Display must be idempotent through parse");
 		insta::assert_snapshot!(s1, @"

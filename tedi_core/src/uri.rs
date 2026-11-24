@@ -193,6 +193,11 @@ impl MilestoneLink {
 		Self::new(Url::parse(url).ok()?)
 	}
 
+	pub fn in_project(repo: RepoInfo, number: u64) -> Self {
+		let url = format!("https://github.com/{}/{}/milestone/{number}", repo.owner().expect("milestones are github-only"), repo.repo());
+		Self::parse(&url).expect("built in its shape")
+	}
+
 	pub fn repo_info(&self) -> RepoInfo {
 		let mut segments = self.0.path_segments().unwrap();
 		RepoInfo::new(segments.next().unwrap(), segments.next().unwrap())
@@ -204,6 +209,17 @@ impl MilestoneLink {
 
 	pub fn as_str(&self) -> &str {
 		self.0.as_str()
+	}
+}
+impl serde::Serialize for MilestoneLink {
+	fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+		s.serialize_str(self.as_str())
+	}
+}
+impl<'de> serde::Deserialize<'de> for MilestoneLink {
+	fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+		let url = <String as serde::Deserialize>::deserialize(d)?;
+		Self::parse(&url).ok_or_else(|| serde::de::Error::custom(format!("{url} is not a milestone")))
 	}
 }
 

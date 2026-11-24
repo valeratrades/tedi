@@ -2,6 +2,8 @@
 //! upstream write path (`Sink<Remote>`) that owns both the description push and the
 //! issue-assignment diff.
 
+use std::collections::BTreeSet;
+
 use tedi_core::{CloseState, IssueLink, MilestoneBody, MilestoneIdentity, MilestoneLink, MilestoneTimestamps};
 
 use super::{Remote, RemoteSinkError};
@@ -20,7 +22,7 @@ pub async fn load_remote_milestone(link: &MilestoneLink) -> Result<Milestone, gi
 	let mut body = MilestoneBody::parse(milestone.description.as_deref().unwrap_or(""), repo);
 	let assigned_links: Vec<IssueLink> = assigned
 		.iter()
-		.filter(|issue| !CloseState::is_duplicate_reason(issue.state_reason.as_deref()))
+		.filter(|issue| issue.pull_request.is_none() && !CloseState::is_duplicate_reason(issue.state_reason.as_deref()))
 		.map(|issue| IssueLink::in_project(repo, issue.number))
 		.collect();
 	body.0.push_issue_links(&assigned_links);
@@ -41,6 +43,7 @@ pub async fn load_remote_milestone(link: &MilestoneLink) -> Result<Milestone, gi
 			},
 		},
 		body,
+		assigned: assigned_links.iter().map(IssueLink::number).collect(),
 	})
 }
 
@@ -63,26 +66,44 @@ impl Sink<Remote> for Milestone {
 			None => true,
 		};
 		if desc_or_date_changed {
-			println!("Updating milestone {repo}#{number} description...");
-			gh.update_milestone(repo, number, &new_desc, self.identity.due_on).await?;
-			changed = true;
+			// an issue the description doesn't name is hosted by its `milestone` field alone
+			let described = MilestoneBody::parse(gh.get_milestone(repo, number).await?.description.as_deref().unwrap_or(""), repo); // GitHub holds an empty one as null
+			let named = described.hosted();
+			let by_field: Vec<IssueLink> = old
+				.iter()
+				.flat_map(|o| &o.assigned)
+				.map(|n| IssueLink::in_project(repo, *n))
+				.filter(|l| !named.contains(l))
+				.collect();
+			let mut written = self.body.clone();
+			written.0.drop_pushed(&by_field);
+			if written != described || old.is_none_or(|o| o.identity.due_on != self.identity.due_on) {
+				println!("Updating milestone {repo}#{number} description...");
+				gh.update_milestone(repo, number, &written.0.serialize(), self.identity.due_on).await?;
+				changed = true;
+			}
 		}
 
 		// Assignment diff: only issues in the milestone's own repo can carry its milestone field.
 		let in_repo = |l: &&IssueLink| l.project() == repo;
 		let new_nums: HashSet<u64> = self.body.hosted().iter().filter(in_repo).map(|l| l.number()).collect();
 		let old_nums: HashSet<u64> = old.map(|o| o.body.hosted().iter().filter(in_repo).map(|l| l.number()).collect()).unwrap_or_default();
+		let mut assigned: BTreeSet<u64> = old.map(|o| o.assigned.iter().copied().collect()).unwrap_or_default(); // without a base, the pushes below are all that's known
 
 		for num in new_nums.difference(&old_nums) {
 			println!("Assigning #{num} to milestone {number}");
 			gh.set_issue_milestone(repo, *num, Some(number)).await?;
+			assigned.insert(*num);
 			changed = true;
 		}
-		for num in old_nums.difference(&new_nums) {
+		// one GitHub assigns elsewhere by now is named here alone: its field is not this milestone's to clear
+		for num in assigned.clone().iter().filter(|n| !new_nums.contains(n)) {
 			println!("Unassigning #{num} from milestone {number}");
 			gh.set_issue_milestone(repo, *num, None).await?;
+			assigned.remove(num);
 			changed = true;
 		}
+		self.assigned = assigned.into_iter().collect();
 
 		Ok(changed)
 	}

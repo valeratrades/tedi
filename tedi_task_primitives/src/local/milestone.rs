@@ -10,7 +10,10 @@
 //! own `issues/` files. Identity (title/state/due_on/timestamps) lives in `.meta.json`;
 //! the `.md` file holds only the body (`Milestone::Display`).
 
-use std::{collections::BTreeMap, path::PathBuf};
+use std::{
+	collections::BTreeMap,
+	path::{Path, PathBuf},
+};
 
 use color_eyre::eyre::{Result, eyre};
 use jiff::Timestamp;
@@ -35,6 +38,8 @@ pub struct MilestoneMeta {
 	pub due_on: Option<Timestamp>,
 	#[serde(default)]
 	pub timestamps: MilestoneTimestamps,
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub assigned: Vec<u64>,
 }
 
 /// Project-level milestone metadata file (`{owner}/{repo}/.meta.json`).
@@ -119,7 +124,28 @@ impl Local {
 				timestamps: meta.timestamps,
 			},
 			body,
+			assigned: meta.assigned,
 		}))
+	}
+
+	/// Every repo's stored milestones, closed ones included.
+	pub fn stored_milestones() -> Result<Vec<Milestone>> {
+		let names = |dir: &Path| match FsReader.list_dir(dir) {
+			Ok(names) => Ok(names),
+			Err(e) if e.is_not_found() => Ok(Vec::new()), // none stored yet
+			Err(e) => Err(eyre!("{e}")),
+		};
+		let mut out = Vec::new();
+		for owner in names(&Self::milestones_dir())? {
+			for repo in names(&Self::milestones_dir().join(&owner))? {
+				let repo = RepoInfo::new(&owner, &repo);
+				for number in Self::load_milestone_project_meta(repo, &FsReader).milestones.into_keys() {
+					let link = MilestoneLink::in_project(repo, number);
+					out.push(Self::load_milestone(&link, &FsReader)?.ok_or_else(|| eyre!("{} has metadata but no body stored", link.as_str()))?);
+				}
+			}
+		}
+		Ok(out)
 	}
 }
 
@@ -132,13 +158,11 @@ impl Sink<LocalFs> for Milestone {
 		let number = self.number();
 		let target = Local::milestone_file_path(repo, number, &self.identity.title);
 
-		// Remove a stale file if the title (and thus filename) changed.
-		if let Some(old) = old
-			&& old.identity.title != self.identity.title
-			&& let Some(old_path) = Local::find_milestone_path(repo, number, &FsReader)
-			&& old_path != target
+		// the title names the file, and a body is found by its number alone: two would be ambiguous
+		if let Some(held) = Local::find_milestone_path(repo, number, &FsReader)
+			&& held != target
 		{
-			let _ = std::fs::remove_file(old_path);
+			std::fs::remove_file(held)?;
 		}
 
 		let content = self.to_string();
@@ -157,6 +181,7 @@ impl Sink<LocalFs> for Milestone {
 				state: self.identity.state.clone(),
 				due_on: self.identity.due_on,
 				timestamps: self.identity.timestamps.clone(),
+				assigned: self.assigned.clone(),
 			},
 		)?;
 

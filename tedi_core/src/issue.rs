@@ -1,7 +1,10 @@
 //! The Issue primitive: identity, contents, comments, blockers, children,
 //! plus parse/serialize over `tedi_md::Events`.
 
-use std::{collections::HashMap, path::PathBuf};
+use std::{
+	collections::{BTreeMap, HashMap},
+	path::PathBuf,
+};
 
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -266,7 +269,18 @@ pub enum PrState {
 	Closed,
 }
 
-/// A pull request as GitHub last showed it; tedi never edits one.
+/// A submitted review's verdict.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, strum::Display, strum::EnumString)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "SCREAMING_SNAKE_CASE")]
+pub enum Review {
+	Approved,
+	ChangesRequested,
+	Commented,
+	Dismissed,
+}
+
+/// A pull request as GitHub last showed it. Whose review it waits on is asked straight of GitHub; tedi edits nothing else of one.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct PullRequest {
 	pub number: u64,
@@ -278,6 +292,12 @@ pub struct PullRequest {
 	pub labels: Vec<String>,
 	/// The issues it closes once merged.
 	pub closes: Vec<IssueLink>,
+	/// Logins (a team as `org/team`) whose review is asked and not given since.
+	#[serde(default)] // a mirror whose walk predates them: the next walk reads them
+	pub requested: Vec<String>,
+	/// Each reviewer's latest review, by login.
+	#[serde(default)] // as above
+	pub reviews: BTreeMap<String, Review>,
 	pub updated_at: Timestamp,
 	/// Merged or closed: `None` while open.
 	pub closed_at: Option<Timestamp>,

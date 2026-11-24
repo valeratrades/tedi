@@ -26,6 +26,8 @@ fn pr(number: u64, title: &str, state: PrState, assignees: &[&str], closes: &[u6
 		assignees: assignees.iter().map(|a| a.to_string()).collect(),
 		labels: Vec::new(),
 		closes: closes.iter().map(|n| IssueLink::parse(&format!("https://github.com/o/r/issues/{n}")).unwrap()).collect(),
+		requested: Vec::new(),
+		reviews: Default::default(),
 		updated_at: days_ago(updated),
 		closed_at: closed.map(days_ago),
 	}

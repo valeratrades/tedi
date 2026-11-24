@@ -126,6 +126,8 @@ fn place_pr(state: PrState, closed_days_ago: Option<i64>) -> String {
 			assignees: Vec::new(),
 			labels: Vec::new(),
 			closes: Vec::new(),
+			requested: Vec::new(),
+			reviews: Default::default(),
 			updated_at: base,
 			closed_at: closed_days_ago.map(|_| base),
 		},
