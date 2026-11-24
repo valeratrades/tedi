@@ -109,13 +109,42 @@ pub(super) fn FacetMenu(facet: Facet, query: Query) -> Element {
 		Ok(t) => t,
 		Err(e) => return rsx! { span { class: "p-2 text-caption text-accent-error", "{e}" } },
 	};
-	let bound = match facet {
-		Facet::Importance => Some(">="),
-		Facet::Hours => Some("<="),
-		_ => None,
+	// the direction its picked bound has, else the one the facet is mostly read in
+	let held = query.picked(facet).into_iter().find_map(|v| [">=", "<="].into_iter().find(|d| v.starts_with(d)));
+	let mut dir = use_signal(|| held.unwrap_or(if facet == Facet::Hours { "<=" } else { ">=" }));
+	let bound = matches!(facet, Facet::Importance | Facet::Hours).then(|| dir());
+	let flip = move |to: &'static str| {
+		dir.set(to);
+		let picked = in_view
+			.0
+			.peek()
+			.query
+			.parse::<Query>()
+			.ok()
+			.and_then(|q| q.picked(facet).into_iter().find(|v| v.starts_with(">=") || v.starts_with("<=")));
+		if let Some(was) = picked {
+			let at = format!("{to}{}", &was[2..]);
+			in_view.narrow(|q| {
+				q.clear(facet);
+				q.toggle(facet, &at, false).expect("a bound the facet reads");
+			});
+		}
 	};
 	rsx! {
 		div { class: "flex flex-col gap-0.5",
+			if bound.is_some() {
+				div { class: "flex items-center gap-0.5 rounded-[var(--control-radius)] border border-border-subtle p-0.5",
+					for (d , label) in [(">=", "≥ at least"), ("<=", "≤ at most")] {
+						button {
+							key: "{d}",
+							r#type: "button",
+							class: if dir() == d { "h-6 flex-1 rounded-[var(--control-radius)] bg-active text-body-s font-medium text-ink" } else { "h-6 flex-1 rounded-[var(--control-radius)] text-body-s font-medium text-ink-soft hover:text-ink" },
+							onclick: { let mut flip = flip; move |_| flip(d) },
+							"{label}"
+						}
+					}
+				}
+			}
 			div { class: if bound.is_some() { "hidden" } else { "flex h-7 items-center gap-1.5 rounded-[var(--control-radius)] border border-border-subtle px-2" },
 				Icon { glyph: Glyph::Search, class: "size-3.5 text-ink-faint" }
 				input {
@@ -142,9 +171,8 @@ pub(super) fn FacetMenu(facet: Facet, query: Query) -> Element {
 			div { class: "flex items-center gap-2 px-2 py-1",
 				span { class: "flex-1 text-caption text-ink-soft",
 					match bound {
-						Some(">=") => "at least  ·  type i:5 for exactly 5",
-						Some(_) => "at most  ·  type h:3 for exactly 3",
-						None => "⇧-click excludes  ·  -{facet}:",
+						Some(_) => format!("type {facet}:5 for exactly 5"),
+						None => format!("⇧-click excludes  ·  -{facet}:"),
 					}
 				}
 				Btn { style: Style::Ghost, onclick: move |_| in_view.narrow(|q| q.clear(facet)), "Clear" }
