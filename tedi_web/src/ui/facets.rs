@@ -120,8 +120,10 @@ pub(super) fn FacetMenu(facet: Facet, query: Query) -> Element {
 			.peek()
 			.query
 			.parse::<Query>()
-			.ok()
-			.and_then(|q| q.picked(facet).into_iter().find(|v| v.starts_with(">=") || v.starts_with("<=")));
+			.expect("a facet's menu is open only over a query that parses")
+			.picked(facet)
+			.into_iter()
+			.find(|v| v.starts_with(">=") || v.starts_with("<="));
 		if let Some(was) = picked {
 			let at = format!("{to}{}", &was[2..]);
 			in_view.narrow(|q| {
