@@ -19,14 +19,15 @@ use super::{
 };
 
 #[component]
-pub(super) fn CardView(card: Card, shown: Vec<Shown>) -> Element {
+pub(super) fn CardView(card: Card, shown: Vec<Shown>, #[props(default)] lifted: bool) -> Element {
 	let ctx = use_context::<Ctx>();
 	let link = card.link.clone();
 	let open = ctx.panels.read().iter().any(|p| p.id.0 == format!("issue:{link}"));
-	let edge = match (card.conflicted, open) {
-		(true, _) => "border-chip-warn-border",
-		(false, true) => "border-primary-ink",
-		(false, false) => "border-border-subtle hover:border-border-strong",
+	let edge = match (lifted, card.conflicted, open) {
+		(true, ..) => "border-accent-error",
+		(false, true, _) => "border-chip-warn-border",
+		(false, false, true) => "border-primary-ink",
+		(false, false, false) => "border-border-subtle hover:border-border-strong",
 	};
 	let has = |s: &Shown| shown.contains(s);
 	let meta: Vec<Shown> = shown

@@ -3,7 +3,7 @@
 //! through the sync are the operations' business.
 
 use std::{
-	collections::{BTreeMap, HashSet},
+	collections::{BTreeMap, HashMap, HashSet},
 	path::PathBuf,
 	str::FromStr,
 };
@@ -456,9 +456,18 @@ pub fn scope_at(scopes: &BTreeMap<String, Scope>, path: &str) -> Option<String> 
 	Some(at?.filter())
 }
 
-/// `hits` (as `Query::run` ordered them) split into groups, each keeping that order. A workflow's states
-/// come in its order, every leaf present even when empty; other keys sort by name, the ungrouped last.
-pub fn group(cards: &[Card], hits: &[usize], by: &GroupBy, workflows: &BTreeMap<String, Workflow>) -> Result<Vec<(String, Vec<usize>)>, WorkflowError> {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Placed {
+	/// Its index among the cards.
+	pub card: usize,
+	/// Above where the order had it, for blocking a card there.
+	pub lifted: bool,
+}
+
+/// `hits` (as an `Order` left them) split into groups, each keeping that order, but a card blocking one
+/// above it in its group goes right above that one. A workflow's states come in its order, every leaf
+/// present even when empty; other keys sort by name, the ungrouped last.
+pub fn group(cards: &[Card], hits: &[usize], by: &GroupBy, workflows: &BTreeMap<String, Workflow>) -> Result<Vec<(String, Vec<Placed>)>, WorkflowError> {
 	let key = |c: &Card| -> Vec<String> {
 		match by {
 			GroupBy::State(w) => vec![c.states[w].to_string()],
@@ -491,7 +500,41 @@ pub fn group(cards: &[Card], hits: &[usize], by: &GroupBy, workflows: &BTreeMap<
 	if !matches!(by, GroupBy::State(_)) {
 		groups.sort_by(|a, b| a.0.cmp(&b.0));
 	}
-	Ok(groups)
+	let open: HashMap<&IssueLink, usize> = cards.iter().enumerate().filter(|(_, c)| c.open()).map(|(i, c)| (&c.link, i)).collect();
+	Ok(groups.into_iter().map(|(key, members)| (key, lift(cards, &members, &open))).collect())
+}
+
+/// As `rank` reads the graph: between open cards only, and through those not among `members`.
+/// A cycle has no such order: it is entered where `members` first do.
+fn lift(cards: &[Card], members: &[usize], open: &HashMap<&IssueLink, usize>) -> Vec<Placed> {
+	let mut place = vec![None; cards.len()];
+	for (at, &i) in members.iter().enumerate() {
+		place[i] = Some(at);
+	}
+	let mut seen = vec![false; cards.len()];
+	let mut out = Vec::with_capacity(members.len());
+	for &root in members {
+		let mut stack = vec![(root, false)]; // a card, and whether its blockers are out
+		while let Some((i, cleared)) = stack.pop() {
+			if cleared {
+				if place[i].is_some() {
+					out.push(Placed { card: i, lifted: i != root });
+				}
+				continue;
+			}
+			if std::mem::replace(&mut seen[i], true) {
+				continue;
+			}
+			stack.push((i, true));
+			if cards[i].open() {
+				let mut blockers: Vec<usize> = cards[i].blocked_by.iter().filter_map(|b| open.get(b).copied()).collect();
+				blockers.sort_by_key(|&b| std::cmp::Reverse((place[b].is_none(), place[b]))); // the last is popped first
+				stack.extend(blockers.into_iter().map(|b| (b, false)));
+			}
+		}
+	}
+	assert_eq!(out.len(), members.len(), "each member is out once");
+	out
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1088,6 +1131,51 @@ mod tests {
 		}
 		let hits = Query::from_str("is:open").unwrap().run(&cards, None).unwrap();
 		assert_eq!(titles(&cards, &hits), "set to the default · defaulted");
+	}
+
+	#[test]
+	fn a_blocker_is_lifted_right_above_what_it_blocks() {
+		let cards = [
+			card(1, "a", "app", "triage", &[], &[], &[]),
+			card(2, "b", "app", "selected", &[], &[], &[1]),
+			card(3, "c", "app", "triage", &[], &[], &[2, 4]),
+			card(4, "d", "app", "triage", &[], &[], &[]),
+			card(5, "e", "app", "triage", &[], &[], &[6]),
+			card(6, "done", "app", "done", &[], &[], &[1]),
+			card(7, "f", "app", "triage", &[], &[], &[8]),
+			card(8, "g", "app", "triage", &[], &[], &[7]),
+		];
+		let out: Vec<String> = [[0, 1, 2].as_slice(), &[2, 0, 1], &[1, 2, 0], &[4, 2, 3, 0], &[4, 3, 2, 0], &[4, 5, 0], &[6, 7], &[7, 6]]
+			.into_iter()
+			.flat_map(|hits| {
+				[GroupBy::Nothing, GroupBy::State("kanban".into())].map(|by| {
+					let groups = group(&cards, hits, &by, &kanban()).unwrap();
+					let shown = groups.iter().filter(|(_, m)| !m.is_empty()).map(|(key, members)| {
+						let members = members.iter().map(|p| format!("{}{}", if p.lifted { "^" } else { "" }, cards[p.card].title));
+						format!("{key}[{}]", members.collect::<Vec<_>>().join(" "))
+					});
+					format!("{}: {}", titles(&cards, hits), shown.collect::<Vec<_>>().join(" "))
+				})
+			})
+			.collect();
+		insta::assert_snapshot!(out.join("\n"), @"
+		a · b · c: [a b c]
+		a · b · c: triage[a c] selected[b]
+		c · a · b: [^a ^b c]
+		c · a · b: triage[^a c] selected[b]
+		b · c · a: [^a b c]
+		b · c · a: triage[^a c] selected[b]
+		e · c · d · a: [e ^d ^a c]
+		e · c · d · a: triage[e ^d ^a c]
+		e · d · c · a: [e d ^a c]
+		e · d · c · a: triage[e d ^a c]
+		e · done · a: [e done a]
+		e · done · a: triage[e a] done[done]
+		f · g: [^g f]
+		f · g: triage[^g f]
+		g · f: [^f g]
+		g · f: triage[^f g]
+		");
 	}
 
 	#[test]

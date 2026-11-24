@@ -47,8 +47,8 @@ pub async fn view_command(settings: &LiveSettings, args: ViewArgs, mode: SyncMod
 		if group != GroupBy::Nothing {
 			content.push_str(&format!("# {key}\n"));
 		}
-		for i in members {
-			content.push_str(&format!("- {}\n", board.cards[i].link));
+		for p in members {
+			content.push_str(&format!("- {}\n", board.cards[p.card].link));
 		}
 	}
 	if content.is_empty() {

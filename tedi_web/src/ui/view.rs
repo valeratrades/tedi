@@ -6,7 +6,7 @@ use dioxus::{core::spawn_forever, prelude::*};
 use ev_lib::uikit_dioxus::*;
 use strum::IntoEnumIterator as _;
 use tedi_core::{
-	board::{GroupBy, Order, Query, Shown, View, group},
+	board::{GroupBy, Order, Placed, Query, Shown, View, group},
 	workflow::State,
 };
 use tilers_dioxus::{Band, Config, DockPanel, Group, LockScope, MinSize, PackedApi, PackedArea, PanelId, Tile};
@@ -127,7 +127,7 @@ fn ViewBody(defined: View) -> Element {
 pub(super) struct Outcome {
 	pub(super) query: Query,
 	pub(super) count: usize,
-	pub(super) groups: Vec<(String, Vec<usize>)>,
+	pub(super) groups: Vec<(String, Vec<Placed>)>,
 }
 
 pub(super) fn outcome(ctx: &Ctx, ran: &View) -> Result<Outcome, String> {
@@ -154,7 +154,7 @@ pub(super) fn outcome(ctx: &Ctx, ran: &View) -> Result<Outcome, String> {
 
 /// The view's cards, a column per group.
 #[component]
-pub(super) fn Results(ran: View, groups: Vec<(String, Vec<usize>)>) -> Element {
+pub(super) fn Results(ran: View, groups: Vec<(String, Vec<Placed>)>) -> Element {
 	let ctx = use_context::<Ctx>();
 	let relaid = ctx.relaid.read().get(&ran.name).copied().unwrap_or(0); // never laid out anew
 	rsx! {
@@ -187,7 +187,7 @@ pub(super) fn Empty(glyph: Glyph, #[props(default)] error: bool, title: String, 
 /// What every column of a view reads: its tiles are hosted by a dock of their own, so they don't take props from the view.
 #[derive(Clone, Copy)]
 struct Lanes {
-	groups: Signal<Vec<(String, Vec<usize>)>>,
+	groups: Signal<Vec<(String, Vec<Placed>)>>,
 	by: Signal<GroupBy>,
 	shown: Signal<Vec<Shown>>,
 	order: Signal<Order>,
@@ -200,7 +200,7 @@ struct Lanes {
 /// kept per view and grouping in the viewer's library. Grouped by a workflow, a card
 /// dropped on a column moves there.
 #[component]
-fn Columns(view: String, groups: Vec<(String, Vec<usize>)>, by: GroupBy, shown: Vec<Shown>, order: Order) -> Element {
+fn Columns(view: String, groups: Vec<(String, Vec<Placed>)>, by: GroupBy, shown: Vec<Shown>, order: Order) -> Element {
 	let ctx = use_context::<Ctx>();
 	let tints: Tints = {
 		let library = ctx.library.read();
@@ -472,11 +472,16 @@ fn Column(group: String) -> Element {
 	let mut drop = use_drop(group.clone());
 	// where the dragged card would land: its place in this column under the view's order
 	let landing = match (over(), dragged.read().as_ref()) {
-		(true, Some(link)) if !members.iter().any(|&i| &cards[i].link == link) => cards.iter().position(|c| &c.link == link).map(|at| {
-			let mut with: Vec<usize> = members.to_vec();
+		(true, Some(link)) if !members.iter().any(|p| &cards[p.card].link == link) => cards.iter().position(|c| &c.link == link).map(|at| {
+			let mut with: Vec<usize> = members.iter().map(|p| p.card).collect();
 			with.push(at);
-			lanes.order.read().apply(cards, &mut with, &ctx.workflows()).expect("the view's order ran on these cards");
-			with.iter().position(|&i| i == at).expect("pushed above")
+			let workflows = ctx.workflows();
+			lanes.order.read().apply(cards, &mut with, &workflows).expect("the view's order ran on these cards");
+			let groups = tedi_core::board::group(cards, &with, &GroupBy::Nothing, &workflows).expect("no workflow to be unknown");
+			let mut below = groups[0].1.iter().skip_while(|p| p.card != at).skip(1); // what it blocks or is blocked by is yet where it was
+			below
+				.next()
+				.map_or(members.len(), |next| members.iter().position(|p| p.card == next.card).expect("all but the dragged are members"))
 		}),
 		_ => None,
 	};
@@ -499,7 +504,7 @@ fn Column(group: String) -> Element {
 				over.set(false);
 				drop(e);
 			},
-			for (n , &i) in members.iter().enumerate() {
+			for (n , &Placed { card: i , lifted }) in members.iter().enumerate() {
 				Fragment { key: "{cards[i].link}",
 				if landing == Some(n) {
 					{slot.clone()}
@@ -509,7 +514,7 @@ fn Column(group: String) -> Element {
 					draggable: if draggable { "true" } else { "false" },
 					ondragstart: { let link = cards[i].link.clone(); move |_| dragged.set(Some(link.clone())) },
 					ondragend: move |_| dragged.set(None),
-					CardView { card: cards[i].clone(), shown: shown.clone() }
+					CardView { card: cards[i].clone(), shown: shown.clone(), lifted }
 				}
 				}
 			}
@@ -522,7 +527,7 @@ fn Column(group: String) -> Element {
 
 /// A board on a phone (Figma: 06a): its groups stacked, headers sticky; a long press on a card moves it.
 #[component]
-fn Stacked(view: String, by: GroupBy, groups: Vec<(String, Vec<usize>)>, shown: Vec<Shown>) -> Element {
+fn Stacked(view: String, by: GroupBy, groups: Vec<(String, Vec<Placed>)>, shown: Vec<Shown>) -> Element {
 	let ctx = use_context::<Ctx>();
 	let mut moving = use_signal(|| None::<tedi_core::board::Card>);
 	let board = ctx.board.read();
@@ -535,7 +540,7 @@ fn Stacked(view: String, by: GroupBy, groups: Vec<(String, Vec<usize>)>, shown: 
 		div { class: "flex h-full flex-col gap-1.5 overflow-auto",
 			for (key , members) in groups.into_iter().filter(|(_, m)| !m.is_empty()) {
 				div { key: "head-{key}", class: "sticky top-0 z-[5] bg-background pb-0.5", GroupHead { view: view.clone(), by: by.clone(), group: key.clone(), count: members.len() } }
-				for i in members {
+				for Placed { card: i , lifted } in members {
 					div {
 						key: "{key}-{cards[i].link}",
 						oncontextmenu: {
@@ -545,7 +550,7 @@ fn Stacked(view: String, by: GroupBy, groups: Vec<(String, Vec<usize>)>, shown: 
 								moving.set(Some(card.clone()));
 							}
 						},
-						CardView { card: cards[i].clone(), shown: shown.clone() }
+						CardView { card: cards[i].clone(), shown: shown.clone(), lifted }
 					}
 				}
 			}
