@@ -4,7 +4,7 @@ test.skip(({ viewport }) => viewport!.width < 768, "the shelves are behind a she
 
 const at = (page: Page) => page.evaluate(() => location.pathname + location.search);
 const shelf = (page: Page, name: string) => page.locator("aside").getByRole("link", { name, exact: true });
-const tab = (page: Page, name: string) => page.locator(".tl-tab", { hasText: name });
+const tab = (page: Page, name: string) => page.locator(`.tl-tab[data-panel="view:${name}"]`);
 const ISSUE = /[?&]issue=service-arb\/[\w.-]+\/\d+/;
 const card = (page: Page) => page.locator('a[href*="issue=service-arb/"]').first();
 

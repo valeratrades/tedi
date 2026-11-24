@@ -46,27 +46,23 @@ test("a click reverses a label, a drag moves it, and both are there on reload", 
   await expect(labels(page)).toHaveText(["importance ↓", "created ↑", "hours ↑"]);
 });
 
-test("a blocker sorted below what it blocks is lifted right above it, edged red", async ({ page }) => {
-  await triage(page);
-  await page.goto(page.url().replace(/scope=[^&]*/, "scope=EV")); // the two sit in repos of different owners
-  const card = (title: string) => page.locator("[draggable=true]").filter({ has: page.getByRole("link", { name: title, exact: true }) });
-  const titles = () => page.locator("[draggable=true] > div").locator('a.font-medium[href*="issue="]').allTextContents();
-  const [blocker, blocked] = ["rotate staging certs", "stick rate stats"];
-  const red = await card(blocked).getByText("blocked by").evaluate((e) => getComputedStyle(e).color);
-  const edge = (title: string) => card(title).locator("> div");
+for (const scope of ["EV", "EV / EV-Service-Arb"])
+  test(`a blocker from an earlier step, or from outside ${scope}, is above what it blocks, edged red`, async ({ page }) => {
+    await triage(page);
+    await page.goto(page.url().replace(/scope=[^&]*/, `scope=${encodeURIComponent(scope)}`));
+    const card = (title: string) => page.locator("[draggable=true]").filter({ has: page.getByRole("link", { name: title, exact: true }) });
+    const titles = () => page.locator("[draggable=true] > div").locator('a.font-medium[href*="issue="]').allTextContents();
+    const [blocker, blocked] = ["rotate staging certs", "Epic: a video verification Google accepts, submitted from the PC"]; // ev-main's in triage, service-arb's in selected
+    const red = await card(blocked).getByText("blocked by").evaluate((e) => getComputedStyle(e).color);
 
-  await expect.poll(async () => (await titles()).indexOf(blocked) - (await titles()).indexOf(blocker)).toBe(1);
-  await expect(edge(blocker)).not.toHaveCSS("border-top-color", red); // rank leads the tie with it already
-
-  await add(page, "created");
-  await expect(labels(page)).toHaveText(["importance ↓", "created ↓"]);
-  await expect(edge(blocker)).toHaveCSS("border-top-color", red);
-  await expect(edge(blocked)).not.toHaveCSS("border-top-color", red);
-  expect((await titles()).indexOf(blocked) - (await titles()).indexOf(blocker)).toBe(1);
-
-  await strip(page).getByRole("button", { name: "created: newest first" }).click();
-  await expect(edge(blocker)).not.toHaveCSS("border-top-color", red);
-});
+    for (const key of [null, "created"]) {
+      if (key) await add(page, key);
+      await expect.poll(async () => (await titles()).indexOf(blocked) - (await titles()).indexOf(blocker)).toBe(1);
+      await expect(card(blocker)).toHaveCount(1);
+      await expect(card(blocker).locator("> div")).toHaveCSS("border-top-color", red);
+      await expect(card(blocked).locator("> div")).not.toHaveCSS("border-top-color", red);
+    }
+  });
 
 test("a label is dropped, but never the last; what is added goes ahead of a closing rank", async ({ page }) => {
   await triage(page);

@@ -460,17 +460,72 @@ pub fn scope_at(scopes: &BTreeMap<String, Scope>, path: &str) -> Option<String> 
 pub struct Placed {
 	/// Its index among the cards.
 	pub card: usize,
-	/// Above where the order had it, for blocking a card there.
+	/// Not where the query, the order or its state put it, for blocking a card there.
 	pub lifted: bool,
 }
 
-/// `hits` (as an `Order` left them) split into groups, each keeping that order, but a card blocking one
-/// above it in its group goes right above that one. A workflow's states come in its order, every leaf
-/// present even when empty; other keys sort by name, the ungrouped last.
+/// `hits` (as an `Order` left them) split into groups, each keeping that order, but an open card blocking one
+/// above it in its group goes right above that one, and so does one outside `hits`. A workflow's states come
+/// in its order, every leaf present even when empty, and a further step counts as above: a blocker in an
+/// earlier one than what it blocks goes over to that one's. Other keys sort by name, the ungrouped last.
 pub fn group(cards: &[Card], hits: &[usize], by: &GroupBy, workflows: &BTreeMap<String, Workflow>) -> Result<Vec<(String, Vec<Placed>)>, WorkflowError> {
+	let open: HashMap<&IssueLink, usize> = cards.iter().enumerate().filter(|(_, c)| c.open()).map(|(i, c)| (&c.link, i)).collect();
+	let blockers: Vec<Vec<usize>> = cards
+		.iter()
+		.map(|c| {
+			if c.open() {
+				c.blocked_by.iter().filter_map(|b| open.get(b).copied()).collect()
+			} else {
+				Vec::new()
+			}
+		})
+		.collect();
+	// `from`, then whatever blocks it
+	let reach = |from: &[usize]| -> Vec<usize> {
+		let mut out = from.to_vec();
+		let mut seen = vec![false; cards.len()];
+		for &i in from {
+			seen[i] = true;
+		}
+		let mut next = 0;
+		while let Some(&i) = out.get(next) {
+			out.extend(blockers[i].iter().filter(|&&b| !std::mem::replace(&mut seen[b], true)));
+			next += 1;
+		}
+		out
+	};
+	if let GroupBy::State(w) = by {
+		let workflow = workflows.get(w).ok_or_else(|| WorkflowError::Unknown(w.clone()))?;
+		let all = reach(hits);
+		let mut step = vec![0; cards.len()];
+		for &i in &all {
+			step[i] = workflow.order(&cards[i].states[w]);
+		}
+		let held = step.clone();
+		let mut raising = all.clone();
+		while let Some(i) = raising.pop() {
+			for &b in &blockers[i] {
+				if step[b] < step[i] {
+					step[b] = step[i];
+					raising.push(b);
+				}
+			}
+		}
+		let (hits, brought) = all.split_at(hits.len());
+		return Ok(workflow
+			.leaves()
+			.iter()
+			.enumerate()
+			.map(|(n, leaf)| {
+				let (own, raised): (Vec<usize>, Vec<usize>) = hits.iter().copied().filter(|&i| step[i] == n).partition(|&i| held[i] == n);
+				let lifted = raised.into_iter().chain(brought.iter().copied().filter(|&i| step[i] == n)).collect();
+				(leaf.to_string(), lift(&blockers, own, lifted))
+			})
+			.collect());
+	}
 	let key = |c: &Card| -> Vec<String> {
 		match by {
-			GroupBy::State(w) => vec![c.states[w].to_string()],
+			GroupBy::State(_) => unreachable!("returned above"),
 			GroupBy::Repo => vec![c.link.project().to_string()],
 			GroupBy::Assignee if c.assignees.is_empty() => vec!["unassigned".into()],
 			GroupBy::Assignee => c.assignees.iter().map(|a| format!("@{a}")).collect(),
@@ -479,46 +534,42 @@ pub fn group(cards: &[Card], hits: &[usize], by: &GroupBy, workflows: &BTreeMap<
 			GroupBy::Nothing => vec![String::new()],
 		}
 	};
-	let mut groups: Vec<(String, Vec<usize>)> = match by {
-		GroupBy::State(w) => workflows
-			.get(w)
-			.ok_or_else(|| WorkflowError::Unknown(w.clone()))?
-			.leaves()
-			.iter()
-			.map(|s| (s.to_string(), Vec::new()))
-			.collect(),
-		_ => Vec::new(),
-	};
+	let mut groups: BTreeMap<String, Vec<usize>> = BTreeMap::new();
 	for &i in hits {
 		for k in key(&cards[i]) {
-			match groups.iter_mut().find(|(g, _)| *g == k) {
-				Some((_, members)) => members.push(i),
-				None => groups.push((k, vec![i])),
-			}
+			groups.entry(k).or_default().push(i);
 		}
 	}
-	if !matches!(by, GroupBy::State(_)) {
-		groups.sort_by(|a, b| a.0.cmp(&b.0));
-	}
-	let open: HashMap<&IssueLink, usize> = cards.iter().enumerate().filter(|(_, c)| c.open()).map(|(i, c)| (&c.link, i)).collect();
-	Ok(groups.into_iter().map(|(key, members)| (key, lift(cards, &members, &open))).collect())
+	let hit: HashSet<usize> = hits.iter().copied().collect();
+	Ok(groups
+		.into_iter()
+		.map(|(key, own)| {
+			let brought = reach(&own).into_iter().filter(|i| !hit.contains(i)).collect();
+			(key, lift(&blockers, own, brought))
+		})
+		.collect())
 }
 
-/// As `rank` reads the graph: between open cards only, and through those not among `members`.
-/// A cycle has no such order: it is entered where `members` first do.
-fn lift(cards: &[Card], members: &[usize], open: &HashMap<&IssueLink, usize>) -> Vec<Placed> {
-	let mut place = vec![None; cards.len()];
+/// `own` in its order, each card right below whichever of `own` and `lifted` block it, through others too;
+/// `lifted` blocking none of `own` go last. A cycle has no such order: it is entered where `own` first does.
+fn lift(blockers: &[Vec<usize>], own: Vec<usize>, lifted: Vec<usize>) -> Vec<Placed> {
+	let first_lifted = own.len();
+	let members = [own, lifted].concat();
+	let mut place = vec![None; blockers.len()];
 	for (at, &i) in members.iter().enumerate() {
 		place[i] = Some(at);
 	}
-	let mut seen = vec![false; cards.len()];
+	let mut seen = vec![false; blockers.len()];
 	let mut out = Vec::with_capacity(members.len());
-	for &root in members {
+	for &root in &members {
 		let mut stack = vec![(root, false)]; // a card, and whether its blockers are out
 		while let Some((i, cleared)) = stack.pop() {
 			if cleared {
-				if place[i].is_some() {
-					out.push(Placed { card: i, lifted: i != root });
+				if let Some(at) = place[i] {
+					out.push(Placed {
+						card: i,
+						lifted: i != root || at >= first_lifted,
+					});
 				}
 				continue;
 			}
@@ -526,11 +577,9 @@ fn lift(cards: &[Card], members: &[usize], open: &HashMap<&IssueLink, usize>) ->
 				continue;
 			}
 			stack.push((i, true));
-			if cards[i].open() {
-				let mut blockers: Vec<usize> = cards[i].blocked_by.iter().filter_map(|b| open.get(b).copied()).collect();
-				blockers.sort_by_key(|&b| std::cmp::Reverse((place[b].is_none(), place[b]))); // the last is popped first
-				stack.extend(blockers.into_iter().map(|b| (b, false)));
-			}
+			let mut above = blockers[i].clone();
+			above.sort_by_key(|&b| std::cmp::Reverse((place[b].is_none(), place[b]))); // the last is popped first
+			stack.extend(above.into_iter().map(|b| (b, false)));
 		}
 	}
 	assert_eq!(out.len(), members.len(), "each member is out once");
@@ -1136,45 +1185,77 @@ mod tests {
 	#[test]
 	fn a_blocker_is_lifted_right_above_what_it_blocks() {
 		let cards = [
-			card(1, "a", "app", "triage", &[], &[], &[]),
-			card(2, "b", "app", "selected", &[], &[], &[1]),
-			card(3, "c", "app", "triage", &[], &[], &[2, 4]),
-			card(4, "d", "app", "triage", &[], &[], &[]),
-			card(5, "e", "app", "triage", &[], &[], &[6]),
-			card(6, "done", "app", "done", &[], &[], &[1]),
-			card(7, "f", "app", "triage", &[], &[], &[8]),
-			card(8, "g", "app", "triage", &[], &[], &[7]),
+			card(1, "a", "app", "triage", &[], &["ann"], &[]),
+			card(2, "b", "app", "selected", &[], &["bob"], &[1]),
+			card(3, "c", "app", "triage", &[], &["ann"], &[2, 4]),
+			card(4, "d", "app", "triage", &[], &["ann"], &[]),
+			card(5, "e", "app", "triage", &[], &["ann"], &[6]),
+			card(6, "done", "app", "done", &[], &["ann"], &[1]),
+			card(7, "f", "app", "triage", &[], &["ann"], &[8]),
+			card(8, "g", "app", "triage", &[], &["ann"], &[7]),
+			card(9, "h", "app", "triage", &[], &["bob"], &[10]),
+			card(10, "i", "app", "in_review", &[], &["ann"], &[11]),
+			card(11, "j", "app", "icebox", &[], &["ann"], &[]),
 		];
-		let out: Vec<String> = [[0, 1, 2].as_slice(), &[2, 0, 1], &[1, 2, 0], &[4, 2, 3, 0], &[4, 3, 2, 0], &[4, 5, 0], &[6, 7], &[7, 6]]
-			.into_iter()
-			.flat_map(|hits| {
-				[GroupBy::Nothing, GroupBy::State("kanban".into())].map(|by| {
-					let groups = group(&cards, hits, &by, &kanban()).unwrap();
-					let shown = groups.iter().filter(|(_, m)| !m.is_empty()).map(|(key, members)| {
-						let members = members.iter().map(|p| format!("{}{}", if p.lifted { "^" } else { "" }, cards[p.card].title));
-						format!("{key}[{}]", members.collect::<Vec<_>>().join(" "))
-					});
-					format!("{}: {}", titles(&cards, hits), shown.collect::<Vec<_>>().join(" "))
-				})
+		let out: Vec<String> = [
+			[0, 1, 2].as_slice(),
+			&[3, 2, 0, 1],
+			&[4, 2, 3, 0],
+			&[3, 0, 2],
+			&[4, 2],
+			&[1],
+			&[4, 5, 0],
+			&[6, 7],
+			&[7],
+			&[10, 8, 9],
+			&[8, 3],
+		]
+		.into_iter()
+		.flat_map(|hits| {
+			[GroupBy::Nothing, GroupBy::State("kanban".into()), GroupBy::Assignee].map(|by| {
+				let groups = group(&cards, hits, &by, &kanban()).unwrap();
+				let shown = groups.iter().filter(|(_, m)| !m.is_empty()).map(|(key, members)| {
+					let members = members.iter().map(|p| format!("{}{}", if p.lifted { "^" } else { "" }, cards[p.card].title));
+					format!("{key}[{}]", members.collect::<Vec<_>>().join(" "))
+				});
+				format!("{}: {}", titles(&cards, hits), shown.collect::<Vec<_>>().join(" "))
 			})
-			.collect();
+		})
+		.collect();
 		insta::assert_snapshot!(out.join("\n"), @"
-		a · b · c: [a b c]
-		a · b · c: triage[a c] selected[b]
-		c · a · b: [^a ^b c]
-		c · a · b: triage[^a c] selected[b]
-		b · c · a: [^a b c]
-		b · c · a: triage[^a c] selected[b]
-		e · c · d · a: [e ^d ^a c]
-		e · c · d · a: triage[e ^d ^a c]
-		e · d · c · a: [e d ^a c]
-		e · d · c · a: triage[e d ^a c]
+		a · b · c: [a b ^d c]
+		a · b · c: triage[^d c] selected[^a b]
+		a · b · c: @ann[a ^d c] @bob[b]
+		d · c · a · b: [d ^a ^b c]
+		d · c · a · b: triage[d c] selected[^a b]
+		d · c · a · b: @ann[d ^a c] @bob[b]
+		e · c · d · a: [e ^d ^a ^b c]
+		e · c · d · a: triage[e ^d c] selected[^a ^b]
+		e · c · d · a: @ann[e ^d ^a ^b c]
+		d · a · c: [d a ^b c]
+		d · a · c: triage[d c] selected[^a ^b]
+		d · a · c: @ann[d a ^b c]
+		e · c: [e ^a ^b ^d c]
+		e · c: triage[e ^d c] selected[^a ^b]
+		e · c: @ann[e ^a ^b ^d c]
+		b: [^a b]
+		b: selected[^a b]
+		b: @bob[^a b]
 		e · done · a: [e done a]
 		e · done · a: triage[e a] done[done]
+		e · done · a: @ann[e done a]
 		f · g: [^g f]
 		f · g: triage[^g f]
-		g · f: [^f g]
-		g · f: triage[^f g]
+		f · g: @ann[^g f]
+		g: [^f g]
+		g: triage[^f g]
+		g: @ann[^f g]
+		j · h · i: [j ^i h]
+		j · h · i: triage[h] in_review[^j i]
+		j · h · i: @ann[j i] @bob[h]
+		h · d: [^j ^i h d]
+		h · d: triage[h d] in_review[^j ^i]
+		h · d: @ann[d] @bob[^j ^i h]
 		");
 	}
 

@@ -470,18 +470,17 @@ fn Column(group: String) -> Element {
 	let members = groups.iter().find(|(k, _)| *k == group).map_or(&[][..], |(_, m)| m.as_slice());
 	let shown = lanes.shown.read();
 	let mut drop = use_drop(group.clone());
+	let here = |c: &tedi_core::board::Card| matches!(&*lanes.by.read(), GroupBy::State(w) if c.states[w].to_string() == group);
 	// where the dragged card would land: its place in this column under the view's order
 	let landing = match (over(), dragged.read().as_ref()) {
-		(true, Some(link)) if !members.iter().any(|p| &cards[p.card].link == link) => cards.iter().position(|c| &c.link == link).map(|at| {
-			let mut with: Vec<usize> = members.iter().map(|p| p.card).collect();
+		(true, Some(link)) => cards.iter().position(|c| &c.link == link && !here(c)).map(|at| {
+			let mut with: Vec<usize> = members.iter().filter(|p| !p.lifted).map(|p| p.card).collect(); // what it lifts, it does again
 			with.push(at);
 			let workflows = ctx.workflows();
 			lanes.order.read().apply(cards, &mut with, &workflows).expect("the view's order ran on these cards");
 			let groups = tedi_core::board::group(cards, &with, &GroupBy::Nothing, &workflows).expect("no workflow to be unknown");
-			let mut below = groups[0].1.iter().skip_while(|p| p.card != at).skip(1); // what it blocks or is blocked by is yet where it was
-			below
-				.next()
-				.map_or(members.len(), |next| members.iter().position(|p| p.card == next.card).expect("all but the dragged are members"))
+			let mut below = groups[0].1.iter().skip_while(|p| p.card != at).skip(1);
+			below.find_map(|next| members.iter().position(|p| p.card == next.card)).unwrap_or(members.len()) // none below it: last
 		}),
 		_ => None,
 	};
