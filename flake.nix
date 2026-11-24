@@ -181,8 +181,9 @@
               exec nix develop -c bash -c '
                 trap "kill 0" EXIT
                 ${pkgs.watchexec}/bin/watchexec --restart --exts rs,toml --ignore "tedi_web/src/ui/**" -- \
-                  cargo run -q -p tedi -- --config ${(pkgs.formats.toml { }).generate "tedi-dev.toml" (teamBoard // { github_token.env = "GITHUB_KEY"; })} \
-                  web --addr 127.0.0.1:7341 --pull-every 10m &
+                  cargo run -q --color always -p tedi -- --config ${(pkgs.formats.toml { }).generate "tedi-dev.toml" (teamBoard // { github_token.env = "GITHUB_KEY"; })} \
+                  web --addr 127.0.0.1:7341 --pull-every 10m 2>&1 \
+                  | (trap "" TERM; exec sed -u "s/$/\r/") & # dx holds the tty raw; sed outlives the server, which would otherwise die on its closed pipe
                 cd tedi_web && dx serve --platform web --port "$PORT" --open false
               '
             ''}/bin/tedi-dev";

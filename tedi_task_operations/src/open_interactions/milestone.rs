@@ -108,41 +108,34 @@ async fn apply_modifier(milestone: &mut Milestone, modifier: MilestoneModifier) 
 }
 
 async fn sync(milestone: &mut Milestone, consensus: Option<Milestone>, mode: MergeMode) -> Result<()> {
-	println!("Syncing milestone...");
 	let link = milestone.identity.link.clone();
+	tracing::info!("Syncing milestone {}", link.as_str());
 	if let Some(conflict_file) = check_for_existing_milestone_conflict(&link).await? {
 		bail!("Unresolved milestone conflict in {}. Resolve the markers, then re-run.", conflict_file.display());
 	}
 	let remote = load_remote_milestone(&link).await?;
 
 	let store = crate::local::lock_store().await?;
-	let (resolved, changed) = resolve_merge(milestone.clone(), consensus, remote, mode).await?;
-	*milestone = resolved;
-
-	match changed {
-		true => {
-			<Milestone as Sink<LocalFs>>::sink(milestone, None).await?;
-			<Milestone as Sink<Consensus>>::sink(milestone, None).await?;
-		}
-		false => println!("No milestone changes."),
-	}
+	*milestone = resolve_merge(milestone.clone(), consensus, remote, mode).await?;
+	<Milestone as Sink<LocalFs>>::sink(milestone, None).await?;
+	<Milestone as Sink<Consensus>>::sink(milestone, None).await?;
 	drop(store);
 	Ok(())
 }
 
 /// Three-way resolution; a divergence is recorded for resolution in its own conflict file.
-async fn resolve_merge(local: Milestone, consensus: Option<Milestone>, remote: Milestone, mode: MergeMode) -> Result<(Milestone, bool)> {
+async fn resolve_merge(local: Milestone, consensus: Option<Milestone>, remote: Milestone, mode: MergeMode) -> Result<Milestone> {
 	if let MergeMode::Reset { prefer } = mode {
 		return match prefer {
 			Side::Local => {
 				let mut resolved = local;
 				<Milestone as Sink<Remote>>::sink(&mut resolved, Some(&remote)).await?;
-				Ok((resolved, true))
+				Ok(resolved)
 			}
 			Side::Remote => {
 				let mut resolved = remote;
 				<Milestone as Sink<LocalFs>>::sink(&mut resolved, None).await?;
-				Ok((resolved, true))
+				Ok(resolved)
 			}
 		};
 	}
@@ -188,7 +181,7 @@ async fn resolve_merge(local: Milestone, consensus: Option<Milestone>, remote: M
 		let mut resolved = local_merged;
 		<Milestone as Sink<LocalFs>>::sink(&mut resolved, None).await?;
 		<Milestone as Sink<Remote>>::sink(&mut resolved, Some(&remote)).await?;
-		return Ok((resolved, true));
+		return Ok(resolved);
 	}
 
 	let repo = local.identity.link.repo_info();
