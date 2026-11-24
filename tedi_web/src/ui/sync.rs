@@ -35,7 +35,7 @@ enum Stage {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-enum Op {
+pub(super) enum Op {
 	Edit(Vec<FieldEdit>),
 	Move {
 		workflow: String,
@@ -124,7 +124,18 @@ impl Op {
 		}
 	}
 
-	/// Its outcome's note: one per issue and what is set, the last told.
+	/// Whether it was made against exactly what `under` leaves.
+	fn follows(&self, under: &Op) -> bool {
+		match (self, under) {
+			(Op::Edit(a), Op::Edit(b)) => a.len() == b.len() && a.iter().zip(b).all(|(a, b)| a.field == b.field && a.seen == b.new),
+			(Op::Move { workflow: a, seen, .. }, Op::Move { workflow: b, to, .. }) => a == b && seen == to,
+			(Op::Milestone { repo: a, seen, .. }, Op::Milestone { repo: b, new, .. }) => a == b && seen == new,
+			(Op::Review { reviewer: a, on }, Op::Review { reviewer: b, on: was }) => a == b && on != was,
+			_ => false,
+		}
+	}
+
+	/// What is set on the issue: the last told of it is its one note.
 	fn key(&self, link: &IssueLink) -> String {
 		match self {
 			Op::Edit(edits) => format!("edit:{link}:{}", edits.iter().map(|e| e.field.to_string()).collect::<Vec<_>>().join(",")),
@@ -212,26 +223,50 @@ impl Ctx {
 		}
 	}
 
-	/// Told with its own Undo, however it is sent: that is one more edit, made against what this one shows.
+	/// Told with an Undo, however it is sent.
 	fn submit(self, link: IssueLink, op: Op) {
-		let (back, to) = (op.back(), link.clone());
-		// the scope it's made in may leave the screen before its note does
-		let undo = Runtime::current().in_scope(ScopeId::ROOT, || Callback::new(move |()| self.submit(to.clone(), back.clone())));
+		let mut made = self.made;
+		{
+			let mut made = made.write();
+			let run = made.entry(op.key(&link)).or_default();
+			if run.last().is_some_and(|under| !op.follows(under)) {
+				run.clear(); // what it was made against isn't what they left
+			}
+			run.push(op.clone());
+		}
 		let (done, what) = op.told(&link, &self);
-		self.say(op.key(&link), toast::Tone::Info, format!("{done} {what}"), Some(("Undo", undo)));
+		self.tell(&link, op.key(&link), format!("{done} {what}"));
+		self.queue(link, op);
+	}
 
+	/// The last made under `key`, back to what it was made against: sent as one more edit, not itself undone.
+	fn undo(self, link: IssueLink, key: String) {
+		let mut made = self.made;
+		let op = made.write().get_mut(&key).and_then(Vec::pop).expect("offered while there is one");
+		self.tell(&link, key, format!("Undone: {}", op.told(&link, &self).1));
+		self.queue(link, op.back());
+	}
+
+	fn tell(self, link: &IssueLink, key: String, text: String) {
+		let more = self.made.peek().get(&key).is_some_and(|run| !run.is_empty());
+		let undo = more.then(|| {
+			let (link, key) = (link.clone(), key.clone());
+			// the scope it's told from may leave the screen before its note does
+			Runtime::current().in_scope(ScopeId::ROOT, || Callback::new(move |()| self.undo(link.clone(), key.clone())))
+		});
+		self.say(key, toast::Tone::Info, text, undo.map(|undo| ("Undo", undo)));
+	}
+
+	fn queue(self, link: IssueLink, op: Op) {
 		let mut pending = self.pending;
 		let mut pending = pending.write();
 		let sending = pending.iter().any(|p| p.link == link && p.stage != Stage::Landed);
-		if let Op::Edit(edits) = &op
-			&& let Some(at) = pending.iter().rposition(|p| p.link == link && p.op.rests_on(&op))
+		if let Some(at) = pending.iter().rposition(|p| p.link == link && p.op.rests_on(&op))
 			&& let Pending {
-				op: Op::Edit(queued),
-				stage: Stage::Queued,
-				..
+				op: under, stage: Stage::Queued, ..
 			} = &mut pending[at]
-			&& queued.len() == edits.len()
-			&& queued.iter().zip(edits).all(|(q, e)| q.field == e.field && q.new == e.seen)
+			&& op.follows(under)
+			&& let (Op::Edit(queued), Op::Edit(edits)) = (under, &op)
 		{
 			for (q, e) in queued.iter_mut().zip(edits) {
 				q.new = e.new.clone();
@@ -307,12 +342,15 @@ impl Ctx {
 
 	/// `id` and everything queued on top of it, oldest first, off the board: nothing is left to undo.
 	fn take_off(self, id: u64, link: &IssueLink, op: &Op) -> Vec<Op> {
-		let (mut pending, mut notes) = (self.pending, self.notes);
-		let key = op.key(link);
-		notes.write().retain(|n| n.key != key);
+		let (mut pending, mut notes, mut made) = (self.pending, self.notes, self.made);
 		let mut pending = pending.write();
 		let (off, kept): (Vec<Pending>, Vec<Pending>) = pending.drain(..).partition(|p| p.id == id || (p.link == *link && p.stage == Stage::Queued && p.op.rests_on(op)));
 		*pending = kept;
+		for p in &off {
+			let key = p.op.key(link);
+			made.write().remove(&key);
+			notes.write().retain(|n| n.key != key);
+		}
 		off.into_iter().map(|p| p.op).collect()
 	}
 }

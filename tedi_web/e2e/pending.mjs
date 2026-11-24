@@ -90,7 +90,8 @@ const PANEL = STEPPERS + '.filter((s) => s.closest(".min-h-\\\\[30px\\\\]"))[0]'
 const importance = async () => (await js(PANEL + "?.innerText.match(/i\\s*([0-9?])/)?.[1]")) ?? null;
 const click = (title) => js(PANEL + '.querySelector("button[title*=' + JSON.stringify(title).replaceAll('"', "'") + ']").click()');
 const stored = async () => (await (await fetch("http://127.0.0.1:" + server + "/api/board")).json()).cards.find((c) => c.link === ISSUE);
-const undo = () => js('[...document.querySelectorAll("button")].find((b) => b.innerText.trim() === "Undo" && b.parentElement.innerText.includes("labels on #46")).click()');
+const UNDO = '[...document.querySelectorAll("button")].find((b) => b.innerText.trim() === "Undo" && b.parentElement.innerText.includes("labels on #46"))';
+const undo = () => js(UNDO + ".click()");
 
 let failed = null;
 try {
@@ -98,7 +99,7 @@ try {
   const { importance: before } = await stored();
   assert(before <= 6, "seeded at 6");
 
-  // a run of clicks shows at once, the last of it undone as fast; it lands as its end, in as few edits as it can
+  // a run of clicks shows at once, and is undone as fast, a click at a time; it lands as its end, in as few edits as it can
   const start = Date.now();
   for (let i = before + 1; i <= 9; i++) {
     await click("raise");
@@ -113,8 +114,16 @@ try {
   await until("it lands", async () => (await stored()).importance === 8);
   assert.equal(await importance(), "8");
   assert.equal(sent.length, 2, "the first click, then the rest as one: " + JSON.stringify(sent));
-  await undo();
-  await until("the undo undone, landed as it is", async () => (await importance()) === "9", 400);
+  for (let i = 7; i >= before; i--) {
+    await undo();
+    await until("back to i " + i + ", landed as it is", async () => (await importance()) === String(i), 400);
+  }
+  assert(!(await js("!!" + UNDO)), "every click is undone: none left");
+  await until("it lands", async () => (await stored()).importance === before);
+  for (let i = before + 1; i <= 9; i++) {
+    await click("raise");
+    await until("shows i " + i, async () => (await importance()) === String(i), 400);
+  }
   await until("it lands", async () => (await stored()).importance === 9);
 
   // refused: the value comes back, and what didn't go through is told
@@ -162,7 +171,9 @@ try {
   assert.equal(await importance(), "6", "its tab, still open, agrees");
   await undo();
   await until("undone: the card is back", async () => (await onCard()) === "7", 400);
-  await until("it lands", async () => (await stored()).importance === 7);
+  await undo();
+  await until("and the click before", async () => (await onCard()) === "8", 400);
+  await until("it lands", async () => (await stored()).importance === 8);
   console.log("ok");
 } catch (e) {
   failed = e;

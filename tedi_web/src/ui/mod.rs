@@ -60,6 +60,8 @@ struct Ctx {
 	stored: Signal<Option<Board>>,
 	/// Edits it may not hold yet, oldest first.
 	pending: Signal<Vec<sync::Pending>>,
+	/// Per what is set, the edits made of it that can be undone, oldest first, each against what the one before left.
+	made: Signal<HashMap<String, Vec<sync::Op>>>,
 	reading: Signal<Reading>,
 	/// What is shown: `stored` with `pending` over it.
 	board: Memo<Option<Board>>,
@@ -523,6 +525,7 @@ fn Shell() -> Element {
 			library: Signal::new(None),
 			stored,
 			pending,
+			made: Signal::new(HashMap::new()),
 			reading: Signal::new(Reading::Idle),
 			board: Memo::new(move || sync::shown(&stored.read(), &pending.read())),
 			conflicts: Signal::new(HashMap::new()),
