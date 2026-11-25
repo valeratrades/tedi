@@ -15,6 +15,7 @@ use super::{
 	Ctx,
 	facets::Pick,
 	icons::{Glyph, Icon},
+	issue::Number,
 	route::Go,
 };
 
@@ -44,7 +45,7 @@ pub(super) fn CardView(card: Card, shown: Vec<Shown>, #[props(default)] lifted: 
 						span { class: "text-mono-s text-ink-soft", "{card.link.project().repo()}" }
 					}
 				}
-				span { class: "text-mono-s text-ink-faint", "#{card.link.number()}" }
+				Number { link: card.link.clone() }
 				div { class: "flex-1" }
 				if has(&Shown::Assignees) {
 					for a in card.assignees.iter() {
@@ -151,7 +152,7 @@ pub(super) fn Field(card: Card, shown: Shown) -> Element {
 	let ctx = use_context::<Ctx>();
 	match shown {
 		Shown::Repo => rsx! { Pick { facet: Facet::Repo, value: card.link.project().to_string(), span { class: "text-mono-s text-ink-soft", "{card.link.project()}" } } },
-		Shown::Number => rsx! { span { class: "text-mono-s text-ink-faint", "#{card.link.number()}" } },
+		Shown::Number => rsx! { Number { link: card.link.clone() } },
 		Shown::Assignees => rsx! {
 			span { class: "inline-flex items-center gap-1",
 				for a in card.assignees.iter() {

@@ -37,7 +37,8 @@ pub fn IssuePanel(link: IssueLink) -> Element {
 			div { class: "flex flex-col gap-3 px-4 py-3",
 				div { class: "flex h-6 shrink-0 items-center gap-1.5",
 					KindIcon { card: card.clone() }
-					a { class: "truncate text-mono-s text-ink-soft hover:underline", href: "{link}", target: "_blank", "{link.project()}#{link.number()}" }
+					a { class: "truncate text-mono-s text-ink-soft hover:underline", href: "{link}", target: "_blank", "{link.project()}" }
+					Number { link: link.clone() }
 					div { class: "flex-1" }
 					IconBtn { glyph: Glyph::Link, title: "Copy its link", onclick: { let link = link.clone(); move |_| copy(ctx, link.to_string()) } }
 				}
@@ -754,6 +755,27 @@ fn Composer(card: Card) -> Element {
 				if !blank { Closing { card: card.clone(), said: Some(text) } }
 				Btn { style: Style::Primary, disabled: blank || sending(), onclick: move |_| send(), "Comment" }
 			}
+		}
+	}
+}
+
+/// `#n`, copying its link.
+#[component]
+pub(super) fn Number(link: IssueLink) -> Element {
+	let ctx = use_context::<Ctx>();
+	rsx! {
+		button {
+			r#type: "button",
+			class: "shrink-0 cursor-pointer text-mono-s text-ink-faint hover:underline",
+			title: "Copy its link",
+			onclick: {
+				let link = link.clone();
+				move |e: MouseEvent| {
+					e.stop_propagation();
+					copy(ctx, link.to_string());
+				}
+			},
+			"#{link.number()}"
 		}
 	}
 }
