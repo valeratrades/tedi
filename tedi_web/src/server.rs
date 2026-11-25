@@ -292,18 +292,22 @@ pub async fn library(headers: &HeaderMap) -> Result<Library> {
 pub async fn edit_library(headers: &HeaderMap, edit: LibraryEdit) -> Result<Library> {
 	let key = viewer(headers)?;
 	let _held = LIBRARIES.lock().await;
-	let mut library = read_library(&key)?;
-	let fetched = match &edit {
-		LibraryEdit::Fork { from, .. } => Some(origin(from).await?),
-		LibraryEdit::Pull(item) => {
-			let forked = library.forks.iter().find(|f| &f.item == item).ok_or_else(|| eyre!("{item:?} is no fork"))?;
-			Some(latest(item.shelf(), &forked.upstream).await?)
-		}
-		_ => None,
-	};
-	apply(&mut library, edit, fetched)?;
+	let library = edited(&read_library(&key)?, edit).await?;
 	write_library(&key, &library)?;
 	Ok(library)
+}
+
+pub async fn leave_library(headers: &HeaderMap, edits: Vec<LibraryEdit>) -> Result<()> {
+	let key = viewer(headers)?;
+	let _held = LIBRARIES.lock().await;
+	let mut library = read_library(&key)?;
+	for edit in edits {
+		match edited(&library, edit).await {
+			Ok(after) => library = after,
+			Err(e) => tracing::warn!("{key} left behind an edit that doesn't apply: {e:#}"),
+		}
+	}
+	write_library(&key, &library)
 }
 
 pub async fn catalog(headers: &HeaderMap) -> Result<Catalog> {
@@ -825,6 +829,20 @@ fn read_library(key: &str) -> Result<Library> {
 		}
 	}
 	Ok(library)
+}
+
+async fn edited(library: &Library, edit: LibraryEdit) -> Result<Library> {
+	let fetched = match &edit {
+		LibraryEdit::Fork { from, .. } => Some(origin(from).await?),
+		LibraryEdit::Pull(item) => {
+			let forked = library.forks.iter().find(|f| &f.item == item).ok_or_else(|| eyre!("{item:?} is no fork"))?;
+			Some(latest(item.shelf(), &forked.upstream).await?)
+		}
+		_ => None,
+	};
+	let mut edited = library.clone();
+	apply(&mut edited, edit, fetched)?;
+	Ok(edited)
 }
 
 /// `fetched`: a fork's or pull's upstream, read before the edit.

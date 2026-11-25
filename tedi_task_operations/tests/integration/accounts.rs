@@ -93,7 +93,7 @@ fn attempts() -> Vec<(&'static str, &'static str, Option<Value>)> {
 		("POST", "/api/board", Some(json!({ "first": ["repo:alice/priv"] }))),
 		("POST", "/api/off", Some(json!({ "what": "view Triage", "percent": 0, "late": 0 }))),
 		("POST", "/api/query", Some(json!({ "asked": "" }))),
-		("POST", "/api/view", Some(json!({ "named": "", "group": "repo" }))),
+		("POST", "/api/view", Some(json!({ "query": "", "group": "repo" }))),
 		("POST", "/api/refresh", Some(json!({}))),
 		(
 			"POST",
@@ -115,9 +115,10 @@ fn attempts() -> Vec<(&'static str, &'static str, Option<Value>)> {
 		("GET", "/api/account", None),
 		("POST", "/api/account/edit", Some(json!({ "edit": { "Scope": "alice/priv" } }))),
 		("GET", "/api/library", None),
-		("POST", "/api/library/edit", Some(json!({ "edit": { "Workspace": null } }))),
+		("POST", "/api/library/edit", Some(json!({ "edit": { "Open": "ws 1" } }))),
+		("POST", "/api/library/left", Some(json!({ "edits": [{ "Open": "ws 1" }] }))),
 		("GET", "/api/catalog", None),
-		("POST", "/api/share", Some(json!({ "item": item, "bands": [], "scope": null }))),
+		("POST", "/api/share", Some(json!({ "item": item, "bands": [] }))),
 		("POST", "/api/shared", Some(json!({ "link": "/l/view/alice/hers@1" }))),
 		("POST", "/api/propose", Some(json!({ "item": item, "onto": { "New": "x" }, "message": "" }))),
 	]
