@@ -6902,7 +6902,7 @@ checksum = "c1bbb9f3c5c463a01705937a24fdabc5047929ac764b2d5b9cf681c1f5041ed5"
 
 [[package]]
 name = "tedi"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "clap",
  "clap_complete",
@@ -6927,7 +6927,7 @@ dependencies = [
 
 [[package]]
 name = "tedi_adapters"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -6951,7 +6951,7 @@ dependencies = [
 
 [[package]]
 name = "tedi_core"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "arrayvec",
  "copy_arrayvec",
@@ -6976,7 +6976,7 @@ dependencies = [
 
 [[package]]
 name = "tedi_eval"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "ask_llm",
  "base64 0.22.1",
@@ -6995,7 +6995,7 @@ dependencies = [
 
 [[package]]
 name = "tedi_hooks"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "cbindgen",
  "jiff",
@@ -7009,7 +7009,7 @@ dependencies = [
 
 [[package]]
 name = "tedi_md"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "derive_more",
  "insta",
@@ -7019,7 +7019,7 @@ dependencies = [
 
 [[package]]
 name = "tedi_task_operations"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "base64 0.22.1",
  "clap",
@@ -7057,7 +7057,7 @@ dependencies = [
 
 [[package]]
 name = "tedi_task_primitives"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "async-trait",
  "clap",
@@ -7085,7 +7085,7 @@ dependencies = [
 
 [[package]]
 name = "tedi_utils"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "nucleo-matcher",
  "regex",
@@ -7095,7 +7095,7 @@ dependencies = [
 
 [[package]]
 name = "tedi_web"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "color-eyre",
  "dioxus",
