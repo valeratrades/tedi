@@ -64,7 +64,7 @@ objective: good times
 An item that is just an issue ref is a GitHub `blocked by` link: every one the blockers name is linked there, and dropping it unlinks it. A link made on GitHub alone joins the blockers at the top (last in sequence), written as the shortest ref from the issue's own repo. The link set GitHub held at the last sync is persisted with the issue, so a link removed on GitHub since is a remote edit of the blockers: the ref leaves them through the same merge as any field (conflicting if they were edited locally too). Either end of a link missing locally is pulled, with the whole tree it lives in.
 
 ### Composition Rules
-how the system components own each other. One chain, typed by `tedi_core::chain`: containment, [scopes](#views) and [Bottlenecks](#bottlenecks) are read off it.
+how the system components own each other. One chain, typed by `tedi_core::chain`: containment, [scopes](#views) and [Bottlenecks](#sprints) are read off it.
 ```
  Org (main) ─► Org ─► Repo                      place: who holds it
     └──────────────────► Repo ─► Milestone, Issue
@@ -75,7 +75,7 @@ how the system components own each other. One chain, typed by `tedi_core::chain`
 | owner | may own | never |
 |---|---|---|
 | [Sprint](#sprints), planning (titled by a timeframe) | Bottlenecks, Milestone, Issue | a planning one |
-| [Sprint](#sprints), Bottlenecks (`{org}/.github`, titled `Bottlenecks`) | Bottlenecks, Milestone (its own repo's too), Issue | a planning one; itself |
+| [Sprint](#sprints), Bottlenecks (`{org}/.github`, titled `Bottlenecks`) | Bottlenecks, Milestone (its own repo's too), Issue | a planning one; itself, through others too |
 | [Milestone](#milestone) | Milestone, Issue | a sprint; a milestone of a repo already on the chain |
 | [Issue](#issue) | Issue, [Blockers](#blockers) | any milestone |
 

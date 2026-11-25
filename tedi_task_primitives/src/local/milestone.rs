@@ -139,6 +139,7 @@ impl Local {
 		for owner in names(&Self::milestones_dir())? {
 			out.extend(names(&Self::milestones_dir().join(&owner))?.iter().map(|repo| RepoInfo::new(&owner, repo)));
 		}
+		out.sort(); // not as the directory lists them
 		Ok(out)
 	}
 

@@ -46,12 +46,15 @@ test("a click reverses a label, a drag moves it, and both are there on reload", 
   await expect(labels(page)).toHaveText(["importance ↓", "created ↑", "hours ↑"]);
 });
 
-for (const path of [["ev-main"], ["ev-main", "service-arb"]])
-  test(`a blocker from an earlier step, or from outside ${path.at(-1)}, is above what it blocks, edged red`, async ({ page }) => {
+for (const [path, why] of [
+  [["ev-main"], "in the tree of a Bottlenecks"], // it takes its own place there
+  [["ev-main", "service-arb"], "blocks a card here"],
+] as const)
+  test(`a blocker from an earlier step, or from outside ${path.at(-1)}, is above what it blocks, edged as ${why}`, async ({ page }) => {
     await triage(page);
     for (const at of path) {
       await page.getByRole("button", { name: "Start from" }).click();
-      await page.getByRole("button", { name: new RegExp(`^${at}`) }).last().click();
+      await page.getByPlaceholder("scope…").locator("xpath=ancestor::div[2]").getByRole("button", { name: new RegExp(`^${at}`) }).click();
     }
     await expect(page.getByRole("navigation", { name: "Scope" })).toHaveText(path.join("/"));
     const card = (title: string) => page.locator("[draggable=true]").filter({ has: page.getByRole("link", { name: title, exact: true }) });
@@ -63,7 +66,9 @@ for (const path of [["ev-main"], ["ev-main", "service-arb"]])
       if (key) await add(page, key);
       await expect.poll(async () => (await titles()).indexOf(blocked) - (await titles()).indexOf(blocker)).toBe(1);
       await expect(card(blocker)).toHaveCount(1);
-      await expect(card(blocker).locator("> div")).toHaveCSS("border-top-color", red);
+      const edge = card(blocker).locator("> div");
+      await expect(edge).toHaveAttribute("title", why);
+      await (why === "blocks a card here" ? expect(edge) : expect(edge).not).toHaveCSS("border-top-color", red);
       await expect(card(blocked).locator("> div")).not.toHaveCSS("border-top-color", red);
     }
   });

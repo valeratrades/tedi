@@ -7,6 +7,8 @@ const at = (page: Page) => page.evaluate(() => location.pathname + location.sear
 const shelf = (page: Page, name: string) => page.locator("aside").getByRole("link", { name, exact: true });
 const scope = (page: Page, name: string) => page.locator("aside").getByRole("button", { name, exact: true });
 const line = (page: Page) => page.getByRole("group", { name: "Scope", exact: true });
+/** What the open "Start from" offers. */
+const startable = (page: Page) => page.getByPlaceholder("scope…").locator("xpath=ancestor::div[2]");
 const search = (page: Page) => page.getByRole("textbox", { name: "Search", exact: true });
 const sort = (page: Page) => page.getByRole("group", { name: "Sort", exact: true }).locator("[draggable=true]");
 const named = (page: Page) => page.getByRole("button", { name: "Workspace menu" });
@@ -110,7 +112,7 @@ test("a scope is a starting point: its terms are copied, undone, edited apart", 
   await page.goto("/");
   await open(page, "Triage desk");
   await page.getByRole("button", { name: "Start from" }).click();
-  await page.getByRole("button", { name: /^core/ }).last().click();
+  await startable(page).getByRole("button", { name: /^core/ }).click();
   await expect(line(page)).toContainText("repo:valeratrades/tedi,service-arb/*");
   await toast(page, "Started from core").getByRole("button", { name: "Undo" }).click();
   await expect(line(page)).toContainText("repo:service-arb/*");
@@ -135,7 +137,7 @@ test("a point of the chain is a scope: down by the picker, up by its crumbs, and
   const crumbs = line(page).getByRole("navigation");
   for (const [at, shown] of [["ev-main", "ev-main"], ["service-arb", "ev-main/service-arb"], ["review_archive", "ev-main/service-arb/review_archive"]]) {
     await page.getByRole("button", { name: "Start from" }).click();
-    await page.getByRole("button", { name: new RegExp(`^${at}`) }).last().click();
+    await startable(page).getByRole("button", { name: new RegExp(`^${at}`) }).click();
     await expect(crumbs).toHaveText(shown);
   }
   await expect(line(page).getByRole("button", { name: "Add a term to the scope" })).toHaveCount(0);

@@ -153,6 +153,7 @@ test.describe("what waits for the board is the views on screen, each for what it
       await release(page, "board", n);
       await reads(bars(tile(page)), part(all, n, itsPrs));
     }
+    await page.waitForTimeout(250); // a shorter wait is none, whatever it read
     const off = page.waitForRequest(/\/api\/off$/);
     await release(page, "board", end);
     await expect(cards(tile(page)).first()).toBeVisible();
