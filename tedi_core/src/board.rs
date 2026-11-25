@@ -2,7 +2,7 @@
 //! reading them from the store and editing them through the sync are the operations' business.
 
 use std::{
-	collections::{BTreeMap, HashMap, HashSet},
+	collections::{BTreeMap, BTreeSet, HashMap, HashSet},
 	path::PathBuf,
 	str::FromStr,
 };
@@ -164,6 +164,35 @@ pub struct Board {
 	pub assignable: BTreeMap<String, Vec<String>>,
 }
 impl Board {
+	/// What `at` owns right below it: an org its orgs and repos by name, a repo its milestones and the issues outside
+	/// them, a milestone its nodes in order, an issue its sub-issues. An issue another one here holds is that one's.
+	pub fn below(&self, at: &Point, orgs: &Orgs) -> Vec<Point> {
+		let mut hosted: HashSet<&IssueLink> = HashSet::new();
+		let owned: Vec<Point> = match at {
+			Point::Org(_) => {
+				let repos = self.cards.iter().map(|c| c.link.project()).chain(self.targets.iter().map(|t| t.link.repo_info()));
+				let places = repos.map(Point::Repo).flat_map(|repo| std::iter::successors(Some(repo), |p| p.above(orgs)));
+				places.filter(|p| p.above(orgs).as_ref() == Some(at)).collect::<BTreeSet<_>>().into_iter().collect()
+			}
+			Point::Repo(repo) => {
+				let own: Vec<&Target> = self.targets.iter().filter(|t| t.link.repo_info() == *repo).collect();
+				hosted.extend(own.iter().flat_map(|t| &t.nodes).filter_map(|n| if let NodeLink::Issue(link) = n { Some(link) } else { None }));
+				let issues = self.cards.iter().filter(|c| c.pr.is_none() && c.link.project() == *repo).map(|c| Point::Issue(c.link.clone()));
+				own.iter().map(|t| Point::Milestone(t.link.clone())).chain(issues).collect()
+			}
+			Point::Milestone(link) => self.targets.iter().filter(|t| t.link == *link).flat_map(|t| t.nodes.iter().cloned().map(Point::from)).collect(),
+			Point::Issue(link) => self.cards.iter().filter(|c| c.parent.as_ref() == Some(link)).map(|c| Point::Issue(c.link.clone())).collect(),
+		};
+		let parents: HashMap<&IssueLink, &IssueLink> = self.cards.iter().filter_map(|c| Some((&c.link, c.parent.as_ref()?))).collect();
+		let here: HashSet<&Point> = owned.iter().collect();
+		let in_another = |link: &IssueLink| {
+			let above = std::iter::successors(parents.get(link).copied(), |l| parents.get(*l).copied());
+			above.take(parents.len()).any(|l| here.contains(&Point::Issue(l.clone()))) // no further than there are parents: they may loop
+		};
+		let left = |p: &&Point| !matches!(p, Point::Issue(link) if hosted.contains(link) || in_another(link));
+		owned.iter().filter(left).cloned().collect()
+	}
+
 	/// `link`, the milestones it contains and theirs, and the issues they host with their sub-issues. A closed
 	/// milestone is none of the board's, so it passes nothing on.
 	fn owned(&self, link: &MilestoneLink) -> (HashSet<MilestoneLink>, HashSet<IssueLink>) {
@@ -906,10 +935,7 @@ pub fn group(cards: &[Card], hits: &[usize], by: &GroupBy, workflows: &Trees, wi
 #[derive(Clone, Debug, PartialEq)]
 enum Left {
 	Terms(Terms),
-	Nodes {
-		milestones: HashSet<MilestoneLink>,
-		issues: HashSet<IssueLink>,
-	},
+	Nodes { milestones: HashSet<MilestoneLink>, issues: HashSet<IssueLink> },
 }
 impl Default for Left {
 	fn default() -> Self {
@@ -1756,6 +1782,44 @@ mod tests {
 		https://github.com/o/.github:  | o/.github Bottlenecks
 		https://github.com/o/app/milestone/7: not there
 		https://github.com/o/app/issues/7: not there
+		");
+	}
+
+	#[test]
+	fn below_a_point_is_each_thing_once() {
+		let (mut board, orgs) = chained();
+		let sub_issue = board.cards[1].link.clone();
+		board.targets[0].nodes.push(NodeLink::Issue(sub_issue)); // its parent is there too
+		let shown: Vec<String> = [
+			"O",
+			"p",
+			"o/app",
+			"p/lib",
+			"o/app/milestone/1",
+			"p/lib/milestone/1",
+			"o/.github/milestone/1",
+			"o/app/issues/1",
+			"o/app/issues/2",
+			"nobody",
+		]
+		.into_iter()
+		.map(|at| {
+			let below = board.below(&format!("{GITHUB}{at}").parse().unwrap(), &orgs);
+			let below: Vec<String> = below.iter().map(|p| p.to_string().replace(GITHUB, "")).collect();
+			format!("{at}: {}", below.join(" · "))
+		})
+		.collect();
+		insta::assert_snapshot!(shown.join("\n"), @"
+		O: p · o/.github · o/app
+		p: p/.github · p/lib
+		o/app: o/app/milestone/1
+		p/lib: p/lib/milestone/1 · p/lib/issues/2
+		o/app/milestone/1: o/app/issues/1 · o/app/issues/3 · p/lib/milestone/1
+		p/lib/milestone/1: p/lib/issues/1 · p/lib/issues/3 · o/app/milestone/1 · p/lib/milestone/9
+		o/.github/milestone/1: o/app/milestone/1
+		o/app/issues/1: o/app/issues/2
+		o/app/issues/2: 
+		nobody:
 		");
 	}
 

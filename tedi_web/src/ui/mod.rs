@@ -5,6 +5,7 @@
 mod account;
 mod builder;
 mod card;
+mod chain;
 mod facets;
 mod filter;
 mod icons;
@@ -45,7 +46,7 @@ use tilers_dioxus::{
 	model::{packed::GridState, serial},
 };
 
-use crate::api::{self, Arrangement, Columns, Item, Lens, Library, LibraryEdit, Setup, View, ViewPart, Workspace, WorkspacePart};
+use crate::api::{self, Arrangement, Boxing, Columns, Item, Lens, Library, LibraryEdit, Setup, View, ViewPart, Workspace, WorkspacePart};
 
 const HELP: [(&str, &str); 7] = [
 	("⌘K", "jump to a view, scope, sprint or issue"),
@@ -278,10 +279,11 @@ impl Ctx {
 		workspace_named(&self.setup.read(), &self.library.read(), &self.unsaved.read(), name)
 	}
 
-	/// What cards can be grouped by.
-	fn groupings(&self) -> impl Iterator<Item = GroupBy> {
+	/// What cards can be boxed by.
+	fn boxings(&self) -> impl Iterator<Item = Boxing> {
 		let workflows = self.workflows().into_keys().map(GroupBy::State);
-		workflows.chain([GroupBy::Repo, GroupBy::Assignee, GroupBy::Type, GroupBy::Importance, GroupBy::Nothing])
+		let groupings = workflows.chain([GroupBy::Repo, GroupBy::Assignee, GroupBy::Type, GroupBy::Importance, GroupBy::Nothing]);
+		groupings.map(Boxing::Groups).chain([Boxing::Chain])
 	}
 
 	/// What a card can show.
@@ -757,22 +759,29 @@ impl Ctx {
 
 	/// `layout` on the dock, its panels hosted first, cut to the rows this window shows: a row is a fixed height,
 	/// so a layout kept on a taller window would scroll here.
-	fn show(self, mut api: PackedApi, layout: &str) -> bool {
+	fn show(self, api: PackedApi, layout: &str) -> bool {
+		self.load(api, layout, "layout", |grid| {
+			without_floating_issues(grid);
+			for id in grid.cells.iter().flat_map(|c| c.group.tabs.iter()) {
+				self.host(id);
+			}
+			cut(grid, api.rows());
+		})
+	}
+
+	/// `layout`, as `fit` leaves it, on `api`'s dock; whether it loads is said if it doesn't.
+	fn load(self, mut api: PackedApi, layout: &str, what: &str, fit: impl FnOnce(&mut PackedGrid)) -> bool {
 		match serial::load(layout) {
 			Ok(mut grid) => {
-				without_floating_issues(&mut grid);
-				for id in grid.cells.iter().flat_map(|c| c.group.tabs.iter()) {
-					self.host(id);
-				}
-				cut(&mut grid, api.rows());
-				api.load(&serial::save(&grid)).expect("parsed above, heights cut");
+				fit(&mut grid);
+				api.load(&serial::save(&grid)).expect("parsed above");
 				true
 			}
 			Err(e) => {
 				self.say(
-					"layout",
+					what,
 					toast::Tone::Error,
-					format!("the kept layout doesn't load ({e:?}); nothing kept is overwritten until another is shown"),
+					format!("the kept {what} doesn't load ({e:?}); nothing kept is overwritten until another is shown"),
 					None,
 				);
 				false
@@ -843,7 +852,7 @@ fn supersedes(edit: &LibraryEdit, held: &LibraryEdit) -> bool {
 					(_, ViewPart::GroupBy(_)) => false, // each boxes anew
 					(ViewPart::GroupBy(_), ViewPart::Shown(_)) => false,
 					(ViewPart::GroupBy(_), _) => true,
-					(ViewPart::Arrangement { band, .. }, ViewPart::Arrangement { band: b, .. }) => band == b,
+					(ViewPart::Arrangement { of, band, .. }, ViewPart::Arrangement { of: o, band: b, .. }) => (of, band) == (o, b),
 					_ => discriminant(part) == discriminant(p),
 				},
 		_ => false,

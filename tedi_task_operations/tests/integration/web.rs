@@ -490,6 +490,20 @@ fn a_views_boxes_are_drafted_a_part_at_a_time_and_kept_with_it() {
 	assert_eq!(edit(port, me, serde_json::json!({ "Revert": { "View": "main" } })).0, 200);
 	assert!(library(port, me)["drafts"]["views"].get("main").is_none());
 	assert_ne!(edit(port, me, arranged("nowhere", "Xl", "x")).0, 200);
+
+	assert_eq!(edit(port, me, boxed("main", serde_json::json!({ "GroupBy": "chain" }))).0, 200);
+	let node = |at: &str, layout: &str| boxed("main", serde_json::json!({ "Arrangement": { "of": at, "band": "Sm", "layout": layout } }));
+	assert_eq!(edit(port, me, node("https://github.com/o/r/milestone/1", "stacked")).0, 200);
+	assert_eq!(edit(port, me, node("https://github.com/o/r/issues/2", "split")).0, 200);
+	assert_ne!(edit(port, me, node("repo:o/r", "split")).0, 200, "terms are no node");
+	assert_eq!(
+		library(port, me)["drafts"]["views"]["main"],
+		serde_json::json!({
+			"name": "main", "group_by": "chain", "shown": [],
+			"nodes": { "https://github.com/o/r/issues/2": { "Sm": "split" }, "https://github.com/o/r/milestone/1": { "Sm": "stacked" } },
+		}),
+		"each node's leaves are laid out apart"
+	);
 }
 
 #[test]

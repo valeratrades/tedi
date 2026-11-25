@@ -11,7 +11,7 @@ use arrayvec::ArrayString;
 use serde::{Deserialize, Serialize};
 
 pub use crate::error::ChainError;
-use crate::{IssueLink, Milestone, MilestoneLink, RepoInfo, Sprint, error::ChainDiagnostic};
+use crate::{IssueLink, Milestone, MilestoneLink, NodeLink, RepoInfo, Sprint, error::ChainDiagnostic};
 
 /// What GitHub links start with, and so what tells a [`Point`] from a name.
 pub const GITHUB: &str = "https://github.com/";
@@ -100,7 +100,7 @@ pub enum OrgsError {
 }
 
 /// A place on the chain. Serialized as its GitHub URL.
-#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(try_from = "String", into = "String")]
 pub enum Point {
 	Org(Org),
@@ -117,6 +117,14 @@ impl Point {
 			Point::Repo(RepoInfo::Virtual) => None,
 			Point::Milestone(link) => Some(Point::Repo(link.repo_info())),
 			Point::Issue(link) => Some(Point::Repo(link.project())),
+		}
+	}
+}
+impl From<NodeLink> for Point {
+	fn from(node: NodeLink) -> Self {
+		match node {
+			NodeLink::Milestone(link) => Point::Milestone(link),
+			NodeLink::Issue(link) => Point::Issue(link),
 		}
 	}
 }

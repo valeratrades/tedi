@@ -4,7 +4,6 @@
 
 use dioxus::prelude::*;
 use tedi_core::{
-	NodeLink,
 	board::{Query, Scope, Slice, Terms},
 	chain::{Orgs, Point},
 };
@@ -90,31 +89,24 @@ impl Ctx {
 	/// What `at` holds right below it, orgs at the top, as far as it holds something on the board. A repo's
 	/// issues aside: the palette finds those.
 	pub(super) fn below(&self, at: Option<&Point>) -> Vec<Offered> {
+		let orgs = self.orgs();
+		let Some(at) = at else {
+			return self.places().into_iter().filter(|o| o.point.above(&orgs).is_none()).collect();
+		};
 		let owned: Vec<Point> = {
 			let board = self.board.read();
-			let open = |link: &tedi_core::IssueLink| board.cards.iter().any(|c| c.link == *link && c.open());
-			match at {
-				Some(Point::Milestone(link)) => {
-					let Some(target) = board.targets.iter().find(|t| t.link == *link) else { return Vec::new() };
-					let shown = target.nodes.iter().filter_map(|node| match node {
-						NodeLink::Milestone(inner) => Some(Point::Milestone(inner.clone())),
-						NodeLink::Issue(issue) => open(issue).then(|| Point::Issue(issue.clone())),
-					});
-					shown.collect()
-				}
-				Some(Point::Issue(link)) => board
-					.cards
-					.iter()
-					.filter(|c| c.open() && c.parent.as_ref() == Some(link))
-					.map(|c| Point::Issue(c.link.clone()))
-					.collect(),
-				Some(Point::Org(_) | Point::Repo(_)) | None => {
-					let orgs = self.orgs();
-					return self.places().into_iter().filter(|o| o.point.above(&orgs).as_ref() == at).collect();
-				}
-			}
+			let mut owned = board.below(at, &orgs);
+			owned.retain(|p| match p {
+				Point::Issue(link) => !matches!(at, Point::Repo(_)) && board.cards.iter().any(|c| c.link == *link && c.open()),
+				Point::Org(_) | Point::Repo(_) | Point::Milestone(_) => true,
+			});
+			owned
 		};
-		owned.into_iter().filter_map(|p| self.offered(p)).collect()
+		let mut offered: Vec<Offered> = owned.into_iter().filter_map(|p| self.offered(p)).collect();
+		if let Point::Org(_) | Point::Repo(_) = at {
+			offered.sort_by_key(|o| o.name.to_lowercase());
+		}
+		offered
 	}
 
 	/// `None`: it holds nothing on the board.

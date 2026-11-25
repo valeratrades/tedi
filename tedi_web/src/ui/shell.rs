@@ -18,7 +18,7 @@ use super::{
 	view::{count, outcome},
 	workspace,
 };
-use crate::api::{Item, LibraryEdit, Shelf, Workspace};
+use crate::api::{Boxing, Item, LibraryEdit, Shelf, Workspace};
 
 /// The shelves; on a phone the same in a sheet behind ☰.
 #[component]
@@ -90,7 +90,7 @@ fn Shelves() -> Element {
 			depth: s.depth,
 			favorite: Some(Item::Scope(s.path.clone())),
 			own: library.scopes.contains_key(&s.path).then_some(Shelf::Scopes),
-			current: false,                                                                    // applied, it is its terms
+			current: false,                                                                                // applied, it is its terms
 			meta: ctx.open_in(&Slice::Terms(s.scope.filter())).map(|n| n.to_string()).unwrap_or_default(), // before the board arrives
 			go: Go::Scope(s.path),
 		})
@@ -109,7 +109,7 @@ fn Shelves() -> Element {
 			depth: 0,
 			go: Go::Columns {
 				name: name.clone(),
-				onto: view.clone().filter(|_| by.as_ref() == Some(&c.by)),
+				onto: view.clone().filter(|_| by == Some(Boxing::Groups(c.by.clone()))),
 			},
 			favorite: Some(Item::Columns(name.clone())),
 			own,

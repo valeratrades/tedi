@@ -22,9 +22,9 @@ use super::{
 	sprint_panel,
 	toolbar::ViewToolbar,
 };
-use crate::api::{Arrangement, Columns as Layout, Kept, LibraryEdit, Tint, Tints, View, ViewPart};
+use crate::api::{Arrangement, Boxing, Columns as Layout, Kept, LibraryEdit, Tint, Tints, View, ViewPart};
 
-type Groups = Vec<(String, Vec<Placed>)>;
+pub(super) type Groups = Vec<(String, Vec<Placed>)>;
 
 /// The view `name`: as last edited, against how it is kept.
 #[component]
@@ -210,8 +210,12 @@ fn ViewBody(defined: View) -> Element {
 	}
 }
 
-/// The open workspace's cards as its lens has them, of those here, grouped `by`; none while none is open.
-pub(super) fn outcome(ctx: &Ctx, by: &GroupBy) -> Option<Result<Groups, String>> {
+/// The open workspace's cards as its lens has them, of those here, grouped `by`, the chain's in one; none while none is open.
+pub(super) fn outcome(ctx: &Ctx, by: &Boxing) -> Option<Result<Groups, String>> {
+	let by = match by {
+		Boxing::Groups(by) => by,
+		Boxing::Chain => &GroupBy::Nothing,
+	};
 	let lens = ctx.lens.read().clone()?;
 	let board = ctx.board.read();
 	let cards = &board.cards;
@@ -241,10 +245,10 @@ pub(super) fn Results(view: View, groups: Groups, relaid: usize, edit: Callback<
 	let ctx = use_context::<Ctx>();
 	rsx! {
 		div { class: "flex min-h-0 flex-1 flex-col p-2",
-			if ctx.band() == Some(Band::Sm) {
-				Stacked { view, groups }
-			} else {
-				Columns { key: "{view.group_by}-{relaid}", view, groups, edit, onlay }
+			match &view.group_by {
+				Boxing::Chain => rsx! { super::chain::Chain { key: "{relaid}", view: view.clone(), groups, edit } },
+				Boxing::Groups(_) if ctx.band() == Some(Band::Sm) => rsx! { Stacked { view: view.clone(), groups } },
+				Boxing::Groups(by) => rsx! { Columns { key: "{by}-{relaid}", view: view.clone(), groups, edit, onlay } },
 			}
 		}
 	}
@@ -278,11 +282,19 @@ struct Lanes {
 }
 impl Lanes {
 	fn by(&self) -> GroupBy {
-		self.view.read().group_by.clone()
+		grouping(&self.view.read())
 	}
 
 	fn tint(&self, group: &str) -> Option<Tint> {
 		self.view.read().boxes.tints.get(group).copied()
+	}
+}
+
+/// What a view of columns groups by.
+fn grouping(view: &View) -> GroupBy {
+	match &view.group_by {
+		Boxing::Groups(by) => by.clone(),
+		Boxing::Chain => panic!("a view of the chain has no columns: {}", view.name),
 	}
 }
 
@@ -310,7 +322,7 @@ fn Columns(view: View, groups: Groups, edit: Callback<ViewPart>, onlay: Callback
 	let mut seen = use_signal(|| None::<Seen>);
 	// the columns the dock had when last looked at: what is there since, the viewer closed or brought back
 	let mut placed = use_signal(BTreeSet::<String>::new);
-	let made = use_callback(move |(band, layout)| edit.call(ViewPart::Arrangement { band, layout }));
+	let made = use_callback(move |(band, layout)| edit.call(ViewPart::Arrangement { of: None, band, layout }));
 	let kept = use_callback(move |band| lanes.view.peek().boxes.arrangement.get(&band).cloned());
 	super::use_kept(api, seen, kept, made);
 	let mut host = move |key: &str| {
@@ -319,30 +331,18 @@ fn Columns(view: View, groups: Groups, edit: Callback<ViewPart>, onlay: Callback
 			panels.write().push(column(id, key.to_string()));
 		}
 	};
-	let mut show = move |mut a: PackedApi, layout: &str| -> bool {
-		let mut grid = match tilers_dioxus::model::serial::load(layout) {
-			Ok(grid) => grid,
-			Err(e) => {
-				ctx.say(
-					"columns",
-					super::toast::Tone::Error,
-					format!("the kept columns don't load ({e:?}); nothing kept is overwritten until others are shown"),
-					None,
-				);
-				return false;
+	let mut show = move |a: PackedApi, layout: &str| -> bool {
+		ctx.load(a, layout, "column layout", |grid| {
+			let kept: Vec<PanelId> = grid.cells.iter().flat_map(|c| c.group.tabs.iter()).cloned().collect();
+			for id in kept {
+				let key = id.0.strip_prefix("col:").expect("a column dock hosts only columns");
+				match lanes.view.peek().boxes.hidden.contains(key) {
+					true => grid.close(&id), // arranged before it was hidden, in another band
+					false => host(key),
+				}
 			}
-		};
-		let kept: Vec<PanelId> = grid.cells.iter().flat_map(|c| c.group.tabs.iter()).cloned().collect();
-		for id in kept {
-			let key = id.0.strip_prefix("col:").expect("a column dock hosts only columns");
-			match lanes.view.peek().boxes.hidden.contains(key) {
-				true => grid.close(&id), // arranged before it was hidden, in another band
-				false => host(key),
-			}
-		}
-		super::cut(&mut grid, a.rows());
-		a.load(&tilers_dioxus::model::serial::save(&grid)).expect("parsed above, heights cut");
-		true
+			super::cut(grid, a.rows());
+		})
 	};
 	use_effect(use_reactive!(|view, groups| {
 		let (mut v, mut g) = (lanes.view, lanes.groups);
@@ -487,7 +487,7 @@ fn ColumnActions(tile: Tile) -> Element {
 							on_name: move |name: String| {
 								naming.set(false);
 								let a = (*lanes.api.peek()).expect("the column dock entered a band before its menu shows");
-								let View { group_by: by, mut boxes, .. } = lanes.view.peek().clone();
+								let (by, mut boxes) = (lanes.by(), lanes.view.peek().boxes.clone());
 								boxes.arrangement.extend(Arrangement::from([(a.band(), a.save())])); // as it stands, dragged or not
 								let edit = LibraryEdit::Keep(Kept::Columns { name: name.clone(), columns: Layout { by, boxes } });
 								spawn_forever(async move {
@@ -535,7 +535,7 @@ fn use_drop(group: String) -> impl FnMut(DragEvent) + 'static {
 	move |e: DragEvent| {
 		e.prevent_default();
 		let Some(link) = dragged.take() else { return };
-		let by = lanes.view.peek().group_by.clone();
+		let by = grouping(&lanes.view.peek());
 		let GroupBy::State(workflow) = by else {
 			ctx.say("drop", super::toast::Tone::Warn, format!("Only a workflow's columns take a drop; this view groups by {by}"), None);
 			return;
@@ -641,8 +641,8 @@ fn Stacked(view: View, groups: Groups) -> Element {
 	let mut moving = use_signal(|| None::<tedi_core::board::Card>);
 	let board = ctx.board.read();
 	let cards = &board.cards;
-	let workflow = match &view.group_by {
-		GroupBy::State(w) => Some(w.clone()),
+	let workflow = match grouping(&view) {
+		GroupBy::State(w) => Some(w),
 		_ => None,
 	};
 	let drawn = use_drawn(groups.iter().map(|(_, m)| m.len()).max().unwrap_or(0)); // a view with no group
