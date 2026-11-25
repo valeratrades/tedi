@@ -9,17 +9,16 @@ pull_requests = "preset:pull_requests"
 
 [[board.views]]
 name = "Triage"
-query = "is:issue is:open state:kanban/icebox,kanban/triage,kanban/selected,kanban/in_progress,kanban/in_review"
 group_by = "state:kanban"
-sort = "importance"
 shown = ["repo", "number", "assignees", "importance", "hours", "type", "blockers", "prs"]
+hidden = ["done", "wont_do", "backlog"]
+tints = { triage = "orange", selected = "blue", in_progress = "blue", in_review = "purple", done = "green" }
 
 [[board.views]]
 name = "Triage (mine)"
-query = "is:issue is:open assignee:@me state:kanban/icebox,kanban/triage,kanban/selected,kanban/in_progress,kanban/in_review"
 group_by = "state:kanban"
-sort = "importance"
 shown = ["repo", "number", "assignees", "importance", "hours", "type", "blockers", "prs"]
+hidden = ["done", "wont_do", "backlog"]
 
 [board.columns."kanban · notion tints"]
 by = "state:kanban"

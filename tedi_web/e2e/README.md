@@ -13,12 +13,12 @@ tedi_web/e2e/figma.sh [screen]            # reference/*.png from Figma (needs FI
 ```
 
 Screens and frames: 01-board 48:5386, 02-view 10:1607, 03-library 11:3139, 04-workspace 12:3114, 05-scope 48:6437,
-06a-mobile 13:5217, 06b-mobile 13:5488. Compare `out/<s>.png` with `reference/<s>.png`.
+06a-mobile 13:5217, 06b-mobile 13:5488, 07-first-open 48:7379, 08-none-open 48:7797. Compare `out/<s>.png` with `reference/<s>.png`.
 
 ## Specs and renders
 
 ```sh
-nix run .#e2e                  # specs/: the address against the screen (url), a view's order as labels (sort), what is on screen while it loads (loading), the account panel (account)
+nix run .#e2e                  # specs/: the address against the screen (url), the order as labels (sort), workspaces and their lenses (workspace), what is on screen while it loads (loading), the account panel (account)
 nix run .#figma                # every page the address can name, at 1440 and 390, onto a new page of `figmaFile` (flake.nix), "tedi — renders"
 ```
 
@@ -32,8 +32,8 @@ with `libraries/04-workspace.json`. The renders are code's, never read back; the
   states (`.states.json`) and label colours (`.meta.json`).
 - `config.toml`: two views, the org ev-main owning service-arb and ev-estate, column layouts.
 - `libraries/<screen>.json`: the viewer's library (copied to `$XDG_DATA_HOME/tedi/web/mock_user.json` before each shot):
-  tiles per band, current scope, workspaces, kept views. Layouts are tilers schema v3 (xl: 64 steps; 01: board tile 42, issue tile 22);
-  `on_screen.columns` is empty, the app seeds a column per group. `workspace` names the active workspace tab.
+  workspaces (tiles per band and lens), kept views. Layouts are tilers schema v3 (xl: 64 steps; 01: board tile 42, issue tile 22);
+  the views arrange no band, the app seeds a column per group. `workspace` names the one that opens.
 - Store, state and cache live in `$E2E_HOME` (default `/tmp/tedi-e2e`); the server is on `E2E_PORT` (7351), clock `2026-11-23T12:00Z`.
   To use `dx serve` instead of the bundle, run the server on 7341 (`E2E_PORT=7341`) and point chromium at the dx port.
 

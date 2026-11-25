@@ -2575,7 +2575,7 @@ fn a_root_is_owned_by_no_milestone() {
 	insta::assert_snapshot!(drawn.join("\n"), @r#"
 	tedi::chain::root
 
-	  × ev-service-arb/site "v1" can't own o/r "1d": nothing owns a sprint
+	  × ev-service-arb/site "v1" can't own o/r "1d": nothing owns a planning sprint
 	   ╭─[ownership:2:11]
 	 1 │ ev-service-arb/site · v1
 	 2 │ └─► o/r · 1d
@@ -2593,16 +2593,19 @@ fn a_root_is_owned_by_no_milestone() {
 	   ·                   ╰── added by this edit
 	   ╰────
 	  help: drop the new link
-	tedi::chain::root
+	tedi::chain::loop
 
-	  × ev-main/.github "Bottlenecks" can't own ev-quant/.github "Bottlenecks": only a sprint owns Bottlenecks
-	   ╭─[ownership:2:11]
-	 1 │ ev-main/.github · Bottlenecks
-	 2 │ └─► ev-quant/.github · Bottlenecks
-	   ·     ───────────────┬──────────────
-	   ·                    ╰── added by this edit
+	  × ev-main/.github "Bottlenecks" would own itself
+	   ╭─[ownership:2:17]
+	 1 │ ╭─► ev-main/.github · Bottlenecks
+	 2 │ │   └─► ev-quant/.github · Bottlenecks
+	   ·         ───────────────┬──────────────
+	   ·                        ╰── added by this edit
+	 3 │ ╰───────┘
+	   · ────┬────
+	   ·     ╰── already contains ev-main/.github · Bottlenecks
 	   ╰────
-	  help: drop the new link
+	  help: drop the new link, or ev-main/.github from https://github.com/ev-quant/.github/milestone/1
 	"#);
 }
 
@@ -2700,9 +2703,12 @@ fn what_the_chain_allows_lands() {
 	- https://github.com/ev-main/.github/milestone/2
 	- https://github.com/ev-service-arb/site/milestone/1
 	- https://github.com/ev-main/tilers/milestone/1
+	- https://github.com/ev-quant/.github/milestone/1
 	ev-main/.github#2 ci []
 
 	ev-main/tilers#1 0.5 []
+
+	ev-quant/.github#1 Bottlenecks []
 
 	ev-quant/trading_data#1 1.0 []
 	- https://github.com/ev-main/tilers/milestone/1
@@ -2721,7 +2727,7 @@ fn a_bottlenecks_of_no_org_is_an_ordinary_milestone_and_told() {
 	ctx.remote_milestone("ev-main/tilers", 2, "Bottlenecks", "", &[]);
 	ctx.remote_milestone("ev-service-arb/site", 1, "v1", "ship", &[]);
 	let out = pull(&ctx, &["ev-main/tilers", "ev-service-arb/site"]);
-	insta::assert_snapshot!(out.stderr.lines().filter(|l| l.contains("Bottlenecks")).collect::<Vec<_>>().join("\n"), @"");
+	insta::assert_snapshot!(out.stderr.lines().filter(|l| l.contains("Bottlenecks")).collect::<Vec<_>>().join("\n"), @"https://github.com/ev-main/tilers/milestone/2 is taken for an ordinary milestone: only an org's `.github` may have a milestone titled `Bottlenecks`, and ev-main/tilers is none");
 	let out = own(&ctx, &["--offline"], SITE, misplaced);
 	assert!(out.status.success(), "{}", out.stderr);
 }
@@ -2755,7 +2761,7 @@ async fn a_sprint_owns_bottlenecks_and_no_sprint() {
 	insta::assert_snapshot!(drawn(&out), @r#"
 	tedi::chain::root
 
-	  × o/r "1d" can't own o/r "2w": nothing owns a sprint
+	  × o/r "1d" can't own o/r "2w": nothing owns a planning sprint
 	   ╭─[ownership:2:11]
 	 1 │ o/r · 1d
 	 2 │ └─► o/r · 2w
@@ -2913,6 +2919,7 @@ async fn an_issue_given_a_milestone_in_an_editor_is_refused() {
 	});
 	assert!(out.stderr.contains("an issue can't own a milestone"), "stderr: {}", out.stderr);
 	assert!(!local_issue(10).contains("milestone"), "{}", local_issue(10));
+}
 
 /// GitHub's `1d` (o/r#7) becomes `body` and is pulled into the store: what a server's puller does while the editor is open.
 fn pull_midway(ctx: &TestContext, body: &'static str) -> impl FnOnce() + 'static {

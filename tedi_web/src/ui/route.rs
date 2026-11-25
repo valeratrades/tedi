@@ -1,13 +1,12 @@
 //! The address bar. What is on screen reads as an address, and an address moves the screen:
 //! `/view/<id>[/<column layout's id>]`, `/sprint/<owner>/<repo>/<n>`, `/library/<at>`, `/builder/<view>` is the panel last brought up;
-//! `?issue=owner/repo/n` the floating issues, the shown one last; `ws=<id>` the workspace; `scope=` the scope, a named one's
-//! path or a point's GitHub URL.
+//! `?issue=owner/repo/n` the floating issues, the shown one last; `ws=<id>` the workspace, its lens with it.
 
 use std::{fmt, str::FromStr};
 
 use dioxus::{core::spawn_forever, prelude::*};
 use futures::StreamExt as _;
-use tedi_core::{IssueLink, board::Slice};
+use tedi_core::IssueLink;
 use tilers_dioxus::{PanelId, model::serial};
 use wasm_bindgen::{JsCast as _, JsValue, closure::Closure};
 
@@ -20,7 +19,6 @@ pub(super) struct Address {
 	issues: Vec<IssueLink>,
 	/// By id.
 	workspace: Option<String>,
-	scope: Option<Slice>,
 }
 impl Address {
 	pub(super) fn href(&self) -> String {
@@ -35,8 +33,15 @@ impl Address {
 		to
 	}
 
-	pub(super) fn with_scope(&self, scope: Option<Slice>) -> Self {
-		Self { scope, ..self.clone() }
+	pub(super) fn issues_only(self) -> Self {
+		Self {
+			issues: self.issues,
+			..Default::default()
+		}
+	}
+
+	pub(super) fn workspace(&self) -> Option<String> {
+		self.workspace.clone()
 	}
 }
 
@@ -64,12 +69,12 @@ pub(super) fn bar() -> String {
 
 impl Ctx {
 	/// What `id` names: the viewer's, or the team's.
-	fn named(&self, id: &str) -> Option<Item> {
+	pub(super) fn named(&self, id: &str) -> Option<Item> {
 		let (library, setup) = (self.library.read(), self.setup.read());
 		library.as_ref()?.ids.get(id).or_else(|| setup.as_ref()?.ids.get(id)).cloned()
 	}
 
-	fn id_of(&self, item: &Item) -> Option<String> {
+	pub(super) fn id_of(&self, item: &Item) -> Option<String> {
 		let (library, setup) = (self.library.read(), self.setup.read());
 		let held = library.as_ref()?.ids.iter().chain(setup.as_ref()?.ids.iter()).find(|(_, held)| *held == item);
 		held.map(|(id, _)| id.clone())
@@ -77,16 +82,7 @@ impl Ctx {
 
 	/// The column layout `view` was last laid out as, under the grouping it shows.
 	pub(super) fn laid(&self, view: &str) -> Option<String> {
-		let by = self.grouping(view)?;
-		self.library.read().as_ref()?.on_screen.laid.get(view)?.get(&by).cloned()
-	}
-
-	pub(super) fn grouping(&self, view: &str) -> Option<tedi_core::board::GroupBy> {
-		let library = self.library.read();
-		match library.as_ref()?.on_screen.views.get(view) {
-			Some(shown) => Some(shown.group_by.clone()),
-			None => self.views().into_iter().find(|v| v.name == view).map(|v| v.group_by), // never edited on screen: as kept
-		}
+		self.library.read().as_ref()?.laid.get(view).cloned()
 	}
 
 	/// The view last brought up, while it is what the address names.
@@ -134,27 +130,27 @@ impl Ctx {
 		}
 	}
 
-	/// The workspace as it is kept.
+	/// The workspace, as it is kept.
 	pub(super) fn at_workspace(&self, name: &str) -> Address {
 		Address {
 			main: None,
 			issues: Vec::new(),
 			workspace: Some(self.id_of(&Item::Workspace(name.to_string())).expect("every workspace offered has an id")),
-			scope: self.at.read().scope.clone(),
 		}
 	}
 
 	/// What is on screen; none while it is not the viewer's, or not there yet.
 	fn here(&self) -> Option<Address> {
 		let api = (*self.api.read())?;
-		if *self.arranged.read() != Some(api.band()) || self.viewing.read().is_some() {
+		if *self.landing.read() || self.viewing.read().is_some() {
 			return None;
 		}
-		let (workspace, scope) = {
-			let library = self.library.read();
-			let library = library.as_ref()?;
-			(library.workspace.clone(), library.scope.clone())
+		let Some(workspace) = self.workspace.read().clone() else {
+			return Some(Address::default());
 		};
+		if self.seen.read().as_ref().is_none_or(|s| s.band != api.band()) {
+			return None;
+		}
 		let grid = serial::load(&api.save()).expect("a layout loads back from its own save");
 		let is_issue = |p: &PanelId| p.0.starts_with("issue:");
 		let docked = grid.cells.iter().map(|c| (c.w * c.h, c.group.active_panel()));
@@ -184,8 +180,7 @@ impl Ctx {
 		Some(Address {
 			main: main.and_then(|m| self.main_of(&m)),
 			issues,
-			workspace: workspace.and_then(|name| self.id_of(&Item::Workspace(name))),
-			scope,
+			workspace: Some(workspace),
 		})
 	}
 
@@ -203,18 +198,14 @@ impl Ctx {
 	pub(super) async fn reach(self, to: Address) {
 		let (mut moving, mut settling) = (self.moving, self.settling);
 		moving += 1;
-		let library = || self.library.peek().clone().expect("the screen moves once the library arrived");
 		if let Some(id) = &to.workspace {
 			match self.named(id) {
 				Some(Item::Workspace(name)) =>
-					if to.main.is_none() || library().workspace.as_ref() != Some(&name) {
+					if to.main.is_none() || self.workspace.peek().as_ref() != Some(id) || self.viewing.peek().is_some() {
 						self.switch(&name).await;
 					},
 				_ => self.lost("workspace", id),
 			}
-		}
-		if library().scope != to.scope {
-			self.keep(LibraryEdit::Scope(to.scope.clone())).await;
 		}
 		match &to.main {
 			Some(Main::View { id, columns }) => match self.named(id) {
@@ -256,8 +247,7 @@ impl Ctx {
 	/// `view` laid out as the column layout `columns`, whatever was dragged since it last was.
 	pub(super) async fn lay(self, view: String, columns: String) {
 		if self.keep(LibraryEdit::Lay { view: view.clone(), columns }).await {
-			let mut relaid = self.relaid;
-			*relaid.write().entry(view).or_default() += 1;
+			self.relay(view);
 		}
 	}
 }
@@ -377,7 +367,6 @@ impl fmt::Display for Address {
 			})
 			.collect();
 		query.extend(self.workspace.iter().map(|id| format!("ws={id}")));
-		query.extend(self.scope.iter().map(|s| format!("scope={}", enc(&s.to_string()))));
 		match query.is_empty() {
 			true => Ok(()),
 			false => write!(f, "?{}", query.join("&")),
@@ -416,7 +405,6 @@ impl FromStr for Address {
 					to.issues.push(link.ok_or_else(bad)?);
 				}
 				("ws", id) => to.workspace = Some(id.to_string()),
-				("scope", slice) => to.scope = Some(dec(slice)?.parse().map_err(|_| bad())?),
 				_ => return Err(bad()),
 			}
 		}

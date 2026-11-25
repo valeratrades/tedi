@@ -27,11 +27,11 @@ pub async fn edit_sprint(repo: RepoInfo, sprint: Sprint, picking: Option<&Pickin
 		true => SyncMode::Offline,
 		false => mode,
 	};
-	let find = async |sprint: Sprint| match (mode, Local::stored_sprint(repo, sprint)) {
-		(SyncMode::OnExit, Some(stored)) => Ok(stored),
-		_ => find_sprint(repo, sprint, mode).await,
+	let listing = match (mode, Local::stored_sprint(repo, sprint)) {
+		(SyncMode::OnExit, Some(_)) => SyncMode::Offline, // Github is reached only once the editor closes
+		_ => mode,
 	};
-	let link = find(sprint).await?;
+	let link = find_sprint(repo, sprint, listing).await?;
 
 	let own = MilestoneTab::render(&link, sprint, mode).await?;
 	let opened = own.opened.0.serialize();
@@ -44,7 +44,7 @@ pub async fn edit_sprint(repo: RepoInfo, sprint: Sprint, picking: Option<&Pickin
 				Err(e) => beside("selected.md", e),
 			}
 		}
-		let bottlenecks = async { MilestoneTab::render(&find(Sprint::Bottlenecks).await?, Sprint::Bottlenecks, mode).await };
+		let bottlenecks = async { MilestoneTab::render(&find_sprint(repo, Sprint::Bottlenecks, listing).await?, Sprint::Bottlenecks, mode).await };
 		match bottlenecks.await {
 			Ok(tab) => tabs.push(Tab::Milestone(Box::new(tab))),
 			Err(e) if e.downcast_ref::<NoSprint>().is_some() => {} // nor is there one to open
@@ -66,8 +66,10 @@ pub async fn edit_sprint(repo: RepoInfo, sprint: Sprint, picking: Option<&Pickin
 		let mut failed = None;
 		for ((tab, raw), doc) in tabs.into_iter().zip(&raws).zip(docs) {
 			if let Err(e) = tab.land(raw, doc, &moved, mode).await {
-				eprintln!("warning: a tab was not saved: {e:#}");
-				failed = failed.or(Some(e));
+				match failed {
+					None => failed = Some(e), // said by whoever ran us
+					Some(_) => eprintln!("warning: another tab was not saved: {e:#}"),
+				}
 			}
 		}
 		match failed {

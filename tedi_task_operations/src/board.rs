@@ -85,21 +85,16 @@ pub fn load(reach: Reach, trees: &Trees) -> Result<Reading<'_>> {
 	})
 }
 
-/// `named` is one of `views`, or a query; `group` stands over the view's own grouping.
-pub fn listing(board: &Board, named: &str, group: Option<GroupBy>, views: &[View], trees: &Trees, me: Option<&str>) -> Result<Listing> {
-	let (query, group) = match views.iter().find(|v| v.name == named) {
-		Some(view) => (view.query.clone(), group.unwrap_or_else(|| view.group_by.clone())),
-		None => (named.to_string(), group.unwrap_or(GroupBy::Nothing)),
-	};
+pub fn listing(board: &Board, query: String, group: &GroupBy, trees: &Trees, me: Option<&str>) -> Result<Listing> {
 	let mut hits = query.parse::<Query>()?.run(&Within::default(), &board.cards, me)?;
 	let all = hits.len();
 	hits.retain(|&i| board.cards[i].pr.is_none());
-	let groups = tedi_core::board::group(&board.cards, &hits, &group, trees, &Within::default())?
+	let groups = tedi_core::board::group(&board.cards, &hits, group, trees, &Within::default())?
 		.into_iter()
 		.filter(|(_, members)| !members.is_empty())
 		.map(|(key, members)| {
 			let links = members.into_iter().map(|p| board.cards[p.card].link.clone()).collect();
-			((group != GroupBy::Nothing).then_some(key), links)
+			((*group != GroupBy::Nothing).then_some(key), links)
 		})
 		.collect();
 	Ok(Listing {

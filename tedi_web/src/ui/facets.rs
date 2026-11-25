@@ -1,53 +1,58 @@
-//! Quick filters: a facet's chip opens its values with live counts; a pick rewrites the query, ⇧ rules a
-//! value out, a chip's × drops its clause. They only ever rewrite the query string, so it stays the whole of
-//! what a view shows. Importance and hours pick a bound (\`i:>=5\`, \`h:<=3\`), ⌥ the exact value.
+//! Quick filters: a facet's chip opens its values with live counts; a pick rewrites the workspace's search, ⇧ rules
+//! a value out, a chip's × drops its clause. Importance and hours pick a bound (`i:>=5`, `h:<=3`), ⌥ the exact value.
 
 use dioxus::prelude::*;
 use ev_lib::uikit_dioxus::*;
 use strum::IntoEnumIterator as _;
-use tedi_core::board::{Board, Facet, Query, Tally, View};
+use tedi_core::board::{Board, Facet, Query, Tally};
 
 use super::{
 	Ctx,
 	icons::{Glyph, Icon},
 	kit::{Btn, Style},
 };
+use crate::api::{Lens, WorkspacePart};
 
-/// The view a card sits in, when it does.
-#[derive(Clone, Copy)]
-pub(super) struct InView(pub(super) Signal<View>);
-impl InView {
-	pub(super) fn narrow(mut self, edit: impl FnOnce(&mut Query)) {
-		let mut query: Query = self.0.peek().query.parse().expect("values are offered only while their view's query parses");
-		edit(&mut query);
-		self.0.write().query = query.to_string();
+impl Ctx {
+	/// The open workspace's search, rewritten.
+	fn narrow(self, edit: impl FnOnce(&mut Query)) {
+		let Some(Lens { mut search, .. }) = self.lens_now() else {
+			return self.none_open();
+		};
+		edit(&mut search);
+		self.edit_lens(WorkspacePart::Search(search));
 	}
 
+	//#[codestyle::skip(swappable-args)]
 	fn toggle(self, facet: Facet, value: &str, exclude: bool) {
 		self.narrow(|q| q.toggle(facet, value, exclude).expect("offered values are spelled as the query reads them"));
 	}
 }
 
-/// A chip per facet, the ones the query narrows on first.
+/// A chip per facet.
 #[component]
-pub(super) fn FacetBar(query: Query, wrap: bool, #[props(default)] children: Element) -> Element {
-	let facets: Vec<Facet> = Facet::iter().collect();
+pub(super) fn FacetBar(lens: Lens, wrap: bool, children: Element) -> Element {
+	let mut facets: Vec<Facet> = Facet::iter().collect();
+	if !wrap {
+		facets.sort_by_key(|f| lens.search.picked(*f).is_empty()); // stable: those it narrows on in sight
+	}
 	rsx! {
 		div { class: if wrap { "flex min-w-0 flex-1 flex-wrap items-center gap-1" } else { "flex min-w-0 shrink-0 items-center gap-1 overflow-x-auto [scrollbar-width:none]" },
 			for facet in facets {
-				FacetChip { key: "{facet}", facet, query: query.clone() }
+				FacetChip { key: "{facet}", facet, lens: lens.clone() }
 			}
 			{children}
 		}
 	}
 }
 
-/// \`state triage, selected ▾ ×\`: active, its values print inline and × drops the clause.
+/// `state triage, selected ▾ ×`: active, its values print inline and × drops the clause.
 #[component]
-pub(super) fn FacetChip(facet: Facet, query: Query) -> Element {
-	let in_view = use_context::<InView>();
+fn FacetChip(facet: Facet, lens: Lens) -> Element {
+	let ctx = use_context::<Ctx>();
 	let mut open = use_signal(|| false);
-	let picked: Vec<String> = query
+	let picked: Vec<String> = lens
+		.search
 		.picked(facet)
 		.into_iter()
 		.map(|v| match (facet, v.strip_prefix('-')) {
@@ -81,50 +86,45 @@ pub(super) fn FacetChip(facet: Facet, query: Query) -> Element {
 						r#type: "button",
 						class: "text-ink-soft hover:text-ink",
 						title: "drop the {facet} filter",
-						onclick: move |_| in_view.narrow(|q| q.clear(facet)),
+						onclick: move |_| ctx.narrow(|q| q.clear(facet)),
 						Icon { glyph: Glyph::X, class: "size-3" }
 					}
 				}
 			}
 			PopoverContent { align: "start", class: "w-[260px] rounded-[var(--radius)] border border-border bg-popover p-1 text-ink",
-				FacetMenu { facet, query }
+				FacetMenu { facet, lens }
 			}
 		}
 	}
 }
 
-/// Every value the rest of the query leaves, with its count. Computed only while open.
+/// Every value the rest of the lens leaves, with its count. Computed only while open.
 #[component]
-pub(super) fn FacetMenu(facet: Facet, query: Query) -> Element {
+fn FacetMenu(facet: Facet, lens: Lens) -> Element {
 	let ctx = use_context::<Ctx>();
-	let in_view = use_context::<InView>();
 	let mut needle = use_signal(String::new);
 	let board = ctx.board.read();
-	let (Some(Board { cards, .. }), Ok(within)) = (board.as_ref(), ctx.within()) else {
+	let Some(Board { cards, .. }) = board.as_ref() else {
 		return rsx! { span { class: "p-2 text-caption text-ink-soft", "Counted once the board is here" } };
 	};
-	let tallies = match query.tally(facet, &within, cards, ctx.me().as_deref()) {
+	let within = ctx.within().unwrap_or_default(); // nothing of it is on the board: the tiles say so
+	let tallies = match lens.search.tally(facet, &within, cards, ctx.me().as_deref()) {
 		Ok(t) => t,
 		Err(e) => return rsx! { span { class: "p-2 text-caption text-accent-error", "{e}" } },
 	};
 	// the direction its picked bound has, else the one the facet is mostly read in
-	let held = query.picked(facet).into_iter().find_map(|v| [">=", "<="].into_iter().find(|d| v.starts_with(d)));
+	let held = lens.search.picked(facet).into_iter().find_map(|v| [">=", "<="].into_iter().find(|d| v.starts_with(d)));
 	let mut dir = use_signal(|| held.unwrap_or(if facet == Facet::Hours { "<=" } else { ">=" }));
 	let bound = matches!(facet, Facet::Importance | Facet::Hours).then(|| dir());
 	let flip = move |to: &'static str| {
 		dir.set(to);
-		let picked = in_view
-			.0
-			.peek()
-			.query
-			.parse::<Query>()
-			.expect("a facet's menu is open only over a query that parses")
-			.picked(facet)
-			.into_iter()
-			.find(|v| v.starts_with(">=") || v.starts_with("<="));
+		let Some(Lens { search, .. }) = ctx.lens_now() else {
+			return ctx.none_open();
+		};
+		let picked = search.picked(facet).into_iter().find(|v| v.starts_with(">=") || v.starts_with("<="));
 		if let Some(was) = picked {
 			let at = format!("{to}{}", &was[2..]);
-			in_view.narrow(|q| {
+			ctx.narrow(|q| {
 				q.clear(facet);
 				q.toggle(facet, &at, false).expect("a bound the facet reads");
 			});
@@ -175,13 +175,13 @@ pub(super) fn FacetMenu(facet: Facet, query: Query) -> Element {
 						None => format!("⇧-click excludes  ·  -{facet}:"),
 					}
 				}
-				Btn { style: Style::Ghost, onclick: move |_| in_view.narrow(|q| q.clear(facet)), "Clear" }
+				Btn { style: Style::Ghost, onclick: move |_| ctx.narrow(|q| q.clear(facet)), "Clear" }
 			}
 		}
 	}
 }
 
-/// \`≥ 5\` with how many reach it, over a bar of how many sit exactly there: the distribution behind the bound.
+/// `≥ 5` with how many reach it, over a bar of how many sit exactly there: the distribution behind the bound.
 #[component]
 fn Bounds(facet: Facet, bound: &'static str, tallies: Vec<Tally>, needle: String) -> Element {
 	let mut exact: Vec<(u16, usize, Option<bool>)> = tallies.iter().filter_map(|t| Some((t.value.parse().ok()?, t.count, t.picked))).collect();
@@ -214,19 +214,19 @@ fn Bounds(facet: Facet, bound: &'static str, tallies: Vec<Tally>, needle: String
 //#[codestyle::skip(swappable-args)]
 #[component]
 fn Value(facet: Facet, value: String, label: String, count: usize, picked: Option<bool>, bar: Option<f32>) -> Element {
-	let in_view = use_context::<InView>();
+	let ctx = use_context::<Ctx>();
 	rsx! {
 		button {
 			r#type: "button",
 			class: if picked.is_some() { "relative flex h-7 items-center gap-2 rounded-[var(--control-radius)] bg-selected px-2 text-left" } else { "relative flex h-7 items-center gap-2 rounded-[var(--control-radius)] px-2 text-left hover:bg-hover" },
 			onclick: move |e: MouseEvent| {
 				match bar {
-					Some(_) if picked != Some(true) => in_view.narrow(|q| {
+					Some(_) if picked != Some(true) => ctx.narrow(|q| {
 						q.clear(facet);
 						q.toggle(facet, &value, false).expect("a bound the facet reads");
 					}),
-					Some(_) => in_view.narrow(|q| q.clear(facet)),
-					None => in_view.toggle(facet, &value, e.modifiers().shift()),
+					Some(_) => ctx.narrow(|q| q.clear(facet)),
+					None => ctx.toggle(facet, &value, e.modifiers().shift()),
 				}
 			},
 			if let Some(bar) = bar {
@@ -245,22 +245,20 @@ fn Value(facet: Facet, value: String, label: String, count: usize, picked: Optio
 	}
 }
 
-/// A value a card shows, which narrows its view to it when it sits in one.
+/// A value a card shows, which narrows the workspace to it.
 #[component]
 pub(super) fn Pick(facet: Facet, value: String, children: Element) -> Element {
-	match try_use_context::<InView>() {
-		None => rsx! { {children} },
-		Some(in_view) => rsx! {
-			button {
-				r#type: "button",
-				class: "cursor-pointer",
-				title: "{facet}:{value} · ⇧: rule out",
-				onclick: move |e: MouseEvent| {
-					e.stop_propagation();
-					in_view.toggle(facet, &value, e.modifiers().shift());
-				},
-				{children}
-			}
-		},
+	let ctx = use_context::<Ctx>();
+	rsx! {
+		button {
+			r#type: "button",
+			class: "cursor-pointer",
+			title: "{facet}:{value} · ⇧: rule out",
+			onclick: move |e: MouseEvent| {
+				e.stop_propagation();
+				ctx.toggle(facet, &value, e.modifiers().shift());
+			},
+			{children}
+		}
 	}
 }

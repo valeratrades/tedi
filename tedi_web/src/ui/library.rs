@@ -4,7 +4,6 @@
 
 use dioxus::prelude::*;
 use ev_lib::uikit_dioxus::*;
-use tedi_core::board::{Slice, View};
 use tilers_dioxus::{PanelId, model::serial};
 
 use super::{
@@ -15,7 +14,7 @@ use super::{
 	toast::Tone as Said,
 	workspace,
 };
-use crate::api::{self, Catalog, Construction, Entry, Item, LibraryEdit, Onto, Origin, Owner, ShareLink, Shelf, band_name, constructions, diff};
+use crate::api::{self, Arrangement, Boxes, Catalog, Construction, Entry, Item, LibraryEdit, Onto, Origin, Owner, ShareLink, Shelf, View, Workspace, band_name, constructions, diff};
 
 //#[codestyle::skip(swappable-args)]
 /// A name typed in place: Enter takes it, Escape or leaving the field drops it.
@@ -78,7 +77,7 @@ fn focus(at: &str) -> Result<(Option<Shelf>, Option<String>), String> {
 	};
 	let shelf = match kind {
 		"" => None,
-		"views" | "view" => Some(Shelf::Filters),
+		"views" | "view" => Some(Shelf::Views),
 		"scopes" | "scope" => Some(Shelf::Scopes),
 		"workspaces" | "workspace" => Some(Shelf::Workspaces),
 		"columns" => Some(Shelf::Columns),
@@ -89,7 +88,7 @@ fn focus(at: &str) -> Result<(Option<Shelf>, Option<String>), String> {
 
 fn kind_name(shelf: Shelf) -> &'static str {
 	match shelf {
-		Shelf::Filters => "View",
+		Shelf::Views => "View",
 		Shelf::Scopes => "Scope",
 		Shelf::Workspaces => "Workspace",
 		Shelf::Columns => "Column layout",
@@ -98,7 +97,7 @@ fn kind_name(shelf: Shelf) -> &'static str {
 
 fn kind_glyph(shelf: Shelf) -> Glyph {
 	match shelf {
-		Shelf::Filters => Glyph::View,
+		Shelf::Views => Glyph::View,
 		Shelf::Scopes => Glyph::Scope,
 		Shelf::Workspaces => Glyph::Workspace,
 		Shelf::Columns => Glyph::Columns,
@@ -109,7 +108,7 @@ fn kind_glyph(shelf: Shelf) -> Glyph {
 #[component]
 fn KindTag(shelf: Shelf) -> Element {
 	let tone = match shelf {
-		Shelf::Filters => Tone::Info,
+		Shelf::Views => Tone::Info,
 		Shelf::Scopes => Tone::Positive,
 		Shelf::Workspaces => Tone::Purple,
 		Shelf::Columns => Tone::Pink,
@@ -155,12 +154,7 @@ fn Thumb(construction: Construction, #[props(default)] large: bool) -> Element {
 					.unwrap_or_default(), // a workflow this board lacks: drawn uncoloured
 				_ => Vec::new(),
 			};
-			let tints = ctx
-				.library
-				.read()
-				.as_ref()
-				.and_then(|l| l.on_screen.tints.get(&view.name).and_then(|t| t.get(&view.group_by)).cloned())
-				.unwrap_or_default(); // never tinted
+			let tints = &view.boxes.tints;
 			let hues: Vec<String> = (0..5)
 				.map(|i| match columns.get(i).and_then(|c| tints.get(c)) {
 					Some(t) => format!("var(--tint-{t})"),
@@ -203,7 +197,7 @@ fn Thumb(construction: Construction, #[props(default)] large: bool) -> Element {
 				}
 			}
 		}
-		Construction::Workspace(tiles) => {
+		Construction::Workspace(Workspace { tiles, .. }) => {
 			let layout = tiles.get(&tilers_dioxus::Band::Xl).or_else(|| tiles.values().next());
 			let cells = layout.and_then(|l| serial::load(l).ok()).map(|g| g.cells).unwrap_or_default(); // an unreadable layout draws empty: Open says why
 			let (cols, rows) = (
@@ -224,7 +218,7 @@ fn Thumb(construction: Construction, #[props(default)] large: bool) -> Element {
 		}
 		Construction::Columns(columns) => rsx! {
 			div { class: "flex h-full gap-1",
-				for (group , tint) in columns.tints.iter() {
+				for (group , tint) in columns.boxes.tints.iter() {
 					div { key: "{group}", class: "flex flex-1 flex-col gap-1",
 						div { class: "h-full rounded-sm", style: "background: color-mix(in srgb, var(--tint-{tint}) 40%, var(--card))" }
 						span { class: "truncate text-mono-s text-ink-soft", "{group}" }
@@ -248,8 +242,8 @@ fn objects(ctx: &Ctx) -> Vec<(Owner, Item, Construction)> {
 	let team = constructions(&setup.views, &setup.scopes, &setup.columns, &setup.workspaces)
 		.into_iter()
 		.map(|(i, c)| (Owner::Team, i, c));
-	let filters: Vec<View> = library.filters.values().cloned().collect();
-	let mine = constructions(&filters, &library.scopes, &library.columns, &library.workspaces)
+	let views: Vec<View> = library.views.values().cloned().collect();
+	let mine = constructions(&views, &library.scopes, &library.columns, &library.workspaces)
 		.into_iter()
 		.map(|(i, c)| (Owner::Viewer(String::new()), i, c));
 	team.chain(mine).collect()
@@ -357,7 +351,7 @@ pub(super) fn LibraryPanel(at: String) -> Element {
 							oninput: move |e| search.set(e.value()),
 						}
 					}
-					for k in [Shelf::Filters, Shelf::Scopes, Shelf::Workspaces, Shelf::Columns] {
+					for k in [Shelf::Views, Shelf::Scopes, Shelf::Workspaces, Shelf::Columns] {
 						button {
 							key: "{k:?}",
 							r#type: "button",
@@ -480,25 +474,25 @@ fn open(ctx: Ctx, owner: &Owner, item: &Item, construction: &Construction) {
 	match (item, construction) {
 		(Item::View(name), _) => ctx.open(PanelId(format!("view:{name}"))),
 		(Item::Workspace(name), _) => ctx.go(ctx.at_workspace(name)),
-		(Item::Scope(path), _) => {
-			let path = path.clone();
-			spawn(async move { _ = ctx.keep(LibraryEdit::Scope(Some(Slice::Named(path)))).await });
-		}
-		(Item::Columns(name), Construction::Columns(columns)) => {
-			let onto: Vec<String> = ctx.views().into_iter().filter(|v| v.group_by == columns.by).map(|v| v.name).collect();
-			match onto.as_slice() {
-				[] => ctx.say("library", Said::Info, format!("no view groups by {}: {name} colours none", columns.by), None),
-				_ => {
-					let mut m = ctx.modal;
-					m.set(Some(Modal::ApplyColumns {
-						name: name.clone(),
-						owner: owner.clone(),
-					}));
-				}
+		(Item::Scope(path), _) => ctx.start_from(Some(path.clone())),
+		(Item::Columns(name), Construction::Columns(columns)) => match grouped_by(&ctx, &columns.by).as_slice() {
+			[] => ctx.say("library", Said::Info, format!("no view groups by {}: {name} colours none", columns.by), None),
+			_ => {
+				let mut m = ctx.modal;
+				m.set(Some(Modal::ApplyColumns {
+					name: name.clone(),
+					owner: owner.clone(),
+				}));
 			}
-		}
+		},
 		(item, construction) => panic!("{item:?} holds no {construction:?}"),
 	}
+}
+
+/// The views grouping `by`, as last edited.
+fn grouped_by(ctx: &Ctx, by: &tedi_core::board::GroupBy) -> Vec<String> {
+	let names = ctx.views().into_iter().map(|v| v.name);
+	names.filter(|n| ctx.view(n).is_some_and(|v| v.group_by == *by)).collect()
 }
 
 fn fork(ctx: Ctx, from: Origin, name: &str) {
@@ -513,16 +507,28 @@ fn fork(ctx: Ctx, from: Origin, name: &str) {
 /// A pinned link to `item` as it stands, onto the clipboard; a workspace's carries every band it arranged.
 fn share(ctx: Ctx, item: Item, construction: &Construction) {
 	let bands = match construction {
-		Construction::Workspace(tiles) => tiles.keys().copied().collect(),
+		Construction::Workspace(workspace) => workspace.tiles.keys().copied().collect(),
 		_ => Vec::new(),
 	};
-	let scope = ctx.library.read().as_ref().and_then(|l| l.scope.clone());
 	spawn(async move {
-		match api::share(item, bands, scope).await {
+		ctx.flush().await;
+		match api::share(item, bands).await {
 			Ok(link) => workspace::copy_link(ctx, &link),
 			Err(e) => ctx.say("share", Said::Error, e.to_string(), None),
 		}
 	});
+}
+
+fn bands(of: &Arrangement) -> String {
+	of.keys().map(|b| band_name(*b)).collect::<Vec<_>>().join(" ")
+}
+
+fn boxes(of: &Boxes) -> Vec<(&'static str, String)> {
+	vec![
+		("tints", of.tints.iter().map(|(g, t)| format!("{g} {t}")).collect::<Vec<_>>().join(" ")),
+		("hidden", of.hidden.iter().cloned().collect::<Vec<_>>().join(" ")),
+		("arranged for", bands(&of.arrangement)),
+	]
 }
 
 /// The picked object: preview, definition, counts, its moves, its link, history and forks.
@@ -557,15 +563,26 @@ fn Detail(owner: Owner, item: Item, construction: Construction, entry: Option<En
 		(_, _, None) => "yours".to_string(),
 	};
 	let definition: Vec<(&str, String)> = match &construction {
-		Construction::View(v) => vec![
-			("query", v.query.clone()),
-			("group_by", v.group_by.to_string()),
-			("sort", v.sort.to_string()),
-			("fields", v.shown.iter().cloned().map(String::from).collect::<Vec<_>>().join(" ")),
+		Construction::View(v) => [
+			vec![
+				("group_by", v.group_by.to_string()),
+				("fields", v.shown.iter().cloned().map(String::from).collect::<Vec<_>>().join(" ")),
+			],
+			boxes(&v.boxes),
+		]
+		.concat(),
+		Construction::Scope(s) => vec![
+			("repos", s.repos.join(" ")),
+			("terms", s.terms.to_string()),
+			("nested", s.children.keys().cloned().collect::<Vec<_>>().join(" ")),
 		],
-		Construction::Scope(s) => vec![("repos", s.repos.join(" ")), ("nested", s.children.keys().cloned().collect::<Vec<_>>().join(" "))],
-		Construction::Workspace(tiles) => vec![("arranged for", tiles.keys().map(|b| band_name(*b)).collect::<Vec<_>>().join(" "))],
-		Construction::Columns(c) => vec![("by", c.by.to_string()), ("tints", c.tints.iter().map(|(g, t)| format!("{g} {t}")).collect::<Vec<_>>().join(" "))],
+		Construction::Workspace(Workspace { tiles, lens }) => vec![
+			("arranged for", bands(tiles)),
+			("scope", lens.scope.to_string()),
+			("search", lens.search.to_string()),
+			("sort", lens.sort.to_string()),
+		],
+		Construction::Columns(c) => [vec![("by", c.by.to_string())], boxes(&c.boxes)].concat(),
 	};
 	let usage = entry.as_ref().map(|e| e.usage.clone()).unwrap_or_default(); // the counts are still loading
 	let behind_only = entry.as_ref().and_then(|e| e.behind).is_some_and(|b| b > 0) && upstream.as_ref().is_some_and(|u| u.ahead == 0);
@@ -741,7 +758,7 @@ fn SharedDetail(link: ShareLink, on_pick: EventHandler<(Owner, Item)>) -> Elemen
 					onclick: {
 						let (link, name) = (link.clone(), name.clone());
 						move |_| {
-							let (from, name) = (Origin::Link(Box::new(link.clone())), name.clone());
+							let (from, name) = (Origin::Link(link.clone()), name.clone());
 							let shelf = link.item.shelf();
 							spawn(async move {
 								if ctx.keep(LibraryEdit::Fork { from, name: name.clone() }).await {
@@ -830,6 +847,7 @@ pub(super) fn Propose(item: Item) -> Element {
 								let (item, text) = (item.clone(), message());
 								sending.set(true);
 								spawn(async move {
+									ctx.flush().await;
 									match api::propose(item, onto, text).await {
 										Ok(url) => {
 											let pr = url.rsplit_once("/pull/").map_or(url.clone(), |(repo, n)| format!("{}#{n}", repo.rsplit('/').next().expect("rsplit yields one")));
@@ -873,7 +891,7 @@ pub(super) fn ApplyColumns(name: String, owner: Owner) -> Element {
 		let mut m = ctx.modal;
 		m.set(None);
 	};
-	let onto: Vec<String> = ctx.views().into_iter().filter(|v| v.group_by == columns.by).map(|v| v.name).collect();
+	let onto = grouped_by(&ctx, &columns.by);
 	rsx! {
 		Dialog { open: true, on_open_change: move |v: bool| if !v { close() },
 			DialogContent { class: "flex flex-col gap-1 sm:max-w-sm",

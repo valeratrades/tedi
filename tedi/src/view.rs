@@ -11,17 +11,17 @@ use crate::config::{LiveSettings, States};
 
 #[derive(clap::Args)]
 pub struct ViewArgs {
-	/// A view named in the config's `board.views` (the home's, with one), or a query: `state:kanban/triage,kanban/selected t:bug i:>=5 repo:owner/* text`.
+	/// `state:kanban/triage,kanban/selected t:bug i:>=5 repo:owner/* text`
 	query: Vec<String>,
-	/// Split into one section per value; a named view brings its own.
-	#[arg(long)]
-	group: Option<GroupBy>,
+	/// Split into one section per value.
+	#[arg(long, default_value = "nothing")]
+	group: GroupBy,
 }
 
 pub async fn view_command(settings: &LiveSettings, args: ViewArgs, mode: SyncMode) -> Result<()> {
-	let named = args.query.join(" ");
+	let query = args.query.join(" ");
 	let listing = match settings.config()?.states()? {
-		States::Home(home) => home.view(&named, args.group.as_ref()).await?,
+		States::Home(home) => home.view(&query, &args.group).await?,
 		States::Here(config) => {
 			let workflows = config.workflows()?;
 			let mut reading = board::load(Reach::All, &workflows.trees)?;
@@ -33,9 +33,9 @@ pub async fn view_command(settings: &LiveSettings, args: ViewArgs, mode: SyncMod
 				eprintln!("unreadable, left out: {}: {}", path.display(), e.lines().next().unwrap_or_default());
 			}
 			let me = tedi_task_operations::current_user::get();
-			board::listing(&board, &named, args.group, &config.views, &workflows.trees, me.as_deref())?
+			board::listing(&board, query, &args.group, &workflows.trees, me.as_deref())?
 		}
-		States::Nowhere => bail!("`tedi view` reads the config's `board` (`workflows`, `views`), or asks its `home`"),
+		States::Nowhere => bail!("`tedi view` reads the config's `board` (`workflows`), or asks its `home`"),
 	};
 	if listing.pull_requests > 0 {
 		eprintln!("{} pull requests match, left out: a task view holds issues", listing.pull_requests);

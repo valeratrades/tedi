@@ -1,0 +1,32 @@
+{
+ "workspace": null,
+ "views": {},
+ "workspaces": {
+  "ws 1": {
+   "tiles": {},
+   "lens": {
+    "scope": "",
+    "search": "",
+    "sort": "rank"
+   }
+  }
+ },
+ "columns": {},
+ "scopes": {
+  "core": {
+   "repos": [
+    "valeratrades/tedi",
+    "service-arb/*"
+   ]
+  }
+ },
+ "drafts": {
+  "views": {},
+  "workspaces": {}
+ },
+ "favorites": [
+  {
+   "View": "Triage"
+  }
+ ]
+}

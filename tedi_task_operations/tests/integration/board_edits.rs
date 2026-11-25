@@ -71,9 +71,9 @@ fn the_board_shows_open_milestones_an_orgs_sprints_among_them() {
 		.map(|t| format!("{} {} {}", t["title"], t["description"], t["nodes"]))
 		.collect();
 	insta::assert_snapshot!(shown.join("\n"), @r#"
-	"v1" "ship it" ["https://github.com/o/r/issues/1"]
-	"1d" "the day" ["https://github.com/o/r/issues/1","https://github.com/o/r/milestone/3"]
 	"Bottlenecks" "" ["https://github.com/o/r/issues/1"]
+	"v1" "ship it" ["https://github.com/o/r/issues/1"]
+	"1d" "the day" ["https://github.com/o/r/issues/1","https://github.com/o/.github/milestone/3"]
 	"#);
 
 	// what is planned is not the board's to say; what is a bottleneck is
@@ -279,25 +279,4 @@ fn the_board_carries_who_a_repos_issues_go_to() {
 	pulled(&ctx, |_| {});
 	let (_server, port) = serve(&ctx, BOARD, &[]);
 	assert_eq!(board(port)["assignable"]["o/r"], json!(["mock_user"]));
-}
-
-#[test]
-fn the_board_carries_what_a_milestone_contains() {
-	let ctx = TestContext::build();
-	pulled(&ctx, |ctx| {
-		ctx.remote_milestone("o/r", 1, "v1", "- #1\n- https://github.com/o/s/milestone/4", &[]);
-		ctx.remote_milestone("o/s", 4, "launch", "- https://github.com/o/r/milestone/1", &[]);
-	});
-	let (_server, port) = serve(&ctx, BOARD, &[]);
-	let board = board(port);
-	let owned: Vec<String> = board["targets"]
-		.as_array()
-		.unwrap()
-		.iter()
-		.map(|t| format!("{} hosts {} contains {}", t["title"], t["hosted"], t["contains"]))
-		.collect();
-	insta::assert_snapshot!(owned.join("\n"), @r#"
-	"launch" hosts [] contains ["https://github.com/o/r/milestone/1"]
-	"v1" hosts ["https://github.com/o/r/issues/1"] contains ["https://github.com/o/s/milestone/4"]
-	"#);
 }

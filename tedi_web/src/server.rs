@@ -24,8 +24,8 @@ use dioxus_fullstack::ServerEvents;
 use futures::{Stream, StreamExt as _};
 use tedi_core::{
 	IssueLink, MilestoneLink, RepoInfo,
-	board::{Answer, Board, GroupBy, Hit, Listing, Query, Scope, Slice, Thread, View, Within, scope_at},
-	chain::{GITHUB, Orgs},
+	board::{Answer, Board, GroupBy, Hit, Listing, Query, Scope, Thread, Within, scope_at},
+	chain::Orgs,
 	conflict::{CommentEdit, Conflict, Edited, FieldEdit},
 	workflow::State,
 };
@@ -39,8 +39,8 @@ use tedi_task_operations::{
 use tokio::sync::{Mutex, broadcast, mpsc};
 
 use crate::api::{
-	Arrangement, Catalog, Change, Construction, Dock, Entry as Cataloged, Fork, Forked, Item, Kept, Library, LibraryEdit, Onto, Origin, Owner, Setup, ShareLink, Shared, Shelf, Upstream,
-	Usage, Version, diff,
+	Catalog, Change, Construction, Entry as Cataloged, Fork, Forked, Item, Kept, Library, LibraryEdit, Onto, Origin, Owner, Setup, ShareLink, Shared, Shelf, Upstream, Usage, Version, View,
+	ViewPart, Workspace, diff,
 };
 
 /// Each team object's versions, oldest first, with what each holds: a version per commit that changed it.
@@ -56,7 +56,7 @@ pub struct Settings {
 	pub orgs: Orgs,
 	pub scopes: BTreeMap<String, Scope>,
 	pub columns: BTreeMap<String, crate::api::Columns>,
-	pub workspaces: BTreeMap<String, Arrangement>,
+	pub workspaces: BTreeMap<String, Workspace>,
 	pub source: Option<Source>,
 	/// Owners and `owner/repo`s: what the periodic pull pulls, and the only repos a webhook delivery is pulled for.
 	pub watch: Vec<String>,
@@ -92,9 +92,6 @@ pub async fn serve(config: Settings) -> Result<()> {
 	use tower_http::services::{ServeDir, ServeFile};
 
 	let addr = config.addr;
-	for name in config.scopes.keys() {
-		nameable(name)?;
-	}
 	SETTINGS.set(config).map_err(|_| eyre!("one server per process"))?;
 	//UNBOUNDED announcements are repo names, deduplicated by the puller
 	let (announce, announced) = mpsc::unbounded_channel::<Pull>();
@@ -169,7 +166,7 @@ pub async fn query(headers: &HeaderMap, asked: String) -> Result<Answer> {
 	let caller = Caller::of(headers)?;
 	let login = caller.act(async { client::login() }).await;
 	let board = whole(caller.reach).await?;
-	let hits = asked.parse::<Query>()?.run(&board.cards, login.as_deref())?;
+	let hits = asked.parse::<Query>()?.run(&Within::default(), &board.cards, login.as_deref())?;
 	Ok(Answer {
 		trees: settings().workflows.trees.clone(),
 		hits: hits
@@ -183,11 +180,10 @@ pub async fn query(headers: &HeaderMap, asked: String) -> Result<Answer> {
 	})
 }
 
-pub async fn view(headers: &HeaderMap, named: String, group: Option<GroupBy>) -> Result<Listing> {
+pub async fn view(headers: &HeaderMap, query: String, group: GroupBy) -> Result<Listing> {
 	let caller = Caller::of(headers)?;
 	let login = caller.act(async { client::login() }).await;
-	let s = settings();
-	tedi_task_operations::board::listing(&whole(caller.reach).await?, &named, group, &s.views, &s.workflows.trees, login.as_deref())
+	tedi_task_operations::board::listing(&whole(caller.reach).await?, query, &group, &settings().workflows.trees, login.as_deref())
 }
 
 pub async fn edit(headers: &HeaderMap, link: IssueLink, edits: Vec<FieldEdit>) -> Result<Edited> {
@@ -327,18 +323,10 @@ pub async fn catalog(headers: &HeaderMap) -> Result<Catalog> {
 			usage.entry(upstream.clone()).or_default().forks += 1;
 			refers.insert(upstream);
 		}
-		let layouts = library.on_screen.tiles.values().chain(library.workspaces.values().flat_map(|w| w.values()));
-		for layout in layouts {
+		let workspaces = library.workspaces.values().chain(library.drafts.workspaces.values());
+		for layout in workspaces.flat_map(|w| w.tiles.values()) {
 			for view in viewed(layout)? {
 				let item = Item::View(view);
-				refers.insert((owner_of(viewer, &item), item));
-			}
-		}
-		if let Some(Slice::Named(path)) = &library.scope {
-			let mut at = String::new();
-			for name in path.split(" / ") {
-				at = if at.is_empty() { name.to_string() } else { format!("{at} / {name}") };
-				let item = Item::Scope(at.clone());
 				refers.insert((owner_of(viewer, &item), item));
 			}
 		}
@@ -412,7 +400,7 @@ pub async fn catalog(headers: &HeaderMap) -> Result<Catalog> {
 	Ok(Catalog { entries })
 }
 
-pub async fn share(headers: &HeaderMap, item: Item, bands: Vec<tilers_core::Band>, scope: Option<Slice>) -> Result<ShareLink> {
+pub async fn share(headers: &HeaderMap, item: Item, bands: Vec<tilers_core::Band>) -> Result<ShareLink> {
 	let me = viewer(headers)?;
 	let workspace = matches!(item, Item::Workspace(_));
 	if workspace == bands.is_empty() {
@@ -428,8 +416,8 @@ pub async fn share(headers: &HeaderMap, item: Item, bands: Vec<tilers_core::Band
 			.and_then(|h| h.iter().rev().find(|(_, c)| c == running))
 			.map(|(v, _)| v.v)
 			.ok_or_else(|| eyre!("the team's {} is unpublished: no commit of the config holds it as the board runs it", item.name()))?;
-		if let Construction::Workspace(tiles) = running
-			&& let Some(band) = bands.iter().find(|b| !tiles.contains_key(b))
+		if let Construction::Workspace(workspace) = running
+			&& let Some(band) = bands.iter().find(|b| !workspace.tiles.contains_key(b))
 		{
 			bail!("the team's workspace {} has no {} arrangement", item.name(), crate::api::band_name(*band));
 		}
@@ -438,7 +426,6 @@ pub async fn share(headers: &HeaderMap, item: Item, bands: Vec<tilers_core::Band
 			owner: Owner::Team,
 			version,
 			bands,
-			scope,
 		});
 	}
 	let _held = LIBRARIES.lock().await;
@@ -446,14 +433,14 @@ pub async fn share(headers: &HeaderMap, item: Item, bands: Vec<tilers_core::Band
 	let mut construction = kept(&library, &item).ok_or_else(|| eyre!("{} is not kept", item.name()))?;
 	let mut shares = read_shares(&me)?;
 	let mut carried = BTreeMap::new();
-	if let Construction::Workspace(tiles) = &mut construction {
+	if let Construction::Workspace(Workspace { tiles, .. }) = &mut construction {
 		if let Some(band) = bands.iter().find(|b| !tiles.contains_key(b)) {
 			bail!("{} has no {} arrangement", item.name(), crate::api::band_name(*band));
 		}
 		tiles.retain(|band, _| bands.contains(band));
 		for layout in tiles.values() {
 			for name in viewed(layout)? {
-				if let Some(view) = library.filters.get(&name) {
+				if let Some(view) = library.views.get(&name) {
 					let v = shares.pin(Item::View(name.clone()), Construction::View(view.clone()), BTreeMap::new());
 					carried.insert(name, v);
 				}
@@ -467,7 +454,6 @@ pub async fn share(headers: &HeaderMap, item: Item, bands: Vec<tilers_core::Band
 		owner: Owner::Viewer(me),
 		version,
 		bands,
-		scope,
 	})
 }
 
@@ -517,7 +503,7 @@ pub async fn propose(headers: &HeaderMap, item: Item, onto: Onto, message: Strin
 		None => Vec::new(),
 	};
 	let kind = match item.shelf() {
-		Shelf::Filters => "view",
+		Shelf::Views => "view",
 		Shelf::Scopes => "scope",
 		Shelf::Workspaces => "workspace",
 		Shelf::Columns => "column layout",
@@ -762,46 +748,53 @@ fn library_file(key: &str) -> PathBuf {
 
 fn read_library(key: &str) -> Result<Library> {
 	let file = library_file(key);
-	match std::fs::read_to_string(&file) {
-		Ok(json) => {
-			let mut library: Library = serde_json::from_str(&json).wrap_err_with(|| format!("{} doesn't read as a library", file.display()))?;
-			for item in addressed(kept_items(&library).into_iter()) {
-				if !library.ids.values().any(|held| *held == item) {
-					library.ids.insert(id(key, &item), item); // kept before ids were; a rename writes it down
-				}
-			}
-			Ok(library)
+	let mut library: Library = match std::fs::read_to_string(&file) {
+		Ok(json) => serde_json::from_str(&json).wrap_err_with(|| format!("{} doesn't read as a library", file.display()))?,
+		Err(e) if e.kind() == std::io::ErrorKind::NotFound => Library::default(), // a viewer who never kept anything
+		Err(e) => return Err(e.into()),
+	};
+	for item in addressed(kept_items(&library).into_iter()) {
+		if !library.ids.values().any(|held| *held == item) {
+			library.ids.insert(id(key, &item), item); // held by no file yet; an edit writes it down
 		}
-		Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Library::default()), // a viewer who never kept anything
-		Err(e) => Err(e.into()),
 	}
+	Ok(library)
 }
 
 /// `fetched`: a fork's or pull's upstream, read before the edit.
 fn apply(library: &mut Library, edit: LibraryEdit, fetched: Option<Fetched>) -> Result<()> {
 	let team = team_items(settings());
 	match edit {
-		LibraryEdit::Arranged { dock: Dock::Tiles, band, layout } => {
-			if let Some(current) = library.workspace.clone()
-				&& let Some(workspace) = library.workspaces.get(&current)
-				&& workspace.get(&band) != Some(&layout)
-			{
-				let mut tiles = workspace.clone();
-				tiles.insert(band, layout.clone());
-				save(library, Item::Workspace(current), Construction::Workspace(tiles));
-				library.autosaved = Some(jiff::Timestamp::now());
+		LibraryEdit::Workspace { workspace, part } => {
+			let mut edited = library.workspace(&settings().workspaces, &workspace).ok_or_else(|| eyre!("no workspace {workspace}"))?;
+			let was = edited.clone();
+			edited.set(part);
+			match settings().workspaces.get(&workspace) {
+				_ if edited == was => {}
+				Some(theirs) if *theirs == edited => _ = library.drafts.workspaces.remove(&workspace),
+				Some(_) => _ = library.drafts.workspaces.insert(workspace, edited),
+				None => {
+					library.autosaved.insert(workspace.clone(), jiff::Timestamp::now());
+					save(library, Item::Workspace(workspace), Construction::Workspace(edited));
+				}
 			}
-			library.on_screen.tiles.insert(band, layout);
 		}
-		LibraryEdit::Arranged {
-			dock: Dock::Columns { view, by },
-			band,
-			layout,
-		} => {
-			library.on_screen.columns.entry(view).or_default().entry(by).or_default().insert(band, layout);
+		LibraryEdit::View { view, part } => {
+			let mut edited = library.view(&settings().views, &view).ok_or_else(|| eyre!("no view {view}"))?;
+			if let ViewPart::GroupBy(by) = &part
+				&& *by != edited.group_by
+			{
+				library.laid.remove(&view);
+			}
+			edited.set(part);
+			draft(library, edited);
 		}
-		LibraryEdit::Viewed(view) => _ = library.on_screen.views.insert(view.name.clone(), view),
-		LibraryEdit::Tinted { view, by, tints } => _ = library.on_screen.tints.entry(view).or_default().insert(by, tints),
+		LibraryEdit::Revert(Item::View(name)) => {
+			library.laid.remove(&name);
+			library.drafts.views.remove(&name).ok_or_else(|| eyre!("{name} is as kept"))?;
+		}
+		LibraryEdit::Revert(Item::Workspace(name)) => _ = library.drafts.workspaces.remove(&name).ok_or_else(|| eyre!("{name} is as the team has it"))?,
+		LibraryEdit::Revert(item) => bail!("{item:?} is never drafted"),
 		LibraryEdit::Lay { view, columns } => {
 			let laid = library
 				.columns
@@ -809,59 +802,36 @@ fn apply(library: &mut Library, edit: LibraryEdit, fetched: Option<Fetched>) -> 
 				.or_else(|| settings().columns.get(&columns))
 				.cloned()
 				.ok_or_else(|| eyre!("no column layout {columns}"))?;
-			let on_screen = &mut library.on_screen;
-			on_screen.columns.entry(view.clone()).or_default().entry(laid.by.clone()).or_default().extend(laid.layout);
-			on_screen.tints.entry(view.clone()).or_default().insert(laid.by.clone(), laid.tints);
-			on_screen.laid.entry(view).or_default().insert(laid.by, columns);
+			let mut edited = library.view(&settings().views, &view).ok_or_else(|| eyre!("no view {view}"))?;
+			if edited.group_by != laid.by {
+				bail!("the columns {columns} are by {}, and {view} groups by {}", laid.by, edited.group_by);
+			}
+			edited.boxes = laid.boxes;
+			draft(library, edited);
+			library.laid.insert(view, columns);
 		}
-		LibraryEdit::Locked { view, locked: true } => _ = library.on_screen.locked.insert(view),
-		LibraryEdit::Locked { view, locked: false } => _ = library.on_screen.locked.remove(&view),
-		LibraryEdit::Keep(Kept::Filter { view, arranged_as }) => {
-			let name = named(view.name.clone())?;
-			refuse_team(&team, &Item::View(name.clone()))?;
-			if let Some(columns) = library.on_screen.columns.get(&arranged_as).cloned() {
-				library.on_screen.columns.insert(name.clone(), columns);
-			}
-			if let Some(tints) = library.on_screen.tints.get(&arranged_as).cloned() {
-				library.on_screen.tints.insert(name.clone(), tints);
-			}
-			if let Some(laid) = library.on_screen.laid.get(&arranged_as).cloned() {
-				library.on_screen.laid.insert(name.clone(), laid);
-			}
-			if library.on_screen.locked.contains(&arranged_as) {
-				library.on_screen.locked.insert(name.clone());
-			}
-			save(library, Item::View(name), Construction::View(view));
-		}
-		LibraryEdit::Keep(Kept::Workspace { name, tiles }) => {
-			let item = Item::Workspace(named(name.clone())?);
+		LibraryEdit::Locked { view, locked: true } => _ = library.locked.insert(view),
+		LibraryEdit::Locked { view, locked: false } => _ = library.locked.remove(&view),
+		LibraryEdit::Keep(Kept::View(view)) => {
+			let item = Item::View(named(view.name.clone())?);
 			refuse_team(&team, &item)?;
-			if tiles.is_empty() {
-				bail!("the workspace {name} keeps no arrangement");
-			}
-			let mut kept = library.workspaces.get(&name).cloned().unwrap_or_default(); // a new workspace
-			kept.extend(tiles);
-			save(library, item, Construction::Workspace(kept));
+			library.drafts.views.remove(&view.name);
+			save(library, item, Construction::View(view));
 		}
-		LibraryEdit::Keep(Kept::Columns { name, by, band, layout, tints }) => {
-			let item = Item::Columns(named(name.clone())?);
+		LibraryEdit::Keep(Kept::Workspace { name, workspace }) => {
+			let item = Item::Workspace(named(name)?);
 			refuse_team(&team, &item)?;
-			let mut kept = library.columns.get(&name).cloned().unwrap_or_else(|| crate::api::Columns {
-				by: by.clone(),
-				layout: BTreeMap::new(),
-				tints: BTreeMap::new(),
-			});
-			if kept.by != by {
-				bail!("the columns {name} are by {}, not {by}", kept.by);
-			}
-			kept.layout.insert(band, layout);
-			kept.tints = tints;
-			save(library, item, Construction::Columns(kept));
+			save(library, item, Construction::Workspace(workspace));
+		}
+		LibraryEdit::Keep(Kept::Columns { name, columns }) => {
+			let item = Item::Columns(named(name)?);
+			refuse_team(&team, &item)?;
+			save(library, item, Construction::Columns(columns));
 		}
 		LibraryEdit::Keep(Kept::Scope { name, scope }) => {
 			let name = named(name)?;
-			if scope.repos.is_empty() && scope.children.is_empty() {
-				bail!("the scope {name} names no repo");
+			if scope.is_empty() {
+				bail!("the scope {name} narrows by nothing");
 			}
 			if !library.scopes.contains_key(&name) {
 				placeable(library, &name)?;
@@ -888,34 +858,31 @@ fn apply(library: &mut Library, edit: LibraryEdit, fetched: Option<Fetched>) -> 
 			library.ids.insert(id, new.clone());
 			put(library, &new, construction);
 			match shelf {
-				Shelf::Filters => {
-					if let Some(columns) = library.on_screen.columns.remove(&from) {
-						library.on_screen.columns.insert(to.clone(), columns);
+				Shelf::Views => {
+					if let Some(mut draft) = library.drafts.views.remove(&from) {
+						draft.name = to.clone();
+						library.drafts.views.insert(to.clone(), draft);
 					}
-					if let Some(tints) = library.on_screen.tints.remove(&from) {
-						library.on_screen.tints.insert(to.clone(), tints);
+					if let Some(laid) = library.laid.remove(&from) {
+						library.laid.insert(to.clone(), laid);
 					}
-					if let Some(laid) = library.on_screen.laid.remove(&from) {
-						library.on_screen.laid.insert(to.clone(), laid);
-					}
-					if library.on_screen.locked.remove(&from) {
-						library.on_screen.locked.insert(to.clone());
-					}
-					if let Some(mut shown) = library.on_screen.views.remove(&from) {
-						shown.name = to.clone();
-						library.on_screen.views.insert(to.clone(), shown);
+					if library.locked.remove(&from) {
+						library.locked.insert(to.clone());
 					}
 				}
 				Shelf::Workspaces => {
 					if library.workspace.as_deref() == Some(&from) {
 						library.workspace = Some(to.clone());
 					}
+					if let Some(at) = library.autosaved.remove(&from) {
+						library.autosaved.insert(to.clone(), at);
+					}
 					for name in library.recent.iter_mut().filter(|n| **n == from) {
 						*name = to.clone();
 					}
 				}
 				Shelf::Columns =>
-					for name in library.on_screen.laid.values_mut().flat_map(BTreeMap::values_mut).filter(|n| **n == from) {
+					for name in library.laid.values_mut().filter(|n| **n == from) {
 						*name = to.clone();
 					},
 				Shelf::Scopes => unreachable!("renamed above"),
@@ -941,41 +908,36 @@ fn apply(library: &mut Library, edit: LibraryEdit, fetched: Option<Fetched>) -> 
 				}
 			}
 			match shelf {
-				Shelf::Scopes if matches!(&library.scope, Some(Slice::Named(p)) if within(p, &name).is_some()) => library.scope = None,
+				Shelf::Views => {
+					library.drafts.views.remove(&name);
+					library.laid.remove(&name);
+					library.locked.remove(&name);
+				}
 				Shelf::Workspaces => {
 					if library.workspace.as_deref() == Some(&name) {
 						library.workspace = None;
 					}
+					library.autosaved.remove(&name);
 					library.recent.retain(|n| *n != name);
 				}
-				Shelf::Columns =>
-					for laid in library.on_screen.laid.values_mut() {
-						laid.retain(|_, n| *n != name);
-					},
-				_ => {}
+				Shelf::Columns => library.laid.retain(|_, n| *n != name),
+				Shelf::Scopes => {}
 			}
 			library.favorites.remove(&item);
 			library.forks.retain(|f| f.item != item);
 		}
-		LibraryEdit::Scope(scope) => {
-			if let Some(Slice::Named(path)) = &scope
-				&& scope_at(&library.scopes(&settings().scopes).map_err(|e| eyre!(e))?, path).is_none()
-			{
-				bail!("no scope {path}");
+		LibraryEdit::Open(name) => {
+			let item = Item::Workspace(name.clone());
+			if kept(library, &item).is_none() && !team.contains_key(&item) {
+				bail!("no workspace {name}");
 			}
-			library.scope = scope;
+			select(library, name);
 		}
-		LibraryEdit::Workspace(name) => {
-			if let Some(name) = &name {
-				let item = Item::Workspace(name.clone());
-				if kept(library, &item).is_none() && !team.contains_key(&item) {
-					bail!("no workspace {name}");
-				}
-				library.recent.retain(|n| n != name);
-				library.recent.insert(0, name.clone());
-				library.recent.truncate(9);
-			}
-			library.workspace = name;
+		LibraryEdit::NewWorkspace => {
+			let free = |name: &String| !library.workspaces.contains_key(name) && !settings().workspaces.contains_key(name);
+			let name = (1..).map(|n| format!("ws {n}")).find(free).expect("only so many are kept");
+			put(library, &Item::Workspace(name.clone()), Construction::Workspace(Workspace::default()));
+			select(library, name);
 		}
 		LibraryEdit::Favorite { what, on: false } =>
 			if !library.favorites.remove(&what) {
@@ -1051,7 +1013,6 @@ fn apply(library: &mut Library, edit: LibraryEdit, fetched: Option<Fetched>) -> 
 
 /// A new scope can sit at `path`: nothing holds that path yet, and its parent, team's or own, exists.
 fn placeable(library: &Library, path: &str) -> Result<()> {
-	nameable(path)?;
 	let tree = library.scopes(&settings().scopes).map_err(|e| eyre!(e))?;
 	if scope_at(&tree, path).is_some() {
 		bail!("{path} is taken");
@@ -1062,14 +1023,6 @@ fn placeable(library: &Library, path: &str) -> Result<()> {
 		bail!("no scope {parent} to keep {path} in");
 	}
 	Ok(())
-}
-
-/// A scope may be called so: as text, it is told from a point of the chain.
-fn nameable(scope: &str) -> Result<()> {
-	match scope.starts_with(GITHUB) {
-		true => bail!("no scope is named {scope}: what starts with {GITHUB} is a place there"),
-		false => Ok(()),
-	}
 }
 
 //#[codestyle::skip(swappable-args)]
@@ -1098,12 +1051,24 @@ fn rename_scope(library: &mut Library, from: &str, to: &str) -> Result<()> {
 			f.item = Item::Scope(to);
 		}
 	}
-	if let Some(Slice::Named(at)) = &mut library.scope
-		&& let Some(to) = moved(at)
-	{
-		*at = to;
-	}
 	Ok(())
+}
+
+/// `name`, the workspace last selected.
+fn select(library: &mut Library, name: String) {
+	library.recent.retain(|n| *n != name);
+	library.recent.insert(0, name.clone());
+	library.recent.truncate(9);
+	library.workspace = Some(name);
+}
+
+/// `view` as last edited, unless it is as kept.
+fn draft(library: &mut Library, view: View) {
+	let kept = library.views.get(&view.name).or_else(|| settings().views.iter().find(|v| v.name == view.name));
+	match kept == Some(&view) {
+		true => _ = library.drafts.views.remove(&view.name),
+		false => _ = library.drafts.views.insert(view.name.clone(), view),
+	}
 }
 
 /// `construction` kept as `item`; a fork's `ahead` counts it when it changed anything.
@@ -1125,7 +1090,7 @@ fn refuse_team(team: &BTreeMap<Item, Construction>, item: &Item) -> Result<()> {
 
 fn kept(library: &Library, item: &Item) -> Option<Construction> {
 	match item {
-		Item::View(n) => library.filters.get(n).cloned().map(Construction::View),
+		Item::View(n) => library.views.get(n).cloned().map(Construction::View),
 		Item::Scope(n) => library.scopes.get(n).cloned().map(Construction::Scope),
 		Item::Workspace(n) => library.workspaces.get(n).cloned().map(Construction::Workspace),
 		Item::Columns(n) => library.columns.get(n).cloned().map(Construction::Columns),
@@ -1146,13 +1111,16 @@ fn id(seed: &str, item: &Item) -> String {
 }
 
 fn put(library: &mut Library, item: &Item, construction: Construction) {
+	if item.shelf() == Shelf::Views && kept(library, item).is_none() {
+		library.drafts.views.remove(item.name()); // of another by its name, gone since
+	}
 	if item.shelf() != Shelf::Scopes && !library.ids.values().any(|held| held == item) {
 		// seeded by the moment: the name's last holder may still hold its id, renamed
 		library.ids.insert(id(&jiff::Timestamp::now().as_nanosecond().to_string(), item), item.clone());
 	}
 	let name = item.name().to_string();
 	match (item, construction) {
-		(Item::View(_), Construction::View(v)) => _ = library.filters.insert(name, v),
+		(Item::View(_), Construction::View(v)) => _ = library.views.insert(name, v),
 		(Item::Scope(_), Construction::Scope(s)) => _ = library.scopes.insert(name, s),
 		(Item::Workspace(_), Construction::Workspace(w)) => _ = library.workspaces.insert(name, w),
 		(Item::Columns(_), Construction::Columns(c)) => _ = library.columns.insert(name, c),
@@ -1165,7 +1133,7 @@ fn drop_kept(library: &mut Library, item: &Item) -> bool {
 	library.ids.retain(|_, held| held != item);
 	let name = item.name();
 	match item {
-		Item::View(_) => library.filters.remove(name).is_some(),
+		Item::View(_) => library.views.remove(name).is_some(),
 		Item::Scope(_) => library.scopes.remove(name).is_some(),
 		Item::Workspace(_) => library.workspaces.remove(name).is_some(),
 		Item::Columns(_) => library.columns.remove(name).is_some(),
@@ -1175,7 +1143,7 @@ fn drop_kept(library: &mut Library, item: &Item) -> bool {
 fn kept_items(library: &Library) -> Vec<Item> {
 	let names = |shelf: Shelf, names: Vec<&String>| names.into_iter().map(|n| Item::new(shelf, n.clone())).collect::<Vec<_>>();
 	[
-		names(Shelf::Filters, library.filters.keys().collect()),
+		names(Shelf::Views, library.views.keys().collect()),
 		names(Shelf::Scopes, library.scopes.keys().collect()),
 		names(Shelf::Workspaces, library.workspaces.keys().collect()),
 		names(Shelf::Columns, library.columns.keys().collect()),
@@ -1193,7 +1161,7 @@ struct Team {
 	#[serde(default)] // a commit may hold none
 	columns: BTreeMap<String, crate::api::Columns>,
 	#[serde(default)] // a commit may hold none
-	workspaces: BTreeMap<String, Arrangement>,
+	workspaces: BTreeMap<String, Workspace>,
 }
 
 fn items(team: &Team) -> BTreeMap<Item, Construction> {
@@ -1393,7 +1361,7 @@ async fn pinned(link: &ShareLink) -> Result<Shared> {
 			(snapshot.construction.clone(), carried)
 		}
 	};
-	if let Construction::Workspace(tiles) = &mut construction {
+	if let Construction::Workspace(Workspace { tiles, .. }) = &mut construction {
 		tiles.retain(|band, _| link.bands.contains(band));
 		if tiles.is_empty() {
 			bail!("{link} carries no band its workspace has");
@@ -1538,10 +1506,10 @@ fn proposed(head: &str, target: &str, update: bool, construction: &Construction)
 			held(at.contains_key(target))?;
 			put_table(at, target, table(columns)?);
 		}
-		Construction::Workspace(tiles) => {
+		Construction::Workspace(workspace) => {
 			let at = named(board, "workspaces")?;
 			held(at.contains_key(target))?;
-			put_table(at, target, table(tiles)?);
+			put_table(at, target, table(workspace)?);
 		}
 	}
 	Ok(doc.to_string())

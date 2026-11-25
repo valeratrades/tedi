@@ -3,6 +3,7 @@ import { expect, type Locator, type Page, test } from "@playwright/test";
 const bars = (within: Page | Locator) => within.getByRole("progressbar", { name: "Loading" });
 const shelf = (page: Page, name: string) => page.locator("aside").getByRole("link", { name, exact: true });
 const tile = (page: Page) => page.locator('.tl-render-overlay[data-tile="0"]').filter({ visible: true }).first();
+const search = (page: Page) => page.getByRole("textbox", { name: "Search", exact: true });
 const cards = (within: Page | Locator) => within.locator('a[href*="issue=service-arb/"]');
 const reads = async (bar: Locator, percent: number) => {
   await expect(bar).toHaveText(`${percent}%`);
@@ -80,32 +81,33 @@ test("before the client: the page's frame, and how much of the client is here", 
 test.describe("what waits for the board is the views on screen, each for what it shows", () => {
   test.skip(({ viewport }) => viewport!.width < 768, "the shelves are behind a sheet");
 
-  test("the shelves, the dock and a view's own toolbar are there with none of it, and work", async ({ page }) => {
+  test("the shelves, the search, the dock and a view's own toolbar are there with none of it, and work", async ({ page }) => {
     await hold(page);
     await page.goto("/");
     await release(page, "client", 8);
     await expect(shelf(page, "Triage")).toBeVisible();
-    await expect(tile(page).getByRole("textbox")).toHaveValue(/is:pr/);
+    await expect(search(page)).toHaveValue(/is:pr/);
+    await expect(tile(page).getByRole("button", { name: "state:pull_requests" })).toBeVisible();
     await reads(bars(tile(page)), 0);
     const [t, b] = [(await tile(page).boundingBox())!, (await bars(tile(page)).boundingBox())!];
     expect(b.x).toBeGreaterThan(t.x);
     expect(b.x + b.width).toBeLessThan(t.x + t.width);
     expect(Math.abs(b.x + b.width / 2 - (t.x + t.width / 2))).toBeLessThan(2);
-    await shelf(page, "Triage").click();
-    await expect(tile(page).getByRole("textbox")).toHaveValue(/is:issue/);
+    await shelf(page, "Triage desk").click();
+    await expect(search(page)).toHaveValue(/is:issue/);
     await reads(bars(tile(page)), 0);
-    await tile(page).getByRole("button", { name: "filter by repo" }).click();
+    await page.getByRole("button", { name: "filter by repo" }).click();
     await expect(page.getByText("Counted once the board is here")).toBeVisible();
   });
 
-  test("a view of issues shows once they are here, one of pull requests reads both to the percent", async ({ page }) => {
+  test("a workspace of issues shows once they are here, one of pull requests reads both to the percent", async ({ page }) => {
     await signIn(page);
     const { bytes, whole, issues, prs, all } = await lines(page);
     await hold(page);
     await page.goto("/");
     await release(page, "client", 8);
-    await shelf(page, "Triage").click();
-    await expect(tile(page).getByRole("textbox")).toHaveValue(/is:issue/);
+    await shelf(page, "Triage desk").click();
+    await expect(search(page)).toHaveValue(/is:issue/);
     const triage = tile(page);
     for (const at of [0.3, 0.7].map((f) => Math.ceil(f * whole))) {
       await release(page, "board", at);
@@ -117,8 +119,8 @@ test.describe("what waits for the board is the views on screen, each for what it
     await expect(cards(triage).first()).toBeVisible();
     await expect(bars(triage)).toHaveCount(0);
 
-    await shelf(page, "Release checklist").click();
-    await expect(tile(page).getByRole("textbox")).toHaveValue(/is:pr/);
+    await shelf(page, "Release week").click();
+    await expect(search(page)).toHaveValue(/is:pr/);
     const checklist = tile(page);
     await reads(bars(checklist), share(issues, issues + prs));
     await release(page, "board", all - 1);

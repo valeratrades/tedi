@@ -1,4 +1,4 @@
-//! A card, read first by its title: \`repo #n\` and who above it, the fields its view shows below
+//! A card, read first by its title: `repo #n` and who above it, the fields its view shows below
 //! (Figma: Card, Chip, Stepper, Avatar).
 
 use dioxus::prelude::*;
@@ -82,7 +82,7 @@ pub(super) fn CardView(card: Card, shown: Vec<Shown>, #[props(default)] lifted: 
 	}
 }
 
-/// Whether \`card\` has anything to show for \`shown\`, so an empty meta row takes no room.
+/// Whether `card` has anything to show for `shown`, so an empty meta row takes no room.
 fn shows(card: &Card, shown: &Shown) -> bool {
 	match shown {
 		Shown::Type => card.kind.is_some(), // unset, it's set from the issue panel: a card stays quiet about it
@@ -94,7 +94,7 @@ fn shows(card: &Card, shown: &Shown) -> bool {
 	}
 }
 
-/// \`t:\`, \`i:\` and \`h:\`: shown as their own fields, never among the labels.
+/// `t:`, `i:` and `h:`: shown as their own fields, never among the labels.
 fn scheme_label(l: &String) -> bool {
 	let scheme = Scheme::from(std::slice::from_ref(l));
 	scheme.kind.is_some() || scheme.importance.is_some() || scheme.hours.is_some()
@@ -146,7 +146,7 @@ fn Blockers(card: Card) -> Element {
 	}
 }
 
-/// One field of a card, as its view's \`shown\` names it: on a card's meta row, or in a table cell.
+/// One field of a card, as its view's `shown` names it: on a card's meta row, or in a table cell.
 #[component]
 pub(super) fn Field(card: Card, shown: Shown) -> Element {
 	let ctx = use_context::<Ctx>();
@@ -315,8 +315,8 @@ enum Axis {
 	Hours,
 }
 
-/// \`t:bug\`, \`i 6 − +\`, \`h ? − +\`: the value opens every value its axis takes; a pick or a step is a labels
-/// edit, made against the labels the card shows. Unset reads \`?\` in neutral ink, so the gap shows.
+/// `t:bug`, `i 6 − +`, `h ? − +`: the value opens every value its axis takes; a pick or a step is a labels
+/// edit, made against the labels the card shows. Unset reads `?` in neutral ink, so the gap shows.
 #[component]
 fn Stepper(card: Card, axis: Axis) -> Element {
 	let ctx = use_context::<Ctx>();
@@ -328,7 +328,7 @@ fn Stepper(card: Card, axis: Axis) -> Element {
 			card.importance.map(|v| format!("i:{v}")),
 			(0..=9).map(|v| format!("i:{v}")).collect(),
 			Some("i:3".to_string()),
-		), // \`labels.nix\`: "\`i:3\` is the default"
+		), // `labels.nix`: "`i:3` is the default"
 		Axis::Hours => (Facet::Hours, card.hours.map(|v| format!("h:{v}")), HOURS.iter().map(|v| format!("h:{v}")).collect(), None),
 	};
 	let editable = card.pr.is_none(); // a pull request is read-only here
@@ -430,7 +430,7 @@ fn Stepper(card: Card, axis: Axis) -> Element {
 	}
 }
 
-/// \`at\` as how long before now: \`2m ago\`, \`3d ago\`.
+/// `at` as how long before now: `2m ago`, `3d ago`.
 pub(super) fn ago(at: jiff::Timestamp) -> String {
 	let secs = jiff::Timestamp::now().duration_since(at).as_secs().max(0);
 	let (unit, per) = [("mo", 2_592_000), ("d", 86_400), ("h", 3_600), ("m", 60)]

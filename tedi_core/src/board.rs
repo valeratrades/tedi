@@ -1,6 +1,5 @@
-//! The board: every stored issue as a card, a query over them, and views — named queries with a
-//! grouping and an order. Pure over cards; reading them from the store and editing them
-//! through the sync are the operations' business.
+//! The board: every stored issue as a card, a query over them, their order and grouping. Pure over cards;
+//! reading them from the store and editing them through the sync are the operations' business.
 
 use std::{
 	collections::{BTreeMap, HashMap, HashSet},
@@ -144,7 +143,7 @@ pub struct Hit {
 	pub states: BTreeMap<String, State>,
 }
 
-/// A view, or a query, as a task view lists it: no pull requests.
+/// A query as a task view lists it: no pull requests.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct Listing {
 	pub query: String,
@@ -254,6 +253,10 @@ pub enum QueryError {
 	Is(String),
 	#[error("{0}: takes a value")]
 	Empty(Facet),
+	#[error("only clauses (repo:, is:, t:, …) narrow here, and {0:?} is free text")]
+	Text(String),
+	#[error(transparent)]
+	Point(#[from] BadName),
 	#[error(transparent)]
 	Search(#[from] tedi_utils::search::SearchError),
 }
@@ -261,7 +264,8 @@ pub enum QueryError {
 /// `repo:EV-Service-Arb/*,EV-Main/tilers assignee:@me state:kanban/triage,kanban/selected -t:chore i:>=5,none h:<=8 is:blocked label:x free text`.
 /// Clauses AND, the values of one OR, a `-` clause holds none of them; `none` is a value unset.
 /// What isn't a clause is free text, ranked by `tedi_utils::search`.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[serde(try_from = "String", into = "String")]
 pub struct Query {
 	clauses: Vec<Clause>,
 	text: String,
@@ -271,7 +275,7 @@ impl Query {
 	pub fn run(&self, within: &Within, cards: &[Card], me: Option<&str>) -> Result<Vec<usize>, QueryError> {
 		let open = open(cards);
 		let passing: Vec<usize> = (0..cards.len())
-			.filter(|&i| within.holds(&cards[i].link) && self.clauses.iter().all(|c| c.holds(&cards[i], me, &open)))
+			.filter(|&i| within.holds(&cards[i], me, &open) && self.clauses.iter().all(|c| c.holds(&cards[i], me, &open)))
 			.collect();
 		if self.text.is_empty() {
 			let mut sorted = passing;
@@ -315,6 +319,16 @@ impl Query {
 		!self.clauses.iter().any(|c| match c.negated {
 			false => c.any.iter().all(|v| *v == Filter::Is(Is::Issue)),
 			true => c.any.contains(&Filter::Is(Is::Pr)),
+		})
+	}
+
+	/// Whether its `repo:` clauses leave `repo` in.
+	fn covers(&self, repo: RepoInfo) -> bool {
+		self.clauses.iter().filter(|c| c.facet() == Facet::Repo).all(|c| {
+			c.any.iter().any(|v| match v {
+				Filter::Repo(pattern) => names(pattern, repo),
+				other => unreachable!("{other} in a repo clause"),
+			}) != c.negated
 		})
 	}
 
@@ -375,15 +389,25 @@ pub struct Tally {
 	pub picked: Option<bool>,
 }
 
-/// A named query, and how its result is grouped and ordered.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct View {
-	pub name: String,
-	pub query: String,
-	pub group_by: GroupBy,
-	pub sort: Order,
-	/// What a card shows beside its title, in this order.
-	pub shown: Vec<Shown>,
+/// A query of clauses alone.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize, derive_more::Deref)]
+#[serde(try_from = "String", into = "String")]
+pub struct Terms(Query);
+impl FromStr for Terms {
+	type Err = QueryError;
+
+	fn from_str(s: &str) -> Result<Self, QueryError> {
+		let query: Query = s.parse()?;
+		match query.text.is_empty() {
+			true => Ok(Terms(query)),
+			false => Err(QueryError::Text(query.text)),
+		}
+	}
+}
+impl std::fmt::Display for Terms {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		self.0.fmt(f)
+	}
 }
 
 /// How a view splits its cards: by `state:<workflow>`, `repo`, `assignee`, `type`, `importance` or `nothing`.
@@ -525,28 +549,49 @@ pub enum Shown {
 	Sprint,
 	Updated,
 }
-/// A named slice of the team's repos, nesting narrower ones: it covers its own `repos` (`owner/repo`,
-/// `owner/*`) and those of every scope inside it. It narrows; which views exist is none of its business.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+/// A named starting point: the terms narrowing to its own `repos` (`owner/repo`, `owner/*`) with those of every scope
+/// inside it, and to its own `terms`.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct Scope {
-	#[serde(default)] // a scope may only group nested ones
+	#[serde(default, skip_serializing_if = "Vec::is_empty")] // a scope may only group nested ones, or only hold terms
 	pub repos: Vec<String>,
+	#[serde(default, skip_serializing_if = "unset")] // a scope may only cover repos
+	pub terms: Terms,
 	#[serde(flatten)]
 	pub children: BTreeMap<String, Scope>,
 }
 impl Scope {
-	/// What names every repo this scope covers.
-	pub fn patterns(&self) -> Vec<String> {
-		fn collect(scope: &Scope, out: &mut Vec<String>) {
-			out.extend(scope.repos.iter().cloned());
+	pub fn filter(&self) -> Terms {
+		fn collect<'a>(scope: &'a Scope, out: &mut Vec<&'a str>) {
+			out.extend(scope.repos.iter().map(String::as_str));
 			for child in scope.children.values() {
 				collect(child, out);
 			}
 		}
 		let mut repos = Vec::new();
 		collect(self, &mut repos);
-		assert!(!repos.is_empty(), "a configured scope names at least one repo, itself or nested");
-		repos
+		let mut filter = Terms::default();
+		if !repos.is_empty() {
+			filter.0.clauses.push(Clause::of_repos(repos.into_iter().map(str::to_string)));
+		}
+		filter.0.clauses.extend(self.terms.clauses.iter().cloned());
+		filter
+	}
+
+	/// What it lacks to be one: it holds neither repos, nor terms, nor another scope.
+	pub fn is_empty(&self) -> bool {
+		self.repos.is_empty() && unset(&self.terms) && self.children.is_empty()
+	}
+}
+/// Its first `repo:` clause as repos, what else it narrows by as terms.
+impl From<Terms> for Scope {
+	fn from(Terms(mut query): Terms) -> Self {
+		let repos = query.clauses.iter().position(|c| c.facet() == Facet::Repo && !c.negated).map(|at| query.clauses.remove(at));
+		Scope {
+			repos: repos.map_or_else(Vec::new, |c| c.any.iter().map(ToString::to_string).collect()), // it narrows by no repo
+			terms: Terms(query),
+			children: BTreeMap::new(),
+		}
 	}
 }
 
@@ -560,36 +605,42 @@ pub fn scope_at<'a>(scopes: &'a BTreeMap<String, Scope>, path: &str) -> Option<&
 	at
 }
 
-/// What a screen sits in. As text, what starts as a GitHub link is a point: no named scope may.
-#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+/// What a workspace is narrowed to. As text, what starts as a GitHub link is a point: no term does.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(try_from = "String", into = "String")]
 pub enum Slice {
 	Point(Point),
-	/// A named scope, by its path.
-	Named(String),
+	Terms(Terms),
 }
 impl Slice {
-	/// What it leaves in; `None`: it is no longer there.
-	pub fn within(&self, board: &Board, orgs: &Orgs, scopes: &BTreeMap<String, Scope>) -> Option<Within> {
+	/// What it leaves in; `None`: it is not on the board.
+	pub fn within(&self, board: &Board, orgs: &Orgs) -> Option<Within> {
 		let above = |point: &Point| -> HashSet<Org> {
 			std::iter::successors(Some(point.clone()), |p| p.above(orgs))
 				.filter_map(|p| if let Point::Org(org) = p { Some(org) } else { None })
 				.collect()
 		};
+		let repos = |patterns: Vec<String>| {
+			Left::Terms(Terms(Query {
+				clauses: vec![Clause::of_repos(patterns)],
+				..Query::default()
+			}))
+		};
 		let (left, of) = match self {
-			Slice::Named(path) => {
-				let patterns = scope_at(scopes, path)?.patterns();
-				let of = patterns.iter().map(|p| match p.split_once('/').map(|(owner, _)| owner.parse()) {
-					Some(Ok(org)) => above(&Point::Org(org)),
-					Some(Err(_)) | None => HashSet::new(), // a bare name is of any org
+			Slice::Terms(terms) => {
+				let of = terms.clauses.iter().filter(|c| c.facet() == Facet::Repo && !c.negated).map(|c| {
+					let of = c.any.iter().map(|v| match v.to_string().split_once('/').map(|(owner, _)| owner.parse()) {
+						Some(Ok(org)) => above(&Point::Org(org)),
+						Some(Err(_)) | None => HashSet::new(), // a bare name is of any org
+					});
+					of.reduce(|a, b| &a & &b).expect("a clause takes a value")
 				});
-				let of = of.reduce(|a, b| &a & &b).expect("a scope names at least one repo");
-				(Left::Repos(patterns), of)
+				(Left::Terms(terms.clone()), of.flatten().collect()) // all its clauses hold at once
 			}
 			Slice::Point(point) => {
 				let left = match point {
-					Point::Org(org) => Left::Repos(std::iter::once(org).chain(orgs.owned(*org)).map(|o| format!("{o}/*")).collect()),
-					Point::Repo(repo) => Left::Repos(vec![repo.to_string()]),
+					Point::Org(org) => repos(std::iter::once(org).chain(orgs.owned(*org)).map(|o| format!("{o}/*")).collect()),
+					Point::Repo(repo) => repos(vec![repo.to_string()]),
 					Point::Milestone(link) => {
 						let (milestones, issues) = board.owned(link);
 						Left::Nodes { milestones, issues }
@@ -604,10 +655,13 @@ impl Slice {
 		};
 		let mut within = Within { left, pressed: HashMap::new() };
 		let there = match self {
-			Slice::Named(_) => true,
+			Slice::Terms(_) => true,
 			Slice::Point(Point::Milestone(link)) => within.offers(link),
 			Slice::Point(Point::Issue(link)) => board.cards.iter().any(|c| c.link == *link),
-			Slice::Point(Point::Org(_) | Point::Repo(_)) => board.cards.iter().any(|c| within.holds(&c.link)) || board.targets.iter().any(|t| within.offers(&t.link)),
+			Slice::Point(Point::Org(_) | Point::Repo(_)) => {
+				let none = HashSet::new(); // repos alone narrow here
+				board.cards.iter().any(|c| within.holds(c, None, &none)) || board.targets.iter().any(|t| within.offers(&t.link))
+			}
 		};
 		for target in board.targets.iter().filter(|t| t.sprint() == Some(Sprint::Bottlenecks)) {
 			let org = Point::Repo(target.link.repo_info()).above(orgs);
@@ -620,29 +674,43 @@ impl Slice {
 		}
 		there.then_some(within)
 	}
+
+	/// Whether it leaves pull requests in.
+	pub fn covers_prs(&self) -> bool {
+		match self {
+			Slice::Terms(terms) => terms.covers_prs(),
+			Slice::Point(Point::Org(_) | Point::Repo(_)) => true,
+			Slice::Point(Point::Milestone(_) | Point::Issue(_)) => false,
+		}
+	}
+}
+impl Default for Slice {
+	fn default() -> Self {
+		Slice::Terms(Terms::default())
+	}
 }
 impl std::fmt::Display for Slice {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		match self {
 			Slice::Point(point) => write!(f, "{point}"),
-			Slice::Named(path) => f.write_str(path),
+			Slice::Terms(terms) => write!(f, "{terms}"),
 		}
 	}
 }
 impl FromStr for Slice {
-	type Err = BadName;
+	type Err = QueryError;
 
-	fn from_str(s: &str) -> Result<Self, BadName> {
+	fn from_str(s: &str) -> Result<Self, QueryError> {
 		match s.starts_with(GITHUB) {
-			true => s.parse().map(Slice::Point),
-			false => Ok(Slice::Named(s.into())),
+			true => Ok(Slice::Point(s.parse()?)),
+			false => Ok(Slice::Terms(s.parse()?)),
 		}
 	}
 }
 impl TryFrom<String> for Slice {
-	type Error = BadName;
+	type Error = QueryError;
 
-	fn try_from(s: String) -> Result<Self, BadName> {
+	fn try_from(s: String) -> Result<Self, QueryError> {
 		s.parse()
 	}
 }
@@ -660,19 +728,17 @@ pub struct Within {
 	pressed: HashMap<IssueLink, MilestoneLink>,
 }
 impl Within {
-	fn holds(&self, issue: &IssueLink) -> bool {
+	fn holds(&self, card: &Card, me: Option<&str>, open: &HashSet<&IssueLink>) -> bool {
 		match &self.left {
-			Left::All => true,
-			Left::Repos(patterns) => patterns.iter().any(|p| names(p, issue.project())),
-			Left::Nodes { issues, .. } => issues.contains(issue),
+			Left::Terms(terms) => terms.clauses.iter().all(|c| c.holds(card, me, open)),
+			Left::Nodes { issues, .. } => issues.contains(&card.link),
 		}
 	}
 
 	/// Whether an issue may be put into `milestone` from here.
 	pub fn offers(&self, milestone: &MilestoneLink) -> bool {
 		match &self.left {
-			Left::All => true,
-			Left::Repos(patterns) => patterns.iter().any(|p| names(p, milestone.repo_info())),
+			Left::Terms(terms) => terms.covers(milestone.repo_info()),
 			Left::Nodes { milestones, .. } => milestones.contains(milestone),
 		}
 	}
@@ -799,15 +865,22 @@ pub fn group(cards: &[Card], hits: &[usize], by: &GroupBy, workflows: &Trees, wi
 		.collect())
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 enum Left {
-	#[default]
-	All,
-	Repos(Vec<String>),
+	Terms(Terms),
 	Nodes {
 		milestones: HashSet<MilestoneLink>,
 		issues: HashSet<IssueLink>,
 	},
+}
+impl Default for Left {
+	fn default() -> Self {
+		Left::Terms(Terms::default())
+	}
+}
+
+fn unset(terms: &Terms) -> bool {
+	terms.clauses.is_empty()
 }
 
 /// `own` in its order, each card right below whichever of `own` and `lifted` block it, through others too;
@@ -853,6 +926,13 @@ struct Clause {
 	any: Vec<Filter>,
 }
 impl Clause {
+	fn of_repos(patterns: impl IntoIterator<Item = String>) -> Self {
+		Self {
+			negated: false,
+			any: patterns.into_iter().map(Filter::Repo).collect(),
+		}
+	}
+
 	fn facet(&self) -> Facet {
 		Facet::from(&self.any[0])
 	}
@@ -1008,6 +1088,31 @@ impl FromStr for Query {
 		}
 		query.text = text.join(" ");
 		Ok(query)
+	}
+}
+
+impl TryFrom<String> for Query {
+	type Error = QueryError;
+
+	fn try_from(s: String) -> Result<Self, QueryError> {
+		s.parse()
+	}
+}
+impl From<Query> for String {
+	fn from(query: Query) -> String {
+		query.to_string()
+	}
+}
+impl TryFrom<String> for Terms {
+	type Error = QueryError;
+
+	fn try_from(s: String) -> Result<Self, QueryError> {
+		s.parse()
+	}
+}
+impl From<Terms> for String {
+	fn from(terms: Terms) -> String {
+		terms.to_string()
 	}
 }
 
@@ -1402,7 +1507,7 @@ mod tests {
 			cards: cards(),
 			..Default::default()
 		};
-		let within = "https://github.com/o/app".parse::<Slice>().unwrap().within(&board, &Orgs::default(), &BTreeMap::new()).unwrap();
+		let within = "https://github.com/o/app".parse::<Slice>().unwrap().within(&board, &Orgs::default()).unwrap();
 		let cards = board.cards;
 		let out: Vec<String> = [("", Facet::Repo), ("repo:o/lib", Facet::Repo), ("", Facet::Is)]
 			.into_iter()
@@ -1567,11 +1672,6 @@ mod tests {
 		(board, serde_json::from_value(serde_json::json!({ "O": ["p"] })).unwrap())
 	}
 
-	fn scopes() -> BTreeMap<String, Scope> {
-		serde_json::from_value(serde_json::json!({ "both": { "repos": ["p/*"], "inner": { "repos": ["O/app"] } }, "loose": { "repos": ["lib"] }, "far": { "repos": ["p/lib", "q/*"] } }))
-			.unwrap()
-	}
-
 	#[test]
 	fn each_slice_leaves_in_what_it_owns() {
 		let (board, orgs) = chained();
@@ -1582,20 +1682,20 @@ mod tests {
 			"https://github.com/o/app/milestone/1",
 			"https://github.com/o/.github/milestone/1",
 			"https://github.com/o/app/issues/1",
-			"both",
-			"both / inner",
-			"loose",
+			"repo:p/*,O/app",
+			"repo:O/app repo:o/*",
+			"repo:lib -repo:o/*",
+			"is:pr",
 			"https://github.com/nobody",
 			"https://github.com/o/.github",
 			"https://github.com/o/app/milestone/7",
 			"https://github.com/o/app/issues/7",
-			"gone",
 		]
 		.into_iter()
 		.map(|s| {
 			let slice: Slice = s.parse().unwrap();
 			assert_eq!(slice.to_string().parse::<Slice>().unwrap(), slice);
-			let Some(within) = slice.within(&board, &orgs, &scopes()) else {
+			let Some(within) = slice.within(&board, &orgs) else {
 				return format!("{slice}: not there");
 			};
 			let hits = Query::default().run(&within, &board.cards, None).unwrap();
@@ -1610,14 +1710,14 @@ mod tests {
 		https://github.com/o/app/milestone/1: o/app#1 · o/app#2 · o/app#3 · p/lib#1 · p/lib#3 | o/app v1 · p/lib 0.5
 		https://github.com/o/.github/milestone/1: o/app#1 · o/app#2 · o/app#3 · p/lib#1 · p/lib#3 | o/app v1 · p/lib 0.5 · o/.github Bottlenecks
 		https://github.com/o/app/issues/1: o/app#1 · o/app#2 | o/app v1
-		both: o/app#1 · o/app#2 · o/app#3 · p/lib#1 · p/lib#2 · p/lib#3 | o/app v1 · p/lib 0.5 · p/.github Bottlenecks
-		both / inner: o/app#1 · o/app#2 · o/app#3 | o/app v1
-		loose: p/lib#1 · p/lib#2 · p/lib#3 | p/lib 0.5
+		repo:p/*,O/app: o/app#1 · o/app#2 · o/app#3 · p/lib#1 · p/lib#2 · p/lib#3 | o/app v1 · p/lib 0.5 · p/.github Bottlenecks
+		repo:O/app repo:o/*: o/app#1 · o/app#2 · o/app#3 | o/app v1
+		repo:lib -repo:o/*: p/lib#1 · p/lib#2 · p/lib#3 | p/lib 0.5
+		is:pr:  | o/app v1 · p/lib 0.5 · o/.github Bottlenecks · p/.github Bottlenecks · q/z Bottlenecks
 		https://github.com/nobody: not there
 		https://github.com/o/.github:  | o/.github Bottlenecks
 		https://github.com/o/app/milestone/7: not there
 		https://github.com/o/app/issues/7: not there
-		gone: not there
 		");
 	}
 
@@ -1666,14 +1766,16 @@ mod tests {
 			("", Some("https://github.com/o")),
 			("", Some("https://github.com/p")),
 			("", Some("https://github.com/p/lib")),
-			("", Some("both")),
-			("", Some("far")),
+			("", Some("repo:p/*,O/app")),
+			("", Some("repo:p/lib,q/*")),
+			("", Some("repo:p/lib,q/* repo:p/*")),
+			("", Some("is:open")),
 			("state:kanban/triage", Some("https://github.com/p")),
 			("state:kanban/icebox", Some("https://github.com/o")),
 		]
 		.into_iter()
 		.map(|(q, slice)| {
-			let within = slice.map_or_else(Within::default, |s| s.parse::<Slice>().unwrap().within(&board, &orgs, &scopes()).unwrap());
+			let within = slice.map_or_else(Within::default, |s| s.parse::<Slice>().unwrap().within(&board, &orgs).unwrap());
 			let mut hits = q.parse::<Query>().unwrap().run(&within, &board.cards, None).unwrap();
 			Order::try_from("number".to_string()).unwrap().apply(&board.cards, &mut hits, &kanban()).unwrap();
 			let groups = group(&board.cards, &hits, &by, &kanban(), &within).unwrap();
@@ -1696,8 +1798,10 @@ mod tests {
 		 in https://github.com/o: selected[!o/app#1 ^p/lib#2 !p/lib#1 !o/app#2] in_progress[p/lib#3] done[o/app#3]
 		 in https://github.com/p: selected[^p/lib#2 !p/lib#1] in_progress[p/lib#3]
 		 in https://github.com/p/lib: selected[^p/lib#2 !p/lib#1] in_progress[p/lib#3]
-		 in both: selected[!o/app#1 ^p/lib#2 !p/lib#1 !o/app#2] in_progress[p/lib#3] done[o/app#3]
-		 in far: triage[^p/lib#2 p/lib#1 q/z#1] in_progress[p/lib#3]
+		 in repo:p/*,O/app: selected[!o/app#1 ^p/lib#2 !p/lib#1 !o/app#2] in_progress[p/lib#3] done[o/app#3]
+		 in repo:p/lib,q/*: triage[^p/lib#2 p/lib#1 q/z#1] in_progress[p/lib#3]
+		 in repo:p/lib,q/* repo:p/*: selected[^p/lib#2 !p/lib#1] in_progress[p/lib#3]
+		 in is:open: icebox[o/app#2] triage[o/app#1 ^p/lib#2 p/lib#1 q/z#1] in_progress[p/lib#3]
 		state:kanban/triage in https://github.com/p: selected[^p/lib#2 !p/lib#1]
 		state:kanban/icebox in https://github.com/o: icebox[p/lib#2] selected[!o/app#2]
 		");

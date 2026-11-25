@@ -88,6 +88,7 @@ pub async fn modify_and_sync_milestone(link: &MilestoneLink, mode: SyncMode, mod
 			};
 			let path = tempfile::tempdir()?.keep().join(issue_file_name(Some(link.number()), &milestone.identity.title, false)); // kept: an edit outlives a crash
 			std::fs::write(&path, format!("{milestone}\n"))?;
+			eprintln!("[{}] tmp_path: {}", milestone.identity.title, path.display());
 			crate::utils::open_files(&[&path], None).await?;
 			let typed = std::fs::read_to_string(&path)?;
 			let body = MilestoneBody::parse(&typed, link.repo_info());
@@ -114,8 +115,8 @@ async fn land(link: &MilestoneLink, mode: SyncMode, mut edit: BodyWrite, sync_op
 	}
 	let mut pull = Pull { seen: vec![link.clone()] };
 	by_now(&mut edit).await?;
-	pull.contained(added(&edit.rendered, &edit.body)).await; // what they are, and own, decides whether they can be owned
-	match pull.sync(link, Some(edit.clone()), sync_opts.take_merge_mode()).await {
+	Box::pin(pull.contained(added(&edit.rendered, &edit.body))).await; // what they are, and own, decides whether they can be owned
+	match Box::pin(pull.sync(link, Some(edit.clone()), sync_opts.take_merge_mode())).await {
 		Err(e) if is_transient_sync_error(&e) => {
 			tracing::warn!("GitHub transient during milestone sync — deferring to local: {e}");
 			eprintln!("GitHub unreachable; milestone edit saved locally (will sync next online edit).");
@@ -191,7 +192,7 @@ impl Pull {
 		if !self.pulled(link) {
 			self.seen.push(link.clone());
 		}
-		match self.sync(link, None, mode).await {
+		match Box::pin(self.sync(link, None, mode)).await {
 			Ok(synced) => Ok(synced),
 			Err(e) => match (Local::load_milestone(link, &FsReader)?, e.downcast_ref::<ChainError>()) {
 				(Some(stored), _) if is_transient_sync_error(&e) => {
@@ -232,7 +233,7 @@ impl Pull {
 				if let Err(e) = merged {
 					match e.downcast_ref::<ChainError>() {
 						Some(refused) => tell_unsynced(link, refused),
-						None => eprintln!("warning: {} stays as stored: {e:#}", link.as_str()),
+						None => eprintln!("warning: {} was not pulled: {e:#}", link.as_str()),
 					}
 				}
 				match Local::load_milestone(link, &FsReader) {
@@ -291,11 +292,11 @@ impl Pull {
 			Ok(held.into_iter().flatten().collect()) // one GitHub won't show us isn't stored
 		};
 		let contained = stored(&self.seen)?.iter().flat_map(|m| m.body.0.milestone_links()).collect();
-		self.contained(contained).await;
+		Box::pin(self.contained(contained)).await;
 
 		let pulled = stored(&self.seen)?;
 		let hosted: Vec<IssueLink> = pulled.iter().flat_map(|m| m.body.0.issue_links()).filter(|l| !matches!(l, IssueLink::Virtual(_))).collect();
-		fetch_and_store_missing(&hosted).await;
+		Box::pin(fetch_and_store_missing(&hosted)).await;
 
 		// as of consensus: an edit not synced yet is nothing GitHub holds
 		let known: Vec<Milestone> = Local::stored_milestones()?

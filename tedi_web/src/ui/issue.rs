@@ -8,7 +8,7 @@ use dioxus::{core::spawn_forever, prelude::*};
 use ev_lib::uikit_dioxus::{Popover, PopoverContent, PopoverTrigger, Spinner, Textarea};
 use tedi_core::{
 	CloseState, IssueLink, PrState, Review, Sprint,
-	board::{Card, Said, Shown, Slice, Target},
+	board::{Card, Said, Shown, Target},
 	chain::Point,
 	conflict::{CommentEdit, Conflict, Field as EditedField, FieldEdit, list, sides},
 	labels::{Color, Scheme},
@@ -40,12 +40,7 @@ pub fn IssuePanel(link: IssueLink) -> Element {
 					KindIcon { card: card.clone() }
 					a { class: "truncate text-mono-s text-ink-soft hover:underline", href: "{link}", target: "_blank", "{link.project()}#{link.number()}" }
 					div { class: "flex-1" }
-					Go {
-						to: ctx.at.read().with_scope(Some(Slice::Point(Point::Issue(link.clone())))),
-						class: "inline-flex size-6 shrink-0 items-center justify-center rounded-[var(--control-radius)] text-ink-soft hover:bg-hover hover:text-ink",
-						title: "Scope to it",
-						Icon { glyph: Glyph::Scope }
-					}
+					IconBtn { glyph: Glyph::Scope, title: "Scope to it", onclick: { let link = link.clone(); move |_| ctx.scope_to(Point::Issue(link.clone())) } }
 					IconBtn { glyph: Glyph::Link, title: "Copy its link", onclick: { let link = link.clone(); move |_| copy(ctx, link.to_string()) } }
 				}
 				if card.pr.is_none() {
@@ -507,14 +502,14 @@ fn Labels(card: Card) -> Element {
 	}
 }
 
-/// The milestones hosting it, of any repo; `+` offers the scope's, one a repo.
+/// The milestones hosting it, of any repo; `+` offers those in the workspace's scope, one a repo.
 #[component]
 fn Milestones(card: Card) -> Element {
 	let ctx = use_context::<Ctx>();
 	let home = card.link.project();
 	let board = ctx.board.read();
 	let board = board.as_ref().expect("the card came from it");
-	let within = ctx.within().unwrap_or_default(); // its scope is no longer there: the panel shows without one
+	let within = ctx.within().unwrap_or_default(); // nothing of its scope is on the board: the panel shows without one
 	let hosts = |t: &Target| t.hosts(&card.link);
 	let mut offered: Vec<&Target> = board
 		.targets
@@ -809,7 +804,7 @@ fn Title(link: IssueLink, current: String) -> Element {
 	}
 }
 
-/// One select per workflow the card sits in: \`kanban / triage ▾\`.
+/// One select per workflow the card sits in: `kanban / triage ▾`.
 #[component]
 fn StatePicker(card: Card) -> Element {
 	let ctx = use_context::<Ctx>();
