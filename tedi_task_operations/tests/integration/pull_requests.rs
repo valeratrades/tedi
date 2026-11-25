@@ -59,11 +59,7 @@ fn seed(ctx: &TestContext) {
 async fn shown(ctx: &TestContext, queries: &[&str]) -> String {
 	ctx.set_issues_dir_override();
 	let workflows = Workflows::load(&[("kanban".to_string(), "preset:kanban".to_string())].into()).unwrap();
-	let mut reading = board::load(Reach::All, &workflows.trees).unwrap();
-	let mut board = board::Board::default();
-	while let Some(part) = reading.next().await.unwrap() {
-		board.extend([part]);
-	}
+	let board = board::load(&Reach::All, &workflows.trees).await.unwrap();
 	let mut out = Vec::new();
 	for q in queries {
 		let hits = q.parse::<Query>().unwrap().run(&board.cards, Some("mock_user")).unwrap();

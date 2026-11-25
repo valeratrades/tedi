@@ -106,10 +106,10 @@ pub(crate) fn call(port: u16, method: &str, path: &str, user: Option<&str>, body
 
 /// The board, put together of its parts.
 pub(crate) fn board(port: u16) -> serde_json::Value {
-	let (status, body) = call(port, "GET", "/api/board", None, None);
+	let (status, body) = call(port, "POST", "/api/board", None, Some(serde_json::json!({ "first": [] })));
 	assert_eq!(status, 200, "{body}");
 	let parts: Vec<Part> = body.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
-	assert!(matches!(parts.last(), Some(Part::Rest { .. })), "{body}");
+	assert!(parts.iter().any(|p| matches!(p, Part::Ranks(_))), "{body}");
 	let mut board = Board::default();
 	board.extend(parts);
 	serde_json::to_value(board).unwrap()
@@ -458,6 +458,44 @@ fn the_board_carries_its_repos_label_colors_as_of_the_last_pull() {
 
 	let (_server, port) = serve(&ctx, BOARD, &[]);
 	assert_eq!(board(port)["colors"], serde_json::json!({ "o/r": { "t:bug": "ededed", "won't fix": "ededed" } }));
+}
+
+#[test]
+fn the_board_is_read_in_the_order_of_what_is_shown() {
+	let ctx = TestContext::build();
+	for (repo, state) in [("a", " "), ("a", "x"), ("b", " "), ("b", "x")] {
+		let n = if state == "x" { 2 } else { 1 };
+		ctx.remote_in(
+			("o", repo).into(),
+			&crate::common::parse_virtual(&format!("- [{state}] Task <!-- @mock_user https://github.com/o/{repo}/issues/{n} -->\n  body\n")),
+			Some(crate::common::Seed::new(0)),
+		);
+	}
+	let out = ctx.run(&["--mock", "pull", "o/a", "o/b"]);
+	assert!(out.status.success(), "{}", out.stderr);
+
+	let (_server, port) = serve(&ctx, BOARD, &[]);
+	let order = |first: &[&str]| -> Vec<String> {
+		let (status, body) = call(port, "POST", "/api/board", None, Some(serde_json::json!({ "first": first })));
+		assert_eq!(status, 200, "{body}");
+		body.lines()
+			.map(|l| match serde_json::from_str(l).unwrap() {
+				Part::Head { .. } => "head".to_string(),
+				Part::Ranks(_) => "ranks".to_string(),
+				Part::Read { source, .. } => format!("{} {:?}", source.repo, source.holds),
+			})
+			.filter(|l| !l.ends_with("PullRequests"))
+			.collect()
+	};
+	assert_eq!(
+		order(&["is:issue is:closed repo:o/b"]),
+		["head", "o/a OpenIssues", "o/b OpenIssues", "ranks", "o/b ClosedIssues", "o/a ClosedIssues"],
+		"the open ones rank each other, so they come first whatever is shown"
+	);
+	assert_eq!(
+		order(&["is:issue is:open"]),
+		["head", "o/a OpenIssues", "o/b OpenIssues", "ranks", "o/a ClosedIssues", "o/b ClosedIssues"]
+	);
 }
 
 fn team_file(triage_hides: &str) -> String {

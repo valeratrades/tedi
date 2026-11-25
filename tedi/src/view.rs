@@ -2,7 +2,7 @@
 
 use color_eyre::eyre::{Result, bail};
 use tedi_task_operations::{
-	board::{self, Board, GroupBy},
+	board::{self, GroupBy},
 	open_interactions::SyncMode,
 	reach::Reach,
 };
@@ -24,11 +24,7 @@ pub async fn view_command(settings: &LiveSettings, args: ViewArgs, mode: SyncMod
 		States::Home(home) => home.view(&query, &args.group).await?,
 		States::Here(config) => {
 			let workflows = config.workflows()?;
-			let mut reading = board::load(Reach::All, &workflows.trees)?;
-			let mut board = Board::default();
-			while let Some(part) = reading.next().await? {
-				board.extend([part]);
-			}
+			let board = board::load(&Reach::All, &workflows.trees).await?;
 			for (path, e) in &board.unreadable {
 				eprintln!("unreadable, left out: {}: {}", path.display(), e.lines().next().unwrap_or_default());
 			}

@@ -245,17 +245,15 @@ fn hits(ctx: &Ctx) -> Vec<Hit> {
 		go: Go::Panel(PanelId("builder:".into())),
 		page: None,
 	});
-	if let Some(board) = ctx.board.read().as_ref() {
-		for c in board.cards.iter().filter(|c| c.open()) {
-			out.push(Hit {
-				kind: "issues",
-				glyph: if c.pr.is_some() { Glyph::Pr } else { Glyph::Issue },
-				label: format!("#{} {}", c.link.number(), c.title),
-				meta: c.link.project().repo().to_string(),
-				go: Go::Panel(PanelId(format!("issue:{}", c.link))),
-				page: None,
-			});
-		}
+	for c in ctx.board.read().cards.iter().filter(|c| c.open()) {
+		out.push(Hit {
+			kind: "issues",
+			glyph: if c.pr.is_some() { Glyph::Pr } else { Glyph::Issue },
+			label: format!("#{} {}", c.link.number(), c.title),
+			meta: c.link.project().repo().to_string(),
+			go: Go::Panel(PanelId(format!("issue:{}", c.link))),
+			page: None,
+		});
 	}
 	out
 }

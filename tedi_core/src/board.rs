@@ -166,39 +166,55 @@ impl Extend<Part> for Board {
 	fn extend<T: IntoIterator<Item = Part>>(&mut self, parts: T) {
 		for part in parts {
 			match part {
-				Part::Sizes { .. } => {}
+				Part::Head { targets, colors, assignable, .. } => (self.targets, self.colors, self.assignable) = (targets, colors, assignable),
 				Part::Read { cards, unreadable, .. } => {
 					self.cards.extend(cards);
 					self.unreadable.extend(unreadable);
 				}
-				Part::Rest {
-					ranks, targets, colors, assignable, ..
-				} => {
+				Part::Ranks(mut ranks) =>
 					for card in &mut self.cards {
-						card.rank = ranks.get(&card.link.to_string()).copied();
-					}
-					(self.targets, self.colors, self.assignable) = (targets, colors, assignable);
-				}
+						card.rank = ranks.remove(&card.link.to_string()).or(card.rank);
+					},
 			}
 		}
 	}
 }
 
-/// A board as it is read: `Sizes`, the issues, a `Rest` with which they are whole, the pull requests, the `Rest` with which all is.
+/// A board as it is read: the head, every source of open issues, their ranks, and the other sources.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum Part {
-	/// The bytes of the store it is read from.
-	Sizes { issues: u64, prs: u64 },
-	/// What `bytes` of them hold.
-	Read { bytes: u64, cards: Vec<Card>, unreadable: Vec<(PathBuf, String)> },
-	/// What the cards so far decide together, and what no card holds.
-	Rest {
-		whole: bool,
-		ranks: BTreeMap<String, Rank>,
+	/// What no card holds, and the bytes each source is read from.
+	Head {
+		sizes: Vec<(Source, u64)>,
 		targets: Vec<Target>,
 		colors: BTreeMap<String, BTreeMap<String, crate::labels::Color>>,
 		assignable: BTreeMap<String, Vec<String>>,
 	},
+	/// What `bytes` of a source hold.
+	Read {
+		source: Source,
+		bytes: u64,
+		cards: Vec<Card>,
+		unreadable: Vec<(PathBuf, String)>,
+	},
+	/// Of the open issues, which decide them together.
+	Ranks(BTreeMap<String, Rank>),
+}
+
+/// What a board is read from, apart so that a view waits only for those it shows.
+#[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+pub struct Source {
+	/// `owner/repo`
+	pub repo: String,
+	pub holds: Holds,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+pub enum Holds {
+	/// Every tree with an open issue in it.
+	OpenIssues,
+	ClosedIssues,
+	PullRequests,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -275,12 +291,26 @@ impl Query {
 		Ok(())
 	}
 
-	/// Whether its `is:` clauses leave pull requests in.
-	pub fn covers_prs(&self) -> bool {
-		!self.clauses.iter().any(|c| match c.negated {
-			false => c.any.iter().all(|v| *v == Filter::Is(Is::Issue)),
-			true => c.any.contains(&Filter::Is(Is::Pr)),
-		})
+	/// Whether what it shows is read from `source`: what may match, and every open issue when one does, as they rank and block each other.
+	pub fn needs(&self, source: &Source) -> bool {
+		let holds = |holds: Holds| {
+			self.clauses.iter().filter(|c| c.facet() == Facet::Is).all(|c| match c.negated {
+				false => c.any.iter().any(|v| match (v, holds) {
+					(Filter::Is(Is::Pr), _) => holds == Holds::PullRequests,
+					(Filter::Is(Is::Issue), _) => holds != Holds::PullRequests,
+					(Filter::Is(Is::Open), _) => holds != Holds::ClosedIssues,
+					_ => true,
+				}),
+				true => !c.any.iter().any(|v| match v {
+					Filter::Is(Is::Pr) => holds == Holds::PullRequests,
+					Filter::Is(Is::Issue) => holds != Holds::PullRequests,
+					Filter::Is(Is::Closed) => holds == Holds::ClosedIssues,
+					_ => false,
+				}),
+			})
+		};
+		let (owner, repo) = source.repo.split_once('/').expect("a source's repo is `owner/repo`");
+		holds(source.holds) && (source.holds == Holds::OpenIssues || self.covers(RepoInfo::new(owner, repo)))
 	}
 
 	/// Whether its `repo:` clauses leave `repo` in.

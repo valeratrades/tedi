@@ -4,10 +4,10 @@
 use dioxus::prelude::*;
 use ev_lib::uikit_dioxus::*;
 use strum::IntoEnumIterator as _;
-use tedi_core::board::{Board, Facet, Query, Tally};
+use tedi_core::board::{Facet, Query, Tally};
 
 use super::{
-	Ctx,
+	Ctx, Need,
 	icons::{Glyph, Icon},
 	kit::{Btn, Style},
 };
@@ -104,9 +104,12 @@ fn FacetMenu(facet: Facet, lens: Lens) -> Element {
 	let ctx = use_context::<Ctx>();
 	let mut needle = use_signal(String::new);
 	let board = ctx.board.read();
-	let Some(Board { cards, .. }) = board.as_ref() else {
-		return rsx! { span { class: "p-2 text-caption text-ink-soft", "Counted once the board is here" } };
-	};
+	let cards = &board.cards;
+	let mut counted = lens.search.clone();
+	counted.narrow(&lens.scope);
+	if ctx.awaits(&Need::Query(counted)) {
+		return rsx! { span { class: "p-2 text-caption text-ink-soft", "Counted once the view is here" } };
+	}
 	let tallies = match lens.search.tally(facet, &lens.scope, cards, ctx.me().as_deref()) {
 		Ok(t) => t,
 		Err(e) => return rsx! { span { class: "p-2 text-caption text-accent-error", "{e}" } },

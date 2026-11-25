@@ -24,12 +24,14 @@ use crate::api;
 
 #[component]
 pub fn IssuePanel(link: IssueLink) -> Element {
+	rsx! { super::view::Behind { what: "issue {link}", need: super::Need::Cards(vec![link.clone()]), Opened { link } } }
+}
+
+#[component]
+fn Opened(link: IssueLink) -> Element {
 	let ctx = use_context::<Ctx>();
 	let Some(card) = ctx.card(&link) else {
-		return match ctx.awaits(true) {
-			true => rsx! { super::view::Loader { prs: true } },
-			false => rsx! { div { class: "p-4 text-body text-ink-soft", "{link} is not on the board: not stored here" } },
-		};
+		return rsx! { div { class: "p-4 text-body text-ink-soft", "{link} is not on the board: not stored here" } };
 	};
 	let conflict = ctx.conflicts.read().get(&link).cloned();
 	rsx! {
@@ -177,7 +179,6 @@ fn Sidebar(card: Card) -> Element {
 	let link = card.link.clone();
 	let home = link.project();
 	let board = ctx.board.read();
-	let board = board.as_ref().expect("the card came from it");
 	let children: Vec<&Card> = board.cards.iter().filter(|c| c.parent.as_ref() == Some(&link)).collect();
 	let editable = card.pr.is_none();
 	let mut assignable = board.assignable.get(&home.to_string()).cloned().unwrap_or_default(); // a repo no pull read them of yet
@@ -462,7 +463,7 @@ fn Chooser(title: String, glyph: Glyph, choices: Vec<Choice>, picked: Vec<String
 fn Labels(card: Card) -> Element {
 	let ctx = use_context::<Ctx>();
 	let board = ctx.board.read();
-	let colors = board.as_ref().expect("the card came from it").colors.get(&card.link.project().to_string());
+	let colors = board.colors.get(&card.link.project().to_string());
 	let names: BTreeSet<&String> = colors.into_iter().flat_map(|c| c.keys()).chain(&card.labels).collect();
 	let mut choices: Vec<Choice> = names
 		.into_iter()
@@ -507,7 +508,6 @@ fn Milestones(card: Card) -> Element {
 	let ctx = use_context::<Ctx>();
 	let home = card.link.project();
 	let board = ctx.board.read();
-	let board = board.as_ref().expect("the card came from it");
 	let hosts = |t: &Target| t.hosts(&card.link);
 	let mut offered: Vec<&Target> = board
 		.targets
@@ -589,16 +589,7 @@ fn Conversation(card: Card) -> Element {
 			async move { api::thread(link).await }
 		}
 	});
-	let children: Vec<Card> = ctx
-		.board
-		.read()
-		.as_ref()
-		.expect("the card came from it")
-		.cards
-		.iter()
-		.filter(|c| c.parent.as_ref() == Some(&link))
-		.cloned()
-		.collect();
+	let children: Vec<Card> = ctx.board.read().cards.iter().filter(|c| c.parent.as_ref() == Some(&link)).cloned().collect();
 	let body = card.body.split("\n# Blockers").next().expect("split yields at least one piece").trim_end().to_string(); // the blockers show as their own field
 	let tick = {
 		let (link, held) = (link.clone(), card.body.clone());

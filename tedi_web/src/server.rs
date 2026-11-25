@@ -6,7 +6,7 @@ mod accounts;
 mod migrate;
 
 use std::{
-	collections::{BTreeMap, BTreeSet, HashMap, hash_map::Entry},
+	collections::{BTreeMap, BTreeSet, HashMap},
 	net::SocketAddr,
 	path::PathBuf,
 	sync::{Arc, LazyLock, OnceLock},
@@ -25,7 +25,7 @@ use dioxus_fullstack::ServerEvents;
 use futures::{Stream, StreamExt as _};
 use tedi_core::{
 	IssueLink, MilestoneLink, RepoInfo,
-	board::{Answer, Board, GroupBy, Hit, Listing, Query, Scope, Thread, scope_at},
+	board::{Answer, Board, GroupBy, Hit, Holds, Listing, Part, Query, Scope, Source as Held, Thread, scope_at},
 	conflict::{CommentEdit, Conflict, Edited, FieldEdit},
 	workflow::State,
 };
@@ -36,7 +36,7 @@ use tedi_task_operations::{
 	reach::{Reach, Reached},
 	workflow::{MovedOn, Mover, Rejected, Workflows},
 };
-use tokio::sync::{Mutex, broadcast, mpsc};
+use tokio::sync::{Mutex, Notify, OnceCell, broadcast, mpsc};
 
 use crate::api::{
 	Catalog, Change, Construction, Entry as Cataloged, Fork, Forked, Item, Kept, Library, LibraryEdit, Onto, Origin, Owner, Setup, ShareLink, Shared, Shelf, Upstream, Usage, Version, View,
@@ -120,7 +120,7 @@ pub async fn serve(config: Settings) -> Result<()> {
 	}
 	let listener = tokio::net::TcpListener::bind(addr).await?;
 	tracing::info!("serving the board on {addr}");
-	tokio::try_join!(async { Ok(axum::serve(listener, router).await?) }, puller(announced))?;
+	tokio::try_join!(async { Ok(axum::serve(listener, router).await?) }, puller(announced), Box::pin(reader()))?; // main polls this whole future off its stack
 	Ok(())
 }
 
@@ -153,12 +153,23 @@ pub async fn setup(headers: &HeaderMap) -> Result<Setup> {
 	})
 }
 
-/// Its parts, a line each, as they are read.
-pub async fn board(headers: &HeaderMap) -> Result<impl Stream<Item = Result<Bytes>> + use<>> {
-	let reading = reading(Caller::of(headers)?.reach).await?;
-	Ok(futures::stream::try_unfold((reading, 0), |(reading, n)| async move {
-		Ok(reading.line(n).await?.map(|line| (line, (reading, n + 1))))
+/// Its parts, a line each, as they are read: those the queries `first` show before the others.
+pub async fn board(headers: &HeaderMap, first: Vec<String>) -> Result<impl Stream<Item = Result<Bytes>> + use<>> {
+	let reach = Caller::of(headers)?.reach;
+	let first: Vec<Query> = first.iter().map(|q| q.parse()).collect::<Result<_, _>>()?;
+	let store = current().await?;
+	let steps = steps(&store, &reach, &first);
+	Ok(futures::stream::try_unfold((store, reach, steps.into_iter()), |(store, reach, mut steps)| async move {
+		Ok(match steps.next() {
+			Some(step) => Some((store.lines(step, &reach).await?, (store, reach, steps))),
+			None => None,
+		})
 	}))
+}
+
+/// What a page meant to show at 100% it showed at `percent`, having stood full for `late` percent of the wait.
+pub fn off(what: &str, percent: u64, late: u64) {
+	tracing::warn!(what, percent, late, "a view's progress was off");
 }
 
 pub async fn query(headers: &HeaderMap, asked: String) -> Result<Answer> {
@@ -536,52 +547,105 @@ async fn pending(link: &Reached<IssueLink>) -> Result<Option<String>> {
 	}
 }
 
-/// The board within `reach`, as whoever reaches as much reads it.
-async fn reading(reach: Reach) -> Result<Arc<SharedReading>> {
-	let mut held = BOARDS.lock().await;
-	Ok(match held.entry(reach) {
-		Entry::Occupied(e) => e.get().clone(),
-		Entry::Vacant(e) => {
-			let reading = tedi_task_operations::board::load(e.key().clone(), &settings().workflows.trees)?;
-			e.insert(Arc::new(SharedReading(Mutex::new((Vec::new(), reading))))).clone()
-		}
-	})
-}
-
+/// The board within `reach`.
 async fn whole(reach: Reach) -> Result<Board> {
-	let reading = reading(reach).await?;
+	let store = current().await?;
 	let mut board = Board::default();
-	let mut n = 0;
-	while let Some(line) = reading.line(n).await? {
-		board.extend([serde_json::from_slice(&line)?]);
-		n += 1;
+	for step in steps(&store, &reach, &[]) {
+		for line in store.lines(step, &reach).await?.split_inclusive(|b| *b == b'\n') {
+			board.extend([serde_json::from_slice(line)?]);
+		}
 	}
 	Ok(board)
 }
 
-/// A reading of the board, shared by whoever asks for it: each reads on from where the furthest got.
-struct SharedReading(Mutex<(Vec<Bytes>, Reading<'static>)>);
-impl SharedReading {
-	async fn line(self: &Arc<Self>, n: usize) -> Result<Option<Bytes>> {
-		let mut read = self.0.lock().await;
-		let (lines, reading) = &mut *read;
-		if let Some(line) = lines.get(n) {
-			return Ok(Some(line.clone()));
-		}
-		let part = match reading.next().await {
-			Ok(Some(part)) => part,
-			Ok(None) => return Ok(None),
-			Err(e) => {
-				BOARDS.lock().await.retain(|_, held| !Arc::ptr_eq(held, self)); // the next to ask reads anew
-				return Err(e);
+#[derive(Clone, Copy)]
+enum Step {
+	Head,
+	Unit(usize),
+	Ranks,
+}
+
+/// All there is of `store` within `reach`, what `first` shows before the rest; what isn't within it has no step.
+fn steps(store: &Store, reach: &Reach, first: &[Query]) -> Vec<Step> {
+	let late = |(_, source): &(usize, &Held)| !first.iter().any(|q| q.needs(source));
+	let (mut open, mut rest): (Vec<_>, Vec<_>) = store.reading.units(reach).partition(|(_, source)| source.holds == Holds::OpenIssues);
+	open.sort_by_key(late); // stable
+	rest.sort_by_key(late);
+	let units = |of: Vec<(usize, &Held)>| of.into_iter().map(|(i, _)| Step::Unit(i)).collect::<Vec<_>>();
+	[Step::Head].into_iter().chain(units(open)).chain([Step::Ranks]).chain(units(rest)).collect()
+}
+
+/// The store as it stands, its units' lines kept as they are first read: by whoever asks, or ahead of them.
+struct Store {
+	reading: Reading<'static>,
+	units: HashMap<usize, OnceCell<Bytes>>,
+}
+impl Store {
+	async fn lines(&self, step: Step, reach: &Reach) -> Result<Bytes> {
+		match step {
+			Step::Head => line(&self.reading.head(reach)),
+			Step::Unit(i) => self.unit(i).await,
+			Step::Ranks => {
+				for (i, _) in self.reading.units(reach).filter(|(_, source)| source.holds == Holds::OpenIssues) {
+					self.unit(i).await?;
+				}
+				line(&self.reading.ranks(reach))
 			}
+		}
+	}
+
+	async fn unit(&self, i: usize) -> Result<Bytes> {
+		let read = async {
+			let mut lines = Vec::new();
+			for part in self.reading.read(i).await? {
+				lines.extend_from_slice(&line(&part)?);
+			}
+			tokio::task::yield_now().await; // reading never waits: what is read leaves before the next is
+			Ok(Bytes::from(lines))
 		};
-		let mut line = serde_json::to_vec(&part)?;
-		line.push(b'\n');
-		let line = Bytes::from(line);
-		lines.push(line.clone());
-		tokio::task::yield_now().await; // reading never waits: what is read leaves before the next is
-		Ok(Some(line))
+		self.units[&i].get_or_try_init(|| read).await.cloned()
+	}
+}
+
+fn line(part: &Part) -> Result<Bytes> {
+	let mut line = serde_json::to_vec(part)?;
+	line.push(b'\n');
+	Ok(line.into())
+}
+
+/// The store since the last change.
+async fn current() -> Result<Arc<Store>> {
+	let mut held = STORE.lock().await;
+	if let Some(store) = &*held {
+		return Ok(store.clone());
+	}
+	let reading = Reading::begin(&settings().workflows.trees)?;
+	let units = reading.units(&Reach::All).map(|(i, _)| (i, OnceCell::new())).collect();
+	let store = Arc::new(Store { reading, units });
+	*held = Some(store.clone());
+	Ok(store)
+}
+
+/// Reads the store after every change, so that a page opening later finds it read.
+async fn reader() -> Result<()> {
+	let read = async || -> Result<()> {
+		let store = current().await?;
+		for (i, _) in store.reading.units(&Reach::All) {
+			store.unit(i).await?;
+		}
+		Ok(())
+	};
+	//LOOP follows the store for the life of the server
+	loop {
+		let read = tokio::select! {
+			() = STALE.notified() => continue,
+			read = read() => read,
+		};
+		if let Err(e) = read {
+			tracing::warn!("reading the board ahead: {e:#}"); // whoever asks for it is told
+		}
+		STALE.notified().await;
 	}
 }
 
@@ -589,8 +653,10 @@ static SETTINGS: OnceLock<Settings> = OnceLock::new();
 /// What the puller pulls next; never dropped, so its channel never closes.
 static ANNOUNCE: OnceLock<mpsc::UnboundedSender<Pull>> = OnceLock::new();
 static CHANGES: LazyLock<broadcast::Sender<()>> = LazyLock::new(|| broadcast::channel(16).0);
-/// Read once per change and reach rather than once per open board.
-static BOARDS: LazyLock<Mutex<HashMap<Reach, Arc<SharedReading>>>> = LazyLock::new(Default::default);
+/// Read once per change rather than once per open board; each is served its reach of it.
+static STORE: Mutex<Option<Arc<Store>>> = Mutex::const_new(None);
+/// The store changed since it was last read ahead.
+static STALE: Notify = Notify::const_new();
 /// Held across each library's read-modify-write.
 static LIBRARIES: Mutex<()> = Mutex::const_new(());
 
@@ -708,7 +774,8 @@ async fn webhook(headers: HeaderMap, body: Bytes) -> StatusCode {
 }
 
 async fn changed() {
-	BOARDS.lock().await.clear();
+	*STORE.lock().await = None;
+	STALE.notify_one();
 	let _ = CHANGES.send(()); // errs only while no board is open: nobody to tell
 }
 

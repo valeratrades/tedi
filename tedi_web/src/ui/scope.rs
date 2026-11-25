@@ -6,7 +6,7 @@ use dioxus::prelude::*;
 use tedi_core::board::{Query, Scope, Terms};
 
 use super::{
-	Ctx, Editing,
+	Ctx, Editing, Need,
 	icons::{Glyph, Icon},
 	kit::{Btn, IconBtn, MenuItem, Picker, Style},
 };
@@ -17,10 +17,7 @@ pub(super) fn open_in(ctx: &Ctx, terms: &Terms) -> Option<usize> {
 	let board = ctx.board.read();
 	let mut q: Query = "is:open".parse().expect("a constant, valid query");
 	q.narrow(terms);
-	if ctx.awaits(q.covers_prs()) {
-		return None;
-	}
-	Some(q.run(&board.as_ref()?.cards, ctx.me().as_deref()).expect("clauses run").len())
+	(!ctx.awaits(&Need::Query(q.clone()))).then(|| q.run(&board.cards, ctx.me().as_deref()).expect("clauses run").len())
 }
 
 #[component]
@@ -56,13 +53,13 @@ pub(super) fn ScopeEditor(editing: Editing) -> Element {
 		m.set(None);
 	};
 	let board = ctx.board.read();
-	let mut known: Vec<String> = board.as_ref().map_or_else(Vec::new, |b| b.cards.iter().map(|c| c.link.project().to_string()).collect()); // before the board arrives nothing is offered
+	let mut known: Vec<String> = board.cards.iter().map(|c| c.link.project().to_string()).collect();
 	known.extend(known.clone().iter().map(|r| format!("{}/*", r.split('/').next().expect("owner/repo"))));
 	drop(board);
 	known.sort();
 	known.dedup();
 	let needle = typed.read().trim().to_lowercase();
-	let offered: Vec<(String, usize)> = known
+	let offered: Vec<(String, Option<usize>)> = known
 		.into_iter()
 		.filter(|r| !repos.read().contains(r) && r.to_lowercase().contains(&needle))
 		.take(12)
@@ -71,7 +68,7 @@ pub(super) fn ScopeEditor(editing: Editing) -> Element {
 				repos: vec![r.clone()],
 				..Default::default()
 			};
-			let n = open_in(&ctx, &scope.filter()).unwrap_or(0); // offered only from the board's cards, so it has arrived
+			let n = open_in(&ctx, &scope.filter());
 			(r, n)
 		})
 		.collect();
@@ -190,7 +187,7 @@ pub(super) fn ScopeEditor(editing: Editing) -> Element {
 									onclick: { let r = r.clone(); move |_| add(r.clone()) },
 									Icon { glyph: Glyph::Plus, class: "size-3" }
 									"{r}"
-									span { class: "text-ink-faint", "{n}" }
+									span { class: "text-ink-faint", if let Some(n) = n { "{n}" } }
 								}
 							}
 						}

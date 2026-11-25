@@ -60,7 +60,7 @@ fn scope(port: u16, user: &str, scope: &str) {
 
 /// The board as `user` is served it, its lines.
 fn board(port: u16, user: &str) -> String {
-	let (status, body) = call(port, "GET", "/api/board", Some(user), None);
+	let (status, body) = call(port, "POST", "/api/board", Some(user), Some(json!({ "first": [] })));
 	assert_eq!(status, 200, "{body}");
 	body
 }
@@ -90,7 +90,8 @@ fn attempts() -> Vec<(&'static str, &'static str, Option<Value>)> {
 	let item = json!({ "View": "Triage" });
 	vec![
 		("GET", "/api/setup", None),
-		("GET", "/api/board", None),
+		("POST", "/api/board", Some(json!({ "first": ["repo:alice/priv"] }))),
+		("POST", "/api/off", Some(json!({ "what": "view Triage", "percent": 0, "late": 0 }))),
 		("POST", "/api/query", Some(json!({ "asked": "" }))),
 		("POST", "/api/view", Some(json!({ "named": "", "group": "repo" }))),
 		("POST", "/api/refresh", Some(json!({}))),

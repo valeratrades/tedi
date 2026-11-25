@@ -136,7 +136,7 @@ fn Shelves() -> Element {
 		})
 		.collect();
 
-	let unreadable = ctx.board.read().as_ref().map_or(0, |b| b.unreadable.len()); // the board arrives after the shelves
+	let unreadable = ctx.board.read().unreadable.len();
 	let me = ctx.me();
 	rsx! {
 		div { class: "flex min-h-0 flex-1 flex-col gap-1 p-2",

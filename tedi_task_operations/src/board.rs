@@ -1,9 +1,9 @@
 //! The board as the store holds it: every stored issue and mirrored pull request carded (the model is `tedi_core::board`).
 
 use std::{
-	collections::{BTreeMap, HashMap, HashSet, VecDeque, hash_map::Entry},
+	collections::{BTreeMap, HashMap, hash_map::Entry},
 	path::PathBuf,
-	sync::Arc,
+	sync::{Arc, Mutex},
 };
 
 use color_eyre::eyre::{Result, bail, eyre};
@@ -29,60 +29,21 @@ use crate::{
 /// What an issue without `i:` counts as (`labels.nix`: "`i:3` is the default").
 const DEFAULT_IMPORTANCE: u8 = 3;
 
-/// Pull requests are read a repo at a time, and shown so many.
+/// Issue trees, and pull requests, are read and shown so many at a time.
+const TREES_A_UNIT: usize = 4;
 const PRS_A_PART: usize = 25;
 
 /// Every issue in the store within `reach`, one card per node, and every pull request, ranked over their
 /// `blocked by` links; each placed in every one of `trees`.
-pub fn load(reach: Reach, trees: &Trees) -> Result<Reading<'_>> {
-	let mut roots = Vec::new();
-	let mut sizes: HashMap<(RepoInfo, IssueSelector), u64> = HashMap::new();
-	for rel in Local::issue_file_relpaths()? {
-		let path = Local::issues_dir().join(&rel);
-		let index = Local::extract_index_from_path(&path)?;
-		let Some(&root) = index.index().first().filter(|_| !index.repo_info().is_virtual() && reach.covers(index.repo_info())) else {
-			continue; // virtual issues have no board, and what is out of reach isn't on this one
-		};
-		*sizes.entry((index.repo_info(), root)).or_default() += std::fs::metadata(&path)?.len();
-		if index.index().len() == 1 {
-			roots.push((path, index.repo_info(), root)); // a child is carded with its root's tree
-		}
+pub async fn load(reach: &Reach, trees: &Trees) -> Result<Board> {
+	let reading = Reading::begin(trees)?;
+	let mut board = Board::default();
+	board.extend([reading.head(reach)]);
+	for (unit, _) in reading.units(reach) {
+		board.extend(Box::pin(reading.read(unit)).await?); // a command polls this whole future off main's stack
 	}
-	let mut steps: Vec<Step> = roots
-		.into_iter()
-		.map(|(path, repo, root)| Step::Issue {
-			bytes: sizes.remove(&(repo, root)).unwrap_or(0), // the same root's second file (`.md`, `.md.bak`): counted with the first
-			path,
-		})
-		.collect();
-	steps.push(Step::Rest { whole: false });
-	steps.extend(
-		Local::pr_repos()?
-			.into_iter()
-			.filter(|(repo, _)| reach.covers(*repo))
-			.map(|(repo, bytes)| Step::Prs { repo, bytes }),
-	);
-	steps.push(Step::Rest { whole: true });
-	let (mut issues, mut prs) = (0, 0);
-	for step in &steps {
-		match step {
-			Step::Issue { bytes, .. } => issues += bytes,
-			Step::Prs { bytes, .. } => prs += bytes,
-			Step::Rest { .. } => {}
-		}
-	}
-	Ok(Reading {
-		reach,
-		trees,
-		steps,
-		at: 0,
-		ready: [Part::Sizes { issues, prs }].into(),
-		held: HashMap::new(),
-		metas: HashMap::new(),
-		tasks: BTreeMap::new(),
-		blocks: Vec::new(),
-		repos: HashSet::new(),
-	})
+	board.extend([reading.ranks(reach)]);
+	Ok(board)
 }
 
 pub fn listing(board: &Board, query: String, group: &GroupBy, trees: &Trees, me: Option<&str>) -> Result<Listing> {
@@ -219,126 +180,203 @@ pub async fn pending_conflict(link: &Reached<IssueLink>) -> Result<Option<PathBu
 	check_for_existing_conflict(stored_index(link)?).await
 }
 
-/// A board being read.
+/// The store as a board is read from it, a unit at a time: those of open issues first, which the ranks then come of.
 pub struct Reading<'a> {
-	reach: Reach,
+	units: Vec<Unit>,
+	milestones: Vec<Milestone>,
 	trees: &'a Trees,
-	steps: Vec<Step>,
-	at: usize,
-	ready: VecDeque<Part>,
-	held: HashMap<RepoInfo, States>,
 	metas: HashMap<RepoInfo, Arc<ProjectMeta>>,
-	tasks: BTreeMap<String, Task>,
-	blocks: Vec<(String, String)>,
-	repos: HashSet<RepoInfo>,
+	states: HashMap<RepoInfo, States>,
+	/// Of the open issues read: each one's repo, what ranks it, and what blocks it.
+	open: Mutex<HashMap<String, (RepoInfo, Task, Vec<String>)>>,
 }
-impl Reading<'_> {
-	/// Reads on; `None` once whole. Dropped midway, the next call reads the same again.
-	pub async fn next(&mut self) -> Result<Option<Part>> {
-		while self.ready.is_empty() && self.at < self.steps.len() {
-			self.step().await?;
+impl<'a> Reading<'a> {
+	/// All of it: what a caller gets of it is what their reach asks for.
+	pub fn begin(trees: &'a Trees) -> Result<Self> {
+		struct Tree {
+			roots: Vec<PathBuf>,
+			bytes: u64,
+			open: bool,
 		}
-		Ok(self.ready.pop_front())
-	}
-
-	async fn step(&mut self) -> Result<()> {
-		match self.steps[self.at].clone() {
-			Step::Issue { path, bytes } => {
-				let index = Local::extract_index_from_path(&path)?;
-				let meta = self
-					.metas
-					.entry(index.repo_info())
-					.or_insert_with(|| Arc::new(Local::load_project_meta(index.repo_info())))
-					.clone();
-				let loaded = match LocalIssueSource::<FsReader>::build(LocalPath::new(index)).await {
-					Ok(source) => Issue::load(LocalIssueSource { meta: Some(meta), ..source }).await.map(|i| (i, false)),
-					Err(LocalError::ConflictBlocked(_)) => Issue::load(LocalIssueSource::<GitReader>::build(LocalPath::new(index))?).await.map(|i| (i, true)),
-					Err(e) => Err(e),
-				};
-				let (mut cards, mut unreadable) = (Vec::new(), Vec::new());
-				match loaded {
-					Ok((issue, conflicted)) => {
-						let trees = self.trees;
-						card_tree(&issue, None, conflicted, self.states(index.repo_info())?, trees, &mut cards)?
-					}
-					Err(e) => unreadable.push((path, e.to_string())),
-				}
-				self.read(bytes, cards, unreadable);
+		let mut stored: BTreeMap<(String, IssueSelector), (RepoInfo, Tree)> = BTreeMap::new();
+		for rel in Local::issue_file_relpaths()? {
+			let path = Local::issues_dir().join(&rel);
+			let index = Local::extract_index_from_path(&path)?;
+			let Some(&root) = index.index().first().filter(|_| !index.repo_info().is_virtual()) else {
+				continue; // virtual issues have no board
+			};
+			let repo = index.repo_info();
+			let none = Tree {
+				roots: Vec::new(),
+				bytes: 0,
+				open: false,
+			};
+			let (_, tree) = stored.entry((repo.to_string(), root)).or_insert((repo, none));
+			tree.bytes += std::fs::metadata(&path)?.len();
+			tree.open |= path.extension().is_some_and(|e| e == "md"); // closed, it is `.md.bak`
+			if index.index().len() == 1 {
+				tree.roots.push(path); // a child is carded with its root's tree
 			}
-			Step::Prs { repo, bytes } => {
-				let trees = self.trees;
-				let states = self.states(repo)?;
-				let mut cards = Local::stored_prs(repo)?.into_values().map(|pr| pr_card(repo, pr, states, trees)).collect::<Result<Vec<_>>>()?;
-				let (n, mut left) = (cards.len() as u64, bytes);
-				while !cards.is_empty() {
-					let rest = cards.split_off(PRS_A_PART.min(cards.len()));
-					let share = if rest.is_empty() { left } else { (bytes * cards.len() as u64).div_euclid(n) };
-					left -= share;
-					self.read(share, std::mem::replace(&mut cards, rest), Vec::new());
-				}
-				if n == 0 {
-					self.read(bytes, Vec::new(), Vec::new());
-				}
-			}
-			Step::Rest { whole } => self.ready.push_back(self.rest(whole)?),
 		}
-		self.at += 1;
-		Ok(())
-	}
+		let mut units: Vec<Unit> = Vec::new();
+		for ((name, _), (repo, tree)) in stored {
+			let source = Source {
+				repo: name,
+				holds: if tree.open { Holds::OpenIssues } else { Holds::ClosedIssues },
+			};
+			match units.iter_mut().rfind(|u| u.source == source && u.roots.len() < TREES_A_UNIT) {
+				Some(unit) => {
+					unit.bytes += tree.bytes;
+					unit.roots.extend(tree.roots);
+				}
+				None => units.push(Unit {
+					source,
+					repo,
+					bytes: tree.bytes,
+					roots: tree.roots,
+				}),
+			}
+		}
+		units.extend(Local::pr_repos()?.into_iter().map(|(repo, bytes)| Unit {
+			source: Source {
+				repo: repo.to_string(),
+				holds: Holds::PullRequests,
+			},
+			repo,
+			bytes,
+			roots: Vec::new(),
+		}));
+		units.sort_by(|a, b| (a.source.holds, &a.source.repo).cmp(&(b.source.holds, &b.source.repo)));
 
-	fn states(&mut self, repo: RepoInfo) -> Result<&States> {
-		Ok(match self.held.entry(repo) {
-			Entry::Occupied(e) => e.into_mut(),
-			Entry::Vacant(e) => e.insert(Local::load_states(repo)?),
+		let (mut metas, mut states) = (HashMap::new(), HashMap::new());
+		for unit in &units {
+			if let Entry::Vacant(e) = states.entry(unit.repo) {
+				e.insert(Local::load_states(unit.repo)?);
+				metas.insert(unit.repo, Arc::new(Local::load_project_meta(unit.repo)));
+			}
+		}
+		Ok(Self {
+			units,
+			milestones: Local::stored_milestones()?.into_iter().filter(|m| !m.is_closed()).collect(),
+			trees,
+			metas,
+			states,
+			open: Mutex::new(HashMap::new()),
 		})
 	}
 
-	fn read(&mut self, bytes: u64, cards: Vec<Card>, unreadable: Vec<(PathBuf, String)>) {
-		for c in &cards {
-			let task = Task {
-				importance: c.importance.unwrap_or(DEFAULT_IMPORTANCE),
-				open: c.open(),
-			};
-			self.tasks.insert(c.link.to_string(), task);
-			self.blocks.extend(c.blocked_by.iter().map(|b| (b.to_string(), c.link.to_string())));
-			self.repos.insert(c.link.project());
+	pub fn head(&self, reach: &Reach) -> Part {
+		let mut sizes: BTreeMap<Source, u64> = BTreeMap::new();
+		for unit in self.units.iter().filter(|u| reach.covers(u.repo)) {
+			*sizes.entry(unit.source.clone()).or_default() += unit.bytes;
 		}
-		self.ready.push_back(Part::Read { bytes, cards, unreadable });
-	}
-
-	fn rest(&self, whole: bool) -> Result<Part> {
-		let (mut colors, mut assignable) = (BTreeMap::new(), BTreeMap::new());
-		for &repo in &self.repos {
-			let meta = Local::load_project_meta(repo);
-			colors.insert(repo.to_string(), meta.label_colors);
-			assignable.insert(repo.to_string(), meta.assignable);
-		}
-		let targets = Local::stored_milestones()?
-			.into_iter()
-			.filter(|m| !m.is_closed() && self.reach.covers(m.link().repo_info()))
+		let targets = self
+			.milestones
+			.iter()
+			.filter(|m| reach.covers(m.link().repo_info()))
 			.map(|m| Target {
 				nodes: m.body.0.nodes(),
 				description: m.body.0.description(),
-				link: m.identity.link,
-				title: m.identity.title,
+				link: m.identity.link.clone(),
+				title: m.identity.title.clone(),
 				due_on: m.identity.due_on,
 			})
 			.collect();
-		Ok(Part::Rest {
-			whole,
-			ranks: rank(&self.tasks, &self.blocks).ranks,
+		let metas = || self.metas.iter().filter(|(repo, _)| reach.covers(**repo));
+		Part::Head {
+			sizes: sizes.into_iter().collect(),
 			targets,
-			colors,
-			assignable,
-		})
+			colors: metas().map(|(repo, m)| (repo.to_string(), m.label_colors.clone())).collect(),
+			assignable: metas().map(|(repo, m)| (repo.to_string(), m.assignable.clone())).collect(),
+		}
+	}
+
+	/// Each by its place, those of open issues first.
+	pub fn units(&self, reach: &Reach) -> impl Iterator<Item = (usize, &Source)> {
+		self.units.iter().enumerate().filter(|(_, u)| reach.covers(u.repo)).map(|(i, u)| (i, &u.source))
+	}
+
+	/// What the unit at `i` holds; the same however often it is read.
+	pub async fn read(&self, i: usize) -> Result<Vec<Part>> {
+		let unit = &self.units[i];
+		let states = &self.states[&unit.repo];
+		let part = |bytes, cards, unreadable| Part::Read {
+			source: unit.source.clone(),
+			bytes,
+			cards,
+			unreadable,
+		};
+		if unit.source.holds == Holds::PullRequests {
+			let mut cards = Local::stored_prs(unit.repo)?
+				.into_values()
+				.map(|pr| pr_card(unit.repo, pr, states, self.trees))
+				.collect::<Result<Vec<_>>>()?;
+			for card in &mut cards {
+				let link = card.link.to_string();
+				card.rank = rank(&[(link.clone(), task(card))].into(), &[]).ranks.remove(&link); // it blocks and is blocked by nothing
+			}
+			let (n, mut left) = (cards.len() as u64, unit.bytes);
+			let mut parts = Vec::new();
+			while !cards.is_empty() {
+				let rest = cards.split_off(PRS_A_PART.min(cards.len()));
+				let share = if rest.is_empty() { left } else { (unit.bytes * cards.len() as u64).div_euclid(n) };
+				left -= share;
+				parts.push(part(share, std::mem::replace(&mut cards, rest), Vec::new()));
+			}
+			if parts.is_empty() {
+				parts.push(part(unit.bytes, Vec::new(), Vec::new()));
+			}
+			return Ok(parts);
+		}
+		let (mut cards, mut unreadable) = (Vec::new(), Vec::new());
+		for path in &unit.roots {
+			let index = Local::extract_index_from_path(path)?;
+			let loaded = match LocalIssueSource::<FsReader>::build(LocalPath::new(index)).await {
+				Ok(source) => {
+					let meta = Some(self.metas[&unit.repo].clone());
+					Issue::load(LocalIssueSource { meta, ..source }).await.map(|i| (i, false))
+				}
+				Err(LocalError::ConflictBlocked(_)) => Issue::load(LocalIssueSource::<GitReader>::build(LocalPath::new(index))?).await.map(|i| (i, true)),
+				Err(e) => Err(e),
+			};
+			match loaded {
+				Ok((issue, conflicted)) => card_tree(&issue, None, conflicted, states, self.trees, &mut cards)?,
+				Err(e) => unreadable.push((path.clone(), e.to_string())),
+			}
+		}
+		let mut open = self.open.lock().expect("nothing panics holding it");
+		open.extend(cards.iter().map(|c| {
+			let by = c.blocked_by.iter().map(ToString::to_string).collect();
+			(c.link.to_string(), (unit.repo, task(c), by))
+		}));
+		Ok(vec![part(unit.bytes, cards, unreadable)])
+	}
+
+	/// Of the issues read so far.
+	pub fn ranks(&self, reach: &Reach) -> Part {
+		let open = self.open.lock().expect("nothing panics holding it");
+		let (mut tasks, mut blocks) = (BTreeMap::new(), Vec::new());
+		for (link, (_, task, by)) in open.iter().filter(|(_, (repo, ..))| reach.covers(*repo)) {
+			tasks.insert(link.clone(), *task);
+			blocks.extend(by.iter().map(|b| (b.clone(), link.clone())));
+		}
+		Part::Ranks(rank(&tasks, &blocks).ranks)
 	}
 }
 
-#[derive(Clone)]
-enum Step {
-	Issue { path: PathBuf, bytes: u64 },
-	Prs { repo: RepoInfo, bytes: u64 },
-	Rest { whole: bool },
+struct Unit {
+	source: Source,
+	repo: RepoInfo,
+	bytes: u64,
+	/// The files of the trees' roots; none: the repo's pull requests.
+	roots: Vec<PathBuf>,
+}
+
+fn task(card: &Card) -> Task {
+	Task {
+		importance: card.importance.unwrap_or(DEFAULT_IMPORTANCE),
+		open: card.open(),
+	}
 }
 
 fn card_tree(issue: &Issue, parent: Option<&IssueLink>, conflicted: bool, states: &States, trees: &Trees, out: &mut Vec<Card>) -> Result<()> {

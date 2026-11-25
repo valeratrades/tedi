@@ -707,10 +707,17 @@ pub async fn setup() -> Result<Setup, ServerFnError> {
 	crate::server::setup(&headers).await.map_err(failed)
 }
 
-/// The board's parts within the viewer's reach, a JSON line each, as they are read.
-#[get("/api/board", headers: HeaderMap)]
-pub async fn board() -> Result<ByteStream, ServerFnError> {
-	let lines = crate::server::board(&headers).await.map_err(failed)?;
+/// A view was ready at `percent` of its progress, or stood full for `late` percent of its wait: what it counts is off.
+#[post("/api/off")]
+pub async fn off(what: String, percent: u64, late: u64) -> Result<(), ServerFnError> {
+	crate::server::off(&what, percent, late);
+	Ok(())
+}
+
+/// The board's parts within the viewer's reach, a JSON line each, as they are read: those the queries `first` show before the others.
+#[post("/api/board", headers: HeaderMap)]
+pub async fn board(first: Vec<String>) -> Result<ByteStream, ServerFnError> {
+	let lines = crate::server::board(&headers, first).await.map_err(failed)?;
 	let context = FullstackContext::current().expect("in a server fn");
 	context.add_response_header(CONTENT_TYPE, HeaderValue::from_static("text/plain; charset=utf-8"));
 	Ok(lines.into())

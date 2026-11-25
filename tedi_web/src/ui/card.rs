@@ -124,7 +124,7 @@ pub(super) fn KindIcon(card: Card) -> Element {
 fn Blockers(card: Card) -> Element {
 	let ctx = use_context::<Ctx>();
 	let board = ctx.board.read();
-	let cards = &board.as_ref().expect("cards render from the board").cards;
+	let cards = &board.cards;
 	let open: Vec<_> = card.blocked_by.iter().filter(|b| cards.iter().any(|c| &c.link == *b && c.open())).cloned().collect();
 	if open.is_empty() {
 		return rsx! {};
@@ -289,8 +289,7 @@ pub(super) fn Chip(tone: Tone, children: Element) -> Element {
 
 fn label_color(ctx: &Ctx, card: &Card, label: &str) -> Option<Color> {
 	let board = ctx.board.read();
-	let colors = &board.as_ref().expect("cards render from the board").colors;
-	colors.get(&card.link.project().to_string())?.get(label).copied()
+	board.colors.get(&card.link.project().to_string())?.get(label).copied()
 }
 
 /// Initials on a chart hue the login always gets.
