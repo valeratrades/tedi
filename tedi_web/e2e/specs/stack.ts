@@ -9,7 +9,7 @@ import { PORT } from "./playwright.config";
 const here = new URL("..", import.meta.url).pathname;
 const SERVER = PORT + 1;
 const HOME = "/tmp/tedi-e2e-specs";
-const VIEWERS = 24; // more than any run has tabs open: a viewer comes round again only once its tab is gone, so the library's counts of viewers hold still
+const VIEWERS = 128; // more than a run has tests: none is signed in as anew with its tab still open, and the library's counts of viewers hold still
 
 const read = (name: string) => JSON.parse(readFileSync(`${here}libraries/${name}.json`, "utf8"));
 

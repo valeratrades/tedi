@@ -98,7 +98,7 @@ impl fmt::Display for RepoInfo {
 /// its URL), or an owner-less local virtual issue (identified by its file path). Each carries the
 /// value that both *names* the issue and *locates* it — a Github URL points at the upstream, a
 /// path points at the file.
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum IssueLink {
 	/// `https://github.com/{owner}/{repo}/issues/{number}`
 	Owned(Url),
@@ -191,7 +191,7 @@ impl IssueLink {
 
 /// A Github milestone identifier. Wraps a URL and derives properties on demand.
 /// Format: `https://github.com/{owner}/{repo}/milestone/{number}`
-#[derive(Clone, Debug, Eq, Hash, PartialEq, derive_more::Deref)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, derive_more::Deref)]
 pub struct MilestoneLink(Url);
 impl MilestoneLink {
 	/// Create from a URL. Returns None if not a valid Github milestone URL.

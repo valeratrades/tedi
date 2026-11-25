@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 
 use dioxus::{core::spawn_forever, prelude::*};
 use ev_lib::uikit_dioxus::Checkbox;
-use tedi_core::board::{GroupBy, Shown};
+use tedi_core::board::Shown;
 
 use super::{
 	Ctx,
@@ -13,7 +13,7 @@ use super::{
 	kit::{Btn, MenuItem, Picker, Style},
 	library::NameForm,
 };
-use crate::api::{Kept, LibraryEdit, View, ViewPart};
+use crate::api::{Boxing, Kept, LibraryEdit, View, ViewPart};
 
 /// `view` as last edited, against how it is kept; `groups` are those it could show; no `count`: what it shows isn't here yet.
 #[component]
@@ -22,7 +22,9 @@ pub(super) fn ViewToolbar(view: View, defined: View, groups: Vec<String>, count:
 		div { class: "flex shrink-0 flex-wrap items-center gap-2 border-b border-border-subtle bg-card px-3 py-2",
 			Picker { glyph: Glyph::Group, label: view.group_by.to_string(), GroupMenu { by: view.group_by.clone(), edit } }
 			Picker { glyph: Glyph::Fields, label: format!("{} fields", view.shown.len()), FieldsMenu { shown: view.shown.clone(), edit } }
-			ColumnsPicker { groups, hidden: view.boxes.hidden.clone(), edit }
+			if let Boxing::Groups(_) = view.group_by {
+				ColumnsPicker { groups, hidden: view.boxes.hidden.clone(), edit }
+			}
 			div { class: "flex-1" }
 			span { class: "shrink-0 px-1 text-mono-s text-ink-soft", if let Some(count) = count { "{count} cards" } }
 			tilers_dioxus::LockToggle {}
@@ -32,10 +34,10 @@ pub(super) fn ViewToolbar(view: View, defined: View, groups: Vec<String>, count:
 }
 
 #[component]
-pub(super) fn GroupMenu(by: GroupBy, edit: Callback<ViewPart>) -> Element {
+pub(super) fn GroupMenu(by: Boxing, edit: Callback<ViewPart>) -> Element {
 	let ctx = use_context::<Ctx>();
 	rsx! {
-		for g in ctx.groupings() {
+		for g in ctx.boxings() {
 			MenuItem { key: "{g}", selected: g == by, label: g.to_string(), onclick: move |_| edit.call(ViewPart::GroupBy(g.clone())) }
 		}
 	}

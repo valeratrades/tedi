@@ -14,7 +14,7 @@ use super::{
 	toolbar::ColumnsPicker,
 	view::{Behind, Empty, Results, count, outcome},
 };
-use crate::api::{self, Boxes, Construction, Item, Kept, LibraryEdit, Sign, View, ViewPart};
+use crate::api::{self, Boxes, Boxing, Construction, Item, Kept, LibraryEdit, Sign, View, ViewPart};
 
 /// `from`: the view the draft starts as; none: a blank one.
 #[component]
@@ -34,7 +34,7 @@ pub(super) fn Builder(from: Option<String>) -> Element {
 		},
 		None => View {
 			name: String::new(),
-			group_by: ctx.workflows().into_keys().next().map_or(GroupBy::Nothing, GroupBy::State),
+			group_by: Boxing::Groups(ctx.workflows().into_keys().next().map_or(GroupBy::Nothing, GroupBy::State)),
 			shown: vec![Shown::Repo, Shown::Assignees, Shown::Importance, Shown::Hours, Shown::Labels],
 			boxes: Boxes::default(),
 		},
@@ -76,9 +76,9 @@ pub(super) fn Builder(from: Option<String>) -> Element {
 							oninput: { let mut draft = draft; move |e: FormEvent| draft.write().name = e.value() },
 						}
 					}
-					Section { title: "Group by", hint: "a board grouped by state is the kanban",
+					Section { title: "Group by", hint: "by state is the kanban, by chain nests what the scope holds",
 						div { class: "flex flex-wrap gap-1",
-							for g in ctx.groupings() {
+							for g in ctx.boxings() {
 								button {
 									key: "{g}",
 									r#type: "button",
@@ -90,8 +90,10 @@ pub(super) fn Builder(from: Option<String>) -> Element {
 						}
 					}
 					Section { title: "Shown fields", hint: "drag to order", Fields { view: draft } }
-					Section { title: "Columns",
-						div { class: "flex", ColumnsPicker { groups, hidden: d.boxes.hidden.clone(), edit } }
+					if let Boxing::Groups(_) = d.group_by {
+						Section { title: "Columns",
+							div { class: "flex", ColumnsPicker { groups, hidden: d.boxes.hidden.clone(), edit } }
+						}
 					}
 				}
 				div { class: "flex shrink-0 items-center gap-2 border-t border-border-subtle px-4 py-3",
@@ -108,7 +110,7 @@ pub(super) fn Builder(from: Option<String>) -> Element {
 					span { class: "size-1.5 rounded-full bg-positive-ink" }
 					span { class: "text-body-s font-medium text-ink", "Live preview" }
 					if let Some(Ok(groups)) = &outcome {
-						span { class: "text-mono-s text-ink-soft", "{count(groups, &d.boxes.hidden)} cards  ·  {groups.len()} groups  ·  in this workspace" }
+						span { class: "text-mono-s text-ink-soft", "{count(groups, &d.boxes.hidden)} cards" if let Boxing::Groups(_) = d.group_by { "  ·  {groups.len()} groups" } "  ·  in this workspace" }
 					}
 					div { class: "flex-1" }
 					if let (Some(u), Some(changes)) = (&upstream, &changes) {

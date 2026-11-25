@@ -4,6 +4,7 @@
 
 use dioxus::prelude::*;
 use ev_lib::uikit_dioxus::*;
+use tedi_core::board::GroupBy;
 use tilers_dioxus::{PanelId, model::serial};
 
 use super::{
@@ -14,7 +15,7 @@ use super::{
 	toast::Tone as Said,
 	workspace,
 };
-use crate::api::{self, Arrangement, Boxes, Catalog, Construction, Entry, Item, LibraryEdit, Onto, Origin, Owner, ShareLink, Shelf, View, Workspace, band_name, constructions, diff};
+use crate::api::{self, Arrangement, Boxes, Boxing, Catalog, Construction, Entry, Item, LibraryEdit, Onto, Origin, Owner, ShareLink, Shelf, View, Workspace, band_name, constructions, diff};
 
 //#[codestyle::skip(swappable-args)]
 /// A name typed in place: Enter takes it, Escape or leaving the field drops it.
@@ -147,7 +148,7 @@ fn Thumb(construction: Construction, #[props(default)] large: bool) -> Element {
 	let body = match &construction {
 		Construction::View(view) => {
 			let columns: Vec<String> = match &view.group_by {
-				tedi_core::board::GroupBy::State(w) => ctx
+				Boxing::Groups(GroupBy::State(w)) => ctx
 					.workflows()
 					.get(w)
 					.map(|w| w.leaves().iter().map(|s| s.names().last().cloned().expect("a state names its leaf")).collect())
@@ -490,9 +491,9 @@ fn open(ctx: Ctx, owner: &Owner, item: &Item, construction: &Construction) {
 }
 
 /// The views grouping `by`, as last edited.
-fn grouped_by(ctx: &Ctx, by: &tedi_core::board::GroupBy) -> Vec<String> {
+fn grouped_by(ctx: &Ctx, by: &GroupBy) -> Vec<String> {
 	let names = ctx.views().into_iter().map(|v| v.name);
-	names.filter(|n| ctx.view(n).is_some_and(|v| v.group_by == *by)).collect()
+	names.filter(|n| ctx.view(n).is_some_and(|v| v.group_by == Boxing::Groups(by.clone()))).collect()
 }
 
 fn fork(ctx: Ctx, from: Origin, name: &str) {

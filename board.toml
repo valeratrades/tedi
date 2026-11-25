@@ -13,6 +13,11 @@ group_by = "state:kanban"
 shown = ["repo", "assignees", "importance", "hours", "type", "blockers"]
 hidden = ["done", "wont_do", "backlog"]
 
+[[board.views]]
+name = "Chain"
+group_by = "chain"
+shown = ["repo", "number", "assignees", "importance", "hours", "type", "blockers"]
+
 [board.columns.notion]
 by = "state:kanban"
 tints = { triage = "orange", selected = "blue", in_progress = "blue", in_review = "purple", done = "green" }

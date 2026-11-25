@@ -20,4 +20,4 @@ export const config = (testMatch: string, still: boolean) =>
     ],
   });
 
-export default config("{account,loading,sort,url,workspace}.spec.ts", false);
+export default config("{account,chain,loading,sort,url,workspace}.spec.ts", false);

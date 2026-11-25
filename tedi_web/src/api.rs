@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use tedi_core::{
 	IssueLink, MilestoneLink,
 	board::{Answer, GroupBy, Listing, Order, Query, Scope, Shown, Slice, Sort, SortKey, Thread},
-	chain::Orgs,
+	chain::{Orgs, Point},
 	conflict::{CommentEdit, Edited, FieldEdit},
 	workflow::{State, Trees},
 };
@@ -41,7 +41,38 @@ pub struct Setup {
 	pub ids: BTreeMap<String, Item>,
 }
 
-/// How the groups of a grouping are boxed.
+/// What a view boxes its cards by: a grouping's groups, or where they sit on the chain below the workspace's scope (`chain`).
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(try_from = "String", into = "String")]
+pub enum Boxing {
+	Groups(GroupBy),
+	Chain,
+}
+impl std::fmt::Display for Boxing {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match self {
+			Boxing::Groups(by) => by.fmt(f),
+			Boxing::Chain => f.write_str("chain"),
+		}
+	}
+}
+impl TryFrom<String> for Boxing {
+	type Error = <GroupBy as std::str::FromStr>::Err;
+
+	fn try_from(s: String) -> Result<Self, Self::Error> {
+		match s.as_str() {
+			"chain" => Ok(Boxing::Chain),
+			by => Ok(Boxing::Groups(by.parse()?)),
+		}
+	}
+}
+impl From<Boxing> for String {
+	fn from(boxing: Boxing) -> String {
+		boxing.to_string()
+	}
+}
+
+/// How the groups of a grouping, or the nodes of the chain, are boxed.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct Boxes {
 	#[serde(default, skip_serializing_if = "BTreeMap::is_empty")] // a band without one seeds a box per group
@@ -51,13 +82,16 @@ pub struct Boxes {
 	/// The groups not shown: one that appears later is.
 	#[serde(default, skip_serializing_if = "BTreeSet::is_empty")] // all are shown
 	pub hidden: BTreeSet<String>,
+	/// Of the chain's nodes, how the leaf issues right in each are laid out.
+	#[serde(default, skip_serializing_if = "BTreeMap::is_empty")] // a node without one seeds a tile per issue
+	pub nodes: BTreeMap<Point, Arrangement>,
 }
 
 /// How cards are shown; which, and in what order, is the lens's.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct View {
 	pub name: String,
-	pub group_by: GroupBy,
+	pub group_by: Boxing,
 	/// What a card shows beside its title, in this order.
 	pub shown: Vec<Shown>,
 	#[serde(flatten)]
@@ -69,7 +103,8 @@ impl View {
 			ViewPart::GroupBy(by) if by == self.group_by => {}
 			ViewPart::GroupBy(by) => (self.group_by, self.boxes) = (by, Boxes::default()),
 			ViewPart::Shown(shown) => self.shown = shown,
-			ViewPart::Arrangement { band, layout } => _ = self.boxes.arrangement.insert(band, layout),
+			ViewPart::Arrangement { of: None, band, layout } => _ = self.boxes.arrangement.insert(band, layout),
+			ViewPart::Arrangement { of: Some(node), band, layout } => _ = self.boxes.nodes.entry(node).or_default().insert(band, layout),
 			ViewPart::Tints(tints) => self.boxes.tints = tints,
 			ViewPart::Hidden(hidden) => self.boxes.hidden = hidden,
 		}
@@ -507,7 +542,7 @@ pub fn diff(from: &Construction, to: &Construction) -> Vec<Change> {
 		to.iter().filter(|t| !from.contains(t)).for_each(|t| push(Sign::Added, format!("{label}{}", t.to_string())));
 		from.iter().filter(|f| !to.contains(f)).for_each(|f| push(Sign::Removed, format!("{label}{}", f.to_string())));
 	}
-	fn arrangements(from: &Arrangement, to: &Arrangement, push: &mut dyn FnMut(Sign, String)) {
+	fn arrangements(of: &str, from: &Arrangement, to: &Arrangement, push: &mut dyn FnMut(Sign, String)) {
 		for band in from.keys().chain(to.keys()).collect::<BTreeSet<_>>() {
 			let sign = match (from.get(band), to.get(band)) {
 				(None, Some(_)) => Sign::Added,
@@ -515,7 +550,7 @@ pub fn diff(from: &Construction, to: &Construction) -> Vec<Change> {
 				(a, b) if a != b => Sign::Changed,
 				_ => continue,
 			};
-			push(sign, format!("{} arrangement", band_name(*band)));
+			push(sign, format!("{of}{} arrangement", band_name(*band)));
 		}
 	}
 	fn boxes(from: &Boxes, to: &Boxes, push: &mut dyn FnMut(Sign, String)) {
@@ -528,7 +563,11 @@ pub fn diff(from: &Construction, to: &Construction) -> Vec<Change> {
 			}
 		}
 		sets("hidden: ", &from.hidden, &to.hidden, push);
-		arrangements(&from.arrangement, &to.arrangement, push);
+		arrangements("", &from.arrangement, &to.arrangement, push);
+		for node in from.nodes.keys().chain(to.nodes.keys()).collect::<BTreeSet<_>>() {
+			let of = |boxes: &Boxes| boxes.nodes.get(node).cloned().unwrap_or_default(); // arranged on one side only
+			arrangements(&format!("{node} "), &of(from), &of(to), push);
+		}
 	}
 	fn clauses(query: &impl ToString) -> Vec<String> {
 		query.to_string().split_whitespace().map(str::to_string).collect()
@@ -565,7 +604,7 @@ pub fn diff(from: &Construction, to: &Construction) -> Vec<Change> {
 			if a.lens.sort != b.lens.sort {
 				push(Sign::Changed, format!("sort {} → {}", a.lens.sort, b.lens.sort));
 			}
-			arrangements(&a.tiles, &b.tiles, &mut push);
+			arrangements("", &a.tiles, &b.tiles, &mut push);
 		}
 		(Construction::Columns(a), Construction::Columns(b)) => {
 			if a.by != b.by {
@@ -589,9 +628,11 @@ pub enum WorkspacePart {
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub enum ViewPart {
 	/// Another grouping's groups are boxed anew.
-	GroupBy(GroupBy),
+	GroupBy(Boxing),
 	Shown(Vec<Shown>),
 	Arrangement {
+		/// The chain's node whose leaf issues it lays out; none: it lays out the groups.
+		of: Option<Point>,
 		band: Band,
 		layout: String,
 	},

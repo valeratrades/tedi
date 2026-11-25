@@ -161,6 +161,8 @@ Lens      { scope, search, sort }  ◄─copy──  Scope  { repos, terms, chil
                                              Columns{ by, boxes }   laid onto a view: its boxes copied
 shown = scope ∧ search ─sort─► cards ─group_by─► boxes − hidden
 ```
+A view boxes by a grouping's groups, or by the chain (`chain`): the workspace's scope as a node — what it is, the leaf issues right in it as a dock, what else it holds as tabs, the selected one a node again. It nests a point alone: terms would leave nodes out of the tree. The search narrows its leaves, never what holds them.
+
 Every tile of a workspace runs its lens; a facet's values and a click on a card's rewrite its search. A workspace's scope is a point of the [chain](#composition-rules), or terms: never both. A point covers what it holds or owns: an org its repos and those of the orgs it owns, a milestone everything it owns transitively, an issue its descendants; one nothing of which is on the board is said so. As text it is its GitHub URL, which no term starts as. A scope has a name only in the library: applied, it is its terms, and editing either later doesn't touch the other. The team's scopes are config; a viewer keeps their own beside them, never under a team scope's name.
 
 A viewer has a workspace ("ws 1") from the first open. Without one open, or with no arrangement of it for a band, nothing is shown where views go.

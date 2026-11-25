@@ -13,12 +13,12 @@ tedi_web/e2e/figma.sh [screen]            # reference/*.png from Figma (needs FI
 ```
 
 Screens and frames: 01-board 48:5386, 02-view 10:1607, 03-library 11:3139, 04-workspace 12:3114, 05-scope 48:6437,
-06a-mobile 13:5217, 06b-mobile 13:5488, 07-first-open 48:7379, 08-none-open 48:7797. Compare `out/<s>.png` with `reference/<s>.png`.
+06a-mobile 13:5217, 06b-mobile 13:5488, 07-first-open 48:7379, 08-none-open 48:7797. Without a shot: 09 Chain 58:6204, 09b 58:8393. Compare `out/<s>.png` with `reference/<s>.png`.
 
 ## Specs and renders
 
 ```sh
-nix run .#e2e                  # specs/: the address against the screen (url), the order as labels (sort), workspaces and their lenses (workspace), what is on screen while it loads (loading), the account panel (account)
+nix run .#e2e                  # specs/: the address against the screen (url), the order as labels (sort), workspaces and their lenses (workspace), a view nested by the chain (chain), what is on screen while it loads (loading), the account panel (account)
 nix run .#figma                # every page the address can name, at 1440 and 390, onto a new page of `figmaFile` (flake.nix), "tedi — renders"
 ```
 

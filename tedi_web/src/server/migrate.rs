@@ -11,7 +11,7 @@ use color_eyre::eyre::{Result, WrapErr as _, bail, eyre};
 use tedi_core::board::{GroupBy, Order, Query, QueryError, Scope, Shown, Slice, Terms, scope_at};
 
 use super::{Pinned, Settings, Shares, Snapshot, Source, items, move_scopes, source_repo, viewed, write_library, write_shares};
-use crate::api::{Arrangement, Boxes, Columns, Construction, Drafts, Forked, Item, Lens, Library, Owner, ShareLink, Tints, Upstream, View, Workspace};
+use crate::api::{Arrangement, Boxes, Boxing, Columns, Construction, Drafts, Forked, Item, Lens, Library, Owner, ShareLink, Tints, Upstream, View, Workspace};
 
 const VERSION: u32 = 2;
 
@@ -150,7 +150,7 @@ fn orphans(settings: &Settings, before: &Path) -> Result<()> {
 struct OldView {
 	name: String,
 	query: String,
-	group_by: GroupBy,
+	group_by: Boxing,
 	sort: Order,
 	shown: Vec<Shown>,
 }
@@ -180,7 +180,7 @@ impl From<OldColumns> for Columns {
 			boxes: Boxes {
 				arrangement: old.layout,
 				tints: old.tints,
-				hidden: BTreeSet::new(),
+				..Default::default()
 			},
 		}
 	}
@@ -300,10 +300,13 @@ impl OldLibrary {
 			}
 		}
 
-		let boxes = |name: &str, by: &GroupBy| Boxes {
-			arrangement: screen.columns.get(name).and_then(|c| c.get(by)).cloned().unwrap_or_default(), // never arranged
-			tints: screen.tints.get(name).and_then(|t| t.get(by)).cloned().unwrap_or_default(),         // never tinted
-			hidden: BTreeSet::new(),
+		let boxes = |name: &str, by: &Boxing| match by {
+			Boxing::Groups(by) => Boxes {
+				arrangement: screen.columns.get(name).and_then(|c| c.get(by)).cloned().unwrap_or_default(), // never arranged
+				tints: screen.tints.get(name).and_then(|t| t.get(by)).cloned().unwrap_or_default(),         // never tinted
+				..Default::default()
+			},
+			Boxing::Chain => Boxes::default(), // no column was ever boxed by it
 		};
 		let views: BTreeMap<String, View> = self.filters.iter().map(|(name, v)| (name.clone(), v.boxed(boxes(name, &v.group_by)))).collect();
 		for name in screen.views.keys().chain(screen.columns.keys()).chain(screen.tints.keys()).collect::<BTreeSet<_>>() {
@@ -329,7 +332,7 @@ impl OldLibrary {
 				.get(name)
 				.or_else(|| views.get(name))
 				.or_else(|| settings.views.iter().find(|v| v.name == name))
-				.map(|v| v.group_by.clone())
+				.and_then(|v| if let Boxing::Groups(by) = &v.group_by { Some(by.clone()) } else { None })
 		};
 		let laid = screen.laid.iter().filter_map(|(name, by)| Some((name.clone(), by.get(&grouping(name)?)?.clone()))).collect();
 		let forks = self
@@ -519,7 +522,13 @@ impl Past {
 	/// The team's, as it last was.
 	fn scope(&self, path: &str) -> Option<Scope> {
 		let item = Item::Scope(path.to_string());
-		self.0.iter().rev().find_map(|c| if let Some(Construction::Scope(scope)) = c.read.get(&item) { Some(scope.clone()) } else { None })
+		self.0.iter().rev().find_map(|c| {
+			if let Some(Construction::Scope(scope)) = c.read.get(&item) {
+				Some(scope.clone())
+			} else {
+				None
+			}
+		})
 	}
 
 	/// Version `v` of `item`, as numbered when a view's query and order made versions of it.

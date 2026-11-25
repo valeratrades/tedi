@@ -40,8 +40,8 @@ use tedi_task_operations::{
 use tokio::sync::{Mutex, Notify, OnceCell, broadcast, mpsc};
 
 use crate::api::{
-	Catalog, Change, Construction, Entry as Cataloged, Fork, Forked, Item, Kept, Library, LibraryEdit, Onto, Origin, Owner, Setup, ShareLink, Shared, Shelf, Upstream, Usage, Version, View,
-	ViewPart, Workspace, diff,
+	Boxing, Catalog, Change, Construction, Entry as Cataloged, Fork, Forked, Item, Kept, Library, LibraryEdit, Onto, Origin, Owner, Setup, ShareLink, Shared, Shelf, Upstream, Usage,
+	Version, View, ViewPart, Workspace, diff,
 };
 
 /// Each team object's versions, oldest first, with what each holds: a version per commit that changed it.
@@ -893,7 +893,7 @@ fn apply(library: &mut Library, edit: LibraryEdit, fetched: Option<Fetched>) -> 
 				.cloned()
 				.ok_or_else(|| eyre!("no column layout {columns}"))?;
 			let mut edited = library.view(&settings().views, &view).ok_or_else(|| eyre!("no view {view}"))?;
-			if edited.group_by != laid.by {
+			if edited.group_by != Boxing::Groups(laid.by.clone()) {
 				bail!("the columns {columns} are by {}, and {view} groups by {}", laid.by, edited.group_by);
 			}
 			edited.boxes = laid.boxes;
