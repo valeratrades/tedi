@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 import { expect, type Locator, type Page, test } from "@playwright/test";
 
 const bars = (within: Page | Locator) => within.getByRole("progressbar", { name: "Loading" });
@@ -30,7 +32,14 @@ const hold = (page: Page) =>
     });
     const pieces = (what: "client" | "board", body: Uint8Array) => {
       if (what === "client") return Array.from({ length: 8 }, (_, i) => body.slice(Math.floor((i * body.length) / 8), Math.floor(((i + 1) * body.length) / 8)));
-      return new TextDecoder().decode(body).trim().split("\n").map((line) => new TextEncoder().encode(line + "\n"));
+      const all = new TextDecoder().decode(body).trim().split("\n").map((line) => JSON.parse(line));
+      const heavy = (window as never as { heavy?: string }).heavy && all.findLast((l) => l.Read?.source.holds === (window as never as { heavy: string }).heavy).Read;
+      if (heavy) {
+        const size = all[0].Head.sizes.find(([s]: [{ repo: string; holds: string }]) => s.repo === heavy.source.repo && s.holds === heavy.source.holds);
+        size[1] += 100_000;
+        heavy.bytes += 100_000;
+      }
+      return all.map((line) => new TextEncoder().encode(JSON.stringify(line) + "\n"));
     };
     window.fetch = async (input, init) => {
       const url = input instanceof Request ? input.url : String(input);
@@ -38,6 +47,7 @@ const hold = (page: Page) =>
       const response = await fetched(input, init);
       if (!what || !response.ok) return response;
       const all = pieces(what, new Uint8Array(await response.arrayBuffer()));
+      if (what === "board") Object.assign(window, { lines: all.map((l) => JSON.parse(new TextDecoder().decode(l))).map((l) => ({ ranks: !!l.Ranks, bytes: l.Read?.bytes ?? 0, repo: l.Read?.source.repo, holds: l.Read?.source.holds })) });
       let sent = 0;
       const body = new ReadableStream({
         async pull(to) {
@@ -51,16 +61,13 @@ const hold = (page: Page) =>
   });
 const release = (page: Page, what: "client" | "board", pieces: number) => page.evaluate(([w, n]) => (window as never as { held: Held }).held.release(w as "client", n as number), [what, pieces] as const);
 
-/** The board's lines: the issues' bytes and the pull requests', and the line the issues are whole with. */
-const lines = async (page: Page) => {
-  const all = (await (await page.request.get("/api/board")).text()).trim().split("\n").map((l) => JSON.parse(l));
-  const bytes = all.map((l) => (l.Read?.bytes ?? 0) as number);
-  const whole = all.findIndex((l) => l.Rest);
-  const { issues, prs } = all[0].Sizes as { issues: number; prs: number };
-  expect(sum(bytes.slice(0, whole))).toBe(issues);
-  expect(sum(bytes.slice(whole))).toBe(prs);
-  return { bytes, whole, issues, prs, all: all.length };
-};
+type Line = { ranks: boolean; bytes: number; repo?: string; holds?: "OpenIssues" | "ClosedIssues" | "PullRequests" };
+/** The board's lines, as the page is sent them. */
+const lines = async (page: Page) => (await page.waitForFunction(() => (window as never as { lines?: Line[] }).lines)).jsonValue() as Promise<Line[]>;
+/** How much of the lines `needed` is in the first `n`. */
+const part = (all: Line[], n: number, needed: (l: Line) => boolean) => share(sum(all.slice(0, n).filter(needed).map((l) => l.bytes)), sum(all.filter(needed).map((l) => l.bytes)));
+/** Where the last line of those `needed` is. */
+const last = (all: Line[], needed: (l: Line) => boolean) => all.findLastIndex(needed);
 const signIn = (page: Page) => page.request.get("/");
 
 test("before the client: the page's frame, and how much of the client is here", async ({ page, viewport }) => {
@@ -80,6 +87,8 @@ test("before the client: the page's frame, and how much of the client is here", 
 
 test.describe("what waits for the board is the views on screen, each for what it shows", () => {
   test.skip(({ viewport }) => viewport!.width < 768, "the shelves are behind a sheet");
+  const openIssues = (l: Line) => l.holds === "OpenIssues";
+  const itsPrs = (l: Line) => l.holds === "PullRequests" && l.repo!.startsWith("service-arb/"); // the scope on screen
 
   test("the shelves, the search, the dock and a view's own toolbar are there with none of it, and work", async ({ page }) => {
     await hold(page);
@@ -87,48 +96,75 @@ test.describe("what waits for the board is the views on screen, each for what it
     await release(page, "client", 8);
     await expect(shelf(page, "Triage")).toBeVisible();
     await expect(search(page)).toHaveValue(/is:pr/);
-    await expect(tile(page).getByRole("button", { name: "state:pull_requests" })).toBeVisible();
     await reads(bars(tile(page)), 0);
     const [t, b] = [(await tile(page).boundingBox())!, (await bars(tile(page)).boundingBox())!];
-    expect(b.x).toBeGreaterThan(t.x);
-    expect(b.x + b.width).toBeLessThan(t.x + t.width);
     expect(Math.abs(b.x + b.width / 2 - (t.x + t.width / 2))).toBeLessThan(2);
     await shelf(page, "Triage desk").click();
     await expect(search(page)).toHaveValue(/is:issue/);
     await reads(bars(tile(page)), 0);
     await page.getByRole("button", { name: "filter by repo" }).click();
-    await expect(page.getByText("Counted once the board is here")).toBeVisible();
+    await expect(page.getByText("Counted once the view is here")).toBeVisible();
   });
 
-  test("a workspace of issues shows once they are here, one of pull requests reads both to the percent", async ({ page }) => {
-    await signIn(page);
-    const { bytes, whole, issues, prs, all } = await lines(page);
+  test("a view is drawn behind its loader, which covers it whole", async ({ page }) => {
     await hold(page);
     await page.goto("/");
     await release(page, "client", 8);
+    await reads(bars(tile(page)), 0);
+    const heads = tile(page).locator(".cols .tl-tab");
+    await expect(heads).not.toHaveCount(0);
+    const covered = (e: Element) => {
+      const { x, y, width, height } = e.getBoundingClientRect();
+      return !e.contains(document.elementFromPoint(x + width / 2, y + height / 2));
+    };
+    const within = tile(page).locator(".cols :is(.tl-tab, [class*=tl-resize])");
+    expect(await within.evaluateAll((all, covered) => all.every(eval(covered)), covered.toString())).toBe(true);
+  });
+
+  test("a view of open issues waits for those, whatever else is still to come", async ({ page }) => {
+    await hold(page);
+    await page.goto("/");
+    await release(page, "client", 8);
+    const all = await lines(page);
     await shelf(page, "Triage desk").click();
     await expect(search(page)).toHaveValue(/is:issue/);
-    const triage = tile(page);
-    for (const at of [0.3, 0.7].map((f) => Math.ceil(f * whole))) {
-      await release(page, "board", at);
-      await reads(bars(triage), share(sum(bytes.slice(0, at)), issues));
+    const issues = last(all, openIssues) + 1;
+    expect(all.findIndex((l) => l.ranks), "ranked as soon as they are read").toBe(issues);
+    for (const n of [0.4, 0.8].map((f) => Math.ceil(f * issues))) {
+      await release(page, "board", n);
+      await reads(bars(tile(page)), part(all, n, openIssues));
     }
-    await release(page, "board", whole);
-    await reads(bars(triage), 99);
-    await release(page, "board", whole + 1);
-    await expect(cards(triage).first()).toBeVisible();
-    await expect(bars(triage)).toHaveCount(0);
-
-    await shelf(page, "Release week").click();
-    await expect(search(page)).toHaveValue(/is:pr/);
-    const checklist = tile(page);
-    await reads(bars(checklist), share(issues, issues + prs));
-    await release(page, "board", all - 1);
-    await reads(bars(checklist), 99);
-    await release(page, "board", all);
-    await expect(cards(checklist).first()).toBeVisible();
-    await expect(bars(page)).toHaveCount(0);
+    await release(page, "board", issues);
+    await reads(bars(tile(page)), 99);
+    await release(page, "board", issues + 1);
+    await expect(cards(tile(page)).first()).toBeVisible();
+    await expect(bars(tile(page))).toHaveCount(0);
+    expect(issues + 1, "the rest is still held").toBeLessThan(all.length);
   });
+
+  test("a view of pull requests waits for its scope's; the backend is told its percentage was off", async ({ page }) => {
+    await page.addInitScript(() => Object.assign(window, { heavy: "PullRequests" })); // its last line, weighing most of it
+    await hold(page);
+    await page.goto("/");
+    await release(page, "client", 8);
+    const all = await lines(page);
+    const end = last(all, itsPrs) + 1;
+    for (let n = all.findIndex(itsPrs) + 1; n < end; n++) {
+      await release(page, "board", n);
+      await reads(bars(tile(page)), part(all, n, itsPrs));
+    }
+    const off = page.waitForRequest(/\/api\/off$/);
+    await release(page, "board", end);
+    await expect(cards(tile(page)).first()).toBeVisible();
+    await expect(bars(tile(page))).toHaveCount(0);
+
+    // its last line was more than the 5% a percentage may be off by: the backend is told
+    const percent = part(all, end - 1, itsPrs);
+    expect(99 - percent).toBeGreaterThan(5);
+    expect((await off).postDataJSON()).toMatchObject({ what: "view Release checklist", percent });
+    await expect.poll(() => readFileSync("/tmp/tedi-e2e-specs/server.log", "utf8")).toContain("a view's progress was off");
+  });
+
 });
 
 test("the theme's mark is over the bar", async ({ page }) => {
@@ -164,6 +200,7 @@ test("a board cut short is no board", async ({ page }) => {
   });
   await page.goto("/");
   await expect(page.getByText("The board didn't load").first()).toBeVisible();
+  await page.unrouteAll({ behavior: "ignoreErrors" }); // a later read of it may be under way
 });
 
 test("a client that doesn't start says so", async ({ page }) => {

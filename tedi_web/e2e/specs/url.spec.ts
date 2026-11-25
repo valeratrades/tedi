@@ -1,4 +1,4 @@
-import { expect, type Page, test } from "@playwright/test";
+import { expect, type Locator, type Page, test } from "@playwright/test";
 
 test.skip(({ viewport }) => viewport!.width < 768, "the shelves are behind a sheet");
 
@@ -30,6 +30,24 @@ test("a view has an address: its link, Back, and a tab of its own", async ({ pag
   const [own] = await Promise.all([context.waitForEvent("page"), shelf(page, "Triage").click({ modifiers: ["ControlOrMeta"] })]);
   await expect(tab(own, "Triage")).toBeVisible();
   expect((await at(own)).split("?")[0]).toBe(triage.split("?")[0]);
+});
+
+test("a click on an issue's number copies its link, on a card and in its panel", async ({ page, context }) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await page.goto("/");
+  await expect.poll(() => at(page)).toMatch(/^\/view\//);
+  const copied = async (number: Locator) => {
+    const before = await at(page);
+    await page.evaluate(() => navigator.clipboard.writeText(""));
+    await number.click();
+    await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toMatch(new RegExp(`^https://github\\.com/.+/issues/${(await number.textContent())!.slice(1)}$`));
+    expect(await at(page)).toBe(before);
+  };
+  await copied(card(page).locator("..").getByRole("button", { name: /^#\d+$/ }));
+  await card(page).click();
+  await expect.poll(() => at(page)).toMatch(ISSUE);
+  const panel = page.locator("div.\\@container").filter({ has: page.getByRole("button", { name: "Copy its link" }) });
+  await copied(panel.getByRole("button", { name: /^#\d+$/ }).first());
 });
 
 test("a picked issue is in the address, over the view it was picked from", async ({ page }) => {

@@ -12,7 +12,7 @@ use super::{
 	icons::{Glyph, Icon},
 	kit::{Btn, Style},
 	toolbar::ColumnsPicker,
-	view::{Empty, Loader, Results, count, outcome, prs},
+	view::{Behind, Empty, Results, count, outcome},
 };
 use crate::api::{self, Boxes, Construction, Item, Kept, LibraryEdit, Sign, View, ViewPart};
 
@@ -127,10 +127,10 @@ pub(super) fn Builder(from: Option<String>) -> Element {
 						}
 					}
 				}
-				match outcome {
-					Some(Ok(groups)) => rsx! { Results { view: d, groups, relaid: relaid(), edit, onlay } },
-					Some(Err(why)) => rsx! { Empty { glyph: Glyph::Alert, error: true, title: "The draft doesn't run", body: why } },
-					None => rsx! { Loader { prs: prs(&ctx) } },
+				match (outcome, ctx.need()) {
+					(Some(Ok(groups)), Some(need)) => rsx! { Behind { what: "the draft", need, Results { view: d, groups, relaid: relaid(), edit, onlay } } },
+					(Some(Err(why)), _) => rsx! { Empty { glyph: Glyph::Alert, error: true, title: "The draft doesn't run", body: why } },
+					(None, _) | (_, None) => rsx! {}, // none is open
 				}
 			}
 		}

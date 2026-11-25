@@ -16,6 +16,9 @@ pub enum Sprint {
 	Bottlenecks,
 }
 impl Sprint {
+	/// What it holds is picked up by being in it.
+	pub const DAY: Self = Self::Planning(Timeframe::from_naive(1, TimeframeDesignator::Days));
+
 	/// What `repo`'s milestone titled `title` is a sprint of, if it is one.
 	pub fn of(repo: RepoInfo, title: &str) -> Option<Self> {
 		let named = title.parse::<Self>().ok().filter(|s| s.to_string() == title); //IGNORED_ERROR: any other milestone's title

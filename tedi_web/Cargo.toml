@@ -87,7 +87,7 @@ tower-http = { workspace = true, features = ["fs"], optional = true }
 tracing = { workspace = true, optional = true }
 urlencoding.workspace = true
 wasm-bindgen = { workspace = true, optional = true }
-web-sys = { workspace = true, features = ["Document", "Element", "EventTarget", "History", "KeyboardEvent", "Location", "Performance", "Storage", "Window"], optional = true }
+web-sys = { workspace = true, features = ["Blob", "BlobPropertyBag", "Document", "Element", "EventTarget", "History", "KeyboardEvent", "Location", "Navigator", "Performance", "Storage", "Window"], optional = true }
 
 [build-dependencies]
 ev_lib_classes.workspace = true

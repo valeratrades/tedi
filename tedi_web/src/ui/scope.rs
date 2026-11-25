@@ -10,7 +10,7 @@ use tedi_core::{
 };
 
 use super::{
-	Ctx, Editing,
+	Ctx, Editing, Need,
 	icons::{Glyph, Icon},
 	kit::{Btn, IconBtn, MenuItem, Picker, Style},
 };
@@ -26,7 +26,7 @@ pub(super) struct Offered {
 }
 
 impl Ctx {
-	fn orgs(&self) -> Orgs {
+	pub(super) fn orgs(&self) -> Orgs {
 		self.setup.read().as_ref().expect("read once setup arrived").orgs.clone()
 	}
 
@@ -44,7 +44,7 @@ impl Ctx {
 			Point::Repo(repo) => repo.repo().to_string(),
 			Point::Milestone(link) => {
 				let board = self.board.read();
-				let title = board.as_ref().and_then(|b| b.targets.iter().find(|t| t.link == *link)).map(|t| t.title.clone());
+				let title = board.targets.iter().find(|t| t.link == *link).map(|t| t.title.clone());
 				title.unwrap_or_else(|| format!("milestone {}", link.number())) // not on the board, or not yet
 			}
 			Point::Issue(link) => self.card(link).map_or_else(|| format!("#{}", link.number()), |c| format!("#{} {}", link.number(), c.title)),
@@ -58,18 +58,19 @@ impl Ctx {
 	/// Open cards `scope` leaves in; `None` before they arrive.
 	pub(super) fn open_in(&self, scope: &Slice) -> Option<usize> {
 		let q: Query = "is:open".parse().expect("a constant, valid query");
-		if self.awaits(scope.covers_prs()) {
+		let mut narrowed = q.clone();
+		narrowed.narrow(&scope.terms(&self.orgs()));
+		if self.awaits(&Need::Query(narrowed)) {
 			return None;
 		}
 		let within = self.left_in(scope)?;
-		Some(q.run(&within, &self.board.read().as_ref()?.cards, self.me().as_deref()).expect("clauses run").len())
+		Some(q.run(&within, &self.board.read().cards, self.me().as_deref()).expect("clauses run").len())
 	}
 
 	/// Every org, repo and milestone holding something on the board, from the top.
 	pub(super) fn places(&self) -> Vec<Offered> {
 		let points: Vec<Point> = {
 			let (board, orgs) = (self.board.read(), self.orgs());
-			let Some(board) = board.as_ref() else { return Vec::new() };
 			let repos = board.cards.iter().map(|c| c.link.project()).chain(board.targets.iter().map(|t| t.link.repo_info()));
 			let mut points: Vec<Point> = Vec::new();
 			for point in repos.map(Point::Repo).chain(board.targets.iter().map(|t| Point::Milestone(t.link.clone()))) {
@@ -91,7 +92,6 @@ impl Ctx {
 	pub(super) fn below(&self, at: Option<&Point>) -> Vec<Offered> {
 		let owned: Vec<Point> = {
 			let board = self.board.read();
-			let Some(board) = board.as_ref() else { return Vec::new() };
 			let open = |link: &tedi_core::IssueLink| board.cards.iter().any(|c| c.link == *link && c.open());
 			match at {
 				Some(Point::Milestone(link)) => {
@@ -122,7 +122,7 @@ impl Ctx {
 		let within = self.left_in(&Slice::Point(point.clone()))?;
 		if let Point::Milestone(_) = point {
 			let board = self.board.read();
-			let held = Query::default().run(&within, &board.as_ref()?.cards, None).expect("an empty query runs");
+			let held = Query::default().run(&within, &board.cards, None).expect("an empty query runs");
 			if held.is_empty() {
 				return None;
 			}
@@ -177,13 +177,13 @@ pub(super) fn ScopeEditor(editing: Editing) -> Element {
 		m.set(None);
 	};
 	let board = ctx.board.read();
-	let mut known: Vec<String> = board.as_ref().map_or_else(Vec::new, |b| b.cards.iter().map(|c| c.link.project().to_string()).collect()); // before the board arrives nothing is offered
+	let mut known: Vec<String> = board.cards.iter().map(|c| c.link.project().to_string()).collect();
 	known.extend(known.clone().iter().map(|r| format!("{}/*", r.split('/').next().expect("owner/repo"))));
 	drop(board);
 	known.sort();
 	known.dedup();
 	let needle = typed.read().trim().to_lowercase();
-	let offered: Vec<(String, usize)> = known
+	let offered: Vec<(String, Option<usize>)> = known
 		.into_iter()
 		.filter(|r| !repos.read().contains(r) && r.to_lowercase().contains(&needle))
 		.take(12)
@@ -192,7 +192,7 @@ pub(super) fn ScopeEditor(editing: Editing) -> Element {
 				repos: vec![r.clone()],
 				..Default::default()
 			};
-			let n = ctx.open_in(&Slice::Terms(scope.filter())).unwrap_or(0); // offered only from the board's cards, so it has arrived
+			let n = ctx.open_in(&Slice::Terms(scope.filter()));
 			(r, n)
 		})
 		.collect();
@@ -311,7 +311,7 @@ pub(super) fn ScopeEditor(editing: Editing) -> Element {
 									onclick: { let r = r.clone(); move |_| add(r.clone()) },
 									Icon { glyph: Glyph::Plus, class: "size-3" }
 									"{r}"
-									span { class: "text-ink-faint", "{n}" }
+									span { class: "text-ink-faint", if let Some(n) = n { "{n}" } }
 								}
 							}
 						}

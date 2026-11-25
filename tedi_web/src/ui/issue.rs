@@ -25,12 +25,14 @@ use crate::api;
 
 #[component]
 pub fn IssuePanel(link: IssueLink) -> Element {
+	rsx! { super::view::Behind { what: "issue {link}", need: super::Need::Cards(vec![link.clone()]), Opened { link } } }
+}
+
+#[component]
+fn Opened(link: IssueLink) -> Element {
 	let ctx = use_context::<Ctx>();
 	let Some(card) = ctx.card(&link) else {
-		return match ctx.awaits(true) {
-			true => rsx! { super::view::Loader { prs: true } },
-			false => rsx! { div { class: "p-4 text-body text-ink-soft", "{link} is not on the board: not stored here" } },
-		};
+		return rsx! { div { class: "p-4 text-body text-ink-soft", "{link} is not on the board: not stored here" } };
 	};
 	let conflict = ctx.conflicts.read().get(&link).cloned();
 	rsx! {
@@ -38,7 +40,8 @@ pub fn IssuePanel(link: IssueLink) -> Element {
 			div { class: "flex flex-col gap-3 px-4 py-3",
 				div { class: "flex h-6 shrink-0 items-center gap-1.5",
 					KindIcon { card: card.clone() }
-					a { class: "truncate text-mono-s text-ink-soft hover:underline", href: "{link}", target: "_blank", "{link.project()}#{link.number()}" }
+					a { class: "truncate text-mono-s text-ink-soft hover:underline", href: "{link}", target: "_blank", "{link.project()}" }
+					Number { link: link.clone() }
 					div { class: "flex-1" }
 					IconBtn { glyph: Glyph::Scope, title: "Scope to it", onclick: { let link = link.clone(); move |_| ctx.scope_to(Point::Issue(link.clone())) } }
 					IconBtn { glyph: Glyph::Link, title: "Copy its link", onclick: { let link = link.clone(); move |_| copy(ctx, link.to_string()) } }
@@ -178,7 +181,6 @@ fn Sidebar(card: Card) -> Element {
 	let link = card.link.clone();
 	let home = link.project();
 	let board = ctx.board.read();
-	let board = board.as_ref().expect("the card came from it");
 	let children: Vec<&Card> = board.cards.iter().filter(|c| c.parent.as_ref() == Some(&link)).collect();
 	let editable = card.pr.is_none();
 	let mut assignable = board.assignable.get(&home.to_string()).cloned().unwrap_or_default(); // a repo no pull read them of yet
@@ -463,7 +465,7 @@ fn Chooser(title: String, glyph: Glyph, choices: Vec<Choice>, picked: Vec<String
 fn Labels(card: Card) -> Element {
 	let ctx = use_context::<Ctx>();
 	let board = ctx.board.read();
-	let colors = board.as_ref().expect("the card came from it").colors.get(&card.link.project().to_string());
+	let colors = board.colors.get(&card.link.project().to_string());
 	let names: BTreeSet<&String> = colors.into_iter().flat_map(|c| c.keys()).chain(&card.labels).collect();
 	let mut choices: Vec<Choice> = names
 		.into_iter()
@@ -508,7 +510,6 @@ fn Milestones(card: Card) -> Element {
 	let ctx = use_context::<Ctx>();
 	let home = card.link.project();
 	let board = ctx.board.read();
-	let board = board.as_ref().expect("the card came from it");
 	let within = ctx.within().unwrap_or_default(); // nothing of its scope is on the board: the panel shows without one
 	let hosts = |t: &Target| t.hosts(&card.link);
 	let mut offered: Vec<&Target> = board
@@ -591,16 +592,7 @@ fn Conversation(card: Card) -> Element {
 			async move { api::thread(link).await }
 		}
 	});
-	let children: Vec<Card> = ctx
-		.board
-		.read()
-		.as_ref()
-		.expect("the card came from it")
-		.cards
-		.iter()
-		.filter(|c| c.parent.as_ref() == Some(&link))
-		.cloned()
-		.collect();
+	let children: Vec<Card> = ctx.board.read().cards.iter().filter(|c| c.parent.as_ref() == Some(&link)).cloned().collect();
 	let body = card.body.split("\n# Blockers").next().expect("split yields at least one piece").trim_end().to_string(); // the blockers show as their own field
 	let tick = {
 		let (link, held) = (link.clone(), card.body.clone());
@@ -757,6 +749,27 @@ fn Composer(card: Card) -> Element {
 				if !blank { Closing { card: card.clone(), said: Some(text) } }
 				Btn { style: Style::Primary, disabled: blank || sending(), onclick: move |_| send(), "Comment" }
 			}
+		}
+	}
+}
+
+/// `#n`, copying its link.
+#[component]
+pub(super) fn Number(link: IssueLink) -> Element {
+	let ctx = use_context::<Ctx>();
+	rsx! {
+		button {
+			r#type: "button",
+			class: "shrink-0 cursor-pointer text-mono-s text-ink-faint hover:underline",
+			title: "Copy its link",
+			onclick: {
+				let link = link.clone();
+				move |e: MouseEvent| {
+					e.stop_propagation();
+					copy(ctx, link.to_string());
+				}
+			},
+			"#{link.number()}"
 		}
 	}
 }

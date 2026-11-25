@@ -153,7 +153,7 @@ impl Op {
 			Op::Move { to, .. } => ("Moved", format!("#{n} → {to}")),
 			Op::Milestone { repo, new: Some(m), .. } => {
 				let board = ctx.board.peek();
-				let target = board.as_ref().and_then(|b| b.targets.iter().find(|t| t.link == *m));
+				let target = board.targets.iter().find(|t| t.link == *m);
 				let title = target.map_or_else(|| format!("milestone {}", m.number()), |t| t.title.clone()); // closed since it was offered
 				("Put", format!("#{n} in {repo}'s {title}"))
 			}
@@ -165,12 +165,12 @@ impl Op {
 }
 
 /// The server's board, `pending` laid over it.
-pub(super) fn shown(stored: &Option<Board>, pending: &[Pending]) -> Option<Board> {
-	let mut board = stored.clone()?;
+pub(super) fn shown(stored: &Board, pending: &[Pending]) -> Board {
+	let mut board = stored.clone();
 	for p in pending {
 		p.op.show(&p.link, &mut board);
 	}
-	Some(board)
+	board
 }
 
 /// What a board read from here on holds.

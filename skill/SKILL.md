@@ -176,7 +176,8 @@ selected.md  (opens beside a planning sprint: what you have picked up, off the h
 ```
 
 - A sprint holds milestones and issues. Never blockers. Only a Bottlenecks (an org's, in its `.github`)
-  can be held, and only by a sprint, never round. Picking something up is `selected.md`'s, not the sprint's.
+  can be held, and only by a sprint, never round. Picking something up is `selected.md`'s, not the sprint's; what
+  `1d` or urgent holds is picked up by itself.
 - A milestone holds issues, other repos' milestones it is blocked on, and prose, and may carry a deadline. No priority order inside —
   everything in it is required. Not being in any milestone does not stop an issue from
   entering a sprint.

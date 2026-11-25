@@ -6,15 +6,15 @@ use dioxus::{core::spawn_forever, prelude::*};
 use ev_lib::uikit_dioxus::Logo;
 use strum::IntoEnumIterator as _;
 use tedi_core::{
-	MilestoneLink, NodeLink,
-	board::{GroupBy, Lift, Order, Placed, Shown, Within, group},
+	IssueLink, MilestoneLink, NodeLink,
+	board::{GroupBy, Lift, Order, Placed, Shown, Target, Within, group},
 	workflow::State,
 };
 use tilers_dioxus::{Band, Config, DockPanel, Group, LockScope, MinSize, PackedApi, PackedArea, PanelId, Tile};
 
 pub(super) use super::card::CardView;
 use super::{
-	Ctx, Seen,
+	Ctx, Need, Seen,
 	icons::{Glyph, Icon},
 	issue::Markdown,
 	kit::MenuItem,
@@ -41,16 +41,30 @@ pub fn ViewPanel(name: String) -> Element {
 pub fn SprintPanel(link: MilestoneLink) -> Element {
 	let ctx = use_context::<Ctx>();
 	let board = ctx.board.read();
-	let Some(board) = board.as_ref() else {
-		return rsx! { Loader { prs: false } };
-	};
 	let Some(sprint) = board.targets.iter().find(|t| t.link == link) else {
-		return rsx! { div { class: "p-3 text-sm text-ink-soft", "{link.as_str()} is no open sprint here" } };
+		return rsx! {
+			Behind { what: "a sprint", need: Need::Cards(Vec::new()),
+				div { class: "p-3 text-sm text-ink-soft", "{link.as_str()} is no open sprint here" }
+			}
+		};
 	};
-	let prs = sprint.nodes.iter().any(|n| matches!(n, NodeLink::Issue(l) if ctx.card(l).is_none())); // what is no issue may be a pull request
-	if ctx.awaits(prs) {
-		return rsx! { Loader { prs } };
-	}
+	let links: Vec<IssueLink> = sprint.nodes.iter().filter_map(|n| if let NodeLink::Issue(l) = n { Some(l.clone()) } else { None }).collect();
+	rsx! { Behind { what: "sprint {sprint.title}", need: Need::Cards(links), Musts { sprint: sprint.clone() } } }
+}
+
+/// A sprint's tab: its title, once the board arrived.
+#[component]
+pub fn SprintTab(link: MilestoneLink) -> Element {
+	let ctx = use_context::<Ctx>();
+	let board = ctx.board.read();
+	let title = board.targets.iter().find(|t| t.link == link).map(|t| t.title.clone());
+	ctx.tab_label(Glyph::Sprint, &title.unwrap_or_else(|| format!("{}/{}", link.repo_info(), link.number()))) // not here yet, or closed
+}
+
+#[component]
+fn Musts(sprint: Target) -> Element {
+	let ctx = use_context::<Ctx>();
+	let board = ctx.board.read();
 	let shown: Vec<Shown> = ctx
 		.workflows()
 		.into_keys()
@@ -75,21 +89,11 @@ pub fn SprintPanel(link: MilestoneLink) -> Element {
 	}
 }
 
-/// A sprint's tab: its title, once the board arrived.
-#[component]
-pub fn SprintTab(link: MilestoneLink) -> Element {
-	let ctx = use_context::<Ctx>();
-	let board = ctx.board.read();
-	let title = board.iter().flat_map(|b| &b.targets).find(|t| t.link == link).map(|t| t.title.clone());
-	ctx.tab_label(Glyph::Sprint, &title.unwrap_or_else(|| format!("{}/{}", link.repo_info(), link.number()))) // not here yet, or closed
-}
-
 /// A milestone a sprint holds: a sprint opens here, any other on GitHub.
 #[component]
 fn Must(link: MilestoneLink) -> Element {
 	let ctx = use_context::<Ctx>();
 	let board = ctx.board.read();
-	let board = board.as_ref().expect("the sprint holding it came from it");
 	let Some(held) = board.targets.iter().find(|t| t.link == link) else {
 		return rsx! { div { class: "text-xs text-ink-soft", "{link.as_str()} is closed, or not stored here" } };
 	};
@@ -105,17 +109,37 @@ fn Must(link: MilestoneLink) -> Element {
 	}
 }
 
-/// How much of what a view shows is here, or why it isn't.
+/// `children`, drawn from the start, behind how much of what they show is here until all of it is.
 #[component]
-pub(super) fn Loader(prs: bool) -> Element {
+pub(super) fn Behind(what: String, need: Need, children: Element) -> Element {
 	let ctx = use_context::<Ctx>();
-	let loading = ctx.loading.read();
-	if let Some(why) = &loading.failed {
+	let mut wanted = ctx.wanted;
+	let id = use_hook(|| wanted.peek().keys().last().map_or(0, |id| id + 1));
+	if wanted.peek().get(&id) != Some(&(what.clone(), need.clone())) {
+		wanted.write().insert(id, (what, need.clone()));
+	}
+	dioxus::prelude::use_drop(move || _ = wanted.write().remove(&id));
+	let awaited = ctx.awaits(&need);
+	rsx! {
+		div { class: "relative flex h-full min-h-0 flex-1 flex-col",
+			div { class: if awaited { "isolate flex min-h-0 flex-1 flex-col" } else { "flex min-h-0 flex-1 flex-col" }, inert: if awaited { "true" }, {children} }
+			if awaited {
+				div { class: "absolute inset-0 flex bg-card", Loader { need } }
+			}
+		}
+	}
+}
+
+/// How much of it is here, or why it isn't.
+#[component]
+fn Loader(need: Need) -> Element {
+	let ctx = use_context::<Ctx>();
+	if let Some(why) = &ctx.loading.read().failed {
 		return rsx! { Empty { glyph: Glyph::Alert, error: true, title: "The board didn't load", body: "{why}" } };
 	}
-	let percent = loading.percent(prs);
+	let percent = need.percent(&ctx.progress.read(), &ctx.board.read()).unwrap_or(99); // all here, and drawn with the next
 	rsx! {
-		div { class: "flex h-full flex-1 flex-col items-center justify-center gap-8",
+		div { class: "flex flex-1 flex-col items-center justify-center gap-8",
 			div { class: "hidden text-primary-ink [[data-mark]_&]:block", Logo { class: "block h-11" } }
 			div { role: "progressbar", aria_label: "Loading", aria_valuenow: "{percent}", class: "flex w-48 max-w-[60%] flex-col items-center gap-6",
 				div { class: "h-px w-full overflow-hidden bg-border", div { class: "h-full bg-primary-ink", style: "width: {percent}%" } }
@@ -164,43 +188,37 @@ fn ViewBody(defined: View) -> Element {
 	let Some(view) = view.read().clone().filter(|_| docked()) else {
 		return rsx! {};
 	};
-	let groups = match outcome.read().clone().transpose() {
+	let (Some(need), Some(outcome)) = (ctx.need(), outcome.read().clone()) else {
+		return rsx! {}; // none is open
+	};
+	let groups = match outcome {
 		Ok(groups) => groups,
 		Err(why) => return rsx! { Empty { glyph: Glyph::Alert, error: true, title: "The view doesn't run", body: why } },
 	};
-	let count = groups.as_ref().map(|groups| count(groups, &view.boxes.hidden));
+	let count = (!ctx.awaits(&need)).then(|| count(&groups, &view.boxes.hidden));
 	rsx! {
 		LockScope { locked,
 			div { class: "flex h-full flex-col",
 				if ctx.band() != Some(Band::Sm) {
-					ViewToolbar { view: view.clone(), defined, groups: groups.iter().flatten().map(|(g, _)| g.clone()).collect::<Vec<_>>(), count, edit }
+					ViewToolbar { view: view.clone(), defined, groups: groups.iter().map(|(g, _)| g.clone()).collect::<Vec<_>>(), count, edit }
 				}
-				match groups {
-					Some(groups) => rsx! { Results { view, groups, relaid, edit, onlay: { let name = name.clone(); move |columns| { spawn_forever(ctx.lay(name.clone(), columns)); } } } },
-					None => rsx! { Loader { prs: prs(&ctx) } },
+				Behind { what: "view {name}", need,
+					Results { view, groups, relaid, edit, onlay: { let name = name.clone(); move |columns| { spawn_forever(ctx.lay(name.clone(), columns)); } } }
 				}
 			}
 		}
 	}
 }
 
-/// Whether the open workspace's lens leaves pull requests in.
-pub(super) fn prs(ctx: &Ctx) -> bool {
-	ctx.lens.read().as_ref().is_some_and(|l| l.search.covers_prs() && l.scope.covers_prs())
-}
-
-/// The open workspace's cards as its lens has them, grouped `by`; none before they arrive, or while none is open.
+/// The open workspace's cards as its lens has them, of those here, grouped `by`; none while none is open.
 pub(super) fn outcome(ctx: &Ctx, by: &GroupBy) -> Option<Result<Groups, String>> {
 	let lens = ctx.lens.read().clone()?;
-	if ctx.awaits(prs(ctx)) {
-		return None;
-	}
 	let board = ctx.board.read();
-	let cards = &board.as_ref()?.cards;
+	let cards = &board.cards;
 	let workflows = ctx.workflows();
 	let within = match ctx.within() {
 		Ok(within) => within,
-		Err(_) if ctx.awaits(true) => return None, // what the scope holds may be yet to come
+		Err(_) if ctx.need().is_some_and(|need| ctx.awaits(&need)) => return Some(Ok(Vec::new())), // what it holds may be yet to come
 		Err(why) => return Some(Err(why)),
 	};
 	let run = || -> Result<Groups, String> {
@@ -540,11 +558,12 @@ fn Column(group: String) -> Element {
 	let by = lanes.by();
 	let draggable = matches!(by, GroupBy::State(_));
 	let board = ctx.board.read();
-	let cards = &board.as_ref().expect("views render once the board loaded").cards;
+	let cards = &board.cards;
 	let order: Option<Order> = ctx.lens.read().as_ref().map(|l| l.sort.clone());
 	let groups = lanes.groups.read();
 	let members = groups.iter().find(|(k, _)| *k == group).map_or(&[][..], |(_, m)| m.as_slice());
 	let shown = lanes.view.read().shown.clone();
+	let drawn = use_drawn(members.len());
 	let mut drop = use_drop(group.clone());
 	let here = |c: &tedi_core::board::Card| matches!(&by, GroupBy::State(w) if c.states[w].to_string() == group);
 	// where the dragged card would land: its place in this column under the workspace's order
@@ -579,7 +598,7 @@ fn Column(group: String) -> Element {
 				over.set(false);
 				drop(e);
 			},
-			for (n , &Placed { card: i , lifted }) in members.iter().enumerate() {
+			for (n , &Placed { card: i , lifted }) in members.iter().enumerate().take(drawn) {
 				Fragment { key: "{cards[i].link}",
 				if landing == Some(n) {
 					{slot.clone()}
@@ -600,22 +619,38 @@ fn Column(group: String) -> Element {
 	}
 }
 
+/// How many of so many rows to draw: what a screen holds at once, the rest while the page is free.
+fn use_drawn(of: usize) -> usize {
+	let mut drawn = use_signal(|| 20);
+	use_effect(use_reactive!(|of| {
+		if drawn() < of {
+			spawn(async move {
+				gloo_timers::future::sleep(std::time::Duration::ZERO).await;
+				let now = *drawn.peek();
+				drawn.set(now + now.min(100));
+			});
+		}
+	}));
+	drawn()
+}
+
 /// A board on a phone (Figma: 06a): its groups stacked, headers sticky; a long press on a card moves it.
 #[component]
 fn Stacked(view: View, groups: Groups) -> Element {
 	let ctx = use_context::<Ctx>();
 	let mut moving = use_signal(|| None::<tedi_core::board::Card>);
 	let board = ctx.board.read();
-	let cards = &board.as_ref().expect("views render once the board loaded").cards;
+	let cards = &board.cards;
 	let workflow = match &view.group_by {
 		GroupBy::State(w) => Some(w.clone()),
 		_ => None,
 	};
+	let drawn = use_drawn(groups.iter().map(|(_, m)| m.len()).max().unwrap_or(0)); // a view with no group
 	rsx! {
 		div { class: "flex h-full flex-col gap-1.5 overflow-auto",
 			for (key , members) in groups.into_iter().filter(|(g, m)| !m.is_empty() && !view.boxes.hidden.contains(g)) {
 				div { key: "head-{key}", class: "sticky top-0 z-[5] bg-background pb-0.5", GroupHead { tint: view.boxes.tints.get(&key).copied(), group: key.clone(), count: members.len() } }
-				for Placed { card: i , lifted } in members {
+				for Placed { card: i , lifted } in members.into_iter().take(drawn) {
 					div {
 						key: "{key}-{cards[i].link}",
 						oncontextmenu: {

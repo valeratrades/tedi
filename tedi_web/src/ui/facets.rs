@@ -4,7 +4,7 @@
 use dioxus::prelude::*;
 use ev_lib::uikit_dioxus::*;
 use strum::IntoEnumIterator as _;
-use tedi_core::board::{Board, Facet, Query, Tally};
+use tedi_core::board::{Facet, Query, Tally};
 
 use super::{
 	Ctx,
@@ -104,9 +104,12 @@ fn FacetMenu(facet: Facet, lens: Lens) -> Element {
 	let ctx = use_context::<Ctx>();
 	let mut needle = use_signal(String::new);
 	let board = ctx.board.read();
-	let Some(Board { cards, .. }) = board.as_ref() else {
-		return rsx! { span { class: "p-2 text-caption text-ink-soft", "Counted once the board is here" } };
-	};
+	let cards = &board.cards;
+	if let Some(need) = ctx.need()
+		&& ctx.awaits(&need)
+	{
+		return rsx! { span { class: "p-2 text-caption text-ink-soft", "Counted once the view is here" } };
+	}
 	let within = ctx.within().unwrap_or_default(); // nothing of it is on the board: the tiles say so
 	let tallies = match lens.search.tally(facet, &within, cards, ctx.me().as_deref()) {
 		Ok(t) => t,

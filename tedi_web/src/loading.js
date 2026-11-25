@@ -39,14 +39,10 @@
 		},
 	};
 
-	// asked for along with the client, which takes them over; the board, the most of it, once the client is here and its changes are followed
+	// asked for along with the client, which takes them over; the board, the most of it, is the client's to ask for, in the order of what it shows
 	const base = new URL("..", document.currentScript.src);
 	const fetched = window.fetch.bind(window);
-	const get = (path) => fetched(new URL(`api/${path}`, base));
-	const changes = get("changes");
-	const client = Promise.withResolvers();
-	const asked = { changes, board: Promise.all([changes, client.promise]).then(() => get("board")), setup: get("setup"), library: get("library"), sprints: get("sprints") };
-	const early = new Map(Object.entries(asked).map(([path, response]) => [new URL(`api/${path}`, base).href, response]));
+	const early = new Map(["changes", "setup", "library"].map((path) => [new URL(`api/${path}`, base).href, fetched(new URL(`api/${path}`, base))]));
 	window.fetch = async (input, init) => {
 		const url = new URL(input instanceof Request ? input.url : input, location).href;
 		if (early.has(url)) {
@@ -70,6 +66,5 @@
 			bar.lastElementChild.textContent = `${percent}%`;
 			bar.querySelector("[style]").style.width = `${percent}%`;
 		}
-		client.resolve();
 	};
 })();

@@ -106,10 +106,10 @@ pub(crate) fn call(port: u16, method: &str, path: &str, user: Option<&str>, body
 
 /// The board, put together of its parts.
 pub(crate) fn board(port: u16) -> serde_json::Value {
-	let (status, body) = call(port, "GET", "/api/board", None, None);
+	let (status, body) = call(port, "POST", "/api/board", None, Some(serde_json::json!({ "first": [] })));
 	assert_eq!(status, 200, "{body}");
 	let parts: Vec<Part> = body.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
-	assert!(matches!(parts.last(), Some(Part::Rest { .. })), "{body}");
+	assert!(parts.iter().any(|p| matches!(p, Part::Ranks(_))), "{body}");
 	let mut board = Board::default();
 	board.extend(parts);
 	serde_json::to_value(board).unwrap()
@@ -246,6 +246,30 @@ fn lens_parts_edited_from_two_tabs_both_stand() {
 	assert_ne!(edit(port, me, lensed("ws 1", "Search", "i:many")).0, 200, "a search that doesn't parse");
 	assert_ne!(edit(port, me, lensed("ws 1", "Scope", "repo:o/* words")).0, 200, "a scope of words");
 	assert_eq!(library(port, me)["workspaces"]["ws 1"]["lens"], lens("repo:o/*", "is:open crash", "importance,-hours"));
+}
+
+#[test]
+fn what_a_page_leaves_is_applied_in_order_whatever_of_it_no_longer_does() {
+	let ctx = TestContext::build();
+	let (_server, port) = serve(&ctx, BOARD, &["--viewer-header", "X-Auth-User"]);
+	let me = Some("alice");
+	let edits = [
+		lensed("ws 1", "Search", "is:open"),
+		lensed("gone", "Search", "is:open"),
+		boxed("Triage", serde_json::json!({ "Hidden": ["done"] })),
+		boxed("Triage", serde_json::json!({ "GroupBy": "repo" })),
+		boxed("Triage", serde_json::json!({ "Hidden": ["o/r"] })),
+	];
+	let (status, body) = call(port, "POST", "/api/library/left", me, Some(serde_json::json!({ "edits": edits })));
+	assert_eq!(status, 200, "{body}");
+	let held = library(port, me);
+	assert_eq!(held["workspaces"]["ws 1"]["lens"], lens("", "is:open", "rank"));
+	assert_eq!(
+		held["drafts"]["views"]["Triage"],
+		serde_json::json!({ "name": "Triage", "group_by": "repo", "shown": [], "hidden": ["o/r"] })
+	);
+	let (status, _) = call(port, "POST", "/api/library/left", None, Some(serde_json::json!({ "edits": [] })));
+	assert_ne!(status, 200, "a request the gate didn't name a viewer on");
 }
 
 #[test]
@@ -458,6 +482,44 @@ fn the_board_carries_its_repos_label_colors_as_of_the_last_pull() {
 
 	let (_server, port) = serve(&ctx, BOARD, &[]);
 	assert_eq!(board(port)["colors"], serde_json::json!({ "o/r": { "t:bug": "ededed", "won't fix": "ededed" } }));
+}
+
+#[test]
+fn the_board_is_read_in_the_order_of_what_is_shown() {
+	let ctx = TestContext::build();
+	for (repo, state) in [("a", " "), ("a", "x"), ("b", " "), ("b", "x")] {
+		let n = if state == "x" { 2 } else { 1 };
+		ctx.remote_in(
+			("o", repo).into(),
+			&crate::common::parse_virtual(&format!("- [{state}] Task <!-- @mock_user https://github.com/o/{repo}/issues/{n} -->\n  body\n")),
+			Some(crate::common::Seed::new(0)),
+		);
+	}
+	let out = ctx.run(&["--mock", "pull", "o/a", "o/b"]);
+	assert!(out.status.success(), "{}", out.stderr);
+
+	let (_server, port) = serve(&ctx, BOARD, &[]);
+	let order = |first: &[&str]| -> Vec<String> {
+		let (status, body) = call(port, "POST", "/api/board", None, Some(serde_json::json!({ "first": first })));
+		assert_eq!(status, 200, "{body}");
+		body.lines()
+			.map(|l| match serde_json::from_str(l).unwrap() {
+				Part::Head { .. } => "head".to_string(),
+				Part::Ranks(_) => "ranks".to_string(),
+				Part::Read { source, .. } => format!("{} {:?}", source.repo, source.holds),
+			})
+			.filter(|l| !l.ends_with("PullRequests"))
+			.collect()
+	};
+	assert_eq!(
+		order(&["is:issue is:closed repo:o/b"]),
+		["head", "o/a OpenIssues", "o/b OpenIssues", "ranks", "o/b ClosedIssues", "o/a ClosedIssues"],
+		"the open ones rank each other, so they come first whatever is shown"
+	);
+	assert_eq!(
+		order(&["is:issue is:open"]),
+		["head", "o/a OpenIssues", "o/b OpenIssues", "ranks", "o/a ClosedIssues", "o/b ClosedIssues"]
+	);
 }
 
 fn team_file(triage_hides: &str) -> String {
@@ -720,4 +782,187 @@ fn a_config_whose_orgs_nest_deeper_is_refused() {
 	assert!(!out.status.success(), "{}", out.stdout);
 	let why = "orgs nest one level";
 	assert!(out.stderr.contains(why) || out.stdout.contains(why), "stdout: {}, stderr: {}", out.stdout, out.stderr);
+}
+
+/// A dock of one tile showing `tab`.
+fn dock(tab: &str) -> String {
+	format!(
+		r#"{{"version":5,"grid":{{"cells":[{{"group":{{"id":0,"tabs":["{tab}"],"active":0}},"x":0,"y":0,"w":64,"h":24,"desired_w":null,"desired_x":null,"desired_h":null,"rank":0}}],"floats":[],"state":"Settled","next_group_id":1}}}}"#
+	)
+}
+
+#[test]
+fn what_was_kept_before_lenses_is_brought_over_as_the_server_starts() {
+	let ctx = TestContext::build();
+	let past = |query: &str| format!("[[board.views]]\nname = \"Triage\"\nquery = \"{query}\"\ngroup_by = \"state:kanban\"\nsort = \"importance\"\nshown = []\n");
+	ctx.remote_file_commit(CONFIG_REPO, "board.toml", "bob", &past("is:open"));
+	ctx.remote_file_commit(CONFIG_REPO, "board.toml", "bob", &past("is:open t:bug"));
+	ctx.remote_file_commit(CONFIG_REPO, "board.toml", "bob", &team_file("\"done\""));
+	let was = |name: &str, query: &str| serde_json::json!({ "name": name, "query": query, "group_by": "repo", "sort": "hours", "shown": ["number"], "layout": "list" });
+	let old = serde_json::json!({
+		"scope": "Main",
+		"workspace": null,
+		"on_screen": {
+			"tiles": { "Xl": dock("view:Triage") },
+			"views": { "Bugs": { "name": "Bugs", "query": "t:bug", "group_by": "repo", "sort": "rank", "shown": [] } },
+			"columns": { "Triage": { "state:kanban": { "Xl": "wide" } }, "Bugs": { "repo": { "Md": "narrow" } } },
+			"tints": { "Bugs": { "repo": { "o/r": "red" }, "state:kanban": { "triage": "blue" } } },
+			"laid": { "Triage": { "state:kanban": "notion" } },
+			"locked": ["Triage"],
+		},
+		"filters": { "Bugs": was("Bugs", "t:bug repo:o/r"), "Main": was("Main", "is:pr"), "Words": was("Words", "crash is:open"), "All": was("All", "") },
+		"workspaces": { "ws 1": { "Xl": dock("view:Bugs") } },
+		"columns": { "notion": { "by": "state:kanban", "layout": { "Xl": "wide" }, "tints": { "triage": "orange" } } },
+		"scopes": { "core": { "repos": ["o/core"] } },
+		"favorites": [{ "View": "Bugs" }],
+		"ids": { "BugsView": { "View": "Bugs" } },
+		"forks": [{ "item": { "View": "All" }, "upstream": { "owner": "Team", "name": "Triage", "version": 2, "ahead": 0 } }],
+		"recent": ["ws 1"],
+		"received": ["/l/ws/bob/desk@1?bands=xl&scope=Main", "/l/view/team/Triage@2"],
+	});
+	let pins = serde_json::json!([
+		{ "item": { "View": "Mine" }, "versions": [{ "construction": { "View": was("Mine", "is:pr") }, "carried": {} }] },
+		{ "item": { "Workspace": "desk" }, "versions": [{ "construction": { "Workspace": { "Xl": dock("view:Mine") } }, "carried": { "Mine": 1 } }] },
+	]);
+	let web = ctx.xdg.inner.root.join("data/tedi/web");
+	std::fs::create_dir_all(web.join("shared")).unwrap();
+	std::fs::create_dir_all(web.join("accounts")).unwrap();
+	std::fs::write(web.join("alice.json"), old.to_string()).unwrap();
+	std::fs::write(web.join("shared/bob.json"), pins.to_string()).unwrap();
+
+	let gate = ["--viewer-header", "X-Auth-User"];
+	let running = format!("{}\n[board.scopes.Main]\nrepos = [\"o/*\"]\n", sourced("\"done\""));
+	let (server, port) = serve(&ctx, &running, &gate);
+	let me = Some("alice");
+	let mut held = library(port, me);
+	assert_eq!(held["workspace"], "ws 2", "the screen as left was no kept workspace's");
+	assert_eq!(
+		held["workspaces"],
+		serde_json::json!({
+			"ws 1": { "tiles": { "Xl": dock("view:Bugs") }, "lens": lens("repo:o/*", "t:bug", "rank") },
+			"ws 2": { "tiles": { "Xl": dock("view:Triage") }, "lens": lens("repo:o/*", "is:open t:bug", "importance") },
+			"Words": { "tiles": {}, "lens": lens("repo:o/*", "is:open crash", "hours") },
+		})
+	);
+	let boxed = |name: &str| serde_json::json!({ "name": name, "group_by": "repo", "shown": ["number"] });
+	let mut bugs = boxed("Bugs");
+	bugs["arrangement"] = serde_json::json!({ "Md": "narrow" });
+	bugs["tints"] = serde_json::json!({ "o/r": "red" });
+	assert_eq!(
+		held["views"],
+		serde_json::json!({ "Bugs": bugs, "Main": boxed("Main"), "Words": boxed("Words"), "All": boxed("All") })
+	);
+	assert_eq!(
+		held["scopes"],
+		serde_json::json!({ "core": { "repos": ["o/core"] }, "Bugs": { "repos": ["o/r"], "terms": "t:bug" }, "Main (2)": { "terms": "is:pr" } }),
+		"no filter is lost, and none takes the team's name"
+	);
+	bugs["shown"] = serde_json::json!([]);
+	assert_eq!(
+		held["drafts"],
+		serde_json::json!({
+			"views": { "Bugs": bugs, "Triage": { "name": "Triage", "group_by": "state:kanban", "shown": [], "arrangement": { "Xl": "wide" }, "hidden": ["done"] } },
+			"workspaces": {},
+		})
+	);
+	assert_eq!(
+		held["columns"],
+		serde_json::json!({ "notion": { "by": "state:kanban", "arrangement": { "Xl": "wide" }, "tints": { "triage": "orange" } } })
+	);
+	assert_eq!((&held["laid"], &held["locked"]), (&serde_json::json!({ "Triage": "notion" }), &serde_json::json!(["Triage"])));
+	assert_eq!(held["ids"]["BugsView"], serde_json::json!({ "View": "Bugs" }));
+	assert_eq!(held["received"], serde_json::json!(["/l/ws/bob/desk@1?bands=xl", "/l/view/team/Triage@1"]));
+	assert_eq!(held["forks"][0]["upstream"]["version"], 1, "as the team's versions are numbered without queries");
+	assert_eq!(
+		entry(&catalog(port, "alice"), serde_json::json!({ "Viewer": "alice" }), serde_json::json!({ "View": "All" }))["behind"],
+		1
+	);
+
+	let (status, body) = call(port, "POST", "/api/shared", me, Some(serde_json::json!({ "link": "/l/ws/bob/desk@1?bands=xl" })));
+	assert_eq!(status, 200, "{body}");
+	let shared: serde_json::Value = serde_json::from_str(&body).unwrap();
+	assert_eq!(
+		shared["construction"],
+		serde_json::json!({ "Workspace": { "tiles": { "Xl": dock("view:Mine") }, "lens": lens("", "is:pr", "hours") } })
+	);
+
+	let read = |file: &str| serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(web.join("before-1").join(file)).unwrap()).unwrap();
+	assert_eq!((read("alice.json"), read("shared/bob.json")), (old, pins), "as they were");
+	assert_eq!(edit(port, me, lensed("ws 1", "Search", "is:closed")).0, 200);
+	held = library(port, me);
+	drop(server);
+	let (_server, port) = serve(&ctx, &running, &gate);
+	assert_eq!(library(port, me), held, "brought over once");
+}
+
+#[test]
+fn a_viewers_scope_outlives_the_teams_one_it_was_in() {
+	let ctx = TestContext::build();
+	let gate = ["--viewer-header", "X-Auth-User"];
+	let scoped = format!("{BOARD}\n[board.scopes.EV.Main]\nrepos = [\"o/*\"]\n");
+	let (server, port) = serve(&ctx, &scoped, &gate);
+	let me = Some("alice");
+	let keep = |name: &str| edit(port, me, serde_json::json!({ "Keep": { "Scope": { "name": name, "scope": { "repos": ["o/core"] } } } })).0;
+	for name in ["core", "EV / Main / core", "EV / Main / core / deep"] {
+		assert_eq!(keep(name), 200, "{name}");
+	}
+	for path in ["EV / Main", "EV / Main / core"] {
+		assert_eq!(edit(port, me, serde_json::json!({ "Favorite": { "what": { "Scope": path }, "on": true } })).0, 200, "{path}");
+	}
+	assert_eq!(edit(port, me, lensed("ws 1", "Scope", "repo:o/*")).0, 200);
+	let before = library(port, me);
+	drop(server);
+
+	std::fs::write(ctx.xdg.inner.root.join("data/tedi/web/version"), "1").unwrap();
+	let gone = BOARD.replace("[board.scopes.Main]\nrepos = [\"o/*\"]\n", "");
+	let (_server, port) = serve(&ctx, &gone, &gate);
+	let held = library(port, me);
+	assert_eq!(held["scopes"].as_object().unwrap().keys().collect::<Vec<_>>(), ["core", "core (2)", "core (2) / deep"]);
+	assert_eq!(held["favorites"], serde_json::json!([{ "Scope": "core (2)" }]));
+	assert_eq!(held["workspaces"], before["workspaces"]);
+}
+
+#[test]
+fn bringing_data_over_cut_short_is_run_again_whole() {
+	let ctx = TestContext::build();
+	let web = ctx.xdg.inner.root.join("data/tedi/web");
+	std::fs::create_dir_all(&web).unwrap();
+	let old = |scope: &str| serde_json::json!({ "scope": scope, "on_screen": { "tiles": {}, "columns": {} }, "filters": {}, "workspaces": {}, "columns": {}, "favorites": [] }).to_string();
+	for viewer in ["alice", "bob"] {
+		std::fs::write(web.join(format!("{viewer}.json")), old("Main")).unwrap();
+	}
+	let gate = ["--viewer-header", "X-Auth-User"];
+	let (server, port) = serve(&ctx, BOARD, &gate);
+	let over = library(port, Some("bob"));
+	assert_eq!(over["workspaces"]["ws 1"]["lens"], lens("repo:o/*", "", "rank"));
+	drop(server);
+
+	std::fs::remove_file(web.join("version")).unwrap();
+	std::fs::write(web.join("bob.json"), old("Main")).unwrap(); // alice's was written, bob's wasn't
+	let (server, port) = serve(&ctx, BOARD, &gate);
+	assert_eq!(library(port, Some("alice"))["workspaces"], over["workspaces"]);
+	assert_eq!(library(port, Some("bob"))["workspaces"], over["workspaces"]);
+	drop(server);
+
+	std::fs::remove_file(web.join("version")).unwrap();
+	std::fs::remove_dir_all(web.join("before-1")).unwrap();
+	std::fs::write(web.join("alice.json"), old("Main")).unwrap();
+	std::fs::write(web.join("bob.json"), "not a library").unwrap();
+	let out = ctx.run(&["--mock", "web", "--addr", "127.0.0.1:0"]);
+	assert!(!out.status.success());
+	assert!(out.stderr.contains("bob"), "{}", out.stderr);
+	assert_eq!(std::fs::read_to_string(web.join("alice.json")).unwrap(), old("Main"), "all or nothing");
+}
+
+#[test]
+fn data_a_later_server_kept_is_not_served() {
+	let ctx = TestContext::build();
+	let (server, port) = serve(&ctx, BOARD, &[]);
+	assert_eq!(edit(port, None, keep_workspace("focus", "Xl", "{}")).0, 200);
+	drop(server);
+	let web = ctx.xdg.inner.root.join("data/tedi/web");
+	std::fs::write(web.join("version"), "99").unwrap();
+	let out = ctx.run(&["--mock", "web", "--addr", "127.0.0.1:0"]);
+	assert!(!out.status.success());
+	assert!(out.stderr.contains("99"), "{}", out.stderr);
 }

@@ -21,7 +21,7 @@ const proxy = http.createServer(async (req, res) => {
   const chunks = [];
   for await (const c of req) chunks.push(c);
   const body = Buffer.concat(chunks);
-  if (/^\/api\/(edit|move_card)\d+/.test(req.url)) {
+  if (/^\/api\/(edit|move)$/.test(req.url)) {
     sent.push(JSON.parse(body));
     const instead = answer;
     await sleep(HELD_MS);
@@ -89,7 +89,7 @@ const STEPPERS = '[...document.querySelectorAll("[aria-label=\'set i\'],[aria-la
 const PANEL = STEPPERS + '.filter((s) => s.closest(".min-h-\\\\[30px\\\\]"))[0]';
 const importance = async () => (await js(PANEL + "?.innerText.match(/i\\s*([0-9?])/)?.[1]")) ?? null;
 const click = (title) => js(PANEL + '.querySelector("button[title*=' + JSON.stringify(title).replaceAll('"', "'") + ']").click()');
-const stored = async () => (await (await fetch("http://127.0.0.1:" + server + "/api/board")).text()).trim().split("\n").flatMap((l) => JSON.parse(l).Read?.cards ?? []).find((c) => c.link === ISSUE);
+const stored = async () => (await (await fetch("http://127.0.0.1:" + server + "/api/board", { method: "POST", headers: { "content-type": "application/json" }, body: '{"first":[]}' })).text()).trim().split("\n").flatMap((l) => JSON.parse(l).Read?.cards ?? []).find((c) => c.link === ISSUE);
 const UNDO = '[...document.querySelectorAll("button")].find((b) => b.innerText.trim() === "Undo" && b.parentElement.innerText.includes("labels on #46"))';
 const undo = () => js(UNDO + ".click()");
 

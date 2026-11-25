@@ -709,10 +709,17 @@ pub async fn setup() -> Result<Setup, ServerFnError> {
 	crate::server::setup(&headers).await.map_err(failed)
 }
 
-/// The board's parts within the viewer's reach, a JSON line each, as they are read.
-#[get("/api/board", headers: HeaderMap)]
-pub async fn board() -> Result<ByteStream, ServerFnError> {
-	let lines = crate::server::board(&headers).await.map_err(failed)?;
+/// A view was ready at `percent` of its progress, or stood full for `late` percent of its wait: what it counts is off.
+#[post("/api/off")]
+pub async fn off(what: String, percent: u64, late: u64) -> Result<(), ServerFnError> {
+	crate::server::off(&what, percent, late);
+	Ok(())
+}
+
+/// The board's parts within the viewer's reach, a JSON line each, as they are read: those the queries `first` show before the others.
+#[post("/api/board", headers: HeaderMap)]
+pub async fn board(first: Vec<String>) -> Result<ByteStream, ServerFnError> {
+	let lines = crate::server::board(&headers, first).await.map_err(failed)?;
 	let context = FullstackContext::current().expect("in a server fn");
 	context.add_response_header(CONTENT_TYPE, HeaderValue::from_static("text/plain; charset=utf-8"));
 	Ok(lines.into())
@@ -809,6 +816,12 @@ pub async fn library() -> Result<Library, ServerFnError> {
 #[post("/api/library/edit", headers: HeaderMap)]
 pub async fn edit_library(edit: LibraryEdit) -> Result<Library, ServerFnError> {
 	crate::server::edit_library(&headers, edit).await.map_err(failed)
+}
+
+/// The requesting viewer's, after each of `edits` that applies: what a page still held as it went, so nobody hears why one doesn't.
+#[post("/api/library/left", headers: HeaderMap)]
+pub async fn leave_library(edits: Vec<LibraryEdit>) -> Result<(), ServerFnError> {
+	crate::server::leave_library(&headers, edits).await.map_err(failed)
 }
 
 #[get("/api/catalog", headers: HeaderMap)]

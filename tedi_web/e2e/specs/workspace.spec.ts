@@ -215,3 +215,21 @@ test("showing is not editing: reopened on a shorter window, nothing is modified"
   await page.waitForTimeout(SETTLED);
   expect(Object.keys((await library(page)).drafts.views)).toEqual(["Release checklist"]);
 });
+
+test("what is edited right before leaving is kept, and nothing asks", async ({ page, context }) => {
+  for (const leave of [(p: Page) => p.goto("about:blank"), (p: Page) => p.close({ runBeforeUnload: true })]) {
+    await page.goto("/");
+    await open(page, "Triage desk");
+    await page.waitForTimeout(SETTLED);
+    page.on("dialog", (asks) => expect(asks.type(), "asked on leaving").toBe(""));
+    await page.route("**/api/library/edit", (route) => route.abort()); // what settles is too late
+    const asked = `is:open i:>=${await search(page).inputValue() === "is:open i:>=3" ? 4 : 3}`;
+    await column(page, "icebox").getByTitle("Close tab").click();
+    await search(page).fill(asked);
+    await leave(page);
+    await expect.poll(async () => (await (await context.request.get("/api/library")).json()).workspaces["Triage desk"].lens.search).toBe(asked);
+    expect((await (await context.request.get("/api/library")).json()).drafts.views.Triage.hidden).toContain("icebox");
+    const back = await context.request.post("/api/library/edit", { data: { edit: { Revert: { View: "Triage" } } } });
+    expect(back.ok(), await back.text()).toBe(true);
+  }
+});

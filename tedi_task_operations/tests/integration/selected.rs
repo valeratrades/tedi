@@ -185,9 +185,9 @@ fn a_line_under_another_header_moves_there() {
 #[test]
 fn a_line_gone_goes_to_the_intake_and_one_there_already_stays() {
 	let w = world();
-	let out = w.rewrite(&[], |_| bare(&[("in_progress", &[2])]));
+	let out = w.rewrite(&[], |_| bare(&[("", &[1])]));
 	assert!(out.status.success(), "{}", out.stderr);
-	assert_eq!(w.held(), ["app#1 triage", "app#2 in_progress", "app#3 triage", "app#4 triage"]);
+	assert_eq!(w.held(), ["app#1 selected", "app#2 triage", "app#3 triage", "app#4 triage"]);
 	assert!(out.stdout.contains("changes nothing"), "{}", out.stdout);
 	assert!(out.stdout.contains(&link(3)), "{}", out.stdout);
 	assert!(w.stored().contains(&link(3)), "it is where the home has it: {}", w.stored());
@@ -232,9 +232,9 @@ fn a_text_line_becomes_an_issue_once_online() {
 	- app/issues/3
 
 	---
-	- todos/issues/1
-	- app/issues/5
 	- app/issues/1
+	- app/issues/5
+	- todos/issues/1
 
 	# in_progress
 
@@ -311,17 +311,15 @@ fn a_move_of_a_card_that_left_is_refused_and_the_rest_lands() {
 	let w = world();
 	let port = w.port;
 	let out = w.rewrite(&[], move |_| {
-		World::move_there(port, 1, "in_progress");
-		bare(&[("in_progress", &[2]), ("icebox", &[1, 3])])
+		World::move_there(port, 2, "selected");
+		bare(&[("", &[1]), ("icebox", &[2, 3])])
 	});
 	assert!(out.status.success(), "{}", out.stderr);
 	assert!(out.stderr.contains("stays where the home has it"), "{}", out.stderr);
-	assert_eq!(w.held(), ["app#1 in_progress", "app#2 in_progress", "app#3 icebox", "app#4 triage"]);
+	assert_eq!(w.held(), ["app#1 selected", "app#2 selected", "app#3 icebox", "app#4 triage"]);
 	insta::assert_snapshot!(lines(&w.stored()), @"
-	# in_progress
-
-	- app/issues/2
 	- app/issues/1
+	- app/issues/2
 
 	# icebox
 
@@ -333,21 +331,23 @@ fn a_move_of_a_card_that_left_is_refused_and_the_rest_lands() {
 fn an_offline_edit_is_replayed_by_the_next_online_one() {
 	let w = world();
 	assert!(w.edit(&[], |_| {}).status.success());
-	let out = w.rewrite(&["--offline"], |_| bare(&[("icebox", &[1]), ("in_progress", &[2]), ("triage", &[3])]));
+	let out = w.rewrite(&["--offline"], |_| bare(&[("", &[1]), ("icebox", &[2]), ("triage", &[3])]));
 	assert!(out.status.success(), "{}", out.stderr);
-	assert_eq!(w.held()[0], "app#1 selected", "nothing left yet");
+	assert_eq!(w.held()[1], "app#2 in_progress", "nothing left yet");
 	assert!(w.stored().contains("# icebox"), "{}", w.stored());
 
-	World::move_there(w.port, 2, "selected");
+	World::move_there(w.port, 1, "in_progress");
 	let out = w.edit(&[], |_| {});
 	assert!(out.status.success(), "{}", out.stderr);
-	assert_eq!(w.held(), ["app#1 icebox", "app#2 selected", "app#3 triage", "app#4 triage"]);
+	assert_eq!(w.held(), ["app#1 in_progress", "app#2 icebox", "app#3 triage", "app#4 triage"]);
 	insta::assert_snapshot!(lines(&w.stored()), @"
-	- app/issues/2
+	# in_progress
+
+	- app/issues/1
 
 	# icebox
 
-	- app/issues/1
+	- app/issues/2
 
 	# triage
 
@@ -427,6 +427,83 @@ fn held_elsewhere_the_sprint_opens_alone() {
 	let out = w.edit(&[], |dir| assert!(!dir.join("selected.md").exists()));
 	assert!(out.status.success(), "{}", out.stderr);
 	assert!(out.stderr.contains("already being edited by"), "{}", out.stderr);
+}
+
+#[test]
+fn what_the_day_holds_is_at_least_selected() {
+	let w = world();
+	let out = w.edit(&[], |dir| {
+		let sprint = std::fs::read_to_string(dir.join("1d.md")).unwrap();
+		std::fs::write(dir.join("1d.md"), format!("{sprint}\n\n- mock_user/app#2\n- mock_user/app#3\n- mock_user/app#4\n")).unwrap();
+	});
+	assert!(out.status.success(), "{}", out.stderr);
+	let musts = ["app#1 selected", "app#2 in_progress", "app#3 selected", "app#4 selected"];
+	assert_eq!(w.held(), musts);
+	insta::assert_snapshot!(lines(&w.stored()), @"
+	- app/issues/1
+	- app/issues/3
+	- app/issues/4
+
+	# in_progress
+
+	- app/issues/2
+	");
+
+	let out = w.rewrite(&[], |_| bare(&[("in_progress", &[2]), ("icebox", &[3])]));
+	assert!(out.status.success(), "{}", out.stderr);
+	assert_eq!(w.held(), musts);
+	assert_eq!(out.stdout.matches("stays in selected").count(), 3, "{}", out.stdout);
+}
+
+#[test]
+fn what_urgent_holds_is_at_least_selected() {
+	let w = world();
+	assert!(w.edit(&[], |_| {}).status.success());
+	let mut cmd = std::process::Command::new(get_binary_path());
+	cmd.args(["--mock", "sprints", "edit", "urgent"]);
+	cmd.env(concat!("tedi", "_MOCK_STATE"), &w.me.mock_state_path);
+	let typed = |buffer: &Path| std::fs::write(buffer, "- mock_user/app#2\n- mock_user/app#3\n- mock_user/app#4\n").unwrap();
+	let out = w.me.drive_editor_session(cmd, Some(Box::new(typed)));
+	assert!(out.status.success(), "{}", out.stderr);
+	assert_eq!(w.held(), ["app#1 selected", "app#2 in_progress", "app#3 selected", "app#4 selected"]);
+	assert!(w.stored().contains(&link(4)), "{}", w.stored());
+}
+
+#[test]
+fn a_must_somebody_else_started_stays_where_it_is() {
+	let w = world();
+	let held = json!({ "kanban": { "1": "selected", "2": "in_progress", "4": "in_progress" } });
+	std::fs::write(w.home.xdg.data_dir().join("issues/mock_user/app/.states.json"), held.to_string()).unwrap();
+	let out = w.edit(&[], |dir| {
+		let sprint = std::fs::read_to_string(dir.join("1d.md")).unwrap();
+		std::fs::write(dir.join("1d.md"), format!("{sprint}\n\n- mock_user/app#4\n")).unwrap();
+	});
+	assert!(out.status.success(), "{}", out.stderr);
+	assert_eq!(w.held()[3], "app#4 in_progress");
+	assert!(!w.stored().contains(&link(4)), "nobody's is not this owner's: {}", w.stored());
+}
+
+#[test]
+fn a_selection_reaches_whatever_is_started_by_now() {
+	let mut w = world();
+	assert!(w.edit(&[], |_| {}).status.success());
+	let select = |w: &World, args: &[&str]| {
+		let out = w.me.run(&[&["--mock", "sprints", "select"], args].concat());
+		assert!(out.status.success(), "{args:?}: {}", out.stderr);
+		(out.stdout, out.stderr)
+	};
+	World::move_there(w.port, 4, "in_progress");
+	assert!(select(&w, &["Task 4"]).0.contains("mock_user/app#4"), "picked up since, and stored nowhere here");
+
+	std::fs::write(w.me.xdg.data_dir().join("issues/urgent.md"), format!("- {}\n", link(1))).unwrap();
+	assert!(select(&w, &["Task 2"]).0.contains("mock_user/app#2"), "over urgent too");
+	assert!(select(&w, &["--top"]).0.contains("mock_user/app#1"), "urgent's own first");
+	assert!(select(&w, &["--down"]).0.contains("mock_user/app#2"));
+
+	drop(w.server.take());
+	let (out, err) = select(&w, &["Task 4"]);
+	assert!(out.contains("mock_user/app#4"), "as last fetched: {out}");
+	assert!(err.contains("as last fetched"), "{err}");
 }
 
 /// With a home, no workflow is held here: a move and a view are its answers.

@@ -22,7 +22,7 @@ mod view;
 mod workspace;
 
 use std::{
-	collections::{BTreeMap, HashMap},
+	collections::{BTreeMap, HashMap, HashSet},
 	rc::Rc,
 };
 
@@ -35,7 +35,7 @@ use futures::StreamExt as _;
 use icons::{Glyph, Icon};
 use tedi_core::{
 	IssueLink, MilestoneLink,
-	board::{Board, Card, GroupBy, Part, Scope, Shown, Slice, Target, Within},
+	board::{Board, Card, GroupBy, Holds, Part, Query, Scope, Shown, Slice, Source, Target, Within},
 	chain::Point,
 	conflict::{CommentEdit, Conflict, Edited},
 	workflow::Workflow,
@@ -65,7 +65,12 @@ extern "C" {
 
 /// How long what settles is let settle.
 const SETTLES: std::time::Duration = std::time::Duration::from_millis(800);
+/// A wait of so many ms is one.
+const NOTICED: f64 = 200.0;
 const PANEL_MIN: MinSize = MinSize::Rem { w: 16.0, h: 8.0 };
+
+/// The most a browser carries for a page that is gone.
+const CARRIED: usize = 64 * 1024;
 
 #[component]
 pub fn App() -> Element {
@@ -92,22 +97,27 @@ struct Ctx {
 	/// What every tile runs: the open workspace's. None: none is open.
 	lens: Memo<Option<Lens>>,
 	/// The server's, as last read.
-	stored: Signal<Option<Board>>,
+	stored: Signal<Board>,
 	/// Edits it may not hold yet, oldest first.
 	pending: Signal<Vec<sync::Pending>>,
 	/// Per what is set, the edits made of it that can be undone, oldest first, each against what the one before left.
 	made: Signal<HashMap<String, Vec<sync::Op>>>,
 	reading: Signal<Reading>,
 	/// What is shown: `stored` with `pending` over it.
-	board: Memo<Option<Board>>,
+	board: Memo<Board>,
 	/// Edits that came back clashing, shown on their issue until answered.
 	conflicts: Signal<HashMap<IssueLink, Conflict>>,
 	panels: Signal<Vec<DockPanel>>,
 	api: Signal<Option<PackedApi>>,
 	/// The dock as it was last arranged or kept. None: what it shows isn't the viewer's to keep.
 	seen: Signal<Option<Seen>>,
-	/// What of the first board is here.
+	/// What of the first board is in `stored`, and what has come by now.
 	loading: Signal<Loading>,
+	progress: Signal<Loading>,
+	/// What each tile on screen shows, and its name.
+	wanted: Signal<BTreeMap<u64, (String, Need)>>,
+	/// The queries the board is read in the order of.
+	order: Signal<Vec<String>>,
 	/// Why setup or the library didn't arrive: nothing renders without both.
 	failure: Signal<Option<String>>,
 	/// The dialog over the screen.
@@ -163,7 +173,7 @@ impl Ctx {
 	}
 
 	fn card(&self, link: &IssueLink) -> Option<Card> {
-		self.board.read().as_ref()?.cards.iter().find(|c| &c.link == link).cloned()
+		self.board.read().cards.iter().find(|c| &c.link == link).cloned()
 	}
 
 	/// What cards sit in, by name.
@@ -171,9 +181,16 @@ impl Ctx {
 		self.setup.read().as_ref().expect("tiles render once setup arrived").workflows.clone()
 	}
 
-	/// Whether the first board still lacks what a view of issues, or of pull requests too, shows.
-	fn awaits(&self, prs: bool) -> bool {
-		self.board.read().is_none() || prs && !self.loading.read().whole
+	/// Whether some of what it shows isn't here yet.
+	fn awaits(&self, need: &Need) -> bool {
+		need.percent(&self.loading.read(), &self.board.read()).is_some()
+	}
+
+	/// What every view shows: the open workspace's lens.
+	fn need(&self) -> Option<Need> {
+		let Lens { mut search, scope, .. } = self.lens.read().clone()?;
+		search.narrow(&scope.terms(&self.orgs()));
+		Some(Need::Query(search))
 	}
 
 	fn me(&self) -> Option<String> {
@@ -222,7 +239,7 @@ impl Ctx {
 		Some(view)
 	}
 
-	/// What the open workspace's scope leaves in; the error: nothing of it is on the board, or the board isn't here yet.
+	/// What the open workspace's scope leaves in; the error: nothing of it is on the board, as far as that is here.
 	fn within(&self) -> Result<Within, String> {
 		match &*self.lens.read() {
 			None => Ok(Within::default()),
@@ -231,20 +248,14 @@ impl Ctx {
 	}
 
 	fn left_in(&self, scope: &Slice) -> Option<Within> {
-		let (board, setup) = (self.board.read(), self.setup.read());
-		scope.within(board.as_ref()?, &setup.as_ref()?.orgs)
+		scope.within(&self.board.read(), &self.orgs())
 	}
 
 	/// The sprints of the open workspace's scope: what is planned, the shortest period first, then the bottlenecks.
 	fn sprints(&self) -> Vec<Target> {
 		let within = self.within().unwrap_or_default(); // nothing of it is on the board: shown without one
 		let board = self.board.read();
-		let mut sprints: Vec<Target> = board
-			.iter()
-			.flat_map(|b| &b.targets)
-			.filter(|t| t.sprint().is_some() && within.offers(&t.link))
-			.cloned()
-			.collect();
+		let mut sprints: Vec<Target> = board.targets.iter().filter(|t| t.sprint().is_some() && within.offers(&t.link)).cloned().collect();
 		sprints.sort_by_key(|t| (t.sprint(), t.link.repo_info().to_string()));
 		sprints
 	}
@@ -644,6 +655,20 @@ impl Ctx {
 		self.send_edit(edit).await
 	}
 
+	/// What is unsaved, handed to the browser as the page goes: it outlives the page, as no request of the page's own does.
+	fn leave(self) {
+		if self.unsaved.peek().is_empty() {
+			return;
+		}
+		let body = web_sys::js_sys::Array::of1(&leaving(&self.unsaved.peek()).into());
+		let json = web_sys::BlobPropertyBag::new();
+		json.set_type("application/json");
+		let body = web_sys::Blob::new_with_str_sequence_and_options(&body, &json).expect("a blob of one string");
+		let url = format!("{}/api/library/left", dioxus_fullstack::get_server_url());
+		let navigator = web_sys::window().expect("a browser window").navigator();
+		navigator.send_beacon_with_opt_blob(&url, Some(&body)).expect("a same-origin url");
+	}
+
 	async fn drain(self) {
 		let mut unsaved = self.unsaved;
 		while let Some(edit) = self.next_unsaved() {
@@ -794,6 +819,12 @@ impl ScopeAt {
 struct Unsaved {
 	edit: LibraryEdit,
 	sent: bool,
+}
+
+/// What a page leaves: an edit in flight with it, as the page's end may cut it off.
+fn leaving(unsaved: &[Unsaved]) -> String {
+	let edits: Vec<&LibraryEdit> = unsaved.iter().map(|u| &u.edit).collect();
+	serde_json::json!({ "edits": edits }).to_string()
 }
 
 /// `edit` sets all that `held` did.
@@ -978,7 +1009,7 @@ fn use_kept(api: Signal<Option<PackedApi>>, seen: Signal<Option<Seen>>, kept: Ca
 #[component]
 fn Shell() -> Element {
 	let ctx = use_context_provider(|| {
-		let (stored, pending) = (Signal::new(None), Signal::new(Vec::new()));
+		let (stored, pending) = (Signal::new(Board::default()), Signal::new(Vec::new()));
 		let (setup, library, unsaved) = (Signal::new(None), Signal::new(None), Signal::new(Vec::new()));
 		let (workspace, viewing) = (Signal::new(None), Signal::new(None));
 		Ctx {
@@ -999,6 +1030,9 @@ fn Shell() -> Element {
 			api: Signal::new(None),
 			seen: Signal::new(None),
 			loading: Signal::new(Loading::default()),
+			progress: Signal::new(Loading::default()),
+			wanted: Signal::new(BTreeMap::new()),
+			order: Signal::new(Vec::new()),
 			failure: Signal::new(None),
 			modal: Signal::new(None),
 			palette: Signal::new(false),
@@ -1023,7 +1057,31 @@ fn Shell() -> Element {
 		Err(e) => ctx.say("address", toast::Tone::Error, e, None),
 	});
 	route::use_address(ctx);
-	let unsent = use_memo(move || sync::unsent(&ctx.pending.read()));
+	use_hook(move || {
+		use wasm_bindgen::{JsCast as _, closure::Closure};
+		let window = web_sys::window().expect("a browser window");
+		let document = window.document().expect("a page has one");
+		let runtime = Runtime::current();
+		let gone = Closure::<dyn FnMut(web_sys::Event)>::new(move |e: web_sys::Event| {
+			let shown = !web_sys::window().expect("a browser window").document().expect("a page has one").hidden();
+			if e.type_() == "visibilitychange" && shown {
+				return;
+			}
+			ctx.leave();
+			if e.type_() == "visibilitychange" {
+				// a phone ends a hidden page without a word; one that comes back must not send what is old by then
+				runtime.in_scope(ScopeId::ROOT, || spawn_forever(ctx.flush()));
+			}
+		});
+		window
+			.add_event_listener_with_callback("pagehide", gone.as_ref().unchecked_ref())
+			.expect("a window takes listeners");
+		document
+			.add_event_listener_with_callback("visibilitychange", gone.as_ref().unchecked_ref())
+			.expect("a document takes listeners");
+		gone.forget(); // the shell never unmounts
+	});
+	let unsent = use_memo(move || sync::unsent(&ctx.pending.read()) || leaving(&ctx.unsaved.read()).len() > CARRIED);
 	use_effect(move || {
 		document::eval(match unsent() {
 			true => "window.onbeforeunload = (e) => e.preventDefault()",
@@ -1100,15 +1158,15 @@ fn Live() -> Element {
 				let (mut s, mut l) = (ctx.setup, ctx.library);
 				s.set(Some(setup));
 				l.set(Some(library));
+				gloo_timers::future::sleep(std::time::Duration::ZERO).await; // the shelves show before the tiles are drawn
 				if let Some(api) = *ctx.api.peek() {
 					ctx.arrange(api);
 				}
 			}
-			(Err(e), _) => failure.set(Some(format!("setup: {e}"))),
-			(_, Err(e)) => failure.set(Some(format!("your library: {e}"))),
+			(Err(e), _) => return failure.set(Some(format!("setup: {e}"))),
+			(_, Err(e)) => return failure.set(Some(format!("your library: {e}"))),
 		}
-	});
-	use_future(move || async move {
+		gloo_timers::future::sleep(std::time::Duration::ZERO).await; // the tiles say what they show as they mount
 		loop {
 			match api::changes().await {
 				Ok(mut ticks) => {
@@ -1146,12 +1204,14 @@ async fn reload(ctx: Ctx) {
 	loop {
 		reading.set(Reading::Once);
 		let held = sync::landed(&pending.peek());
-		let first = !loading.peek().whole;
+		let first = !loading.peek().whole();
 		match read(ctx, first).await {
-			Ok(board) => {
-				stored.set(Some(board));
+			Ok((board, loaded)) => {
+				stored.set(board);
 				if first {
-					loading.write().whole = true;
+					let mut progress = ctx.progress;
+					progress.set(loaded.clone());
+					loading.set(loaded);
 				}
 				pending.write().retain(|p| !held.contains(&p.id));
 			}
@@ -1164,22 +1224,38 @@ async fn reload(ctx: Ctx) {
 	}
 }
 
-/// What of the first board is here, in bytes of the store it is read from.
+/// What of the first board is on this page, in bytes of the store it is read from.
 #[derive(Clone, Debug, Default, PartialEq)]
 struct Loading {
-	issues: Share,
-	prs: Share,
-	whole: bool,
+	sources: BTreeMap<Source, Share>,
+	ranked: bool,
 	failed: Option<String>,
 }
 impl Loading {
-	/// Of what a view of issues, or of pull requests too, shows.
-	fn percent(&self, prs: bool) -> u64 {
-		let (loaded, of) = match prs {
-			true => (self.issues.loaded + self.prs.loaded, self.issues.of + self.prs.of),
-			false => (self.issues.loaded, self.issues.of),
-		};
-		(100 * loaded).checked_div(of).unwrap_or(0).min(99) // nothing sized yet; 100 is the view
+	fn whole(&self) -> bool {
+		self.ranked && self.sources.values().all(|s| s.loaded == s.of)
+	}
+
+	/// Of the sources `needed`: how much is here, or `None` once all is.
+	fn percent(&self, needed: impl Fn(&Source) -> bool) -> Option<u64> {
+		let (mut loaded, mut of, mut ranked) = (0, 0, true);
+		for (source, share) in self.sources.iter().filter(|(s, _)| needed(s)) {
+			loaded += share.loaded;
+			of += share.of;
+			ranked &= self.ranked || source.holds != Holds::OpenIssues;
+		}
+		match self.sources.is_empty() || loaded < of || !ranked {
+			true => Some((100 * loaded).checked_div(of).unwrap_or(0).min(99)), // nothing sized yet; 100 is the view
+			false => None,
+		}
+	}
+
+	fn add(&mut self, part: &Part) {
+		match part {
+			Part::Head { sizes, .. } => self.sources = sizes.iter().map(|(s, of)| (s.clone(), Share { loaded: 0, of: *of })).collect(),
+			Part::Read { source, bytes, .. } => self.sources.get_mut(source).expect("the head sized every source").loaded += bytes,
+			Part::Ranks(_) => self.ranked = true,
+		}
 	}
 }
 
@@ -1189,43 +1265,120 @@ struct Share {
 	of: u64,
 }
 
-/// The server's board. The `first` read shows the issues once they are whole, and lets the page draw as it goes.
-async fn read(ctx: Ctx, first: bool) -> Result<Board, String> {
-	let (mut stored, mut loading) = (ctx.stored, ctx.loading);
+/// What a tile shows.
+#[derive(Clone, Debug, PartialEq)]
+enum Need {
+	Query(Query),
+	Cards(Vec<IssueLink>),
+}
+impl Need {
+	fn covers(&self, source: &Source) -> bool {
+		match self {
+			Need::Query(q) => q.needs(source),
+			Need::Cards(links) => links.iter().any(|l| l.project().to_string() == source.repo),
+		}
+	}
+
+	/// How much of it is in `board`, of which `loaded` is; `None` once all of it.
+	fn percent(&self, loaded: &Loading, board: &Board) -> Option<u64> {
+		match self {
+			Need::Query(_) => loaded.percent(|s| self.covers(s)),
+			Need::Cards(links) => {
+				let missing = links.iter().filter(|l| !board.cards.iter().any(|c| c.link == **l)).count();
+				let of = links.len();
+				(missing > 0 && loaded.percent(|s| self.covers(s)).is_some()).then(|| (100 * (of - missing)).div_euclid(of) as u64)
+			}
+		}
+	}
+}
+
+/// The server's board, what the screen shows before the rest. The `first` read shows it as it comes: each tile's as
+/// soon as it is all here, the rest as often as showing it takes little of the time.
+async fn read(ctx: Ctx, first: bool) -> Result<(Board, Loading), String> {
+	let (mut stored, mut loading, mut progress, mut order) = (ctx.stored, ctx.loading, ctx.progress, ctx.order);
 	let window = web_sys::window().expect("runs in a browser");
 	let performance = window.performance().expect("a browser's window has one");
 	let document = window.document().expect("a page has one");
-	let mut chunks = api::board().await.map_err(|e| e.to_string())?;
-	let (mut board, mut now, mut issues) = (Board::default(), Loading::default(), true);
+	if first {
+		let wanted = ctx.wanted.peek();
+		let on_screen = wanted.values().flat_map(|(_, need)| match need {
+			Need::Query(q) => vec![q.to_string()],
+			Need::Cards(links) => links.iter().map(|l| format!("repo:{}", l.project())).collect(),
+		});
+		order.set(on_screen.collect());
+	}
+	let mut chunks = api::board(order.peek().clone()).await.map_err(|e| e.to_string())?; // the same on each read: so is the cards' order
+	let (mut board, mut loaded) = (Board::default(), Loading::default());
 	let mut pending = Vec::new(); // a line not all here yet
-	let mut drawn = performance.now();
+	let began = performance.now();
+	let (mut drawn, mut next) = (began, began + 200.0);
+	let (mut at, mut done) = (HashMap::<u64, u64>::new(), HashSet::new());
 	while let Some(chunk) = chunks.next().await {
 		pending.extend_from_slice(&chunk.map_err(|e| e.to_string())?);
 		let end = pending.iter().rposition(|b| *b == b'\n').map_or(0, |at| at + 1); // no line ended in it
 		for line in pending.drain(..end).collect::<Vec<u8>>().split_inclusive(|b| *b == b'\n') {
 			let part: Part = serde_json::from_slice(line).map_err(|e| e.to_string())?;
-			match &part {
-				Part::Sizes { issues, prs } => (now.issues.of, now.prs.of) = (*issues, *prs),
-				Part::Read { bytes, .. } if issues => now.issues.loaded += bytes,
-				Part::Read { bytes, .. } => now.prs.loaded += bytes,
-				Part::Rest { whole: true, .. } => now.whole = true,
-				Part::Rest { whole: false, .. } => issues = false,
-			}
-			let shows = matches!(part, Part::Rest { whole: false, .. });
+			loaded.add(&part);
+			let came: Vec<IssueLink> = match &part {
+				Part::Read { cards, .. } => cards.iter().map(|c| c.link.clone()).collect(),
+				Part::Head { .. } | Part::Ranks(_) => Vec::new(),
+			};
 			board.extend([part]);
-			if first {
-				if shows {
-					stored.set(Some(board.clone()));
+			if !first {
+				continue;
+			}
+			let mut ready = Vec::new();
+			for (id, (what, need)) in ctx.wanted.peek().iter() {
+				let touched = match need {
+					Need::Query(_) => true,
+					Need::Cards(links) => links.iter().any(|l| came.contains(l)),
+				};
+				if !touched || done.contains(id) {
+					continue;
 				}
-				loading.set(Loading { whole: false, ..now.clone() });
-				if performance.now() - drawn > 16.0 && !document.hidden() {
-					gloo_timers::future::sleep(std::time::Duration::ZERO).await; // a hidden page's timers are slowed, and nothing is drawn
-					drawn = performance.now();
+				match need.percent(&loaded, &board) {
+					Some(percent) => _ = at.insert(*id, percent),
+					None => {
+						done.insert(*id);
+						let counted = matches!(need, Need::Cards(_)); // a card is a step of its own, however few they are
+						ready.extend(at.remove(id).map(|percent| (what.clone(), percent, counted)));
+					}
+				}
+			}
+			let now = performance.now();
+			if !ready.is_empty() || now > next {
+				stored.set(board.clone());
+				loading.set(loaded.clone());
+				progress.set(loaded.clone());
+			} else if now - drawn > 16.0 {
+				progress.set(loaded.clone());
+			} else {
+				continue;
+			}
+			if document.hidden() {
+				continue; // its timers are slowed, and nothing is drawn
+			}
+			gloo_timers::future::sleep(std::time::Duration::ZERO).await;
+			drawn = performance.now();
+			if !ready.is_empty() || now > next {
+				next = drawn + 4.0 * (drawn - now);
+			}
+			for (what, percent, counted) in ready {
+				let late = (100.0 * (drawn - now) / (drawn - began)) as u64;
+				let early = 99 - percent > 5 && !counted;
+				if drawn - began > NOTICED && early || drawn - now > NOTICED && late > 5 {
+					spawn_forever(async move { _ = api::off(what, percent, late).await }); // a report that doesn't reach the server changes nothing here
 				}
 			}
 		}
+		if first {
+			progress.set(loaded.clone()); // the next may be long in coming
+		}
 	}
-	now.whole.then_some(board).ok_or_else(|| "it was cut short".to_string())
+	match loaded.whole() {
+		true => Ok((board, loaded)),
+		false => Err("it was cut short".to_string()),
+	}
 }
 
 /// Buttons a tile's header adds beside tilers' own (Figma: TileBar): split the shown panel off, maximize.
@@ -1299,7 +1452,7 @@ fn Modals() -> Element {
 				},
 				Some(Modal::Unreadable) => {
 					let board = ctx.board.read();
-					let files = board.as_ref().map(|b| b.unreadable.clone()).expect("offered from the board's");
+					let files = board.unreadable.clone();
 					rsx! {
 						Dialog { open: true, on_open_change: close,
 							DialogContent { class: "max-h-[80vh] overflow-y-auto sm:max-w-4xl",
