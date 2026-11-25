@@ -173,7 +173,8 @@ selected.md  (opens beside a planning sprint: what you have picked up, off the h
 ```
 
 - A sprint holds milestones and issues. Never blockers. Only a Bottlenecks sprint can be
-  held, and only by a sprint. Picking something up is `selected.md`'s, not the sprint's.
+  held, and only by a sprint. Picking something up is `selected.md`'s, not the sprint's; what
+  `1d` or urgent holds is picked up by itself.
 - A milestone holds issues and prose, and may carry a deadline. No priority order inside —
   everything in it is required. Not being in any milestone does not stop an issue from
   entering a sprint.

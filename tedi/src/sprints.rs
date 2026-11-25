@@ -154,11 +154,25 @@ pub async fn sprints_command(settings: &LiveSettings, args: SprintsArgs, mode: S
 			println!("{}", ops::expand_and_refresh(view, false).await?.text);
 			Ok(())
 		}
-		SprintsCommands::Edit { sprint: SprintRef::Urgent } => tabs::edit_urgent(mode).await,
+		SprintsCommands::Edit { sprint: SprintRef::Urgent } => {
+			let picking = picking(settings)?;
+			let picked = match &picking {
+				Some(picking) => Some((picking, milestone_repo(settings)?)),
+				None => None,
+			};
+			Box::pin(tabs::edit_urgent(picked, mode)).await
+		}
 		SprintsCommands::Edit {
 			sprint: SprintRef::Milestone(sprint),
 		} => {
-			let link = tabs::edit_sprint(milestone_repo(settings)?, sprint, picking(settings)?.as_ref(), mode, tedi_eval::same_day_buffer()).await?;
+			let link = Box::pin(tabs::edit_sprint(
+				milestone_repo(settings)?,
+				sprint,
+				picking(settings)?.as_ref(),
+				mode,
+				tedi_eval::same_day_buffer(),
+			))
+			.await?; // on the stack, it overflows the main thread's unoptimized
 			if sprint == blocker_sprint(settings)? {
 				Selected::focus(link)?;
 			}
@@ -196,6 +210,14 @@ pub async fn sprints_command(settings: &LiveSettings, args: SprintsArgs, mode: S
 				ops::selected_show(yes()).await
 			} else {
 				ensure_selection(settings, mode).await?;
+				if mode != SyncMode::Offline
+					&& !next && !prev
+					&& !up && !down && !enter
+					&& !out && !top && let Some(picking) = picking(settings)?
+					&& let Err(e) = Box::pin(picking.refresh(milestone_repo(settings)?)).await
+				{
+					eprintln!("warning: selected.md is as last fetched: {e:#}");
+				}
 				ops::select(pattern, SearchKind::try_from(search)?, next, prev, up, down, enter, out, top, yes()).await
 			}
 		}

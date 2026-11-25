@@ -118,7 +118,7 @@ impl Selected {
 				return Some(ActiveSprint {
 					key: URGENT_KEY.to_string(),
 					view,
-					repo: None,
+					repo: self.sprint.as_ref().map(MilestoneLink::repo_info),
 				});
 			}
 		}
@@ -546,7 +546,7 @@ impl Selected {
 pub struct ActiveSprint {
 	pub key: String,
 	pub view: TaskView,
-	/// Whose sprint it is; urgent is nobody's.
+	/// Beside whose sprints what is picked up is listed: urgent's are the last focused's.
 	repo: Option<RepoInfo>,
 }
 impl ActiveSprint {

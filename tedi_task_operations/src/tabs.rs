@@ -107,8 +107,8 @@ pub async fn edit_sprint(repo: RepoInfo, sprint: Sprint, picking: Option<&Pickin
 }
 
 /// Edit the local urgent list (creating it if absent): the same cycle, stored at `urgent_path()` — no
-/// GitHub milestone involved.
-pub async fn edit_urgent(mode: SyncMode) -> Result<()> {
+/// GitHub milestone involved. `picked`: where what it holds is picked up, beside which repo's sprints.
+pub async fn edit_urgent(picked: Option<(&Picking, RepoInfo)>, mode: SyncMode) -> Result<()> {
 	let _lock = lock_sprint(URGENT_KEY)?;
 
 	let path = urgent_path();
@@ -160,6 +160,12 @@ pub async fn edit_urgent(mode: SyncMode) -> Result<()> {
 	std::fs::create_dir_all(path.parent().expect("urgent_path is always nested under data dir"))?;
 	std::fs::write(&path, stored)?;
 	println!("Updated urgent sprint");
+	if mode != SyncMode::Offline
+		&& let Some((picking, repo)) = picked
+		&& let Err(e) = picking.refresh(repo).await
+	{
+		eprintln!("warning: what urgent holds is not picked up (the next online edit retries): {e:#}");
+	}
 	Ok(())
 }
 
