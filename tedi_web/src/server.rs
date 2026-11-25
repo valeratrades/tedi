@@ -118,7 +118,10 @@ pub async fn serve(config: Settings) -> Result<()> {
 	}
 	let listener = tokio::net::TcpListener::bind(addr).await?;
 	tracing::info!("serving the board on {addr}");
-	tokio::try_join!(async { Ok(axum::serve(listener, router).await?) }, puller(announced))?;
+	let mut serving = tokio::task::JoinSet::new(); // a pull's git processes hold up whatever shares its task
+	serving.spawn(axum::serve(listener, router).into_future());
+	let served = async { Ok(serving.join_next().await.expect("spawned above")??) };
+	tokio::try_join!(served, puller(announced))?;
 	Ok(())
 }
 
