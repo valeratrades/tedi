@@ -20,8 +20,8 @@ use crate::{
 	github::GithubError,
 	local::{Consensus, FsReader, Local, LocalFs},
 	open_interactions::{
-		BodyWrite, MergeMode, MilestoneModifier, Modifier, Pull, SyncMode, SyncOptions, fetch_and_store_missing, modify_and_sync_issue, modify_and_sync_milestone, pull_issues, pull_milestone,
-		unsynced,
+		BodyWrite, MergeMode, MilestoneModifier, Modifier, Pull, SyncMode, SyncOptions, fetch_and_store_missing, modify_and_sync_issue, modify_and_sync_milestone, pull_issues,
+		pull_milestone, unsynced,
 	},
 	remote::Remote,
 	selection::{Landing, Selected, URGENT_KEY},
@@ -117,35 +117,6 @@ pub async fn fetch_sprint(repo: RepoInfo, sprint: Sprint, mode: SyncMode) -> Res
 		SyncMode::Offline => Ok(Local::load_milestone(&link, &FsReader)?.expect("listed in its project's meta")),
 		SyncMode::Full | SyncMode::OnExit => pull_milestone(&link, MergeMode::Normal).await,
 	}
-}
-
-/// `sprint` of whoever owns `repo`, as GitHub lists it; Offline, as stored.
-pub(crate) async fn find_sprint(repo: RepoInfo, sprint: Sprint, mode: SyncMode) -> Result<MilestoneLink> {
-	let home = sprint.home(repo);
-	if mode == SyncMode::Offline {
-		return Ok(Local::stored_sprint(repo, sprint).ok_or(NoSprint::Stored { sprint, home })?);
-	}
-	let listed = match crate::github::client::get()?.list_milestones(home).await {
-		Err(GithubError::Api { status, .. }) if status.as_u16() == 404 && home != repo => Vec::new(), // no such repo
-		listed => listed?,
-	};
-	match listed.iter().find(|m| m.title == sprint.to_string()) {
-		Some(m) => Ok(MilestoneLink::in_project(home, m.number)),
-		None => Err(NoSprint::Listed {
-			sprint,
-			home,
-			titles: listed.into_iter().map(|m| m.title).collect(),
-		}
-		.into()),
-	}
-}
-
-#[derive(Debug, thiserror::Error)]
-pub(crate) enum NoSprint {
-	#[error("no milestone '{sprint}' in {home}. It has: {titles:?}")]
-	Listed { sprint: Sprint, home: RepoInfo, titles: Vec<String> },
-	#[error("'{sprint}' of {home} was never fetched while online")]
-	Stored { sprint: Sprint, home: RepoInfo },
 }
 
 /// Materialize every item of an edited task view: linked refs not stored locally are fetched,
@@ -249,6 +220,7 @@ pub async fn sync_milestone_changes(expanded: &Expanded, edited: &TaskView, mode
 	}
 	Ok(())
 }
+
 /// Fold every issue block edited inside buffers opened together back into its own issue, in full —
 /// a task view stores only links, so anything not carried here has no second home.
 ///
@@ -549,6 +521,34 @@ pub async fn pull_stored(links: &[IssueLink]) -> Result<()> {
 		}
 	}
 	pull_issues(&mut issues, MergeMode::Normal).await
+}
+/// `sprint` of whoever owns `repo`, as GitHub lists it; Offline, as stored.
+pub(crate) async fn find_sprint(repo: RepoInfo, sprint: Sprint, mode: SyncMode) -> Result<MilestoneLink> {
+	let home = sprint.home(repo);
+	if mode == SyncMode::Offline {
+		return Ok(Local::stored_sprint(repo, sprint).ok_or(NoSprint::Stored { sprint, home })?);
+	}
+	let listed = match crate::github::client::get()?.list_milestones(home).await {
+		Err(GithubError::Api { status, .. }) if status.as_u16() == 404 && home != repo => Vec::new(), // no such repo
+		listed => listed?,
+	};
+	match listed.iter().find(|m| m.title == sprint.to_string()) {
+		Some(m) => Ok(MilestoneLink::in_project(home, m.number)),
+		None => Err(NoSprint::Listed {
+			sprint,
+			home,
+			titles: listed.into_iter().map(|m| m.title).collect(),
+		}
+		.into()),
+	}
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum NoSprint {
+	#[error("no milestone '{sprint}' in {home}. It has: {titles:?}")]
+	Listed { sprint: Sprint, home: RepoInfo, titles: Vec<String> },
+	#[error("'{sprint}' of {home} was never fetched while online")]
+	Stored { sprint: Sprint, home: RepoInfo },
 }
 
 /// Descendants that are blocks of the same buffer take their state from there, not from disk.

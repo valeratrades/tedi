@@ -332,7 +332,7 @@ fn Columns(view: View, groups: Groups, edit: Callback<ViewPart>, onlay: Callback
 		}
 	};
 	let mut show = move |a: PackedApi, layout: &str| -> bool {
-		ctx.load(a, layout, "column layout", |grid| {
+		ctx.load(a, layout, |grid| {
 			let kept: Vec<PanelId> = grid.cells.iter().flat_map(|c| c.group.tabs.iter()).cloned().collect();
 			for id in kept {
 				let key = id.0.strip_prefix("col:").expect("a column dock hosts only columns");

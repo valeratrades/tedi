@@ -760,7 +760,7 @@ impl Ctx {
 	/// `layout` on the dock, its panels hosted first, cut to the rows this window shows: a row is a fixed height,
 	/// so a layout kept on a taller window would scroll here.
 	fn show(self, api: PackedApi, layout: &str) -> bool {
-		self.load(api, layout, "layout", |grid| {
+		self.load(api, layout, |grid| {
 			without_floating_issues(grid);
 			for id in grid.cells.iter().flat_map(|c| c.group.tabs.iter()) {
 				self.host(id);
@@ -769,8 +769,8 @@ impl Ctx {
 		})
 	}
 
-	/// `layout`, as `fit` leaves it, on `api`'s dock; whether it loads is said if it doesn't.
-	fn load(self, mut api: PackedApi, layout: &str, what: &str, fit: impl FnOnce(&mut PackedGrid)) -> bool {
+	/// `layout`, as `fit` leaves it, on `api`'s dock; said so when it doesn't load.
+	fn load(self, mut api: PackedApi, layout: &str, fit: impl FnOnce(&mut PackedGrid)) -> bool {
 		match serial::load(layout) {
 			Ok(mut grid) => {
 				fit(&mut grid);
@@ -779,9 +779,9 @@ impl Ctx {
 			}
 			Err(e) => {
 				self.say(
-					what,
+					"layout",
 					toast::Tone::Error,
-					format!("the kept {what} doesn't load ({e:?}); nothing kept is overwritten until another is shown"),
+					format!("the kept layout doesn't load ({e:?}); nothing kept is overwritten until another is shown"),
 					None,
 				);
 				false

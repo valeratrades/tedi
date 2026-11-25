@@ -329,7 +329,7 @@ fn Leaves(at: Point, leaves: Vec<IssueLink>) -> Element {
 					on_band: Some(Callback::new(move |a: PackedApi| {
 						seen.set(None);
 						placed.set(Vec::new());
-						let loads = kept.call(a.band()).is_none_or(|layout| ctx.load(a, &layout, "node layout", |grid| {
+						let loads = kept.call(a.band()).is_none_or(|layout| ctx.load(a, &layout, |grid| {
 							for id in grid.cells.iter().flat_map(|c| c.group.tabs.iter()) {
 								host(id);
 							}
