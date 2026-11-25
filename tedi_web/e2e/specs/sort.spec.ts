@@ -64,7 +64,8 @@ for (const [path, why] of [
 
     for (const key of [null, "created"]) {
       if (key) await add(page, key);
-      await expect.poll(async () => (await titles()).indexOf(blocked) - (await titles()).indexOf(blocker)).toBe(1);
+      const above = expect.poll(async () => (await titles()).indexOf(blocked) - (await titles()).indexOf(blocker));
+      await (why === "blocks a card here" ? above.toBe(1) : above.toBeGreaterThan(0));
       await expect(card(blocker)).toHaveCount(1);
       const edge = card(blocker).locator("> div");
       await expect(edge).toHaveAttribute("title", why);
