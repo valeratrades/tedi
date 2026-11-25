@@ -138,7 +138,11 @@ impl GitReader {
 
 	/// Check if git is initialized in the issues directory.
 	fn check_git_initialized(data_dir: &Path) -> Result<(), ReaderError> {
-		use std::process::Command;
+		use std::{process::Command, sync::OnceLock};
+		static INITIALIZED: OnceLock<()> = OnceLock::new(); // it doesn't cease to be, and each reading asks
+		if INITIALIZED.get().is_some() {
+			return Ok(());
+		}
 		let data_dir_str = data_dir.to_str().ok_or_else(|| ReaderError::other("issues dir path not valid UTF-8".to_string()))?;
 		let git_check = Command::new("git")
 			.args(["-C", data_dir_str, "rev-parse", "--git-dir"])
@@ -147,6 +151,7 @@ impl GitReader {
 		if !git_check.status.success() {
 			return Err(ReaderError::git_not_initialized());
 		}
+		INITIALIZED.get_or_init(|| ());
 		Ok(())
 	}
 }

@@ -70,6 +70,30 @@ pub(crate) fn serve(ctx: &TestContext, config: &str, args: &[&str]) -> (Server, 
 }
 
 #[test]
+fn the_board_answers_while_it_pulls() {
+	let ctx = TestContext::build();
+	let children: String = (2..=20)
+		.map(|n| format!("\n  - [ ] Task {n} <!-- @mock_user https://github.com/o/r/issues/{n} -->\n    body\n"))
+		.collect();
+	let tree = crate::common::parse_virtual(&format!("- [ ] Root <!-- @mock_user https://github.com/o/r/issues/1 -->\n  body\n{children}"));
+	ctx.remote_in(("o", "r").into(), &tree, Some(crate::common::Seed::new(0)));
+
+	let (_server, port) = serve(&ctx, "watch = [\"o\"]\n\n[board]\nviews = []\n", &[]);
+	assert_eq!(call(port, "POST", "/api/refresh", None, Some(serde_json::json!({}))).0, 200);
+	let since = Instant::now();
+	let cursor = ctx.xdg.data_dir().join("issues/o/r/.meta.json");
+	let pulled = || std::fs::read_to_string(&cursor).is_ok_and(|m| m.contains("\"pulled_at\": \""));
+	while !pulled() {
+		let asked = Instant::now();
+		assert_eq!(call(port, "GET", "/api/setup", None, None).0, 200);
+		assert!(asked.elapsed() < Duration::from_secs(2), "answered after {:?}", asked.elapsed());
+		assert!(since.elapsed() < Duration::from_secs(20), "the pull takes too long");
+		std::thread::sleep(Duration::from_millis(20));
+	}
+	assert!(ctx.xdg.data_dir().join("issues/o/r/1_-_Root/20_-_Task_20.md").exists());
+}
+
+#[test]
 fn a_delivery_for_a_repo_outside_watch_is_not_pulled() {
 	let ctx = TestContext::build();
 	let (server, port) = serve(&ctx, &format!("watch = [\"o\"]\ngithub_webhook_secret = \"{SECRET}\"\n\n[board]\nviews = []\n"), &[]);

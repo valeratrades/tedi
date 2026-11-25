@@ -779,9 +779,6 @@ mod local_path {
 		for name in &entries {
 			/// Check if an entry name matches the selector.
 			fn entry_matches_selector<R: LocalReader>(reader: &R, parent: &Path, name: &str, selector: &IssueSelector) -> Result<Option<FoundEntry>, ReaderError> {
-				let entry_path = parent.join(name);
-				let is_dir = reader.is_dir(&entry_path)?;
-
 				let matches = match selector {
 					IssueSelector::GitId(issue_number) => {
 						let prefix = format!("{issue_number}_-_");
@@ -797,10 +794,13 @@ mod local_path {
 					}
 				};
 
-				if matches {
-					return Ok(Some(if is_dir { FoundEntry::Dir(name.to_string()) } else { FoundEntry::File(name.to_string()) }));
+				if !matches {
+					return Ok(None); // what an entry is costs git a process
 				}
-				Ok(None)
+				Ok(Some(match reader.is_dir(&parent.join(name))? {
+					true => FoundEntry::Dir(name.to_string()),
+					false => FoundEntry::File(name.to_string()),
+				}))
 			}
 			if let Some(entry) = entry_matches_selector(reader, parent, name, selector)? {
 				results.push(entry);
