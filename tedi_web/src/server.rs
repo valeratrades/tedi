@@ -25,7 +25,8 @@ use dioxus_fullstack::ServerEvents;
 use futures::{Stream, StreamExt as _};
 use tedi_core::{
 	IssueLink, MilestoneLink, RepoInfo,
-	board::{Answer, Board, GroupBy, Hit, Holds, Listing, Part, Query, Scope, Source as Held, Thread, scope_at},
+	board::{Answer, Board, GroupBy, Hit, Holds, Listing, Part, Query, Scope, Source as Held, Thread, Within, scope_at},
+	chain::Orgs,
 	conflict::{CommentEdit, Conflict, Edited, FieldEdit},
 	workflow::State,
 };
@@ -53,6 +54,7 @@ pub struct Settings {
 	pub mode: SyncMode,
 	pub workflows: Workflows,
 	pub views: Vec<View>,
+	pub orgs: Orgs,
 	pub scopes: BTreeMap<String, Scope>,
 	pub columns: BTreeMap<String, crate::api::Columns>,
 	pub workspaces: BTreeMap<String, Workspace>,
@@ -149,6 +151,7 @@ pub async fn setup(headers: &HeaderMap) -> Result<Setup> {
 		accounts: matches!(s.viewer, Viewer::Header(_)),
 		workflows: s.workflows.trees.clone(),
 		views: s.views.clone(),
+		orgs: s.orgs.clone(),
 		scopes: s.scopes.clone(),
 		columns: s.columns.clone(),
 		workspaces: s.workspaces.clone(),
@@ -179,7 +182,7 @@ pub async fn query(headers: &HeaderMap, asked: String) -> Result<Answer> {
 	let caller = Caller::of(headers)?;
 	let login = caller.act(async { client::login() }).await;
 	let board = whole(caller.reach).await?;
-	let hits = asked.parse::<Query>()?.run(&board.cards, login.as_deref())?;
+	let hits = asked.parse::<Query>()?.run(&Within::default(), &board.cards, login.as_deref())?;
 	Ok(Answer {
 		trees: settings().workflows.trees.clone(),
 		hits: hits
@@ -1122,6 +1125,12 @@ fn rename_scope(library: &mut Library, from: &str, to: &str) -> Result<()> {
 	if within(to, from).is_some() {
 		bail!("{from} can't move inside itself");
 	}
+	move_scopes(library, from, to);
+	Ok(())
+}
+
+//#[codestyle::skip(swappable-args)]
+fn move_scopes(library: &mut Library, from: &str, to: &str) {
 	let moved = |path: &str| within(path, from).map(|rest| format!("{to}{rest}"));
 	library.scopes = std::mem::take(&mut library.scopes).into_iter().map(|(p, s)| (moved(&p).unwrap_or(p), s)).collect(); // only those under `from` move
 	library.favorites = std::mem::take(&mut library.favorites)
@@ -1138,7 +1147,6 @@ fn rename_scope(library: &mut Library, from: &str, to: &str) -> Result<()> {
 			f.item = Item::Scope(to);
 		}
 	}
-	Ok(())
 }
 
 /// `name`, the workspace last selected.

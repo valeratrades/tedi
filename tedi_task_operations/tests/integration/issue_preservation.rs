@@ -322,11 +322,9 @@ async fn test_markerless_item_appended_after_children_reports_its_own_line() {
 	std::fs::write(&vpath, format!("{content}  - [ ] https://github.com/o/r2/milestone/2\n")).unwrap();
 
 	let out = paused.resume();
-	assert!(out.status.success(), "stdout: {}\nstderr: {}", out.stdout, out.stderr);
-	assert!(
-		std::fs::read_to_string(&vpath).unwrap().contains("https://github.com/o/r2/milestone/2"),
-		"the milestone reference should remain issue body content"
-	);
+	assert!(!out.status.success(), "stdout: {}\nstderr: {}", out.stdout, out.stderr);
+	assert!(out.stderr.contains("https://github.com/o/r2/milestone/2"), "stderr: {}", out.stderr);
+	assert_eq!(std::fs::read_to_string(&vpath).unwrap(), content);
 }
 
 /// A rejected edit must leave the issue file as it was before the editor opened — otherwise the

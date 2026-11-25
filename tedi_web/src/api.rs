@@ -8,7 +8,8 @@ use dioxus_fullstack::{HeaderMap, HeaderValue, http::header::CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
 use tedi_core::{
 	IssueLink, MilestoneLink,
-	board::{Answer, GroupBy, Listing, Order, Query, Scope, Shown, Sort, SortKey, Terms, Thread},
+	board::{Answer, GroupBy, Listing, Order, Query, Scope, Shown, Slice, Sort, SortKey, Thread},
+	chain::Orgs,
 	conflict::{CommentEdit, Edited, FieldEdit},
 	workflow::{State, Trees},
 };
@@ -29,6 +30,7 @@ pub struct Setup {
 	pub accounts: bool,
 	/// What a card sits in, by name: their buckets are a state grouping's columns.
 	pub workflows: Trees,
+	pub orgs: Orgs,
 	pub scopes: BTreeMap<String, Scope>,
 	pub views: Vec<View>,
 	/// The team's columns, offered beside each viewer's own.
@@ -85,14 +87,14 @@ pub struct Columns {
 /// Which cards every tile of a workspace shows, and in what order.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct Lens {
-	pub scope: Terms,
+	pub scope: Slice,
 	pub search: Query,
 	pub sort: Order,
 }
 impl Default for Lens {
 	fn default() -> Self {
 		Self {
-			scope: Terms::default(),
+			scope: Slice::default(),
 			search: Query::default(),
 			sort: vec![Sort { by: SortKey::Rank, reversed: false }].into(), // the query's own order
 		}
@@ -528,7 +530,7 @@ pub fn diff(from: &Construction, to: &Construction) -> Vec<Change> {
 		sets("hidden: ", &from.hidden, &to.hidden, push);
 		arrangements(&from.arrangement, &to.arrangement, push);
 	}
-	fn clauses(query: &Query) -> Vec<String> {
+	fn clauses(query: &impl ToString) -> Vec<String> {
 		query.to_string().split_whitespace().map(str::to_string).collect()
 	}
 	match (from, to) {
@@ -579,7 +581,7 @@ pub fn diff(from: &Construction, to: &Construction) -> Vec<Change> {
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub enum WorkspacePart {
 	Tiles { band: Band, layout: String },
-	Scope(Terms),
+	Scope(Slice),
 	Search(Query),
 	Sort(Order),
 }

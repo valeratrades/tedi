@@ -9,6 +9,7 @@ use ev_lib::uikit_dioxus::{Popover, PopoverContent, PopoverTrigger, Spinner, Tex
 use tedi_core::{
 	CloseState, IssueLink, PrState, Review, Sprint,
 	board::{Card, Said, Shown, Target},
+	chain::Point,
 	conflict::{CommentEdit, Conflict, Field as EditedField, FieldEdit, list, sides},
 	labels::{Color, Scheme},
 };
@@ -42,6 +43,7 @@ fn Opened(link: IssueLink) -> Element {
 					a { class: "truncate text-mono-s text-ink-soft hover:underline", href: "{link}", target: "_blank", "{link.project()}" }
 					Number { link: link.clone() }
 					div { class: "flex-1" }
+					IconBtn { glyph: Glyph::Scope, title: "Scope to it", onclick: { let link = link.clone(); move |_| ctx.scope_to(Point::Issue(link.clone())) } }
 					IconBtn { glyph: Glyph::Link, title: "Copy its link", onclick: { let link = link.clone(); move |_| copy(ctx, link.to_string()) } }
 				}
 				if card.pr.is_none() {
@@ -508,11 +510,12 @@ fn Milestones(card: Card) -> Element {
 	let ctx = use_context::<Ctx>();
 	let home = card.link.project();
 	let board = ctx.board.read();
+	let within = ctx.within().unwrap_or_default(); // nothing of its scope is on the board: the panel shows without one
 	let hosts = |t: &Target| t.hosts(&card.link);
 	let mut offered: Vec<&Target> = board
 		.targets
 		.iter()
-		.filter(|t| !matches!(t.sprint(), Some(Sprint::Planning(_))) && (ctx.in_scope(t.link.repo_info()) || hosts(t))) // what is planned is its own file's to say
+		.filter(|t| !matches!(t.sprint(), Some(Sprint::Planning(_))) && (within.offers(&t.link) || hosts(t))) // what is planned is its own file's to say
 		.collect();
 	offered.sort_by_key(|t| (t.link.repo_info() != home, t.link.repo_info().to_string(), t.due_on.is_none(), t.due_on, t.title.to_lowercase()));
 	let hosting: Vec<&Target> = offered.iter().copied().filter(|t| hosts(t)).collect();

@@ -34,8 +34,9 @@ use ev_lib::uikit_dioxus::*;
 use futures::StreamExt as _;
 use icons::{Glyph, Icon};
 use tedi_core::{
-	IssueLink, MilestoneLink, RepoInfo,
-	board::{Board, Card, GroupBy, Holds, Part, Query, Scope, Shown, Source, Target},
+	IssueLink, MilestoneLink,
+	board::{Board, Card, GroupBy, Holds, Part, Query, Scope, Shown, Slice, Source, Target, Within},
+	chain::Point,
 	conflict::{CommentEdit, Conflict, Edited},
 	workflow::Workflow,
 };
@@ -188,7 +189,7 @@ impl Ctx {
 	/// What every view shows: the open workspace's lens.
 	fn need(&self) -> Option<Need> {
 		let Lens { mut search, scope, .. } = self.lens.read().clone()?;
-		search.narrow(&scope);
+		search.narrow(&scope.terms(&self.orgs()));
 		Some(Need::Query(search))
 	}
 
@@ -238,15 +239,23 @@ impl Ctx {
 		Some(view)
 	}
 
-	/// Whether the open workspace's scope leaves `repo` in.
-	fn in_scope(&self, repo: RepoInfo) -> bool {
-		self.lens.read().as_ref().is_none_or(|l| l.scope.covers(repo))
+	/// What the open workspace's scope leaves in; the error: nothing of it is on the board, as far as that is here.
+	fn within(&self) -> Result<Within, String> {
+		match &*self.lens.read() {
+			None => Ok(Within::default()),
+			Some(Lens { scope, .. }) => self.left_in(scope).ok_or_else(|| format!("nothing of {scope} is on the board: pick another scope")),
+		}
+	}
+
+	fn left_in(&self, scope: &Slice) -> Option<Within> {
+		scope.within(&self.board.read(), &self.orgs())
 	}
 
 	/// The sprints of the open workspace's scope: what is planned, the shortest period first, then the bottlenecks.
 	fn sprints(&self) -> Vec<Target> {
+		let within = self.within().unwrap_or_default(); // nothing of it is on the board: shown without one
 		let board = self.board.read();
-		let mut sprints: Vec<Target> = board.targets.iter().filter(|t| t.sprint().is_some() && self.in_scope(t.link.repo_info())).cloned().collect();
+		let mut sprints: Vec<Target> = board.targets.iter().filter(|t| t.sprint().is_some() && within.offers(&t.link)).cloned().collect();
 		sprints.sort_by_key(|t| (t.sprint(), t.link.repo_info().to_string()));
 		sprints
 	}
@@ -339,7 +348,7 @@ impl Ctx {
 		self.say("workspace", toast::Tone::Info, "no workspace is open: pick one first", None);
 	}
 
-	/// The scope's terms copied into the open workspace.
+	/// The named scope's terms copied into the open workspace.
 	fn start_from(self, path: Option<String>) {
 		let (terms, what) = match &path {
 			None => (Default::default(), "all repos"),
@@ -348,13 +357,23 @@ impl Ctx {
 				(at.scope.filter(), path.as_str())
 			}
 		};
+		self.set_scope(Slice::Terms(terms), format!("Started from {what}"));
+	}
+
+	fn scope_to(self, point: Point) {
+		let said = format!("Scoped to {}", self.path(&point));
+		self.set_scope(Slice::Point(point), said);
+	}
+
+	/// The open workspace narrowed to `scope`, and `said` so.
+	fn set_scope(self, scope: Slice, said: String) {
 		let Some(Lens { scope: was, .. }) = self.lens_now() else {
 			return self.none_open();
 		};
-		if was == terms {
+		if was == scope {
 			return;
 		}
-		self.edit_lens(WorkspacePart::Scope(terms));
+		self.edit_lens(WorkspacePart::Scope(scope));
 		let kept = self.viewing.peek().is_none().then(|| self.open_workspace()).flatten();
 		let undo = kept.map(|workspace| {
 			let back = LibraryEdit::Workspace {
@@ -364,7 +383,7 @@ impl Ctx {
 			// what it is picked from leaves the screen before its note does
 			Runtime::current().in_scope(ScopeId::ROOT, || Callback::new(move |()| self.settle(back.clone())))
 		});
-		self.say("scope", toast::Tone::Info, format!("Started from {what}"), undo.map(|undo| ("Undo", undo)));
+		self.say("scope", toast::Tone::Info, said, undo.map(|undo| ("Undo", undo)));
 	}
 
 	/// The team's with the viewer's own in them, parents before what they hold.

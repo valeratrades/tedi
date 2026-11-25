@@ -28,6 +28,7 @@ pub mod current_user {
 
 pub mod blockers;
 pub mod board;
+pub mod chain;
 pub mod conflict;
 pub mod error;
 pub mod issue;

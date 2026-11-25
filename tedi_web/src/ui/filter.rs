@@ -3,7 +3,10 @@
 
 use dioxus::prelude::*;
 use ev_lib::uikit_dioxus::{Popover, PopoverContent, PopoverTrigger};
-use tedi_core::board::{Order, Query, Scope, Sort, SortKey, Terms};
+use tedi_core::{
+	board::{Order, Query, Scope, Slice, Sort, SortKey, Terms},
+	chain::Point,
+};
 use tilers_dioxus::{Band, PanelId};
 
 use super::{
@@ -12,7 +15,7 @@ use super::{
 	icons::{Glyph, Icon},
 	kit::{IconBtn, Kbd, Menu, MenuItem},
 	library::NameForm,
-	scope::open_in,
+	scope::{Offered, glyph_at},
 	toast,
 };
 use crate::api::{Item, Lens, WorkspacePart};
@@ -48,16 +51,14 @@ pub(super) fn FilterBar() -> Element {
 	}
 }
 
-/// `[Start from ▾] repo:service-arb/* × +`: plain terms, whatever scope they were copied from.
+/// `[Start from ▾] repo:service-arb/* × +`: plain terms, whatever scope they were copied from; or
+/// `[Start from ▾] ev-main / service-arb / site ×`: a point of the chain.
 #[component]
-fn ScopeLine(scope: Terms) -> Element {
-	let ctx = use_context::<Ctx>();
+fn ScopeLine(scope: Slice) -> Element {
 	let mut open = use_signal(|| false);
-	let mut adding = use_signal(|| false);
-	let terms: Vec<String> = scope.to_string().split_whitespace().map(str::to_string).collect();
-	let narrow = move |terms: String| match terms.parse::<Terms>() {
-		Ok(terms) => ctx.edit_lens(WorkspacePart::Scope(terms)),
-		Err(e) => ctx.say("scope", toast::Tone::Error, e.to_string(), None),
+	let here = match &scope {
+		Slice::Point(point) => rsx! { Crumbs { point: point.clone() } },
+		Slice::Terms(terms) => rsx! { TermsHere { terms: terms.clone() } },
 	};
 	rsx! {
 		div { class: "flex min-h-7 flex-wrap items-center gap-2", role: "group", aria_label: "Scope",
@@ -68,9 +69,53 @@ fn ScopeLine(scope: Terms) -> Element {
 					Icon { glyph: Glyph::ChevronDown, class: "size-3.5 text-ink-soft" }
 				}
 				PopoverContent { align: "start", class: "flex w-[300px] flex-col gap-0.5 rounded-[var(--radius)] border border-border bg-popover p-1 text-ink",
-					StartFrom { scope: scope.clone(), onpick: move |()| open.set(false) }
+					StartFrom { scope, onpick: move |()| open.set(false) }
 				}
 			}
+			{here}
+		}
+	}
+}
+
+/// What holds `point`, from the top, down to it.
+#[component]
+fn Crumbs(point: Point) -> Element {
+	let ctx = use_context::<Ctx>();
+	let crumbs = ctx.crumbs(&point);
+	let last = crumbs.len() - 1;
+	rsx! {
+		nav { class: "flex min-w-0 flex-wrap items-center gap-1.5", aria_label: "Scope",
+			for (i , at) in crumbs.into_iter().enumerate() {
+				Fragment { key: "{at}",
+					if i == last {
+						span { class: "max-w-64 truncate text-body font-medium text-ink", aria_current: "true", {ctx.called(&at)} }
+					} else {
+						button {
+							r#type: "button",
+							class: "max-w-40 truncate text-body text-ink-soft hover:text-ink hover:underline",
+							onclick: { let at = at.clone(); move |_| ctx.scope_to(at.clone()) },
+							{ctx.called(&at)}
+						}
+						span { class: "text-body text-ink-faint", "/" }
+					}
+				}
+			}
+			IconBtn { glyph: Glyph::X, title: "Leave this scope", onclick: move |_| ctx.start_from(None) }
+		}
+	}
+}
+
+#[component]
+fn TermsHere(terms: Terms) -> Element {
+	let ctx = use_context::<Ctx>();
+	let mut adding = use_signal(|| false);
+	let scope = terms.to_string();
+	let terms: Vec<String> = scope.split_whitespace().map(str::to_string).collect();
+	let narrow = move |terms: String| match terms.parse::<Terms>() {
+		Ok(terms) => ctx.edit_lens(WorkspacePart::Scope(Slice::Terms(terms))),
+		Err(e) => ctx.say("scope", toast::Tone::Error, e.to_string(), None),
+	};
+	rsx! {
 			for (i , term) in terms.iter().cloned().enumerate() {
 				span { key: "{i}-{term}", class: "inline-flex h-5 max-w-full items-center gap-1 rounded-[var(--control-radius)] bg-secondary pr-1 pl-1.5 text-mono-s text-ink-mid",
 					span { class: "truncate", "{term}" }
@@ -105,20 +150,24 @@ fn ScopeLine(scope: Terms) -> Element {
 			} else {
 				IconBtn { glyph: Glyph::Plus, title: "Add a term to the scope", onclick: move |_| adding.set(true) }
 			}
-		}
 	}
 }
 
-/// The named scopes, starred first, with their open cards: one picked is copied onto the line.
+/// What the point it is at holds, orgs at the top; then the named scopes, starred first: one picked is copied onto
+/// the line. Each with its open cards.
 #[component]
-fn StartFrom(scope: Terms, onpick: EventHandler<()>) -> Element {
+fn StartFrom(scope: Slice, onpick: EventHandler<()>) -> Element {
 	let ctx = use_context::<Ctx>();
 	let mut needle = use_signal(String::new);
 	let library = ctx.library.read();
 	let library = library.as_ref().expect("a workspace is open once the library arrived");
 	let mut scopes = ctx.scopes();
 	scopes.sort_by_key(|s| !library.favorites.contains(&Item::Scope(s.path.clone()))); // stable: the tree's order within each
-	let count = |terms: &Terms| open_in(&ctx, terms).map(|n| n.to_string()).unwrap_or_default(); // before the board arrives
+	let count = |open: Option<usize>| open.map(|n| n.to_string()).unwrap_or_default(); // before the board arrives
+	let at = if let Slice::Point(point) = &scope { Some(point) } else { None };
+	let found = |name: &str| name.to_lowercase().contains(&needle.read().to_lowercase());
+	let below: Vec<Offered> = ctx.below(at).into_iter().filter(|o| found(&o.name)).collect();
+	scopes.retain(|s| found(&s.path));
 	rsx! {
 		div { class: "flex h-7 items-center gap-1.5 rounded-[var(--control-radius)] border border-border-subtle px-2",
 			Icon { glyph: Glyph::Search, class: "size-3.5 text-ink-faint" }
@@ -130,8 +179,27 @@ fn StartFrom(scope: Terms, onpick: EventHandler<()>) -> Element {
 			}
 		}
 		div { class: "flex max-h-80 flex-col gap-0.5 overflow-y-auto",
-			MenuItem { selected: false, glyph: Glyph::Scope, label: "All repos", meta: count(&Terms::default()), onclick: move |_| { onpick.call(()); ctx.start_from(None); } }
-			for s in scopes.into_iter().filter(|s| s.path.to_lowercase().contains(&needle.read().to_lowercase())) {
+			MenuItem { selected: false, glyph: Glyph::Scope, label: "All repos", meta: count(ctx.open_in(&Slice::default())), onclick: move |_| { onpick.call(()); ctx.start_from(None); } }
+			if !below.is_empty() {
+				span { class: "truncate px-2 pt-1.5 pb-0.5 text-overline text-ink-soft", if let Some(at) = at { "in {ctx.called(at)}" } else { "orgs" } }
+			}
+			for o in below {
+				MenuItem {
+					key: "{o.point}",
+					selected: false,
+					glyph: glyph_at(&o.point),
+					label: o.name,
+					meta: count(o.open),
+					onclick: move |_| {
+						onpick.call(());
+						ctx.scope_to(o.point.clone());
+					},
+				}
+			}
+			if !scopes.is_empty() {
+				span { class: "px-2 pt-1.5 pb-0.5 text-overline text-ink-soft", "named scopes" }
+			}
+			for s in scopes {
 				{
 					let starred = library.favorites.contains(&Item::Scope(s.path.clone()));
 					let pad = if starred { 0 } else { s.depth * 16 }; // out of the tree, ahead of it
@@ -142,7 +210,7 @@ fn StartFrom(scope: Terms, onpick: EventHandler<()>) -> Element {
 								selected: false,
 								glyph: if starred { Glyph::Star } else { Glyph::Scope },
 								label: if mine { format!("{} · mine", s.name()) } else { s.name().to_string() },
-								meta: count(&s.scope.filter()),
+								meta: count(ctx.open_in(&Slice::Terms(s.scope.filter()))),
 								onclick: {
 									let path = s.path.clone();
 									move |_| {
@@ -157,7 +225,7 @@ fn StartFrom(scope: Terms, onpick: EventHandler<()>) -> Element {
 			}
 		}
 		div { class: "my-0.5 h-px bg-border-subtle" }
-		if scope != Terms::default() {
+		if let Slice::Terms(terms) = scope.clone() && terms != Terms::default() {
 			MenuItem {
 				selected: false,
 				glyph: Glyph::Save,
@@ -165,7 +233,7 @@ fn StartFrom(scope: Terms, onpick: EventHandler<()>) -> Element {
 				onclick: move |_| {
 					onpick.call(());
 					let mut m = ctx.modal;
-					m.set(Some(Modal::Scope(Editing::New(Scope::from(scope.clone())))));
+					m.set(Some(Modal::Scope(Editing::New(Scope::from(terms.clone())))));
 				},
 			}
 		}

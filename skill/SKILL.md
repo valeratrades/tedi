@@ -16,11 +16,14 @@ Milestone   target system state      "site is presentable to clients"
 Containment — anything not drawn is forbidden:
 
 ```
-Sprint ──┬─→ Milestone ──→ Issue ──┬─→ Issue (child)
-         └─→ Issue ────────────────┴─→ Blockers
+Sprint ──┬─→ Bottlenecks ──┬─→ Milestone ──┬─→ Milestone (of another repo) ─→ …
+         ├─→ Milestone     └─→ Issue       └─→ Issue ──┬─→ Issue (child)
+         └─→ Issue                                     └─→ Blockers
 ```
 
-A Milestone never holds another Milestone (state implies state; explicit edges would go stale).
+To own is to list a ref; a link in prose owns nothing. Bottlenecks is the milestone so titled in an org's
+`.github`. A chain of owners never names one repo twice (Sprint and Bottlenecks aside): within a repo,
+`v1.0` precedes `v1.1` by its name. An Issue never lists a milestone — not as a child, not as a blocker.
 Blockers are owned by Issues only. No view holds Blockers directly.
 
 Write nothing you can leave out. No filler, no restating the title, no "this PR adds".
@@ -172,10 +175,10 @@ selected.md  (opens beside a planning sprint: what you have picked up, off the h
 └─ # triage        ← a line deleted goes back here
 ```
 
-- A sprint holds milestones and issues. Never blockers. Only a Bottlenecks sprint can be
-  held, and only by a sprint. Picking something up is `selected.md`'s, not the sprint's; what
+- A sprint holds milestones and issues. Never blockers. Only a Bottlenecks (an org's, in its `.github`)
+  can be held, and only by a sprint, never round. Picking something up is `selected.md`'s, not the sprint's; what
   `1d` or urgent holds is picked up by itself.
-- A milestone holds issues and prose, and may carry a deadline. No priority order inside —
+- A milestone holds issues, other repos' milestones it is blocked on, and prose, and may carry a deadline. No priority order inside —
   everything in it is required. Not being in any milestone does not stop an issue from
   entering a sprint.
 - `urgent` is the special lowest sprint: `issues/urgent.md`, local, never synced, no

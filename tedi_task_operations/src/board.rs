@@ -9,7 +9,7 @@ use std::{
 use color_eyre::eyre::{Result, bail, eyre};
 pub use tedi_core::board::*;
 use tedi_core::{
-	PrState, PullRequest, Sprint,
+	NodeLink, PrState, PullRequest, Sprint,
 	conflict::CommentEdit,
 	workflow::{State, Trees},
 };
@@ -19,7 +19,7 @@ use crate::{
 	conflict_resolve::{FieldEdit, check_for_existing_conflict},
 	labels::Scheme,
 	local::{FsReader, GitReader, Local, LocalError, LocalIssueSource, LocalPath, ProjectMeta, States, lock_store},
-	open_interactions::{BodyWrite, MergeMode, MilestoneModifier, Modifier, SyncMode, SyncOptions, modify_and_sync_issue, modify_and_sync_milestone, pull_milestone},
+	open_interactions::{BodyWrite, MergeMode, MilestoneModifier, Modifier, Pull, SyncMode, SyncOptions, modify_and_sync_issue, modify_and_sync_milestone},
 	pull::pull_milestones,
 	rank::{Task, rank},
 	reach::{Reach, Reached},
@@ -47,10 +47,10 @@ pub async fn load(reach: &Reach, trees: &Trees) -> Result<Board> {
 }
 
 pub fn listing(board: &Board, query: String, group: &GroupBy, trees: &Trees, me: Option<&str>) -> Result<Listing> {
-	let mut hits = query.parse::<Query>()?.run(&board.cards, me)?;
+	let mut hits = query.parse::<Query>()?.run(&Within::default(), &board.cards, me)?;
 	let all = hits.len();
 	hits.retain(|&i| board.cards[i].pr.is_none());
-	let groups = tedi_core::board::group(&board.cards, &hits, group, trees)?
+	let groups = tedi_core::board::group(&board.cards, &hits, group, trees, &Within::default())?
 		.into_iter()
 		.filter(|(_, members)| !members.is_empty())
 		.map(|(key, members)| {
@@ -75,12 +75,12 @@ pub async fn set_milestone(link: &Reached<IssueLink>, repo: &Reached<RepoInfo>, 
 	}
 	stored_index(link)?;
 	if mode != SyncMode::Offline {
-		pull_milestones(repo).await?; // whatever of the repo hosts it by now
+		pull_milestones(repo, &mut Pull::default()).await?; // whatever of the repo hosts it by now
 	}
 	let (hosting, rest): (Vec<Milestone>, Vec<Milestone>) = Local::stored_milestones()?
 		.into_iter()
 		.filter(|m| !m.is_closed() && !matches!(m.sprint(), Some(Sprint::Planning(_))) && m.identity.link.repo_info() == repo) // what is planned is its own file's to say
-		.partition(|m| m.body.hosted().contains(link));
+		.partition(|m| m.body.0.issue_links().contains(link));
 	let is_in = |at: Option<&MilestoneLink>| match at {
 		Some(at) => hosting.iter().any(|m| m.link() == at),
 		None => hosting.is_empty(),
@@ -107,14 +107,14 @@ pub async fn set_milestone(link: &Reached<IssueLink>, repo: &Reached<RepoInfo>, 
 		modify_and_sync_milestone(milestone.link(), mode, MilestoneModifier::BodyWrite(write), SyncOptions::default()).await
 	};
 	for left in hosting.iter().filter(|m| Some(m.link()) != new) {
-		write(left, &|body| body.remove_issue_links(std::slice::from_ref(link))).await?;
+		write(left, &|body| body.remove_nodes(&[NodeLink::Issue(link.clone())])).await?;
 	}
 	let Some(into) = into else { return Ok(()) };
 	match mode == SyncMode::Offline || link.project() != repo {
-		true => write(&into, &|body| body.push_issue_links(std::slice::from_ref(link))).await?,
+		true => write(&into, &|body| body.push_nodes(&[NodeLink::Issue(link.clone())])).await?,
 		false => {
 			crate::github::client::get()?.set_issue_milestone(repo, link.number(), Some(into.number())).await?;
-			pull_milestone(into.link(), MergeMode::Normal).await?
+			Pull::default().link(into.link(), MergeMode::Normal).await?
 		}
 	};
 	Ok(())

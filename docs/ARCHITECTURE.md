@@ -10,7 +10,7 @@ the framework fundamentally consists of 3 primitive levels:
 ### Milestone
 this is the primitive through which the targetting of all projects happens. 
 
-may or may not contain any number of issues. Unlike issues, they have inherent time component, - deadlines can be set on it.
+may or may not contain any number of issues, and [milestones of other repos](#composition-rules): for a milestone, blocked-on is contains. Unlike issues, they have inherent time component, - deadlines can be set on it.
 
 hosts issues of any repo, and an issue sits in at most one milestone a repo. Its own repo's holds it through GitHub's `milestone` field, any other's by naming it in the description. Remote state putting it in two of one repo is pulled as-is.
 
@@ -64,17 +64,30 @@ objective: good times
 An item that is just an issue ref is a GitHub `blocked by` link: every one the blockers name is linked there, and dropping it unlinks it. A link made on GitHub alone joins the blockers at the top (last in sequence), written as the shortest ref from the issue's own repo. The link set GitHub held at the last sync is persisted with the issue, so a link removed on GitHub since is a remote edit of the blockers: the ref leaves them through the same merge as any field (conflicting if they were edited locally too). Either end of a link missing locally is pulled, with the whole tree it lives in.
 
 ### Composition Rules
-how the system components interact with each other.
+how the system components own each other. One chain, typed by `tedi_core::chain`: containment, [scopes](#views) and [Bottlenecks](#sprints) are read off it.
+```
+ Org (main) ─► Org ─► Repo                      place: who holds it
+    └──────────────────► Repo ─► Milestone, Issue
 
-[Sprints](#sprints) contain [Milestones](#Milestone) and [Issues](#issue). Only a sprint holds a sprint, and only a Bottlenecks one; holding is never round. An edit making it otherwise is rejected; one pulled stands, so nothing that walks down from a sprint may assume an end.
-[Blockers](#blockers) pin is held by nothing.
+ Sprint ─► Bottlenecks ─► Bottlenecks ─► … ─► Milestone ─► Milestone ─► … ─► Issue ─► Issue ─► Blockers      ownership: what it needs
+ (person)  └─────── each an org's ───────┘     └─ each of another repo, any org ─┘
+```
+| owner | may own | never |
+|---|---|---|
+| [Sprint](#sprints), planning (titled by a timeframe) | Bottlenecks, Milestone, Issue | a planning one |
+| [Sprint](#sprints), Bottlenecks (`{org}/.github`, titled `Bottlenecks`) | Bottlenecks, Milestone (its own repo's too), Issue | a planning one; itself, through others too |
+| [Milestone](#milestone) | Milestone, Issue | a sprint; a milestone of a repo already on the chain |
+| [Issue](#issue) | Issue, [Blockers](#blockers) | any milestone |
 
-[Milestones](#milestone) contain exclusively [Issues](#issue).
-For normal Milestones, we choose to prohibit explicit inclusion of other [Milestones](#milestone), - as we're reasoning about state, thus most milestones implicitly depend on each other already, - allowing drawing explicit connections would open the door for inconsistencies. One semi-explicit embed is allowed, - but it's done more so through shape: `v1.0` milestone is likely a pre-requisite of `v1.1`, `v1.2` and so on.
+Owning is a list item that is a ref; a link in prose owns nothing.
 
-[Issues](#issue) mostly own other issues, or just plaintext points of what needs to happen. Most often, as soon as the work starts, the Blockers become apparent.
+A chain never names one repo twice: within a repo milestones relate through their shape (`v1.0` → `v1.1`). A loop is one such chain. Sprint and Bottlenecks are roots: their own repo doesn't count.
 
-[Blockers](#blockers)  are only ever owned by Issues, as the Milestones and Milestone-based primitives assume self-contained selections, - thus all their parts are effectively blockers; and the potential case of each one being blocked by the same factor is an exception, and framework doesn't optimize for it. 
+An edit may not introduce a forbidden edge: `open_interactions/milestone.rs` refuses it, drawn, before anything is written — against the milestone before the edit, and on the merge result against GitHub's, as two legal edits can close a loop together. An edge refused only by a merge stays in the local body, unsynced and told, until its milestone is edited. GitHub state holding one is pulled as-is and told, so a walk over the chain must survive a loop. What an edit introduces is known: fetched with everything it contains, under the name GitHub holds it by now, or, offline, an error.
+
+Orgs owning orgs is config (`orgs`, one level: GitHub's can't nest); owning one doesn't pull it.
+
+Blockers are owned by Issues alone: Milestones and Milestone-based primitives assume self-contained selections, so all their parts are effectively blockers.
 
 ### TaskView
 a primitive exposing a view into a slice of task space. Can contain Milestones and Issues (never blockers).
@@ -87,11 +100,13 @@ a collection of musts. What it is a must *by* tells its kind:
 - **Planning** (`1d`, `2w`, `1Q`, `1y`…): before the period rolls over.
 - **Bottlenecks**: first. The necessary constituents of getting what stands in front of everything else resolved; a guideline for compiling the planning ones. A wider area of tasks that could be added under its umbrella, but is not critical to its completion, is another milestone's, or no one's.
 
-The milestone's title alone makes it one (`tedi_core::Sprint`), whoever's repo it sits in: a user's and an org's are the same thing. Acting on a planning one (rollover, `selected.md`) is its repo owner's.
+The milestone's title makes it one (`tedi_core::Sprint`); a Bottlenecks sits in its org's `.github` alone, none is created elsewhere, and one found there is an ordinary milestone, told. Acting on a planning one (rollover, `selected.md`) is its repo owner's.
+
+A workflow may name the leaf (`bottlenecks = "selected"`) an open card in the tree of a Bottlenecks stands no earlier than, where the view is grouped by it. Those that press are the scope's: of its org and of the main org owning that; terms' are of the orgs common to all the repos a clause of theirs names; without one, there are none. Closed milestones pass nothing on. It is layout alone: the query runs on held states and the card takes its own place in the order, its blockers following; a drop before the leaf is refused, any other is a move made against the held state.
 
 Everything in a sprint is required: its headers only group, its leading prose is its description, and its completion is over all of it, a milestone it holds being done when closed. They assume top-down priority ordering, - as we admit impossibility of consistent 100% completion of the period's selection.
 
-Opening a planning sprint opens [what is picked up](#what-is-picked-up) and the repo's Bottlenecks beside it, a tab each, folded back as one: an issue rendered in several tabs is edited in whichever, its untouched copies reverting nothing.
+Opening a planning sprint opens [what is picked up](#what-is-picked-up) and its org's Bottlenecks beside it, a tab each, folded back as one: an issue rendered in several tabs is edited in whichever, its untouched copies reverting nothing.
 
 When Github is reached depends on the sync mode:
 - **Full** (default): nothing reaches an editor before it has been reconciled with Github: the sprint's own body, every milestone it inlines, and every issue it expands are pulled first. The buffer is what an edit is reasoned against.
@@ -100,7 +115,7 @@ When Github is reached depends on the sync mode:
 
 A pending conflict is always reconciled against a fresh pull, Offline included; its resolution becomes consensus.
 
-One writer at a time: from a merge to its consensus commit, a writer holds the store lock (a flock on `issues/.lock`, behind an in-process mutex), so the CLI and a server never interleave; consensus is read under it, and every consensus commit asserts it.
+One writer at a time: from a merge to its consensus commit, a writer holds the store lock (a flock on `issues/.lock`, behind an in-process mutex), so the CLI and a server never interleave; consensus is read under it, and every consensus commit asserts it. A milestone's commit holds its own files alone, and an issue's no milestone: what another left unsynced is not folded into consensus.
 
 A conflict is data: `Conflict { link, clashes: [{ node, field, consensus, local, remote }], files }`. Each clashing node is recorded to its own file under `issues/.conflicts/{owner}/{repo}/`, named by lineage (`1_5.md`), both sides between markers; consensus never commits it. It blocks only that line — the node, its ancestors and descendants — and removing the markers is the resolution.
 
@@ -130,7 +145,7 @@ What is stored is the document and the home's last answer (`.selected.json`), an
 What `1d` or urgent holds is at least in the configured bucket: each asking of the home moves there what it has further back, and a line of theirs goes no further back than it. What somebody else has started stays theirs.
 
 ##### Selection
-`Selected` holds one selected issue per sprint (`sprints_selection.json`); the *active* selection is that of the lowest existing sprint (urgent while it has an open issue, else `1d`, …). It is not the kanban's `selected` bucket: a bucket holds what is picked up, this is what is being worked on. `sprints select` moves it: `--up`/`--down` step among the selection's siblings — circular, skipping issues whose current blocker delegates to another issue (a blocker ref) — and at the root walk the sprint, then the lines of `selected.md` at its bucket or any forward of it; `--in`/`--out` descend into / ascend out of the tree; a [search](#search) pattern (or the picker) reaches the whole of both, and the repo's Bottlenecks, asking the home first what is picked up by now. Urgent is followed by what is picked up beside the sprint last focused. All else is read from local files: status bars poll it offline. `--prev`/`--next` walk back and forth through the sprint's selection history (every explicit selection change is recorded; entries no longer open in the view are skipped). When the selection closes or leaves the view it auto-advances to the top open item; when no open issues remain the selection is cleared and the next sprint up becomes active. An issue not stored locally is unknown, not closed: selecting, resolving or validating onto one errors, naming what to fetch (movement alone skips it with a notice, to stay usable offline).
+`Selected` holds one selected issue per sprint (`sprints_selection.json`); the *active* selection is that of the lowest existing sprint (urgent while it has an open issue, else `1d`, …). It is not the kanban's `selected` bucket: a bucket holds what is picked up, this is what is being worked on. `sprints select` moves it: `--up`/`--down` step among the selection's siblings — circular, skipping issues whose current blocker delegates to another issue (a blocker ref) — and at the root walk the sprint, then the lines of `selected.md` at its bucket or any forward of it; `--in`/`--out` descend into / ascend out of the tree; a [search](#search) pattern (or the picker) reaches the whole of both, and its org's Bottlenecks, asking the home first what is picked up by now. Urgent is followed by what is picked up beside the sprint last focused. All else is read from local files: status bars poll it offline. `--prev`/`--next` walk back and forth through the sprint's selection history (every explicit selection change is recorded; entries no longer open in the view are skipped). A milestone stands for the first workable issue it owns, descending into the milestones it contains. When the selection closes or leaves the view it auto-advances to the top open item; when no open issues remain the selection is cleared and the next sprint up becomes active. An issue not stored locally is unknown, not closed: selecting, resolving or validating onto one errors, naming what to fetch (movement alone skips it with a notice, to stay usable offline).
 `sprints selected list` reports the sprint's musts and their completion above the selected issue's blockers.
 The selected issue is where day-to-day blocker work lands: `sprints selected add/pop/set/list/open` route through the issue coordinator (`modify_and_sync_issue` + `Modifier::Blocker*`) — blockers keep zero runtime, the issue owns save/sync. `sprints selected resume/halt` drive a per-issue Clockify timer (keyed by the selected `repo#number`, description = title + current blocker); a selection change restarts it on the new issue.
 
@@ -142,11 +157,11 @@ On the web board, which cards and in what order is the workspace's; how they are
 DYNAMIC, the workspace's, autosaved          STATIC, the library's: kept, forked, shared, proposed
 Workspace { tiles per band, lens }           View   { name, group_by, shown, boxes }
 Lens      { scope, search, sort }  ◄─copy──  Scope  { repos, terms, children }   a named starting point
-            terms  text                      Boxes  { arrangement per band, tints, hidden }
+   point or terms  text                      Boxes  { arrangement per band, tints, hidden }
                                              Columns{ by, boxes }   laid onto a view: its boxes copied
 shown = scope ∧ search ─sort─► cards ─group_by─► boxes − hidden
 ```
-Every tile of a workspace runs its lens; a facet's values and a click on a card's rewrite its search. A scope has a name only in the library: applied, it is its terms, and editing either later doesn't touch the other. The team's scopes are config; a viewer keeps their own beside them, never under a team scope's name.
+Every tile of a workspace runs its lens; a facet's values and a click on a card's rewrite its search. A workspace's scope is a point of the [chain](#composition-rules), or terms: never both. A point covers what it holds or owns: an org its repos and those of the orgs it owns, a milestone everything it owns transitively, an issue its descendants; one nothing of which is on the board is said so. As text it is its GitHub URL, which no term starts as. A scope has a name only in the library: applied, it is its terms, and editing either later doesn't touch the other. The team's scopes are config; a viewer keeps their own beside them, never under a team scope's name.
 
 A viewer has a workspace ("ws 1") from the first open. Without one open, or with no arrangement of it for a band, nothing is shown where views go.
 
@@ -161,7 +176,7 @@ tedi_md → tedi_core → tedi_task_primitives → tedi_task_operations → tedi
                  └───────────────────────────────────────→ tedi_web (client, wasm)
 ```
 - `tedi_md` — markdown primitives: owned pulldown_cmark `Events` ⇄ `String`.
-- `tedi_core` — the pure model: the primitives above (Issue/Blockers/Milestone), their locators/markers, and parse/serialize over `Events`. No IO, no async, no transport. A primitive cannot reach fs/network/app-state — the crate boundary enforces it. It builds for wasm (the web client runs the board model and reads conflicts): `v_utils` with `macros` only. Its `board` is the board model — cards, query, order, grouping, scopes — and `workflow` the workflow tree; `tedi_task_operations::board` cards the store and edits through the sync, `tedi_task_operations::workflow` moves cards.
+- `tedi_core` — the pure model: the primitives above (Issue/Blockers/Milestone), their locators/markers, and parse/serialize over `Events`. No IO, no async, no transport. A primitive cannot reach fs/network/app-state — the crate boundary enforces it. It builds for wasm (the web client runs the board model and reads conflicts): `v_utils` with `macros` only. Its `chain` is who owns what above the issue tree, `board` the board model — cards, query, order, grouping, scopes — and `workflow` the workflow tree; `tedi_task_operations::board` cards the store and edits through the sync, `tedi_task_operations::workflow` moves cards.
 - `tedi_hooks` — workflows as run: a workflow file parsed and checked, its hooks loaded (builtins, or C-ABI libraries) and called. A hook only asks; what lands is the operations' call.
 - `tedi_adapters` — transport at the edge: `GithubClient` and whom it acts as, the home, Clockify. Depends on core for what it carries.
 - `tedi_task_primitives` — what a stored issue *is*: local/remote sources+sinks, storage layout, path resolution, the `LazyIssue` loading protocol, the GitHub mock.
@@ -203,7 +218,7 @@ GitHub is reached through one module in `tedi_task_primitives` — `LazyIssue<Re
 
 tedi acts as `github_token`'s user or as a `github_app`; the App reaches each account through that account's installation, each with its own rate budget, and edits as its bot (`<slug>[bot]`).
 
-`tedi pull [owner|owner/repo]…` (the config's `watch` when none are named) stores every issue those hold: one not stored yet arrives with its whole tree, one stored is pulled through the same merge as any other sync. It lists a repo a page of whole issues per GraphQL call, least recently updated first, and keeps the update time of the last page it stored whole: the next pull, or one picking up after the rate limit cut it short, lists from there. A clash it meets is recorded as a conflict and doesn't hold the cursor back. The repo's open milestones, sprints among them, are pulled with it through their own three-way merge; so is who its issues can be assigned to.
+`tedi pull [owner|owner/repo]…` (the config's `watch` when none are named) stores every issue those hold: one not stored yet arrives with its whole tree, one stored is pulled through the same merge as any other sync. It lists a repo a page of whole issues per GraphQL call, least recently updated first, and keeps the update time of the last page it stored whole: the next pull, or one picking up after the rate limit cut it short, lists from there. A clash it meets is recorded as a conflict and doesn't hold the cursor back. The repo's open milestones, sprints among them, are pulled with it through their own three-way merge, each with the milestones it contains and the issues those host, of whatever repo; so is who its issues can be assigned to.
 
 A pull request is the *how* of the issues it closes: no blockers, no children; whose review it waits on is asked straight on GitHub, and nothing else of it is edited by tedi. Pull mirrors a repo's into `.prs.json` beside its issues, newest first down to the newest the last whole walk stored (GraphQL lists them by no `since`); the board cards them read-only.
 

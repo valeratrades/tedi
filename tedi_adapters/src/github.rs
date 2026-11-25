@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use reqwest::Client;
 use serde::Deserialize;
 pub use tedi_core::RepoInfo;
-use tedi_core::{CloseState, labels::Color};
+use tedi_core::{CloseState, Sprint, SprintError, labels::Color};
 use v_utils::macros::wrap_err;
 
 mod auth;
@@ -214,6 +214,8 @@ pub struct FileCommit {
 #[derive(Clone, Debug, Deserialize)]
 pub struct GithubMilestone {
 	pub number: u64,
+	/// Under the names GitHub holds by now, whatever it was asked by.
+	pub html_url: String,
 	pub title: String,
 	pub state: String,
 	pub due_on: Option<jiff::Timestamp>,
@@ -233,6 +235,10 @@ pub enum GithubError {
 	/// Signing the GitHub App's JWT failed.
 	#[foreign]
 	Jwt(jsonwebtoken::errors::Error),
+
+	/// A milestone that can't be where it was to be created.
+	#[foreign]
+	Sprint(SprintError),
 
 	/// GitHub API returned a non-success status code.
 	#[leaf]
@@ -796,6 +802,7 @@ impl GithubClient for RealGithubClient {
 	}
 
 	async fn create_milestone(&self, repo: RepoInfo, title: &str, description: &str, closed: bool) -> Result<(), GithubError> {
+		Sprint::check(repo, title)?;
 		let url = format!("https://api.github.com/repos/{}/{}/milestones", repo.owner().expect("github repo"), repo.repo());
 		let mut body = serde_json::json!({ "title": title, "description": description });
 		if closed {

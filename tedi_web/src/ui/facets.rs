@@ -7,7 +7,7 @@ use strum::IntoEnumIterator as _;
 use tedi_core::board::{Facet, Query, Tally};
 
 use super::{
-	Ctx, Need,
+	Ctx,
 	icons::{Glyph, Icon},
 	kit::{Btn, Style},
 };
@@ -105,12 +105,13 @@ fn FacetMenu(facet: Facet, lens: Lens) -> Element {
 	let mut needle = use_signal(String::new);
 	let board = ctx.board.read();
 	let cards = &board.cards;
-	let mut counted = lens.search.clone();
-	counted.narrow(&lens.scope);
-	if ctx.awaits(&Need::Query(counted)) {
+	if let Some(need) = ctx.need()
+		&& ctx.awaits(&need)
+	{
 		return rsx! { span { class: "p-2 text-caption text-ink-soft", "Counted once the view is here" } };
 	}
-	let tallies = match lens.search.tally(facet, &lens.scope, cards, ctx.me().as_deref()) {
+	let within = ctx.within().unwrap_or_default(); // nothing of it is on the board: the tiles say so
+	let tallies = match lens.search.tally(facet, &within, cards, ctx.me().as_deref()) {
 		Ok(t) => t,
 		Err(e) => return rsx! { span { class: "p-2 text-caption text-accent-error", "{e}" } },
 	};

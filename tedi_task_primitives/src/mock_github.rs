@@ -306,6 +306,11 @@ impl MockGithubClient {
 			}
 		}
 
+		for rename in state.get("renames").and_then(|v| v.as_array()).into_iter().flatten() {
+			let name = |of: &str| rename.get(of).and_then(|v| v.as_str()).map(str::to_string).ok_or("a rename is {old, new}");
+			self.renames.lock().unwrap().insert(name("old")?, name("new")?);
+		}
+
 		// Load milestones
 		if let Some(ms_arr) = state.get("milestones").and_then(|v| v.as_array()) {
 			let mut milestones = self.milestones.lock().unwrap();
@@ -480,6 +485,7 @@ impl MockGithubClient {
 			}
 		}
 
+		let renames: Vec<Value> = self.renames.lock().unwrap().iter().map(|(old, new)| json!({ "old": old, "new": new })).collect();
 		let files: Vec<Value> = self
 			.files
 			.lock()
@@ -501,7 +507,7 @@ impl MockGithubClient {
 		let state = json!({
 			"issues": issues, "sub_issues": sub_issues, "comments": comments, "dependencies": dependencies, "unlinked": unlinked,
 			"prs": prs, "pull_requests": pull_requests, "transferred": transferred, "labels": labels, "milestones": milestones,
-			"files": files, "proposals": proposals, "tokens": *self.tokens.lock().unwrap(),
+			"files": files, "proposals": proposals, "renames": renames, "tokens": *self.tokens.lock().unwrap(),
 		});
 		// renamed into place, so another process never reads it half-written
 		let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
@@ -538,6 +544,7 @@ impl MockGithubClient {
 			std::mem::swap(&mut *held.unlinked.lock().unwrap(), &mut *with.unlinked.lock().unwrap());
 			std::mem::swap(&mut *held.prs.lock().unwrap(), &mut *with.prs.lock().unwrap());
 			std::mem::swap(&mut *held.pull_requests.lock().unwrap(), &mut *with.pull_requests.lock().unwrap());
+			std::mem::swap(&mut *held.renames.lock().unwrap(), &mut *with.renames.lock().unwrap());
 			std::mem::swap(&mut *held.transferred.lock().unwrap(), &mut *with.transferred.lock().unwrap());
 			std::mem::swap(&mut *held.files.lock().unwrap(), &mut *with.files.lock().unwrap());
 			std::mem::swap(&mut *held.proposals.lock().unwrap(), &mut *with.proposals.lock().unwrap());
@@ -547,6 +554,11 @@ impl MockGithubClient {
 		self.next_issue_id.store(fresh.next_issue_id.load(Ordering::SeqCst), Ordering::SeqCst);
 		self.next_comment_id.fetch_max(fresh.next_comment_id.load(Ordering::SeqCst), Ordering::SeqCst);
 		*read_at = at;
+	}
+
+	fn by_now(&self, repo: RepoInfo) -> RepoKey {
+		let owner = repo.owner().expect("github repo");
+		RepoKey::new(self.renames.lock().unwrap().get(owner).map_or(owner, String::as_str), repo.repo())
 	}
 
 	fn log_call(&self, call: &str) {
@@ -763,6 +775,9 @@ pub struct MockState {
 
 	pull_requests: Mutex<HashMap<RepoKey, BTreeMap<u64, tedi_core::PullRequest>>>,
 
+	/// Owners by their former names: GitHub redirects from them
+	renames: Mutex<HashMap<String, String>>,
+
 	/// Where a transferred issue went: GitHub redirects its old address there
 	transferred: Mutex<HashMap<(RepoKey, u64), (RepoKey, u64)>>,
 
@@ -916,9 +931,10 @@ struct MockMilestoneData {
 }
 
 impl MockMilestoneData {
-	fn to_github(&self) -> GithubMilestone {
+	fn to_github(&self, key: &RepoKey) -> GithubMilestone {
 		GithubMilestone {
 			number: self.number,
+			html_url: format!("https://github.com/{}/{}/milestone/{}", key.owner, key.repo, self.number),
 			title: self.title.clone(),
 			state: self.state.clone(),
 			due_on: self.due_on,
@@ -1290,7 +1306,7 @@ impl GithubClient for MockGithubClient {
 		let milestones = self.milestones.lock().unwrap();
 		Ok(milestones
 			.get(&key)
-			.map(|m| m.values().filter(|m| m.state == "open").map(MockMilestoneData::to_github).collect())
+			.map(|m| m.values().filter(|m| m.state == "open").map(|m| m.to_github(&key)).collect())
 			.unwrap_or_default())
 	}
 
@@ -1299,18 +1315,18 @@ impl GithubClient for MockGithubClient {
 		if let Some(status) = self.fail_status {
 			return Err(GithubError::new_api(status, "mock injected failure".to_string(), "get milestone".to_string()));
 		}
-		let key = RepoKey::from(repo);
+		let key = self.by_now(repo);
 		let milestones = self.milestones.lock().unwrap();
 		milestones
 			.get(&key)
 			.and_then(|m| m.get(&number))
-			.map(MockMilestoneData::to_github)
+			.map(|m| m.to_github(&key))
 			.ok_or_else(|| GithubError::new_api(reqwest::StatusCode::NOT_FOUND, format!("mock has no milestone #{number}"), "get milestone".to_string()))
 	}
 
 	async fn list_milestone_issues(&self, repo: RepoInfo, milestone_number: u64) -> Result<Vec<GithubIssue>, GithubError> {
 		self.log_call(&format!("list_milestone_issues({milestone_number})"));
-		let key = RepoKey::new(repo.owner().expect("github repo"), repo.repo());
+		let key = self.by_now(repo);
 		let issues = self.issues.lock().unwrap();
 		Ok(issues
 			.get(&key)

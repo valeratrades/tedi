@@ -8,12 +8,12 @@ use std::{
 };
 
 use color_eyre::eyre::{Result, WrapErr as _, bail, eyre};
-use tedi_core::board::{GroupBy, Order, Query, QueryError, Scope, Shown, Terms, scope_at};
+use tedi_core::board::{GroupBy, Order, Query, QueryError, Scope, Shown, Slice, Terms, scope_at};
 
-use super::{Pinned, Settings, Shares, Snapshot, Source, items, source_repo, viewed, write_library, write_shares};
+use super::{Pinned, Settings, Shares, Snapshot, Source, items, move_scopes, source_repo, viewed, write_library, write_shares};
 use crate::api::{Arrangement, Boxes, Columns, Construction, Drafts, Forked, Item, Lens, Library, Owner, ShareLink, Tints, Upstream, View, Workspace};
 
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 
 pub(super) async fn migrate(settings: &Settings) -> Result<()> {
 	let web = tedi_task_operations::paths::data_dir("web");
@@ -35,6 +35,11 @@ pub(super) async fn migrate(settings: &Settings) -> Result<()> {
 			.await
 			.wrap_err_with(|| format!("bringing {} to version 1; as it was: {}", web.display(), before.display()))?;
 		tracing::info!("{} brought to version 1; as it was: {}", web.display(), before.display());
+	}
+	if held < 2 {
+		let before = before(&web, 2)?;
+		orphans(settings, &before).wrap_err_with(|| format!("bringing {} to version 2; as it was: {}", web.display(), before.display()))?;
+		tracing::info!("{} brought to version 2; as it was: {}", web.display(), before.display());
 	}
 	let fresh = web.join("version.new");
 	std::fs::write(&fresh, VERSION.to_string())?;
@@ -107,6 +112,36 @@ async fn lenses(settings: &Settings, before: &Path) -> Result<()> {
 	}
 	for (key, shares) in &pinned {
 		write_shares(key, shares)?;
+	}
+	Ok(())
+}
+
+/// Step 2: the team's scopes by org left its config, points of the chain in their place. A viewer's scope nested in one
+/// that is gone sits at the top.
+fn orphans(settings: &Settings, before: &Path) -> Result<()> {
+	let mut fresh: Vec<(String, Library)> = Vec::new();
+	for key in jsons(before)? {
+		let file = before.join(format!("{key}.json"));
+		let text = std::fs::read_to_string(&file).wrap_err_with(|| file.display().to_string())?;
+		let mut library: Library = serde_json::from_str(&text).wrap_err_with(|| format!("{key}'s library"))?;
+		let there = |library: &Library, path: &str| library.scopes.contains_key(path) || scope_at(&settings.scopes, path).is_some();
+		let orphan = |library: &Library| {
+			let mut nested = library.scopes.keys().filter_map(|p| Some((p.clone(), p.rsplit_once(" / ")?)));
+			nested.find_map(|(path, (parent, name))| (!there(library, parent)).then(|| (path.clone(), name.to_string())))
+		};
+		//LOOP each takes one to the top, where it is nested no more
+		while let Some((path, name)) = orphan(&library) {
+			let to = free(&name, |n| there(&library, n));
+			tracing::info!("{key}: the scope {path} is {to} now");
+			move_scopes(&mut library, &path, &to);
+		}
+		let mut favorites = std::mem::take(&mut library.favorites);
+		favorites.retain(|f| !matches!(f, Item::Scope(path) if !there(&library, path)));
+		library.favorites = favorites;
+		fresh.push((key, library));
+	}
+	for (key, library) in &fresh {
+		write_library(key, library)?;
 	}
 	Ok(())
 }
@@ -191,7 +226,7 @@ struct OldLibrary {
 }
 impl OldLibrary {
 	/// The terms of the scope the screen sat in.
-	fn terms(&self, who: &str, settings: &Settings) -> Terms {
+	fn terms(&self, who: &str, settings: &Settings, past: &Past) -> Terms {
 		let Some(path) = &self.scope else {
 			return Terms::default();
 		};
@@ -200,7 +235,8 @@ impl OldLibrary {
 			..Default::default()
 		};
 		let tree = own.scopes(&settings.scopes).unwrap_or_default(); // one lost its parent: the old board served them nothing either
-		match scope_at(&tree, path) {
+		let left = || self.scopes.get(path).cloned().or_else(|| past.scope(path));
+		match scope_at(&tree, path).cloned().or_else(left) {
 			Some(scope) => scope.filter(),
 			None => {
 				tracing::warn!("{who}: the scope {path} is no longer there: the workspaces narrow by none");
@@ -211,7 +247,7 @@ impl OldLibrary {
 
 	fn library(&self, who: &str, settings: &Settings, past: &Past) -> Result<Library> {
 		let screen = &self.on_screen;
-		let scope = self.terms(who, settings);
+		let scope = self.terms(who, settings, past);
 		let shown = |name: &str| screen.views.get(name).or_else(|| self.filters.get(name)).cloned().or_else(|| past.view(name));
 		let workspace = |tiles: &Arrangement| Workspace {
 			tiles: tiles.clone(),
@@ -254,7 +290,7 @@ impl OldLibrary {
 					// a scope holds no words, a search does
 					let name = free(&view.name, |n| workspaces.contains_key(n) || settings.workspaces.contains_key(n));
 					let lens = Lens {
-						scope: scope.clone(),
+						scope: Slice::Terms(scope.clone()),
 						search: view.query.parse().expect("only its words make it no terms"),
 						sort: view.sort.clone(),
 					};
@@ -339,7 +375,10 @@ fn lens(who: &str, scope: Terms, tiles: &Arrangement, view: impl Fn(&str) -> Opt
 			None
 		})
 	});
-	let fresh = Lens { scope, ..Default::default() };
+	let fresh = Lens {
+		scope: Slice::Terms(scope),
+		..Default::default()
+	};
 	let Some(view) = shown.and_then(|name| view(&name)) else {
 		return fresh; // it shows none, or one that is gone
 	};
@@ -395,7 +434,7 @@ enum OldConstruction {
 }
 
 fn pins(who: &str, old: Vec<OldPinned>, library: Option<&OldLibrary>, settings: &Settings, past: &Past) -> Shares {
-	let scope = library.map(|l| l.terms(who, settings)).unwrap_or_default(); // a sharer who keeps nothing any more
+	let scope = library.map(|l| l.terms(who, settings, past)).unwrap_or_default(); // a sharer who keeps nothing any more
 	let pinned: BTreeMap<String, Vec<OldConstruction>> = old
 		.iter()
 		.filter_map(|p| match &p.item {
@@ -475,6 +514,12 @@ impl Past {
 	/// The team's, as it last narrowed.
 	fn view(&self, name: &str) -> Option<OldView> {
 		self.0.iter().rev().find_map(|c| Self::written(&c.views, name))
+	}
+
+	/// The team's, as it last was.
+	fn scope(&self, path: &str) -> Option<Scope> {
+		let item = Item::Scope(path.to_string());
+		self.0.iter().rev().find_map(|c| if let Some(Construction::Scope(scope)) = c.read.get(&item) { Some(scope.clone()) } else { None })
 	}
 
 	/// Version `v` of `item`, as numbered when a view's query and order made versions of it.

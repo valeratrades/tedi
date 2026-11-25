@@ -1,15 +1,17 @@
 //! ⌘K (Figma: CommandPalette): one index over every view, scope, workspace and column layout, the open
 //! issues, and actions. `v: s: w: c: #` narrow it to one kind. ⏎ opens in place, ⇧⏎ in a new tile, ⌘⏎ as
-//! its library page.
+//! its library page, ⌥⏎ scopes to it.
 
 use dioxus::prelude::*;
 use ev_lib::uikit_dioxus::use_command_palette_shortcut;
+use tedi_core::chain::Point;
 use tilers_dioxus::PanelId;
 
 use super::{
 	Ctx, Editing, Modal,
 	icons::{Glyph, Icon},
 	kit::Kbd,
+	scope::glyph_at,
 	sprint_panel,
 };
 
@@ -20,6 +22,7 @@ enum Go {
 	Panel(PanelId),
 	/// Copied into the open workspace.
 	Scope(Option<String>),
+	Point(Point),
 	Workspace(String),
 	NewScope,
 }
@@ -33,6 +36,8 @@ struct Hit {
 	go: Go,
 	/// Its library page, for ⌘⏎.
 	page: Option<PanelId>,
+	/// What ⌥⏎ scopes to.
+	scope: Option<Point>,
 }
 
 #[component]
@@ -71,9 +76,12 @@ fn Open() -> Element {
 	};
 	let go = {
 		let shown = shown.clone();
-		move |i: usize, beside: bool, page: bool| {
+		move |i: usize, beside: bool, page: bool, scoped: bool| {
 			let Some(hit) = shown.get(i).cloned() else { return };
 			close();
+			if let (true, Some(point)) = (scoped, hit.scope) {
+				return ctx.scope_to(point);
+			}
 			match (hit.go, page.then_some(hit.page).flatten()) {
 				(_, Some(page)) => ctx.open(page),
 				(Go::Panel(id), None) => {
@@ -89,6 +97,7 @@ fn Open() -> Element {
 					}
 				}
 				(Go::Scope(path), None) => ctx.start_from(path),
+				(Go::Point(point), None) => ctx.scope_to(point),
 				(Go::Workspace(name), None) => ctx.go(ctx.at_workspace(&name)),
 				(Go::NewScope, None) => {
 					let mut m = ctx.modal;
@@ -125,7 +134,7 @@ fn Open() -> Element {
 								Key::Escape => close(),
 								Key::ArrowDown => at.set((chosen + 1).min(count.saturating_sub(1))),
 								Key::ArrowUp => at.set(chosen.saturating_sub(1)),
-								Key::Enter => go(chosen, e.modifiers().shift(), e.modifiers().meta() || e.modifiers().ctrl()),
+								Key::Enter => go(chosen, e.modifiers().shift(), e.modifiers().meta() || e.modifiers().ctrl(), e.modifiers().alt()),
 								_ => {}
 							}
 						},
@@ -144,7 +153,7 @@ fn Open() -> Element {
 								r#type: "button",
 								class: if i == chosen { "flex h-7 shrink-0 items-center gap-2 rounded-[var(--control-radius)] bg-hover px-2 text-left" } else { "flex h-7 shrink-0 items-center gap-2 rounded-[var(--control-radius)] px-2 text-left" },
 								onmouseenter: move |_| at.set(i),
-								onclick: { let mut go = go.clone(); move |e: MouseEvent| go(i, e.modifiers().shift(), e.modifiers().meta() || e.modifiers().ctrl()) },
+								onclick: { let mut go = go.clone(); move |e: MouseEvent| go(i, e.modifiers().shift(), e.modifiers().meta() || e.modifiers().ctrl(), e.modifiers().alt()) },
 								Icon { glyph: h.glyph, class: "size-3.5 text-ink-soft" }
 								span { class: "flex-1 truncate text-body text-ink", "{h.label}" }
 								span { class: "text-mono-s text-ink-soft", if i == chosen { "⏎ open" } else { "{h.meta}" } }
@@ -157,6 +166,7 @@ fn Open() -> Element {
 					span { "⏎ open" }
 					span { "⇧⏎ open in new tile" }
 					span { "⌘⏎ open in library" }
+					span { "⌥⏎ scope to it" }
 				}
 			}
 		}
@@ -179,6 +189,7 @@ fn hits(ctx: &Ctx) -> Vec<Hit> {
 			page: Some(PanelId(format!("library:views:{}", v.name))),
 			go: Go::Panel(PanelId(format!("view:{}", v.name))),
 			label: v.name,
+			scope: None,
 		});
 	}
 	out.push(Hit {
@@ -188,6 +199,7 @@ fn hits(ctx: &Ctx) -> Vec<Hit> {
 		meta: String::new(),
 		go: Go::Scope(None),
 		page: None,
+		scope: None,
 	});
 	for s in ctx.scopes() {
 		out.push(Hit {
@@ -197,6 +209,18 @@ fn hits(ctx: &Ctx) -> Vec<Hit> {
 			meta: String::new(),
 			page: Some(PanelId(format!("library:scopes:{}", s.path))),
 			go: Go::Scope(Some(s.path)),
+			scope: None,
+		});
+	}
+	for place in ctx.places() {
+		out.push(Hit {
+			kind: "scopes",
+			glyph: glyph_at(&place.point),
+			label: ctx.path(&place.point),
+			meta: place.open.map(|n| n.to_string()).unwrap_or_default(), // before the board arrives
+			page: None,
+			scope: Some(place.point.clone()),
+			go: Go::Point(place.point),
 		});
 	}
 	out.push(Hit {
@@ -206,6 +230,7 @@ fn hits(ctx: &Ctx) -> Vec<Hit> {
 		meta: String::new(),
 		go: Go::NewScope,
 		page: None,
+		scope: None,
 	});
 	for (n, name) in setup.workspaces.keys().chain(library.workspaces.keys()).enumerate() {
 		out.push(Hit {
@@ -215,6 +240,7 @@ fn hits(ctx: &Ctx) -> Vec<Hit> {
 			meta: if n < setup.workspaces.len() { "team".into() } else { String::new() },
 			go: Go::Workspace(name.clone()),
 			page: Some(PanelId(format!("library:workspaces:{name}"))),
+			scope: None,
 		});
 	}
 	for name in setup.columns.keys().chain(library.columns.keys()) {
@@ -225,6 +251,7 @@ fn hits(ctx: &Ctx) -> Vec<Hit> {
 			meta: String::new(),
 			go: Go::Panel(PanelId(format!("library:columns:{name}"))),
 			page: None,
+			scope: None,
 		});
 	}
 	for s in ctx.sprints() {
@@ -235,6 +262,7 @@ fn hits(ctx: &Ctx) -> Vec<Hit> {
 			meta: format!("{} {}", s.link.repo_info().repo(), s.nodes.len()),
 			go: Go::Panel(sprint_panel(&s.link)),
 			page: None,
+			scope: None,
 		});
 	}
 	out.push(Hit {
@@ -244,6 +272,7 @@ fn hits(ctx: &Ctx) -> Vec<Hit> {
 		meta: String::new(),
 		go: Go::Panel(PanelId("builder:".into())),
 		page: None,
+		scope: None,
 	});
 	for c in ctx.board.read().cards.iter().filter(|c| c.open()) {
 		out.push(Hit {
@@ -253,6 +282,7 @@ fn hits(ctx: &Ctx) -> Vec<Hit> {
 			meta: c.link.project().repo().to_string(),
 			go: Go::Panel(PanelId(format!("issue:{}", c.link))),
 			page: None,
+			scope: Some(Point::Issue(c.link.clone())),
 		});
 	}
 	out

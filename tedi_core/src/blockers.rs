@@ -12,7 +12,7 @@
 
 use tedi_md::{Events, OwnedEvent, OwnedTag, OwnedTagEnd};
 
-use crate::{IssueLink, IssueRef, Marker, RepoInfo};
+use crate::{IssueLink, IssueRef, Marker, MilestoneLink, MilestoneRef, RepoInfo};
 
 /// Split text at the blockers marker, returning (content_before, blockers).
 /// If no blockers marker is found, returns the original text and an empty `Blockers`.
@@ -247,6 +247,19 @@ impl Blockers {
 		}
 		let mut out = Vec::new();
 		walk(&self.items, home, &mut out);
+		out
+	}
+
+	/// Every milestone an item names outright.
+	pub(crate) fn milestone_links(&self) -> Vec<MilestoneLink> {
+		fn walk(items: &[BlockerItem], out: &mut Vec<MilestoneLink>) {
+			for item in items {
+				out.extend(MilestoneRef::parse_word(item.text.trim()).map(|r| r.to_milestone_link()));
+				walk(&item.children, out);
+			}
+		}
+		let mut out = Vec::new();
+		walk(&self.items, &mut out);
 		out
 	}
 

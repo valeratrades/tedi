@@ -437,6 +437,11 @@
  ],
  "labels": [
   {
+   "owner": "ev-main",
+   "repo": ".github",
+   "names": []
+  },
+  {
    "owner": "service-arb",
    "repo": "review_archive",
    "names": [
@@ -545,7 +550,7 @@
  "milestones": [
   {
    "owner": "ev-main",
-   "repo": "devops",
+   "repo": ".github",
    "number": 1,
    "title": "Bottlenecks",
    "state": "open",

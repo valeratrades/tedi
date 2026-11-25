@@ -1,6 +1,7 @@
 # Every issue's stage, icebox to backlog. Closing, reopening and pull requests move it on each pull;
 # review and backlog are the rules' alone.
 intake = "triage"
+bottlenecks = "selected"
 
 [[buckets]]
 name = "icebox"

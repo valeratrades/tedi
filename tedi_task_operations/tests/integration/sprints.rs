@@ -22,6 +22,12 @@ const ISSUE_10: &str = "- [ ] Titre application <!-- @mock_user https://github.c
 const PARENT_WITH_CHILD: &str =
 	"- [ ] Parent <!-- @mock_user https://github.com/o/r/issues/10 -->\n  parent body\n\n  - [ ] Child <!--sub @mock_user https://github.com/o/r/issues/11 -->\n\n    child body\n";
 
+// ─── The ownership chain ──────────────────────────────────────────────────────
+
+const SITE: &str = "https://github.com/ev-service-arb/site/milestone/1";
+
+const TILERS: &str = "https://github.com/ev-main/tilers/milestone/1";
+const DATA: &str = "https://github.com/ev-quant/trading_data/milestone/1";
 pub(crate) type EditFn = Box<dyn FnOnce(&Path)>;
 
 impl TestContext {
@@ -130,12 +136,9 @@ impl TestContext {
 				std::thread::sleep(std::time::Duration::from_millis(100));
 				let stderr_so_far = String::from_utf8_lossy(&stderr_buf);
 
-				// Apply edit once the binary has written the tmp file and is waiting on pipe
-				if edit_fn.is_some()
-					&& stderr_so_far.contains("Waiting for signal on pipe")
-					&& let Some(tmp_path) = parse_tmp_path(&stderr_so_far)
-				{
-					(edit_fn.take().unwrap())(&tmp_path);
+				// Apply edit once the binary is waiting on pipe; a file edited in place is the edit's own to find
+				if edit_fn.is_some() && stderr_so_far.contains("Waiting for signal on pipe") {
+					(edit_fn.take().unwrap())(&parse_tmp_path(&stderr_so_far).unwrap_or_default());
 				}
 
 				// Signal the pipe (no-edit case signals immediately; edit case signals after editing)
@@ -2389,6 +2392,535 @@ async fn test_mv_rewrites_blocker_refs_elsewhere() {
 	assert!(ctx.github_calls().iter().any(|c| c.starts_with("update_issue_body(o, r, 12,")), "{:?}", ctx.github_calls());
 }
 
+/// Github holds `milestones` (`(url, title, description)`), and the store as pulled.
+fn chained(ctx: &TestContext, milestones: &[(&str, &str, &str)]) {
+	ctx.set_issues_dir_override();
+	let mut repos = Vec::new();
+	for (url, title, description) in milestones {
+		let (repo, number) = on_github(url);
+		ctx.remote_milestone(&repo, number, title, description, &[]);
+		if !repos.contains(&repo) {
+			repos.push(repo);
+		}
+	}
+	pull(ctx, &repos.iter().map(String::as_str).collect::<Vec<_>>());
+}
+
+fn pull(ctx: &TestContext, repos: &[&str]) -> RunOutput {
+	let out = ctx.run(&[&["--mock", "pull"], repos].concat());
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+	out
+}
+
+fn on_github(url: &str) -> (String, u64) {
+	let link = tedi_task_operations::MilestoneLink::parse(url).unwrap();
+	(link.repo_info().to_string(), link.number())
+}
+
+fn milestone_file(url: &str) -> PathBuf {
+	use tedi_task_operations::local::{FsReader, Local};
+	let link = tedi_task_operations::MilestoneLink::parse(url).unwrap();
+	Local::find_milestone_path(link.repo_info(), link.number(), &FsReader).unwrap_or_else(|| panic!("{url} is not stored"))
+}
+
+fn held(url: &str) -> String {
+	std::fs::read_to_string(milestone_file(url)).unwrap().trim_end().to_string()
+}
+
+/// The stored milestone `url` opened in the editor, `edit` made of its file.
+fn open_milestone(ctx: &TestContext, flags: &[&str], url: &str, edit: impl FnOnce(String) -> String + 'static) -> RunOutput {
+	seed_selection(ctx, &format!("- {url}\n"), &[], &[url]);
+	let edit_fn = Box::new(move |path: &Path| std::fs::write(path, edit(std::fs::read_to_string(path).unwrap())).unwrap());
+	ctx.milestone_client_edit(&[&["--mock"], flags, &["sprints", "selected", "open"]].concat(), None, Some(edit_fn as EditFn))
+}
+
+/// `url` given `child` as one more list item.
+fn own(ctx: &TestContext, flags: &[&str], url: &str, child: &str) -> RunOutput {
+	let child = child.to_string();
+	open_milestone(ctx, flags, url, move |body| format!("{}\n- {child}\n", body.trim_end()))
+}
+
+/// The chains `out` drew.
+fn drawn(out: &RunOutput) -> String {
+	let (mut kept, mut inside, mut helped) = (Vec::new(), false, false);
+	for line in out.stderr.lines() {
+		(inside, helped) = (inside || line.contains("tedi::chain::"), helped || line.trim_start().starts_with("help:"));
+		if inside && helped && line.trim().is_empty() {
+			(inside, helped) = (false, false);
+		}
+		if inside {
+			kept.push(line.find("tedi::chain::").map_or(line, |at| &line[at..]).trim_end());
+		}
+	}
+	kept.join("\n")
+}
+
+fn refused(ctx: &TestContext, url: &str, flags: &[&str], child: &str) -> String {
+	let (remote, local) = (ctx.remote_milestones(), held(url));
+	let out = own(ctx, flags, url, child);
+	assert!(!out.status.success(), "stdout: {}", out.stdout);
+	assert!(out.stderr.contains("rejected-changes.md"), "the buffer is kept: {}", out.stderr);
+	assert_eq!(ctx.remote_milestones(), remote, "nothing reaches Github");
+	assert_eq!(held(url), local, "nor the store");
+	drawn(&out)
+}
+
+#[test]
+fn a_milestone_owning_itself_through_another_org_is_refused() {
+	let ctx = TestContext::build();
+	chained(&ctx, &[(SITE, "v1", "ship"), (TILERS, "0.5", &format!("- {SITE}"))]);
+	let drawn = [refused(&ctx, SITE, &[], TILERS), refused(&ctx, SITE, &["--offline"], SITE)];
+	insta::assert_snapshot!(drawn.join("\n"), @r#"
+	tedi::chain::loop
+
+	  × ev-service-arb/site "v1" would own itself
+	   ╭─[ownership:2:17]
+	 1 │ ╭─► ev-service-arb/site · v1
+	 2 │ │   └─► ev-main/tilers · 0.5
+	   ·         ──────────┬─────────
+	   ·                   ╰── added by this edit
+	 3 │ ╰───────┘
+	   · ────┬────
+	   ·     ╰── already contains ev-service-arb/site · v1
+	   ╰────
+	  help: drop the new link, or ev-service-arb/site from https://github.com/ev-main/tilers/milestone/1
+	tedi::chain::loop
+
+	  × ev-service-arb/site "v1" would own itself
+	   ╭─[ownership:2:1]
+	 1 │ ╭─► ev-service-arb/site · v1
+	 2 │ ╰───┘
+	   · ──┬──
+	   ·   ╰── added by this edit
+	   ╰────
+	  help: drop the new link
+	"#);
+}
+
+#[test]
+fn a_loop_over_three_orgs_is_drawn_whole() {
+	let ctx = TestContext::build();
+	chained(&ctx, &[(SITE, "v1", "ship"), (TILERS, "0.5", &format!("- {DATA}")), (DATA, "1.0", &format!("- {SITE}"))]);
+	insta::assert_snapshot!(refused(&ctx, SITE, &["--offline"], TILERS), @r#"
+	tedi::chain::loop
+
+	  × ev-service-arb/site "v1" would own itself
+	   ╭─[ownership:2:17]
+	 1 │ ╭─► ev-service-arb/site · v1
+	 2 │ │   └─► ev-main/tilers · 0.5
+	   ·         ──────────┬─────────
+	   ·                   ╰── added by this edit
+	 3 │ │       └─► ev-quant/trading_data · 1.0
+	 4 │ ╰───────────┘
+	   · ──────┬──────
+	   ·       ╰── already contains ev-service-arb/site · v1
+	   ╰────
+	  help: drop the new link, or ev-service-arb/site from https://github.com/ev-quant/trading_data/milestone/1
+	"#);
+}
+
+#[test]
+fn a_chain_names_no_repo_twice() {
+	let ctx = TestContext::build();
+	let next = "https://github.com/ev-service-arb/site/milestone/2";
+	chained(&ctx, &[(SITE, "v1", &format!("- {TILERS}")), (next, "v1.1", ""), (TILERS, "0.5", "")]);
+	let drawn = [refused(&ctx, TILERS, &[], next), refused(&ctx, SITE, &["--offline"], next)];
+	insta::assert_snapshot!(drawn.join("\n"), @r#"
+	tedi::chain::repo_twice
+
+	  × ev-main/tilers "0.5" can't own ev-service-arb/site "v1.1": ev-service-arb/site would be on one chain twice
+	   ╭─[ownership:1:1]
+	 1 │ ev-service-arb/site · v1
+	   · ────────────┬───────────
+	   ·             ╰── ev-service-arb/site is here
+	 2 │ └─► ev-main/tilers · 0.5
+	 3 │     └─► ev-service-arb/site · v1.1
+	   ·         ─────────────┬────────────
+	   ·                      ╰── added by this edit, and here again
+	   ╰────
+	  help: drop the new link: within a repo, milestones relate through their shape (`v1.0` → `v1.1`)
+	tedi::chain::repo_twice
+
+	  × ev-service-arb/site "v1" can't own ev-service-arb/site "v1.1": ev-service-arb/site would be on one chain twice
+	   ╭─[ownership:1:1]
+	 1 │ ev-service-arb/site · v1
+	   · ────────────┬───────────
+	   ·             ╰── ev-service-arb/site is here
+	 2 │ └─► ev-service-arb/site · v1.1
+	   ·     ─────────────┬────────────
+	   ·                  ╰── added by this edit, and here again
+	   ╰────
+	  help: drop the new link: within a repo, milestones relate through their shape (`v1.0` → `v1.1`)
+	"#);
+}
+
+#[test]
+fn a_root_is_owned_by_no_milestone() {
+	let ctx = TestContext::build();
+	let (bottlenecks, other) = ("https://github.com/ev-main/.github/milestone/1", "https://github.com/ev-quant/.github/milestone/1");
+	chained(
+		&ctx,
+		&[
+			(SITE, "v1", "ship"),
+			(bottlenecks, "Bottlenecks", ""),
+			(other, "Bottlenecks", &format!("- {bottlenecks}")),
+			("https://github.com/o/r/milestone/7", "1d", ""),
+		],
+	);
+	let drawn = [
+		refused(&ctx, SITE, &[], "https://github.com/o/r/milestone/7"),
+		refused(&ctx, SITE, &["--offline"], bottlenecks),
+		refused(&ctx, bottlenecks, &["--offline"], other),
+	];
+	insta::assert_snapshot!(drawn.join("\n"), @r#"
+	tedi::chain::root
+
+	  × ev-service-arb/site "v1" can't own o/r "1d": nothing owns a planning sprint
+	   ╭─[ownership:2:11]
+	 1 │ ev-service-arb/site · v1
+	 2 │ └─► o/r · 1d
+	   ·     ────┬───
+	   ·         ╰── added by this edit
+	   ╰────
+	  help: drop the new link
+	tedi::chain::root
+
+	  × ev-service-arb/site "v1" can't own ev-main/.github "Bottlenecks": only a sprint owns Bottlenecks
+	   ╭─[ownership:2:11]
+	 1 │ ev-service-arb/site · v1
+	 2 │ └─► ev-main/.github · Bottlenecks
+	   ·     ──────────────┬──────────────
+	   ·                   ╰── added by this edit
+	   ╰────
+	  help: drop the new link
+	tedi::chain::loop
+
+	  × ev-main/.github "Bottlenecks" would own itself
+	   ╭─[ownership:2:17]
+	 1 │ ╭─► ev-main/.github · Bottlenecks
+	 2 │ │   └─► ev-quant/.github · Bottlenecks
+	   ·         ───────────────┬──────────────
+	   ·                        ╰── added by this edit
+	 3 │ ╰───────┘
+	   · ────┬────
+	   ·     ╰── already contains ev-main/.github · Bottlenecks
+	   ╰────
+	  help: drop the new link, or ev-main/.github from https://github.com/ev-quant/.github/milestone/1
+	"#);
+}
+
+/// Each edge is legal where it was made; Github gained the other one since.
+#[test]
+fn a_loop_closed_only_by_the_merge_is_refused_there() {
+	let ctx = TestContext::build();
+	chained(&ctx, &[(SITE, "v1", "ship"), (TILERS, "0.5", "")]);
+	let out = own(&ctx, &["--offline"], SITE, TILERS);
+	assert!(out.status.success(), "legal as far as this machine knows: {}", out.stderr);
+	ctx.remote_milestone("ev-main/tilers", 1, "0.5", &format!("- {SITE}"), &[]);
+
+	let pulled = pull(&ctx, &["ev-service-arb/site", "ev-main/tilers"]);
+	insta::assert_snapshot!(format!("{}\n---\n{}\n---\n{}", drawn(&pulled), held(SITE), ctx.remote_milestones()), @r#"
+	tedi::chain::loop
+
+	  × ev-service-arb/site "v1" would own itself
+	   ╭─[ownership:2:17]
+	 1 │ ╭─► ev-service-arb/site · v1
+	 2 │ │   └─► ev-main/tilers · 0.5
+	   ·         ──────────┬─────────
+	   ·                   ╰── added by this edit
+	 3 │ ╰───────┘
+	   · ────┬────
+	   ·     ╰── already contains ev-service-arb/site · v1
+	   ╰────
+	  help: drop the new link, or ev-service-arb/site from https://github.com/ev-main/tilers/milestone/1
+	---
+	ship
+
+	- https://github.com/ev-main/tilers/milestone/1
+	---
+	ev-main/tilers#1 0.5 []
+	- https://github.com/ev-service-arb/site/milestone/1
+	ev-service-arb/site#1 v1 []
+	ship
+	"#);
+
+	// the editor opens on it, to be fixed
+	let out = open_milestone(&ctx, &[], SITE, |body| {
+		assert!(body.contains(TILERS), "the edge is there to drop: {body}");
+		"ship it".into()
+	});
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+	assert_eq!(ctx.remote_milestones(), format!("ev-main/tilers#1 0.5 []\n- {SITE}\nev-service-arb/site#1 v1 []\nship it"));
+}
+
+#[test]
+fn an_unknown_child_is_refused_offline_and_fetched_online() {
+	let ctx = TestContext::build();
+	chained(&ctx, &[(SITE, "v1", "ship")]);
+	ctx.remote_milestone("ev-main/tilers", 1, "0.5", &format!("- {DATA}"), &[]);
+	ctx.remote_milestone("ev-quant/trading_data", 1, "1.0", "grid", &[]);
+	insta::assert_snapshot!(refused(&ctx, SITE, &["--offline"], TILERS), @"
+	tedi::chain::unknown
+
+	  × https://github.com/ev-main/tilers/milestone/1 is not stored here, so what it owns is unknown
+	  help: own it online: it is fetched with everything it contains
+	");
+
+	let out = own(&ctx, &[], SITE, TILERS);
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+	assert_eq!((held(TILERS), held(DATA)), (format!("- {DATA}"), "grid".to_string()), "with everything it contains");
+}
+
+#[test]
+fn what_the_chain_allows_lands() {
+	let ctx = TestContext::build();
+	let (bottlenecks, own_repos) = ("https://github.com/ev-main/.github/milestone/1", "https://github.com/ev-main/.github/milestone/2");
+	let other = "https://github.com/ev-quant/.github/milestone/1";
+	chained(
+		&ctx,
+		&[
+			(bottlenecks, "Bottlenecks", ""),
+			(other, "Bottlenecks", ""),
+			(own_repos, "ci", ""),
+			(SITE, "v1", "ship"),
+			(DATA, "1.0", ""),
+			(TILERS, "0.5", ""),
+		],
+	);
+	for (owner, child) in [
+		(bottlenecks, own_repos),
+		(bottlenecks, SITE),
+		(bottlenecks, TILERS),
+		(bottlenecks, other),
+		(SITE, TILERS),
+		(DATA, TILERS),
+	] {
+		let out = own(&ctx, &[], owner, child);
+		assert!(out.status.success(), "{owner} owning {child}: {}", out.stderr);
+	}
+	insta::assert_snapshot!(ctx.remote_milestones(), @"
+	ev-main/.github#1 Bottlenecks []
+	- https://github.com/ev-main/.github/milestone/2
+	- https://github.com/ev-service-arb/site/milestone/1
+	- https://github.com/ev-main/tilers/milestone/1
+	- https://github.com/ev-quant/.github/milestone/1
+	ev-main/.github#2 ci []
+
+	ev-main/tilers#1 0.5 []
+
+	ev-quant/.github#1 Bottlenecks []
+
+	ev-quant/trading_data#1 1.0 []
+	- https://github.com/ev-main/tilers/milestone/1
+	ev-service-arb/site#1 v1 []
+	ship
+
+	- https://github.com/ev-main/tilers/milestone/1
+	");
+}
+
+#[test]
+fn a_bottlenecks_of_no_org_is_an_ordinary_milestone_and_told() {
+	let ctx = TestContext::build();
+	let misplaced = "https://github.com/ev-main/tilers/milestone/2";
+	ctx.set_issues_dir_override();
+	ctx.remote_milestone("ev-main/tilers", 2, "Bottlenecks", "", &[]);
+	ctx.remote_milestone("ev-service-arb/site", 1, "v1", "ship", &[]);
+	let out = pull(&ctx, &["ev-main/tilers", "ev-service-arb/site"]);
+	insta::assert_snapshot!(out.stderr.lines().filter(|l| l.contains("Bottlenecks")).collect::<Vec<_>>().join("\n"), @"https://github.com/ev-main/tilers/milestone/2 is taken for an ordinary milestone: only an org's `.github` may have a milestone titled `Bottlenecks`, and ev-main/tilers is none");
+	let out = own(&ctx, &["--offline"], SITE, misplaced);
+	assert!(out.status.success(), "{}", out.stderr);
+}
+
+#[tokio::test]
+async fn a_sprint_owns_bottlenecks_and_no_sprint() {
+	let ctx = TestContext::build();
+	seed_sprint(&ctx, ISSUE_10, ISSUE_10, -100, "2099-01-01T00:00:00Z").await;
+	let mut state: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&ctx.mock_state_path).unwrap()).unwrap();
+	for (owner, repo, number, title) in [("ev-main", ".github", 1, "Bottlenecks"), ("o", "r", 8, "2w")] {
+		state["milestones"]
+			.as_array_mut()
+			.unwrap()
+			.push(serde_json::json!({ "owner": owner, "repo": repo, "number": number, "title": title, "state": "open", "description": "" }));
+	}
+	std::fs::write(&ctx.mock_state_path, state.to_string()).unwrap();
+	let edit = |child: &'static str| {
+		let add = move |tmp: &Path| std::fs::write(tmp, format!("{}\n\n- {child}\n", std::fs::read_to_string(tmp).unwrap().trim_end())).unwrap();
+		ctx.milestone_client_edit(&["--mock", "sprints", "edit", "1d"], None, Some(Box::new(add) as EditFn))
+	};
+
+	let out = edit("https://github.com/ev-main/.github/milestone/1");
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+	let before = ctx.remote_milestones();
+	assert!(before.contains("ev-main/.github/milestone/1"), "{before}");
+
+	let out = edit("https://github.com/o/r/milestone/8");
+	assert!(!out.status.success(), "stdout: {}", out.stdout);
+	assert!(out.stderr.contains("rejected-changes.md"), "the buffer is kept: {}", out.stderr);
+	assert_eq!(ctx.remote_milestones(), before);
+	insta::assert_snapshot!(drawn(&out), @r#"
+	tedi::chain::root
+
+	  × o/r "1d" can't own o/r "2w": nothing owns a planning sprint
+	   ╭─[ownership:2:11]
+	 1 │ o/r · 1d
+	 2 │ └─► o/r · 2w
+	   ·     ────┬───
+	   ·         ╰── added by this edit
+	   ╰────
+	  help: drop the new link
+	"#);
+}
+
+#[test]
+fn a_renamed_owners_milestone_is_owned_under_its_current_name() {
+	let ctx = TestContext::build();
+	chained(&ctx, &[(SITE, "v1", "ship")]);
+	ctx.remote_milestone("ev-main/tilers", 1, "0.5", &format!("- {SITE}"), &[]);
+	ctx.remote_renamed("old-main", "ev-main");
+	insta::assert_snapshot!(refused(&ctx, SITE, &[], "https://github.com/old-main/tilers/milestone/1"), @r#"
+	tedi::chain::loop
+
+	  × ev-service-arb/site "v1" would own itself
+	   ╭─[ownership:2:17]
+	 1 │ ╭─► ev-service-arb/site · v1
+	 2 │ │   └─► ev-main/tilers · 0.5
+	   ·         ──────────┬─────────
+	   ·                   ╰── added by this edit
+	 3 │ ╰───────┘
+	   · ────┬────
+	   ·     ╰── already contains ev-service-arb/site · v1
+	   ╰────
+	  help: drop the new link, or ev-service-arb/site from https://github.com/ev-main/tilers/milestone/1
+	"#);
+
+	ctx.remote_milestone("ev-main/tilers", 1, "0.5", "", &[]);
+	let out = own(&ctx, &[], SITE, "https://github.com/old-main/tilers/milestone/1");
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+	assert_eq!(held(SITE), format!("ship\n\n- {TILERS}"));
+}
+
+#[tokio::test]
+async fn a_loop_on_github_is_pulled_and_told_and_every_walk_ends() {
+	let ctx = TestContext::build();
+	ctx.set_issues_dir_override();
+	let task = "- [ ] Task <!-- @mock_user https://github.com/ev-quant/trading_data/issues/5 -->\n  body\n\n  # Blockers\n  - do it\n";
+	ctx.remote_in(("ev-quant", "trading_data").into(), &parse_virtual(task), Some(Seed::new(0)));
+	ctx.remote_milestone("ev-service-arb/site", 1, "v1", &format!("ship\n\n- {TILERS}"), &[]);
+	ctx.remote_milestone("ev-main/tilers", 1, "0.5", &format!("- {DATA}"), &[]);
+	ctx.remote_milestone("ev-quant/trading_data", 1, "1.0", &format!("- {SITE}\n- #5"), &[]);
+	let remote = ctx.remote_milestones();
+
+	let out = pull(&ctx, &["ev-service-arb/site"]);
+	insta::assert_snapshot!(drawn(&out), @r#"
+	tedi::chain::loop
+
+	  × ev-main/tilers "0.5" owns itself
+	   ╭─[ownership:4:1]
+	 1 │ ╭─► ev-main/tilers · 0.5
+	 2 │ │   └─► ev-quant/trading_data · 1.0
+	 3 │ │       └─► ev-service-arb/site · v1
+	 4 │ ╰───────────┘
+	   · ──────┬──────
+	   ·       ╰── contains ev-main/tilers · 0.5
+	   ╰────
+	  help: drop one of its links, in https://github.com/ev-main/tilers/milestone/1, https://github.com/ev-quant/trading_data/milestone/1, https://github.com/ev-service-arb/site/milestone/1
+	"#);
+	assert_eq!(held(DATA), format!("- {SITE}\n- ev-quant/trading_data#5"));
+	assert_eq!(ctx.remote_milestones(), remote, "pulled as it is");
+
+	let out = open_milestone(&ctx, &[], SITE, |body| body.replace("ship", "ship it"));
+	assert!(out.status.success(), "an unrelated edit lands: {}", out.stderr);
+	assert!(ctx.remote_milestones().contains("ship it"), "{}", ctx.remote_milestones());
+
+	seed_selection(&ctx, &format!("- {SITE}\n"), &[], &[]);
+	let select = |args: &[&str]| {
+		let out = ctx.run(&[&["--offline", "sprints", "select"], args].concat());
+		assert!(out.status.success(), "stderr: {}", out.stderr);
+		out.stdout
+	};
+	assert!(select(&["--top"]).contains("v1 → ev-quant/trading_data#5"), "the first workable issue is two milestones down");
+	assert!(select(&["--in"]).contains("Selected: ev-quant/trading_data#5"));
+	assert!(select(&["--out"]).contains("Selected milestone: 1.0"));
+	assert!(select(&["-e", "Task"]).contains("ev-quant/trading_data#5"));
+	let out = ctx.run(&["--offline", "sprints", "selected", "current"]);
+	assert!(out.stdout.contains("do it"), "stdout: {}, stderr: {}", out.stdout, out.stderr);
+}
+
+#[test]
+fn contained_milestones_added_on_both_sides_both_survive() {
+	let ctx = TestContext::build();
+	chained(&ctx, &[(SITE, "v1", "ship"), (TILERS, "0.5", ""), (DATA, "1.0", "")]);
+	assert!(own(&ctx, &["--offline"], SITE, TILERS).status.success());
+	ctx.remote_milestone("ev-service-arb/site", 1, "v1", &format!("ship\n\n- {DATA}"), &[]);
+	pull(&ctx, &["ev-service-arb/site"]);
+	for at in [held(SITE), ctx.remote_milestones()] {
+		assert!(at.contains(TILERS), "{at}");
+		assert!(at.contains(DATA), "{at}");
+	}
+
+	ctx.remote_milestone("ev-service-arb/site", 1, "v1", &format!("ship\n\n- {TILERS}"), &[]);
+	pull(&ctx, &["ev-service-arb/site"]);
+	assert!(!held(SITE).contains(DATA), "removed on Github: {}", held(SITE));
+	let out = open_milestone(&ctx, &[], SITE, |_| "ship".into());
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+	assert!(!ctx.remote_milestones().contains(&format!("- {TILERS}")), "removed here: {}", ctx.remote_milestones());
+}
+
+#[rstest::rstest]
+#[case::body("body", "body\n\n- https://github.com/ev-main/tilers/milestone/1")]
+#[case::blocker("body", "body\n\n# Blockers\n- https://github.com/ev-main/tilers/milestone/1")]
+#[tokio::test]
+async fn a_field_edit_giving_an_issue_a_milestone_is_refused(#[case] field: &str, #[case] new: &str) {
+	let ctx = TestContext::build();
+	let vi = parse_virtual("- [ ] Task <!-- @mock_user https://github.com/o/r/issues/1 -->\n  body\n");
+	ctx.consensus(&vi, Some(Seed::new(0))).await;
+	ctx.remote(&vi, Some(Seed::new(0)));
+	let out = ctx.run(&["--mock", "set", "https://github.com/o/r/issues/1", field, new, "--seen", "body"]);
+	assert!(!out.status.success(), "stdout: {}", out.stdout);
+	assert!(out.stderr.contains("an issue can't own a milestone"), "stderr: {}", out.stderr);
+	assert!(!local_issue(1).contains("milestone"), "{}", local_issue(1));
+	assert!(!ctx.github_calls().iter().any(|c| c.starts_with("update_issue")), "{:?}", ctx.github_calls());
+}
+
+#[rstest::rstest]
+#[case::add("add")]
+#[case::set("set")]
+#[tokio::test]
+async fn a_blocker_naming_a_milestone_is_refused(#[case] op: &str) {
+	let ctx = TestContext::build();
+	ctx.local(&parse_virtual(ISSUE_10), Some(Seed::new(0))).await;
+	seed_selection(&ctx, "- https://github.com/o/r/issues/10\n", &[], &[]);
+	ctx.set_issues_dir_override();
+	let before = local_issue(10);
+	let out = ctx.run(&["--offline", "sprints", "selected", op, TILERS]);
+	assert!(!out.status.success(), "stdout: {}", out.stdout);
+	assert!(out.stderr.contains("an issue can't own a milestone"), "stderr: {}", out.stderr);
+	assert_eq!(local_issue(10), before);
+}
+
+#[tokio::test]
+async fn an_issue_given_a_milestone_in_an_editor_is_refused() {
+	let ctx = TestContext::build();
+	let vi = parse_virtual(ISSUE_10);
+	let issue = ctx.consensus(&vi, Some(Seed::new(0))).await;
+	ctx.remote(&vi, Some(Seed::new(0)));
+	let (path, paused) = ctx.open_issue(&issue).break_to_edit();
+	let before = std::fs::read_to_string(&path).unwrap();
+	std::fs::write(&path, before.replace("issue body", &format!("issue body\n\n  - {TILERS}"))).unwrap();
+	let out = paused.resume();
+	assert!(!out.status.success(), "stdout: {}", out.stdout);
+	assert!(out.stderr.contains("an issue can't own a milestone"), "stderr: {}", out.stderr);
+	assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+
+	let (out, _) = ctx.milestone_edit_with_changes("- o/r#10", |tmp| {
+		let buffer = std::fs::read_to_string(tmp).unwrap();
+		std::fs::write(tmp, buffer.replace("  issue body", &format!("  issue body\n\n  - {TILERS}"))).unwrap();
+	});
+	assert!(out.stderr.contains("an issue can't own a milestone"), "stderr: {}", out.stderr);
+	assert!(!local_issue(10).contains("milestone"), "{}", local_issue(10));
+}
+
 /// GitHub's `1d` (o/r#7) becomes `body` and is pulled into the store: what a server's puller does while the editor is open.
 fn pull_midway(ctx: &TestContext, body: &'static str) -> impl FnOnce() + 'static {
 	let milestone = serde_json::json!({
@@ -2485,11 +3017,12 @@ async fn test_what_may_hold_a_sprint() {
 	let ctx = TestContext::build();
 	let url = |n: u64| format!("- https://github.com/o/r/milestone/{n}");
 	ctx.store_milestone("https://github.com/o/r/milestone/1", "1d", false, "");
-	ctx.store_milestone("https://github.com/o/r/milestone/2", "Bottlenecks", false, "");
+	let (orgs, others) = ("https://github.com/o/.github/milestone/2", "https://github.com/p/.github/milestone/2");
+	ctx.store_milestone(orgs, "Bottlenecks", false, "");
 	ctx.store_milestone("https://github.com/o/r/milestone/3", "2w", false, &url(5)); // as pulled
 	ctx.store_milestone("https://github.com/o/r/milestone/4", "v1", false, "");
 	ctx.store_milestone("https://github.com/o/r/milestone/5", "1Q", false, "");
-	ctx.store_milestone("https://github.com/p/r/milestone/2", "Bottlenecks", false, &url(2));
+	ctx.store_milestone(others, "Bottlenecks", false, &format!("- {orgs}"));
 	ctx.xdg.write_config("config.toml", "github_token = \"test_token\"\n\n[milestones]\nurl = \"o/r\"\n");
 	let edit = |sprint: &str, line: String| {
 		let mut cmd = Command::new(get_binary_path());
@@ -2500,15 +3033,15 @@ async fn test_what_may_hold_a_sprint() {
 		}) as EditFn;
 		ctx.drive_editor_session(cmd, Some(edit)).status.success()
 	};
-	assert!(edit("1d", url(2)), "a planning sprint holds Bottlenecks");
+	assert!(edit("1d", format!("- {orgs}")), "a planning sprint holds Bottlenecks");
 	assert!(edit("1d", url(4)), "and any other milestone");
 	assert!(!edit("1d", url(5)), "but no planning one");
 	assert!(edit("2w", url(4)), "held before this edit, the 1Q in it stands");
 	assert!(!edit("bottlenecks", url(1)), "nothing holds a planning sprint");
-	assert!(!edit("bottlenecks", url(2)), "itself");
-	assert!(!edit("bottlenecks", "- https://github.com/p/r/milestone/2".into()), "it holds it already");
+	assert!(!edit("bottlenecks", format!("- {orgs}")), "itself");
+	assert!(!edit("bottlenecks", format!("- {others}")), "it holds it already");
 	assert!(edit("bottlenecks", url(4)));
-	assert_eq!(ctx.stored_milestone("o/r", 2).trim_end(), url(4));
+	assert_eq!(ctx.stored_milestone("o/.github", 2).trim_end(), url(4));
 }
 
 /// Bottlenecks pulled holding each other: the search over all they reach ends.
@@ -2517,12 +3050,12 @@ async fn test_selection_walks_no_cycle_round() {
 	let ctx = TestContext::build();
 	let vi = parse_virtual("- [ ] Deep <!-- @mock_user https://github.com/o/r/issues/20 -->\n\n  # Blockers\n  - dig\n");
 	ctx.local(&vi, Some(Seed::new(0))).await;
-	ctx.store_milestone("https://github.com/o/sprints/milestone/2", "Bottlenecks", false, "- https://github.com/p/r/milestone/2");
+	ctx.store_milestone("https://github.com/o/.github/milestone/2", "Bottlenecks", false, "- https://github.com/p/.github/milestone/2");
 	ctx.store_milestone(
-		"https://github.com/p/r/milestone/2",
+		"https://github.com/p/.github/milestone/2",
 		"Bottlenecks",
 		false,
-		"- https://github.com/o/sprints/milestone/2\n- https://github.com/o/r/issues/20",
+		"- https://github.com/o/.github/milestone/2\n- https://github.com/o/r/issues/20",
 	);
 	ctx.focus_sprint("", &[]);
 	let out = ctx.run(&["--offline", "sprints", "select", "-e", "Deep"]);
@@ -2541,7 +3074,7 @@ async fn test_select_walks_the_sprint_and_what_is_picked_up() {
 	}
 	let link = |n: u64| format!("https://github.com/o/r/issues/{n}");
 	ctx.focus_sprint(&format!("- {}\n", link(10)), &[]);
-	ctx.store_milestone("https://github.com/o/sprints/milestone/2", "Bottlenecks", false, &format!("- {}", link(14)));
+	ctx.store_milestone("https://github.com/o/.github/milestone/2", "Bottlenecks", false, &format!("- {}", link(14)));
 	let buckets = ["triage", "selected", "in_progress"].map(|name| serde_json::json!({ "name": name, "on_enter": [], "buckets": [] }));
 	let answer = serde_json::json!({
 		"workflow": "kanban",

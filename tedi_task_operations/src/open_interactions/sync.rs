@@ -423,7 +423,7 @@ fn persist_blocker_selection(issue: &mut Issue) {
 }
 #[derive(Debug, thiserror::Error)]
 #[error("{0}\n\nYour changes were saved to /tmp/tedi/rejected-changes.md — you can recover them from there.")]
-struct RejectedEdit(Box<dyn std::error::Error + Send + Sync>);
+pub(super) struct RejectedEdit(pub(super) Box<dyn std::error::Error + Send + Sync>);
 
 mod core {
 	use super::*;
@@ -942,10 +942,12 @@ mod types {
 					} else {
 						issue.contents.blockers.add(text);
 					}
+					issue.check_edit()?;
 					ModifyResult { output: None, file_modified: true }
 				}
 				Modifier::BlockerSet { text } => {
 					let old = issue.contents.blockers.set(text);
+					issue.check_edit()?;
 					ModifyResult {
 						output: old.map(|prev| format!("Replaced: {prev} -> {text}")),
 						file_modified: true,

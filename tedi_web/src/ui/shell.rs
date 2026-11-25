@@ -3,6 +3,7 @@
 
 use dioxus::prelude::*;
 use ev_lib::uikit_dioxus::{Popover, PopoverContent, PopoverTrigger, Sheet, SheetContent};
+use tedi_core::board::Slice;
 use tilers_dioxus::{Band, PanelId};
 
 use super::{
@@ -12,7 +13,6 @@ use super::{
 	kit::{IconBtn, Kbd},
 	library::NameForm,
 	route::Go as Link,
-	scope::open_in,
 	sprint_panel,
 	toolbar::{FieldsMenu, GroupMenu, Keep},
 	view::{count, outcome},
@@ -91,7 +91,7 @@ fn Shelves() -> Element {
 			favorite: Some(Item::Scope(s.path.clone())),
 			own: library.scopes.contains_key(&s.path).then_some(Shelf::Scopes),
 			current: false,                                                                    // applied, it is its terms
-			meta: open_in(&ctx, &s.scope.filter()).map(|n| n.to_string()).unwrap_or_default(), // before the board arrives
+			meta: ctx.open_in(&Slice::Terms(s.scope.filter())).map(|n| n.to_string()).unwrap_or_default(), // before the board arrives
 			go: Go::Scope(s.path),
 		})
 		.collect();

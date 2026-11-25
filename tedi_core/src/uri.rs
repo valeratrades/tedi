@@ -11,14 +11,15 @@ use std::{
 use arrayvec::ArrayString;
 use url::Url;
 
+use crate::chain::{BadName, Org};
+
 /// Which local project stores an issue: a Github repo, or the single owner-less `virtual` store.
 /// Uses fixed-size `ArrayString`s to be `Copy`. GitHub limits: owner max 39 chars, repo max 100 chars.
 /// `virtual` is reserved as an owner name so it can't collide with the virtual store's directory.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum RepoInfo {
 	Github {
-		/// Repository owner (fixed max length; following Github spec)
-		owner: ArrayString<39>,
+		owner: Org,
 		/// Repository name (fixed max length; following Github spec)
 		repo: ArrayString<100>,
 	},
@@ -34,7 +35,7 @@ impl RepoInfo {
 	/// Panics if owner exceeds 39 chars or repo exceeds 100 chars.
 	pub fn new(owner: &str, repo: &str) -> Self {
 		Self::Github {
-			owner: ArrayString::from(&owner.to_lowercase()).expect("owner name too long (max 39 chars)"),
+			owner: Org(ArrayString::from(&owner.to_lowercase()).expect("owner name too long (max 39 chars)")),
 			repo: ArrayString::from(&repo.to_lowercase()).expect("repo name too long (max 100 chars)"),
 		}
 	}
@@ -42,7 +43,7 @@ impl RepoInfo {
 	/// Get the owner, or `None` for the owner-less virtual store.
 	pub fn owner(&self) -> Option<&str> {
 		match self {
-			Self::Github { owner, .. } => Some(owner.as_str()),
+			Self::Github { owner, .. } => Some(owner.0.as_str()),
 			Self::Virtual => None,
 		}
 	}
@@ -57,6 +58,24 @@ impl RepoInfo {
 
 	pub fn is_virtual(&self) -> bool {
 		matches!(self, Self::Virtual)
+	}
+}
+
+/// `owner/repo`, held to the names GitHub gives out: [`RepoInfo::new`] takes what is known to be one.
+impl std::str::FromStr for RepoInfo {
+	type Err = BadName;
+
+	fn from_str(s: &str) -> Result<Self, BadName> {
+		let (owner, repo) = s.split_once('/').ok_or_else(|| BadName(s.into()))?;
+		let named = |c: char| c.is_ascii_alphanumeric() || "._-".contains(c);
+		let valid = !repo.is_empty() && repo.len() <= 100 && repo.chars().all(named) && repo != "." && repo != "..";
+		match valid {
+			true => Ok(Self::Github {
+				owner: owner.parse()?,
+				repo: ArrayString::from(&repo.to_lowercase()).expect("ASCII of a length checked"),
+			}),
+			false => Err(BadName(s.into())),
+		}
 	}
 }
 
@@ -184,9 +203,11 @@ impl MilestoneLink {
 		if segments.len() < 4 || segments[2] != "milestone" {
 			return None;
 		}
-		segments[3].parse::<u64>().ok()?;
-		let normalized: Vec<String> = segments.iter().enumerate().map(|(i, s)| if i < 2 { s.to_lowercase() } else { s.to_string() }).collect();
-		url.path_segments_mut().ok()?.clear().extend(normalized.iter().map(String::as_str));
+		let number: u64 = segments[3].parse().ok()?;
+		let normalized = [segments[0].to_lowercase(), segments[1].to_lowercase(), "milestone".into(), number.to_string()];
+		url.path_segments_mut().ok()?.clear().extend(&normalized); // however it was copied (`?closed=1`), one milestone has one name
+		url.set_query(None);
+		url.set_fragment(None);
 		Some(Self(url))
 	}
 
@@ -227,7 +248,7 @@ impl<'de> serde::Deserialize<'de> for MilestoneLink {
 /// A link to either node kind of task space: an issue or a milestone.
 /// The unit of selection paths — (de)serializes as the bare URL, disambiguated
 /// by the `issues`/`milestone` path segment.
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq, derive_more::From)]
 pub enum NodeLink {
 	Issue(IssueLink),
 	Milestone(MilestoneLink),

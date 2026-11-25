@@ -149,7 +149,7 @@ pub async fn sprints_command(settings: &LiveSettings, args: SprintsArgs, mode: S
 				}
 			};
 			view.resolve_bare_refs(None);
-			view.remove_issue_links(&tedi_task_operations::selection::closed_links(&view)); // as an edit would open it
+			view.remove_nodes(&tedi_task_operations::selection::closed_links(&view)); // as an edit would open it
 			// read-only print: not worth a round-trip per referenced issue
 			println!("{}", ops::expand_and_refresh(view, false).await?.text);
 			Ok(())
@@ -249,7 +249,7 @@ async fn ensure_selection(settings: &LiveSettings, mode: SyncMode) -> Result<()>
 	}
 	let missing = Selected::uncached_active_milestones();
 	if !missing.is_empty() {
-		ops::refresh_milestones(&missing).await;
+		ops::refresh_milestones(&missing).await?;
 	}
 	if !Selected::active_ready() {
 		Selected::focus(ops::fetch_sprint(milestone_repo(settings)?, blocker_sprint(settings)?, mode).await?.link().clone())?;
@@ -342,7 +342,7 @@ fn not_outdated(sprint: Sprint, due_on: Option<Timestamp>) -> Result<(), GetMile
 
 fn get_milestone(sprint: Sprint, retrieved_milestones: &[GithubMilestone]) -> Result<String, GetMilestoneError> {
 	let error = |source| GetMilestoneError { sprint, source };
-	let milestone = retrieved_milestones.iter().find(|m| Sprint::titled(&m.title) == Some(sprint)).ok_or_else(|| {
+	let milestone = retrieved_milestones.iter().find(|m| m.title == sprint.to_string()).ok_or_else(|| {
 		error(MilestoneError::MilestoneNotFound {
 			existing_milestones: retrieved_milestones.iter().map(|m| m.title.clone()).collect(),
 		})
@@ -407,7 +407,7 @@ async fn healthcheck(settings: &LiveSettings) -> Result<()> {
 
 	// blocker commands read the sprint from the store
 	let blockers = blocker_sprint(settings)?;
-	if retrieved_milestones.iter().any(|m| Sprint::titled(&m.title) == Some(blockers)) {
+	if retrieved_milestones.iter().any(|m| m.title == blockers.to_string()) {
 		let sprint = tedi_task_operations::sprints::fetch_sprint(milestone_repo(settings)?, blockers, SyncMode::Full).await?;
 		tedi_task_operations::selection::Selected::focus(sprint.link().clone())?;
 	}

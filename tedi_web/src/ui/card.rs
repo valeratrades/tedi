@@ -6,7 +6,7 @@ use ev_lib::uikit_dioxus::*;
 use strum::IntoEnumIterator as _;
 use tedi_core::{
 	PrState,
-	board::{Card, Facet, Shown},
+	board::{Card, Facet, Lift, Shown},
 	conflict::{Field as Edited, FieldEdit, list},
 	labels::{Color, HOURS, Scheme, Type},
 };
@@ -20,15 +20,16 @@ use super::{
 };
 
 #[component]
-pub(super) fn CardView(card: Card, shown: Vec<Shown>, #[props(default)] lifted: bool) -> Element {
+pub(super) fn CardView(card: Card, shown: Vec<Shown>, #[props(default)] lifted: Option<Lift>) -> Element {
 	let ctx = use_context::<Ctx>();
 	let link = card.link.clone();
 	let open = ctx.panels.read().iter().any(|p| p.id.0 == format!("issue:{link}"));
-	let edge = match (lifted, card.conflicted, open) {
-		(true, ..) => "border-accent-error",
-		(false, true, _) => "border-chip-warn-border",
-		(false, false, true) => "border-primary-ink",
-		(false, false, false) => "border-border-subtle hover:border-border-strong",
+	let (edge, why) = match (lifted, card.conflicted, open) {
+		(Some(Lift::Blocks), ..) => ("border-accent-error", "blocks a card here"),
+		(Some(Lift::Bottleneck), ..) => ("border-chart-6", "in the tree of a Bottlenecks"),
+		(None, true, _) => ("border-chip-warn-border", ""),
+		(None, false, true) => ("border-primary-ink", ""),
+		(None, false, false) => ("border-border-subtle hover:border-border-strong", ""),
 	};
 	let has = |s: &Shown| shown.contains(s);
 	let meta: Vec<Shown> = shown
@@ -37,7 +38,7 @@ pub(super) fn CardView(card: Card, shown: Vec<Shown>, #[props(default)] lifted: 
 		.cloned()
 		.collect();
 	rsx! {
-		div { class: "flex flex-col gap-1.5 rounded-[var(--radius)] border bg-card px-3 py-2 {edge}",
+		div { class: "flex flex-col gap-1.5 rounded-[var(--radius)] border bg-card px-3 py-2 {edge}", title: "{why}",
 			div { class: "flex h-4 items-center gap-1.5",
 				KindIcon { card: card.clone() }
 				if has(&Shown::Repo) {

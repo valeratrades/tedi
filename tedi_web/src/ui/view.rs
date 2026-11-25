@@ -7,7 +7,7 @@ use ev_lib::uikit_dioxus::Logo;
 use strum::IntoEnumIterator as _;
 use tedi_core::{
 	IssueLink, MilestoneLink, NodeLink,
-	board::{GroupBy, Order, Placed, Shown, Target, group},
+	board::{GroupBy, Lift, Order, Placed, Shown, Target, Within, group},
 	workflow::State,
 };
 use tilers_dioxus::{Band, Config, DockPanel, Group, LockScope, MinSize, PackedApi, PackedArea, PanelId, Tile};
@@ -216,12 +216,15 @@ pub(super) fn outcome(ctx: &Ctx, by: &GroupBy) -> Option<Result<Groups, String>>
 	let board = ctx.board.read();
 	let cards = &board.cards;
 	let workflows = ctx.workflows();
-	let mut query = lens.search;
-	query.narrow(&lens.scope);
+	let within = match ctx.within() {
+		Ok(within) => within,
+		Err(_) if ctx.need().is_some_and(|need| ctx.awaits(&need)) => return Some(Ok(Vec::new())), // what it holds may be yet to come
+		Err(why) => return Some(Err(why)),
+	};
 	let run = || -> Result<Groups, String> {
-		let mut hits = query.run(cards, ctx.me().as_deref()).map_err(|e| e.to_string())?;
+		let mut hits = lens.search.run(&within, cards, ctx.me().as_deref()).map_err(|e| e.to_string())?;
 		lens.sort.apply(cards, &mut hits, &workflows).map_err(|e| e.to_string())?;
-		group(cards, &hits, by, &workflows).map_err(|e| e.to_string())
+		group(cards, &hits, by, &workflows, &within).map_err(|e| e.to_string())
 	};
 	Some(run())
 }
@@ -503,6 +506,27 @@ fn ColumnActions(tile: Tile) -> Element {
 	}
 }
 
+/// Whether `card` can't be shown as early as `to`, a Bottlenecks pressing on it; said so.
+fn refused(ctx: &Ctx, card: &tedi_core::board::Card, workflow: &str, to: &State) -> bool {
+	let workflow = &ctx.workflows()[workflow];
+	let within = ctx.within().unwrap_or_default(); // under a scope not on the board, no card shows
+	let (Some(floor), Some(bottlenecks), true) = (&workflow.bottlenecks, within.bottlenecks(&card.link), card.open()) else {
+		return false;
+	};
+	if workflow.order(to) >= workflow.order(floor) {
+		return false;
+	}
+	let of = bottlenecks.repo_info();
+	let org = of.owner().expect("milestones are github-only");
+	ctx.say(
+		"drop",
+		super::toast::Tone::Warn,
+		format!("#{} is in {org}'s Bottlenecks: it stands no earlier than {floor}", card.link.number()),
+		None,
+	);
+	true
+}
+
 /// A drop of the card being dragged onto `group`: a move, when the columns are a workflow's.
 fn use_drop(group: String) -> impl FnMut(DragEvent) + 'static {
 	let ctx = use_context::<Ctx>();
@@ -518,7 +542,7 @@ fn use_drop(group: String) -> impl FnMut(DragEvent) + 'static {
 		};
 		let to = State::from_str(&group).expect("a workflow's columns are keyed by its leaves");
 		let Some(card) = ctx.card(&link) else { return }; // gone from the board since the drag began
-		if card.states[&workflow] == to {
+		if refused(&ctx, &card, &workflow, &to) || card.states[&workflow] == to {
 			return;
 		}
 		ctx.move_card(card, workflow, to);
@@ -545,11 +569,11 @@ fn Column(group: String) -> Element {
 	// where the dragged card would land: its place in this column under the workspace's order
 	let landing = match (over(), dragged.read().as_ref(), &order) {
 		(true, Some(link), Some(order)) => cards.iter().position(|c| &c.link == link && !here(c)).map(|at| {
-			let mut with: Vec<usize> = members.iter().filter(|p| !p.lifted).map(|p| p.card).collect(); // what it lifts, it does again
+			let mut with: Vec<usize> = members.iter().filter(|p| p.lifted != Some(Lift::Blocks)).map(|p| p.card).collect(); // what it lifts, it does again
 			with.push(at);
 			let workflows = ctx.workflows();
 			order.apply(cards, &mut with, &workflows).expect("the lens's order ran on these cards");
-			let groups = tedi_core::board::group(cards, &with, &GroupBy::Nothing, &workflows).expect("no workflow to be unknown");
+			let groups = tedi_core::board::group(cards, &with, &GroupBy::Nothing, &workflows, &Within::default()).expect("no workflow to be unknown");
 			let mut below = groups[0].1.iter().skip_while(|p| p.card != at).skip(1);
 			below.find_map(|next| members.iter().position(|p| p.card == next.card)).unwrap_or(members.len()) // none below it: last
 		}),
@@ -654,7 +678,7 @@ fn Stacked(view: View, groups: Groups) -> Element {
 								let (card, workflow, leaf) = (card.clone(), workflow.clone(), leaf.clone());
 								move |_| {
 									moving.set(None);
-									if card.states[&workflow] != leaf {
+									if !refused(&ctx, &card, &workflow, &leaf) && card.states[&workflow] != leaf {
 										ctx.move_card(card.clone(), workflow.clone(), leaf.clone());
 									}
 								}

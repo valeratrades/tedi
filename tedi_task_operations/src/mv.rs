@@ -262,7 +262,7 @@ fn linked(issue: &Issue) -> &IssueLink {
 async fn relink_milestones(moved: &HashMap<IssueLink, IssueLink>, editing: &[Editing], mode: SyncMode) -> Result<()> {
 	for milestone in Local::stored_milestones()? {
 		let link = milestone.link();
-		if milestone.is_closed() || editing.contains(&Editing::Milestone(link.clone())) || !milestone.body.hosted().iter().any(|l| moved.contains_key(l)) {
+		if milestone.is_closed() || editing.contains(&Editing::Milestone(link.clone())) || !milestone.body.0.issue_links().iter().any(|l| moved.contains_key(l)) {
 			continue;
 		}
 		let mut body = milestone.body.clone();

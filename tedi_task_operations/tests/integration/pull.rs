@@ -159,3 +159,32 @@ async fn a_pull_into_a_store_that_cant_commit_fails() {
 
 	assert!(!out.status.success(), "nothing reached consensus. stdout: {}", out.stdout);
 }
+
+/// What a pulled milestone contains comes with it, and the issues those host: of repos nobody named, by link.
+#[test]
+fn a_pulled_milestone_brings_what_it_contains() {
+	let ctx = TestContext::build();
+	let task = |title: &str| parse_virtual(&format!("- [ ] {title} <!-- @mock_user https://github.com/q/data/issues/5 -->\n  body\n"));
+	ctx.remote_in(("q", "data").into(), &task("Was"), Some(Seed::new(-100)));
+	ctx.remote_milestone("o/r", 1, "v1", "- https://github.com/p/tilers/milestone/1\n- https://github.com/hidden/x/milestone/1", &[]);
+	ctx.remote_milestone("p/tilers", 1, "0.5", "- https://github.com/q/data/milestone/1", &[]);
+	ctx.remote_milestone("q/data", 1, "1.0", "grid", &[5]);
+
+	let out = ctx.run(&["--mock", "pull", "o/r"]);
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+	assert!(out.stderr.contains("https://github.com/hidden/x/milestone/1 was not pulled"), "told: {}", out.stderr);
+	let snap_first = issue_tree(&ctx);
+
+	ctx.set_remote_title(("q", "data").into(), 5, "Is");
+	let out = ctx.run(&["--mock", "pull", "o/r"]);
+	assert!(out.status.success(), "stderr: {}", out.stderr);
+	let milestones = std::fs::read_to_string(ctx.xdg.data_dir().join("issues/__milestones__/o/r/1_-_v1.md")).unwrap();
+	insta::assert_snapshot!(format!("{snap_first}\n---\n{}\n---\n{milestones}", issue_tree(&ctx)), @"
+	q/data/5_-_Was.md
+	---
+	q/data/5_-_Is.md
+	---
+	- https://github.com/p/tilers/milestone/1
+	- https://github.com/hidden/x/milestone/1
+	");
+}

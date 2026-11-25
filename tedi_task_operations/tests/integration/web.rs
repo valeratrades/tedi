@@ -762,6 +762,52 @@ fn a_viewers_scope_nests_in_any_scope_by_its_path() {
 	assert_eq!(library["scopes"], serde_json::json!({}));
 }
 
+/// A lens sits in a point of the chain or in terms, told apart by the text alone.
+#[test]
+fn a_point_of_the_chain_is_a_scope() {
+	let ctx = TestContext::build();
+	let (_server, port) = serve(&ctx, &format!("orgs.Main = [\"o\"]\n{BOARD}"), &["--viewer-header", "X-Auth-User"]);
+	let me = Some("alice");
+	let (status, setup) = call(port, "GET", "/api/setup", me, None);
+	assert_eq!(status, 200, "{setup}");
+	assert_eq!(serde_json::from_str::<serde_json::Value>(&setup).unwrap()["orgs"], serde_json::json!({ "main": ["o"] }));
+
+	library(port, me);
+	let sit = |scope: &str| edit(port, me, lensed("ws 1", "Scope", scope)).0;
+	let held = || library(port, me)["workspaces"]["ws 1"]["lens"]["scope"].as_str().unwrap().to_string();
+	for point in [
+		"https://github.com/o",
+		"https://github.com/o/r",
+		"https://github.com/o/r/milestone/1",
+		"https://github.com/O/r/issues/1",
+	] {
+		assert_eq!(sit(point), 200, "{point}");
+		assert_eq!(held(), point.to_lowercase());
+	}
+	let long = format!("https://github.com/{}", "o".repeat(40));
+	for bad in [
+		"https://github.com/",
+		"https://github.com/o/r/pull/1",
+		"https://github.com/o/r/issues/x",
+		"https://github.com/o is:open",
+		&long,
+	] {
+		assert_ne!(sit(bad), 200, "{bad}");
+	}
+	assert_eq!(held(), "https://github.com/o/r/issues/1");
+	assert_eq!(sit("repo:o/*"), 200, "terms still read as they are");
+}
+
+#[test]
+fn a_config_whose_orgs_nest_deeper_is_refused() {
+	let ctx = TestContext::build();
+	std::fs::write(ctx.xdg.inner.root.join("config/tedi.toml"), format!("orgs.a = [\"b\"]\norgs.b = [\"c\"]\n{BOARD}")).unwrap();
+	let out = ctx.run(&["--mock", "web", "--addr", "127.0.0.1:0"]);
+	assert!(!out.status.success(), "{}", out.stdout);
+	let why = "orgs nest one level";
+	assert!(out.stderr.contains(why) || out.stdout.contains(why), "stdout: {}, stderr: {}", out.stdout, out.stderr);
+}
+
 /// A dock of one tile showing `tab`.
 fn dock(tab: &str) -> String {
 	format!(
@@ -871,6 +917,33 @@ fn what_was_kept_before_lenses_is_brought_over_as_the_server_starts() {
 	drop(server);
 	let (_server, port) = serve(&ctx, &running, &gate);
 	assert_eq!(library(port, me), held, "brought over once");
+}
+
+#[test]
+fn a_viewers_scope_outlives_the_teams_one_it_was_in() {
+	let ctx = TestContext::build();
+	let gate = ["--viewer-header", "X-Auth-User"];
+	let scoped = format!("{BOARD}\n[board.scopes.EV.Main]\nrepos = [\"o/*\"]\n");
+	let (server, port) = serve(&ctx, &scoped, &gate);
+	let me = Some("alice");
+	let keep = |name: &str| edit(port, me, serde_json::json!({ "Keep": { "Scope": { "name": name, "scope": { "repos": ["o/core"] } } } })).0;
+	for name in ["core", "EV / Main / core", "EV / Main / core / deep"] {
+		assert_eq!(keep(name), 200, "{name}");
+	}
+	for path in ["EV / Main", "EV / Main / core"] {
+		assert_eq!(edit(port, me, serde_json::json!({ "Favorite": { "what": { "Scope": path }, "on": true } })).0, 200, "{path}");
+	}
+	assert_eq!(edit(port, me, lensed("ws 1", "Scope", "repo:o/*")).0, 200);
+	let before = library(port, me);
+	drop(server);
+
+	std::fs::write(ctx.xdg.inner.root.join("data/tedi/web/version"), "1").unwrap();
+	let gone = BOARD.replace("[board.scopes.Main]\nrepos = [\"o/*\"]\n", "");
+	let (_server, port) = serve(&ctx, &gone, &gate);
+	let held = library(port, me);
+	assert_eq!(held["scopes"].as_object().unwrap().keys().collect::<Vec<_>>(), ["core", "core (2)", "core (2) / deep"]);
+	assert_eq!(held["favorites"], serde_json::json!([{ "Scope": "core (2)" }]));
+	assert_eq!(held["workspaces"], before["workspaces"]);
 }
 
 #[test]

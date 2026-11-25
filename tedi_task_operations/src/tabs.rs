@@ -3,23 +3,22 @@
 
 use std::collections::HashMap;
 
-use color_eyre::eyre::{Report, Result, bail, eyre};
+use color_eyre::eyre::{Report, Result, bail};
 use jiff::{SignedDuration, Timestamp};
 use tedi_core::Sprint;
 
 use crate::{
 	IssueLink, MilestoneBody, MilestoneLink, RepoInfo, TaskView,
 	conflict_resolve::check_for_existing_milestone_conflict,
-	github::GithubMilestone,
 	local::{FsReader, Local},
 	mv::{Editing, move_issues},
 	open_interactions::{BodyWrite, MergeMode, MilestoneModifier, SyncMode, SyncOptions, modify_and_sync_milestone, pull_milestone},
 	picked::{PickedTab, Picking},
 	selection::{URGENT_KEY, closed_links, lock_sprint, urgent_path},
-	sprints::{Expanded, expand_and_refresh, materialize_new_tasks, refresh_milestones, sync_embedded_issue_changes, sync_milestone_changes},
+	sprints::{Expanded, NoSprint, expand_and_refresh, find_sprint, materialize_new_tasks, sync_embedded_issue_changes, sync_milestone_changes},
 };
 
-/// Edit `repo`'s `sprint`; a planning one with what is picked up and the repo's Bottlenecks beside it, rolled
+/// Edit `repo`'s `sprint`; a planning one with what is picked up and its org's Bottlenecks beside it, rolled
 /// over once `grace` past its due date.
 pub async fn edit_sprint(repo: RepoInfo, sprint: Sprint, picking: Option<&Picking>, mode: SyncMode, grace: SignedDuration) -> Result<MilestoneLink> {
 	// GitHub unreachable → degrade the whole run to offline: every edit persists to LocalFs as a
@@ -28,24 +27,11 @@ pub async fn edit_sprint(repo: RepoInfo, sprint: Sprint, picking: Option<&Pickin
 		true => SyncMode::Offline,
 		false => mode,
 	};
-	let listed = match (mode, Local::stored_sprint(repo, sprint)) {
-		(SyncMode::Full, _) | (SyncMode::OnExit, None) => Some(crate::github::client::get()?.list_milestones(repo).await?),
-		(SyncMode::OnExit | SyncMode::Offline, _) => None,
+	let listing = match (mode, Local::stored_sprint(repo, sprint)) {
+		(SyncMode::OnExit, Some(_)) => SyncMode::Offline, // Github is reached only once the editor closes
+		_ => mode,
 	};
-	let find = |sprint: Sprint| match &listed {
-		Some(listed) => listed
-			.iter()
-			.find(|m| Sprint::titled(&m.title) == Some(sprint))
-			.map(|m| MilestoneLink::in_project(repo, m.number)),
-		None => Local::stored_sprint(repo, sprint),
-	};
-	let link = find(sprint).ok_or_else(|| match &listed {
-		Some(listed) => eyre!(
-			"No milestone '{sprint}' in {repo}. It has: {:?}",
-			listed.iter().map(|m: &GithubMilestone| &m.title).collect::<Vec<_>>()
-		),
-		None => eyre!("Cannot edit '{sprint}' offline — it was never fetched while online."),
-	})?;
+	let link = find_sprint(repo, sprint, listing).await?;
 
 	let own = MilestoneTab::render(&link, sprint, mode).await?;
 	let opened = own.opened.0.serialize();
@@ -58,11 +44,11 @@ pub async fn edit_sprint(repo: RepoInfo, sprint: Sprint, picking: Option<&Pickin
 				Err(e) => beside("selected.md", e),
 			}
 		}
-		if let Some(bottlenecks) = find(Sprint::Bottlenecks) {
-			match MilestoneTab::render(&bottlenecks, Sprint::Bottlenecks, mode).await {
-				Ok(tab) => tabs.push(Tab::Milestone(Box::new(tab))),
-				Err(e) => beside("Bottlenecks", e),
-			}
+		let bottlenecks = async { MilestoneTab::render(&find_sprint(repo, Sprint::Bottlenecks, listing).await?, Sprint::Bottlenecks, mode).await };
+		match bottlenecks.await {
+			Ok(tab) => tabs.push(Tab::Milestone(Box::new(tab))),
+			Err(e) if e.downcast_ref::<NoSprint>().is_some() => {} // nor is there one to open
+			Err(e) => beside("Bottlenecks", e),
 		}
 	}
 	let buffers: Vec<(String, &str)> = tabs.iter().map(|t| (t.name(), t.text())).collect();
@@ -80,8 +66,10 @@ pub async fn edit_sprint(repo: RepoInfo, sprint: Sprint, picking: Option<&Pickin
 		let mut failed = None;
 		for ((tab, raw), doc) in tabs.into_iter().zip(&raws).zip(docs) {
 			if let Err(e) = tab.land(raw, doc, &moved, mode).await {
-				eprintln!("warning: a tab was not saved: {e:#}");
-				failed = failed.or(Some(e));
+				match failed {
+					None => failed = Some(e), // said by whoever ran us
+					Some(_) => eprintln!("warning: another tab was not saved: {e:#}"),
+				}
 			}
 		}
 		match failed {
@@ -142,7 +130,7 @@ pub async fn edit_urgent(picked: Option<(&Picking, RepoInfo)>, mode: SyncMode) -
 	};
 
 	doc.collapse_to_links();
-	doc.remove_issue_links(&closed_links(&doc)); // an issue closed in the buffer leaves urgent with the same save
+	doc.remove_nodes(&closed_links(&doc)); // an issue closed in the buffer leaves urgent with the same save
 	let stored = doc.serialize();
 	// urgent is section-less by design (ARCHITECTURE.md); a header here is inert, not an error
 	let headers: Vec<&str> = stored.lines().filter(|l| l.starts_with('#')).collect();
@@ -290,11 +278,7 @@ impl MilestoneTab {
 		// way out, where whatever Github gained since would already have been typed over.
 		let stored = Local::load_milestone(link, &FsReader)?;
 		let milestone = match (mode, stored) {
-			(SyncMode::Full, _) | (SyncMode::OnExit, None) => {
-				let milestone = pull_milestone(link, MergeMode::Normal).await?;
-				refresh_milestones(&milestone.body.0.milestone_links()).await;
-				milestone
-			}
+			(SyncMode::Full, _) | (SyncMode::OnExit, None) => pull_milestone(link, MergeMode::Normal).await?,
 			(SyncMode::OnExit, Some(stored)) => match check_for_existing_milestone_conflict(link).await? {
 				Some(conflict_file) => bail!("Unresolved milestone conflict in {}. Resolve the markers, then re-run.", conflict_file.display()),
 				None => stored,
@@ -303,7 +287,7 @@ impl MilestoneTab {
 			(SyncMode::Offline, None) => bail!("Cannot edit '{sprint}' offline — it was never fetched while online."),
 		};
 		let mut body = milestone.body.clone();
-		body.0.remove_issue_links(&closed_links(&body.0)); // closed by the time it's opened: they leave the sprint
+		body.0.remove_nodes(&closed_links(&body.0)); // closed by the time it's opened: they leave the sprint
 		Ok(Self {
 			sprint,
 			link: link.clone(),

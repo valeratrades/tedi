@@ -139,18 +139,18 @@ impl TaskView {
 			.unwrap_or_default() // a view may say nothing of itself
 	}
 
-	/// Drop every issue component (with its children) — prunes a fully-closed sprint.
-	pub fn remove_issues(&mut self) {
+	/// Drop every node component (with its children): what is left owns nothing.
+	pub fn strip_nodes(&mut self) {
 		for items in self.sections.values_mut() {
-			remove_issue_items(items);
+			retain_items(items, &|item| item.node().is_none() && !matches!(item.content, TaskContent::Issue { .. }));
 		}
 	}
 
-	/// Drop the issue components (with their children) holding any of `links` — the inverse of
-	/// [`push_issue_links`](Self::push_issue_links), for links a merge side deleted.
-	pub fn remove_issue_links(&mut self, links: &[IssueLink]) {
+	/// Drop the components (with their children) of any of `nodes` — the inverse of
+	/// [`push_nodes`](Self::push_nodes), for those a merge side deleted.
+	pub fn remove_nodes(&mut self, nodes: &[NodeLink]) {
 		for items in self.sections.values_mut() {
-			remove_linked_issue_items(items, links);
+			retain_items(items, &|item| !item.node().is_some_and(|n| nodes.contains(&n)));
 		}
 	}
 
@@ -168,28 +168,37 @@ impl TaskView {
 		self.normalize();
 	}
 
-	/// Append bare, unchecked issue items for any link not already present, so a
+	/// Append a bare, unchecked item for any node not already present, so a
 	/// GitHub-assigned issue survives merge/remote-load even when it never appeared in the prose.
-	pub fn push_issue_links(&mut self, links: &[IssueLink]) {
-		let mut present: std::collections::HashSet<String> = self.issue_links().iter().map(|l| l.to_string()).collect();
+	pub fn push_nodes(&mut self, nodes: &[NodeLink]) {
+		let mut present: std::collections::HashSet<NodeLink> = self.nodes().into_iter().collect();
 		let root: Vec<String> = vec![];
-		for link in links {
-			if !present.insert(link.to_string()) {
+		for node in nodes {
+			if !present.insert(node.clone()) {
 				continue;
 			}
 			self.touch(&root);
 			self.sections.entry(root.clone()).or_default().push(TaskItem {
 				checkbox: None,
-				content: TaskContent::Issue { r#ref: IssueRef::Url(link.clone()) },
+				content: match node {
+					NodeLink::Issue(link) => TaskContent::Issue { r#ref: IssueRef::Url(link.clone()) },
+					NodeLink::Milestone(link) => TaskContent::Milestone {
+						r#ref: MilestoneRef(link.clone()),
+						embedded: false,
+					},
+				},
 				children: Vec::new(),
 			});
 		}
 	}
 
-	/// Undoes [`Self::push_issue_links`]: drops the items of `links` that stand as it appends them.
-	pub fn drop_pushed(&mut self, links: &[IssueLink]) {
+	/// Undoes [`Self::push_nodes`]: drops the items of `nodes` that stand as it appends them.
+	pub fn drop_pushed(&mut self, nodes: &[NodeLink]) {
 		if let Some(items) = self.sections.get_mut(&Vec::new()) {
-			items.retain(|item| !(item.checkbox.is_none() && item.children.is_empty() && matches!(&item.content, TaskContent::Issue { r#ref: IssueRef::Url(l), .. } if links.contains(l))));
+			items.retain(|item| {
+				let pushed = item.checkbox.is_none() && item.children.is_empty() && !matches!(item.content, TaskContent::Issue { r#ref: IssueRef::Shorthand { .. } });
+				!(pushed && item.node().is_some_and(|n| nodes.contains(&n)))
+			});
 		}
 	}
 
@@ -285,10 +294,11 @@ impl TaskView {
 		out
 	}
 
-	/// Point every issue ref held in `moved` at its new place.
-	pub fn relink(&mut self, moved: &HashMap<IssueLink, IssueLink>) {
+	/// Point every ref held in `moved` at its new place.
+	pub fn relink<L: Clone + Into<NodeLink>>(&mut self, moved: &HashMap<L, L>) {
+		let moved = moved.iter().map(|(from, to)| (from.clone().into(), to.clone().into())).collect();
 		for items in self.sections.values_mut() {
-			relink_items(items, moved);
+			relink_items(items, &moved);
 		}
 	}
 
@@ -403,6 +413,15 @@ pub struct TaskItem {
 	content: TaskContent,
 	/// Nested content under this item (sub-lists, headings, prose).
 	children: Vec<Section>,
+}
+impl TaskItem {
+	fn node(&self) -> Option<NodeLink> {
+		match &self.content {
+			TaskContent::Issue { r#ref } => r#ref.to_issue_link().map(NodeLink::Issue),
+			TaskContent::Milestone { r#ref, .. } => Some(NodeLink::Milestone(r#ref.to_milestone_link())),
+			TaskContent::Virtual(_) => None,
+		}
+	}
 }
 
 /// What a ref renders as in [`TaskView::render`].
@@ -803,14 +822,7 @@ fn collect_milestone_links(items: &[TaskItem], out: &mut Vec<MilestoneLink>) {
 
 fn collect_nodes(items: &[TaskItem], out: &mut Vec<NodeLink>) {
 	for item in items {
-		match &item.content {
-			TaskContent::Issue { r#ref, .. } =>
-				if let Some(link) = r#ref.to_issue_link() {
-					out.push(NodeLink::Issue(link));
-				},
-			TaskContent::Milestone { r#ref, .. } => out.push(NodeLink::Milestone(r#ref.to_milestone_link())),
-			TaskContent::Virtual(_) => {}
-		}
+		out.extend(item.node());
 		for section in &item.children {
 			if let Section::List(list) = section {
 				collect_nodes(list, out);
@@ -819,34 +831,24 @@ fn collect_nodes(items: &[TaskItem], out: &mut Vec<NodeLink>) {
 	}
 }
 
-fn remove_issue_items(items: &mut Vec<TaskItem>) {
-	items.retain(|item| !matches!(item.content, TaskContent::Issue { .. }));
+fn retain_items(items: &mut Vec<TaskItem>, keep: &impl Fn(&TaskItem) -> bool) {
+	items.retain(keep);
 	for item in items.iter_mut() {
 		for section in &mut item.children {
 			if let Section::List(list) = section {
-				remove_issue_items(list);
+				retain_items(list, keep);
 			}
 		}
 	}
 }
 
-fn remove_linked_issue_items(items: &mut Vec<TaskItem>, links: &[IssueLink]) {
-	items.retain(|item| !matches!(&item.content, TaskContent::Issue { r#ref, .. } if r#ref.to_issue_link().is_some_and(|l| links.contains(&l))));
-	for item in items.iter_mut() {
-		for section in &mut item.children {
-			if let Section::List(list) = section {
-				remove_linked_issue_items(list, links);
-			}
-		}
-	}
-}
-
-fn relink_items(items: &mut [TaskItem], moved: &HashMap<IssueLink, IssueLink>) {
+fn relink_items(items: &mut [TaskItem], moved: &HashMap<NodeLink, NodeLink>) {
 	for item in items {
-		if let TaskContent::Issue { r#ref } = &mut item.content
-			&& let Some(new) = r#ref.to_issue_link().and_then(|l| moved.get(&l))
-		{
-			*r#ref = IssueRef::Url(new.clone());
+		match (item.node().and_then(|n| moved.get(&n)), &mut item.content) {
+			(Some(NodeLink::Issue(new)), TaskContent::Issue { r#ref }) => *r#ref = IssueRef::Url(new.clone()),
+			(Some(NodeLink::Milestone(new)), TaskContent::Milestone { r#ref, .. }) => *r#ref = MilestoneRef(new.clone()),
+			(None, _) => {}
+			(Some(to), _) => panic!("a node moves to one of its kind, not {to}"),
 		}
 		for section in &mut item.children {
 			if let Section::List(list) = section {
@@ -1045,7 +1047,7 @@ fn items_are_loose(items: &[TaskItem], r: Render) -> bool {
 struct Render<'a> {
 	expansions: &'a HashMap<String, Expansion>,
 	fold: Option<Fold>,
-	in_milestone: bool, // milestones contain only issues: inner milestone refs stay bare links
+	in_milestone: bool, // expansion is one level: inner milestone refs stay bare links
 }
 impl Render<'_> {
 	fn unfolded(expansions: &HashMap<String, Expansion>) -> Render<'_> {

@@ -1,9 +1,13 @@
-//! The scope editor (Figma: ScopeEditor): name, the scope it nests in, the repos it covers — explicit or
-//! patterns, with their live count — and the terms every card holds. Saved, it is a starting point: no workspace
-//! it was applied to follows it.
+//! What a workspace can be scoped to: the chain's points, read off the board; and the named scopes' editor (Figma:
+//! ScopeEditor): name, the scope it nests in, the repos it covers — explicit or patterns, with their live count —
+//! and the terms every card holds. Saved, it is a starting point: no workspace it was applied to follows it.
 
 use dioxus::prelude::*;
-use tedi_core::board::{Query, Scope, Terms};
+use tedi_core::{
+	NodeLink,
+	board::{Query, Scope, Slice, Terms},
+	chain::{Orgs, Point},
+};
 
 use super::{
 	Ctx, Editing, Need,
@@ -12,12 +16,132 @@ use super::{
 };
 use crate::api::{Kept, LibraryEdit, Shelf};
 
-/// Open cards `terms` hold; `None` before they arrive.
-pub(super) fn open_in(ctx: &Ctx, terms: &Terms) -> Option<usize> {
-	let board = ctx.board.read();
-	let mut q: Query = "is:open".parse().expect("a constant, valid query");
-	q.narrow(terms);
-	(!ctx.awaits(&Need::Query(q.clone()))).then(|| q.run(&board.cards, ctx.me().as_deref()).expect("clauses run").len())
+/// A point as the scope bar offers it.
+#[derive(Clone, PartialEq)]
+pub(super) struct Offered {
+	pub(super) point: Point,
+	pub(super) name: String,
+	/// Its open cards; `None` before the board arrives.
+	pub(super) open: Option<usize>,
+}
+
+impl Ctx {
+	pub(super) fn orgs(&self) -> Orgs {
+		self.setup.read().as_ref().expect("read once setup arrived").orgs.clone()
+	}
+
+	/// `point` and what holds it, from the top.
+	pub(super) fn crumbs(&self, point: &Point) -> Vec<Point> {
+		let orgs = self.orgs();
+		let mut crumbs: Vec<Point> = std::iter::successors(Some(point.clone()), |p| p.above(&orgs)).collect();
+		crumbs.reverse();
+		crumbs
+	}
+
+	pub(super) fn called(&self, point: &Point) -> String {
+		match point {
+			Point::Org(org) => org.to_string(),
+			Point::Repo(repo) => repo.repo().to_string(),
+			Point::Milestone(link) => {
+				let board = self.board.read();
+				let title = board.targets.iter().find(|t| t.link == *link).map(|t| t.title.clone());
+				title.unwrap_or_else(|| format!("milestone {}", link.number())) // not on the board, or not yet
+			}
+			Point::Issue(link) => self.card(link).map_or_else(|| format!("#{}", link.number()), |c| format!("#{} {}", link.number(), c.title)),
+		}
+	}
+
+	pub(super) fn path(&self, point: &Point) -> String {
+		self.crumbs(point).iter().map(|p| self.called(p)).collect::<Vec<_>>().join(" / ")
+	}
+
+	/// Open cards `scope` leaves in; `None` before they arrive.
+	pub(super) fn open_in(&self, scope: &Slice) -> Option<usize> {
+		let q: Query = "is:open".parse().expect("a constant, valid query");
+		let mut narrowed = q.clone();
+		narrowed.narrow(&scope.terms(&self.orgs()));
+		if self.awaits(&Need::Query(narrowed)) {
+			return None;
+		}
+		let within = self.left_in(scope)?;
+		Some(q.run(&within, &self.board.read().cards, self.me().as_deref()).expect("clauses run").len())
+	}
+
+	/// Every org, repo and milestone holding something on the board, from the top.
+	pub(super) fn places(&self) -> Vec<Offered> {
+		let points: Vec<Point> = {
+			let (board, orgs) = (self.board.read(), self.orgs());
+			let repos = board.cards.iter().map(|c| c.link.project()).chain(board.targets.iter().map(|t| t.link.repo_info()));
+			let mut points: Vec<Point> = Vec::new();
+			for point in repos.map(Point::Repo).chain(board.targets.iter().map(|t| Point::Milestone(t.link.clone()))) {
+				for p in std::iter::successors(Some(point), |p| p.above(&orgs)) {
+					if !points.contains(&p) {
+						points.push(p);
+					}
+				}
+			}
+			points
+		};
+		let mut offered: Vec<Offered> = points.into_iter().filter_map(|p| self.offered(p)).collect();
+		offered.sort_by_key(|o| self.path(&o.point).to_lowercase());
+		offered
+	}
+
+	/// What `at` holds right below it, orgs at the top, as far as it holds something on the board. A repo's
+	/// issues aside: the palette finds those.
+	pub(super) fn below(&self, at: Option<&Point>) -> Vec<Offered> {
+		let owned: Vec<Point> = {
+			let board = self.board.read();
+			let open = |link: &tedi_core::IssueLink| board.cards.iter().any(|c| c.link == *link && c.open());
+			match at {
+				Some(Point::Milestone(link)) => {
+					let Some(target) = board.targets.iter().find(|t| t.link == *link) else { return Vec::new() };
+					let shown = target.nodes.iter().filter_map(|node| match node {
+						NodeLink::Milestone(inner) => Some(Point::Milestone(inner.clone())),
+						NodeLink::Issue(issue) => open(issue).then(|| Point::Issue(issue.clone())),
+					});
+					shown.collect()
+				}
+				Some(Point::Issue(link)) => board
+					.cards
+					.iter()
+					.filter(|c| c.open() && c.parent.as_ref() == Some(link))
+					.map(|c| Point::Issue(c.link.clone()))
+					.collect(),
+				Some(Point::Org(_) | Point::Repo(_)) | None => {
+					let orgs = self.orgs();
+					return self.places().into_iter().filter(|o| o.point.above(&orgs).as_ref() == at).collect();
+				}
+			}
+		};
+		owned.into_iter().filter_map(|p| self.offered(p)).collect()
+	}
+
+	/// `None`: it holds nothing on the board.
+	fn offered(&self, point: Point) -> Option<Offered> {
+		let within = self.left_in(&Slice::Point(point.clone()))?;
+		if let Point::Milestone(_) = point {
+			let board = self.board.read();
+			let held = Query::default().run(&within, &board.cards, None).expect("an empty query runs");
+			if held.is_empty() {
+				return None;
+			}
+		}
+		Some(Offered {
+			name: self.called(&point),
+			open: self.open_in(&Slice::Point(point.clone())),
+			point,
+		})
+	}
+}
+
+pub(super) fn glyph_at(point: &Point) -> Glyph {
+	match point {
+		Point::Org(_) => Glyph::Users,
+		Point::Repo(_) => Glyph::Scope,
+		Point::Milestone(_) => Glyph::Sprint,
+		Point::Issue(_) => Glyph::Issue,
+	}
 }
 
 #[component]
@@ -68,7 +192,7 @@ pub(super) fn ScopeEditor(editing: Editing) -> Element {
 				repos: vec![r.clone()],
 				..Default::default()
 			};
-			let n = open_in(&ctx, &scope.filter());
+			let n = ctx.open_in(&Slice::Terms(scope.filter()));
 			(r, n)
 		})
 		.collect();
@@ -77,7 +201,7 @@ pub(super) fn ScopeEditor(editing: Editing) -> Element {
 		terms: terms.read().clone(),
 		children: nested,
 	};
-	let covers = (!scope.is_empty()).then(|| open_in(&ctx, &scope.filter())).flatten();
+	let covers = (!scope.is_empty()).then(|| ctx.open_in(&Slice::Terms(scope.filter()))).flatten();
 	let inside = format!("{initial_path} / ");
 	let parents: Vec<String> = ctx.scopes().into_iter().map(|s| s.path).filter(|p| *p != initial_path && !p.starts_with(&inside)).collect();
 	let path = match parent() {

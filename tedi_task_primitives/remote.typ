@@ -184,10 +184,11 @@ sink(&mut self, old: Option<&Issue>)
 
 ```
 A milestone crosses the same boundary with a smaller shape. The GitHub `description` IS the body,
-and the hosted issue set is the `milestone` field carried by each issue.
+and the hosted issue set is the `milestone` field carried by each issue. The milestones it contains
+are in the description alone.
 
   in   get_milestone.description  ──parse──▶  MilestoneBody, a TaskView
-       list_milestone_issues      ──push_issue_links──▶ folded into that same body, so an issue
+       list_milestone_issues      ──push_nodes──▶ folded into that same body, so an issue
                                     assigned upstream still resolves when offline; pull requests cut
                                   ─▶ Milestone.assigned — persisted; the base an unassignment on
                                     GitHub is told apart by (the merge drops one assigned then and
@@ -197,7 +198,7 @@ and the hosted issue set is the `milestone` field carried by each issue.
 
   out  description  ──▶ PATCH milestones/{n}           when the body or the due date moved; what
                                                        hosts by its field alone is not written in
-       hosted set   ──▶ PATCH issues/{n} { milestone } new against `old.hosted()` ⇒ assign
+       hosted set   ──▶ PATCH issues/{n} { milestone } new against `old`'s ⇒ assign
                                                        gone from `old.assigned` ⇒ unassign
 
 Only issues in the milestone's own repo can carry it, so a hosted link pointing elsewhere is

@@ -22,6 +22,10 @@ pub struct AppConfig {
 	pub manual_stats: Option<ManualStats>,
 	/// Orgs (`owner`) and repos (`owner/repo`) `tedi pull` stores when none are named.
 	pub watch: Option<Vec<String>>,
+	/// Main org → the orgs it owns (`orgs.EV-Main = ["EV-Quant"]`); owning one doesn't pull it.
+	#[settings(skip)]
+	#[serde(default)] // a user may have none
+	pub orgs: tedi_core::chain::Orgs,
 	/// What `tedi view` and the web board read. An instance holds its workflows with this, or asks the one that does: its `home`.
 	#[settings(skip)]
 	board: Option<Board>,
@@ -95,7 +99,7 @@ pub struct Board {
 	#[serde(default)] // a board may place issues in none
 	pub workflows: BTreeMap<String, String>,
 	pub views: Vec<tedi_web::api::View>,
-	/// Named slices of the team's repos, nesting narrower ones (`[board.scopes.EV-Main.tooling] repos = ["EV-Main/tilers"]`).
+	/// Named slices of the team's repos, nesting narrower ones (`[board.scopes.web.tooling] repos = ["EV-Main/tilers"]`).
 	#[serde(default)] // a board may have none
 	pub scopes: BTreeMap<String, tedi_task_operations::board::Scope>,
 	/// Column colorings every viewer is offered (`[board.columns.notion] by = "state:kanban"`, `tints = { triage = "orange" }`).
@@ -111,7 +115,7 @@ impl Board {
 	/// Its workflows, loaded with their hooks; every workflow a view, a column layout or a workspace's lens names is among them.
 	pub fn workflows(&self) -> color_eyre::Result<Workflows> {
 		use color_eyre::eyre::bail;
-		use tedi_task_operations::board::{Facet, GroupBy, Shown, SortKey};
+		use tedi_task_operations::board::{Facet, GroupBy, Shown, Slice, SortKey};
 
 		let loaded = Workflows::load(&self.workflows)?;
 		for view in &self.views {
@@ -136,7 +140,8 @@ impl Board {
 				.iter()
 				.filter_map(|s| if let SortKey::State(w) = &s.by { Some(w.clone()) } else { None })
 				.collect();
-			named.extend([&*lens.scope, &lens.search].iter().flat_map(|q| q.picked(Facet::State)).map(|at| {
+			let scope = if let Slice::Terms(terms) = &lens.scope { Some(&**terms) } else { None }; // a point names no workflow
+			named.extend(scope.into_iter().chain([&lens.search]).flat_map(|q| q.picked(Facet::State)).map(|at| {
 				let (workflow, _) = at.trim_start_matches('-').split_once('/').expect("a state: value is <workflow>/<bucket>");
 				workflow.to_string()
 			}));

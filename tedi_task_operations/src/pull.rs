@@ -15,9 +15,10 @@ use crate::{
 	CloseState, Issue, IssueLink, IssueSelector, LazyIssue, Milestone, MilestoneLink, RepoInfo,
 	github::{FetchedIssue, GithubError},
 	local::{Consensus, FsReader, Local, LocalError, LocalFs, LocalIssueSource, conflict_detect::milestone_conflict_path, lock_store},
-	open_interactions::{MergeMode, fetch_and_store_missing, merge_with_remote, pull_milestone},
+	open_interactions::{MergeMode, Pull, fetch_and_store_missing, merge_with_remote, pull_issues},
 	remote::RemoteSource,
 	sink::Sink,
+	sprints::load_local_issue,
 	workflow::{MovedOn, Rejected, Workflows, apply_rules},
 };
 
@@ -33,12 +34,14 @@ pub async fn pull_repos(targets: &[String], workflows: &Workflows, now: Timestam
 	}
 
 	let mut behind = Vec::new();
-	for repo in repos {
-		if let Err(e) = pull_repo(repo, workflows, now).await {
+	let mut milestones = Pull::default();
+	for &repo in &repos {
+		if let Err(e) = pull_repo(repo, workflows, &mut milestones, now).await {
 			eprintln!("{repo}: {e:?}");
 			behind.push(repo.to_string());
 		}
 	}
+	pull_hosted(milestones.finish().await?, &repos, workflows, now).await?;
 	if !behind.is_empty() {
 		bail!("not every issue was stored, so these pull again from the last page that was: {}", behind.join(", "));
 	}
@@ -47,7 +50,7 @@ pub async fn pull_repos(targets: &[String], workflows: &Workflows, now: Timestam
 
 /// Page by page, least recently updated first: the cursor moves past a page once all of it is stored,
 /// so a pull cut short (by the rate limit, say) is picked up there.
-async fn pull_repo(repo: RepoInfo, workflows: &Workflows, now: Timestamp) -> Result<()> {
+async fn pull_repo(repo: RepoInfo, workflows: &Workflows, milestones: &mut Pull, now: Timestamp) -> Result<()> {
 	let gh = crate::github::client::get()?;
 	let mut moved = HashSet::new();
 	let labels = gh.list_labels(repo).await?;
@@ -124,10 +127,37 @@ async fn pull_repo(repo: RepoInfo, workflows: &Workflows, now: Timestamp) -> Res
 			None => break,
 		}
 	}
-	pull_milestones(repo).await?;
+	pull_milestones(repo, milestones).await?;
 	pull_prs(repo, workflows, &mut moved, now).await?;
 	if !Local::load_project_meta(repo).dated {
 		date_stored(repo).await?;
+	}
+	Ok(())
+}
+
+/// The issues `milestones` host outside `repos`: no listing of those brings them.
+async fn pull_hosted(milestones: Vec<Milestone>, repos: &[RepoInfo], workflows: &Workflows, now: Timestamp) -> Result<()> {
+	let mut links: Vec<IssueLink> = Vec::new();
+	for link in milestones.iter().flat_map(|m| m.body.0.issue_links()) {
+		let listed = matches!(link, IssueLink::Virtual(_)) || repos.contains(&link.project());
+		let stored = !listed && Local::find_by_number(link.project(), link.number(), FsReader).is_some(); // one GitHub won't show us isn't
+		if stored && !links.contains(&link) {
+			links.push(link);
+		}
+	}
+	let mut issues = Vec::new();
+	for link in links {
+		match load_local_issue(&link).await {
+			Ok(issue) => issues.push(issue),
+			Err(e) => eprintln!("{link} was not pulled: {e:#}"), // a conflict waits on it
+		}
+	}
+	if let Err(e) = pull_issues(&mut issues, MergeMode::Normal).await {
+		eprintln!("{e:#}"); // each recorded as a conflict, or pulled again by the next
+	}
+	let mut moved = HashSet::new();
+	for issue in &issues {
+		rules(issue, workflows, &mut moved, now).await?;
 	}
 	Ok(())
 }
@@ -172,7 +202,7 @@ async fn date_stored(repo: RepoInfo) -> Result<()> {
 }
 
 /// `repo`'s open milestones, and those stored as open.
-pub(crate) async fn pull_milestones(repo: RepoInfo) -> Result<()> {
+pub(crate) async fn pull_milestones(repo: RepoInfo, pull: &mut Pull) -> Result<()> {
 	let gh = crate::github::client::get()?;
 	let listed = gh.list_milestones(repo).await?.into_iter().map(|m| m.number);
 	let held: Vec<u64> = Local::load_milestone_project_meta(repo, &FsReader)
@@ -183,7 +213,10 @@ pub(crate) async fn pull_milestones(repo: RepoInfo) -> Result<()> {
 		.collect();
 	for number in listed.chain(held).collect::<BTreeSet<_>>() {
 		let link = MilestoneLink::in_project(repo, number);
-		match pull_milestone(&link, MergeMode::Normal).await {
+		if pull.pulled(&link) {
+			continue;
+		}
+		match pull.link(&link, MergeMode::Normal).await {
 			Ok(_) => {}
 			Err(e) if matches!(e.downcast_ref::<GithubError>(), Some(GithubError::Api { status, .. }) if status.as_u16() == 404) => {
 				println!("{} is gone from GitHub: kept here, closed", link.as_str());

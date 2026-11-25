@@ -89,8 +89,9 @@ fn world() -> World {
 	}
 	me.remote_labels("mock_user", "other", &[]);
 	me.remote_labels("mock_user", "todos", &[]);
+	me.remote_labels("mock_user", ".github", &[]);
 	me.remote_milestone("mock_user/todos", 1, "1d", &format!("- {}", link(1)), &[]);
-	me.remote_milestone("mock_user/todos", 2, "Bottlenecks", &format!("- {}", link(3)), &[]);
+	me.remote_milestone("mock_user/.github", 2, "Bottlenecks", &format!("- {}", link(3)), &[]);
 	let mut state: Value = serde_json::from_str(&std::fs::read_to_string(&me.mock_state_path).unwrap()).unwrap();
 	state["milestones"][0]["due_on"] = "2099-01-01T00:00:00Z".into();
 	std::fs::write(&me.mock_state_path, state.to_string()).unwrap();
@@ -287,7 +288,7 @@ fn a_moved_issue_is_placed_again_where_it_went() {
 }
 
 #[rstest::rstest]
-#[case::milestone("- https://github.com/mock_user/todos/milestone/2\n")]
+#[case::milestone("- https://github.com/mock_user/.github/milestone/2\n")]
 #[case::header("# someday\n- mock_user/app#4\n")]
 #[case::twice("# in_review\n- mock_user/app#1\n")]
 fn what_is_no_placement_is_not_saved(#[case] line: &'static str) {

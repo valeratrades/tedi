@@ -17,9 +17,10 @@ use tedi_utils::search::{Candidate, SearchKind};
 use crate::{
 	CloseState, HollowIssue, Issue, IssueIdentity, IssueIndex, IssueLink, LazyIssue, Milestone, MilestoneBody, MilestoneLink, NodeLink, RepoInfo, TaskView, VirtualIssue,
 	clockify_tracking::{self, HaltArgs, ResumeArgs},
+	github::GithubError,
 	local::{Consensus, FsReader, Local, LocalFs},
 	open_interactions::{
-		BodyWrite, MergeMode, MilestoneModifier, Modifier, SyncMode, SyncOptions, fetch_and_store_missing, modify_and_sync_issue, modify_and_sync_milestone, pull_issues, pull_milestone,
+		BodyWrite, MergeMode, MilestoneModifier, Modifier, Pull, SyncMode, SyncOptions, fetch_and_store_missing, modify_and_sync_issue, modify_and_sync_milestone, pull_issues, pull_milestone,
 		unsynced,
 	},
 	remote::Remote,
@@ -100,34 +101,51 @@ pub struct Expanded {
 	milestones: Vec<(MilestoneLink, MilestoneBody)>,
 }
 
-/// Reconcile each milestone with GitHub, and store the issues it hosts, so navigation and inline
-/// expansion resolve offline. One that can't be is said so, and stays as stored.
-pub async fn refresh_milestones(links: &[MilestoneLink]) {
-	let mut seen = std::collections::HashSet::new();
-	let mut hosted: Vec<IssueLink> = Vec::new();
-	for link in links.iter().filter(|l| seen.insert(l.as_str())) {
-		match pull_milestone(link, MergeMode::Normal).await {
-			Ok(milestone) => hosted.extend(milestone.body.hosted().into_iter().filter(|l| !matches!(l, IssueLink::Virtual(_)))),
-			Err(e) => eprintln!("warning: {} stays as stored: {e:#}", link.as_str()),
-		}
-	}
-	fetch_and_store_missing(&hosted).await;
+/// Reconcile each milestone with GitHub, and all it contains, and store the issues they host, so navigation and
+/// inline expansion resolve offline. One that can't be is said so, and stays as stored.
+pub async fn refresh_milestones(links: &[MilestoneLink]) -> Result<()> {
+	let mut pull = Pull::default();
+	pull.contained(links.to_vec()).await;
+	pull.finish().await?;
+	Ok(())
 }
 
-/// `repo`'s `sprint`, reconciled with GitHub along with what it references; Offline, as stored.
+/// `sprint` of whoever owns `repo`, reconciled with GitHub along with what it references; Offline, as stored.
 pub async fn fetch_sprint(repo: RepoInfo, sprint: Sprint, mode: SyncMode) -> Result<Milestone> {
-	if mode == SyncMode::Offline {
-		let stored = Local::stored_sprint(repo, sprint).ok_or_else(|| eyre!("'{sprint}' of {repo} was never fetched while online"))?;
-		return Ok(Local::load_milestone(&stored, &FsReader)?.expect("listed in its project's meta"));
+	let link = find_sprint(repo, sprint, mode).await?;
+	match mode {
+		SyncMode::Offline => Ok(Local::load_milestone(&link, &FsReader)?.expect("listed in its project's meta")),
+		SyncMode::Full | SyncMode::OnExit => pull_milestone(&link, MergeMode::Normal).await,
 	}
-	let listed = crate::github::client::get()?.list_milestones(repo).await?;
-	let number = listed.iter().find(|m| Sprint::titled(&m.title) == Some(sprint)).map(|m| m.number).ok_or_else(|| {
-		let titles: Vec<&str> = listed.iter().map(|m| m.title.as_str()).collect();
-		eyre!("no milestone '{sprint}' in {repo}. It has: {titles:?}")
-	})?;
-	let milestone = pull_milestone(&MilestoneLink::in_project(repo, number), MergeMode::Normal).await?;
-	refresh_milestones(&milestone.body.0.milestone_links()).await;
-	Ok(milestone)
+}
+
+/// `sprint` of whoever owns `repo`, as GitHub lists it; Offline, as stored.
+pub(crate) async fn find_sprint(repo: RepoInfo, sprint: Sprint, mode: SyncMode) -> Result<MilestoneLink> {
+	let home = sprint.home(repo);
+	if mode == SyncMode::Offline {
+		return Ok(Local::stored_sprint(repo, sprint).ok_or(NoSprint::Stored { sprint, home })?);
+	}
+	let listed = match crate::github::client::get()?.list_milestones(home).await {
+		Err(GithubError::Api { status, .. }) if status.as_u16() == 404 && home != repo => Vec::new(), // no such repo
+		listed => listed?,
+	};
+	match listed.iter().find(|m| m.title == sprint.to_string()) {
+		Some(m) => Ok(MilestoneLink::in_project(home, m.number)),
+		None => Err(NoSprint::Listed {
+			sprint,
+			home,
+			titles: listed.into_iter().map(|m| m.title).collect(),
+		}
+		.into()),
+	}
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum NoSprint {
+	#[error("no milestone '{sprint}' in {home}. It has: {titles:?}")]
+	Listed { sprint: Sprint, home: RepoInfo, titles: Vec<String> },
+	#[error("'{sprint}' of {home} was never fetched while online")]
+	Stored { sprint: Sprint, home: RepoInfo },
 }
 
 /// Materialize every item of an edited task view: linked refs not stored locally are fetched,

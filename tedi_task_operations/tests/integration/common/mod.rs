@@ -324,6 +324,12 @@ impl TestContext {
 		self.rebuild_mock_state();
 	}
 
+	/// Github redirects `old`'s repos to `new`, as it does a renamed owner's.
+	pub fn remote_renamed(&self, old: &str, new: &str) {
+		with_state(self, |s| s.remote_renames.push((old.to_string(), new.to_string())));
+		self.rebuild_mock_state();
+	}
+
 	/// A milestone stored here, open unless `closed`.
 	pub fn store_milestone(&self, url: &str, title: &str, closed: bool, body: &str) {
 		use tedi_task_operations::local::{FsReader, Local};
@@ -672,6 +678,9 @@ impl TestContext {
 						serde_json::json!({ "owner": owner, "repo": repo, "number": number, "title": title, "description": description })
 					})
 					.collect();
+			}
+			if !state.remote_renames.is_empty() {
+				mock_state["renames"] = state.remote_renames.iter().map(|(old, new)| serde_json::json!({ "old": old, "new": new })).collect();
 			}
 			if !state.remote_labels.is_empty() {
 				mock_state["labels"] = state
@@ -1442,6 +1451,7 @@ struct GitState {
 	remote_labels: Vec<(String, String, Vec<String>)>,
 	/// (owner/repo, number, title, description, issues assigned)
 	remote_milestones: Vec<(String, u64, String, String, Vec<u64>)>,
+	remote_renames: Vec<(String, String)>,
 	/// (issue, pr url, `draft` | `open` | `merged` | `closed`)
 	remote_prs: Vec<(tedi_task_operations::IssueLink, String, String)>,
 	/// (owner, repo, pull request)

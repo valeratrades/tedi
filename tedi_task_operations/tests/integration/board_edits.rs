@@ -59,8 +59,8 @@ fn the_board_shows_open_milestones_an_orgs_sprints_among_them() {
 	let ctx = TestContext::build();
 	pulled(&ctx, |ctx| {
 		ctx.remote_milestone("o/r", 1, "v1", "ship it", &[1]);
-		ctx.remote_milestone("o/r", 2, "1d", "the day\n\n# grouped\n- #1\n- https://github.com/o/r/milestone/3", &[]);
-		ctx.remote_milestone("o/r", 3, "Bottlenecks", "- #1", &[]);
+		ctx.remote_milestone("o/r", 2, "1d", "the day\n\n# grouped\n- #1\n- https://github.com/o/.github/milestone/3", &[]);
+		ctx.remote_milestone("o/.github", 3, "Bottlenecks", "- o/r#1", &[]);
 	});
 	let (_server, port) = serve(&ctx, BOARD, &[]);
 	let targets = board(port)["targets"].clone();
@@ -71,14 +71,14 @@ fn the_board_shows_open_milestones_an_orgs_sprints_among_them() {
 		.map(|t| format!("{} {} {}", t["title"], t["description"], t["nodes"]))
 		.collect();
 	insta::assert_snapshot!(shown.join("\n"), @r#"
-	"v1" "ship it" ["https://github.com/o/r/issues/1"]
-	"1d" "the day" ["https://github.com/o/r/issues/1","https://github.com/o/r/milestone/3"]
 	"Bottlenecks" "" ["https://github.com/o/r/issues/1"]
+	"v1" "ship it" ["https://github.com/o/r/issues/1"]
+	"1d" "the day" ["https://github.com/o/r/issues/1","https://github.com/o/.github/milestone/3"]
 	"#);
 
 	// what is planned is not the board's to say; what is a bottleneck is
 	assert!(set(port, "o/r", Some(1), Some(2)).get("Rejected").is_some());
-	assert_eq!(set(port, "o/r", Some(1), Some(3)), "Landed");
+	assert_eq!(set(port, "o/.github", Some(3), None), "Landed");
 }
 
 #[test]

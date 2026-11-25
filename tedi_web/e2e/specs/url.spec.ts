@@ -104,9 +104,10 @@ test("a workspace is in the query, and a scope picked in it is an edit, not a mo
   await expect.poll(async () => new URL(page.url()).searchParams.get("ws")).toBe("TriageDk");
   await expect(tab(page, "Triage")).toBeVisible();
   const desk = await at(page);
-  await page.locator("aside").getByRole("button", { name: "EV-Main", exact: true }).click();
+  await page.getByRole("button", { name: "Start from" }).click();
+  await page.getByPlaceholder("scope…").locator("xpath=ancestor::div[2]").getByRole("button", { name: /^ev-main/ }).click();
   const scope = page.getByRole("group", { name: "Scope", exact: true });
-  await expect(scope).toContainText("repo:ev-main/*");
+  await expect(scope.getByRole("navigation")).toHaveText("ev-main");
   expect(await at(page)).toBe(desk);
   await page.goBack();
   await expect.poll(() => at(page)).toBe(before);

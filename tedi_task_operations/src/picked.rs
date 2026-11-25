@@ -85,7 +85,7 @@ impl Picking {
 		};
 		touched.extend(raised);
 		let mut text = picked.doc;
-		text.remove_issues(); // what is no issue yet
+		text.remove_nodes(&text.issue_links().into_iter().map(NodeLink::Issue).collect::<Vec<_>>()); // what is no issue yet
 		let mut settled = Picked {
 			repo: picked.repo,
 			doc: answer.document(),
