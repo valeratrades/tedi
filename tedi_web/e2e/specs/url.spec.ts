@@ -18,18 +18,18 @@ test("a view has an address: its link, Back, and a tab of its own", async ({ pag
   await page.goto("/");
   await expect.poll(() => at(page)).toMatch(/^\/view\//);
   const first = await at(page);
-  await shelf(page, "Triage").click();
+  await shelf(page, "kanban").click();
   await expect.poll(() => at(page)).not.toBe(first);
-  const triage = await at(page);
-  expect(triage.split("?")[0]).not.toBe(first.split("?")[0]);
+  const kanban = await at(page);
+  expect(kanban.split("?")[0]).not.toBe(first.split("?")[0]);
   await page.goBack();
   await expect.poll(() => at(page)).toBe(first);
   await page.goForward();
-  await expect.poll(() => at(page)).toBe(triage);
+  await expect.poll(() => at(page)).toBe(kanban);
 
-  const [own] = await Promise.all([context.waitForEvent("page"), shelf(page, "Triage").click({ modifiers: ["ControlOrMeta"] })]);
-  await expect(tab(own, "Triage")).toBeVisible();
-  expect((await at(own)).split("?")[0]).toBe(triage.split("?")[0]);
+  const [own] = await Promise.all([context.waitForEvent("page"), shelf(page, "kanban").click({ modifiers: ["ControlOrMeta"] })]);
+  await expect(tab(own, "kanban")).toBeVisible();
+  expect((await at(own)).split("?")[0]).toBe(kanban.split("?")[0]);
 });
 
 test("a click on an issue's number copies its link, on a card and in its panel", async ({ page, context }) => {
@@ -75,34 +75,13 @@ test("a picked issue is in the address, over the view it was picked from", async
   await expect(float, "what the address held is not what the screen was left as").toHaveCount(0);
 });
 
-test("a column layout is under its view", async ({ page }) => {
-  await page.goto("/");
-  await shelf(page, "Triage").click();
-  await expect.poll(() => at(page)).toMatch(/^\/view\/\w{8}\?/);
-  const view = (await at(page)).split("?")[0];
-  await shelf(page, "triage focus").click();
-  await expect.poll(async () => (await at(page)).split("?")[0]).toMatch(new RegExp(`^${view}/\\w{8}$`));
-  const focus = await at(page);
-  const dot = page.locator("span", { hasText: /^triage\d*$/ }).locator("span").first();
-  await expect(dot).toHaveAttribute("style", /--tint-orange/);
-
-  await shelf(page, "kanban · notion tints").click();
-  await expect.poll(() => at(page)).not.toBe(focus);
-  await page.goBack();
-  await expect.poll(() => at(page)).toBe(focus);
-
-  await page.reload();
-  await expect(dot).toHaveAttribute("style", /--tint-orange/);
-  expect(await at(page)).toBe(focus);
-});
-
 test("a workspace is in the query, and a scope picked in it is an edit, not a move", async ({ page }) => {
   await page.goto("/");
   await expect.poll(() => at(page)).toMatch(/ws=/);
   const before = await at(page);
   await shelf(page, "Triage desk").click();
   await expect.poll(async () => new URL(page.url()).searchParams.get("ws")).toBe("TriageDk");
-  await expect(tab(page, "Triage")).toBeVisible();
+  await expect(tab(page, "kanban")).toBeVisible();
   const desk = await at(page);
   await page.getByRole("button", { name: "Start from" }).click();
   await page.getByPlaceholder("scope…").locator("xpath=ancestor::div[2]").getByRole("button", { name: /^ev-main/ }).click();
@@ -122,4 +101,8 @@ test("an address with a scope of its own is none", async ({ page }) => {
 test("an address nothing has says so", async ({ page }) => {
   await page.goto("/view/nowhere1");
   await expect(page.getByText("no view nowhere1 here")).toBeVisible();
+  for (const none of ["/view/nowhere1/nowhere2", "/builder"]) {
+    await page.goto(none);
+    await expect(page.getByText(`${none} is no address on this board`)).toBeVisible();
+  }
 });

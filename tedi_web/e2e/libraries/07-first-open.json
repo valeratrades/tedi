@@ -11,7 +11,6 @@
    }
   }
  },
- "columns": {},
  "scopes": {
   "core": {
    "repos": [
@@ -26,7 +25,7 @@
  },
  "favorites": [
   {
-   "View": "Triage"
+   "View": "kanban"
   }
  ]
 }

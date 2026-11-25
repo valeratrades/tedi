@@ -1,5 +1,5 @@
-//! ⌘K (Figma: CommandPalette): one index over every view, scope, workspace and column layout, the open
-//! issues, and actions. `v: s: w: c: #` narrow it to one kind. ⏎ opens in place, ⇧⏎ in a new tile, ⌘⏎ as
+//! ⌘K (Figma: CommandPalette): one index over every view, scope and workspace, the open
+//! issues. `v: s: w: #` narrow it to one kind. ⏎ opens in place, ⇧⏎ in a new tile, ⌘⏎ as
 //! its library page, ⌥⏎ scopes to it.
 
 use dioxus::prelude::*;
@@ -15,7 +15,7 @@ use super::{
 	sprint_panel,
 };
 
-const KINDS: [(&str, &str); 5] = [("v:", "views"), ("s:", "scopes"), ("w:", "workspaces"), ("c:", "column layouts"), ("#", "issues")];
+const KINDS: [(&str, &str); 4] = [("v:", "views"), ("s:", "scopes"), ("w:", "workspaces"), ("#", "issues")];
 
 #[derive(Clone, PartialEq)]
 enum Go {
@@ -121,7 +121,7 @@ fn Open() -> Element {
 					Icon { glyph: Glyph::Command, class: "size-4 text-ink-soft" }
 					input {
 						class: "min-w-0 flex-1 bg-transparent text-body-l text-ink outline-none placeholder:text-ink-faint",
-						placeholder: "views, scopes, workspaces, issues, actions…  (v: s: w: c: #)",
+						placeholder: "views, scopes, workspaces, issues…  (v: s: w: #)",
 						autofocus: true,
 						value: typed(),
 						oninput: move |e: FormEvent| {
@@ -243,17 +243,6 @@ fn hits(ctx: &Ctx) -> Vec<Hit> {
 			scope: None,
 		});
 	}
-	for name in setup.columns.keys().chain(library.columns.keys()) {
-		out.push(Hit {
-			kind: "column layouts",
-			glyph: Glyph::Columns,
-			label: name.clone(),
-			meta: String::new(),
-			go: Go::Panel(PanelId(format!("library:columns:{name}"))),
-			page: None,
-			scope: None,
-		});
-	}
 	for s in ctx.sprints() {
 		out.push(Hit {
 			kind: "sprints",
@@ -265,15 +254,6 @@ fn hits(ctx: &Ctx) -> Vec<Hit> {
 			scope: None,
 		});
 	}
-	out.push(Hit {
-		kind: "actions",
-		glyph: Glyph::View,
-		label: "Build a view".into(),
-		meta: String::new(),
-		go: Go::Panel(PanelId("builder:".into())),
-		page: None,
-		scope: None,
-	});
 	for c in ctx.board.read().cards.iter().filter(|c| c.open()) {
 		out.push(Hit {
 			kind: "issues",

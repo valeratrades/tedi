@@ -280,9 +280,9 @@ fn what_a_page_leaves_is_applied_in_order_whatever_of_it_no_longer_does() {
 	let edits = [
 		lensed("ws 1", "Search", "is:open"),
 		lensed("gone", "Search", "is:open"),
-		boxed("Triage", serde_json::json!({ "Hidden": ["done"] })),
-		boxed("Triage", serde_json::json!({ "GroupBy": "repo" })),
-		boxed("Triage", serde_json::json!({ "Hidden": ["o/r"] })),
+		boxed("Triage", serde_json::json!({ "Tints": { "done": "red" } })),
+		boxed("Triage", serde_json::json!({ "Shown": ["repo"] })),
+		boxed("Triage", serde_json::json!({ "Tints": { "done": "blue" } })),
 	];
 	let (status, body) = call(port, "POST", "/api/library/left", me, Some(serde_json::json!({ "edits": edits })));
 	assert_eq!(status, 200, "{body}");
@@ -290,7 +290,7 @@ fn what_a_page_leaves_is_applied_in_order_whatever_of_it_no_longer_does() {
 	assert_eq!(held["workspaces"]["ws 1"]["lens"], lens("", "is:open", "rank"));
 	assert_eq!(
 		held["drafts"]["views"]["Triage"],
-		serde_json::json!({ "name": "Triage", "group_by": "repo", "shown": [], "hidden": ["o/r"] })
+		serde_json::json!({ "name": "Triage", "group_by": "state:kanban", "shown": ["repo"], "tints": { "done": "blue" } })
 	);
 	let (status, _) = call(port, "POST", "/api/library/left", None, Some(serde_json::json!({ "edits": [] })));
 	assert_ne!(status, 200, "a request the gate didn't name a viewer on");
@@ -412,40 +412,49 @@ fn a_library_kept_before_ids_is_given_lasting_ones() {
 	assert_eq!(id(&library(port, me), serde_json::json!({ "Workspace": "focus" })), given);
 }
 
+fn setup(port: u16, user: Option<&str>) -> serde_json::Value {
+	let (status, body) = call(port, "GET", "/api/setup", user, None);
+	assert_eq!(status, 200, "{body}");
+	serde_json::from_str(&body).unwrap()
+}
+
 #[test]
-fn a_view_is_laid_out_as_a_column_layout() {
+fn every_layout_is_a_view_of_the_team_under_its_own_name() {
 	let ctx = TestContext::build();
-	let board = format!("{BOARD}\n[board.columns.team]\nby = \"state:kanban\"\ntints = {{ triage = \"blue\" }}\nhidden = [\"done\"]\n\n[board.columns.repos]\nby = \"repo\"\n");
+	let board = format!("{BOARD}\n[[board.views]]\nname = \"repo\"\ngroup_by = \"repo\"\nshown = [\"number\"]\n")
+		.replace("views = [{ name = \"Triage\", group_by = \"state:kanban\", shown = [] }]", "");
 	let (_server, port) = serve(&ctx, &board, &["--viewer-header", "X-Auth-User"]);
 	let me = Some("alice");
-	let mine = serde_json::json!({ "by": "state:kanban", "arrangement": { "Xl": "tabbed" }, "tints": { "triage": "red" } });
-	assert_eq!(edit(port, me, serde_json::json!({ "Keep": { "Columns": { "name": "mine", "columns": mine } } })).0, 200);
-	let lay = |columns: &str| serde_json::json!({ "Lay": { "view": "Triage", "columns": columns } });
-
-	assert_eq!(edit(port, me, lay("mine")).0, 200);
-	let held = library(port, me);
+	let layout = |name: &str, group_by: &str| serde_json::json!({ "name": name, "group_by": group_by, "shown": [] });
+	let mut repo = layout("repo", "repo");
+	repo["shown"] = serde_json::json!(["number"]);
+	let published = setup(port, me);
 	assert_eq!(
-		held["drafts"]["views"]["Triage"],
-		serde_json::json!({ "name": "Triage", "group_by": "state:kanban", "shown": [], "arrangement": { "Xl": "tabbed" }, "tints": { "triage": "red" } })
+		published["views"],
+		serde_json::json!([
+			layout("kanban", "state:kanban"),
+			repo,
+			layout("assignee", "assignee"),
+			layout("type", "type"),
+			layout("importance", "importance"),
+			layout("nothing", "nothing"),
+			layout("chain", "chain"),
+		])
 	);
-	assert_eq!(held["laid"]["Triage"], "mine");
+	id(&published, serde_json::json!({ "View": "kanban" }));
+	assert_ne!(edit(port, me, keep_view(view("kanban", &[]))).0, 200, "the team's name");
+	assert_eq!(edit(port, me, serde_json::json!({ "Fork": { "from": { "Team": { "View": "kanban" } }, "name": "mine" } })).0, 200);
+	assert_eq!(library(port, me)["views"]["mine"], layout("mine", "state:kanban"));
 
-	let (status, body) = edit(port, me, serde_json::json!({ "Rename": { "shelf": "Columns", "from": "mine", "to": "ours" } }));
-	assert_eq!(status, 200, "{body}");
-	assert_eq!(library(port, me)["laid"]["Triage"], "ours");
-
-	assert_eq!(edit(port, me, lay("team")).0, 200);
-	assert_eq!(
-		library(port, me)["drafts"]["views"]["Triage"],
-		serde_json::json!({ "name": "Triage", "group_by": "state:kanban", "shown": [], "tints": { "triage": "blue" }, "hidden": ["done"] }),
-		"its boxes are the layout's, whole"
-	);
-	assert_ne!(edit(port, me, lay("nowhere")).0, 200);
-	assert_ne!(edit(port, me, lay("repos")).0, 200, "columns of another grouping");
-
-	assert_eq!(edit(port, me, lay("ours")).0, 200);
-	assert_eq!(edit(port, me, serde_json::json!({ "Drop": { "shelf": "Columns", "name": "ours" } })).0, 200);
-	assert_eq!(library(port, me)["laid"], serde_json::json!({}), "the layout it named is gone");
+	for (bad, why) in [
+		(board.replace("group_by = \"repo\"", "group_by = \"type\""), "a layout's view written as another's"),
+		(board.replace("{ kanban =", "{ repo ="), "a workflow named as a grouping is"),
+	] {
+		std::fs::write(ctx.xdg.inner.root.join("config/tedi.toml"), bad).unwrap();
+		let out = ctx.run(&["--mock", "web", "--addr", "127.0.0.1:0"]);
+		assert!(!out.status.success(), "{why}");
+		assert!(out.stderr.contains("repo"), "{why}: {}", out.stderr);
+	}
 }
 
 #[test]
@@ -457,13 +466,12 @@ fn a_views_boxes_are_drafted_a_part_at_a_time_and_kept_with_it() {
 	assert_eq!(edit(port, me, arranged("Triage", "Xl", "tabbed")).0, 200);
 	assert_eq!(edit(port, me, arranged("Triage", "Sm", "narrow")).0, 200);
 	assert_eq!(edit(port, me, boxed("Triage", serde_json::json!({ "Tints": { "triage": "red" } }))).0, 200);
-	assert_eq!(edit(port, me, boxed("Triage", serde_json::json!({ "Hidden": ["done"] }))).0, 200);
 	let drafted = library(port, me)["drafts"]["views"]["Triage"].clone();
 	assert_eq!(
 		drafted,
 		serde_json::json!({
 			"name": "Triage", "group_by": "state:kanban", "shown": [],
-			"arrangement": { "Sm": "narrow", "Xl": "tabbed" }, "tints": { "triage": "red" }, "hidden": ["done"],
+			"arrangement": { "Sm": "narrow", "Xl": "tabbed" }, "tints": { "triage": "red" },
 		})
 	);
 
@@ -481,25 +489,20 @@ fn a_views_boxes_are_drafted_a_part_at_a_time_and_kept_with_it() {
 	assert_eq!(edit(port, me, keep_view(held["drafts"]["views"]["main"].clone())).0, 200);
 	assert!(library(port, me)["drafts"]["views"].get("main").is_none(), "saved: nothing is drafted");
 
-	assert_eq!(edit(port, me, boxed("main", serde_json::json!({ "GroupBy": "repo" }))).0, 200);
-	assert_eq!(
-		library(port, me)["drafts"]["views"]["main"],
-		serde_json::json!({ "name": "main", "group_by": "repo", "shown": [] }),
-		"other groups: no box of these is kept"
-	);
+	assert_eq!(edit(port, me, boxed("main", serde_json::json!({ "Shown": ["repo"] }))).0, 200);
+	assert_ne!(edit(port, me, boxed("main", serde_json::json!({ "GroupBy": "repo" }))).0, 200, "a view is of one layout");
 	assert_eq!(edit(port, me, serde_json::json!({ "Revert": { "View": "main" } })).0, 200);
 	assert!(library(port, me)["drafts"]["views"].get("main").is_none());
 	assert_ne!(edit(port, me, arranged("nowhere", "Xl", "x")).0, 200);
 
-	assert_eq!(edit(port, me, boxed("main", serde_json::json!({ "GroupBy": "chain" }))).0, 200);
-	let node = |at: &str, layout: &str| boxed("main", serde_json::json!({ "Arrangement": { "of": at, "band": "Sm", "layout": layout } }));
+	let node = |at: &str, layout: &str| boxed("chain", serde_json::json!({ "Arrangement": { "of": at, "band": "Sm", "layout": layout } }));
 	assert_eq!(edit(port, me, node("https://github.com/o/r/milestone/1", "stacked")).0, 200);
 	assert_eq!(edit(port, me, node("https://github.com/o/r/issues/2", "split")).0, 200);
 	assert_ne!(edit(port, me, node("repo:o/r", "split")).0, 200, "terms are no node");
 	assert_eq!(
-		library(port, me)["drafts"]["views"]["main"],
+		library(port, me)["drafts"]["views"]["chain"],
 		serde_json::json!({
-			"name": "main", "group_by": "chain", "shown": [],
+			"name": "chain", "group_by": "chain", "shown": [],
 			"nodes": { "https://github.com/o/r/issues/2": { "Sm": "split" }, "https://github.com/o/r/milestone/1": { "Sm": "stacked" } },
 		}),
 		"each node's leaves are laid out apart"
@@ -560,22 +563,23 @@ fn the_board_is_read_in_the_order_of_what_is_shown() {
 	);
 }
 
-fn team_file(triage_hides: &str) -> String {
+fn team_file(tinted: &[&str]) -> String {
+	let tints: String = tinted.iter().map(|g| format!("{g} = \"red\"\n")).collect();
 	format!(
-		"# the team's board\n\n[[board.views]]\nname = \"Triage\"\ngroup_by = \"state:kanban\"\nshown = []\nhidden = [{triage_hides}]\n\n[[board.views]]\nname = \"Repos\"\ngroup_by = \"repo\"\nshown = []\n"
+		"# the team's board\n\n[[board.views]]\nname = \"Triage\"\ngroup_by = \"state:kanban\"\nshown = []\n\n[board.views.tints]\n{tints}\n[[board.views]]\nname = \"Repos\"\ngroup_by = \"repo\"\nshown = []\n"
 	)
 }
 
-/// The board as deployed from `team_file(triage_hides)`, its history at `CONFIG_REPO`.
-fn sourced(triage_hides: &str) -> String {
-	let views = team_file(triage_hides).replace("# the team's board\n\n", "");
+/// The board as deployed from `team_file(tinted)`, its history at `CONFIG_REPO`.
+fn sourced(tinted: &[&str]) -> String {
+	let views = team_file(tinted).replace("# the team's board\n\n", "");
 	format!("[board]\nworkflows = {{ kanban = \"preset:kanban\" }}\nsource = {{ repo = \"{CONFIG_REPO}\", path = \"board.toml\", branch = \"main\" }}\n\n{views}")
 }
 
-fn view(name: &str, hidden: &[&str]) -> serde_json::Value {
+fn view(name: &str, tinted: &[&str]) -> serde_json::Value {
 	let mut view = serde_json::json!({ "name": name, "group_by": "state:kanban", "shown": [] });
-	if !hidden.is_empty() {
-		view["hidden"] = hidden.into();
+	for group in tinted {
+		view["tints"][group] = "red".into();
 	}
 	view
 }
@@ -602,10 +606,10 @@ fn entry(catalog: &serde_json::Value, owner: serde_json::Value, item: serde_json
 #[test]
 fn a_fork_counts_what_each_side_changed_since() {
 	let ctx = TestContext::build();
-	ctx.remote_file_commit(CONFIG_REPO, "board.toml", "bob", &team_file("\"done\""));
-	ctx.remote_file_commit(CONFIG_REPO, "board.toml", "carol", &team_file("\"done\", \"wont_do\""));
+	ctx.remote_file_commit(CONFIG_REPO, "board.toml", "bob", &team_file(&["done"]));
+	ctx.remote_file_commit(CONFIG_REPO, "board.toml", "carol", &team_file(&["done", "wont_do"]));
 	let gate = ["--viewer-header", "X-Auth-User"];
-	let running = sourced("\"done\", \"wont_do\"");
+	let running = sourced(&["done", "wont_do"]);
 	let (server, port) = serve(&ctx, &running, &gate);
 	let me = Some("alice");
 	let triage = serde_json::json!({ "View": "Triage" });
@@ -621,7 +625,7 @@ fn a_fork_counts_what_each_side_changed_since() {
 	let team = entry(&team, serde_json::json!("Team"), triage.clone());
 	assert_eq!(team["version"], 2);
 	assert_eq!(team["history"].as_array().unwrap().iter().map(|v| v["author"].clone()).collect::<Vec<_>>(), ["bob", "carol"]);
-	assert_eq!(team["history"][1]["changes"], serde_json::json!([{ "sign": "Added", "text": "hidden: wont_do" }]));
+	assert_eq!(team["history"][1]["changes"], serde_json::json!([{ "sign": "Added", "text": "wont_do red" }]));
 	assert_eq!(team["forks"], serde_json::json!([{ "viewer": "alice", "name": "Triage (mine)", "ahead": 0, "behind": 0 }]));
 
 	let narrowed = view("Triage (mine)", &["done"]);
@@ -630,7 +634,7 @@ fn a_fork_counts_what_each_side_changed_since() {
 	assert_eq!(library(port, me)["forks"][0]["upstream"]["ahead"], 1, "only a save that changed it counts");
 
 	drop(server);
-	ctx.remote_file_commit(CONFIG_REPO, "board.toml", "bob", &team_file("\"backlog\""));
+	ctx.remote_file_commit(CONFIG_REPO, "board.toml", "bob", &team_file(&["backlog"]));
 	let (_server, port) = serve(&ctx, &running, &gate);
 	let catalog = catalog(port, "alice");
 	assert_eq!(entry(&catalog, serde_json::json!({ "Viewer": "alice" }), mine.clone())["behind"], 1);
@@ -648,8 +652,8 @@ fn a_past_commit_with_what_a_view_no_longer_holds_still_reads_as_a_version() {
 	};
 	ctx.remote_file_commit(CONFIG_REPO, "board.toml", "bob", &past("is:open"));
 	ctx.remote_file_commit(CONFIG_REPO, "board.toml", "carol", &past("is:open t:bug"));
-	ctx.remote_file_commit(CONFIG_REPO, "board.toml", "bob", &team_file("\"done\""));
-	let (_server, port) = serve(&ctx, &sourced("\"done\""), &["--viewer-header", "X-Auth-User"]);
+	ctx.remote_file_commit(CONFIG_REPO, "board.toml", "bob", &team_file(&["done"]));
+	let (_server, port) = serve(&ctx, &sourced(&["done"]), &["--viewer-header", "X-Auth-User"]);
 	let catalog = catalog(port, "alice");
 	let triage = entry(&catalog, serde_json::json!("Team"), serde_json::json!({ "View": "Triage" }));
 	assert_eq!(
@@ -661,7 +665,7 @@ fn a_past_commit_with_what_a_view_no_longer_holds_still_reads_as_a_version() {
 			.collect::<Vec<_>>(),
 		[
 			("bob".into(), serde_json::json!([])),
-			("bob".into(), serde_json::json!([{ "sign": "Added", "text": "hidden: done" }]))
+			("bob".into(), serde_json::json!([{ "sign": "Added", "text": "done red" }]))
 		],
 		"carol's changed nothing a view holds"
 	);
@@ -727,8 +731,8 @@ fn a_share_link_pins_what_was_shared() {
 #[test]
 fn a_proposal_is_a_pull_request_replacing_only_that_object() {
 	let ctx = TestContext::build();
-	ctx.remote_file_commit(CONFIG_REPO, "board.toml", "bob", &team_file("\"done\""));
-	let (_server, port) = serve(&ctx, &sourced("\"done\""), &["--viewer-header", "X-Auth-User"]);
+	ctx.remote_file_commit(CONFIG_REPO, "board.toml", "bob", &team_file(&["done"]));
+	let (_server, port) = serve(&ctx, &sourced(&["done"]), &["--viewer-header", "X-Auth-User"]);
 	let me = Some("alice");
 	assert_eq!(
 		edit(port, me, serde_json::json!({ "Fork": { "from": { "Team": { "View": "Triage" } }, "name": "Triage (mine)" } })).0,
@@ -741,14 +745,14 @@ fn a_proposal_is_a_pull_request_replacing_only_that_object() {
 		"POST",
 		"/api/propose",
 		me,
-		Some(serde_json::json!({ "item": { "View": "Triage (mine)" }, "onto": { "Update": "Triage" }, "message": "fewer columns" })),
+		Some(serde_json::json!({ "item": { "View": "Triage (mine)" }, "onto": { "Update": "Triage" }, "message": "red is read" })),
 	);
 	assert_eq!(status, 200, "{body}");
 	assert_eq!(serde_json::from_str::<String>(&body).unwrap(), format!("https://github.com/{CONFIG_REPO}/pull/1"));
 	let [proposal] = ctx.remote_proposals().try_into().unwrap();
 	assert_eq!((proposal.base.as_str(), proposal.path.as_str()), ("main", "board.toml"));
-	assert_eq!(proposal.content, team_file("\"done\", \"wont_do\""));
-	assert!(proposal.body.starts_with("fewer columns\n\n```diff\n+ hidden: wont_do\n```"), "{}", proposal.body);
+	assert_eq!(proposal.content, team_file(&["done", "wont_do"]));
+	assert!(proposal.body.starts_with("red is read\n\n```diff\n+ wont_do red\n```"), "{}", proposal.body);
 }
 
 #[test]
@@ -835,7 +839,7 @@ fn what_was_kept_before_lenses_is_brought_over_as_the_server_starts() {
 	let past = |query: &str| format!("[[board.views]]\nname = \"Triage\"\nquery = \"{query}\"\ngroup_by = \"state:kanban\"\nsort = \"importance\"\nshown = []\n");
 	ctx.remote_file_commit(CONFIG_REPO, "board.toml", "bob", &past("is:open"));
 	ctx.remote_file_commit(CONFIG_REPO, "board.toml", "bob", &past("is:open t:bug"));
-	ctx.remote_file_commit(CONFIG_REPO, "board.toml", "bob", &team_file("\"done\""));
+	ctx.remote_file_commit(CONFIG_REPO, "board.toml", "bob", &team_file(&["done"]));
 	let was = |name: &str, query: &str| serde_json::json!({ "name": name, "query": query, "group_by": "repo", "sort": "hours", "shown": ["number"], "layout": "list" });
 	let old = serde_json::json!({
 		"scope": "Main",
@@ -869,7 +873,7 @@ fn what_was_kept_before_lenses_is_brought_over_as_the_server_starts() {
 	std::fs::write(web.join("shared/bob.json"), pins.to_string()).unwrap();
 
 	let gate = ["--viewer-header", "X-Auth-User"];
-	let running = format!("{}\n[board.scopes.Main]\nrepos = [\"o/*\"]\n", sourced("\"done\""));
+	let running = format!("{}\n[board.scopes.Main]\nrepos = [\"o/*\"]\n", sourced(&["done"]));
 	let (server, port) = serve(&ctx, &running, &gate);
 	let me = Some("alice");
 	let mut held = library(port, me);
@@ -878,7 +882,7 @@ fn what_was_kept_before_lenses_is_brought_over_as_the_server_starts() {
 		held["workspaces"],
 		serde_json::json!({
 			"ws 1": { "tiles": { "Xl": dock("view:Bugs") }, "lens": lens("repo:o/*", "t:bug", "rank") },
-			"ws 2": { "tiles": { "Xl": dock("view:Triage") }, "lens": lens("repo:o/*", "is:open t:bug", "importance") },
+			"ws 2": { "tiles": { "Xl": dock("view:kanban") }, "lens": lens("repo:o/*", "is:open t:bug", "importance") },
 			"Words": { "tiles": {}, "lens": lens("repo:o/*", "is:open crash", "hours") },
 		})
 	);
@@ -888,7 +892,10 @@ fn what_was_kept_before_lenses_is_brought_over_as_the_server_starts() {
 	bugs["tints"] = serde_json::json!({ "o/r": "red" });
 	assert_eq!(
 		held["views"],
-		serde_json::json!({ "Bugs": bugs, "Main": boxed("Main"), "Words": boxed("Words"), "All": boxed("All") })
+		serde_json::json!({
+			"Bugs": bugs, "Main": boxed("Main"), "Words": boxed("Words"), "All": boxed("All"),
+			"notion": { "name": "notion", "group_by": "state:kanban", "shown": [], "arrangement": { "Xl": "wide" }, "tints": { "triage": "orange" } },
+		})
 	);
 	assert_eq!(
 		held["scopes"],
@@ -899,21 +906,16 @@ fn what_was_kept_before_lenses_is_brought_over_as_the_server_starts() {
 	assert_eq!(
 		held["drafts"],
 		serde_json::json!({
-			"views": { "Bugs": bugs, "Triage": { "name": "Triage", "group_by": "state:kanban", "shown": [], "arrangement": { "Xl": "wide" }, "hidden": ["done"] } },
+			"views": { "Bugs": bugs, "kanban": { "name": "kanban", "group_by": "state:kanban", "shown": [], "arrangement": { "Xl": "wide" } } },
 			"workspaces": {},
 		})
 	);
-	assert_eq!(
-		held["columns"],
-		serde_json::json!({ "notion": { "by": "state:kanban", "arrangement": { "Xl": "wide" }, "tints": { "triage": "orange" } } })
-	);
-	assert_eq!((&held["laid"], &held["locked"]), (&serde_json::json!({ "Triage": "notion" }), &serde_json::json!(["Triage"])));
+	assert_eq!(held["locked"], serde_json::json!(["kanban"]));
 	assert_eq!(held["ids"]["BugsView"], serde_json::json!({ "View": "Bugs" }));
 	assert_eq!(held["received"], serde_json::json!(["/l/ws/bob/desk@1?bands=xl", "/l/view/team/Triage@1"]));
-	assert_eq!(held["forks"][0]["upstream"]["version"], 1, "as the team's versions are numbered without queries");
 	assert_eq!(
-		entry(&catalog(port, "alice"), serde_json::json!({ "Viewer": "alice" }), serde_json::json!({ "View": "All" }))["behind"],
-		1
+		held["forks"][0]["upstream"],
+		serde_json::json!({ "owner": "Team", "name": "Triage", "version": null, "ahead": 0 })
 	);
 
 	let (status, body) = call(port, "POST", "/api/shared", me, Some(serde_json::json!({ "link": "/l/ws/bob/desk@1?bands=xl" })));
@@ -928,6 +930,103 @@ fn what_was_kept_before_lenses_is_brought_over_as_the_server_starts() {
 	assert_eq!((read("alice.json"), read("shared/bob.json")), (old, pins), "as they were");
 	assert_eq!(edit(port, me, lensed("ws 1", "Search", "is:closed")).0, 200);
 	held = library(port, me);
+	drop(server);
+	let (_server, port) = serve(&ctx, &running, &gate);
+	assert_eq!(library(port, me), held, "brought over once");
+}
+
+#[test]
+fn what_was_kept_before_views_were_layouts_is_brought_over_as_the_server_starts() {
+	let ctx = TestContext::build();
+	let triage = "[board.workflows]\nkanban = \"preset:kanban\"\n\n[[board.views]]\nname = \"Triage\"\ngroup_by = \"state:kanban\"\nshown = []\nhidden = [\"done\"]\n";
+	ctx.remote_file_commit(CONFIG_REPO, "board.toml", "bob", triage);
+	let docked = |tabs: &[&str]| dock(&tabs.join("\",\""));
+	let tabs = ["view:Triage", "view:repo", "builder:Triage", "view:Board", "view:Bugs"];
+	let old = serde_json::json!({
+		"workspace": "ws 1",
+		"views": {
+			"Bugs": { "name": "Bugs", "group_by": "state:kanban", "shown": [], "hidden": ["done"] },
+			"repo": { "name": "repo", "group_by": "repo", "shown": ["number"] },
+		},
+		"workspaces": { "ws 1": { "tiles": { "Xl": docked(&tabs), "Md": docked(&["library:columns:mine"]), "Sm": "unreadable" }, "lens": lens("", "", "rank") } },
+		"columns": { "mine": { "by": "state:kanban", "arrangement": { "Xl": "tabbed" }, "tints": { "triage": "orange" }, "hidden": ["done"] } },
+		"scopes": {},
+		"drafts": {
+			"views": { "Triage": { "name": "Triage", "group_by": "state:kanban", "shown": ["hours"], "tints": { "triage": "red" }, "hidden": ["done", "wont_do"] } },
+			"workspaces": {},
+		},
+		"laid": { "Triage": "mine" },
+		"locked": ["Triage", "repo"],
+		"favorites": [{ "View": "Triage" }, { "Columns": "mine" }, { "Columns": "notion" }],
+		"ids": { "RepoView": { "View": "repo" }, "MineCols": { "Columns": "mine" } },
+		"forks": [
+			{ "item": { "View": "Bugs" }, "upstream": { "owner": "Team", "name": "Triage", "version": 1, "ahead": 2 } },
+			{ "item": { "Columns": "mine" }, "upstream": { "owner": "Team", "name": "notion", "version": 1, "ahead": 0 } },
+		],
+		"recent": ["ws 1"],
+		"autosaved": {},
+		"received": ["/l/columns/bob/theirs@1", "/l/ws/bob/desk@1?bands=xl"],
+	});
+	let pins = serde_json::json!([
+		{ "item": { "Columns": "theirs" }, "versions": [{ "construction": { "Columns": { "by": "repo" } }, "carried": {} }] },
+		{ "item": { "Workspace": "desk" }, "versions": [{ "construction": { "Workspace": { "tiles": { "Xl": docked(&["view:Triage"]) }, "lens": lens("", "", "rank") } }, "carried": {} }] },
+	]);
+	let web = ctx.xdg.inner.root.join("data/tedi/web");
+	std::fs::create_dir_all(web.join("shared")).unwrap();
+	std::fs::write(web.join("alice.json"), old.to_string()).unwrap();
+	std::fs::write(web.join("shared/bob.json"), pins.to_string()).unwrap();
+	std::fs::write(web.join("version"), "2").unwrap();
+
+	let gate = ["--viewer-header", "X-Auth-User"];
+	let running = format!(
+		"[board]\nsource = {{ repo = \"{CONFIG_REPO}\", path = \"board.toml\", branch = \"main\" }}\n\n{}",
+		triage.replace("Triage", "kanban").replace("shown = []\nhidden = [\"done\"]", "shown = [\"repo\"]")
+	);
+	let (server, port) = serve(&ctx, &running, &gate);
+	let me = Some("alice");
+	let held = library(port, me);
+	assert_eq!(
+		held["views"],
+		serde_json::json!({
+			"Bugs": { "name": "Bugs", "group_by": "state:kanban", "shown": [] },
+			"repo (2)": { "name": "repo (2)", "group_by": "repo", "shown": ["number"] },
+			"mine": { "name": "mine", "group_by": "state:kanban", "shown": ["repo"], "arrangement": { "Xl": "tabbed" }, "tints": { "triage": "orange" } },
+		}),
+		"none takes the team's name, and a column layout is a view of its grouping"
+	);
+	assert_eq!(
+		held["drafts"]["views"],
+		serde_json::json!({ "kanban": { "name": "kanban", "group_by": "state:kanban", "shown": ["hours"], "tints": { "triage": "red" } } }),
+		"the one the team's is now"
+	);
+	let tiles = &held["workspaces"]["ws 1"]["tiles"];
+	let tabs = |band: &str| {
+		serde_json::from_str::<serde_json::Value>(tiles[band].as_str().unwrap()).unwrap()["grid"]["cells"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.map(|c| c["group"]["tabs"].clone())
+			.collect::<Vec<_>>()
+	};
+	assert_eq!(tabs("Xl"), [serde_json::json!(["view:kanban", "view:repo (2)", "view:Board", "view:Bugs"])]);
+	assert!(tabs("Md").is_empty());
+	assert_eq!(tiles["Sm"], "unreadable");
+	assert_eq!(held["locked"], serde_json::json!(["kanban", "repo (2)"]));
+	assert_eq!(held["favorites"], serde_json::json!([{ "View": "kanban" }]));
+	assert_eq!(held["ids"]["RepoView"], serde_json::json!({ "View": "repo (2)" }));
+	assert!(held["ids"].get("MineCols").is_none());
+	assert_eq!(
+		held["forks"],
+		serde_json::json!([{ "item": { "View": "Bugs" }, "upstream": { "owner": "Team", "name": "kanban", "version": null, "ahead": 2 } }])
+	);
+	assert_eq!(held["received"], serde_json::json!(["/l/ws/bob/desk@1?bands=xl"]));
+
+	let (status, body) = call(port, "POST", "/api/shared", me, Some(serde_json::json!({ "link": "/l/ws/bob/desk@1?bands=xl" })));
+	assert_eq!(status, 200, "{body}");
+	assert!(body.contains("view:kanban"), "{body}");
+
+	let read = |file: &str| serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(web.join("before-3").join(file)).unwrap()).unwrap();
+	assert_eq!((read("alice.json"), read("shared/bob.json")), (old, pins), "as they were");
 	drop(server);
 	let (_server, port) = serve(&ctx, &running, &gate);
 	assert_eq!(library(port, me), held, "brought over once");

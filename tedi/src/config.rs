@@ -98,13 +98,12 @@ pub struct Board {
 	/// By name: `preset:<name>` (`kanban`, `pull_requests`) or a workflow file's path.
 	#[serde(default)] // a board may place issues in none
 	pub workflows: BTreeMap<String, String>,
+	/// How the views show what they do: a layout's under its name (`kanban`, `repo`, …), any other beside them.
+	#[serde(default)] // a board may set none up
 	pub views: Vec<tedi_web::api::View>,
 	/// Named slices of the team's repos, nesting narrower ones (`[board.scopes.web.tooling] repos = ["EV-Main/tilers"]`).
 	#[serde(default)] // a board may have none
 	pub scopes: BTreeMap<String, tedi_task_operations::board::Scope>,
-	/// Column colorings every viewer is offered (`[board.columns.notion] by = "state:kanban"`, `tints = { triage = "orange" }`).
-	#[serde(default)] // a board may have none
-	pub columns: BTreeMap<String, tedi_web::api::Columns>,
 	/// Workspaces every viewer is offered (`tiles = { Xl = "<tilers layout>" }`, `lens = { scope = "repo:EV-Main/*", search = "is:open", sort = "rank" }`).
 	#[serde(default)] // a board may have none
 	pub workspaces: BTreeMap<String, tedi_web::api::Workspace>,
@@ -112,7 +111,7 @@ pub struct Board {
 	pub source: Option<tedi_web::Source>,
 }
 impl Board {
-	/// Its workflows, loaded with their hooks; every workflow a view, a column layout or a workspace's lens names is among them.
+	/// Its workflows, loaded with their hooks; every workflow a view or a workspace's lens names is among them.
 	pub fn workflows(&self) -> color_eyre::Result<Workflows> {
 		use color_eyre::eyre::bail;
 		use tedi_task_operations::board::{Facet, GroupBy, Shown, Slice, SortKey};
@@ -127,13 +126,6 @@ impl Board {
 			});
 			if let Some(w) = named.into_iter().find(|w| !loaded.trees.contains_key(*w)) {
 				bail!("the view {} names the workflow {w}, and `board.workflows` doesn't", view.name);
-			}
-		}
-		for (name, columns) in &self.columns {
-			if let GroupBy::State(w) = &columns.by
-				&& !loaded.trees.contains_key(w)
-			{
-				bail!("the columns {name} are by the workflow {w}, and `board.workflows` doesn't name it");
 			}
 		}
 		for (name, workspace) in &self.workspaces {

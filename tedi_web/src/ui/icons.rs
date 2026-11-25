@@ -24,7 +24,6 @@ pub(super) enum Glyph {
 	Scope,
 	View,
 	Workspace,
-	Columns,
 	History,
 	Command,
 	Menu,
@@ -86,8 +85,6 @@ impl Glyph {
 				r#"<path d="M14.6666 2H1.33331L6.66665 8.30667V12.6667L9.33331 14V8.30667L14.6666 2Z" stroke-width="1.33333" stroke-linecap="round" stroke-linejoin="round" stroke="currentColor"/>"#,
 			Glyph::Workspace =>
 				r#"<path d="M2.66667 2H6C6.36819 2 6.66667 2.29848 6.66667 2.66667V7.33333C6.66667 7.70152 6.36819 8 6 8H2.66667C2.29848 8 2 7.70152 2 7.33333V2.66667C2 2.29848 2.29848 2 2.66667 2Z" stroke-width="1.33333" stroke-linecap="round" stroke-linejoin="round" stroke="currentColor"/><path d="M9.99998 2H13.3333C13.7015 2 14 2.29848 14 2.66667V4.66667C14 5.03486 13.7015 5.33333 13.3333 5.33333H9.99998C9.63179 5.33333 9.33331 5.03486 9.33331 4.66667V2.66667C9.33331 2.29848 9.63179 2 9.99998 2Z" stroke-width="1.33333" stroke-linecap="round" stroke-linejoin="round" stroke="currentColor"/><path d="M9.99998 8H13.3333C13.7015 8 14 8.29848 14 8.66667V13.3333C14 13.7015 13.7015 14 13.3333 14H9.99998C9.63179 14 9.33331 13.7015 9.33331 13.3333V8.66667C9.33331 8.29848 9.63179 8 9.99998 8Z" stroke-width="1.33333" stroke-linecap="round" stroke-linejoin="round" stroke="currentColor"/><path d="M2.66667 10.6667H6C6.36819 10.6667 6.66667 10.9651 6.66667 11.3333V13.3333C6.66667 13.7015 6.36819 14 6 14H2.66667C2.29848 14 2 13.7015 2 13.3333V11.3333C2 10.9651 2.29848 10.6667 2.66667 10.6667Z" stroke-width="1.33333" stroke-linecap="round" stroke-linejoin="round" stroke="currentColor"/>"#,
-			Glyph::Columns =>
-				r#"<path d="M3.33333 2H12.6667C13.403 2 14 2.59695 14 3.33333V12.6667C14 13.403 13.403 14 12.6667 14H3.33333C2.59695 14 2 13.403 2 12.6667V3.33333C2 2.59695 2.59695 2 3.33333 2Z" stroke-width="1.33333" stroke-linecap="round" stroke-linejoin="round" stroke="currentColor"/><path d="M6 2V14" stroke-width="1.33333" stroke-linecap="round" stroke-linejoin="round" stroke="currentColor"/><path d="M10 2V14" stroke-width="1.33333" stroke-linecap="round" stroke-linejoin="round" stroke="currentColor"/>"#,
 			Glyph::History =>
 				r#"<path d="M2 8C2 9.18669 2.35189 10.3467 3.01118 11.3334C3.67047 12.3201 4.60754 13.0892 5.7039 13.5433C6.80026 13.9974 8.00666 14.1162 9.17054 13.8847C10.3344 13.6532 11.4035 13.0818 12.2426 12.2426C13.0818 11.4035 13.6532 10.3344 13.8847 9.17054C14.1162 8.00666 13.9974 6.80026 13.5433 5.7039C13.0892 4.60754 12.3201 3.67047 11.3334 3.01118C10.3467 2.35189 9.18669 2 8 2C6.32263 2.00631 4.71265 2.66082 3.50667 3.82667L2 5.33333" stroke-width="1.33333" stroke-linecap="round" stroke-linejoin="round" stroke="currentColor"/><path d="M2 2V5.33333H5.33333" stroke-width="1.33333" stroke-linecap="round" stroke-linejoin="round" stroke="currentColor"/><path d="M8 4.66666V7.99999L10.6667 9.33332" stroke-width="1.33333" stroke-linecap="round" stroke-linejoin="round" stroke="currentColor"/>"#,
 			Glyph::Command =>

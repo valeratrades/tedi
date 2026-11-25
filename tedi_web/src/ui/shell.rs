@@ -11,14 +11,14 @@ use super::{
 	card::Avatar,
 	icons::{Glyph, Icon},
 	kit::{IconBtn, Kbd},
-	library::NameForm,
+	library::{NameForm, fork},
 	route::Go as Link,
 	sprint_panel,
-	toolbar::{FieldsMenu, GroupMenu, Keep},
+	toolbar::{FieldsMenu, Keep},
 	view::{count, outcome},
 	workspace,
 };
-use crate::api::{Boxing, Item, LibraryEdit, Shelf, Workspace};
+use crate::api::{Item, LibraryEdit, Origin, Shelf, Workspace};
 
 /// The shelves; on a phone the same in a sheet behind ☰.
 #[component]
@@ -96,28 +96,6 @@ fn Shelves() -> Element {
 		})
 		.collect();
 
-	let view = ctx.current_view();
-	let (laid, by) = (view.as_ref().and_then(|v| ctx.laid(v)), view.as_ref().and_then(|v| ctx.view(v)).map(|v| v.group_by));
-	let columns: Vec<Row> = setup
-		.columns
-		.iter()
-		.map(|(name, c)| (name, c, None))
-		.chain(library.columns.iter().map(|(name, c)| (name, c, Some(Shelf::Columns))))
-		.map(|(name, c, own)| Row {
-			glyph: Glyph::Columns,
-			label: name.clone(),
-			depth: 0,
-			go: Go::Columns {
-				name: name.clone(),
-				onto: view.clone().filter(|_| by == Some(Boxing::Groups(c.by.clone()))),
-			},
-			favorite: Some(Item::Columns(name.clone())),
-			own,
-			current: laid.as_ref() == Some(name),
-			meta: c.boxes.tints.len().to_string(),
-		})
-		.collect();
-
 	let held = ctx.sprints();
 	let sprints: Vec<Row> = held
 		.iter()
@@ -143,9 +121,8 @@ fn Shelves() -> Element {
 			Brand {}
 			div { class: "flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto overflow-x-hidden",
 				Section { title: "Workspaces", kind: "workspaces", rows: workspaces, empty: "+ makes one", add: Add::Workspace }
-				Section { title: "Views", kind: "views", rows: views, empty: "No views", add: Add::Builder }
+				Section { title: "Views", kind: "views", rows: views, empty: "", add: Add::None }
 				Section { title: "Scopes", kind: "scopes", rows: scopes, empty: "No scopes", add: Add::Dialog }
-				Section { title: "Column layouts", kind: "columns", rows: columns, empty: "Tint a board's columns, then keep them", add: Add::None }
 				if !sprints.is_empty() {
 					Section { title: "Sprints", kind: "", rows: sprints, empty: "", add: Add::None }
 				}
@@ -222,11 +199,6 @@ enum Go {
 	Workspace(String),
 	/// Copied into the open workspace.
 	Scope(String),
-	Columns {
-		name: String,
-		/// The view on screen, when it groups as they do; else they open in the library.
-		onto: Option<String>,
-	},
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -235,8 +207,6 @@ enum Add {
 	/// An empty one, opened.
 	Workspace,
 	Dialog,
-	/// The view builder, on a blank draft.
-	Builder,
 }
 
 //#[codestyle::skip(swappable-args)]
@@ -259,7 +229,6 @@ fn Section(title: &'static str, kind: &'static str, rows: Vec<Row>, empty: &'sta
 					Add::None => rsx! {},
 					Add::Workspace => rsx! { IconBtn { glyph: Glyph::Plus, title: "New workspace", onclick: move |_| { spawn(ctx.new_workspace()); } } },
 					Add::Dialog => rsx! { IconBtn { glyph: Glyph::Plus, title: "New", onclick: move |_| { let mut m = ctx.modal; m.set(Some(Modal::Scope(Editing::New(Default::default())))); } } },
-					Add::Builder => rsx! { IconBtn { glyph: Glyph::Plus, title: "Build a view", onclick: move |_| ctx.open(PanelId("builder:".into())) } },
 				}
 			}
 			if open() {
@@ -279,7 +248,6 @@ fn key_of(go: &Go) -> String {
 		Go::Panel(id) => id.0.clone(),
 		Go::Workspace(n) => format!("workspace:{n}"),
 		Go::Scope(p) => format!("scope:{p}"),
-		Go::Columns { name, .. } => format!("columns:{name}"),
 	}
 }
 
@@ -305,8 +273,6 @@ fn ShelfRow(row: Row) -> Element {
 		Go::Panel(id) => Some(ctx.at_panel(id)),
 		Go::Workspace(name) => Some(ctx.at_workspace(name)),
 		Go::Scope(_) => None, // an edit of the workspace, not a move
-		Go::Columns { name, onto: Some(view) } => Some(ctx.at_columns(view, name)),
-		Go::Columns { name, onto: None } => Some(ctx.at_panel(&PanelId(format!("library:columns:{name}")))),
 	};
 	let rename = {
 		let from = label.clone();
@@ -331,14 +297,14 @@ fn ShelfRow(row: Row) -> Element {
 			});
 		}
 	};
-	let fork = {
+	let forking = {
 		let (go, label) = (go.clone(), label.clone());
 		move |_| match &go {
 			Go::Scope(path) => {
 				let mut m = ctx.modal;
 				m.set(Some(Modal::Scope(if own.is_some() { Editing::Own(path.clone()) } else { Editing::Team(path.clone()) })));
 			}
-			Go::Panel(id) if id.0.starts_with("view:") => ctx.open(PanelId(format!("builder:{label}"))),
+			Go::Panel(id) if id.0.starts_with("view:") => fork(ctx, Origin::Team(Item::View(label.clone())), &label),
 			_ => ctx.open(PanelId(format!("library:{}", key_of(&go)))),
 		}
 	};
@@ -391,9 +357,6 @@ fn ShelfRow(row: Row) -> Element {
 					}
 					match own {
 						Some(shelf) => rsx! {
-							if shelf == Shelf::Views {
-								IconBtn { glyph: Glyph::Fields, title: "Edit in the builder", onclick: { let label = label.clone(); move |_| ctx.open(PanelId(format!("builder:{label}"))) } }
-							}
 							IconBtn { glyph: Glyph::Pencil, title: "Rename", onclick: move |_| renaming.set(true) }
 							if deleting() {
 								button {
@@ -407,7 +370,7 @@ fn ShelfRow(row: Row) -> Element {
 								IconBtn { glyph: Glyph::X, title: "Delete", onclick: move |_| deleting.set(true) }
 							}
 						},
-						None if !matches!(go, Go::Panel(ref id) if id.0.starts_with("sprint:")) => rsx! { IconBtn { glyph: Glyph::Fork, title: "Fork into your library", onclick: fork } },
+						None if !matches!(go, Go::Panel(ref id) if id.0.starts_with("sprint:")) => rsx! { IconBtn { glyph: Glyph::Fork, title: "Fork into your library", onclick: forking } },
 						None => rsx! {},
 					}
 				}
@@ -450,7 +413,7 @@ pub(super) fn TopBar() -> Element {
 	}
 }
 
-/// On a phone, the thumb zone: the band the workspace is arranged for, and the shown view's fields and grouping.
+/// On a phone, the thumb zone: the band the workspace is arranged for, and the shown view's fields.
 #[component]
 pub(super) fn ThumbBar() -> Element {
 	let ctx = use_context::<Ctx>();
@@ -474,7 +437,6 @@ fn ThumbView(name: String) -> Element {
 	const MENU: &str = "top-auto bottom-full mb-1 flex max-h-96 w-72 flex-col gap-0.5 overflow-y-auto rounded-[var(--radius)] border border-border bg-popover p-1 text-ink";
 	let ctx = use_context::<Ctx>();
 	let mut fields = use_signal(|| false);
-	let mut grouping = use_signal(|| false);
 	let edit = use_callback({
 		let name = name.clone();
 		move |part| ctx.edit_view(&name, part)
@@ -484,7 +446,7 @@ fn ThumbView(name: String) -> Element {
 		return rsx! {}; // dropped
 	};
 	let groups = outcome(&ctx, &view.group_by).and_then(Result::ok); // why it doesn't run is the tile's to say
-	let cards = groups.map(|g| format!("{} cards", count(&g, &view.boxes.hidden))).unwrap_or_default();
+	let cards = groups.map(|g| format!("{} cards", count(&g))).unwrap_or_default();
 	rsx! {
 		Popover { open: fields(), on_open_change: move |v| fields.set(v),
 			PopoverTrigger { class: BUTTON, Icon { glyph: Glyph::Fields } "Fields" }
@@ -496,10 +458,6 @@ fn ThumbView(name: String) -> Element {
 					Keep { view: view.clone(), defined }
 				}
 			}
-		}
-		Popover { open: grouping(), on_open_change: move |v| grouping.set(v),
-			PopoverTrigger { class: BUTTON, Icon { glyph: Glyph::Group } "Group" }
-			PopoverContent { align: "end", class: MENU, GroupMenu { by: view.group_by, edit } }
 		}
 	}
 }

@@ -81,7 +81,6 @@ fn focus(at: &str) -> Result<(Option<Shelf>, Option<String>), String> {
 		"views" | "view" => Some(Shelf::Views),
 		"scopes" | "scope" => Some(Shelf::Scopes),
 		"workspaces" | "workspace" => Some(Shelf::Workspaces),
-		"columns" => Some(Shelf::Columns),
 		other => return Err(format!("{other} is no kind the library holds")),
 	};
 	Ok((shelf, name))
@@ -92,7 +91,6 @@ fn kind_name(shelf: Shelf) -> &'static str {
 		Shelf::Views => "View",
 		Shelf::Scopes => "Scope",
 		Shelf::Workspaces => "Workspace",
-		Shelf::Columns => "Column layout",
 	}
 }
 
@@ -101,7 +99,6 @@ fn kind_glyph(shelf: Shelf) -> Glyph {
 		Shelf::Views => Glyph::View,
 		Shelf::Scopes => Glyph::Scope,
 		Shelf::Workspaces => Glyph::Workspace,
-		Shelf::Columns => Glyph::Columns,
 	}
 }
 
@@ -112,7 +109,6 @@ fn KindTag(shelf: Shelf) -> Element {
 		Shelf::Views => Tone::Info,
 		Shelf::Scopes => Tone::Positive,
 		Shelf::Workspaces => Tone::Purple,
-		Shelf::Columns => Tone::Pink,
 	};
 	rsx! {
 		Chip { tone,
@@ -139,7 +135,7 @@ fn OwnerBadge(owner: Owner, forked: bool) -> Element {
 	}
 }
 
-/// A live picture of what it constructs: a view's columns, a scope's repo tree, a workspace's tiles, a column layout's tints.
+/// A live picture of what it constructs: a view's columns, a scope's repo tree, a workspace's tiles.
 #[component]
 fn Thumb(construction: Construction, #[props(default)] large: bool) -> Element {
 	const HUES: [&str; 5] = ["var(--ink-faint)", "var(--tint-yellow)", "var(--tint-blue)", "var(--tint-green)", "var(--tint-purple)"];
@@ -217,16 +213,6 @@ fn Thumb(construction: Construction, #[props(default)] large: bool) -> Element {
 				}
 			}
 		}
-		Construction::Columns(columns) => rsx! {
-			div { class: "flex h-full gap-1",
-				for (group , tint) in columns.boxes.tints.iter() {
-					div { key: "{group}", class: "flex flex-1 flex-col gap-1",
-						div { class: "h-full rounded-sm", style: "background: color-mix(in srgb, var(--tint-{tint}) 40%, var(--card))" }
-						span { class: "truncate text-mono-s text-ink-soft", "{group}" }
-					}
-				}
-			}
-		},
 	};
 	rsx! {
 		div { class: "{height} overflow-hidden rounded-[var(--radius)] bg-muted p-2", {body} }
@@ -240,11 +226,9 @@ fn objects(ctx: &Ctx) -> Vec<(Owner, Item, Construction)> {
 	let (Some(setup), Some(library)) = (setup.as_ref(), library.as_ref()) else {
 		return Vec::new();
 	};
-	let team = constructions(&setup.views, &setup.scopes, &setup.columns, &setup.workspaces)
-		.into_iter()
-		.map(|(i, c)| (Owner::Team, i, c));
+	let team = constructions(&setup.views, &setup.scopes, &setup.workspaces).into_iter().map(|(i, c)| (Owner::Team, i, c));
 	let views: Vec<View> = library.views.values().cloned().collect();
-	let mine = constructions(&views, &library.scopes, &library.columns, &library.workspaces)
+	let mine = constructions(&views, &library.scopes, &library.workspaces)
 		.into_iter()
 		.map(|(i, c)| (Owner::Viewer(String::new()), i, c));
 	team.chain(mine).collect()
@@ -352,7 +336,7 @@ pub(super) fn LibraryPanel(at: String) -> Element {
 							oninput: move |e| search.set(e.value()),
 						}
 					}
-					for k in [Shelf::Views, Shelf::Scopes, Shelf::Workspaces, Shelf::Columns] {
+					for k in [Shelf::Views, Shelf::Scopes, Shelf::Workspaces] {
 						button {
 							key: "{k:?}",
 							r#type: "button",
@@ -441,7 +425,7 @@ fn LibraryCard(owner: Owner, item: Item, construction: Construction, entry: Opti
 				span { class: "ml-auto truncate text-mono-s text-ink-faint", "{meta}" }
 			}
 			div { class: "hidden items-center gap-1 group-hover/card:flex",
-				Btn { style: Style::Primary, onclick: { let (o, i, c) = (owner.clone(), item.clone(), construction.clone()); move |e: MouseEvent| { e.stop_propagation(); open(ctx, &o, &i, &c); } }, "Open" }
+				Btn { style: Style::Primary, onclick: { let i = item.clone(); move |e: MouseEvent| { e.stop_propagation(); open(ctx, &i); } }, "Open" }
 				if owner == Owner::Team {
 					Btn { style: Style::Outline, glyph: Glyph::Fork, onclick: { let i = item.clone(); move |e: MouseEvent| { e.stop_propagation(); fork(ctx, Origin::Team(i.clone()), i.name()); } }, "Fork" }
 				}
@@ -470,33 +454,16 @@ fn LinkCard(link: ShareLink, picked: bool, on_pick: EventHandler<ShareLink>) -> 
 	}
 }
 
-/// Copies `construction` onto the screen.
-fn open(ctx: Ctx, owner: &Owner, item: &Item, construction: &Construction) {
-	match (item, construction) {
-		(Item::View(name), _) => ctx.open(PanelId(format!("view:{name}"))),
-		(Item::Workspace(name), _) => ctx.go(ctx.at_workspace(name)),
-		(Item::Scope(path), _) => ctx.start_from(Some(path.clone())),
-		(Item::Columns(name), Construction::Columns(columns)) => match grouped_by(&ctx, &columns.by).as_slice() {
-			[] => ctx.say("library", Said::Info, format!("no view groups by {}: {name} colours none", columns.by), None),
-			_ => {
-				let mut m = ctx.modal;
-				m.set(Some(Modal::ApplyColumns {
-					name: name.clone(),
-					owner: owner.clone(),
-				}));
-			}
-		},
-		(item, construction) => panic!("{item:?} holds no {construction:?}"),
+/// Copies it onto the screen.
+fn open(ctx: Ctx, item: &Item) {
+	match item {
+		Item::View(name) => ctx.open(PanelId(format!("view:{name}"))),
+		Item::Workspace(name) => ctx.go(ctx.at_workspace(name)),
+		Item::Scope(path) => ctx.start_from(Some(path.clone())),
 	}
 }
 
-/// The views grouping `by`, as last edited.
-fn grouped_by(ctx: &Ctx, by: &GroupBy) -> Vec<String> {
-	let names = ctx.views().into_iter().map(|v| v.name);
-	names.filter(|n| ctx.view(n).is_some_and(|v| v.group_by == Boxing::Groups(by.clone()))).collect()
-}
-
-fn fork(ctx: Ctx, from: Origin, name: &str) {
+pub(super) fn fork(ctx: Ctx, from: Origin, name: &str) {
 	let name = format!("{name} (mine)");
 	spawn(async move {
 		if ctx.keep(LibraryEdit::Fork { from, name: name.clone() }).await {
@@ -527,7 +494,6 @@ fn bands(of: &Arrangement) -> String {
 fn boxes(of: &Boxes) -> Vec<(&'static str, String)> {
 	vec![
 		("tints", of.tints.iter().map(|(g, t)| format!("{g} {t}")).collect::<Vec<_>>().join(" ")),
-		("hidden", of.hidden.iter().cloned().collect::<Vec<_>>().join(" ")),
 		("arranged for", bands(&of.arrangement)),
 	]
 }
@@ -566,7 +532,7 @@ fn Detail(owner: Owner, item: Item, construction: Construction, entry: Option<En
 	let definition: Vec<(&str, String)> = match &construction {
 		Construction::View(v) => [
 			vec![
-				("group_by", v.group_by.to_string()),
+				("layout", v.group_by.to_string()),
 				("fields", v.shown.iter().cloned().map(String::from).collect::<Vec<_>>().join(" ")),
 			],
 			boxes(&v.boxes),
@@ -583,7 +549,6 @@ fn Detail(owner: Owner, item: Item, construction: Construction, entry: Option<En
 			("search", lens.search.to_string()),
 			("sort", lens.sort.to_string()),
 		],
-		Construction::Columns(c) => [vec![("by", c.by.to_string())], boxes(&c.boxes)].concat(),
 	};
 	let usage = entry.as_ref().map(|e| e.usage.clone()).unwrap_or_default(); // the counts are still loading
 	let behind_only = entry.as_ref().and_then(|e| e.behind).is_some_and(|b| b > 0) && upstream.as_ref().is_some_and(|u| u.ahead == 0);
@@ -615,7 +580,7 @@ fn Detail(owner: Owner, item: Item, construction: Construction, entry: Option<En
 				}
 			}
 			div { class: "flex flex-wrap items-center gap-2",
-				Btn { style: Style::Primary, md: true, onclick: { let (o, i, c) = (owner.clone(), item.clone(), construction.clone()); move |_| open(ctx, &o, &i, &c) }, "Open" }
+				Btn { style: Style::Primary, md: true, onclick: { let i = item.clone(); move |_| open(ctx, &i) }, "Open" }
 				if owner == Owner::Team {
 					Btn { style: Style::Outline, md: true, glyph: Glyph::Fork, onclick: { let i = item.clone(); move |_| fork(ctx, Origin::Team(i.clone()), i.name()) }, "Fork to mine" }
 				} else {
@@ -673,13 +638,11 @@ fn Detail(owner: Owner, item: Item, construction: Construction, entry: Option<En
 				}
 			}
 			if let (Some(name), Owner::Team) = (comparing(), &owner) {
-				if let Some(Construction::View(_) | Construction::Scope(_) | Construction::Workspace(_) | Construction::Columns(_)) = Some(&construction) {
-					{
-						let mine = objects(&ctx).into_iter().find(|(o, i, _)| *o != Owner::Team && i.shelf() == item.shelf() && i.name() == name).map(|(_, _, c)| c);
-						match mine {
-							Some(mine) => rsx! { Changes { from: construction.clone(), to: mine } },
-							None => rsx! {},
-						}
+				{
+					let mine = objects(&ctx).into_iter().find(|(o, i, _)| *o != Owner::Team && i.shelf() == item.shelf() && i.name() == name).map(|(_, _, c)| c);
+					match mine {
+						Some(mine) => rsx! { Changes { from: construction.clone(), to: mine } },
+						None => rsx! {},
 					}
 				}
 			}
@@ -869,41 +832,6 @@ pub(super) fn Propose(item: Item) -> Element {
 							}
 						},
 						"Open config PR"
-					}
-				}
-			}
-		}
-	}
-}
-
-/// A column layout onto one of the views grouping as it does.
-#[component]
-pub(super) fn ApplyColumns(name: String, owner: Owner) -> Element {
-	let ctx = use_context::<Ctx>();
-	let item = Item::Columns(name.clone());
-	let columns = objects(&ctx)
-		.into_iter()
-		.find(|(o, i, _)| (*o == Owner::Team) == (owner == Owner::Team) && *i == item)
-		.map(|(_, _, c)| c);
-	let Some(Construction::Columns(columns)) = columns else {
-		return rsx! {};
-	};
-	let close = move || {
-		let mut m = ctx.modal;
-		m.set(None);
-	};
-	let onto = grouped_by(&ctx, &columns.by);
-	rsx! {
-		Dialog { open: true, on_open_change: move |v: bool| if !v { close() },
-			DialogContent { class: "flex flex-col gap-1 sm:max-w-sm",
-				DialogHeader { DialogTitle { "Colour a view's columns as {name}" } }
-				for view in onto {
-					Row {
-						key: "{view}",
-						selected: false,
-						label: view.clone(),
-						glyph: Glyph::View,
-						onclick: { let (view, name) = (view.clone(), name.clone()); move |_| { ctx.go(ctx.at_columns(&view, &name)); close(); } },
 					}
 				}
 			}

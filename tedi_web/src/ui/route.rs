@@ -1,5 +1,5 @@
 //! The address bar. What is on screen reads as an address, and an address moves the screen:
-//! `/view/<id>[/<column layout's id>]`, `/sprint/<owner>/<repo>/<n>`, `/library/<at>`, `/builder/<view>` is the panel last brought up;
+//! `/view/<id>`, `/sprint/<owner>/<repo>/<n>`, `/library/<at>` is the panel last brought up;
 //! `?issue=owner/repo/n` the floating issues, the shown one last; `ws=<id>` the workspace, its lens with it.
 
 use std::{fmt, str::FromStr};
@@ -11,7 +11,7 @@ use tilers_dioxus::{PanelId, model::serial};
 use wasm_bindgen::{JsCast as _, JsValue, closure::Closure};
 
 use super::{Ctx, floating_issues, toast::Tone};
-use crate::api::{Item, LibraryEdit};
+use crate::api::Item;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(super) struct Address {
@@ -47,11 +47,8 @@ impl Address {
 
 #[derive(Clone, Debug, PartialEq)]
 enum Main {
-	/// Both by id.
-	View {
-		id: String,
-		columns: Option<String>,
-	},
+	/// By id.
+	View(String),
 	Panel(PanelId),
 }
 
@@ -80,15 +77,10 @@ impl Ctx {
 		held.map(|(id, _)| id.clone())
 	}
 
-	/// The column layout `view` was last laid out as, under the grouping it shows.
-	pub(super) fn laid(&self, view: &str) -> Option<String> {
-		self.library.read().as_ref()?.laid.get(view).cloned()
-	}
-
 	/// The view last brought up, while it is what the address names.
 	pub(super) fn current_view(&self) -> Option<String> {
 		match &self.at.read().main {
-			Some(Main::View { id, .. }) => match self.named(id)? {
+			Some(Main::View(id)) => match self.named(id)? {
 				Item::View(name) => Some(name),
 				other => panic!("only views are addressed as one: {other:?}"),
 			},
@@ -103,10 +95,7 @@ impl Ctx {
 	/// None: a view kept nowhere the address could name it (one carried by a shared workspace).
 	fn main_of(&self, panel: &PanelId) -> Option<Main> {
 		Some(match panel.0.strip_prefix("view:") {
-			Some(view) => Main::View {
-				id: self.id_of(&Item::View(view.to_string()))?,
-				columns: self.laid(view).and_then(|name| self.id_of(&Item::Columns(name))),
-			},
+			Some(view) => Main::View(self.id_of(&Item::View(view.to_string()))?),
 			None => Main::Panel(panel.clone()),
 		})
 	}
@@ -115,17 +104,6 @@ impl Ctx {
 	pub(super) fn at_panel(&self, panel: &PanelId) -> Address {
 		Address {
 			main: self.main_of(panel),
-			..self.at.read().clone()
-		}
-	}
-
-	//#[codestyle::skip(swappable-args)]
-	pub(super) fn at_columns(&self, view: &str, columns: &str) -> Address {
-		Address {
-			main: self.id_of(&Item::View(view.to_string())).map(|id| Main::View {
-				id,
-				columns: self.id_of(&Item::Columns(columns.to_string())),
-			}),
 			..self.at.read().clone()
 		}
 	}
@@ -194,7 +172,7 @@ impl Ctx {
 		spawn_forever(self.reach(to));
 	}
 
-	/// What differs from `to` changed; a workspace and a column layout it leaves out stand.
+	/// What differs from `to` changed; a workspace it leaves out stands.
 	pub(super) async fn reach(self, to: Address) {
 		let (mut moving, mut settling) = (self.moving, self.settling);
 		moving += 1;
@@ -208,18 +186,8 @@ impl Ctx {
 			}
 		}
 		match &to.main {
-			Some(Main::View { id, columns }) => match self.named(id) {
-				Some(Item::View(view)) => {
-					self.open(PanelId(format!("view:{view}")));
-					match columns.as_ref().map(|c| (c, self.named(c))) {
-						None => {}
-						Some((_, Some(Item::Columns(name)))) =>
-							if self.laid(&view).as_ref() != Some(&name) {
-								self.lay(view, name).await;
-							},
-						Some((c, _)) => self.lost("column layout", c),
-					}
-				}
+			Some(Main::View(id)) => match self.named(id) {
+				Some(Item::View(view)) => self.open(PanelId(format!("view:{view}"))),
 				_ => self.lost("view", id),
 			},
 			Some(Main::Panel(panel)) => self.open(panel.clone()),
@@ -241,14 +209,6 @@ impl Ctx {
 	//#[codestyle::skip(swappable-args)]
 	fn lost(&self, what: &str, id: &str) {
 		self.say("address", Tone::Error, format!("no {what} {id} here: another viewer's opens by a share link"), None);
-	}
-
-	//#[codestyle::skip(swappable-args)]
-	/// `view` laid out as the column layout `columns`, whatever was dragged since it last was.
-	pub(super) async fn lay(self, view: String, columns: String) {
-		if self.keep(LibraryEdit::Lay { view: view.clone(), columns }).await {
-			self.relay(view);
-		}
 	}
 }
 
@@ -346,8 +306,7 @@ impl fmt::Display for Address {
 		let enc = |s: &str| urlencoding::encode(s).into_owned();
 		match &self.main {
 			None => f.write_str("/")?,
-			Some(Main::View { id, columns: None }) => write!(f, "/view/{id}")?,
-			Some(Main::View { id, columns: Some(columns) }) => write!(f, "/view/{id}/{columns}")?,
+			Some(Main::View(id)) => write!(f, "/view/{id}")?,
 			Some(Main::Panel(panel)) => {
 				let (kind, at) = panel.0.split_once(':').expect("a panel's id is <kind>:<what>");
 				write!(f, "/{kind}")?;
@@ -383,14 +342,10 @@ impl FromStr for Address {
 		let (path, query) = s.split_once('?').unwrap_or((s, ""));
 		let main = match path.trim_matches('/').split('/').collect::<Vec<_>>().as_slice() {
 			[""] => None,
-			["view", id] => Some(Main::View { id: id.to_string(), columns: None }),
-			["view", id, columns] => Some(Main::View {
-				id: id.to_string(),
-				columns: Some(columns.to_string()),
-			}),
-			[kind @ ("library" | "builder")] => Some(Main::Panel(PanelId(format!("{kind}:")))),
+			["view", id] => Some(Main::View(id.to_string())),
+			["library"] => Some(Main::Panel(PanelId("library:".to_string()))),
 			["sprint", owner, repo, n] => Some(Main::Panel(PanelId(format!("sprint:{owner}/{repo}/{n}")))),
-			[kind @ ("library" | "builder"), at] => Some(Main::Panel(PanelId(format!("{kind}:{}", dec(at)?)))),
+			["library", at] => Some(Main::Panel(PanelId(format!("library:{}", dec(at)?)))),
 			_ => return Err(bad()),
 		};
 		let mut to = Address { main, ..Default::default() };

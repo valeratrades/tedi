@@ -1,4 +1,4 @@
-# What Figma shows: team board, two views.
+# What Figma shows: team board.
 github_token = "mock"
 watch = ["service-arb", "ev-main", "ev-estate"]
 orgs.ev-main = ["service-arb", "ev-estate"]
@@ -8,22 +8,7 @@ kanban = "preset:kanban"
 pull_requests = "preset:pull_requests"
 
 [[board.views]]
-name = "Triage"
+name = "kanban"
 group_by = "state:kanban"
 shown = ["repo", "number", "assignees", "importance", "hours", "type", "blockers", "prs"]
-hidden = ["done", "wont_do", "backlog"]
 tints = { triage = "orange", selected = "blue", in_progress = "blue", in_review = "purple", done = "green" }
-
-[[board.views]]
-name = "Triage (mine)"
-group_by = "state:kanban"
-shown = ["repo", "number", "assignees", "importance", "hours", "type", "blockers", "prs"]
-hidden = ["done", "wont_do", "backlog"]
-
-[board.columns."kanban · notion tints"]
-by = "state:kanban"
-tints = { triage = "orange", selected = "blue", in_progress = "blue", in_review = "purple", done = "green" }
-
-[board.columns."triage focus"]
-by = "state:kanban"
-tints = { triage = "orange", selected = "blue" }

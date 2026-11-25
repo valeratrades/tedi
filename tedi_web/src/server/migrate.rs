@@ -3,18 +3,21 @@
 //! which it reads from, so a step cut short is run again whole.
 
 use std::{
-	collections::{BTreeMap, BTreeSet},
+	collections::{BTreeMap, BTreeSet, HashMap},
 	path::{Path, PathBuf},
 };
 
 use color_eyre::eyre::{Result, WrapErr as _, bail, eyre};
 use tedi_core::board::{GroupBy, Order, Query, QueryError, Scope, Shown, Slice, Terms, scope_at};
 
-use super::{Pinned, Settings, Shares, Snapshot, Source, items, move_scopes, source_repo, viewed, write_library, write_shares};
-use crate::api::{Arrangement, Boxes, Boxing, Columns, Construction, Drafts, Forked, Item, Lens, Library, Owner, ShareLink, Tints, Upstream, View, Workspace};
+use super::{Pinned, Settings, Shares, Snapshot, items, move_scopes, put, source_repo, viewed, write_library, write_shares};
+use crate::api::{Arrangement, Boxes, Boxing, Construction, Drafts, Forked, Item, Lens, Library, Owner, ShareLink, Tints, Upstream, View, Workspace};
 
-const VERSION: u32 = 2;
+const VERSION: u32 = 3;
 
+type ColumnLayouts = BTreeMap<String, OldColumns>;
+
+type Kept<T> = BTreeMap<String, (T, ColumnLayouts)>;
 pub(super) async fn migrate(settings: &Settings) -> Result<()> {
 	let web = tedi_task_operations::paths::data_dir("web");
 	let marker = web.join("version");
@@ -36,10 +39,12 @@ pub(super) async fn migrate(settings: &Settings) -> Result<()> {
 			.wrap_err_with(|| format!("bringing {} to version 1; as it was: {}", web.display(), before.display()))?;
 		tracing::info!("{} brought to version 1; as it was: {}", web.display(), before.display());
 	}
-	if held < 2 {
-		let before = before(&web, 2)?;
-		orphans(settings, &before).wrap_err_with(|| format!("bringing {} to version 2; as it was: {}", web.display(), before.display()))?;
-		tracing::info!("{} brought to version 2; as it was: {}", web.display(), before.display());
+	if held < 3 {
+		let before = before(&web, 3)?;
+		layouts(settings, &before)
+			.await
+			.wrap_err_with(|| format!("bringing {} to version 3; as it was: {}", web.display(), before.display()))?;
+		tracing::info!("{} brought to version 3; as it was: {}", web.display(), before.display());
 	}
 	let fresh = web.join("version.new");
 	std::fs::write(&fresh, VERSION.to_string())?;
@@ -84,26 +89,19 @@ fn before(web: &Path, n: u32) -> Result<PathBuf> {
 
 /// Step 1: which cards and in what order goes from views to workspaces, how they are boxed from the screen to views.
 async fn lenses(settings: &Settings, before: &Path) -> Result<()> {
-	let read = |file: PathBuf| std::fs::read_to_string(&file).wrap_err_with(|| file.display().to_string());
-	let mut libraries: BTreeMap<String, OldLibrary> = BTreeMap::new();
-	for key in jsons(before)? {
-		let old = serde_json::from_str(&read(before.join(format!("{key}.json")))?).wrap_err_with(|| format!("{key}'s library"))?;
-		libraries.insert(key, old);
+	let libraries: Kept<OldLibrary> = kept(before, "library")?;
+	let shares: Kept<Vec<OldPinned>> = kept(&before.join("shared"), "shares")?;
+	let past = Past::read(settings).await?;
+	let mut fresh: Vec<(String, Library)> = Vec::new();
+	for (key, (old, columns)) in &libraries {
+		let mut library = old.library(key, settings, &past)?;
+		views_of(columns, &mut library, settings);
+		fresh.push((key.clone(), library));
 	}
-	let mut shares: BTreeMap<String, Vec<OldPinned>> = BTreeMap::new();
-	for key in jsons(&before.join("shared"))? {
-		let old = serde_json::from_str(&read(before.join("shared").join(format!("{key}.json")))?).wrap_err_with(|| format!("{key}'s shares"))?;
-		shares.insert(key, old);
-	}
-	let past = match &settings.source {
-		Some(source) => Past::read(source).await?,
-		None => Past(Vec::new()), // unversioned: no library numbers a version of the team's
-	};
-	let fresh: Vec<(String, Library)> = libraries.iter().map(|(key, old)| Ok((key.clone(), old.library(key, settings, &past)?))).collect::<Result<_>>()?;
 	let pinned: Vec<(String, Shares)> = shares
 		.into_iter()
-		.map(|(key, old)| {
-			let shares = pins(&key, old, libraries.get(&key), settings, &past);
+		.map(|(key, (old, _))| {
+			let shares = pins(&key, old, libraries.get(&key).map(|(l, _)| l), settings, &past);
 			(key, shares)
 		})
 		.collect();
@@ -116,34 +114,193 @@ async fn lenses(settings: &Settings, before: &Path) -> Result<()> {
 	Ok(())
 }
 
-/// Step 2: the team's scopes by org left its config, points of the chain in their place. A viewer's scope nested in one
-/// that is gone sits at the top.
-fn orphans(settings: &Settings, before: &Path) -> Result<()> {
+/// Step 3: the team's views are its layouts', and a column layout is a view of its grouping.
+async fn layouts(settings: &Settings, before: &Path) -> Result<()> {
+	let past = Past::read(settings).await?;
+	let layout = |name: &str| {
+		let running = settings.views.iter().find(|v| v.name == name).map(|v| v.group_by.clone());
+		running.or_else(|| past.layout(name))
+	};
+	let of = |layout: Boxing| settings.views.iter().find(|v| v.group_by == layout).map(|v| v.name.clone()); // a layout's own is ahead of the rest
 	let mut fresh: Vec<(String, Library)> = Vec::new();
-	for key in jsons(before)? {
-		let file = before.join(format!("{key}.json"));
-		let text = std::fs::read_to_string(&file).wrap_err_with(|| file.display().to_string())?;
-		let mut library: Library = serde_json::from_str(&text).wrap_err_with(|| format!("{key}'s library"))?;
-		let there = |library: &Library, path: &str| library.scopes.contains_key(path) || scope_at(&settings.scopes, path).is_some();
-		let orphan = |library: &Library| {
-			let mut nested = library.scopes.keys().filter_map(|p| Some((p.clone(), p.rsplit_once(" / ")?)));
-			nested.find_map(|(path, (parent, name))| (!there(library, parent)).then(|| (path.clone(), name.to_string())))
+	for (key, (mut library, columns)) in kept::<Library>(before, "library")? {
+		let own: BTreeSet<String> = library.views.keys().cloned().collect();
+		let drafted: BTreeMap<String, Boxing> = library.drafts.views.iter().map(|(n, v)| (n.clone(), v.group_by.clone())).collect();
+		let taken = |n: &String| settings.views.iter().any(|v| v.name == *n);
+		let to = |name: &str| -> String {
+			match own.contains(name) {
+				true => free(name, |n| taken(n) || n != name && own.contains(n)),
+				false => drafted.get(name).cloned().or_else(|| layout(name)).and_then(of).unwrap_or_else(|| name.to_string()), // it is of no layout any more: opening it says so
+			}
 		};
-		//LOOP each takes one to the top, where it is nested no more
-		while let Some((path, name)) = orphan(&library) {
-			let to = free(&name, |n| there(&library, n));
-			tracing::info!("{key}: the scope {path} is {to} now");
-			move_scopes(&mut library, &path, &to);
+		for (name, mut view) in std::mem::take(&mut library.views) {
+			view.name = to(&name);
+			library.views.insert(view.name.clone(), view);
 		}
-		let mut favorites = std::mem::take(&mut library.favorites);
-		favorites.retain(|f| !matches!(f, Item::Scope(path) if !there(&library, path)));
-		library.favorites = favorites;
+		for (name, mut draft) in std::mem::take(&mut library.drafts.views) {
+			draft.name = to(&name);
+			let kept = library.views.get(&draft.name).or_else(|| settings.views.iter().find(|v| v.name == draft.name));
+			if kept.is_none_or(|kept| *kept == draft) {
+				continue; // of one that is gone, or as it is kept
+			}
+			if let Some(other) = library.drafts.views.insert(draft.name.clone(), draft) {
+				tracing::warn!("{key}: {} was drafted under two names: one draft is left behind", other.name);
+			}
+		}
+		for workspace in library.workspaces.values_mut().chain(library.drafts.workspaces.values_mut()) {
+			for layout in workspace.tiles.values_mut() {
+				*layout = retitled(&key, layout, to);
+			}
+		}
+		library.locked = library.locked.iter().map(|n| to(n)).collect();
+		let moved = |item: Item| if let Item::View(name) = &item { Item::View(to(name)) } else { item };
+		library.favorites = std::mem::take(&mut library.favorites).into_iter().map(moved).collect();
+		library.ids = std::mem::take(&mut library.ids).into_iter().map(|(id, item)| (id, moved(item))).collect();
+		for f in &mut library.forks {
+			f.item = moved(f.item.clone());
+			if let (Item::View(_), Owner::Team) = (&f.item, &f.upstream.owner) {
+				f.upstream.version = None; // numbered when what a view hid made versions of it
+				if !taken(&f.upstream.name)
+					&& let Some(name) = layout(&f.upstream.name).and_then(of)
+				{
+					f.upstream.name = name;
+				}
+			}
+		}
+		views_of(&columns, &mut library, settings);
+		unorphan(&key, &mut library, settings);
 		fresh.push((key, library));
+	}
+	let mut pinned: Vec<(String, Shares)> = Vec::new();
+	for (key, (mut shares, _)) in kept::<Shares>(&before.join("shared"), "shares")? {
+		for snapshot in shares.0.iter_mut().flat_map(|p| &mut p.versions) {
+			if let Construction::Workspace(workspace) = &mut snapshot.construction {
+				for tiles in workspace.tiles.values_mut() {
+					let to = |name: &str| match snapshot.carried.contains_key(name) {
+						true => name.to_string(),
+						false => layout(name).and_then(of).unwrap_or_else(|| name.to_string()), // it is of no layout any more: opening it says so
+					};
+					*tiles = retitled(&key, tiles, to);
+				}
+			}
+		}
+		pinned.push((key, shares));
 	}
 	for (key, library) in &fresh {
 		write_library(key, library)?;
 	}
+	for (key, shares) in &pinned {
+		write_shares(key, shares)?;
+	}
 	Ok(())
+}
+
+/// What `dir` keeps, by key, and the column layouts each kept: nothing else of it names one.
+fn kept<T: serde::de::DeserializeOwned>(dir: &Path, what: &str) -> Result<Kept<T>> {
+	use serde_json::Value;
+	let named = |item: &Value| item.get("Columns").is_some();
+	let linked = |link: &Value| link.as_str().is_some_and(|l| l.starts_with("/l/columns/"));
+	let mut out = BTreeMap::new();
+	for key in jsons(dir)? {
+		let file = dir.join(format!("{key}.json"));
+		let text = std::fs::read_to_string(&file).wrap_err_with(|| file.display().to_string())?;
+		let read = || -> Result<(T, ColumnLayouts)> {
+			let mut held: Value = serde_json::from_str(&text)?;
+			let mut columns = BTreeMap::new();
+			if let Some(library) = held.as_object_mut() {
+				if let Some(kept) = library.remove("columns") {
+					columns = serde_json::from_value(kept)?;
+				}
+				for (list, names) in [("favorites", &named as &dyn Fn(&Value) -> bool), ("forks", &|f| named(&f["item"])), ("received", &linked)] {
+					if let Some(Value::Array(list)) = library.get_mut(list) {
+						list.retain(|v| !names(v));
+					}
+				}
+				if let Some(Value::Object(ids)) = library.get_mut("ids") {
+					ids.retain(|_, item| !named(item));
+				}
+			} else if let Some(pins) = held.as_array_mut() {
+				pins.retain(|pin| !named(&pin["item"]));
+			}
+			Ok((serde_json::from_value(held)?, columns))
+		};
+		out.insert(key.clone(), read().wrap_err_with(|| format!("{key}'s {what}"))?);
+	}
+	Ok(out)
+}
+
+fn views_of(columns: &ColumnLayouts, library: &mut Library, settings: &Settings) {
+	for (name, kept) in columns {
+		let name = free(name, |n| library.views.contains_key(n) || settings.views.iter().any(|v| v.name == *n));
+		let group_by = Boxing::Groups(kept.by.clone());
+		let view = View {
+			shown: settings.views.iter().find(|v| v.group_by == group_by).map(|v| v.shown.clone()).unwrap_or_default(), // the team runs no such workflow any more
+			name: name.clone(),
+			group_by,
+			boxes: Boxes {
+				arrangement: kept.layout.clone(),
+				tints: kept.tints.clone(),
+				..Default::default()
+			},
+		};
+		put(library, &Item::View(name), Construction::View(view));
+	}
+}
+
+/// `layout` with each view's tab as `to` names it, once, and without those of panels there are no more.
+fn retitled(who: &str, layout: &str, to: impl Fn(&str) -> String) -> String {
+	use tilers_core::model::{PanelId, serial};
+	let mut grid = match serial::load(layout) {
+		Ok(grid) => grid,
+		Err(e) => {
+			tracing::warn!("{who}: a kept layout doesn't load: {e:?}"); // kept as it is: opening it says so
+			return layout.to_string();
+		}
+	};
+	let tabs = grid.cells.iter().map(|c| &c.group).chain(grid.floats.iter().map(|f| &f.group)).flat_map(|g| g.tabs.clone());
+	let (mut renamed, mut gone) = (HashMap::new(), Vec::new());
+	for id in tabs {
+		if id.0.starts_with("builder:") || id.0.starts_with("library:columns") {
+			gone.push(id);
+		} else if let Some(name) = id.0.strip_prefix("view:") {
+			let now = PanelId(format!("view:{}", to(name)));
+			match renamed.values().any(|held| *held == now) {
+				true => gone.push(id),
+				false => _ = renamed.insert(id, now),
+			}
+		}
+	}
+	for id in &gone {
+		grid.close(id);
+	}
+	let groups = grid.cells.iter_mut().map(|c| &mut c.group).chain(grid.floats.iter_mut().map(|f| &mut f.group));
+	for tab in groups.flat_map(|g| &mut g.tabs) {
+		if let Some(now) = renamed.get(tab) {
+			*tab = now.clone();
+		}
+	}
+	match gone.is_empty() && renamed.iter().all(|(was, now)| was == now) {
+		true => layout.to_string(),
+		false => serial::save(&grid),
+	}
+}
+
+/// A viewer's scope nested in one the team's config no longer holds sits at the top.
+fn unorphan(key: &str, library: &mut Library, settings: &Settings) {
+	let there = |library: &Library, path: &str| library.scopes.contains_key(path) || scope_at(&settings.scopes, path).is_some();
+	let orphan = |library: &Library| {
+		let mut nested = library.scopes.keys().filter_map(|p| Some((p.clone(), p.rsplit_once(" / ")?)));
+		nested.find_map(|(path, (parent, name))| (!there(library, parent)).then(|| (path.clone(), name.to_string())))
+	};
+	//LOOP each takes one to the top, where it is nested no more
+	while let Some((path, name)) = orphan(library) {
+		let to = free(&name, |n| there(library, n));
+		tracing::info!("{key}: the scope {path} is {to} now");
+		move_scopes(library, &path, &to);
+	}
+	let mut favorites = std::mem::take(&mut library.favorites);
+	favorites.retain(|f| !matches!(f, Item::Scope(path) if !there(library, path)));
+	library.favorites = favorites;
 }
 
 #[derive(Clone, PartialEq, serde::Deserialize)]
@@ -165,25 +322,13 @@ impl OldView {
 	}
 }
 
-#[derive(Clone, PartialEq, serde::Deserialize)]
+#[derive(serde::Deserialize)]
 struct OldColumns {
 	by: GroupBy,
-	#[serde(default)]
+	#[serde(alias = "arrangement", default)]
 	layout: Arrangement,
 	#[serde(default)]
 	tints: Tints,
-}
-impl From<OldColumns> for Columns {
-	fn from(old: OldColumns) -> Self {
-		Columns {
-			by: old.by,
-			boxes: Boxes {
-				arrangement: old.layout,
-				tints: old.tints,
-				..Default::default()
-			},
-		}
-	}
 }
 
 #[derive(serde::Deserialize)]
@@ -194,8 +339,6 @@ struct OldScreen {
 	columns: BTreeMap<String, BTreeMap<GroupBy, Arrangement>>,
 	#[serde(default)]
 	tints: BTreeMap<String, BTreeMap<GroupBy, Tints>>,
-	#[serde(default)]
-	laid: BTreeMap<String, BTreeMap<GroupBy, String>>,
 	#[serde(default)]
 	locked: BTreeSet<String>,
 }
@@ -209,7 +352,6 @@ struct OldLibrary {
 	on_screen: OldScreen,
 	filters: BTreeMap<String, OldView>,
 	workspaces: BTreeMap<String, Arrangement>,
-	columns: BTreeMap<String, OldColumns>,
 	#[serde(default)]
 	scopes: BTreeMap<String, Scope>,
 	favorites: BTreeSet<Item>,
@@ -318,23 +460,11 @@ impl OldLibrary {
 				None => kept.clone(),
 			};
 			draft.boxes = boxes(name, &draft.group_by);
-			if draft.group_by == kept.group_by {
-				draft.boxes.hidden = kept.boxes.hidden.clone();
-			}
 			if draft != *kept {
 				drafts.views.insert(name.clone(), draft);
 			}
 		}
 
-		let grouping = |name: &str| {
-			drafts
-				.views
-				.get(name)
-				.or_else(|| views.get(name))
-				.or_else(|| settings.views.iter().find(|v| v.name == name))
-				.and_then(|v| if let Boxing::Groups(by) = &v.group_by { Some(by.clone()) } else { None })
-		};
-		let laid = screen.laid.iter().filter_map(|(name, by)| Some((name.clone(), by.get(&grouping(name)?)?.clone()))).collect();
 		let forks = self
 			.forks
 			.iter()
@@ -355,10 +485,8 @@ impl OldLibrary {
 			workspace: Some(open),
 			views,
 			workspaces,
-			columns: self.columns.iter().map(|(n, c)| (n.clone(), c.clone().into())).collect(),
 			scopes,
 			drafts,
-			laid,
 			locked: screen.locked.clone(),
 			favorites: self.favorites.clone(),
 			ids: self.ids.clone(),
@@ -433,7 +561,6 @@ enum OldConstruction {
 	View(OldView),
 	Scope(Scope),
 	Workspace(Arrangement),
-	Columns(OldColumns),
 }
 
 fn pins(who: &str, old: Vec<OldPinned>, library: Option<&OldLibrary>, settings: &Settings, past: &Past) -> Shares {
@@ -449,7 +576,6 @@ fn pins(who: &str, old: Vec<OldPinned>, library: Option<&OldLibrary>, settings: 
 		match s.construction.clone() {
 			OldConstruction::View(view) => Construction::View(view.boxed(Boxes::default())),
 			OldConstruction::Scope(scope) => Construction::Scope(scope),
-			OldConstruction::Columns(columns) => Construction::Columns(columns.into()),
 			OldConstruction::Workspace(tiles) => {
 				let shown = |name: &str| match s.carried.get(name) {
 					Some(v) => match pinned.get(name)?.get((*v as usize).checked_sub(1)?)? {
@@ -482,7 +608,10 @@ fn pins(who: &str, old: Vec<OldPinned>, library: Option<&OldLibrary>, settings: 
 /// The team's config at each commit, oldest first.
 struct Past(Vec<Commit>);
 impl Past {
-	async fn read(source: &Source) -> Result<Self> {
+	async fn read(settings: &Settings) -> Result<Self> {
+		let Some(source) = &settings.source else {
+			return Ok(Past(Vec::new())); // unversioned: no library numbers a version of the team's
+		};
 		#[derive(serde::Deserialize)]
 		struct File {
 			board: Written,
@@ -491,8 +620,6 @@ impl Past {
 		struct Written {
 			#[serde(default)] // a commit may hold none
 			views: Vec<toml::Value>,
-			#[serde(default)] // a commit may hold none
-			columns: BTreeMap<String, OldColumns>,
 		}
 		let commits = tedi_task_operations::github::client::get()?
 			.file_history(source_repo(source)?, &source.path, &source.branch)
@@ -502,7 +629,6 @@ impl Past {
 			let written = toml::from_str::<File>(&text)?.board;
 			out.push(Commit {
 				views: written.views,
-				columns: written.columns,
 				read: items(&super::team_of(&text)?),
 			});
 		}
@@ -517,6 +643,17 @@ impl Past {
 	/// The team's, as it last narrowed.
 	fn view(&self, name: &str) -> Option<OldView> {
 		self.0.iter().rev().find_map(|c| Self::written(&c.views, name))
+	}
+
+	/// What the team's was of.
+	fn layout(&self, name: &str) -> Option<Boxing> {
+		self.0.iter().rev().find_map(|c| {
+			if let Construction::View(view) = c.read.get(&Item::View(name.to_string()))? {
+				Some(view.group_by.clone())
+			} else {
+				None
+			}
+		})
 	}
 
 	/// The team's, as it last was.
@@ -534,11 +671,10 @@ impl Past {
 	/// Version `v` of `item`, as numbered when a view's query and order made versions of it.
 	fn renumbered(&self, item: &Item, v: u32) -> Option<u32> {
 		let (mut old, mut new) = (0, 0);
-		let (mut last_view, mut last_columns, mut last_read, mut last) = (None, None, None, None::<&Construction>);
-		for Commit { views, columns, read } in &self.0 {
+		let (mut last_view, mut last_read, mut last) = (None, None, None::<&Construction>);
+		for Commit { views, read } in &self.0 {
 			let moved = match item {
 				Item::View(name) => Self::written(views, name).is_some_and(|w| last_view.replace(w.clone()) != Some(w)),
-				Item::Columns(name) => columns.get(name).is_some_and(|c| last_columns.replace(c) != Some(c)),
 				_ => read.get(item).is_some_and(|c| last_read.replace(c) != Some(c)),
 			};
 			old += u32::from(moved);
@@ -554,7 +690,6 @@ impl Past {
 struct Commit {
 	/// As written.
 	views: Vec<toml::Value>,
-	columns: BTreeMap<String, OldColumns>,
 	/// As it reads now.
 	read: BTreeMap<Item, Construction>,
 }
