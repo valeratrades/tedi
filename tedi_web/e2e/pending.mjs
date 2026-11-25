@@ -21,7 +21,7 @@ const proxy = http.createServer(async (req, res) => {
   const chunks = [];
   for await (const c of req) chunks.push(c);
   const body = Buffer.concat(chunks);
-  if (/^\/api\/(edit|move_card)\d+/.test(req.url)) {
+  if (/^\/api\/(edit|move)$/.test(req.url)) {
     sent.push(JSON.parse(body));
     const instead = answer;
     await sleep(HELD_MS);
