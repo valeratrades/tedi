@@ -187,8 +187,8 @@ pub struct Reading<'a> {
 	trees: &'a Trees,
 	metas: HashMap<RepoInfo, Arc<ProjectMeta>>,
 	states: HashMap<RepoInfo, States>,
-	/// Of the open issues read: each one's repo, what ranks it, and what blocks it.
-	open: Mutex<HashMap<String, (RepoInfo, Task, Vec<String>)>>,
+	/// By the link of an open issue read.
+	open: Mutex<HashMap<String, Open>>,
 }
 impl<'a> Reading<'a> {
 	/// All of it: what a caller gets of it is what their reach asks for.
@@ -346,8 +346,12 @@ impl<'a> Reading<'a> {
 		}
 		let mut open = self.open.lock().expect("nothing panics holding it");
 		open.extend(cards.iter().map(|c| {
-			let by = c.blocked_by.iter().map(ToString::to_string).collect();
-			(c.link.to_string(), (unit.repo, task(c), by))
+			let held = Open {
+				repo: unit.repo,
+				task: task(c),
+				blocked_by: c.blocked_by.iter().map(ToString::to_string).collect(),
+			};
+			(c.link.to_string(), held)
 		}));
 		Ok(vec![part(unit.bytes, cards, unreadable)])
 	}
@@ -356,12 +360,18 @@ impl<'a> Reading<'a> {
 	pub fn ranks(&self, reach: &Reach) -> Part {
 		let open = self.open.lock().expect("nothing panics holding it");
 		let (mut tasks, mut blocks) = (BTreeMap::new(), Vec::new());
-		for (link, (_, task, by)) in open.iter().filter(|(_, (repo, ..))| reach.covers(*repo)) {
-			tasks.insert(link.clone(), *task);
-			blocks.extend(by.iter().map(|b| (b.clone(), link.clone())));
+		for (link, held) in open.iter().filter(|(_, held)| reach.covers(held.repo)) {
+			tasks.insert(link.clone(), held.task);
+			blocks.extend(held.blocked_by.iter().map(|b| (b.clone(), link.clone())));
 		}
 		Part::Ranks(rank(&tasks, &blocks).ranks)
 	}
+}
+
+struct Open {
+	repo: RepoInfo,
+	task: Task,
+	blocked_by: Vec<String>,
 }
 
 struct Unit {

@@ -249,6 +249,30 @@ fn lens_parts_edited_from_two_tabs_both_stand() {
 }
 
 #[test]
+fn what_a_page_leaves_is_applied_in_order_whatever_of_it_no_longer_does() {
+	let ctx = TestContext::build();
+	let (_server, port) = serve(&ctx, BOARD, &["--viewer-header", "X-Auth-User"]);
+	let me = Some("alice");
+	let edits = [
+		lensed("ws 1", "Search", "is:open"),
+		lensed("gone", "Search", "is:open"),
+		boxed("Triage", serde_json::json!({ "Hidden": ["done"] })),
+		boxed("Triage", serde_json::json!({ "GroupBy": "repo" })),
+		boxed("Triage", serde_json::json!({ "Hidden": ["o/r"] })),
+	];
+	let (status, body) = call(port, "POST", "/api/library/left", me, Some(serde_json::json!({ "edits": edits })));
+	assert_eq!(status, 200, "{body}");
+	let held = library(port, me);
+	assert_eq!(held["workspaces"]["ws 1"]["lens"], lens("", "is:open", "rank"));
+	assert_eq!(
+		held["drafts"]["views"]["Triage"],
+		serde_json::json!({ "name": "Triage", "group_by": "repo", "shown": [], "hidden": ["o/r"] })
+	);
+	let (status, _) = call(port, "POST", "/api/library/left", None, Some(serde_json::json!({ "edits": [] })));
+	assert_ne!(status, 200, "a request the gate didn't name a viewer on");
+}
+
+#[test]
 fn an_edit_naming_one_workspace_leaves_the_other_alone() {
 	let ctx = TestContext::build();
 	let (_server, port) = serve(&ctx, BOARD, &["--viewer-header", "X-Auth-User"]);

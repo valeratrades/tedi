@@ -816,6 +816,12 @@ pub async fn edit_library(edit: LibraryEdit) -> Result<Library, ServerFnError> {
 	crate::server::edit_library(&headers, edit).await.map_err(failed)
 }
 
+/// The requesting viewer's, after each of `edits` that applies: what a page still held as it went, so nobody hears why one doesn't.
+#[post("/api/library/left", headers: HeaderMap)]
+pub async fn leave_library(edits: Vec<LibraryEdit>) -> Result<(), ServerFnError> {
+	crate::server::leave_library(&headers, edits).await.map_err(failed)
+}
+
 #[get("/api/catalog", headers: HeaderMap)]
 pub async fn catalog() -> Result<Catalog, ServerFnError> {
 	crate::server::catalog(&headers).await.map_err(failed)

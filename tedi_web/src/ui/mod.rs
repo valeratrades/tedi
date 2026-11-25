@@ -68,6 +68,9 @@ const SETTLES: std::time::Duration = std::time::Duration::from_millis(800);
 const NOTICED: f64 = 200.0;
 const PANEL_MIN: MinSize = MinSize::Rem { w: 16.0, h: 8.0 };
 
+/// The most a browser carries for a page that is gone.
+const CARRIED: usize = 64 * 1024;
+
 #[component]
 pub fn App() -> Element {
 	rsx! {
@@ -633,6 +636,20 @@ impl Ctx {
 		self.send_edit(edit).await
 	}
 
+	/// What is unsaved, handed to the browser as the page goes: it outlives the page, as no request of the page's own does.
+	fn leave(self) {
+		if self.unsaved.peek().is_empty() {
+			return;
+		}
+		let body = web_sys::js_sys::Array::of1(&leaving(&self.unsaved.peek()).into());
+		let json = web_sys::BlobPropertyBag::new();
+		json.set_type("application/json");
+		let body = web_sys::Blob::new_with_str_sequence_and_options(&body, &json).expect("a blob of one string");
+		let url = format!("{}/api/library/left", dioxus_fullstack::get_server_url());
+		let navigator = web_sys::window().expect("a browser window").navigator();
+		navigator.send_beacon_with_opt_blob(&url, Some(&body)).expect("a same-origin url");
+	}
+
 	async fn drain(self) {
 		let mut unsaved = self.unsaved;
 		while let Some(edit) = self.next_unsaved() {
@@ -783,6 +800,12 @@ impl ScopeAt {
 struct Unsaved {
 	edit: LibraryEdit,
 	sent: bool,
+}
+
+/// What a page leaves: an edit in flight with it, as the page's end may cut it off.
+fn leaving(unsaved: &[Unsaved]) -> String {
+	let edits: Vec<&LibraryEdit> = unsaved.iter().map(|u| &u.edit).collect();
+	serde_json::json!({ "edits": edits }).to_string()
 }
 
 /// `edit` sets all that `held` did.
@@ -1015,7 +1038,31 @@ fn Shell() -> Element {
 		Err(e) => ctx.say("address", toast::Tone::Error, e, None),
 	});
 	route::use_address(ctx);
-	let unsent = use_memo(move || sync::unsent(&ctx.pending.read()));
+	use_hook(move || {
+		use wasm_bindgen::{JsCast as _, closure::Closure};
+		let window = web_sys::window().expect("a browser window");
+		let document = window.document().expect("a page has one");
+		let runtime = Runtime::current();
+		let gone = Closure::<dyn FnMut(web_sys::Event)>::new(move |e: web_sys::Event| {
+			let shown = !web_sys::window().expect("a browser window").document().expect("a page has one").hidden();
+			if e.type_() == "visibilitychange" && shown {
+				return;
+			}
+			ctx.leave();
+			if e.type_() == "visibilitychange" {
+				// a phone ends a hidden page without a word; one that comes back must not send what is old by then
+				runtime.in_scope(ScopeId::ROOT, || spawn_forever(ctx.flush()));
+			}
+		});
+		window
+			.add_event_listener_with_callback("pagehide", gone.as_ref().unchecked_ref())
+			.expect("a window takes listeners");
+		document
+			.add_event_listener_with_callback("visibilitychange", gone.as_ref().unchecked_ref())
+			.expect("a document takes listeners");
+		gone.forget(); // the shell never unmounts
+	});
+	let unsent = use_memo(move || sync::unsent(&ctx.pending.read()) || leaving(&ctx.unsaved.read()).len() > CARRIED);
 	use_effect(move || {
 		document::eval(match unsent() {
 			true => "window.onbeforeunload = (e) => e.preventDefault()",
