@@ -383,7 +383,7 @@ impl IssueRef {
 	}
 }
 
-/// Extract an issue number from a stored issue path: `{n}_-_{title}.md[.bak]`, bare `{n}`, or a
+/// Extract an issue number from a stored issue path: `{n}_-_{title}.md[.bak]`, or a
 /// directory-format `{n}_-_{title}/__main__.md` (number taken from the parent dir).
 fn number_from_path(path: &Path) -> Option<u64> {
 	let name = path.file_name()?.to_str()?;
@@ -392,8 +392,7 @@ fn number_from_path(path: &Path) -> Option<u64> {
 	} else {
 		name
 	};
-	let base = source.strip_suffix(".md.bak").or_else(|| source.strip_suffix(".md")).unwrap_or(source);
-	base.split("_-_").next().unwrap_or(base).parse().ok()
+	source.split_once("_-_")?.0.parse().ok()
 }
 
 impl fmt::Display for IssueLink {

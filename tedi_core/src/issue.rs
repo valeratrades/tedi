@@ -1093,24 +1093,6 @@ impl std::fmt::Display for Issue {
 	}
 }
 
-/// Sanitize a title for use in filenames: spaces→`_`, drop non-alphanumeric (keep `-`/`_`), trim `_`.
-pub fn sanitize_title(title: &str) -> String {
-	title
-		.chars()
-		.map(|c| {
-			if c.is_alphanumeric() || c == '-' || c == '_' {
-				c
-			} else if c == ' ' {
-				'_'
-			} else {
-				'\0'
-			}
-		})
-		.filter(|&c| c != '\0')
-		.collect::<String>()
-		.trim_matches('_')
-		.to_string()
-}
 /// Flat issue filename: `{base}.md[.bak]`.
 pub fn issue_file_name(number: Option<u64>, title: &str, closed: bool) -> String {
 	let base = format!("{}.md", issue_base_name(number, title));
@@ -1646,14 +1628,22 @@ fn ensure_blank_line(content: &mut String) {
 	}
 }
 
-/// Base name `{number}_-_{sanitized}` (or just `{sanitized}`/`{number}` when one side is empty).
+/// `{number}_-_{slug}`, or the slug alone of an issue not numbered yet.
 fn issue_base_name(number: Option<u64>, title: &str) -> String {
-	let sanitized = sanitize_title(title);
+	const MAX_SLUG: usize = 225; // what `{u64}_-_` and `.md.bak` leave of a file name's 255 bytes
+	let kept: String = title
+		.chars()
+		.map(|c| if c == ' ' { '_' } else { c })
+		.filter(|&c| c.is_alphanumeric() || c == '-' || c == '_')
+		.collect();
+	let trimmed = kept.trim_matches('_');
+	let slug = match trimmed.is_empty() {
+		true => "untitled",
+		false => &trimmed[..trimmed.floor_char_boundary(MAX_SLUG)],
+	};
 	match number {
-		Some(n) if sanitized.is_empty() => n.to_string(),
-		Some(n) => format!("{n}_-_{sanitized}"),
-		None if sanitized.is_empty() => "untitled".to_string(),
-		None => sanitized,
+		Some(n) => format!("{n}_-_{slug}"),
+		None => slug.to_string(),
 	}
 }
 

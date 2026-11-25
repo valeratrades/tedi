@@ -259,7 +259,7 @@ fn cleanup_old_locations(issue: &Issue, has_children: bool, closed: bool) -> Res
 	if issue.git_id().is_some() {
 		use crate::IssueSelector;
 		let mut title_index = issue.identity.parent_index;
-		title_index.push(IssueSelector::try_exact(&Local::issue_dir_name(None, title, false)).expect("fits: sanitized from a title that already fit")); // `Title` is a substring match, and would take same-titled siblings with it
+		title_index.push(IssueSelector::try_exact(&tedi_core::issue_dir_name(None, title, false)).expect("a file name is shorter than a selector may be")); // `Title` is a substring match, and would take same-titled siblings with it
 		let title_path = LocalPath::new(title_index);
 		if let Ok(title_resolved) = title_path.resolve_parent(reader)
 			&& let Ok(title_matching) = title_resolved.matching_subpaths()

@@ -91,7 +91,10 @@ mod tests {
 		let of = |t: &str| Sprint::of(RepoInfo::new("o", ".github"), t).map(|s| s.to_string());
 		assert_eq!(Sprint::of(RepoInfo::new("o", "r"), "Bottlenecks"), None);
 		assert_eq!(Sprint::of(RepoInfo::new("o", "r"), "1d").map(|s| s.to_string()), of("1d"));
-		let mut shown: Vec<Sprint> = ["Bottlenecks", "1Q", "2w", "7y", "1d"].iter().filter_map(|t| Sprint::of(RepoInfo::new("o", ".github"), t)).collect();
+		let mut shown: Vec<Sprint> = ["Bottlenecks", "1Q", "2w", "7y", "1d"]
+			.iter()
+			.filter_map(|t| Sprint::of(RepoInfo::new("o", ".github"), t))
+			.collect();
 		shown.sort();
 		insta::assert_snapshot!(format!("{:?}\n{:?}", shown.iter().map(ToString::to_string).collect::<Vec<_>>(), ["bottlenecks", "1q", "2", "5m", "0d", "v1.0", "2026/01/02_1d", ""].map(of)), @r#"
 		["1d", "2w", "1Q", "7y", "Bottlenecks"]

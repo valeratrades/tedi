@@ -114,24 +114,6 @@ impl Local {
 		}
 	}
 
-	/// Sanitize a title for use in filenames.
-	/// Converts spaces to underscores and removes special characters.
-	pub fn sanitize_title(title: &str) -> String {
-		tedi_core::sanitize_title(title)
-	}
-
-	/// Format an issue filename from number and title.
-	/// Format: {number}_-_{sanitized_title}.md[.bak]
-	fn format_issue_filename(issue_number: Option<u64>, title: &str, closed: bool) -> String {
-		tedi_core::issue_file_name(issue_number, title, closed)
-	}
-
-	/// Get the directory name for an issue (used when it has sub-issues).
-	/// Format: {number}_-_{sanitized_title}[.bak]
-	pub fn issue_dir_name(issue_number: Option<u64>, title: &str, closed: bool) -> String {
-		tedi_core::issue_dir_name(issue_number, title, closed)
-	}
-
 	/// Get the path for the main issue file when stored inside a directory.
 	/// Format: {dir}/__main__.md[.bak]
 	pub fn main_file_path(issue_dir: &Path, closed: bool) -> PathBuf {
@@ -205,12 +187,9 @@ impl Local {
 		// Strip file extensions if present
 		let base = name.strip_suffix(".md.bak").or_else(|| name.strip_suffix(".md")).unwrap_or(name);
 
-		// Try to extract issue number
-		if let Some(sep_pos) = base.find("_-_") {
-			if let Ok(num) = base[..sep_pos].parse::<u64>() {
-				return Some(IssueSelector::GitId(num));
-			}
-		} else if let Ok(num) = base.parse::<u64>() {
+		if let Some((number, _)) = base.split_once("_-_")
+			&& let Ok(num) = number.parse::<u64>()
+		{
 			return Some(IssueSelector::GitId(num));
 		}
 
@@ -785,8 +764,8 @@ mod local_path {
 						name.starts_with(&prefix)
 					}
 					IssueSelector::Title(title) => {
-						let sanitized = Local::sanitize_title(title.as_str());
-						name.contains(&sanitized)
+						let slug = tedi_core::issue_dir_name(None, title.as_str(), false);
+						name.contains(&slug)
 					}
 					IssueSelector::Exact(target) => {
 						let base = name.strip_suffix(".md.bak").or_else(|| name.strip_suffix(".md")).unwrap_or(name);
@@ -991,11 +970,11 @@ mod local_path {
 				_ => None,
 			};
 			if has_children {
-				let dir_name = Local::issue_dir_name(git_id, title, closed);
+				let dir_name = tedi_core::issue_dir_name(git_id, title, closed);
 				let issue_dir = self.resolved_path.join(&dir_name);
 				self.resolved_path = Local::main_file_path(&issue_dir, closed);
 			} else {
-				let filename = Local::format_issue_filename(git_id, title, closed);
+				let filename = tedi_core::issue_file_name(git_id, title, closed);
 				self.resolved_path = self.resolved_path.join(filename);
 			};
 			self

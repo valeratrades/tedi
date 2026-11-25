@@ -30,6 +30,41 @@ async fn pull_materializes_every_issue_of_an_org() {
 	");
 }
 
+/// A title is anything GitHub takes: one with nothing a file name can hold, or longer than one may be.
+#[tokio::test]
+async fn pull_stores_an_issue_whatever_its_title() {
+	let ctx = TestContext::build();
+	std::fs::write(ctx.xdg.inner.root.join("config/tedi.toml"), "[board]\nviews = []\nworkflows = { kanban = \"preset:kanban\" }\n").unwrap();
+	let long = "я".repeat(256);
+	ctx.remote(
+		&parse_virtual("- [ ] Parent <!-- @mock_user https://github.com/o/r/issues/1 -->\n  body\n\n  - [ ] . <!-- @mock_user https://github.com/o/r/issues/2 -->\n    child body\n"),
+		Some(Seed::new(0)),
+	);
+	ctx.remote(&parse_virtual("- [x] \") { <!-- @mock_user https://github.com/o/r/issues/3 -->\n  body\n"), Some(Seed::new(0)));
+	ctx.remote(
+		&parse_virtual(&format!("- [x] {long} <!-- @mock_user https://github.com/o/r/issues/4 -->\n  body\n")),
+		Some(Seed::new(0)),
+	);
+
+	let mut trees = Vec::new();
+	for body in ["was", "is"] {
+		for n in 1..=4 {
+			ctx.set_remote_body(("o", "r").into(), n, body);
+		}
+		let out = ctx.run(&["--mock", "pull", "o/r"]);
+		assert!(out.status.success(), "stderr: {}", out.stderr);
+		trees.push(issue_tree(&ctx));
+	}
+
+	assert_eq!(trees[0], trees[1], "a pull over what is stored finds it");
+	insta::assert_snapshot!(trees[0].replace(&"я".repeat(112), "<я×112>"), @"
+	o/r/1_-_Parent/2_-_untitled.md
+	o/r/1_-_Parent/__main__.md
+	o/r/3_-_untitled.md.bak
+	o/r/4_-_<я×112>.md.bak
+	");
+}
+
 #[tokio::test]
 async fn pull_updates_a_stored_issue_and_advances_the_cursor() {
 	let ctx = TestContext::build();

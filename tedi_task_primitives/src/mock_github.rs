@@ -805,7 +805,7 @@ pub struct MockState {
 }
 
 /// Scan the project directory for the maximum issue number in filenames.
-/// Looks at files/dirs matching pattern `{number}_-_*` or just `{number}`.
+/// Looks at files/dirs matching pattern `{number}_-_*`.
 fn scan_max_issue_number(repo_info: RepoInfo) -> u64 {
 	fn scan_dir(path: &Path, max: &mut u64) {
 		let Ok(entries) = std::fs::read_dir(path) else {
@@ -820,15 +820,9 @@ fn scan_max_issue_number(repo_info: RepoInfo) -> u64 {
 				continue;
 			}
 
-			// Extract issue number from name: either "{number}_-_..." or just "{number}"
-			let number_part = if let Some(sep_pos) = name_str.find("_-_") {
-				&name_str[..sep_pos]
-			} else {
-				// Strip .md or .md.bak extension if present
-				name_str.strip_suffix(".md.bak").or_else(|| name_str.strip_suffix(".md")).unwrap_or(&name_str)
-			};
-
-			if let Ok(num) = number_part.parse::<u64>() {
+			if let Some((number, _)) = name_str.split_once("_-_")
+				&& let Ok(num) = number.parse::<u64>()
+			{
 				*max = (*max).max(num);
 			}
 
