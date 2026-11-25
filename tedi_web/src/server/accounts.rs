@@ -9,9 +9,8 @@ use color_eyre::eyre::{Result, WrapErr as _, bail};
 use dioxus::server::http::HeaderMap;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
-use tedi_core::RepoInfo;
 use tedi_task_operations::{
-	github::{self, GithubError, client::Actor},
+	github::{self, GithubError, RepoHead, client::Actor},
 	reach::Reach,
 };
 use tokio::sync::Mutex;
@@ -173,18 +172,17 @@ pub(super) async fn pull(key: &str, only: Option<&str>) -> Result<()> {
 	let watched = Reach::Of(settings().watch.iter().map(|w| w.to_lowercase()).collect());
 	for scope in scopes {
 		let listed = match account.keys.contains_key(owner_of(&scope)) {
-			true => github::client::acting(actor.clone(), list(&scope)).await,
+			true => github::client::acting(actor.clone(), tedi_task_operations::pull::heads(&scope)).await,
 			false => Err(GithubError::new_other(format!("no key on {}", owner_of(&scope)))),
 		};
 		let pulled = match &listed {
 			Ok(repos) => {
-				let targets: Vec<String> = repos
+				let own: Vec<RepoHead> = repos
 					.iter()
-					.filter(|r| !watched.covers(**r))
-					.map(|r| r.to_string())
-					.filter(|r| only.is_none_or(|o| o.eq_ignore_ascii_case(r)))
+					.filter(|r| !watched.covers(r.repo) && only.is_none_or(|o| o.eq_ignore_ascii_case(&r.repo.to_string())))
+					.cloned()
 					.collect();
-				github::client::acting(actor.clone(), tedi_task_operations::pull::pull_repos(&targets, &settings().workflows, Timestamp::now())).await
+				github::client::acting(actor.clone(), tedi_task_operations::pull::pull_listed(&own, &settings().workflows, Timestamp::now())).await
 			}
 			Err(e) => Err(color_eyre::eyre::eyre!("{e}")),
 		};
@@ -192,7 +190,7 @@ pub(super) async fn pull(key: &str, only: Option<&str>) -> Result<()> {
 		let mut account = read(key)?;
 		let Some(scoped) = account.scopes.get_mut(&scope) else { continue }; // dropped meanwhile
 		match listed {
-			Ok(repos) => scoped.listed = repos.iter().map(ToString::to_string).collect(),
+			Ok(repos) => scoped.listed = repos.iter().map(|r| r.repo.to_string()).collect(),
 			Err(e) if e.is_transient() => {} // GitHub didn't say: what it last listed stands
 			Err(_) => scoped.listed.clear(),
 		}
@@ -256,20 +254,6 @@ async fn verify(owner: &str, token: &str) -> Result<String> {
 	let login = keyed.fetch_authenticated_user().await.wrap_err("GitHub takes no such token")?;
 	keyed.list_owner_repos(owner).await.wrap_err_with(|| format!("{login}'s token doesn't list {owner}"))?;
 	Ok(login)
-}
-
-async fn list(scope: &str) -> Result<Vec<RepoInfo>, GithubError> {
-	let gh = github::client::get()?;
-	match scope.split_once('/') {
-		None => gh.list_owner_repos(scope).await,
-		Some((owner, repo)) => {
-			let repo = RepoInfo::new(owner, repo);
-			match gh.repo_exists(repo).await? {
-				true => Ok(vec![repo]),
-				false => Err(GithubError::new_other(format!("no {repo} your key sees"))),
-			}
-		}
-	}
 }
 
 fn owner_of(scope: &str) -> &str {

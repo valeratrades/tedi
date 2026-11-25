@@ -243,7 +243,7 @@ fn a_move_is_its_viewers() {
 	ctx.remote_in(
 		("alice", "priv").into(),
 		&parse_virtual("- [ ] Fresh <!-- @alice https://github.com/alice/priv/issues/2 -->\n  body\n"),
-		Some(Seed::new(0)),
+		Some(Seed::new(100)),
 	);
 	ctx.remote_tokens(&[("ka", "alice", &["alice/priv"])]);
 	for (link, title) in [(TEAM, "Team task"), (PRIVATE, "Secret plan"), ("https://github.com/alice/priv/issues/2", "Fresh")] {
@@ -300,7 +300,7 @@ fn a_delivery_is_taken_for_an_accounts_scope() {
 	ctx.remote_in(
 		("alice", "priv").into(),
 		&parse_virtual("- [ ] Fresh <!-- @alice https://github.com/alice/priv/issues/2 -->\n  body\n"),
-		Some(Seed::new(0)),
+		Some(Seed::new(100)),
 	);
 	ctx.remote_tokens(&[("ka", "alice", &["alice/priv"])]);
 	assert_eq!(deliver(port, "alice/priv"), 202);

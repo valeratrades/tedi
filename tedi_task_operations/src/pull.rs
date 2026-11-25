@@ -13,7 +13,7 @@ use tedi_core::conflict::Conflict;
 
 use crate::{
 	CloseState, Issue, IssueLink, IssueSelector, LazyIssue, Milestone, MilestoneLink, RepoInfo,
-	github::{FetchedIssue, GithubError},
+	github::{FetchedIssue, GithubError, RepoHead},
 	local::{Consensus, FsReader, Local, LocalError, LocalFs, LocalIssueSource, conflict_detect::milestone_conflict_path, lock_store},
 	open_interactions::{MergeMode, Pull, fetch_and_store_missing, merge_with_remote, pull_issues},
 	remote::RemoteSource,
@@ -24,47 +24,98 @@ use crate::{
 
 /// `targets`: an org (`owner`) or a repo (`owner/repo`) each.
 pub async fn pull_repos(targets: &[String], workflows: &Workflows, now: Timestamp) -> Result<()> {
-	let gh = crate::github::client::get()?;
 	let mut repos = Vec::new();
+	let mut unread = Vec::new();
 	for target in targets {
-		match target.split_once('/') {
-			Some((owner, repo)) => repos.push(RepoInfo::new(owner, repo)),
-			None => repos.extend(gh.list_owner_repos(target).await?),
+		match heads(target).await {
+			Ok(listed) => repos.extend(listed),
+			Err(e) => {
+				eprintln!("{target}: {e:?}");
+				unread.push(target.as_str());
+			}
 		}
 	}
+	pull_listed(&repos, workflows, now).await?;
+	if !unread.is_empty() {
+		bail!("GitHub didn't list {}", unread.join(", "));
+	}
+	Ok(())
+}
 
+/// The repos `target` names: an org's (`owner`), or the one (`owner/repo`).
+pub async fn heads(target: &str) -> Result<Vec<RepoHead>, GithubError> {
+	let gh = crate::github::client::get()?;
+	match target.split_once('/') {
+		Some((owner, repo)) => Ok(vec![gh.repo_head(RepoInfo::new(owner, repo)).await?]),
+		None => gh.list_owner_repos(target).await,
+	}
+}
+
+pub async fn pull_listed(repos: &[RepoHead], workflows: &Workflows, now: Timestamp) -> Result<()> {
 	let mut behind = Vec::new();
+	let mut spent = HashSet::new();
 	let mut milestones = Pull::default();
-	for &repo in &repos {
-		if let Err(e) = pull_repo(repo, workflows, &mut milestones, now).await {
-			eprintln!("{repo}: {e:?}");
-			behind.push(repo.to_string());
+	for head in repos {
+		let owner = head.repo.owner().expect("github repo"); // each has a budget of its own, where a GitHub App acts
+		if spent.contains(owner) {
+			behind.push(head.repo.to_string());
+			continue;
+		}
+		if let Err(e) = pull_repo(head, workflows, &mut milestones, now).await {
+			eprintln!("{}: {e:?}", head.repo);
+			behind.push(head.repo.to_string());
+			if e.chain().any(|c| c.downcast_ref::<GithubError>().is_some_and(GithubError::is_rate_limited)) {
+				spent.insert(owner);
+			}
 		}
 	}
-	pull_hosted(milestones.finish().await?, &repos, workflows, now).await?;
+	let named: Vec<RepoInfo> = repos.iter().map(|h| h.repo).collect();
+	pull_hosted(milestones.finish().await?, &named, workflows, now).await?;
 	if !behind.is_empty() {
 		bail!("not every issue was stored, so these pull again from the last page that was: {}", behind.join(", "));
 	}
 	Ok(())
 }
 
+/// What a cursor may advance to: GitHub's times are in seconds, so one that fresh may have more to come under it.
+fn settled(newest: Timestamp, now: Timestamp) -> Timestamp {
+	newest.min(now - jiff::SignedDuration::from_mins(1))
+}
+
+async fn pull_repo(head: &RepoHead, workflows: &Workflows, milestones: &mut Pull, now: Timestamp) -> Result<()> {
+	let repo = head.repo;
+	let mut moved = HashSet::new();
+	let held = Local::load_project_meta(repo);
+	let first = held.pulled_at.is_none() && held.prs_walked_to.is_none();
+	if first || held.label_colors != head.labels || held.assignable != head.assignable {
+		Local::update_project_meta(repo, |m| {
+			m.label_colors = head.labels.clone();
+			m.assignable = head.assignable.clone();
+			m.dated |= first; // all of it is about to be read
+		})?;
+	}
+	if head.issues_updated > held.pulled_at {
+		list_issues(repo, held.pulled_at, workflows, &mut moved, now).await?;
+	}
+	pull_milestones(repo, &head.open_milestones, milestones).await?;
+	if head.prs_updated > held.prs_walked_to {
+		pull_prs(repo, workflows, &mut moved, now).await?;
+	}
+	if !Local::load_project_meta(repo).dated {
+		date_stored(repo).await?;
+	}
+	Ok(())
+}
+
 /// Page by page, least recently updated first: the cursor moves past a page once all of it is stored,
 /// so a pull cut short (by the rate limit, say) is picked up there.
-async fn pull_repo(repo: RepoInfo, workflows: &Workflows, milestones: &mut Pull, now: Timestamp) -> Result<()> {
+async fn list_issues(repo: RepoInfo, since: Option<Timestamp>, workflows: &Workflows, moved: &mut HashSet<(IssueLink, String)>, now: Timestamp) -> Result<()> {
 	let gh = crate::github::client::get()?;
-	let mut moved = HashSet::new();
-	let labels = gh.list_labels(repo).await?;
-	let assignable = gh.list_assignable(repo).await?;
-	Local::update_project_meta(repo, |m| {
-		m.label_colors = labels;
-		m.assignable = assignable;
-		m.dated |= m.pulled_at.is_none() && m.prs_walked_to.is_none(); // all of it is about to be read
-	})?;
-	let since = Local::load_project_meta(repo).pulled_at;
 	let mut after = None;
 	//LOOP pages until the remote reports no next cursor
 	loop {
 		let page = gh.list_repo_issues(repo, since, after.as_deref()).await?;
+		let newest = page.issues.last().map(|f| f.updated_at);
 		let read: Vec<Arc<FetchedIssue>> = page
 			.issues
 			.into_iter()
@@ -96,7 +147,7 @@ async fn pull_repo(repo: RepoInfo, workflows: &Workflows, milestones: &mut Pull,
 				<Issue as Sink<LocalFs>>::sink(&mut remote, None).await?;
 				<Issue as Sink<Consensus>>::sink(&mut remote, None).await?;
 				drop(store);
-				rules(&remote, workflows, &mut moved, now).await?;
+				rules(&remote, workflows, moved, now).await?;
 				continue;
 			};
 			let source = match LocalIssueSource::<FsReader>::build_from_path(&path).await {
@@ -111,7 +162,7 @@ async fn pull_repo(repo: RepoInfo, workflows: &Workflows, milestones: &mut Pull,
 			match merge_with_remote(&mut local, remote, MergeMode::Normal).await {
 				Ok(links) => {
 					linked.extend(links);
-					rules(&local, workflows, &mut moved, now).await?;
+					rules(&local, workflows, moved, now).await?;
 				}
 				Err(e) if e.downcast_ref::<Conflict>().is_some() => eprintln!("{repo}#{root}: {e}"), // recorded, for the user to resolve
 				Err(e) => return Err(e),
@@ -119,18 +170,13 @@ async fn pull_repo(repo: RepoInfo, workflows: &Workflows, milestones: &mut Pull,
 		}
 		fetch_and_store_missing(&linked).await;
 
-		if let Some(last) = read.last() {
-			Local::update_project_meta(repo, |m| m.pulled_at = Some(last.updated_at))?;
+		if let Some(newest) = newest {
+			Local::update_project_meta(repo, |m| m.pulled_at = Some(settled(newest, now)))?;
 		}
 		match page.next {
 			Some(next) => after = Some(next),
 			None => break,
 		}
-	}
-	pull_milestones(repo, milestones).await?;
-	pull_prs(repo, workflows, &mut moved, now).await?;
-	if !Local::load_project_meta(repo).dated {
-		date_stored(repo).await?;
 	}
 	Ok(())
 }
@@ -201,17 +247,15 @@ async fn date_stored(repo: RepoInfo) -> Result<()> {
 	Ok(())
 }
 
-/// `repo`'s open milestones, and those stored as open.
-pub(crate) async fn pull_milestones(repo: RepoInfo, pull: &mut Pull) -> Result<()> {
-	let gh = crate::github::client::get()?;
-	let listed = gh.list_milestones(repo).await?.into_iter().map(|m| m.number);
+/// `repo`'s milestones `open` on GitHub, and those stored as open.
+pub(crate) async fn pull_milestones(repo: RepoInfo, open: &[u64], pull: &mut Pull) -> Result<()> {
 	let held: Vec<u64> = Local::load_milestone_project_meta(repo, &FsReader)
 		.milestones
 		.into_iter()
 		.filter(|(_, m)| !m.state.is_closed())
 		.map(|(n, _)| n)
 		.collect();
-	for number in listed.chain(held).collect::<BTreeSet<_>>() {
+	for number in open.iter().copied().chain(held).collect::<BTreeSet<_>>() {
 		let link = MilestoneLink::in_project(repo, number);
 		if pull.pulled(&link) {
 			continue;
@@ -285,6 +329,6 @@ async fn pull_prs(repo: RepoInfo, workflows: &Workflows, moved: &mut HashSet<(Is
 			_ => break,
 		}
 	}
-	Local::update_project_meta(repo, |m| m.prs_walked_to = newest)?;
+	Local::update_project_meta(repo, |m| m.prs_walked_to = newest.map(|n| settled(n, now)))?;
 	Ok(())
 }

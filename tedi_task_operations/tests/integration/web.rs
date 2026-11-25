@@ -100,9 +100,9 @@ fn a_delivery_for_a_repo_outside_watch_is_not_pulled() {
 
 	assert_eq!(deliver(port, "stranger/r"), 204);
 	assert_eq!(deliver(port, "o/r"), 202);
-	// the puller is serial: once the watched repo is listed, the stranger's would have been before it
+	// the puller is serial: once the watched repo is read, the stranger's would have been before it
 	let listed = Instant::now();
-	while !ctx.github_calls().iter().any(|c| c.starts_with("list_repo_issues(o/r")) {
+	while !ctx.github_calls().iter().any(|c| c.starts_with("repo_head(o/r")) {
 		assert!(listed.elapsed() < Duration::from_secs(30), "the watched repo was never pulled: {:?}", ctx.github_calls());
 		std::thread::sleep(Duration::from_millis(20));
 	}

@@ -11,6 +11,17 @@ mod auth;
 
 use color_eyre::eyre::{Result, bail, eyre};
 
+const REPO_HEAD: &str = r#"
+fragment Head on Repository {
+	name
+	labels(first: 100) { totalCount nodes { name color } }
+	assignableUsers(first: 100) { totalCount nodes { login } }
+	milestones(first: 100, states: OPEN) { totalCount nodes { number } }
+	issues(first: 1, orderBy: {field: UPDATED_AT, direction: DESC}) { nodes { updatedAt } }
+	pullRequests(first: 1, orderBy: {field: UPDATED_AT, direction: DESC}) { nodes { updatedAt } }
+}
+"#;
+
 /// Everything `FetchedIssue` holds. A connection is read whole or not at all: one cut at its page
 /// would read as removals.
 const FULL_ISSUE: &str = r#"
@@ -135,14 +146,13 @@ pub trait GithubClient: Send + Sync {
 	/// Replace the issue's assignees. A login the repo can't take is dropped by GitHub, not an error.
 	async fn set_assignees(&self, repo: RepoInfo, issue_number: u64, assignees: &[String]) -> Result<(), GithubError>;
 
-	/// Logins the repo's issues can be assigned to.
-	async fn list_assignable(&self, repo: RepoInfo) -> Result<Vec<String>, GithubError>;
-
 	/// Asks `reviewer` (a login, or a team as `org/team`) for a review of pull request `number`, or withdraws the ask.
 	async fn request_review(&self, repo: RepoInfo, number: u64, reviewer: &str, on: bool) -> Result<(), GithubError>;
 
 	/// The repos of a person's or an org's account, those only they can see included, archived ones aside.
-	async fn list_owner_repos(&self, owner: &str) -> Result<Vec<RepoInfo>, GithubError>;
+	async fn list_owner_repos(&self, owner: &str) -> Result<Vec<RepoHead>, GithubError>;
+
+	async fn repo_head(&self, repo: RepoInfo) -> Result<RepoHead, GithubError>;
 
 	/// The page from `after` of every issue updated at or after `since`, open and closed, least recently updated first.
 	async fn list_repo_issues(&self, repo: RepoInfo, since: Option<jiff::Timestamp>, after: Option<&str>) -> Result<IssuePage, GithubError>;
@@ -173,6 +183,21 @@ pub struct SubIssue {
 	pub id: u64,
 	pub number: u64,
 	pub state_reason: Option<String>,
+}
+
+/// What tells whether anything of a repo is worth reading, and what of it has no update time to tell by.
+#[derive(Clone, Debug)]
+pub struct RepoHead {
+	pub repo: RepoInfo,
+	/// Every label defined in it, by name.
+	pub labels: BTreeMap<String, Color>,
+	/// Logins its issues can be assigned to.
+	pub assignable: Vec<String>,
+	pub open_milestones: Vec<u64>,
+	/// When its last changed issue changed.
+	pub issues_updated: Option<jiff::Timestamp>,
+	/// When its last changed pull request changed.
+	pub prs_updated: Option<jiff::Timestamp>,
 }
 
 #[derive(Clone, Debug)]
@@ -269,6 +294,16 @@ impl GithubError {
 		match self {
 			GithubError::Request { .. } => true,
 			GithubError::Api { status, .. } => status.is_server_error() || *status == reqwest::StatusCode::TOO_MANY_REQUESTS,
+			_ => false,
+		}
+	}
+
+	/// Nothing more is answered until the budget's window is over.
+	pub fn is_rate_limited(&self) -> bool {
+		use reqwest::StatusCode;
+		match self {
+			GithubError::Api { status, body, .. } => matches!(*status, StatusCode::FORBIDDEN | StatusCode::TOO_MANY_REQUESTS) && body.contains("rate limit"),
+			GithubError::Graphql { msg, .. } => msg.contains(r#""type":"RATE_LIMIT"#), // `RATE_LIMITED` too
 			_ => false,
 		}
 	}
@@ -439,6 +474,56 @@ impl RealGithubClient {
 			return Err(GithubError::new_graphql(errors.to_string()));
 		}
 		Ok(response)
+	}
+
+	/// What `read` cut at its page is read whole.
+	async fn head(&self, owner: &str, read: GqlRepo) -> Result<RepoHead, GithubError> {
+		let repo = RepoInfo::new(owner, &read.name);
+		Ok(RepoHead {
+			repo,
+			labels: match read.labels.is_whole() {
+				true => read.labels.nodes.into_iter().map(|l| (l.name, l.color)).collect(),
+				false => self.list_labels(repo).await?,
+			},
+			assignable: match read.assignable_users.is_whole() {
+				true => read.assignable_users.nodes.into_iter().map(|u| u.login).collect(),
+				false => self.list_assignable(repo).await?,
+			},
+			open_milestones: match read.milestones.is_whole() {
+				true => read.milestones.nodes.into_iter().map(|m| m.number).collect(),
+				false =>
+					return Err(GithubError::new_other(format!(
+						"{repo} has {} open milestones, more than one read takes",
+						read.milestones.total_count
+					))),
+			},
+			issues_updated: read.issues.nodes.first().map(|i| i.updated_at),
+			prs_updated: read.pull_requests.nodes.first().map(|p| p.updated_at),
+		})
+	}
+
+	async fn list_assignable(&self, repo: RepoInfo) -> Result<Vec<String>, GithubError> {
+		let mut logins = Vec::new();
+		for page in 1.. {
+			let url = format!(
+				"https://api.github.com/repos/{}/{}/assignees?per_page=100&page={page}",
+				repo.owner().expect("github repo"),
+				repo.repo()
+			);
+			let res = self.get(&url).send().await?;
+			if !res.status().is_success() {
+				let status = res.status();
+				let body = res.text().await.unwrap_or_default();
+				return Err(GithubError::new_api(status, body, "list assignable users".to_string()));
+			}
+			let page = res.json::<Vec<GithubUser>>().await?;
+			let last = page.len() < 100;
+			logins.extend(page.into_iter().map(|u| u.login));
+			if last {
+				break;
+			}
+		}
+		Ok(logins)
 	}
 
 	//#[codestyle::skip(swappable-args)]
@@ -860,37 +945,49 @@ impl GithubClient for RealGithubClient {
 			.ok_or_else(|| GithubError::new_graphql(format!("transferIssue returned no number: {moved}")))
 	}
 
-	async fn list_owner_repos(&self, owner: &str) -> Result<Vec<RepoInfo>, GithubError> {
+	async fn list_owner_repos(&self, owner: &str) -> Result<Vec<RepoHead>, GithubError> {
 		#[derive(Deserialize)]
 		#[serde(rename_all = "camelCase")]
 		struct Repos {
 			page_info: PageInfo,
-			nodes: Vec<Repo>,
+			nodes: Vec<GqlRepo>,
 		}
-		#[derive(Deserialize)]
-		#[serde(rename_all = "camelCase")]
-		struct Repo {
-			name: String,
-			is_archived: bool,
-		}
-		let query = "query($owner: String!, $after: String) { repositoryOwner(login: $owner) { repositories(first: 100, after: $after, ownerAffiliations: OWNER) { pageInfo { hasNextPage endCursor } nodes { name isArchived } } } }";
+		// 50 a page: 100 take GitHub 8s of the 10 it gives a query
+		let query = format!(
+			"query($owner: String!, $after: String) {{ repositoryOwner(login: $owner) {{ repositories(first: 50, after: $after, ownerAffiliations: OWNER, isArchived: false) {{ pageInfo {{ hasNextPage endCursor }} nodes {{ ...Head }} }} }} }} {REPO_HEAD}"
+		);
 		let context = format!("list repos of {owner}");
 		let mut repos = Vec::new();
 		let mut after: Option<String> = None;
 		//LOOP pages until GitHub reports no next cursor
 		loop {
-			let mut response = self.graphql(owner, query, serde_json::json!({ "owner": owner, "after": after }), &context).await?;
+			let mut response = self.graphql(owner, &query, serde_json::json!({ "owner": owner, "after": after }), &context).await?;
 			let listed = response.pointer_mut("/data/repositoryOwner").map(serde_json::Value::take).unwrap_or_default();
 			if listed.is_null() {
 				return Err(GithubError::new_api(reqwest::StatusCode::NOT_FOUND, response.to_string(), context));
 			}
 			let page: Repos = serde_json::from_value(listed["repositories"].clone()).map_err(|e| GithubError::new_graphql(format!("{context}: {e}")))?;
-			repos.extend(page.nodes.into_iter().filter(|r| !r.is_archived).map(|r| RepoInfo::new(owner, &r.name)));
+			for repo in page.nodes {
+				repos.push(self.head(owner, repo).await?);
+			}
 			match page.page_info.has_next_page {
 				true => after = page.page_info.end_cursor,
 				false => return Ok(repos),
 			}
 		}
+	}
+
+	async fn repo_head(&self, repo: RepoInfo) -> Result<RepoHead, GithubError> {
+		let owner = repo.owner().expect("github repo");
+		let query = format!("query($owner: String!, $repo: String!) {{ repository(owner: $owner, name: $repo) {{ ...Head }} }} {REPO_HEAD}");
+		let context = format!("read {repo}");
+		let mut response = self
+			.graphql(owner, &query, serde_json::json!({ "owner": owner, "repo": repo.repo() }), &context)
+			.await
+			.map_err(|e| not_found_as_404(e, &context))?;
+		let head: GqlRepo = serde_json::from_value(response.pointer_mut("/data/repository").map(serde_json::Value::take).unwrap_or_default())
+			.map_err(|e| GithubError::new_graphql(format!("{context}: {e} in {response}")))?;
+		self.head(owner, head).await
 	}
 
 	async fn list_repo_issues(&self, repo: RepoInfo, since: Option<jiff::Timestamp>, after: Option<&str>) -> Result<IssuePage, GithubError> {
@@ -1094,11 +1191,6 @@ impl GithubClient for RealGithubClient {
 	}
 
 	async fn list_labels(&self, repo: RepoInfo) -> Result<BTreeMap<String, Color>, GithubError> {
-		#[derive(Deserialize)]
-		struct Label {
-			name: String,
-			color: Color,
-		}
 		let mut labels = BTreeMap::new();
 		for page in 1.. {
 			let url = format!(
@@ -1120,30 +1212,6 @@ impl GithubClient for RealGithubClient {
 			}
 		}
 		Ok(labels)
-	}
-
-	async fn list_assignable(&self, repo: RepoInfo) -> Result<Vec<String>, GithubError> {
-		let mut logins = Vec::new();
-		for page in 1.. {
-			let url = format!(
-				"https://api.github.com/repos/{}/{}/assignees?per_page=100&page={page}",
-				repo.owner().expect("github repo"),
-				repo.repo()
-			);
-			let res = self.get(&url).send().await?;
-			if !res.status().is_success() {
-				let status = res.status();
-				let body = res.text().await.unwrap_or_default();
-				return Err(GithubError::new_api(status, body, "list assignable users".to_string()));
-			}
-			let page = res.json::<Vec<GithubUser>>().await?;
-			let last = page.len() < 100;
-			logins.extend(page.into_iter().map(|u| u.login));
-			if last {
-				break;
-			}
-		}
-		Ok(logins)
 	}
 
 	async fn request_review(&self, repo: RepoInfo, number: u64, reviewer: &str, on: bool) -> Result<(), GithubError> {
@@ -1212,8 +1280,12 @@ struct Connection<T> {
 	nodes: Vec<T>,
 }
 impl<T> Connection<T> {
+	fn is_whole(&self) -> bool {
+		self.nodes.len() == self.total_count
+	}
+
 	fn whole(self, what: &str, number: u64) -> Result<Vec<T>, GithubError> {
-		match self.nodes.len() == self.total_count {
+		match self.is_whole() {
 			true => Ok(self.nodes),
 			false => Err(GithubError::new_other(format!("#{number} has {} {what}, more than one read takes", self.total_count))),
 		}
@@ -1236,6 +1308,34 @@ struct GqlSubIssue {
 	database_id: u64,
 	number: u64,
 	state_reason: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GqlRepo {
+	name: String,
+	labels: Connection<Label>,
+	assignable_users: Connection<GithubUser>,
+	milestones: Connection<GqlNumber>,
+	issues: Newest,
+	pull_requests: Newest,
+}
+
+#[derive(Deserialize)]
+struct Label {
+	name: String,
+	color: Color,
+}
+
+#[derive(Deserialize)]
+struct Newest {
+	nodes: Vec<Updated>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Updated {
+	updated_at: jiff::Timestamp,
 }
 
 #[derive(Deserialize)]
@@ -1619,16 +1719,16 @@ impl GithubClient for RetryingGithubClient {
 		retrying!(self.inner.set_assignees(repo, issue_number, assignees))
 	}
 
-	async fn list_assignable(&self, repo: RepoInfo) -> Result<Vec<String>, GithubError> {
-		retrying!(self.inner.list_assignable(repo))
-	}
-
 	async fn request_review(&self, repo: RepoInfo, number: u64, reviewer: &str, on: bool) -> Result<(), GithubError> {
 		retrying!(self.inner.request_review(repo, number, reviewer, on))
 	}
 
-	async fn list_owner_repos(&self, org: &str) -> Result<Vec<RepoInfo>, GithubError> {
+	async fn list_owner_repos(&self, org: &str) -> Result<Vec<RepoHead>, GithubError> {
 		retrying!(self.inner.list_owner_repos(org))
+	}
+
+	async fn repo_head(&self, repo: RepoInfo) -> Result<RepoHead, GithubError> {
+		retrying!(self.inner.repo_head(repo))
 	}
 
 	async fn list_repo_issues(&self, repo: RepoInfo, since: Option<jiff::Timestamp>, after: Option<&str>) -> Result<IssuePage, GithubError> {

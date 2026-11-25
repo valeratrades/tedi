@@ -19,7 +19,7 @@ use tracing::instrument;
 use crate::{
 	github::{
 		BoxedGithubClient, CreatedIssue, FetchedIssue, FileCommit, FileProposal, GithubClient, GithubComment, GithubError, GithubIssue, GithubLabel, GithubMilestone, GithubUser,
-		GraphqlTimeline, IssuePage, PrPage, RepoInfo, SubIssue,
+		GraphqlTimeline, IssuePage, PrPage, RepoHead, RepoInfo, SubIssue,
 	},
 	local::Local,
 };
@@ -87,6 +87,39 @@ impl MockGithubClient {
 		let Some(key) = self.keys.get(&owner.to_lowercase()) else { return Ok(None) };
 		let revoked = || GithubError::new_api(reqwest::StatusCode::UNAUTHORIZED, "Bad credentials".to_string(), "mock".to_string());
 		Ok(Some(self.tokens.lock().unwrap().get(key).cloned().ok_or_else(revoked)?))
+	}
+
+	/// Its newest issue is as new as may be while one with no timestamp is among them: that one always counts as updated.
+	fn head(&self, repo: RepoInfo) -> RepoHead {
+		let key = RepoKey::from(repo);
+		let issues = self.issues.lock().unwrap();
+		let issues = || issues.get(&key).into_iter().flat_map(|m| m.values());
+		let assignable: BTreeSet<String> = issues().flat_map(|i| i.assignees.iter().chain([&i.owner_login]).cloned()).collect();
+		RepoHead {
+			repo,
+			labels: self
+				.labels
+				.lock()
+				.unwrap()
+				.get(&key)
+				.into_iter()
+				.flatten()
+				.map(|name| (name.clone(), Color([0xed, 0xed, 0xed])))
+				.collect(),
+			assignable: assignable.into_iter().collect(),
+			open_milestones: self
+				.milestones
+				.lock()
+				.unwrap()
+				.get(&key)
+				.into_iter()
+				.flatten()
+				.filter(|(_, m)| m.state == "open")
+				.map(|(n, _)| *n)
+				.collect(),
+			issues_updated: issues().map(|i| i.updated().unwrap_or(jiff::Timestamp::MAX)).max(),
+			prs_updated: self.pull_requests.lock().unwrap().get(&key).into_iter().flatten().map(|(_, pr)| pr.updated_at).max(),
+		}
 	}
 
 	/// Whom `owner` sees acting.
@@ -1045,6 +1078,7 @@ impl GithubClient for MockGithubClient {
 		self.with_issue_mut(repo, issue_number, |issue| {
 			issue.state = state.to_string();
 			issue.state_reason = reason.map(str::to_owned);
+			issue.state_timestamp = Some(jiff::Timestamp::now());
 		})
 		.inspect(|()| self.persist())
 	}
@@ -1427,18 +1461,6 @@ impl GithubClient for MockGithubClient {
 
 	/// Seeded labels are names only: each wears GitHub's default grey.
 	/// Whoever the repo's issues name.
-	async fn list_assignable(&self, repo: RepoInfo) -> Result<Vec<String>, GithubError> {
-		self.log_call(&format!("list_assignable({repo})"));
-		let issues = self.issues.lock().unwrap();
-		let logins: BTreeSet<String> = issues
-			.get(&RepoKey::from(repo))
-			.into_iter()
-			.flat_map(|m| m.values())
-			.flat_map(|i| i.assignees.iter().chain([&i.owner_login]).cloned())
-			.collect();
-		Ok(logins.into_iter().collect())
-	}
-
 	async fn request_review(&self, repo: RepoInfo, number: u64, reviewer: &str, on: bool) -> Result<(), GithubError> {
 		self.log_call(&format!("request_review({repo}, {number}, {reviewer}, {on})"));
 		{
@@ -1458,16 +1480,18 @@ impl GithubClient for MockGithubClient {
 
 	async fn list_labels(&self, repo: RepoInfo) -> Result<BTreeMap<String, Color>, GithubError> {
 		self.log_call(&format!("list_labels({repo})"));
-		let labels = self.labels.lock().unwrap();
-		Ok(labels
-			.get(&RepoKey::from(repo))
-			.into_iter()
-			.flatten()
-			.map(|name| (name.clone(), Color([0xed, 0xed, 0xed])))
-			.collect())
+		Ok(self.head(repo).labels)
 	}
 
-	async fn list_owner_repos(&self, owner: &str) -> Result<Vec<RepoInfo>, GithubError> {
+	async fn repo_head(&self, repo: RepoInfo) -> Result<RepoHead, GithubError> {
+		self.log_call(&format!("repo_head({repo})"));
+		match self.token(repo.owner().expect("github repo"))? {
+			Some(token) if !token.repos.contains(&repo.to_string()) => Err(GithubError::new_api(reqwest::StatusCode::NOT_FOUND, format!("mock has no {repo}"), "read a repo".to_string())),
+			_ => Ok(self.head(repo)), // one nothing is seeded of is empty
+		}
+	}
+
+	async fn list_owner_repos(&self, owner: &str) -> Result<Vec<RepoHead>, GithubError> {
 		self.log_call(&format!("list_owner_repos({owner})"));
 		let token = self.token(owner)?;
 		let mut repos: Vec<RepoInfo> = self
@@ -1482,7 +1506,7 @@ impl GithubClient for MockGithubClient {
 			.collect();
 		repos.sort_by_key(|r| r.to_string());
 		repos.dedup();
-		Ok(repos)
+		Ok(repos.into_iter().map(|r| self.head(r)).collect())
 	}
 
 	/// An issue counts as updated at its newest field timestamp; one with none always does. Two a

@@ -75,7 +75,8 @@ pub async fn set_milestone(link: &Reached<IssueLink>, repo: &Reached<RepoInfo>, 
 	}
 	stored_index(link)?;
 	if mode != SyncMode::Offline {
-		pull_milestones(repo, &mut Pull::default()).await?; // whatever of the repo hosts it by now
+		let open: Vec<u64> = crate::github::client::get()?.list_milestones(repo).await?.into_iter().map(|m| m.number).collect();
+		pull_milestones(repo, &open, &mut Pull::default()).await?; // whatever of the repo hosts it by now
 	}
 	let (hosting, rest): (Vec<Milestone>, Vec<Milestone>) = Local::stored_milestones()?
 		.into_iter()
