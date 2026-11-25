@@ -61,6 +61,8 @@
 	--tl-tab-border: var(--border-subtle);
 	--tl-tabstrip-bg: var(--muted);
 }
+/* a layout's columns are what it is: none is closed */
+.cols :is(.tl-tab-close, .tl-action[title="Close"]) { display: none; }
 body {
 	background: var(--background);
 	color: var(--ink);

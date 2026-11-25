@@ -42,20 +42,20 @@ test("ws 1 is there from the first open, and holds nothing until something is op
   await page.waitForTimeout(SETTLED);
   expect((await library(page)).workspaces["ws 1"].tiles).toEqual({});
 
-  await shelf(page, "Triage").click();
-  await expect(view(page, "Triage")).toBeVisible();
+  await shelf(page, "kanban").click();
+  await expect(view(page, "kanban")).toBeVisible();
   await page.waitForTimeout(SETTLED);
   await page.goto("/");
   await expect(named(page)).toHaveText("ws 1");
-  await expect(view(page, "Triage")).toBeVisible();
+  await expect(view(page, "kanban")).toBeVisible();
   expect(new URL(page.url()).searchParams.get("ws")).toBe(new URL(first, page.url()).searchParams.get("ws"));
 });
 
 test("with none open nothing is shown where views go, and opening one only says so", async ({ page, baseURL }) => {
   await fresh(page, baseURL!);
   await page.goto("/");
-  await shelf(page, "Triage").click();
-  await expect(view(page, "Triage")).toBeVisible();
+  await shelf(page, "kanban").click();
+  await expect(view(page, "kanban")).toBeVisible();
   const row = page.locator("aside .group\\/row").filter({ hasText: "ws 1" });
   await row.hover();
   await row.getByRole("button", { name: "Delete" }).click();
@@ -65,7 +65,7 @@ test("with none open nothing is shown where views go, and opening one only says 
     await expect(named(page)).toHaveText("Workspace");
     await expect(tiles(page)).toHaveCount(0);
     await expect(search(page)).toHaveCount(0);
-    await shelf(page, "Triage").click();
+    await shelf(page, "kanban").click();
     await expect(page.getByText("no workspace is open")).toBeVisible();
     await expect(tiles(page)).toHaveCount(0);
   }
@@ -152,26 +152,77 @@ test("a point of the chain is a scope: down by the picker, up by its crumbs, and
   await expect(line(page)).not.toContainText("repo:");
 });
 
-test("a column's × and the checklist hide the same, and it stays hidden", async ({ page }) => {
+const COLUMNS = ["icebox", "triage", "selected", "in_progress", "in_review", "done", "wont_do", "backlog"];
+const columns = (page: Page) => page.locator('.tl-tab[data-panel^="col:"]').filter({ visible: true });
+
+test("a layout is a view: the shelf holds each, and none is made another", async ({ page }) => {
+  await page.goto("/");
+  for (const layout of ["kanban", "pull_requests", "repo", "assignee", "type", "importance", "nothing", "chain"]) await expect(shelf(page, layout)).toBeVisible();
+  await open(page, "Triage desk");
+  await expect(page.getByRole("button", { name: /\d+ fields$/ })).toBeVisible();
+  for (const knob of [/^state:/, / columns$/, /^\d of \d$/]) await expect(page.locator(".tl-render-overlay").getByRole("button", { name: knob })).toHaveCount(0);
+});
+
+test("a kanban is its workflow's 8 columns, whatever the search leaves in them, and none is closed", async ({ page }) => {
   await page.goto("/");
   await open(page, "Triage desk");
-  await expect(column(page, "done")).toHaveCount(0); // the team hides it
-  await expect(column(page, "in_review")).toBeVisible();
-  await column(page, "in_review").getByTitle("Close tab").click();
-  await expect(column(page, "in_review")).toHaveCount(0);
-  const checklist = page.getByRole("button", { name: "4 of 8" });
-  await checklist.click();
-  await page.locator("label").filter({ hasText: /^icebox$/ }).getByRole("checkbox").click();
-  await expect(column(page, "icebox")).toHaveCount(0);
-  await expect(page.getByText("team · read-only")).toBeVisible();
+  for (const asked of [null, "is:issue is:open state:kanban/triage", "nothing is named so"]) {
+    if (asked) await search(page).fill(asked);
+    await expect(columns(page)).toHaveCount(8);
+    for (const name of COLUMNS) await expect(column(page, name)).toBeAttached();
+  }
+  await column(page, "done").hover();
+  await expect(page.locator(".cols").getByTitle(/^Close/).filter({ visible: true })).toHaveCount(0);
+});
+
+test("columns follow the cards the workspace leaves in, each back in its place", async ({ page }) => {
+  await page.goto("/");
+  await page.locator("aside").getByRole("button", { name: "New workspace" }).click();
+  await expect(named(page)).toHaveText("ws 1");
+  await shelf(page, "repo").click();
+  const held = () => columns(page).evaluateAll((all) => all.map((c) => ({ at: (c as HTMLElement).dataset.panel!, x: c.getBoundingClientRect().x })).sort((a, b) => a.x - b.x).map((c) => c.at));
+  await expect.poll(async () => (await held()).length).toBeGreaterThan(3);
+  const all = await held();
+  await search(page).fill("repo:service-arb/review_archive");
+  await expect.poll(held).toEqual(["col:service-arb/review_archive"]);
+  await search(page).fill("repo:service-arb/*");
+  await expect.poll(held).toEqual(all.filter((c) => c.startsWith("col:service-arb/")));
+  await search(page).fill("");
+  await expect.poll(held).toEqual(all);
   await page.waitForTimeout(SETTLED);
-  await page.reload();
-  await expect(column(page, "triage")).toBeVisible();
-  for (const hidden of ["in_review", "icebox", "done"]) await expect(column(page, hidden)).toHaveCount(0);
-  await page.getByRole("button", { name: "Revert" }).click();
-  for (const back of ["in_review", "icebox"]) await expect(column(page, back)).toBeVisible();
-  await expect(column(page, "done")).toHaveCount(0);
-  await expect(page.getByText("team · read-only")).toHaveCount(0);
+  expect((await library(page)).drafts.views, "showing is not editing").toEqual({});
+});
+
+test("a view of one's own is a layout's, saved under a name", async ({ page }) => {
+  await page.goto("/");
+  await open(page, "Triage desk");
+  await page.getByRole("button", { name: /\d+ fields$/ }).click();
+  await page.locator("div[draggable=true]").filter({ hasText: /^hours$/ }).getByRole("checkbox").click();
+  await page.mouse.click(5, 5); // off the menu
+  await page.getByRole("button", { name: "Save as mine" }).click();
+  await page.getByPlaceholder("save as mine…").fill("no hours");
+  await page.keyboard.press("Enter");
+  await expect(view(page, "no hours")).toBeVisible();
+  const { views } = await library(page);
+  expect(views["no hours"].group_by).toBe("state:kanban");
+  expect(views["no hours"].shown).not.toContain("hours");
+});
+
+test("no signal is used where it may be gone", async ({ page }) => {
+  const told: string[] = [];
+  page.on("console", (m) => m.text().includes("Copy Value created in") && told.push(m.text().split("Help:")[0]));
+  await page.goto("/");
+  await open(page, "Triage desk");
+  await search(page).fill("is:open t:bug");
+  await page.waitForTimeout(SETTLED);
+  await scope(page, "core").click();
+  await toast(page, "Started from core").getByRole("button", { name: "Undo" }).click();
+  await page.locator('a[href*="issue="]:visible').first().click();
+  await open(page, "Release week");
+  await shelf(page, "repo").click();
+  await page.waitForTimeout(SETTLED);
+  await page.goBack();
+  expect(told).toEqual([]);
 });
 
 test("a card's chip narrows the workspace", async ({ page }) => {
@@ -226,12 +277,13 @@ test("what is edited right before leaving is kept, and nothing asks", async ({ p
     page.on("dialog", (asks) => expect(asks.type(), "asked on leaving").toBe(""));
     await page.route("**/api/library/edit", (route) => route.abort()); // what settles is too late
     const asked = `is:open i:>=${await search(page).inputValue() === "is:open i:>=3" ? 4 : 3}`;
-    await column(page, "icebox").getByTitle("Close tab").click();
+    await page.getByRole("button", { name: /\d+ fields$/ }).click();
+    await page.locator("div[draggable=true]").filter({ hasText: /^hours$/ }).getByRole("checkbox").click();
     await search(page).fill(asked);
     await leave(page);
     await expect.poll(async () => (await (await context.request.get("/api/library")).json()).workspaces["Triage desk"].lens.search).toBe(asked);
-    expect((await (await context.request.get("/api/library")).json()).drafts.views.Triage.hidden).toContain("icebox");
-    const back = await context.request.post("/api/library/edit", { data: { edit: { Revert: { View: "Triage" } } } });
+    expect((await (await context.request.get("/api/library")).json()).drafts.views.kanban.shown).not.toContain("hours");
+    const back = await context.request.post("/api/library/edit", { data: { edit: { Revert: { View: "kanban" } } } });
     expect(back.ok(), await back.text()).toBe(true);
   }
 });

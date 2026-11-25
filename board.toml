@@ -8,16 +8,42 @@ kanban = "preset:kanban"
 pull_requests = "preset:pull_requests"
 
 [[board.views]]
-name = "Triage"
+name = "kanban"
 group_by = "state:kanban"
 shown = ["repo", "assignees", "importance", "hours", "type", "blockers"]
-hidden = ["done", "wont_do", "backlog"]
+tints = { triage = "orange", selected = "blue", in_progress = "blue", in_review = "purple", done = "green" }
 
 [[board.views]]
-name = "Chain"
+name = "pull_requests"
+group_by = "state:pull_requests"
+shown = ["repo", "assignees", "prs", "labels"]
+
+[[board.views]]
+name = "repo"
+group_by = "repo"
+shown = ["assignees", "importance", "hours", "type", "blockers"]
+
+[[board.views]]
+name = "assignee"
+group_by = "assignee"
+shown = ["repo", "importance", "hours", "type", "blockers"]
+
+[[board.views]]
+name = "type"
+group_by = "type"
+shown = ["repo", "assignees", "importance", "hours", "blockers"]
+
+[[board.views]]
+name = "importance"
+group_by = "importance"
+shown = ["repo", "assignees", "hours", "type", "blockers"]
+
+[[board.views]]
+name = "nothing"
+group_by = "nothing"
+shown = ["repo", "assignees", "importance", "hours", "type", "blockers"]
+
+[[board.views]]
+name = "chain"
 group_by = "chain"
 shown = ["repo", "number", "assignees", "importance", "hours", "type", "blockers"]
-
-[board.columns.notion]
-by = "state:kanban"
-tints = { triage = "orange", selected = "blue", in_progress = "blue", in_review = "purple", done = "green" }

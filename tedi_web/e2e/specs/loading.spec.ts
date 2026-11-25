@@ -94,7 +94,7 @@ test.describe("what waits for the board is the views on screen, each for what it
     await hold(page);
     await page.goto("/");
     await release(page, "client", 8);
-    await expect(shelf(page, "Triage")).toBeVisible();
+    await expect(shelf(page, "kanban")).toBeVisible();
     await expect(search(page)).toHaveValue(/is:pr/);
     await reads(bars(tile(page)), 0);
     const [t, b] = [(await tile(page).boundingBox())!, (await bars(tile(page)).boundingBox())!];

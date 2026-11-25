@@ -3,7 +3,6 @@
 //! is on screen, and what the viewer keeps, is their library on the server.
 
 mod account;
-mod builder;
 mod card;
 mod chain;
 mod facets;
@@ -36,7 +35,7 @@ use futures::StreamExt as _;
 use icons::{Glyph, Icon};
 use tedi_core::{
 	IssueLink, MilestoneLink,
-	board::{Board, Card, GroupBy, Holds, Part, Query, Scope, Shown, Slice, Source, Target, Within},
+	board::{Board, Card, Holds, Part, Query, Scope, Shown, Slice, Source, Target, Within},
 	chain::Point,
 	conflict::{CommentEdit, Conflict, Edited},
 	workflow::Workflow,
@@ -46,7 +45,7 @@ use tilers_dioxus::{
 	model::{packed::GridState, serial},
 };
 
-use crate::api::{self, Arrangement, Boxing, Columns, Item, Lens, Library, LibraryEdit, Setup, View, ViewPart, Workspace, WorkspacePart};
+use crate::api::{self, Arrangement, Item, Lens, Library, LibraryEdit, Setup, View, ViewPart, Workspace, WorkspacePart};
 
 const HELP: [(&str, &str); 7] = [
 	("⌘K", "jump to a view, scope, sprint or issue"),
@@ -143,7 +142,7 @@ struct Ctx {
 	/// Moves to an address under way; after the last, the bar corrects rather than steps.
 	moving: Signal<usize>,
 	settling: Signal<bool>,
-	/// How often each view was laid out anew: its columns remount on it.
+	/// How often each view was reverted: its columns remount on it.
 	relaid: Signal<HashMap<String, usize>>,
 }
 impl Ctx {
@@ -261,12 +260,6 @@ impl Ctx {
 		sprints
 	}
 
-	/// The column layout `name`: the viewer's, or the team's.
-	fn columns(&self, name: &str) -> Option<Columns> {
-		let (setup, library) = (self.setup.read(), self.library.read());
-		library.as_ref()?.columns.get(name).or_else(|| setup.as_ref()?.columns.get(name)).cloned()
-	}
-
 	/// The open workspace's name.
 	fn open_workspace(&self) -> Option<String> {
 		match self.named(self.workspace.read().as_ref()?)? {
@@ -277,13 +270,6 @@ impl Ctx {
 
 	fn workspace_named(&self, name: &str) -> Option<Workspace> {
 		workspace_named(&self.setup.read(), &self.library.read(), &self.unsaved.read(), name)
-	}
-
-	/// What cards can be boxed by.
-	fn boxings(&self) -> impl Iterator<Item = Boxing> {
-		let workflows = self.workflows().into_keys().map(GroupBy::State);
-		let groupings = workflows.chain([GroupBy::Repo, GroupBy::Assignee, GroupBy::Type, GroupBy::Importance, GroupBy::Nothing]);
-		groupings.map(Boxing::Groups).chain([Boxing::Chain])
 	}
 
 	/// What a card can show.
@@ -301,17 +287,12 @@ impl Ctx {
 		])
 	}
 
-	/// The view `name` as kept again.
+	/// The view `name` as kept again, its columns mounted anew.
 	async fn revert(self, name: String) {
 		if self.keep(LibraryEdit::Revert(Item::View(name.clone()))).await {
-			self.relay(name);
+			let mut relaid = self.relaid;
+			*relaid.write().entry(name).or_default() += 1;
 		}
-	}
-
-	/// `view`'s columns mount anew, as it has them.
-	fn relay(self, view: String) {
-		let mut relaid = self.relaid;
-		*relaid.write().entry(view).or_default() += 1;
 	}
 
 	fn edit_view(self, view: &str, part: ViewPart) {
@@ -540,11 +521,6 @@ impl Ctx {
 		let (glyph, title, content) = match id.0.split_once(':') {
 			Some(("view", name)) => (Glyph::View, name.to_string(), rsx! { view::ViewPanel { key: "{name}", name: name.to_string() } }),
 			Some(("library", at)) => (Glyph::Search, "Library".to_string(), rsx! { library::LibraryPanel { at: at.to_string() } }),
-			Some(("builder", from)) => (
-				Glyph::View,
-				if from.is_empty() { "New view (draft)".to_string() } else { format!("{from} (draft)") },
-				rsx! { builder::Builder { from: (!from.is_empty()).then(|| from.to_string()) } },
-			),
 			Some(("sprint", at)) => match sprint_at(at) {
 				Some(link) => {
 					return DockPanel {
@@ -849,9 +825,6 @@ fn supersedes(edit: &LibraryEdit, held: &LibraryEdit) -> bool {
 		(LibraryEdit::View { view, part }, LibraryEdit::View { view: v, part: p }) =>
 			view == v
 				&& match (part, p) {
-					(_, ViewPart::GroupBy(_)) => false, // each boxes anew
-					(ViewPart::GroupBy(_), ViewPart::Shown(_)) => false,
-					(ViewPart::GroupBy(_), _) => true,
 					(ViewPart::Arrangement { of, band, .. }, ViewPart::Arrangement { of: o, band: b, .. }) => (of, band) == (o, b),
 					_ => discriminant(part) == discriminant(p),
 				},
@@ -881,11 +854,6 @@ enum Modal {
 	Help,
 	/// The viewer's object as a pull request on the team's config.
 	Propose(Item),
-	/// A column layout onto one of the views grouping as it does.
-	ApplyColumns {
-		name: String,
-		owner: api::Owner,
-	},
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1017,46 +985,49 @@ fn use_kept(api: Signal<Option<PackedApi>>, seen: Signal<Option<Seen>>, kept: Ca
 
 #[component]
 fn Shell() -> Element {
+	// the root's: what settles outlives whoever made it
 	let ctx = use_context_provider(|| {
-		let (stored, pending) = (Signal::new(Board::default()), Signal::new(Vec::new()));
-		let (setup, library, unsaved) = (Signal::new(None), Signal::new(None), Signal::new(Vec::new()));
-		let (workspace, viewing) = (Signal::new(None), Signal::new(None));
-		Ctx {
-			setup,
-			library,
-			unsaved,
-			saving: Signal::new(None),
-			wire: Signal::new(Rc::default()),
-			workspace,
-			lens: Memo::new(move || lens(&setup.read(), &library.read(), &unsaved.read(), &workspace.read(), &viewing.read())),
-			stored,
-			pending,
-			made: Signal::new(HashMap::new()),
-			reading: Signal::new(Reading::Idle),
-			board: Memo::new(move || sync::shown(&stored.read(), &pending.read())),
-			conflicts: Signal::new(HashMap::new()),
-			panels: Signal::new(Vec::new()),
-			api: Signal::new(None),
-			seen: Signal::new(None),
-			loading: Signal::new(Loading::default()),
-			progress: Signal::new(Loading::default()),
-			wanted: Signal::new(BTreeMap::new()),
-			order: Signal::new(Vec::new()),
-			failure: Signal::new(None),
-			modal: Signal::new(None),
-			palette: Signal::new(false),
-			into: Signal::new(None),
-			sheet: Signal::new(false),
-			notes: Signal::new(Vec::new()),
-			landing: Signal::new(true),
-			viewing,
-			at: Signal::new(route::Address::default()),
-			main: Signal::new(None),
-			up: Signal::new(Vec::new()),
-			moving: Signal::new(0),
-			settling: Signal::new(true),
-			relaid: Signal::new(HashMap::new()),
-		}
+		Runtime::current().in_scope(ScopeId::ROOT, || {
+			let (stored, pending) = (Signal::new(Board::default()), Signal::new(Vec::new()));
+			let (setup, library, unsaved) = (Signal::new(None), Signal::new(None), Signal::new(Vec::new()));
+			let (workspace, viewing) = (Signal::new(None), Signal::new(None));
+			Ctx {
+				setup,
+				library,
+				unsaved,
+				saving: Signal::new(None),
+				wire: Signal::new(Rc::default()),
+				workspace,
+				lens: Memo::new(move || lens(&setup.read(), &library.read(), &unsaved.read(), &workspace.read(), &viewing.read())),
+				stored,
+				pending,
+				made: Signal::new(HashMap::new()),
+				reading: Signal::new(Reading::Idle),
+				board: Memo::new(move || sync::shown(&stored.read(), &pending.read())),
+				conflicts: Signal::new(HashMap::new()),
+				panels: Signal::new(Vec::new()),
+				api: Signal::new(None),
+				seen: Signal::new(None),
+				loading: Signal::new(Loading::default()),
+				progress: Signal::new(Loading::default()),
+				wanted: Signal::new(BTreeMap::new()),
+				order: Signal::new(Vec::new()),
+				failure: Signal::new(None),
+				modal: Signal::new(None),
+				palette: Signal::new(false),
+				into: Signal::new(None),
+				sheet: Signal::new(false),
+				notes: Signal::new(Vec::new()),
+				landing: Signal::new(true),
+				viewing,
+				at: Signal::new(route::Address::default()),
+				main: Signal::new(None),
+				up: Signal::new(Vec::new()),
+				moving: Signal::new(0),
+				settling: Signal::new(true),
+				relaid: Signal::new(HashMap::new()),
+			}
+		})
 	});
 	use_hook(|| match route::landed() {
 		Ok(to) => {
@@ -1445,7 +1416,6 @@ fn Modals() -> Element {
 				Some(Modal::Account) => rsx! { account::AccountPanel {} },
 				Some(Modal::Scope(editing)) => rsx! { scope::ScopeEditor { key: "{editing:?}", editing } },
 				Some(Modal::Propose(item)) => rsx! { library::Propose { key: "{item:?}", item } },
-				Some(Modal::ApplyColumns { name, owner }) => rsx! { library::ApplyColumns { name, owner } },
 				Some(Modal::Help) => rsx! {
 					Dialog { open: true, on_open_change: close,
 						DialogContent { class: "flex flex-col gap-3 sm:max-w-md",

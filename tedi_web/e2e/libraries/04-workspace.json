@@ -16,7 +16,7 @@
  "workspaces": {
   "Triage desk": {
    "tiles": {
-    "Xl": "{\"version\":3,\"grid\":{\"cells\":[{\"group\":{\"id\":0,\"tabs\":[\"view:Triage\"],\"active\":0},\"x\":0,\"y\":0,\"w\":42,\"h\":40,\"desired_w\":null,\"desired_x\":null,\"desired_h\":null,\"rank\":0},{\"group\":{\"id\":1,\"tabs\":[\"issue:https://github.com/service-arb/review_archive/issues/46\"],\"active\":0},\"x\":42,\"y\":0,\"w\":22,\"h\":40,\"desired_w\":null,\"desired_x\":null,\"desired_h\":null,\"rank\":1}],\"state\":\"Settled\",\"next_group_id\":2}}"
+    "Xl": "{\"version\":3,\"grid\":{\"cells\":[{\"group\":{\"id\":0,\"tabs\":[\"view:kanban\"],\"active\":0},\"x\":0,\"y\":0,\"w\":42,\"h\":40,\"desired_w\":null,\"desired_x\":null,\"desired_h\":null,\"rank\":0},{\"group\":{\"id\":1,\"tabs\":[\"issue:https://github.com/service-arb/review_archive/issues/46\"],\"active\":0},\"x\":42,\"y\":0,\"w\":22,\"h\":40,\"desired_w\":null,\"desired_x\":null,\"desired_h\":null,\"rank\":1}],\"state\":\"Settled\",\"next_group_id\":2}}"
    },
    "lens": {
     "scope": "repo:service-arb/*",
@@ -36,7 +36,7 @@
   },
   "Sprint planning": {
    "tiles": {
-    "Xl": "{\"version\":3,\"grid\":{\"cells\":[{\"group\":{\"id\":0,\"tabs\":[\"sprint:ev-main/devops/3\"],\"active\":0},\"x\":0,\"y\":0,\"w\":42,\"h\":40,\"desired_w\":null,\"desired_x\":null,\"desired_h\":null,\"rank\":0},{\"group\":{\"id\":1,\"tabs\":[\"view:Triage\"],\"active\":0},\"x\":42,\"y\":0,\"w\":22,\"h\":40,\"desired_w\":null,\"desired_x\":null,\"desired_h\":null,\"rank\":1}],\"state\":\"Settled\",\"next_group_id\":2}}"
+    "Xl": "{\"version\":3,\"grid\":{\"cells\":[{\"group\":{\"id\":0,\"tabs\":[\"sprint:ev-main/devops/3\"],\"active\":0},\"x\":0,\"y\":0,\"w\":42,\"h\":40,\"desired_w\":null,\"desired_x\":null,\"desired_h\":null,\"rank\":0},{\"group\":{\"id\":1,\"tabs\":[\"view:kanban\"],\"active\":0},\"x\":42,\"y\":0,\"w\":22,\"h\":40,\"desired_w\":null,\"desired_x\":null,\"desired_h\":null,\"rank\":1}],\"state\":\"Settled\",\"next_group_id\":2}}"
    },
    "lens": {
     "scope": "repo:service-arb/*",
@@ -46,7 +46,7 @@
   },
   "Phone: inbox": {
    "tiles": {
-    "Sm": "{\"version\":3,\"grid\":{\"cells\":[{\"group\":{\"id\":0,\"tabs\":[\"view:Triage\",\"issue:https://github.com/service-arb/review_archive/issues/46\"],\"active\":0},\"x\":0,\"y\":0,\"w\":64,\"h\":40,\"desired_w\":null,\"desired_x\":null,\"desired_h\":null,\"rank\":0}],\"state\":\"Settled\",\"next_group_id\":1}}"
+    "Sm": "{\"version\":3,\"grid\":{\"cells\":[{\"group\":{\"id\":0,\"tabs\":[\"view:kanban\",\"issue:https://github.com/service-arb/review_archive/issues/46\"],\"active\":0},\"x\":0,\"y\":0,\"w\":64,\"h\":40,\"desired_w\":null,\"desired_x\":null,\"desired_h\":null,\"rank\":0}],\"state\":\"Settled\",\"next_group_id\":1}}"
    },
    "lens": {
     "scope": "repo:service-arb/*",
@@ -55,7 +55,6 @@
    }
   }
  },
- "columns": {},
  "scopes": {
   "core": {
    "repos": [
@@ -68,11 +67,10 @@
   "views": {},
   "workspaces": {}
  },
- "laid": {},
  "locked": [],
  "favorites": [
   {
-   "View": "Triage"
+   "View": "kanban"
   },
   {
    "Workspace": "Triage desk"

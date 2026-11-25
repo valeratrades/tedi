@@ -1,7 +1,4 @@
-//! A view's toolbar (Figma: ViewToolbar): its grouping, the fields a card shows, the columns shown; counts what the
-//! boxes show, and keeps the view.
-
-use std::collections::BTreeSet;
+//! A view's toolbar (Figma: ViewToolbar): the fields a card shows; counts what the boxes show, and keeps the view.
 
 use dioxus::{core::spawn_forever, prelude::*};
 use ev_lib::uikit_dioxus::Checkbox;
@@ -10,70 +7,21 @@ use tedi_core::board::Shown;
 use super::{
 	Ctx,
 	icons::{Glyph, Icon},
-	kit::{Btn, MenuItem, Picker, Style},
+	kit::{Btn, Picker, Style},
 	library::NameForm,
 };
-use crate::api::{Boxing, Kept, LibraryEdit, View, ViewPart};
+use crate::api::{Kept, LibraryEdit, View, ViewPart};
 
-/// `view` as last edited, against how it is kept; `groups` are those it could show; no `count`: what it shows isn't here yet.
+/// `view` as last edited, against how it is kept; no `count`: what it shows isn't here yet.
 #[component]
-pub(super) fn ViewToolbar(view: View, defined: View, groups: Vec<String>, count: Option<usize>, edit: Callback<ViewPart>) -> Element {
+pub(super) fn ViewToolbar(view: View, defined: View, count: Option<usize>, edit: Callback<ViewPart>) -> Element {
 	rsx! {
 		div { class: "flex shrink-0 flex-wrap items-center gap-2 border-b border-border-subtle bg-card px-3 py-2",
-			Picker { glyph: Glyph::Group, label: view.group_by.to_string(), GroupMenu { by: view.group_by.clone(), edit } }
 			Picker { glyph: Glyph::Fields, label: format!("{} fields", view.shown.len()), FieldsMenu { shown: view.shown.clone(), edit } }
-			if let Boxing::Groups(_) = view.group_by {
-				ColumnsPicker { groups, hidden: view.boxes.hidden.clone(), edit }
-			}
 			div { class: "flex-1" }
 			span { class: "shrink-0 px-1 text-mono-s text-ink-soft", if let Some(count) = count { "{count} cards" } }
 			tilers_dioxus::LockToggle {}
 			Keep { view, defined }
-		}
-	}
-}
-
-#[component]
-pub(super) fn GroupMenu(by: Boxing, edit: Callback<ViewPart>) -> Element {
-	let ctx = use_context::<Ctx>();
-	rsx! {
-		for g in ctx.boxings() {
-			MenuItem { key: "{g}", selected: g == by, label: g.to_string(), onclick: move |_| edit.call(ViewPart::GroupBy(g.clone())) }
-		}
-	}
-}
-
-/// Which groups have a box.
-#[component]
-pub(super) fn ColumnsPicker(groups: Vec<String>, hidden: BTreeSet<String>, edit: Callback<ViewPart>) -> Element {
-	let gone: Vec<String> = hidden.iter().filter(|h| !groups.contains(h)).cloned().collect(); // hidden, and no card is in it now
-	let shown = groups.iter().filter(|g| !hidden.contains(*g)).count();
-	let label = if shown == groups.len() {
-		format!("{shown} columns")
-	} else {
-		format!("{shown} of {}", groups.len())
-	};
-	rsx! {
-		Picker { glyph: Glyph::Columns, label,
-			for group in groups.into_iter().chain(gone) {
-				label { key: "{group}", class: "flex h-7 shrink-0 items-center gap-2 rounded-[var(--control-radius)] px-2 hover:bg-hover",
-					Checkbox {
-						checked: !hidden.contains(&group),
-						on_checked_change: {
-							let (group, hidden) = (group.clone(), hidden.clone());
-							move |on: bool| {
-								let mut hidden = hidden.clone();
-								match on {
-									true => _ = hidden.remove(&group),
-									false => _ = hidden.insert(group.clone()),
-								}
-								edit.call(ViewPart::Hidden(hidden));
-							}
-						},
-					}
-					span { class: "flex-1 truncate text-body text-ink", "{group}" }
-				}
-			}
 		}
 	}
 }

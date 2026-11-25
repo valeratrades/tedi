@@ -32,16 +32,15 @@ pub struct Setup {
 	pub workflows: Trees,
 	pub orgs: Orgs,
 	pub scopes: BTreeMap<String, Scope>,
+	/// The team's: one a layout, under its name, then the rest.
 	pub views: Vec<View>,
-	/// The team's columns, offered beside each viewer's own.
-	pub columns: BTreeMap<String, Columns>,
 	/// The team's workspaces, offered beside each viewer's own.
 	pub workspaces: BTreeMap<String, Workspace>,
 	/// The team's, as an address names them.
 	pub ids: BTreeMap<String, Item>,
 }
 
-/// What a view boxes its cards by: a grouping's groups, or where they sit on the chain below the workspace's scope (`chain`).
+/// A layout: what cards are boxed by, a grouping's groups, or where they sit on the chain below the workspace's scope (`chain`).
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(try_from = "String", into = "String")]
 pub enum Boxing {
@@ -79,15 +78,12 @@ pub struct Boxes {
 	pub arrangement: Arrangement,
 	#[serde(default, skip_serializing_if = "BTreeMap::is_empty")] // untinted
 	pub tints: Tints,
-	/// The groups not shown: one that appears later is.
-	#[serde(default, skip_serializing_if = "BTreeSet::is_empty")] // all are shown
-	pub hidden: BTreeSet<String>,
 	/// Of the chain's nodes, how the leaf issues right in each are laid out.
 	#[serde(default, skip_serializing_if = "BTreeMap::is_empty")] // a node without one seeds a tile per issue
 	pub nodes: BTreeMap<Point, Arrangement>,
 }
 
-/// How cards are shown; which, and in what order, is the lens's.
+/// A layout as it is set up; which cards are in it, and in what order, is the lens's.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct View {
 	pub name: String,
@@ -100,23 +96,12 @@ pub struct View {
 impl View {
 	pub fn set(&mut self, part: ViewPart) {
 		match part {
-			ViewPart::GroupBy(by) if by == self.group_by => {}
-			ViewPart::GroupBy(by) => (self.group_by, self.boxes) = (by, Boxes::default()),
 			ViewPart::Shown(shown) => self.shown = shown,
 			ViewPart::Arrangement { of: None, band, layout } => _ = self.boxes.arrangement.insert(band, layout),
 			ViewPart::Arrangement { of: Some(node), band, layout } => _ = self.boxes.nodes.entry(node).or_default().insert(band, layout),
 			ViewPart::Tints(tints) => self.boxes.tints = tints,
-			ViewPart::Hidden(hidden) => self.boxes.hidden = hidden,
 		}
 	}
-}
-
-/// A view's boxes, kept for the grouping whose groups they box.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub struct Columns {
-	pub by: GroupBy,
-	#[serde(flatten)]
-	pub boxes: Boxes,
 }
 
 /// Which cards every tile of a workspace shows, and in what order.
@@ -159,13 +144,9 @@ pub struct Library {
 	pub workspace: Option<String>,
 	pub views: BTreeMap<String, View>,
 	pub workspaces: BTreeMap<String, Workspace>,
-	pub columns: BTreeMap<String, Columns>,
 	/// Beside the team's, never named as one of theirs.
 	pub scopes: BTreeMap<String, Scope>,
 	pub drafts: Drafts,
-	/// The column layout each view was last laid out as, under the grouping it shows; what was dragged since stands.
-	#[serde(default)]
-	pub laid: BTreeMap<String, String>,
 	/// The views whose columns are locked.
 	#[serde(default)]
 	pub locked: BTreeSet<String>,
@@ -228,10 +209,8 @@ impl Default for Library {
 			workspace: Some(first.clone()),
 			views: BTreeMap::new(),
 			workspaces: BTreeMap::from([(first, Workspace::default())]),
-			columns: BTreeMap::new(),
 			scopes: BTreeMap::new(),
 			drafts: Drafts::default(),
-			laid: BTreeMap::new(),
 			locked: BTreeSet::new(),
 			favorites: BTreeSet::new(),
 			ids: BTreeMap::new(),
@@ -274,14 +253,12 @@ pub enum Item {
 	/// Its path: names ` / `-joined.
 	Scope(String),
 	Workspace(String),
-	Columns(String),
 }
 impl Item {
 	pub fn new(shelf: Shelf, name: String) -> Self {
 		match shelf {
 			Shelf::Views => Item::View(name),
 			Shelf::Workspaces => Item::Workspace(name),
-			Shelf::Columns => Item::Columns(name),
 			Shelf::Scopes => Item::Scope(name),
 		}
 	}
@@ -291,26 +268,23 @@ impl Item {
 			Item::View(_) => Shelf::Views,
 			Item::Scope(_) => Shelf::Scopes,
 			Item::Workspace(_) => Shelf::Workspaces,
-			Item::Columns(_) => Shelf::Columns,
 		}
 	}
 
 	pub fn name(&self) -> &str {
 		match self {
-			Item::View(n) | Item::Scope(n) | Item::Workspace(n) | Item::Columns(n) => n,
+			Item::View(n) | Item::Scope(n) | Item::Workspace(n) => n,
 		}
 	}
 }
 
-/// A kind of library object; as a link's segment `view`, `scope`, `ws`, `columns`.
+/// A kind of library object; as a link's segment `view`, `scope`, `ws`.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, strum::Display, strum::EnumIter, strum::EnumString)]
 pub enum Shelf {
 	#[strum(serialize = "view")]
 	Views,
 	#[strum(serialize = "ws")]
 	Workspaces,
-	#[strum(serialize = "columns")]
-	Columns,
 	#[strum(serialize = "scope")]
 	Scopes,
 }
@@ -337,11 +311,10 @@ pub enum Construction {
 	View(View),
 	Scope(Scope),
 	Workspace(Workspace),
-	Columns(Columns),
 }
 
 /// Every object these hold, a scope at each of its paths.
-pub fn constructions(views: &[View], scopes: &BTreeMap<String, Scope>, columns: &BTreeMap<String, Columns>, workspaces: &BTreeMap<String, Workspace>) -> BTreeMap<Item, Construction> {
+pub fn constructions(views: &[View], scopes: &BTreeMap<String, Scope>, workspaces: &BTreeMap<String, Workspace>) -> BTreeMap<Item, Construction> {
 	fn walk(at: &str, scopes: &BTreeMap<String, Scope>, out: &mut BTreeMap<Item, Construction>) {
 		for (name, scope) in scopes {
 			let path = if at.is_empty() { name.clone() } else { format!("{at} / {name}") };
@@ -351,7 +324,6 @@ pub fn constructions(views: &[View], scopes: &BTreeMap<String, Scope>, columns: 
 	}
 	let mut out: BTreeMap<Item, Construction> = views.iter().map(|v| (Item::View(v.name.clone()), Construction::View(v.clone()))).collect();
 	walk("", scopes, &mut out);
-	out.extend(columns.iter().map(|(n, c)| (Item::Columns(n.clone()), Construction::Columns(c.clone()))));
 	out.extend(workspaces.iter().map(|(n, w)| (Item::Workspace(n.clone()), Construction::Workspace(w.clone()))));
 	out
 }
@@ -373,7 +345,7 @@ pub struct Forked {
 	pub upstream: Upstream,
 }
 
-/// `/l/{view|scope|ws|columns}/{owner}/{name}@{version}?bands=md,xl`: one version of a library object, read-only
+/// `/l/{view|scope|ws}/{owner}/{name}@{version}?bands=md,xl`: one version of a library object, read-only
 /// to whoever opens it until they fork it.
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(try_from = "String", into = "String")]
@@ -562,7 +534,6 @@ pub fn diff(from: &Construction, to: &Construction) -> Vec<Change> {
 				_ => {}
 			}
 		}
-		sets("hidden: ", &from.hidden, &to.hidden, push);
 		arrangements("", &from.arrangement, &to.arrangement, push);
 		for node in from.nodes.keys().chain(to.nodes.keys()).collect::<BTreeSet<_>>() {
 			let of = |boxes: &Boxes| boxes.nodes.get(node).cloned().unwrap_or_default(); // arranged on one side only
@@ -606,12 +577,6 @@ pub fn diff(from: &Construction, to: &Construction) -> Vec<Change> {
 			}
 			arrangements("", &a.tiles, &b.tiles, &mut push);
 		}
-		(Construction::Columns(a), Construction::Columns(b)) => {
-			if a.by != b.by {
-				push(Sign::Changed, format!("by {} → {}", a.by, b.by));
-			}
-			boxes(&a.boxes, &b.boxes, &mut push);
-		}
 		(from, to) => panic!("a diff compares one kind: {from:?} against {to:?}"),
 	}
 	out
@@ -627,8 +592,6 @@ pub enum WorkspacePart {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub enum ViewPart {
-	/// Another grouping's groups are boxed anew.
-	GroupBy(Boxing),
 	Shown(Vec<Shown>),
 	Arrangement {
 		/// The chain's node whose leaf issues it lays out; none: it lays out the groups.
@@ -637,7 +600,6 @@ pub enum ViewPart {
 		layout: String,
 	},
 	Tints(Tints),
-	Hidden(BTreeSet<String>),
 }
 
 /// Each replaces `name` whole.
@@ -645,7 +607,6 @@ pub enum ViewPart {
 pub enum Kept {
 	View(View),
 	Workspace { name: String, workspace: Workspace },
-	Columns { name: String, columns: Columns },
 	Scope { name: String, scope: Scope },
 }
 
@@ -664,11 +625,6 @@ pub enum LibraryEdit {
 	},
 	/// Its draft is dropped.
 	Revert(Item),
-	/// `view`'s boxes as the column layout `columns` has them.
-	Lay {
-		view: String,
-		columns: String,
-	},
 	Locked {
 		view: String,
 		locked: bool,
