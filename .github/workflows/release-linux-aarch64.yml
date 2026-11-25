@@ -14,6 +14,10 @@ jobs:
           targets: aarch64-unknown-linux-gnu
       - name: Install mold
         uses: rui314/setup-mold@v1
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwayland-dev libegl-dev libgl-dev libgbm-dev
       - name: Remove .cargo/config.toml
         run: rm -f "$GITHUB_WORKSPACE/.cargo/config.toml" "$GITHUB_WORKSPACE/.cargo/config"
       - name: Build release binary

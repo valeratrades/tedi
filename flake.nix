@@ -49,8 +49,11 @@
               jobs.default = true;
               jobs.errors.install = jobDeps;
               jobs.warnings.install = jobDeps;
-              release.default = true;
-              release.cargoTomlPath = "tedi/Cargo.toml";
+              release = {
+                cargoTomlPath = "tedi/Cargo.toml";
+                targets = [ "x86_64-unknown-linux-gnu" "aarch64-unknown-linux-gnu" ]; # `tedi_eval` screenshots over wayland
+                aptDeps = [ "libwayland-dev" "libegl-dev" "libgl-dev" "libgbm-dev" ];
+              };
               labels.extra = [
                 { name = "milestones"; color = "0000ff"; }
                 { name = "nuke"; color = "0000ff"; description = "remove something. Basically `chore` but strictly subtractive"; }
